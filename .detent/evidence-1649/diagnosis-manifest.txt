@@ -1,0 +1,42 @@
+{
+  "implementation_start_sha": "9ecb0f03b8aec8221f8d8b3cf6be9a2ab5b6e9f1",
+  "historical_tested_sha": "ccd4ffedfb1248531255caf1b48d0485ebf757be",
+  "historical_run": "https://github.com/digitaldrywood/detent/actions/runs/40053526554/attempts/1",
+  "historical_job": "https://github.com/digitaldrywood/detent/actions/jobs/120751322647",
+  "provenance": "Local pre-edit diagnostics on macOS arm64; historical CI logs unavailable to worker because forge operations are forbidden. Node v24.21.0 make app succeeded before diagnostics. Original complete outputs retained in ordered parts.",
+  "parts": [
+    {
+      "path": ".detent/evidence-1649/startup-before-part1.log",
+      "original_identity": "/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/execution-603749373/worker-3874220103/detent-worker-scratch/49aa19cf93a39746/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1649-0f28883c922f/attempt-8dae46ba-e8a4-4b6a-8c39-35ea6afdfcd5/1649-startup-before.log",
+      "original_sha256": "46ea29a4b3e488a4efbd271db0d1712cc85d39196757e3346082e4e72635c603",
+      "original_size": 43667,
+      "part": 1,
+      "byte_start": 0,
+      "byte_end_exclusive": 32000,
+      "command": "go test -timeout=120s ./internal/orchestrator -run '^TestStartupSessionsAppearInStateAndHealth$' -count=1",
+      "exit_code": 1
+    },
+    {
+      "path": ".detent/evidence-1649/startup-before-part2.log",
+      "original_identity": "/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/execution-603749373/worker-3874220103/detent-worker-scratch/49aa19cf93a39746/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1649-0f28883c922f/attempt-8dae46ba-e8a4-4b6a-8c39-35ea6afdfcd5/1649-startup-before.log",
+      "original_sha256": "46ea29a4b3e488a4efbd271db0d1712cc85d39196757e3346082e4e72635c603",
+      "original_size": 43667,
+      "part": 2,
+      "byte_start": 32000,
+      "byte_end_exclusive": 43667,
+      "command": "go test -timeout=120s ./internal/orchestrator -run '^TestStartupSessionsAppearInStateAndHealth$' -count=1",
+      "exit_code": 1
+    },
+    {
+      "path": ".detent/evidence-1649/ssh-before-part1.log",
+      "original_identity": "/Users/corylanou/detent-runner/prj_6d4919bebd73446798e6cd807feda10e/.detent/workspaces/execution-603749373/worker-3874220103/detent-worker-scratch/49aa19cf93a39746/prj_6d4919bebd73446798e6cd807feda10e-prj_6d4919bebd73446798e6cd807feda10e_1649-0f28883c922f/attempt-8dae46ba-e8a4-4b6a-8c39-35ea6afdfcd5/1649-ssh-before.log",
+      "original_sha256": "e5fe04e392441e8354c2e1d19f7ce980bfb0ba50533c90f818db76f8c4fd03ae",
+      "original_size": 6456,
+      "part": 1,
+      "byte_start": 0,
+      "byte_end_exclusive": 6456,
+      "command": "go test -timeout=120s ./internal/cli -run '^TestSSHWorkerLifecycle/native_source_producer_parse_failure$' -count=1",
+      "exit_code": 1
+    }
+  ]
+}

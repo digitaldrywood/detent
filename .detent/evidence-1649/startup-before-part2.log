@@ -1,0 +1,70 @@
+roject_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=restore_retry_intents duration=29.292µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=reconcile_terminal_retries
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=reconcile_terminal_retries duration=4.875µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=observe_hydration_skips
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=observe_hydration_skips duration=3.375µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=restore_merge_reservations
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=restore_merge_reservations duration=31.75µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=reconcile_merge_reservations
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=reconcile_merge_reservations duration=8.5µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=restore_gate_wait_completion
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=restore_gate_wait_completion duration=92.292µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=reconcile_operator_stop_holds
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=reconcile_operator_stop_holds duration=6.166µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=reconcile_merge_duration_holds
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=reconcile_merge_duration_holds duration=10.292µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=refresh_transition_sets
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=refresh_transition_sets duration=19.792µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=resolve_completed_epics
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=resolve_completed_epics duration=16.041µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=reconcile_closed_completed_issue_statuses
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=reconcile_closed_completed_issue_statuses duration=8.959µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=auto_promote_blocker_issues
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=auto_promote_blocker_issues duration=17.083µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=review_plan_issues
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=review_plan_issues duration=15.875µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=promote_human_review
+2026/10/23 22:00:47 INFO auto promote decision issue_id=issue-2486 identifier=digitaldrywood/detent#2486 action=await_review reason=validator_missing pull_request_number=2487 pull_request=https://github.com/digitaldrywood/detent/pull/2487
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=promote_human_review duration=315µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=operator_restore_stuck_merging
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=operator_restore_stuck_merging duration=42.958µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=operator_merge_wedged_pull_requests
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=operator_merge_wedged_pull_requests duration=6.042µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=delegate_native_merge_queue
+2026/10/23 22:00:47 INFO merge_worker_queue_cycle queue_depth=0 ready_count=0 aged_count=0 oldest_lane_age_seconds=0 fairness_age_seconds=7200 lane_occupied=false lane_saturated=false lane_occupant_count=0 queued_behind=0
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=delegate_native_merge_queue duration=51.25µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=reconcile_stale_linked_pull_request_issues
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=reconcile_stale_linked_pull_request_issues duration=44.833µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=transition_completed_active_issues
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=transition_completed_active_issues duration=79.167µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=transition_artifact_gate_waits
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=reconciliation step=transition_artifact_gate_waits duration=22.542µs
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel6sob5s-4 stage=rate_limits elapsed=1.419917ms
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel6sob5s-4 stage=dispatch elapsed=1.449667ms
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=dispatch step=prepare_candidates
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=dispatch step=prepare_candidates duration=23.125µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=dispatch step=track_candidate_blocked_statuses
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=dispatch step=track_candidate_blocked_statuses duration=20.917µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=dispatch step=dispatch_ready_issues
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=dispatch step=dispatch_ready_issues duration=533.75µs
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel6sob5s-4 stage=blocked_maintenance elapsed=2.029375ms
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=blocked_maintenance step=recover_blocked_issues
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=blocked_maintenance step=recover_blocked_issues duration=2.167µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=blocked_maintenance step=operator_clear_closed_dependencies
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=blocked_maintenance step=operator_clear_closed_dependencies duration=169.5µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=blocked_maintenance step=track_blocked_statuses
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=blocked_maintenance step=track_blocked_statuses duration=107.875µs
+2026/10/23 22:00:47 INFO project refresh sub-step started project_id=detent refresh_id=dmcqel6sob5s-4 stage=blocked_maintenance step=release_missing_retries
+2026/10/23 22:00:47 INFO project refresh sub-step completed project_id=detent refresh_id=dmcqel6sob5s-4 stage=blocked_maintenance step=release_missing_retries duration=19.708µs
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel6sob5s-4 stage=publish elapsed=2.337375ms
+2026/10/23 22:00:47 INFO project refresh stage project_id=detent refresh_id=dmcqel6sob5s-4 stage=workspace_cleanup elapsed=2.35375ms
+2026/10/23 22:00:47 INFO project refresh timing project_id=detent refresh_id=dmcqel6sob5s-4 manual=false completed=true total_duration=2.361125ms refresh_status=ready last_error="" preflight_duration=144.917µs preflight_graphql_points=0 status_drift_duration=6.917µs status_drift_graphql_points=0 release_duration=1.75µs release_graphql_points=0 active_runs_duration=2.416µs active_runs_graphql_points=0 tracker_fetch_duration=367.959µs tracker_fetch_graphql_points=0 reconciliation_duration=895.25µs reconciliation_graphql_points=0 rate_limits_duration=29.75µs rate_limits_graphql_points=0 dispatch_duration=579.708µs dispatch_graphql_points=0 blocked_maintenance_duration=308µs blocked_maintenance_graphql_points=0 publish_duration=16.375µs publish_graphql_points=0 workspace_cleanup_duration=7.375µs workspace_cleanup_graphql_points=0
+2026/10/23 22:00:47 INFO github rest scope usage project_id=detent refresh_id=dmcqel6sob5s-4 scope=refresh request_count=0 fanout_deferred=0 reserve_refused=0 steps=[] timings=[] timing_unit=nanoseconds timing_coverage=completed_observed_attempts http_boundary=do_body_close elapsed_semantics=overlapping_work token_elapsed=inclusive unmeasured=actor_queue_local_work
+2026/10/23 22:00:47 INFO stopping web server
+2026/10/23 22:00:47 WARN validator stage failed; retry scheduled issue_id=issue-2486 identifier=digitaldrywood/detent#2486 pull_request=2487 head_sha=head attempt=1 max_attempts=3 error="context canceled" retry_at=2026-10-24T03:00:57.288Z
+--- FAIL: TestStartupSessionsAppearInStateAndHealth (0.26s)
+    --- FAIL: TestStartupSessionsAppearInStateAndHealth/orphan_resume (0.08s)
+        startup_session_health_test.go:81: resumed from 0, want 1
+FAIL
+FAIL	github.com/digitaldrywood/detent/internal/orchestrator	1.355s
+FAIL

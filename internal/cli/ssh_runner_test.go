@@ -420,6 +420,11 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 	cfg.Codex.Command = "env DETENT_SSH_TEST_SANDBOX=" + expectedSandbox + " DETENT_SSH_TEST_HELPER=provider DETENT_SSH_TEST_GATE=" + sshQuote(gate) + " " + sshQuote(filepath.ToSlash(executable)) + " -test.run=^TestSSHHelperProcess$"
 	failingReview := len(producerFailure) != 0 && producerFailure[0]
 	if failingReview {
+		repository := "https://github.com/example-org/example-project"
+		for _, sourceRoot := range []string{source, remoteSource} {
+			git(sourceRoot, "config", "url."+bare+".insteadOf", repository)
+			git(sourceRoot, "remote", "set-url", "origin", repository)
+		}
 		cfg.Codex.Command = "env DETENT_SSH_TEST_REVIEW_FAILURE=1 " + cfg.Codex.Command
 		cfg.Gate.AutomatedReview = gatepkg.AutomatedReviewRequired
 	}

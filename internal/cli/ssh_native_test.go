@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 // sshNativeProbe checks native callbacks in the existing subprocess/SSH worker
@@ -26,6 +27,7 @@ type sshNativeProbe struct {
 	bundle                 artifact.GitCapture
 	producerFailure        bool
 	outcome, finalMessage  string
+	repository             string
 }
 
 func (e *sshNativeProbe) Guard(ctx context.Context) (context.Context, func(), error) {
@@ -68,7 +70,11 @@ func (e *sshNativeProbe) SetDiffSource(source runner.AttemptDiffSource) {
 	defer e.mu.Unlock()
 	e.diff = source
 }
-func (*sshNativeProbe) SetRepository(string) {}
+func (e *sshNativeProbe) SetRepository(repository string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.repository = repository
+}
 func (e *sshNativeProbe) PrepareArtifacts(ctx context.Context, _ string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -109,8 +115,13 @@ func (e *sshNativeProbe) ReviewVersion(context.Context) (runner.NativeValidation
 		return runner.NativeValidation{}, nil
 	}
 	descriptor := policy.Descriptor{Gates: policy.Gates{AutomatedReview: gate.AutomatedReviewRequired}}.WithID()
-	version := tracker.ChangeVersion{ID: "central-version", ChangeID: "central-change", Policy: descriptor, ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: e.lastDiff.BaseSHA, HeadSHA: e.lastDiff.HeadSHA, Repository: "fixture", PolicyID: descriptor.ID}}
+	version := tracker.ChangeVersion{ID: "central-version", ChangeID: "central-change", Policy: descriptor, ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: e.lastDiff.BaseSHA, HeadSHA: e.lastDiff.HeadSHA, Repository: e.repository, PolicyID: descriptor.ID}}
 	return runner.NativeValidation{Version: &version, Diff: &connector.ValidationDiff{Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Digest: "fixture-diff", Files: []string{"feature.txt"}, Patch: e.lastDiff.Files[0].Patch}}, nil
+}
+
+func (e *sshNativeProbe) RecoverChangeSource(ctx context.Context) (workspace.ChangeSource, error) {
+	input, err := e.ReviewVersion(ctx)
+	return workspace.ChangeSource{Version: *input.Version}, err
 }
 
 func (*sshNativeProbe) RecordReview(context.Context, gate.ValidatorResult) error { return nil }
