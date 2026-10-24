@@ -81,6 +81,15 @@ function renderWith(api: EntryApi, element: React.ReactElement) {
 }
 
 describe("organization chooser", () => {
+  it("replaces the organization monogram with its authenticated logo, falling back when absent", async () => {
+    renderWith(fakeApi({ organizations: vi.fn(async () => ({ ...listing, organizations: [{ ...listing.organizations[0]!, logo_url: "/organizations/org_a/api/v2/logo-image" }] })) }), <OrganizationChooser onNavigate={vi.fn()} />);
+    const logo = await screen.findByRole("img", { name: "Alpha logo" });
+    expect(logo.getAttribute("src")).toBe("/organizations/org_a/api/v2/logo-image");
+    fireEvent.error(logo);
+    expect(screen.queryByRole("img", { name: "Alpha logo" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Alpha" }).textContent).toContain("A");
+  });
+
   it("lists organizations as links, pending ones with their state, and the actions", async () => {
     const navigate = vi.fn();
     renderWith(fakeApi(), <OrganizationChooser onNavigate={navigate} />);
