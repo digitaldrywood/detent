@@ -1,0 +1,1 @@
+2026-10-01T09:03:58.0935258Z [/home/runner/work/detent/detent/tools/cifailure/main.go:43] - G204 (CWE-78): Subprocess launched with variable (Confidence: HIGH, Severity: MEDIUM)
