@@ -120,6 +120,9 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 		store.workspaceRetainAfterRun = cfg.Workspace.RetainAfterRun
 		store.workspaceTerminalIsolation = cfg.Workspace.Terminal.Isolation
 	}
+	if err := store.initializeAutoVacuum(ctx); err != nil {
+		return nil, errors.Join(err, store.Close())
+	}
 	if err := store.configure(ctx, cfg.BusyTimeout, cfg.Hosted != nil); err != nil {
 		return nil, errors.Join(err, store.Close())
 	}
@@ -366,10 +369,20 @@ func isWindowsDrivePath(path string) bool {
 	return path[0] >= 'A' && path[0] <= 'Z' || path[0] >= 'a' && path[0] <= 'z'
 }
 
-func (d *database) configure(ctx context.Context, busyTimeout time.Duration, hosted bool) error {
-	if _, err := d.db.ExecContext(ctx, "PRAGMA auto_vacuum = INCREMENTAL"); err != nil {
-		return fmt.Errorf("configure hub sqlite incremental vacuum: %w", err)
+func (d *database) initializeAutoVacuum(ctx context.Context) error {
+	var pageCount int
+	if err := d.db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pageCount); err != nil {
+		return fmt.Errorf("inspect hub sqlite pages: %w", err)
 	}
+	if pageCount == 0 {
+		if _, err := d.db.ExecContext(ctx, "PRAGMA auto_vacuum = INCREMENTAL"); err != nil {
+			return fmt.Errorf("configure hub sqlite incremental vacuum: %w", err)
+		}
+	}
+	return nil
+}
+
+func (d *database) configure(ctx context.Context, busyTimeout time.Duration, hosted bool) error {
 	wantBusyTimeout := busyTimeoutMillis(busyTimeout)
 	var gotBusyTimeout int64
 	if err := d.db.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&gotBusyTimeout); err != nil {
