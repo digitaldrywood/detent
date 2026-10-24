@@ -10,12 +10,15 @@ test.beforeEach(async () => {
 
 test.afterEach(async () => { await hub?.stop(); });
 
-test("runner sheet saves through the fleet and persists routing after reload", async ({ page }) => {
+test("runner page saves through the fleet and persists routing after reload", async ({ page }) => {
   await page.goto(hub.fixture.accounts.owner);
   await page.goto(new URL("/settings/runners", hub.fixture.url).toString());
   const row = page.getByTestId("host-card").filter({ hasText: "Settings runner" });
   await row.getByRole("button", { name: "Manage Settings runner" }).click();
-  const sheet = page.getByRole("dialog", { name: "Settings runner", exact: true });
+  const sheet = page.getByRole("article", { name: "Settings runner", exact: true });
+  await expect(sheet).toBeVisible();
+  await expect(page).toHaveURL(/\/settings\/runners\/[^/?]+$/);
+  await page.reload();
   await expect(sheet).toBeVisible();
   await sheet.getByRole("radio", { name: "Draining Finishes what it has" }).check();
   await sheet.getByRole("spinbutton", { name: "Jobs at once", exact: true }).fill("1");
@@ -28,11 +31,12 @@ test("runner sheet saves through the fleet and persists routing after reload", a
   await sheet.getByRole("combobox", { name: /^Time zone/ }).selectOption("America/Chicago");
   await sheet.getByLabel("Stop running work after hours end").fill("30m");
   await sheet.getByRole("button", { name: "Save runner" }).click();
-  await expect(sheet).toHaveCount(0);
-  await expect(row).toContainText("draining · Limit 1");
+  await expect(page.getByText("Runner saved", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Runners", exact: true }).click();
+  await expect(row).toContainText("Finishing running work");
   await page.reload();
   await page.getByRole("button", { name: "Manage Settings runner" }).click();
-  const saved = page.getByRole("dialog", { name: "Settings runner", exact: true });
+  const saved = page.getByRole("article", { name: "Settings runner", exact: true });
   await expect(saved.getByRole("radio", { name: /^Full access/ })).toBeChecked();
   await expect(saved.getByRole("checkbox", { name: projectName.trim(), exact: true })).not.toBeChecked();
   await expect(saved.getByRole("spinbutton", { name: "Jobs at once", exact: true })).toHaveValue("1");
@@ -44,16 +48,17 @@ test("runner sheet saves through the fleet and persists routing after reload", a
   await saved.getByRole("checkbox", { name: projectName.trim(), exact: true }).check();
   await saved.getByLabel("Runner scope").selectOption("organization");
   await saved.getByRole("button", { name: "Save runner" }).click();
-  await expect(saved).toHaveCount(0);
+  await expect(page.getByText("Runner saved", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Runners", exact: true }).click();
   await page.reload();
   await page.getByRole("button", { name: "Manage Settings runner" }).click();
-  await expect(page.getByRole("dialog").getByLabel("Runner scope")).toHaveValue("organization");
-  await expect(page.getByRole("dialog")).toContainText("All current and future projects");
+  await expect(page.getByRole("article").getByLabel("Runner scope")).toHaveValue("organization");
+  await expect(page.getByRole("article")).toContainText("All current and future projects");
 
   await page.goto(hub.fixture.accounts.viewer);
   await page.goto(new URL("/settings/runners", hub.fixture.url).toString());
   await page.getByRole("button", { name: "Manage Settings runner" }).click();
-  const readonly = page.getByRole("dialog");
+  const readonly = page.getByRole("article");
   await expect(readonly).toContainText("Full access");
   await expect(readonly.locator("input, select, textarea")).toHaveCount(0);
   await expect(readonly.locator('[data-slot="sheet-footer"]')).toHaveCount(0);
@@ -64,7 +69,7 @@ test("runner outside hours stays contextual on its row", async ({ page }) => {
   await page.goto(new URL("/settings/runners", hub.fixture.url).toString());
   const row = page.getByTestId("host-card").filter({ hasText: "Settings runner" });
   await row.getByRole("button", { name: "Manage Settings runner" }).click();
-  const sheet = page.getByRole("dialog", { name: "Settings runner", exact: true });
+  const sheet = page.getByRole("article", { name: "Settings runner", exact: true });
   const later = new Date(Date.now() + 2 * 60 * 60 * 1000);
   const end = new Date(later.getTime() + 60 * 60 * 1000);
   const clock = (date) => date.toISOString().slice(11, 16);
@@ -75,7 +80,8 @@ test("runner outside hours stays contextual on its row", async ({ page }) => {
   await sheet.getByLabel("From 1").fill(clock(later));
   await sheet.getByLabel("Until 1").fill(clock(end));
   await sheet.getByRole("button", { name: "Save runner" }).click();
-  await expect(sheet).toHaveCount(0);
+  await expect(page.getByText("Runner saved", { exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Runners", exact: true }).click();
   await expect(row.getByText("Outside hours", { exact: true })).toBeVisible();
   await expect(page.getByRole("alert")).toHaveCount(0);
   await page.reload();

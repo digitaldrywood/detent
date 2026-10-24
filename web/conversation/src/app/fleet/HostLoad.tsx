@@ -82,7 +82,7 @@ export function HostLoad({ runnerId, load, timezone }: {
     const dayOfMonth = Number(at.toLocaleString("en-US", { day: "numeric", timeZone: zone }));
     const shortLabel = range === "24h"
       ? index === 0 || hourOfDay % 6 === 0 ? at.toLocaleTimeString("en-US", { hour: "numeric", timeZone: zone }) : ""
-      : newDay && (range === "7d" || index === 0 || dayOfMonth % 5 === 0) ? day(hour.hour) : "";
+      : newDay && hourOfDay === 0 && (range === "7d" ? dayOfMonth % 2 === 0 : dayOfMonth % 5 === 0) ? day(hour.hour) : "";
     return { key: hour.hour, label: at.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", timeZone: zone }), shortLabel };
   });
   const cpuSeries: ChartSeries[] = [
@@ -118,6 +118,7 @@ export function HostLoad({ runnerId, load, timezone }: {
           <MetricTile label="Min free memory" value={minFree === null ? null : gigabytes(minFree / GIB)} />
           <MetricTile label="Hours ≥ 90% CPU" value={busy.filter((value) => value >= 90).length.toString()} />
         </MetricTileGroup>
+        <div className="grid min-w-0 gap-3 lg:grid-cols-3">
         <ChartPanel title="CPU busy" actions={<span className="text-xs text-muted-foreground">hourly average</span>}>
           <Chart ariaLabel="CPU busy percent by hour" categories={categories} series={cpuSeries} height={140} formatValue={percent} />
           <ChartLegend items={legend(cpuSeries)} />
@@ -130,6 +131,7 @@ export function HostLoad({ runnerId, load, timezone }: {
           <Chart ariaLabel="Free memory and swap by hour" categories={categories} series={memorySeries} height={140} formatValue={gigabytes} marker={pressure} />
           <ChartLegend items={[...legend(memorySeries), { label: pressure.label, color: pressure.color }]} />
         </ChartPanel>
+        </div>
         {lowDisk ? <p className="border-l-2 border-warning pl-2.5 text-xs">Free disk fell to {(lowDisk.disk_free_min_bytes / 1e9).toFixed(1)} GB on {day(lowDisk.hour)}. Low disk is reported here and does not change the suggestion.</p> : null}
       </>}
     </section>

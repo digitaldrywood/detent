@@ -21,6 +21,8 @@ async function providersRunnersPreview() {
     plugins: [{
       name: "vite-worker-stub",
       setup(build) {
+        build.onResolve({ filter: /\?url$/ }, (args) => ({ path: args.path, namespace: "vite-url-stub" }));
+        build.onLoad({ filter: /.*/, namespace: "vite-url-stub" }, (args) => ({ contents: `export default ${JSON.stringify(args.path)}`, loader: "js" }));
         build.onResolve({ filter: /\?worker$/ }, (args) => ({ path: args.path, namespace: "vite-worker-stub" }));
         build.onLoad({ filter: /.*/, namespace: "vite-worker-stub" }, () => ({ contents: "export default class {}", loader: "js" }));
       },
@@ -33,7 +35,7 @@ async function providersRunnersPreview() {
     const value = fs.readFileSync(path.join("static/fonts", font)).toString("base64");
     css = css.replaceAll("../../fonts/" + font, "data:font/woff2;base64," + value);
   }
-  return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Providers & runners</title><style>' + css + '</style></head><body><div id="root"></div><script>' + result.outputFiles[0].text.replaceAll("</script", "<\\/script") + ';document.currentScript.remove();</script></body></html>';
+  return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Runners</title><style>' + css + '</style></head><body><div id="root"></div><script>' + result.outputFiles[0].text.replaceAll("</script", "<\\/script") + ';document.currentScript.remove();</script></body></html>';
 }
 
 module.exports = { providersRunnersPreview };

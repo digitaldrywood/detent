@@ -1907,7 +1907,7 @@ test.describe("the footer's update check", () => {
     expect(errors).toEqual([]);
   });
 
-  test("shows the behind state on its own and walks to Providers & runners", async ({ page }) => {
+  test("shows the behind state on its own and walks to Runners", async ({ page }) => {
     const errors = watchConsole(page);
     await page.route("**/app/updates", async (route) => {
       await route.fulfill({

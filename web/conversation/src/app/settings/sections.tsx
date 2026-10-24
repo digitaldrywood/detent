@@ -78,7 +78,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsSectionId, string>
   "organization/members": "Members",
   "organization/models": "Models",
   projects: "Projects",
-  runners: "Providers & runners",
+  runners: "Runners",
   integrations: "Integrations",
   mcp: "API keys & MCP",
   plan: "Plan & usage",
