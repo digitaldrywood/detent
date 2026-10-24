@@ -27,6 +27,8 @@ import (
 
 type nativeExecution struct {
 	completionOwner   atomic.Bool
+	stepReviews       *tracker.ChangeDetail
+	stepDiscussion    []tracker.NativeComment
 	workerMu          sync.Mutex
 	workerCloseMu     sync.Mutex
 	cancelMu          sync.Mutex
@@ -690,7 +692,24 @@ func (e *nativeExecution) finish(ctx context.Context, outcome string) (err error
 }
 
 func (e *nativeExecution) finalizationFailure(err error) *tracker.NativeTerminalFailure {
-	failure := tracker.NativeTerminalFailure{ErrorClass: "finalization", Stage: "finalization", ObservedAt: e.scheduler.now().UTC()}
+	stage := "finalization"
+	if e.change != nil && (e.change.VersionError != "" || e.change.Error != "") {
+		stage = "publication"
+	}
+	if e.role == runner.RoleMerge {
+		stage = "landing"
+	}
+	failure := tracker.NativeTerminalFailure{ErrorClass: stage, Stage: stage, ObservedAt: e.scheduler.now().UTC()}
+	var provider interface {
+		NativeTerminalFailure() tracker.NativeTerminalFailure
+	}
+	if errors.As(err, &provider) {
+		recorded := provider.NativeTerminalFailure()
+		if recorded.Stage != "" {
+			failure = recorded
+			failure.ObservedAt = e.scheduler.now().UTC()
+		}
+	}
 	switch change := e.change; {
 	case change != nil && change.VersionError != "":
 		failure.Error = strings.TrimPrefix(change.VersionCode+": "+change.VersionError, ": ")
@@ -868,7 +887,7 @@ func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) (diagnos
 	return nil
 }
 
-func (e *nativeExecution) append(ctx context.Context, kind, outcome string, checkpoint *tracker.NativeCheckpoint) error {
+func (e *nativeExecution) append(ctx context.Context, kind, outcome string, checkpoint *tracker.NativeCheckpoint, immediate ...bool) error {
 	if err := e.flush(ctx); err != nil {
 		return err
 	}
@@ -901,7 +920,7 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 	}
 	data.Handoff = checkpoint
 	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: kind, SchemaVersion: 1, Data: data}
-	if e.claim.lease.RunDetailBatching && kind == "run.observed" && len(e.observations) < 7 && !e.runtimeHeartbeatDue(data.Runtime) {
+	if len(immediate) == 0 && e.claim.lease.RunDetailBatching && kind == "run.observed" && len(e.observations) < 7 && !e.runtimeHeartbeatDue(data.Runtime) {
 		encoded, err := json.Marshal(event)
 		if err != nil {
 			return err

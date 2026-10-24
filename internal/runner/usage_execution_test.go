@@ -118,6 +118,37 @@ func TestReportTurnUsage(t *testing.T) {
 	}
 }
 
+func TestTurnUsageReporter(t *testing.T) {
+	execution := &recordingUsageExecution{}
+	reporter := turnUsageReporter{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	price := func(_ string, input, _, output int64, _ string) float64 { return float64(input+output) / 1000 }
+	result := RunResult{Tokens: TokenTotals{InputTokens: 100, OutputTokens: 10}}
+	reporter.report(t.Context(), execution, result, "test-model", "codex", price, logger)
+	if len(execution.entries) != 1 || execution.entries[0].Input != 100 || execution.entries[0].CostEstimate <= 0 {
+		t.Fatalf("running turn usage = %+v", execution.entries)
+	}
+	reporter.report(t.Context(), execution, result, "test-model", "codex", price, logger)
+	result.Tokens.InputTokens, result.Tokens.OutputTokens = 150, 15
+	reporter.report(t.Context(), execution, result, "test-model", "codex", price, logger)
+	paid := int64(25000)
+	result.ReportedCostMicros, result.CostSource = &paid, "provider"
+	reporter.report(t.Context(), execution, result, "test-model", "codex", price, logger)
+	var input, output, cost int64
+	var estimate float64
+	for _, entry := range execution.entries {
+		input += entry.Input
+		output += entry.Output
+		estimate += entry.CostEstimate
+		if entry.ReportedCostMicros != nil {
+			cost += *entry.ReportedCostMicros
+		}
+	}
+	if len(execution.entries) != 3 || input != 150 || output != 15 || cost != paid || estimate != 0.165 {
+		t.Fatalf("turn total: entries=%+v input=%d output=%d cost=%d estimate=%g", execution.entries, input, output, cost, estimate)
+	}
+}
+
 // stubExecution satisfies Execution without doing anything, so a test can
 // add only the capability it is about.
 type stubExecution struct{}

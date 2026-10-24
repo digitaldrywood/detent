@@ -137,6 +137,7 @@ func decodeRunHistory(ctx context.Context, raw string, result *tracker.Collabora
 func compactRun(data tracker.NativeRunData) tracker.NativeRunData {
 	result := data
 	result.Evidence, result.Usage = nil, nil
+	result.Steps = nil
 	result.CompletionBody = ""
 	if data.Disposition != nil {
 		disposition := *data.Disposition
@@ -248,9 +249,6 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 		}
 	} else if previousErr != sql.ErrNoRows {
 		return ctx, previousErr
-	}
-	if request.Type == "run.observed" && len(request.PriorEvents) == 0 {
-		return ctx, nativeInvalid("Run observations require a bounded detail batch")
 	}
 	owner.organization = string(scope.organization)
 	events := append(append([]tracker.NativeRunEvent{}, request.PriorEvents...), request)

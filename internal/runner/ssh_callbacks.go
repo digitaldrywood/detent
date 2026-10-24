@@ -22,6 +22,7 @@ import (
 
 type SSHRunRequest struct {
 	SourceIteration bool
+	StepReceipts    bool
 	IsolationPolicy *isolation.Policy
 	BatchedLanding  bool
 	ExecutionTools  []AgentTool
@@ -63,6 +64,7 @@ func NewSSHRunRequest(request RunRequest) SSHRunRequest {
 	}
 	if request.Execution != nil {
 		_, wire.SourceIteration = request.Execution.(NativeSourceIterationExecution)
+		_, wire.StepReceipts = stepExecution(request.Execution)
 		recovery := request.Execution.Recovery()
 		wire.Recovery = &recovery
 		_, wire.Native = request.Execution.(ArtifactSourceExecution)
@@ -106,7 +108,7 @@ func (wire SSHRunRequest) Bind(ctx context.Context, peer *SSHPeer) RunRequest {
 		}
 	}
 	if wire.Recovery != nil {
-		execution := &sshExecution{peer: peer, recovery: *wire.Recovery}
+		execution := &sshExecution{peer: peer, recovery: *wire.Recovery, stepReceipts: wire.StepReceipts}
 		request.Execution = execution
 		if wire.Native {
 			sources := wire.Sources
@@ -139,6 +141,11 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 		if strings.HasPrefix(method, "execution.") {
 			name := strings.TrimPrefix(method, "execution.")
 			switch name {
+			case "RecordStep", "Step":
+				if _, ok := request.Execution.(StepExecution); !ok {
+					return nil, nil
+				}
+				return invokeSSHMethod(ctx, request.Execution, name, arguments)
 			case "PrepareFinish":
 				if _, ok := request.Execution.(CompletionExecution); !ok {
 					return nil, nil
@@ -215,9 +222,12 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 }
 
 type sshExecution struct {
-	peer     *SSHPeer
-	recovery tracker.NativeRecovery
+	peer         *SSHPeer
+	recovery     tracker.NativeRecovery
+	stepReceipts bool
 }
+
+func (e *sshExecution) StepReceiptsEnabled() bool { return e.stepReceipts }
 
 func (e *sshExecution) Guard(ctx context.Context) (context.Context, func(), error) {
 	return ctx, func() {}, nil
@@ -230,6 +240,16 @@ func (e *sshExecution) Start(ctx context.Context, identity tracker.NativeExecuti
 }
 func (e *sshExecution) Checkpoint(ctx context.Context, checkpoint tracker.NativeCheckpoint) error {
 	return e.peer.Call(ctx, "execution.Checkpoint", nil, checkpoint)
+}
+
+func (e *sshExecution) RecordStep(ctx context.Context, receipt tracker.NativeStepReceipt) error {
+	return e.peer.Call(ctx, "execution.RecordStep", nil, receipt)
+}
+
+func (e *sshExecution) Step(ctx context.Context, binding tracker.NativeStepReceipt) (tracker.NativeStepReceipt, error) {
+	var receipt tracker.NativeStepReceipt
+	err := e.peer.Call(ctx, "execution.Step", &receipt, binding)
+	return receipt, err
 }
 
 // The central owner finishes execution even if the SSH host disappears.

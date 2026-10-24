@@ -1267,6 +1267,7 @@ func (r *Runner) runAgentTurn(
 	turnRequest.reserveScratch = r.reserveSessionWorkerScratch(detentSessionID, info.Path, "")
 	providerResume := turnRequest.Resume
 	usage := newSessionTokenUsage(!agentResumeEmpty(providerResume))
+	usageReport := &turnUsageReporter{}
 	activityProfile := runRequest.activityProfile
 	stopCompute := r.meterCompute(runRequest.WorkerHost)
 	turnResult, cleanupScratch, turnErr := runAgentBackendTurnWithToolsUsingLimitPreservingScratch(ctx, backend, turnRequest, runRequest.AgentTools, runRequest.AgentToolHandler, conversation.wrapUpdates(func(updateCtx context.Context, update AgentUpdate) error {
@@ -1311,6 +1312,9 @@ func (r *Runner) runAgentTurn(
 		}
 		previousIdentity := result.RuntimeIdentity
 		applyAgentUpdate(&result, update)
+		if update.Type == AgentUpdateTokenUsage {
+			usageReport.report(updateCtx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, r.logger)
+		}
 		if !previousIdentity.MateriallyEqual(result.RuntimeIdentity) {
 			if err := r.persistSessionIdentity(updateCtx, detentSessionID, result.RuntimeIdentity); err != nil {
 				return err
@@ -1401,7 +1405,9 @@ func (r *Runner) runAgentTurn(
 	failure := nativeTerminalFailure(turnErr, time.Time{}, false)
 	result.TurnStartRefused = !turnStarted && turnResult.TurnID == "" && failure != nil && failure.Provider == "codex" && failure.Operation == "turn/start" && failure.RPCCode != nil
 	result.ReportedCostMicros, result.CostSource = turnResult.ReportedCostMicros, turnResult.CostSource
-	reportTurnUsage(ctx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, r.logger)
+	usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+	usageReport.report(usageCtx, runRequest.Execution, result, sessionModel, backendKind, r.usageCostUSD, r.logger)
+	usageCancel()
 	return agentTurnExecution{
 		turnResult:  turnResult,
 		result:      result,
@@ -1639,8 +1645,16 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		req.RetryMode = RetryModeFresh
 	}
 	var reviewRecovery *tracker.NativeAttempt
+	var turnRecovery *tracker.NativeAttempt
 	if req.Execution != nil && mode == RunModeImplement {
-		reviewRecovery = nativeReviewResumeAttempt(req.Execution.Recovery(), gate.Effective(workflow.Config.Gate).Run)
+		turnRecovery = nativeTurnResumeAttempt(req.Execution.Recovery())
+		hasReceipts := false
+		for _, attempt := range req.Execution.Recovery().Attempts {
+			hasReceipts = hasReceipts || len(attempt.Steps) != 0
+		}
+		if !hasReceipts {
+			reviewRecovery = nativeReviewResumeAttempt(req.Execution.Recovery(), gate.Effective(workflow.Config.Gate).Run)
+		}
 	}
 	publicationRecovery := false
 	if req.Execution != nil && mode == RunModeImplement && publicationRecoveryRole(runRole(mode, req.Issue)) {
@@ -1648,7 +1662,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			publicationRecovery = previous.Checkpoint.UncertainForgeEffect()
 		}
 	}
-	if req.Execution != nil && !nativeLanding && !publicationRecovery && reviewRecovery == nil && nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
+	if req.Execution != nil && !nativeLanding && !publicationRecovery && reviewRecovery == nil && turnRecovery == nil && nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
 		if !req.operatorFreshRetry() {
 			resume, err := r.nativeInterruptedResumeState(ctx, req, agentRuntime)
 			if err != nil {
@@ -2028,7 +2042,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	resumeState := store.AgentResumeState{}
-	if mode != RunModeRoutine && reviewRecovery == nil {
+	if turnRecovery != nil && !nativeTurnResumeMatches(turnRecovery, recoveryState) {
+		turnRecovery = nil
+	}
+	if mode != RunModeRoutine && reviewRecovery == nil && turnRecovery == nil {
 		resumeState, err = r.runRequestResumeState(ctx, workflow.Config.Agent, req, sessionModel, selection.BackendID, backendConfig.Kind, role)
 		if err != nil {
 			return RunResult{}, err
@@ -2041,7 +2058,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if !nativeReviewResumeMatches(req.Execution.Recovery(), recoveryState, workspaceIssue.Source) {
 			return RunResult{}, fmt.Errorf("%w: review source changed before finalization", ErrNativeRecoveryRequired)
 		}
-	} else {
+	} else if turnRecovery == nil {
 		resumeState, err = r.nativeResume(ctx, req, backend, processRequest, recoveryState, resumeState, executionIdentity, runWorkspace, info, workspaceIssue)
 		if err != nil {
 			return RunResult{}, err
@@ -2113,14 +2130,20 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, err
 		}
 	}
-	if publicationRecovery || reviewRecovery != nil {
+	if publicationRecovery || reviewRecovery != nil || turnRecovery != nil {
 		req.reviewSource = nil
 		req.finalizeNativeWork = true
 		req.reviewOnly = reviewRecovery != nil
 		result := RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}
+		if turnRecovery != nil {
+			result.FinalMessage = turnRecovery.CompletionBody
+			if err := r.recordAgentStep(ctx, req, runWorkspace, info, workspaceIssue, result.FinalMessage); err != nil {
+				return result, err
+			}
+		}
 		var sessionID int64
 		var sessionStarted bool
-		if reviewRecovery != nil {
+		if reviewRecovery != nil || turnRecovery != nil {
 			if req.AcquireModelPermit != nil {
 				if err := req.AcquireModelPermit(ctx); err != nil {
 					return RunResult{}, err
@@ -2135,12 +2158,16 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 					return RunResult{}, err
 				}
 			}
-			result.reusedDispositionAttemptID = reviewRecovery.AttemptID
-			result.FinalMessage = reviewRecovery.CompletionBody
+			if reviewRecovery != nil {
+				result.reusedDispositionAttemptID = reviewRecovery.AttemptID
+				result.FinalMessage = reviewRecovery.CompletionBody
+			}
 		}
 		afterRunPending = false
-		err := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, AgentResume{}, false)
-		if reviewRecovery != nil {
+		resumeCtx, resumeCancel := r.finalizationContext(context.WithoutCancel(ctx), r.nativeWorkTimeout(workflow.Config, backendConfig, 0), NewCancellationCause(context.DeadlineExceeded, "runner.finalization"))
+		defer resumeCancel()
+		err := r.afterExecution(resumeCtx, req, runWorkspace, info, workspaceIssue, AgentResume{}, false)
+		if reviewRecovery != nil || turnRecovery != nil {
 			err = errors.Join(err, r.finishSession(ctx, sessionID, sessionStarted, req.WorkAttemptID, req.Issue, startedAt, r.now(), result, sessionModel, backendConfig.Kind, 0, AgentTurnResult{}, 0))
 		}
 		return result, err
@@ -2599,6 +2626,12 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		blocked := req.Execution != nil && disposition != nil && disposition.Status == "blocked"
 		req.retainCheckpoint = (turnErr != nil || blocked) && (req.Execution != nil || result.Checkpoint != nil)
 		req.finalizeNativeWork = req.Execution != nil && mode == RunModeImplement && turnErr == nil && !blocked
+		if req.finalizeNativeWork && cleanupErr == nil && result.FinalState == FinalStateCompleted {
+			if err := r.recordAgentStep(afterRunCtx, req, runWorkspace, info, workspaceIssue, result.FinalMessage); err != nil {
+				turnErr = err
+				req.retainCheckpoint = true
+			}
+		}
 		cleanupWorkspace := false
 		if errors.Is(cleanupErr, ErrWorkerProcessReap) || errors.Is(turnErr, ErrWorkerProcessReap) {
 			resume := AgentResume{ThreadID: turnResult.ThreadID, SessionID: turnResult.SessionID}
@@ -3831,6 +3864,7 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	}
 	var output strings.Builder
 	usage := newSessionTokenUsage(false)
+	usageReport := &turnUsageReporter{}
 	workerProcessObserved := false
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
 	if resolvedSelection.Effort != "" {
@@ -3884,6 +3918,9 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		}
 		previousIdentity := runResult.RuntimeIdentity
 		applyAgentUpdate(&runResult, update)
+		if update.Type == AgentUpdateTokenUsage {
+			usageReport.report(updateCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, r.logger)
+		}
 		if !previousIdentity.MateriallyEqual(runResult.RuntimeIdentity) {
 			if err := r.persistSessionIdentity(updateCtx, sessionID, runResult.RuntimeIdentity); err != nil {
 				return err
@@ -3905,6 +3942,10 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 		return nil
 	}, r.turnLimit)
 	runResult.Compute = stopCompute()
+	runResult.ReportedCostMicros, runResult.CostSource = turnResult.ReportedCostMicros, turnResult.CostSource
+	usageCtx, usageCancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
+	usageReport.report(usageCtx, req.usageExecution, runResult, sessionModel, backendConfig.Kind, r.usageCostUSD, r.logger)
+	usageCancel()
 	workerReapErr := r.reapSessionWorkerProcessWithWorkspace(
 		sessionCtx,
 		sessionID,

@@ -391,7 +391,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		if prepared, ok := req.Execution.(CompletionExecution); ok {
 			req.reviewSource = func(ctx context.Context, result *RunResult) (string, error) {
 				if err := prepared.PrepareFinish(ctx, "succeeded", result.FinalMessage, nil); err != nil {
-					return "", err
+					return "", failedStep("publication", err)
 				}
 				sourceReviewed = true
 				reviewRequest := req
@@ -493,7 +493,7 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 		err := prepared.PrepareFinish(prepareCtx, outcome, result.FinalMessage, failure)
 		prepareCancel()
 		if err != nil {
-			runErr = errors.Join(runErr, err)
+			runErr = errors.Join(runErr, failedStep("publication", err))
 			outcome = "failed"
 		} else if outcome == "succeeded" && !sourceReviewed {
 			if err := r.validateNativeChange(guarded, req); err != nil {
@@ -746,7 +746,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 			if err := req.Execution.Validate(ctx); err != nil {
 				finalizationErr = err
 			} else {
-				base, err := finalizer.FinalizeNativeWork(ctx, info, issue, req.Execution.Validate)
+				base, err := r.finalizeNativeCommit(ctx, req, backend, info, issue, finalizer)
 				if err != nil {
 					finalizationErr = nativeGitError("finalize native work", err)
 				} else if base != "" {
@@ -774,7 +774,20 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 					if err == nil {
 						validationIssue := issue
 						validationIssue.PullRequestHeadSHA = strings.TrimSpace(head)
-						receipt, runErr := commands.RunReviewCommand(ctx, info, validationIssue, command)
+						binding, bindingErr := r.sourceStep(ctx, req, backend, info, issue, "validation")
+						var previous tracker.NativeStepReceipt
+						if bindingErr == nil {
+							previous, bindingErr = loadStep(ctx, req.Execution, binding)
+						}
+						var receipt gate.CommandResult
+						runErr := bindingErr
+						if runErr == nil {
+							if previous.Step != "" && previous.Validation != nil && previous.Validation.Command == command && previous.Validation.ExitCode == 0 && previous.Validation.HeadSHA == head {
+								receipt = *previous.Validation
+							} else {
+								receipt, runErr = commands.RunReviewCommand(ctx, info, validationIssue, command)
+							}
+						}
 						if !receipt.StartedAt.IsZero() {
 							receipt.TimingStage = "finalization"
 						}
@@ -789,10 +802,14 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 								err = errors.Join(err, recordErr)
 							}
 						} else {
-							err = recorder.RecordSourceValidation(ctx, receipt)
+							binding.Validation = &receipt
+							err = recordStep(ctx, req.Execution, binding)
+							if err == nil {
+								err = recorder.RecordSourceValidation(ctx, receipt)
+							}
 						}
 					}
-					finalizationErr = err
+					finalizationErr = failedStep("validation", err)
 				}
 			}
 		}
@@ -850,7 +867,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 		return false, errors.Join(completionErr, err)
 	}
 	if err := recordCheckpointRef(checkpointCtx, req.checkpointRefs, req.Execution, checkpoint); err != nil {
-		return false, errors.Join(completionErr, err)
+		return false, errors.Join(completionErr, failedStep("checkpoint_recovery", err))
 	}
 	completionErr = errors.Join(completionErr, executionCancellation(req))
 	if completionErr != nil || checkpoint.WorktreeState != "clean" || req.retainCheckpoint || ctx.Err() != nil {
@@ -1165,7 +1182,8 @@ func (r *Runner) nativeWorkTimeout(cfg config.Config, backend config.AgentBacken
 	return max(r.afterRunTimeout, workBudget, validatorTimeout)
 }
 
-func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error {
+func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) (err error) {
+	defer func() { err = failedStep("validator", err) }()
 	if approved, err := r.auditNativeChange(ctx, req); err != nil || !approved {
 		return err
 	}
@@ -1197,7 +1215,7 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error
 	if routeErr != nil {
 		return routeErr
 	}
-	request := ValidatorRequest{workspacePrepared: req.workspacePrepared, SecurityAudit: input.SecurityAudit, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	request := ValidatorRequest{usageExecution: req.Execution, workspacePrepared: req.workspacePrepared, SecurityAudit: input.SecurityAudit, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ChangeSourceExecution); ok {
 		request.source = source
 	}
@@ -1206,7 +1224,20 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error
 		request.EvidenceTools = tools
 		request.EvidenceHandler = handler
 	}
-	result, err := r.Validate(ctx, request)
+	binding, err := validationStepBinding(req.Execution, input, "validator")
+	if err != nil {
+		return err
+	}
+	previous, err := loadStep(ctx, req.Execution, binding)
+	if err != nil {
+		return failedStep("validator", err)
+	}
+	var result gate.ValidatorResult
+	if previous.Step != "" && previous.Validator != nil {
+		result = *previous.Validator
+	} else {
+		result, err = r.Validate(ctx, request)
+	}
 	if err != nil {
 		var decisionErr *validatorDecisionError
 		if errors.As(err, &decisionErr) {
@@ -1220,13 +1251,18 @@ func (r *Runner) validateNativeChange(ctx context.Context, req RunRequest) error
 	} else {
 		result.Verdict = gate.ValidatorVerdictPass
 	}
+	binding.CompletedAt, binding.Validator = r.now(), &result
+	if err := recordStep(ctx, req.Execution, binding); err != nil {
+		return err
+	}
 	if err := execution.RecordValidator(ctx, result); err != nil {
-		return fmt.Errorf("%w: acceptance publication: %w", ErrValidatorInfrastructure, err)
+		return failedStep("validator_publication", fmt.Errorf("%w: acceptance publication: %w", ErrValidatorInfrastructure, err))
 	}
 	return nil
 }
 
-func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (bool, error) {
+func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (approved bool, err error) {
+	defer func() { err = failedStep("review", err) }()
 	workflow, runtime, _, _ := r.runtimeSnapshot()
 	if gate.AutomatedReviewMode(workflow.Config.Gate) != gate.AutomatedReviewRequired {
 		return true, nil
@@ -1245,14 +1281,27 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (bool, 
 	if routeErr != nil {
 		return false, routeErr
 	}
-	request := ValidatorRequest{workspacePrepared: req.workspacePrepared, implementationReview: true, Discussion: input.Discussion, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
+	request := ValidatorRequest{usageExecution: req.Execution, workspacePrepared: req.workspacePrepared, implementationReview: true, Discussion: input.Discussion, Issue: req.Issue, NativeVersion: input.Version, Diff: input.Diff, Evidence: input.Evidence, Commands: input.Commands, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate}
 	if source, ok := req.Execution.(ChangeSourceExecution); ok {
 		request.source = source
 	}
 	if source, ok := req.Execution.(ToolExecution); ok {
 		request.EvidenceTools, request.EvidenceHandler = source.AgentTools()
 	}
-	result, err := r.Validate(ctx, request)
+	binding, err := validationStepBinding(req.Execution, input, "review")
+	if err != nil {
+		return false, err
+	}
+	previous, err := loadStep(ctx, req.Execution, binding)
+	if err != nil {
+		return false, failedStep("review", err)
+	}
+	var result gate.ValidatorResult
+	if previous.Step != "" && previous.Validator != nil {
+		result = *previous.Validator
+	} else {
+		result, err = r.Validate(ctx, request)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -1263,8 +1312,12 @@ func (r *Runner) reviewNativeChange(ctx context.Context, req RunRequest) (bool, 
 	} else {
 		result.Verdict = gate.ValidatorVerdictPass
 	}
-	if err := execution.RecordReview(ctx, result); err != nil {
+	binding.CompletedAt, binding.Validator = r.now(), &result
+	if err := recordStep(ctx, req.Execution, binding); err != nil {
 		return false, err
+	}
+	if err := execution.RecordReview(ctx, result); err != nil {
+		return false, failedStep("review_publication", err)
 	}
 	return result.Verdict == gate.ValidatorVerdictPass, nil
 }

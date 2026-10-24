@@ -113,6 +113,23 @@ func validCheckpointRef(ref string) bool {
 }
 
 func validateNativeExecution(data tracker.NativeRunData, eventType string) error {
+	if len(data.Steps) > 8 {
+		return nativePublicInvalid("Execution step receipts exceed the bounded step set")
+	}
+	seenSteps := map[string]bool{}
+	for _, receipt := range data.Steps {
+		if receipt.ReviewEpoch < 0 || receipt.ReviewEpoch > data.FencingToken {
+			return nativePublicInvalid("Execution step review revision exceeds its owner")
+		}
+		if !slices.Contains([]string{"agent_turn", "commit", "validation", "publication", "security_audit", "review", "validator", "landing"}, receipt.Step) || seenSteps[receipt.Step] || receipt.PolicyID != data.PolicyID || receipt.CompletedAt.IsZero() || len(receipt.ReviewState) != 64 || receipt.Source.HeadSHA == "" || receipt.Source.WorkspaceDigest == "" || len(receipt.CompletionBody) > 64<<10 || !utf8.ValidString(receipt.CompletionBody) {
+			return nativePublicInvalid("Execution step receipt identity is invalid")
+		}
+		seenSteps[receipt.Step] = true
+		encoded, err := json.Marshal(receipt)
+		if err != nil || len(encoded) > 256<<10 {
+			return nativePublicInvalid("Execution step receipt exceeds its bounded payload")
+		}
+	}
 	if data.Runtime != nil && data.Runtime.WorkerLaunch != nil && data.Runtime.WorkerLaunch.PolicyID != data.PolicyID {
 		return nativeRejection(nativePublicInvalid("Execution worker policy differs from its lease"), "execution_validation", "data.runtime.worker_launch.policy_id")
 	}

@@ -72,6 +72,10 @@ func (b *chunkAuditBackend) RunTurn(ctx context.Context, req AgentTurnRequest, u
 		}
 	}
 	result := AgentTurnResult{ThreadID: "audit-thread", SessionID: fmt.Sprintf("audit-thread-turn-%d", input.Chunk.Index), AuthenticationMode: "api_key"}
+	if b.mode == "reported cost" {
+		result.ReportedCostMicros = new(int64(1000 * (input.Chunk.Index + 1)))
+		result.CostSource = "provider"
+	}
 	if b.mode == "missing conversation" {
 		result.ThreadID, result.SessionID = "", ""
 	}
@@ -81,6 +85,12 @@ func (b *chunkAuditBackend) RunTurn(ctx context.Context, req AgentTurnRequest, u
 		}
 	}
 	tokens := AgentTokenUsage{TotalTokens: 10}
+	if b.mode == "reported cost" {
+		if err := update(AgentUpdate{Type: AgentUpdateTokenUsage, Tokens: AgentTokenUsage{InputTokens: 4, OutputTokens: 1, TotalTokens: 5}}); err != nil {
+			return result, err
+		}
+		tokens.InputTokens, tokens.OutputTokens = 8, 2
+	}
 	if b.mode == "cumulative usage" {
 		tokens.ThreadTotal = &AgentTokenCounts{TotalTokens: int64(10 * len(b.requests))}
 	}
@@ -156,7 +166,7 @@ func (b *chunkAuditBackend) RunTurn(ctx context.Context, req AgentTurnRequest, u
 
 func TestRunnerChunkedAudit(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"pass", "chunked verification", "chunked verification late confirmation", "chunked verification late rejection", "chunked verification early confirmation", "chunked verification early rejection", "cumulative usage", "early finding", "late finding", "provider failure", "malformed", "mismatched conversation", "missing conversation", "missing process", "tool use", "cancelled", "usage budget", "resume unavailable", "timeout", "process reap failure", "artifact reap failure"} {
+	for _, mode := range []string{"pass", "chunked verification", "chunked verification late confirmation", "chunked verification late rejection", "chunked verification early confirmation", "chunked verification early rejection", "cumulative usage", "reported cost", "early finding", "late finding", "provider failure", "malformed", "mismatched conversation", "missing conversation", "missing process", "tool use", "cancelled", "usage budget", "resume unavailable", "timeout", "process reap failure", "artifact reap failure"} {
 		t.Run(mode, func(t *testing.T) {
 			run := func(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
@@ -207,8 +217,9 @@ func TestRunnerChunkedAudit(t *testing.T) {
 				}
 				snapshot := securityaudit.Snapshot{ProjectID: "project", IssueID: "issue", Repository: "owner/repository", BaseSHA: "base", HeadSHA: "head", Diff: "diff --git a/a.go b/a.go\n@@ -0,0 +1 @@\n+caller\n" + strings.Repeat("+record\n", 80000) + "diff --git a/b.go b/b.go\n@@ -0,0 +1 @@\n+unchecked helper\n"}
 				var usage []int64
+				usageExecution := &recordingUsageExecution{}
 				budgetErr := errors.New("usage budget exhausted")
-				execution, err := runner.Audit(ctx, SecurityAuditRequest{Issue: connector.Issue{ID: "issue"}, Snapshot: snapshot, OnUsageUpdate: func(update UsageUpdate) error {
+				execution, err := runner.Audit(ctx, SecurityAuditRequest{Issue: connector.Issue{ID: "issue"}, Snapshot: snapshot, usageExecution: usageExecution, OnUsageUpdate: func(update UsageUpdate) error {
 					if update.Tokens.TotalTokens > 0 {
 						usage = append(usage, update.Tokens.TotalTokens)
 					}
@@ -217,7 +228,7 @@ func TestRunnerChunkedAudit(t *testing.T) {
 					}
 					return nil
 				}})
-				wantError := !strings.HasPrefix(mode, "chunked verification") && mode != "pass" && mode != "early finding" && mode != "late finding" && mode != "cumulative usage"
+				wantError := !strings.HasPrefix(mode, "chunked verification") && mode != "pass" && mode != "early finding" && mode != "late finding" && mode != "cumulative usage" && mode != "reported cost"
 				if (err != nil) != wantError {
 					t.Fatalf("audit error = %v", err)
 				}
@@ -254,6 +265,21 @@ func TestRunnerChunkedAudit(t *testing.T) {
 				}
 				if sessionStore.finished.TotalTokens != int64(10*(len(backend.requests)-backend.sequenceStart)) {
 					t.Fatalf("usage was reset across chunks: %d", sessionStore.finished.TotalTokens)
+				}
+				if mode == "reported cost" {
+					var input, output, cost, reports int64
+					for _, entry := range usageExecution.entries {
+						input += entry.Input
+						output += entry.Output
+						if entry.ReportedCostMicros != nil {
+							cost += *entry.ReportedCostMicros
+							reports++
+						}
+					}
+					turns := int64(len(backend.requests))
+					if input != 8*turns || output != 2*turns || cost != 1000*turns*(turns+1)/2 || reports != turns {
+						t.Fatalf("audit usage input=%d output=%d cost=%d cost reports=%d turns=%d", input, output, cost, reports, turns)
+					}
 				}
 				if len(sessionStore.reaps) != len(backend.requests) {
 					t.Fatalf("audit workers were not reaped per chunk: %d", len(sessionStore.reaps))

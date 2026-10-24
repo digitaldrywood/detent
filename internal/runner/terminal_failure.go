@@ -41,7 +41,7 @@ func nativeTerminalFailure(err error, at time.Time, turnStartRefused bool) *trac
 	switch {
 	case errors.As(err, &issueConfiguration):
 		failure.ErrorClass = "issue_configuration"
-	case errors.As(err, &hook), errors.Is(err, ErrWorkspacePreparation):
+	case failure.Stage == "" && (errors.As(err, &hook) || errors.Is(err, ErrWorkspacePreparation)):
 		failure.ErrorClass = "workspace_hook"
 		failure.Stage = "workspace_preparation"
 		if hook != nil {
@@ -51,7 +51,7 @@ func nativeTerminalFailure(err error, at time.Time, turnStartRefused bool) *trac
 				failure.Error += ": " + unavailable.Error()
 			}
 		}
-	case errors.Is(err, ErrNativeRecoveryRequired):
+	case failure.Stage == "" && errors.Is(err, ErrNativeRecoveryRequired):
 		failure.ErrorClass = "source_recovery"
 	case errors.Is(err, ErrMergeWorkerStartupTimeout), failure.Operation == "initialize", failure.ErrorClass == "backend_startup":
 		failure.ErrorClass = "backend_startup"

@@ -594,6 +594,7 @@ type NativeDisposition struct {
 }
 
 type NativeRunData struct {
+	Steps           []NativeStepReceipt       `json:"steps,omitempty"`
 	ProcessUsage    *procgroup.Usage          `json:"process_usage,omitempty"`
 	TerminalFailure *NativeTerminalFailure    `json:"terminal_failure,omitempty"`
 	Finalization    *NativeFinalization       `json:"finalization,omitempty"`

@@ -81,3 +81,27 @@ func reportTurnUsage(ctx context.Context, execution Execution, result RunResult,
 		logger.Warn("runner.usage_report_failed", "model", entry.Model, "provider", entry.Provider, "error", err)
 	}
 }
+
+type turnUsageReporter struct {
+	tokens TokenTotals
+}
+
+func (u *turnUsageReporter) report(ctx context.Context, execution Execution, result RunResult, model, backend string, price usagePricer, logger *slog.Logger) {
+	recorder, ok := execution.(UsageExecution)
+	if !ok {
+		return
+	}
+	tokens := result.Tokens
+	result.Tokens.InputTokens = max(0, tokens.InputTokens-u.tokens.InputTokens)
+	result.Tokens.CachedInputTokens = max(0, tokens.CachedInputTokens-u.tokens.CachedInputTokens)
+	result.Tokens.OutputTokens = max(0, tokens.OutputTokens-u.tokens.OutputTokens)
+	entry, reportable := turnUsageEntry(result, model, backend, price)
+	if !reportable {
+		return
+	}
+	if err := recorder.RecordUsage(ctx, entry); err != nil {
+		logger.Warn("runner.usage_report_failed", "model", entry.Model, "provider", entry.Provider, "error", err)
+		return
+	}
+	u.tokens = tokens
+}

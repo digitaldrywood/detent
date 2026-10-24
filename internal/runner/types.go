@@ -769,6 +769,7 @@ const (
 )
 
 type ValidatorRequest struct {
+	usageExecution       Execution
 	source               ChangeSourceExecution
 	workspacePrepared    bool
 	SecurityAudit        *NativeSecurityAuditEvidence
@@ -788,6 +789,7 @@ type ValidatorRequest struct {
 }
 
 type SecurityAuditRequest struct {
+	usageExecution  Execution
 	complete        func(context.Context, SecurityAuditExecution) error
 	evidence        ValidationEvidenceExecution
 	OnUsageUpdate   UsageUpdateHandler

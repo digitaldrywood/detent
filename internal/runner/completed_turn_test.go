@@ -24,12 +24,15 @@ import (
 
 type completedExecutionWorkspace struct {
 	retainedExecutionWorkspace
-	finalized        bool
-	validationDelay  time.Duration
-	validationExit   int
-	validationOutput string
-	finalizationErr  error
-	onValidation     func()
+	finalized         bool
+	validationDelay   time.Duration
+	validationExit    int
+	validationOutput  string
+	finalizationErr   error
+	finalizationBase  string
+	onValidation      func()
+	validationCalls   int
+	finalizationCalls int
 }
 
 func (*completedExecutionWorkspace) Use(ctx context.Context, _ workspace.Issue) (func(), error) {
@@ -44,6 +47,7 @@ func (w *completedExecutionWorkspace) Head(context.Context, workspace.Info, work
 }
 
 func (w *completedExecutionWorkspace) RunReviewCommand(ctx context.Context, _ workspace.Info, issue workspace.Issue, command string) (gate.CommandResult, error) {
+	w.validationCalls++
 	if w.onValidation != nil {
 		w.onValidation()
 	}
@@ -53,6 +57,7 @@ func (w *completedExecutionWorkspace) RunReviewCommand(ctx context.Context, _ wo
 }
 
 func (w *completedExecutionWorkspace) FinalizeNativeWork(ctx context.Context, _ workspace.Info, _ workspace.Issue, validate func(context.Context) error) (string, error) {
+	w.finalizationCalls++
 	w.finalized = true
 	if w.finalizationErr != nil {
 		return "", w.finalizationErr
@@ -60,7 +65,7 @@ func (w *completedExecutionWorkspace) FinalizeNativeWork(ctx context.Context, _ 
 	if _, ok := ctx.Deadline(); !ok {
 		return "", errors.New("finalization has no deadline")
 	}
-	return "", validate(ctx)
+	return w.finalizationBase, validate(ctx)
 }
 
 func (w *completedExecutionWorkspace) DiffStat(ctx context.Context, info workspace.Info, issue workspace.Issue) (workspace.DiffStat, error) {
@@ -185,6 +190,148 @@ func (e *finalizingTestExecution) Finish(ctx context.Context, outcome string) er
 type completedTurnBackend struct {
 	fakeCodexClient
 	afterTurn func()
+}
+
+type retryStepExecution struct {
+	*finalizingTestExecution
+	steps           []tracker.NativeStepReceipt
+	failPublication bool
+	failCheckpoint  bool
+	failValidation  bool
+}
+
+func (e *retryStepExecution) PrepareFinish(ctx context.Context, outcome, message string, failure *tracker.NativeTerminalFailure) error {
+	if outcome == "succeeded" && e.failPublication {
+		return errors.New("publication unavailable")
+	}
+	return e.finalizingTestExecution.PrepareFinish(ctx, outcome, message, failure)
+}
+
+func (e *retryStepExecution) Checkpoint(ctx context.Context, checkpoint tracker.NativeCheckpoint) error {
+	if e.failCheckpoint && len(e.steps) > 0 {
+		return errors.New("checkpoint unavailable")
+	}
+	return e.finalizingTestExecution.Checkpoint(ctx, checkpoint)
+}
+
+func (e *retryStepExecution) RecordSourceValidation(ctx context.Context, result gate.CommandResult) error {
+	if e.failValidation {
+		return errors.New("validation publication unavailable")
+	}
+	return e.finalizingTestExecution.RecordSourceValidation(ctx, result)
+}
+
+func (e *retryStepExecution) RecordStep(_ context.Context, receipt tracker.NativeStepReceipt) error {
+	for i := range e.steps {
+		if e.steps[i].Step == receipt.Step {
+			e.steps[i] = receipt
+			return nil
+		}
+	}
+	e.steps = append(e.steps, receipt)
+	return nil
+}
+
+func (e *retryStepExecution) Step(ctx context.Context, binding tracker.NativeStepReceipt) (tracker.NativeStepReceipt, error) {
+	for _, receipt := range e.steps {
+		if receipt.Matches(binding) {
+			return receipt, nil
+		}
+	}
+	for _, attempt := range e.recovery.Attempts {
+		for _, receipt := range attempt.Steps {
+			if receipt.Matches(binding) {
+				return receipt, e.RecordStep(ctx, receipt)
+			}
+		}
+	}
+	return tracker.NativeStepReceipt{}, nil
+}
+
+func TestNativeCompletedTurnRetry(t *testing.T) {
+	for _, test := range []struct {
+		name, stage                                 string
+		changedSource, changedPolicy, changedReview bool
+		rejectedGate, rejectedReview                bool
+		turns, commits, validations                 int
+	}{
+		{name: "commit", stage: "commit", turns: 1, commits: 2},
+		{name: "publication", stage: "publication", turns: 1, commits: 1},
+		{name: "checkpoint recovery", stage: "checkpoint_recovery", turns: 1, commits: 1},
+		{name: "validation publication", stage: "validation", turns: 1, commits: 1, validations: 1},
+		{name: "changed source", stage: "publication", changedSource: true, turns: 2, commits: 2},
+		{name: "changed policy", stage: "publication", changedPolicy: true, turns: 2, commits: 2},
+		{name: "changed review state", stage: "publication", changedReview: true, turns: 2, commits: 2},
+		{name: "rejected gate", stage: "publication", rejectedGate: true, turns: 2, commits: 2},
+		{name: "rejected review", stage: "publication", rejectedReview: true, turns: 2, commits: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			message := "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
+			backend := &completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: "native"}, recoveryStates: []workspace.RecoveryState{{HeadSHA: "completed-head", WorkspaceFingerprint: "completed-digest"}}}}}
+			backend.finalizationBase = "finalized-base"
+			if test.stage == "commit" {
+				backend.finalizationErr = errors.New("finalization unavailable")
+			}
+			agent := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: message}, {Type: AgentUpdateTurnCompleted, Status: "completed"}}}
+			cfg := config.Config{}
+			if test.validations > 0 {
+				cfg.Gate.Run = "make check"
+			}
+			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Complete the native issue"}, Workspace: backend, AgentBackend: agent})
+			if err != nil {
+				t.Fatal(err)
+			}
+			first := &retryStepExecution{finalizingTestExecution: &finalizingTestExecution{}}
+			first.failPublication = test.stage == "publication"
+			first.failCheckpoint = test.stage == "checkpoint_recovery"
+			first.failValidation = test.stage == "validation"
+			request := RunRequest{Execution: first, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModeImplement}
+			if _, err := r.Run(t.Context(), request); err == nil {
+				t.Fatal("post-agent failure succeeded")
+			} else if failure := nativeTerminalFailure(err, time.Now(), false); failure.Stage != test.stage {
+				t.Fatalf("terminal failure = %+v, want stage %s", failure, test.stage)
+			}
+			backend.finalizationErr = nil
+			second := &retryStepExecution{finalizingTestExecution: &finalizingTestExecution{}}
+			second.recovery.Attempts = []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "first", CompletionBody: message, Steps: first.steps}, Status: "failed", Checkpoint: first.checkpoint}}
+			if test.changedSource {
+				backend.recoveryStates[0].WorkspaceFingerprint = "changed-digest"
+			}
+			if test.changedPolicy {
+				second.recovery.Lease.PolicyID = "changed-policy"
+			}
+			if test.changedReview {
+				second.recovery.Discussion = []tracker.NativeComment{{ID: "human-feedback", Actor: tracker.Actor{Kind: "human"}, Body: "Revise the implementation"}}
+			}
+			if test.rejectedGate {
+				second.recovery.Attempts[0].FencingToken = 1
+				second.recovery.Attempts[0].Runtime = &tracker.NativeRuntimeObservation{Validation: &gate.CommandResult{ExitCode: 1}}
+			}
+			if test.rejectedReview {
+				second.recovery.ChangeDetail = &tracker.ChangeDetail{Reviews: []tracker.ChangeReview{{ID: "review-rejected", Decision: "changes_requested"}}}
+			}
+			request.Execution = second
+			result, err := r.Run(t.Context(), request)
+			if err != nil || result.FinalState != FinalStateCompleted || !second.published || agent.calls != test.turns || backend.finalizationCalls != test.commits || test.validations > 0 && backend.validationCalls != test.validations {
+				t.Fatalf("retry error=%v state=%s published=%t provider turns=%d commits=%d validations=%d", err, result.FinalState, second.published, agent.calls, backend.finalizationCalls, backend.validationCalls)
+			}
+			for _, receipt := range second.steps {
+				if receipt.Source.Storage == "local_only" && receipt.Source.BaseSHA != "" {
+					t.Fatal("a finalized base changed checkpoint storage identity")
+				}
+				if receipt.Step == "commit" && receipt.FinalizedBaseSHA != "finalized-base" {
+					t.Fatal("commit receipt lost the finalization result")
+				}
+			}
+			if test.rejectedGate {
+				recovery := second.recovery
+				recovery.Attempts = []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{Steps: second.steps}}}
+				if tracker.NativeStepReviewEpoch(recovery) != 1 || nativeTurnResumeAttempt(recovery) == nil {
+					t.Fatal("a completed retry lost the gate rejection revision when older history disappeared")
+				}
+			}
+		})
+	}
 }
 
 func (b *completedTurnBackend) RunTurn(ctx context.Context, request AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {

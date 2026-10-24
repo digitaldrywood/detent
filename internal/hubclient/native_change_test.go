@@ -170,6 +170,11 @@ func newNativeChangeHubTransport(t *testing.T, review string, states []tracker.N
 func newNativeChangeHubDependencies(t *testing.T, review string, states []tracker.NativeState, inMemory, requireDependencies bool, repositoryBackend ...hubserver.ReconcileBackend) *nativeChangeHub {
 	t.Helper()
 	config := hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken), Conversation: &hubserver.ConversationConfig{Enabled: true}}
+	return newNativeChangeHubConfigured(t, review, states, inMemory, requireDependencies, config, repositoryBackend...)
+}
+
+func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.NativeState, inMemory, requireDependencies bool, config hubserver.Config, repositoryBackend ...hubserver.ReconcileBackend) *nativeChangeHub {
+	t.Helper()
 	if len(repositoryBackend) > 0 {
 		config.ReconcileBackend = repositoryBackend[0]
 		config.ImportBackend, _ = repositoryBackend[0].(hubserver.ImportBackend)
@@ -4431,7 +4436,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if readErr != nil || evidence.Attempt == nil || evidence.Attempt.Finalization == nil || evidence.Attempt.Finalization.VersionError != change.VersionError || evidence.Attempt.Finalization.VersionCode != change.VersionCode || evidence.Attempt.ClaimReleasedAt == nil {
 					t.Fatalf("publication refusal was omitted from the terminal receipt: %+v, %v", evidence.Attempt, readErr)
 				}
-				if f := evidence.Attempt.TerminalFailure; evidence.Attempt.Status != "failed" || f == nil || f.ErrorClass != "finalization" || f.Stage != "finalization" || f.Error != change.VersionCode+": "+change.VersionError {
+				if f := evidence.Attempt.TerminalFailure; evidence.Attempt.Status != "failed" || f == nil || f.ErrorClass != "publication" || f.Stage != "publication" || f.Error != change.VersionCode+": "+change.VersionError {
 					t.Fatalf("failed finalization ended without its cause: status=%s failure=%+v", evidence.Attempt.Status, f)
 				}
 				detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)

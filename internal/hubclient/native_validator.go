@@ -57,6 +57,7 @@ func (e *nativeExecution) PrepareReview(ctx context.Context, expected tracker.Na
 		if version.HeadSHA != expected.HeadSHA || version.PolicyID != e.data.PolicyID || version.Policy.ID != e.data.PolicyID || owner.PolicyID != e.data.PolicyID || version.AttemptID != owner.AttemptID || version.RunID != owner.RunID || e.lastDiff == nil || version.BaseSHA != e.lastDiff.BaseSHA || version.HeadSHA != e.lastDiff.HeadSHA {
 			return fmt.Errorf("%w: published review source differs from its owner", runner.ErrNativeRecoveryRequired)
 		}
+		e.stepReviews = &detail
 		return nil
 	}
 	return fmt.Errorf("%w: published review version is unavailable", runner.ErrNativeRecoveryRequired)
@@ -89,6 +90,7 @@ func (e *nativeExecution) validationVersion(ctx context.Context, stage string) (
 				return runner.NativeValidation{}, err
 			}
 			discussion = runner.NativeReviewDiscussionForVersion(recovery.Discussion, detail.Discussion, version.ID)
+			e.stepDiscussion = recovery.Discussion
 			var latest *tracker.ChangeReview
 			for i := range detail.Reviews {
 				review := &detail.Reviews[i]
@@ -246,6 +248,7 @@ func (e *nativeExecution) RecordReview(ctx context.Context, result gate.Validato
 		return err
 	}
 	e.change.Reviewed = detail.Change.CurrentVersion == result.VersionID && detail.Summary.Status == "reviewed"
+	e.stepReviews = &detail
 	return nil
 }
 
@@ -288,6 +291,7 @@ func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.Valid
 	}
 	e.change.Validator = &result
 	e.change.Reviewed = detail.Change.CurrentVersion == result.VersionID && detail.Summary.Status == "reviewed"
+	e.stepReviews = &detail
 	return nil
 }
 
@@ -356,6 +360,7 @@ func (e *nativeExecution) RecordSecurityAudit(ctx context.Context, result tracke
 	e.change.SecurityAudit = &result
 	e.applySecurityAuditHumanAction(&result)
 	e.change.Reviewed = detail.Change.CurrentVersion == e.change.VersionID && detail.Summary.Status == "reviewed"
+	e.stepReviews = &detail
 	return nil
 }
 
@@ -368,6 +373,7 @@ func (e *nativeExecution) PrepareSourceIteration(ctx context.Context, expected t
 	e.settled = false
 	e.change = nil
 	e.validation = nil
+	e.data.Steps = nil
 	e.publication = nil
 	e.preparedFailure = nil
 	e.preparedOutcome, e.preparedMessage = "", ""
