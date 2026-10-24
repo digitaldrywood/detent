@@ -44,7 +44,8 @@ const (
 
 type healthRateAttempt struct {
 	ID, Item, Status, Signature, Recovery, LandingKey, Runner string
-	At, Heartbeat                                             time.Time
+	At, Heartbeat, Started                                    time.Time
+	Session, Stage, SourceVersion                             string
 	Cost                                                      float64
 	Landing, Conflict, Landed, InstanceSetupFailure           bool
 	LandingAt                                                 time.Time
@@ -231,6 +232,7 @@ func evaluateHealthRates(now time.Time, projects []healthRateProject) []healthFi
 	capacity := map[string]int{}
 	for _, p := range projects {
 		b := buildHealthRateBaseline(now, p)
+		out = append(out, healthProductivityFindings(now, p)...)
 		out = append(out, healthRetryFindings(now, p, b)...)
 		out = append(out, healthRecoveryFindings(now, p, b)...)
 		out = append(out, healthStallFindings(now, p, b)...)

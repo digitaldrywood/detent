@@ -10,6 +10,13 @@ import (
 )
 
 func applyHealthAttemptData(a *healthRateAttempt, data tracker.NativeRunData) {
+	a.Session = data.SessionID
+	if data.TerminalFailure != nil {
+		a.Stage = data.TerminalFailure.Stage
+	}
+	if f := data.Finalization; f != nil && f.Settled && f.Changed {
+		a.SourceVersion = f.VersionID
+	}
 	if f := data.TerminalFailure; a.Status == "failed" && f != nil && f.Stage == "pre_provider" && f.Attribution == "instance" {
 		a.InstanceSetupFailure = true
 	}
@@ -46,11 +53,16 @@ func updateAttemptHotProjection(ctx context.Context, tx *sql.Tx, id, status stri
 	if data.Runtime != nil && data.Runtime.Landing != nil {
 		landingAt = projectionTime(data.Runtime.Landing.ObservedAt)
 	}
+	var settled, changed bool
+	var versionID string
+	if f := data.Finalization; f != nil {
+		settled, changed, versionID = f.Settled, f.Changed, f.VersionID
+	}
 	var local int64
 	if data.Runtime != nil {
 		local = data.Runtime.LocalAttemptID
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE native_attempts SET hot_projection_version=1,local_attempt_id=?,heartbeat_at=?,health_failure_signature=?,health_recovery_reason=?,health_instance_failure=?,health_landing=?,health_landed=?,health_conflict=?,health_landing_at=?,health_landing_key=?,health_updated_day=julianday(updated_at),health_landing_day=julianday(?) WHERE id=?`, local, heartbeat, a.Signature, a.Recovery, a.InstanceSetupFailure, a.Landing, a.Landed, a.Conflict, landingAt, a.LandingKey, landingAt, id)
+	_, err := tx.ExecContext(ctx, `UPDATE native_attempts SET hot_projection_version=1,session_id=?,local_attempt_id=?,heartbeat_at=?,health_failure_signature=?,health_recovery_reason=?,health_instance_failure=?,health_landing=?,health_landed=?,health_conflict=?,health_landing_at=?,health_landing_key=?,failure_stage=?,finalization_settled=?,finalization_changed=?,finalization_version_id=?,health_updated_day=julianday(updated_at),health_landing_day=julianday(?) WHERE id=?`, a.Session, local, heartbeat, a.Signature, a.Recovery, a.InstanceSetupFailure, a.Landing, a.Landed, a.Conflict, landingAt, a.LandingKey, a.Stage, settled, changed, versionID, landingAt, id)
 	return err
 }
 

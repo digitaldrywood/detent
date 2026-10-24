@@ -30,6 +30,7 @@ type healthSubject struct {
 }
 
 type healthEvidence struct {
+	Productivity        *healthProductivityEvidence    `json:"productivity,omitempty"`
 	ScheduledValidation *healthScheduledEvidence       `json:"scheduled_validation,omitempty"`
 	EventIDs            []string                       `json:"event_ids,omitempty"`
 	AttemptIDs          []string                       `json:"attempt_ids,omitempty"`

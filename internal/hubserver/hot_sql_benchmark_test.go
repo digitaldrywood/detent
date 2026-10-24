@@ -162,6 +162,15 @@ func BenchmarkHotSQL(b *testing.B) {
 			}
 		})
 	}
+	b.Run("health/productivity", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if err := readHealthProductivityAttempts(b.Context(), q, scope, got); err != nil {
+				b.Fatal(err)
+			}
+			healthProductivityFindings(now, healthRateProject{ID: string(scope.project), Attempts: got})
+		}
+	})
 	for _, typed := range []bool{false, true} {
 		b.Run(fmt.Sprintf("runtime/typed=%t", typed), func(b *testing.B) {
 			b.ReportAllocs()

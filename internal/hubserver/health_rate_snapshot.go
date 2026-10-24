@@ -28,6 +28,9 @@ func readHealthRates(ctx context.Context, q nativeQueryer, organization tracker.
 		if err != nil {
 			return err
 		}
+		if err := readHealthProductivityAttempts(ctx, q, scope, p.Attempts); err != nil {
+			return err
+		}
 		landings, err := nativeAnalyticsLandings(ctx, q, scope, window)
 		if err != nil {
 			return err
