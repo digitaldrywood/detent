@@ -16,8 +16,8 @@ func TestIssueFilterValues(t *testing.T) {
 		issue   tracker.NativeIssue
 		id      tracker.WorkItemID
 	}
-	var entries []entry
-	for _, fixture := range []nativeFixture{f, other} {
+	var entries [2]entry
+	for index, fixture := range []nativeFixture{f, other} {
 		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
@@ -38,7 +38,7 @@ func TestIssueFilterValues(t *testing.T) {
 		if err := tx.Commit(); err != nil {
 			t.Fatal(err)
 		}
-		entries = append(entries, entry{fixture, issue, id})
+		entries[index] = entry{fixture, issue, id}
 	}
 	assertMatches := func(firstMatches bool) {
 		t.Helper()
