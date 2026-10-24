@@ -18,6 +18,7 @@ func TestRender(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			message, err := Render(Content{
 				Title: "Title " + test.value, Heading: "Heading " + test.value,
+				Note:        "Note " + test.value,
 				Details:     []Detail{{Label: "Label " + test.value, Value: "Value " + test.value}, {Label: "Time", Value: "Oct 22, 2026 20:52 UTC"}},
 				ActionLabel: "Action " + test.value, ActionURL: "https://example.test/open?one=1&two=%3Cscript%3E",
 				Footer: "Footer " + test.value,
@@ -25,7 +26,7 @@ func TestRender(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, field := range []string{"Title", "Heading", "Label", "Value", "Action", "Footer"} {
+			for _, field := range []string{"Title", "Heading", "Note", "Label", "Value", "Action", "Footer"} {
 				if !strings.Contains(message.HTMLBody, field+" "+test.escaped) {
 					t.Fatalf("missing escaped %s: %s", field, message.HTMLBody)
 				}
@@ -38,7 +39,7 @@ func TestRender(t *testing.T) {
 			if strings.Contains(message.HTMLBody, "<script>") {
 				t.Fatal("unescaped script in HTML")
 			}
-			if !strings.Contains(message.Body, "Label "+test.value+": Value "+test.value+"\n") || !strings.Contains(message.Body, "https://example.test/open?one=1&two=%3Cscript%3E\n") || !strings.HasSuffix(message.Body, "Footer "+test.value+"\n") {
+			if !strings.Contains(message.Body, "Label "+test.value+": Value "+test.value+"\n") || !strings.Contains(message.Body, "Note "+test.value+"\n") || !strings.Contains(message.Body, "https://example.test/open?one=1&two=%3Cscript%3E\n") || !strings.HasSuffix(message.Body, "Footer "+test.value+"\n") {
 				t.Fatalf("plain-text facts or footer changed: %s", message.Body)
 			}
 			if len(message.InlineImages) != 1 || message.InlineImages[0].ContentID != "detent-mark" || message.InlineImages[0].ContentType != "image/png" {
