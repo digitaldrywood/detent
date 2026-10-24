@@ -26,12 +26,15 @@ import (
 	"golang.org/x/crypto/blake2b"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -176,7 +179,18 @@ func testOfflineBusyControllerConvergence(t *testing.T, configPath, binary strin
 	}
 	active := make(chan struct{})
 	runner := &shutdownBlockingRunner{started: make(chan struct{}, 1), canceled: make(chan struct{}, 1), release: active}
-	project := newShutdownRuntimeProject(t, "selected", []connector.Issue{{ID: "active-issue", Identifier: "owner/repository#1", Title: "Active implementation", State: "Todo", AssignedToWorker: true}}, runner)
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	cfg.Polling.IntervalMS = 60000
+	cfg.Agent.MaxConcurrentAgents = 1
+	tracker := fakehub.New(fakehub.Config{Stateful: true, Issues: []connector.Issue{{ID: "active-issue", Identifier: "owner/repository#1", Title: "Active implementation", State: "Todo", AssignedToWorker: true}}})
+	project, err := projectfixture.New(projectpkg.Config{
+		Project:  globalconfig.Project{ID: "selected", Workdir: t.TempDir(), Weight: 1},
+		Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
+	}, projectpkg.Dependencies{Runner: runner, Connector: tracker})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := project.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
