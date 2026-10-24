@@ -23,7 +23,11 @@ if [ "$run_conclusion" = cancelled ] || [ "${WORKFLOW_CANCELLED:-false}" = true 
   exit 0
 fi
 
-gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" --jq '.jobs[]' | jq -s . > "$jobs_file"
+jobs_endpoint="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100"
+if [ -n "${CI_RELEASE_BRANCH:-}" ]; then
+  jobs_endpoint="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=all&per_page=100"
+fi
+gh api --paginate "$jobs_endpoint" --jq '.jobs[]' | jq -s 'group_by(.name) | map(max_by([.run_attempt // 1, .id]))' > "$jobs_file"
 
 report_validation() {
   go run ./tools/cifailure < "$jobs_file" >> "$evidence_file"
@@ -38,6 +42,21 @@ if [ "${CI_SHOULD_RUN:-true}" = false ]; then
 fi
 
 failures="$(jq -r '.[] | select(.name != "Finalize scheduled validation" and .conclusion != "success") | .name' "$jobs_file")"
+if [ -n "${CI_RELEASE_BRANCH:-}" ]; then
+  missing_jobs="$(jq -r '
+    ["preflight", "Invariant Gate", "Lint", "Verify build and vet", "Generated sources",
+     "Cloud client", "Security", "GoReleaser Snapshot", "Installer Smoke (ubuntu-latest)",
+     (range(1;6) | "Verify race (\(.)/5)"),
+     (range(1;5) | "Verify race (hub \(.)/4)"),
+     (range(1;5) | "Test Coverage (\(.)/4)"),
+     (range(1;5) | "Test Coverage (hub \(.)/4)"),
+     (range(1;4) | "Browser Visual (\(.)/3)"),
+     (("darwin", "linux", "windows") as $os | ("amd64", "arm64") | "Release prebuild (\($os)/\(.))")]
+    - map(.name) | .[]
+  ' "$jobs_file")"
+  wrong_sha_jobs="$(jq -r --arg sha "$CI_DEVELOP_SHA" '.[] | select(.name != "Finalize scheduled validation" and .head_sha != $sha) | .name' "$jobs_file")"
+  failures="${failures}${missing_jobs}${wrong_sha_jobs}"
+fi
 if [ -n "$failures" ]; then
   if [ -n "${CI_RELEASE_BRANCH:-}" ]; then
     delete_prebuilt
@@ -147,6 +166,9 @@ done
 gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$CI_DEVELOP_SHA" -f state=success -f context=scheduled-full-ci -f target_url="$run_url" -f description='Full release validation passed' > /dev/null
 if ! checks="$(required_statuses)"; then
   echo "Release $series awaits required status release-security-audit and all configured checks on $CI_DEVELOP_SHA; missing, failed, or superseded evidence; not tagging."
+  if [ "$GITHUB_REPOSITORY" = digitaldrywood/detent ]; then
+    report_validated "$CI_RELEASE_BRANCH"
+  fi
   exit 0
 fi
 git config user.name 'github-actions[bot]'

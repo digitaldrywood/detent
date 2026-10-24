@@ -72,6 +72,15 @@ echo "Posted release-security-audit=$state on $sha."
 if [ "$state" = failure ]; then
   exit 1
 fi
+if ! gh api --paginate --slurp "repos/$repository/commits/$sha/status?per_page=100" |
+  jq -e --arg sha "$sha" '
+    all(.[]; .sha == $sha) and
+    ([.[].statuses[] | select(.context == "scheduled-full-ci")] | max_by(.id) |
+      .state == "success" and (.id | type == "number") and .id > 0)
+  ' > /dev/null; then
+  echo "Waiting for the suite: no current scheduled-full-ci success on $sha; no finalize rerun."
+  exit 0
+fi
 run_id="$(gh api "repos/$repository/actions/workflows/ci.yml/runs?branch=$branch&head_sha=$sha&status=completed&per_page=1" --jq '.workflow_runs[0].id // empty')"
 if [ -z "$run_id" ]; then
   echo "No completed CI run for $branch at $sha; the next completed suite can tag."
