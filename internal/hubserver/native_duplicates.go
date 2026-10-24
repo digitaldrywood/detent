@@ -174,6 +174,7 @@ AND search.score < ? ORDER BY search.score,ws.terminal,i.number DESC LIMIT 5`, s
 		if err != nil {
 			return nil, err
 		}
+		defer rows.Close()
 		for rows.Next() {
 			var hit possibleDuplicate
 			var terms string
