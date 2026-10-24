@@ -311,6 +311,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"setSlackIntegration":          "Integration readback follows its transactional update in this request.",
 		"openDatabase":                 "Startup verifies the writer's schema and hosted binding before serving requests.",
 		"configure":                    "Startup verifies settings on the actual writer connection.",
+		"initializeAutoVacuum":         "Startup checks for an empty database before setting its vacuum mode on the writer, before opening readers.",
 		"enableWAL":                    "Changing journal mode is a database write.",
 		"verifyIdentity":               "Startup reads back the application identity it writes on the same connection.",
 		"consumeHostedTransaction":     "UPDATE RETURNING atomically consumes a login transaction.",

@@ -222,9 +222,14 @@ func (e *reworkReviewExecution) FinalizeArtifacts(ctx context.Context, path stri
 		if !ok {
 			return errors.New("repair diff unavailable")
 		}
+		capture, err := workspace.CaptureChangeSource(ctx, path, diff.BaseSHA, diff.HeadSHA)
+		if err != nil {
+			return err
+		}
 		e.source.Version.ID = "version_repaired"
 		e.source.Version.HeadSHA, e.source.Version.BaseSHA = diff.HeadSHA, diff.BaseSHA
 		e.source.Version.Validation = e.validation
+		e.source.Version.Source, e.source.Bundle = &capture.Source, capture.Bundle
 	}
 	return nil
 }

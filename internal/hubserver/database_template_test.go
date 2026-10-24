@@ -120,6 +120,7 @@ func buildHubDatabaseTemplate() {
 	ctx := context.Background()
 	store := &database{db: db, path: path}
 	err = errors.Join(
+		store.initializeAutoVacuum(ctx),
 		store.configure(ctx, defaultBusyTimeout, false),
 		store.verifyIdentity(ctx),
 		store.enableWAL(ctx),

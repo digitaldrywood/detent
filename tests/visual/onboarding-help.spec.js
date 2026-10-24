@@ -66,6 +66,7 @@ for (const width of [1280, 390]) {
     await page.goto(new URL(`/projects/proj_alpha/setup?theme=${colorScheme}`, origin).href);
     const steps = page.getByRole("list", { name: "Setup steps" });
     await expect(steps.getByRole("button").nth(0)).toContainText("Runner");
+    await expect(page.getByRole("heading", { name: /is preparing mockorg\/alpha/ })).toBeVisible();
     await steps.getByRole("button", { name: /^.*Repository (ready|action required)$/ }).click();
     const repository = page.getByRole("combobox", { name: "Search or type owner/name" });
     await expect(repository).toHaveValue("");
@@ -185,7 +186,6 @@ for (const width of [1280, 390]) {
     await steps.getByRole("button", { name: /^.*Repository (ready|action required)$/ }).click();
     await repository.fill("mockorg/alpha");
     await page.getByRole("button", { name: "Use mockorg/alpha", exact: true }).click();
-    await steps.getByRole("button", { name: /Checkout/ }).click();
     await expect(page.getByText("Configuration files", { exact: true })).toBeVisible();
     await expect(page.getByRole("radio", { name: "Create starter files on Example runner" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Advanced policy details", exact: true })).toHaveCount(0);
@@ -195,7 +195,7 @@ for (const width of [1280, 390]) {
       const onboarding = data;
       await route.fulfill({ json: { ...onboarding, ready: true, progress: { ...onboarding.progress, artifacts: "local" }, steps: onboarding.steps.map(step => ({ ...step, state: "ready" })) } });
     });
-    await page.reload();
+    await page.reload({ waitUntil: "domcontentloaded" });
     await expect(page.getByRole("heading", { name: "alpha is ready for work", exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath(`ready-${width}.png`) });
     await page.getByRole("button", { name: "Import issues", exact: true }).click();
