@@ -1,5 +1,5 @@
 import React from "react";
-import { CheckIcon, UploadIcon } from "lucide-react";
+import { CheckIcon } from "lucide-react";
 import { DynamicIcon, iconNames, type IconName } from "lucide-react/dynamic";
 import { ProjectFavicon } from "../../components/ProjectFavicon.tsx";
 import { Button } from "../../components/ui/button.tsx";
@@ -20,6 +20,7 @@ import { useAccountApi } from "./context.ts";
 import { AccountError } from "./api.ts";
 import { newKey } from "./idempotency.ts";
 import { prepareIconUpload, type IconUpload } from "./projectIconUpload.ts";
+import { IconUploadView } from "./IconUploadView.tsx";
 
 const COMMON_ICONS: readonly IconName[] = ["rocket", "bot", "book-open", "cloud", "database", "monitor", "gamepad-2", "image", "smartphone", "music", "package", "shield-check", "server", "shopping-bag", "terminal", "flask-conical", "video", "globe", "code", "braces", "circuit-board", "folder-code", "layers", "zap", "heart", "star", "wrench", "leaf", "mail", "chart-no-axes-combined", "lock", "cpu"];
 const EMOJI = [
@@ -56,7 +57,6 @@ export function ProjectIconPickerRow({ projectId, projectName, icon, canManage, 
   const [pending, setPending] = React.useState(false);
   const [reading, setReading] = React.useState(false);
   const generation = React.useRef(0);
-  const fileInput = React.useRef<HTMLInputElement>(null);
   const changed = upload !== null || JSON.stringify(choice) !== JSON.stringify(choiceOf(icon));
   useProjectSettingsDirty(open && changed);
   React.useEffect(() => () => { generation.current++; }, []);
@@ -117,19 +117,7 @@ export function ProjectIconPickerRow({ projectId, projectName, icon, canManage, 
           {invalidEmoji ? <p role="status" className="text-sm text-destructive">Choose one emoji.</p> : null}
         </TabsPanel>
         <TabsPanel value="upload" className="space-y-4">
-          <div hidden={upload !== null} className="flex flex-col items-center gap-3 rounded-lg border border-dashed border-border p-6 text-center" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void read(event.dataTransfer.files[0]); }}>
-            <UploadIcon className="size-6 text-muted-foreground" />
-            <p className="text-sm">Drop an image here or <Button size="sm" variant="link" disabled={reading || pending} onClick={() => fileInput.current?.click()}>browse files</Button></p>
-            <p className="text-xs text-muted-foreground">PNG, JPEG or WebP · Up to 256 KB<br />64–1024 px · Square within 10%</p>
-            </div>
- <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp" aria-label="Upload project icon" className="sr-only" disabled={pending} onChange={(event) => { void read(event.currentTarget.files?.[0]); event.currentTarget.value = ""; }} />
-          {reading ? <p role="status" className="text-sm text-muted-foreground">Checking image…</p> : null}
-          {uploadError ? <p role="alert" className="text-sm text-destructive">{uploadError}</p> : null}
-          {upload ? <>
-            <div className="flex items-end justify-center gap-6 rounded-lg bg-muted p-6" aria-label="Image preview">{[64, 32, 16].map((size) => <div key={size} className="space-y-2 text-center text-xs text-muted-foreground"><img src={upload.preview} width={size} height={size} alt={`${size} px preview`} className="rounded-sm object-cover" /><span>{size} px</span></div>)}</div>
-            <p className="break-words text-center text-xs text-muted-foreground">{upload.name} · {upload.width} × {upload.height} · {(upload.size / 1024).toFixed(1)} KB</p>
- <Button size="sm" variant="ghost" disabled={pending} onClick={() => fileInput.current?.click()}>Choose another</Button>
-          </> : null}
+          <IconUploadView label="Upload project icon" upload={upload} error={uploadError} reading={reading} pending={pending} onRead={read} />
         </TabsPanel>
       </Tabs>
       {choice.kind === "automatic" ? <p role="status" className="text-xs text-muted-foreground">The icon is chosen from the project name.</p> : null}
