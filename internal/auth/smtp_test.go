@@ -5,23 +5,33 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"html"
 	"io"
+	"io/fs"
 	"mime"
 	"mime/multipart"
 	"net"
 	"net/http/httptest"
 	"net/mail"
 	"net/textproto"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent"
 )
 
 func TestSMTPMessages(t *testing.T) {
 	t.Parallel()
+	mark, err := fs.ReadFile(detent.StaticFS(), "img/detent-mark.png")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name, subject, body, html string
+		link, escapedLink         string
 		images                    []InlineImage
 		magicLink                 bool
 		implicitTLS               bool
@@ -33,10 +43,15 @@ func TestSMTPMessages(t *testing.T) {
 		{name: "unicode", subject: "[Detent] signal: café", body: "Summary: café.\n"},
 		{name: "html", subject: "New sign-up: café@example.test", body: "Email: café@example.test\nhttps://example.test/user\n", html: "<h1>New sign-up</h1>\n<p>café &amp; tea</p>"},
 		{name: "html implicit TLS with image", subject: "New organization: Example", body: "Organization: Example\n", html: "<h1>Example</h1><img src=\"cid:mark\">", implicitTLS: true, images: []InlineImage{{ContentID: "mark", ContentType: "image/png", Data: []byte(strings.Repeat("fixture image bytes", 10))}}},
-		{name: "sign in", subject: "Your Detent sign-in link", body: "https://detent.example.test/auth/link?token=fixture", magicLink: true},
+		{name: "sign in", subject: "Your Detent sign-in link", link: "https://detent.example.test/auth/link?token=fixture", escapedLink: "https://detent.example.test/auth/link?token=fixture", magicLink: true},
+		{name: "sign in escaped query", subject: "Your Detent sign-in link", link: "https://detent.example.test/auth/link?token=fixture&next=%2Fwork", escapedLink: "https://detent.example.test/auth/link?token=fixture&amp;next=%2Fwork", magicLink: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+			if test.magicLink {
+				test.body = "Use this link to sign in to Detent:\n\n" + test.link + "\n\nThis link can be used once and expires at 2026-10-06T18:00:45Z.\n"
+				test.images = []InlineImage{{ContentID: "detent-mark", ContentType: "image/png", Data: mark}}
+			}
 			listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
@@ -88,7 +103,7 @@ func TestSMTPMessages(t *testing.T) {
 				sender = transport
 			}
 			if test.magicLink {
-				err = sender.SendMagicLink(t.Context(), Message{To: "owner@example.test", URL: test.body, ExpiresAt: time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)})
+				err = sender.SendMagicLink(t.Context(), Message{To: "owner@example.test", URL: test.link, ExpiresAt: time.Date(2026, 10, 6, 20, 30, 45, 0, time.FixedZone("offset", 150*60))})
 			} else {
 				err = sender.SendEmail(t.Context(), EmailMessage{To: "owner@example.test", Subject: test.subject, Body: test.body, HTMLBody: test.html, InlineImages: test.images})
 			}
@@ -121,7 +136,7 @@ func TestSMTPMessages(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if test.html != "" {
+			if test.html != "" || test.magicLink {
 				kind, params, err := mime.ParseMediaType(message.Header.Get("Content-Type"))
 				if err != nil || kind != "multipart/alternative" || params["boundary"] == "" {
 					t.Fatalf("alternative header=%q error=%v", message.Header.Get("Content-Type"), err)
@@ -153,7 +168,20 @@ func TestSMTPMessages(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					assertEmailPart(t, htmlPart, "text/html", test.html)
+					if test.magicLink {
+						htmlBody := readEmailPart(t, htmlPart, "text/html")
+						for _, want := range []string{"Sign in to Detent", "This link can be used once and expires at Oct 6, 2026 18:00:45 UTC.", "If you didn&#39;t request this, you can ignore this email.", `src="cid:detent-mark"`} {
+							if !strings.Contains(htmlBody, want) {
+								t.Fatalf("magic-link HTML missing %q: %s", want, htmlBody)
+							}
+						}
+						links := regexp.MustCompile(`<a href="([^"]+)"[^>]*>([^<]+)</a>`).FindAllStringSubmatch(htmlBody, -1)
+						if len(links) != 2 || links[0][1] != test.escapedLink || html.UnescapeString(links[0][1]) != test.link || links[0][2] != "Sign in" || html.UnescapeString(links[1][1]) != test.link || html.UnescapeString(links[1][2]) != test.link {
+							t.Fatalf("magic-link button or fallback changed: %v", links)
+						}
+					} else {
+						assertEmailPart(t, htmlPart, "text/html", test.html)
+					}
 					for _, image := range test.images {
 						part, err := related.NextPart()
 						if err != nil {
@@ -184,14 +212,22 @@ func TestSMTPMessages(t *testing.T) {
 
 func assertEmailPart(t *testing.T, part *multipart.Part, wantType, wantBody string) {
 	t.Helper()
+	if body := readEmailPart(t, part, wantType); body != wantBody {
+		t.Fatalf("part body=%q want %q", body, wantBody)
+	}
+}
+
+func readEmailPart(t *testing.T, part *multipart.Part, wantType string) string {
+	t.Helper()
 	kind, params, err := mime.ParseMediaType(part.Header.Get("Content-Type"))
 	if err != nil || kind != wantType || params["charset"] != "UTF-8" {
 		t.Fatalf("part header=%q error=%v", part.Header.Get("Content-Type"), err)
 	}
 	body, err := io.ReadAll(part)
-	if err != nil || strings.ReplaceAll(string(body), "\r\n", "\n") != wantBody {
-		t.Fatalf("part body=%q want %q error=%v", body, wantBody, err)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return strings.ReplaceAll(string(body), "\r\n", "\n")
 }
 
 func TestEmailMessagePlainText(t *testing.T) {
