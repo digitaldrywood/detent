@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -60,6 +61,10 @@ func seedHostedSecurityDatabaseTemplate(t *testing.T, cfg Config) {
 }
 
 func TestMain(m *testing.M) {
+	if err := testenv.ClearGitEnvironment(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	code := m.Run()
 	if hubDatabaseTemplate.dir != "" {
 		_ = os.RemoveAll(hubDatabaseTemplate.dir)
