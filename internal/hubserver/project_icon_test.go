@@ -19,10 +19,24 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-type memoryProjectIcons struct{ objects map[string][]byte }
+type memoryProjectIcons struct {
+	objects  map[string][]byte
+	afterPut func(context.Context) error
+}
 
-func (m *memoryProjectIcons) PutIcon(_ context.Context, organization, id string, content []byte) error {
+func (m *memoryProjectIcons) PutIcon(ctx context.Context, organization, id string, content []byte) error {
 	m.objects[organization+"/"+id] = append([]byte{}, content...)
+	if m.afterPut != nil {
+		return m.afterPut(ctx)
+	}
+	return nil
+}
+
+func (m *memoryProjectIcons) DeleteIcon(ctx context.Context, organization, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	delete(m.objects, organization+"/"+id)
 	return nil
 }
 
