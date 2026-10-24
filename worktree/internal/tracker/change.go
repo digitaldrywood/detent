@@ -1,0 +1,278 @@
+package tracker
+
+import (
+	"context"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
+)
+
+type ChangeRequest struct {
+	ID             string             `json:"change_id"`
+	OrganizationID OrganizationID     `json:"organization_id"`
+	ProjectID      ProjectID          `json:"project_id"`
+	WorkItemID     NativeWorkItemID   `json:"work_item_id"`
+	LinkedIssues   []NativeWorkItemID `json:"linked_issues"`
+	Title          string             `json:"title"`
+	Body           string             `json:"body"`
+	CurrentVersion string             `json:"current_version_id"`
+	Landed         *ChangeLanding     `json:"landed,omitempty"`
+	Revision       Revision           `json:"revision,string"`
+	CreatedAt      time.Time          `json:"created_at"`
+	UpdatedAt      time.Time          `json:"updated_at"`
+}
+
+func (c ChangeRequest) CurrentLanding() *ChangeLanding {
+	if c.CurrentVersion != "" && c.Landed != nil && c.Landed.VersionID == c.CurrentVersion {
+		return c.Landed
+	}
+	return nil
+}
+
+// ChangeLanding records that a reviewed version reached the base branch: the
+// commit the runner pushed there, the branch, and the merge method it used.
+type ChangeLanding struct {
+	Quality   *LandingQualitySnapshot `json:"quality,omitempty"`
+	Rebased   bool                    `json:"rebased,omitempty"`
+	VersionID string                  `json:"version_id"`
+	HeadSHA   string                  `json:"head_sha"`
+	MergeSHA  string                  `json:"merge_sha"`
+	BaseRef   string                  `json:"base_ref"`
+	Method    string                  `json:"method"`
+	Actor     Actor                   `json:"actor"`
+	LandedAt  time.Time               `json:"landed_at"`
+}
+
+// LandChangeVersion is the runner's report that it landed a reviewed version
+// with its own git credentials: the merge commit now on the base branch. The
+// Hub records it and finishes the primary issue in the same transaction.
+type LandChangeVersion struct {
+	Mutation
+	Receipt  *NativeLandingReceipt `json:"receipt,omitempty"`
+	Rebased  bool                  `json:"rebased,omitempty"`
+	MergeSHA string                `json:"merge_sha"`
+	BaseRef  string                `json:"base_ref"`
+	Method   string                `json:"method"`
+}
+
+type ChangeArtifact struct {
+	Kind         string `json:"kind"`
+	URI          string `json:"uri"`
+	SHA256       string `json:"sha256"`
+	Availability string `json:"availability"`
+}
+
+type ChangeExternalReference struct {
+	Provider string `json:"provider"`
+	ID       string `json:"id"`
+	URL      string `json:"url"`
+}
+
+type ChangeCheckSpec struct {
+	Name           string `json:"name"`
+	PrincipalID    string `json:"principal_id"`
+	WorkflowID     string `json:"workflow_id"`
+	WorkflowSHA256 string `json:"workflow_sha256"`
+	Source         string `json:"source"`
+	MaxAgeSeconds  int64  `json:"max_age_seconds"`
+}
+
+type ChangeReviewPolicy struct {
+	ID             string            `json:"review_policy_id"`
+	PolicyID       string            `json:"policy_id"`
+	RequireReview  bool              `json:"require_review"`
+	RequiredChecks []ChangeCheckSpec `json:"required_checks"`
+}
+
+type ApproveChangeReviewPolicy struct {
+	Mutation
+	ExpectedID string             `json:"expected_review_policy_id"`
+	Policy     ChangeReviewPolicy `json:"policy"`
+}
+
+type ChangeVersionInput struct {
+	Validation   *gate.CommandResult      `json:"validation,omitempty"`
+	BaseSHA      string                   `json:"base_sha"`
+	HeadSHA      string                   `json:"head_sha"`
+	MergeBaseSHA string                   `json:"merge_base_sha"`
+	Repository   string                   `json:"repository"`
+	Code         ChangeArtifact           `json:"code"`
+	Artifacts    []ChangeArtifact         `json:"artifacts"`
+	RunID        string                   `json:"run_id,omitempty"`
+	AttemptID    string                   `json:"attempt_id,omitempty"`
+	PolicyID     string                   `json:"policy_id"`
+	External     *ChangeExternalReference `json:"external,omitempty"`
+	Source       *ChangeSource            `json:"source,omitempty"`
+}
+
+type ChangeCheckExpectation struct {
+	ChangeCheckSpec
+	CheckRunID string `json:"check_run_id"`
+}
+
+type ChangeVersion struct {
+	LandingQuality *LandingQualitySnapshot `json:"landing_quality,omitempty"`
+	ChangeVersionInput
+	Landing      *NativeLandingReceipt    `json:"landing,omitempty"`
+	ID           string                   `json:"version_id"`
+	ChangeID     string                   `json:"change_id"`
+	Number       int64                    `json:"number,string"`
+	Policy       policy.Descriptor        `json:"policy"`
+	ReviewPolicy ChangeReviewPolicy       `json:"review_policy"`
+	Checks       []ChangeCheckExpectation `json:"checks"`
+	Actor        Actor                    `json:"actor"`
+	CreatedAt    time.Time                `json:"created_at"`
+}
+
+type CreateChange struct {
+	Mutation
+	Title        string             `json:"title"`
+	Body         string             `json:"body"`
+	LinkedIssues []NativeWorkItemID `json:"linked_issues"`
+}
+
+type PublishChangeVersion struct {
+	Mutation
+	ExpectedVersionID string `json:"expected_version_id"`
+	SourceBundle      []byte `json:"source_bundle,omitempty"`
+	ChangeVersionInput
+}
+
+type SecurityAuditReview struct {
+	RunOmitted    bool                   `json:"run_omitted,omitempty"`
+	TextTruncated bool                   `json:"text_truncated,omitempty"`
+	VersionID     string                 `json:"version_id,omitempty"`
+	Landing       bool                   `json:"landing,omitempty"`
+	Identity      agentidentity.Identity `json:"identity"`
+	Verdict       string                 `json:"verdict"`
+	SessionID     int64                  `json:"session_id"`
+	DiffDigest    string                 `json:"diff_digest"`
+	Run           securityaudit.Run      `json:"run"`
+}
+
+type ChangeReview struct {
+	SecurityAudit        *SecurityAuditReview  `json:"security_audit,omitempty"`
+	SessionMachineID     MachineID             `json:"session_machine_id,omitempty"`
+	ImplementationReview *gate.ValidatorResult `json:"implementation_review,omitempty"`
+	Validator            *gate.ValidatorResult `json:"validator,omitempty"`
+	ID                   string                `json:"review_id"`
+	VersionID            string                `json:"version_id"`
+	Decision             string                `json:"decision"`
+	Body                 string                `json:"body"`
+	Actor                Actor                 `json:"actor"`
+	CreatedAt            time.Time             `json:"created_at"`
+}
+
+type ReviewChange struct {
+	SecurityAudit        *SecurityAuditReview  `json:"security_audit,omitempty"`
+	ImplementationReview *gate.ValidatorResult `json:"implementation_review,omitempty"`
+	Validator            *gate.ValidatorResult `json:"validator,omitempty"`
+	Mutation
+	ExpectedRevision  Revision            `json:"expected_revision,string,omitempty"`
+	Decision          string              `json:"decision"`
+	Body              string              `json:"body"`
+	ExpectedVersionID string              `json:"expected_version_id,omitempty"`
+	Bundle            *ChangeReviewBundle `json:"bundle,omitempty"`
+}
+
+type ChangeReviewBundle struct {
+	ArtifactID string `json:"artifact_id"`
+	Revision   int64  `json:"revision"`
+	SHA256     string `json:"sha256"`
+	HeadSHA    string `json:"head_sha"`
+}
+
+type ViewChangeFile struct {
+	Mutation
+	Bundle     ChangeReviewBundle `json:"bundle"`
+	FileSHA256 string             `json:"file_sha256"`
+	Viewed     bool               `json:"viewed"`
+}
+
+type ChangeViewedFile struct {
+	ManifestSHA256 string `json:"manifest_sha256"`
+	FileSHA256     string `json:"file_sha256"`
+	Viewed         bool   `json:"viewed"`
+}
+
+type ChangeCheckResult struct {
+	CheckRunID     string           `json:"check_run_id"`
+	HeadSHA        string           `json:"head_sha"`
+	RunID          string           `json:"run_id"`
+	PolicyID       string           `json:"policy_id"`
+	ConfigDigest   string           `json:"config_digest"`
+	WorkflowID     string           `json:"workflow_id"`
+	WorkflowSHA256 string           `json:"workflow_sha256"`
+	Source         string           `json:"source"`
+	Conclusion     string           `json:"conclusion"`
+	CompletedAt    time.Time        `json:"completed_at"`
+	Evidence       []ChangeArtifact `json:"evidence"`
+}
+
+type SubmitChangeCheck struct {
+	Mutation
+	ChangeCheckResult
+}
+
+type ChangeCheck struct {
+	ChangeCheckResult
+	VersionID  string    `json:"version_id"`
+	Actor      Actor     `json:"actor"`
+	ReceivedAt time.Time `json:"received_at"`
+}
+
+type ChangeDiscussion struct {
+	Escape     *QualityEscape `json:"escape,omitempty"`
+	ID         string         `json:"comment_id"`
+	VersionID  string         `json:"version_id,omitempty"`
+	Body       string         `json:"body"`
+	Actor      Actor          `json:"actor"`
+	Provenance *Provenance    `json:"provenance,omitempty"`
+	CreatedAt  time.Time      `json:"created_at"`
+}
+
+type DiscussChange struct {
+	Escape *QualityEscape `json:"escape,omitempty"`
+	Mutation
+	VersionID  string      `json:"version_id,omitempty"`
+	Body       string      `json:"body"`
+	Provenance *Provenance `json:"provenance,omitempty"`
+}
+
+type ChangeDetail struct {
+	PublicationPushes []ChangePublicationPush `json:"publication_pushes,omitempty"`
+	SourceIssues      []ExternalReference     `json:"source_issues,omitempty"`
+	External          *PullRequestSummary     `json:"external_snapshot,omitempty"`
+	Change            ChangeRequest           `json:"change"`
+	Versions          []ChangeVersion         `json:"versions"`
+	Reviews           []ChangeReview          `json:"reviews"`
+	Checks            []ChangeCheck           `json:"checks"`
+	Discussion        []ChangeDiscussion      `json:"discussion"`
+	Summary           ChangeSummary           `json:"summary"`
+}
+
+// ChangePublicationPush is read-only evidence from a retained checkpoint. It is
+// not a PR receipt or part of the immutable source version. The recorder may be
+// a later attempt than the source attempt bound by the push effect digest.
+type ChangePublicationPush struct {
+	Change             NativeChangeReference `json:"change"`
+	RecordingAttemptID string                `json:"recording_attempt_id"`
+	EffectID           string                `json:"effect_id"`
+}
+
+type ChangeSummary struct {
+	NativeReview   string   `json:"native_review"`
+	ExternalReview string   `json:"external_review"`
+	Checks         string   `json:"checks"`
+	Status         string   `json:"status"`
+	Messages       []string `json:"messages"`
+}
+
+type ChangeReader interface {
+	FetchChanges(context.Context, NativeWorkItemID) ([]ChangeRequest, error)
+	FetchChange(context.Context, NativeWorkItemID, string) (ChangeDetail, error)
+	FetchNativeAttempts(context.Context, NativeWorkItemID) ([]NativeAttempt, error)
+}
