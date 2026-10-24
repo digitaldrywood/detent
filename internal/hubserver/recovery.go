@@ -59,16 +59,13 @@ func openRecoverySource(ctx context.Context, source string) (*database, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stop the owning Hub before offline maintenance: %w", err)
 	}
-	db, err := sql.Open("sqlite", sqliteDSN(path, cfg.BusyTimeout)+"&mode=rw")
+	db, err := sql.Open("sqlite", sqliteReaderDSN(path, cfg.BusyTimeout))
 	if err != nil {
 		return nil, errors.Join(err, lock.Close())
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	owner := &database{db: db, reader: db, lock: lock, path: path}
-	if err := owner.configure(ctx, cfg.BusyTimeout, false); err != nil {
-		return nil, errors.Join(err, owner.Close())
-	}
 	if err := verifyRecoveryDatabase(ctx, db); err != nil {
 		return nil, errors.Join(err, owner.Close())
 	}
