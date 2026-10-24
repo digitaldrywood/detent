@@ -3,6 +3,7 @@ package hubserver
 import (
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -59,7 +60,7 @@ func TestHotAttemptProjectionCompatibility(t *testing.T) {
 		ids = append(ids, projectIDs)
 	}
 	window := operatortool.AnalyticsWindow{From: at.Add(-time.Minute), To: now}
-	for _, stage := range []string{"legacy", "mixed", "converted", "landing updated", "null landing updated"} {
+	for _, stage := range []string{"legacy", "mixed", "converted", "landing updated", "null document landing updated"} {
 		t.Run(stage, func(t *testing.T) {
 			if stage == "mixed" {
 				if err := first.service.convertAttemptHotProjection(first.service.runDetailContext(t.Context()), ids[0][0]); err != nil {
@@ -71,10 +72,10 @@ func TestHotAttemptProjectionCompatibility(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if stage == "landing updated" || stage == "null landing updated" {
+			if stage == "landing updated" || stage == "null document landing updated" {
 				ctx := first.service.runDetailContext(t.Context())
 				if err := first.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
-					if stage == "null landing updated" {
+					if stage == "null document landing updated" {
 						if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET data_json=?,payload_object_key='' WHERE id=?", "null", ids[0][3]); err != nil {
 							return err
 						}
@@ -93,6 +94,17 @@ func TestHotAttemptProjectionCompatibility(t *testing.T) {
 				}
 				if _, err := first.service.database.db.ExecContext(ctx, "UPDATE native_attempts SET data_json=?,payload_object_key='' WHERE id=?", string(inline), ids[0][3]); err != nil {
 					t.Fatal(err)
+				}
+				var document string
+				if err := first.service.database.reader.QueryRowContext(t.Context(), "SELECT data_json FROM native_attempts WHERE id=?", ids[0][3]).Scan(&document); err != nil {
+					t.Fatal(err)
+				}
+				var data tracker.NativeRunData
+				if err := json.Unmarshal([]byte(document), &data); err != nil {
+					t.Fatal(err)
+				}
+				if data.Runtime == nil || data.Runtime.Landing == nil || !data.Runtime.Landing.Landed {
+					t.Fatalf("landing receipt not persisted: %s", document)
 				}
 			}
 			for _, f := range fixtures {
