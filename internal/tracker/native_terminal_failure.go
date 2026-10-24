@@ -58,8 +58,13 @@ func (f NativeTerminalFailure) Public() NativeTerminalFailure {
 	switch f.ErrorClass {
 	case "backend_startup", "protocol", "workspace_hook", "acceptance_publication", "security_audit_publication", "event_publication":
 		f.Attribution = "instance"
-	case "issue_configuration", "source_recovery":
+	case "issue_configuration":
 		f.Attribution = "issue"
+	case "source_recovery":
+		f.Attribution = "issue"
+		if f.Stage == "pre_provider" || f.Stage == "workspace_preparation" {
+			f.Attribution = "instance"
+		}
 	}
 	f.Source = "host_runner_completion"
 	f.Coverage = "recorded_execution_error_only; not_change_publication_or_issue_acceptance_or_lease_release; historical_metadata_not_backfilled"

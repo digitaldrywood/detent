@@ -39,8 +39,10 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 		transfer        bool
 		transferCode    bool
 		workerOwnership bool
+		planning        bool
 	}{
 		{name: "same policy"},
+		{name: "planning enabled Rework restores missing published head before provider", planning: true},
 		{name: "retained source waits for writer cleanup before replacement", workerOwnership: true},
 		{name: "updated policy", updatePolicy: true},
 		{name: "operator republished same tree", republish: true},
@@ -117,7 +119,7 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer runtimeStore.Close()
-				agent, err := runner.NewRunner(runner.Dependencies{Store: runtimeStore, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
+				agent, err := runner.NewRunner(runner.Dependencies{Store: runtimeStore, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: gate.PlanConfig{Enabled: test.planning}, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -273,6 +275,9 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 			}
 			providerB := &committingAgent{validator: "pass", complete: true}
 			providerB.duringTurn = func() {
+				if identity := h.scheduler.RunExecution(issue.ID).(*nativeExecution).data.Identity; !test.transferCode && (identity == nil || identity.Role != runner.RoleRework) {
+					t.Fatalf("Rework provider identity = %+v, want role=rework", identity)
+				}
 				expectedFiles := map[string]string{"CHANGE.md": "changed\n"}
 				if test.transferCode {
 					if got := head(providerB.workspace); got != recovered.Version.HeadSHA {
@@ -348,11 +353,12 @@ func TestNativeDamagedSourceRecoversOnlyVerifiedOwner(t *testing.T) {
 		foreign, wrongHead, lostLease, wrongDiff bool
 		missingCapture, wrongWorktree            bool
 		wantError                                bool
-		transferred, staleTransfer               bool
+		transferred, staleTransfer, recovered    bool
 	}{
 		{name: "owner recaptures missing artifact", status: http.StatusInternalServerError},
 		{name: "transferred version retains exact selection during recapture", status: http.StatusInternalServerError, transferred: true},
 		{name: "stale transfer refuses current version substitution", transferred: true, staleTransfer: true, wantError: true},
+		{name: "recovered transfer refuses a newer current version", transferred: true, staleTransfer: true, recovered: true, wantError: true},
 		{name: "owner recaptures corrupt artifact"},
 		{name: "foreign runner cannot recapture", foreign: true, wantError: true},
 		{name: "wrong local checkpoint cannot recapture", wrongHead: true, wantError: true},
@@ -421,6 +427,9 @@ func TestNativeDamagedSourceRecoversOnlyVerifiedOwner(t *testing.T) {
 				if test.staleTransfer {
 					execution.claim.recovery.SourceVersionID = "version_older"
 				}
+			}
+			if test.recovered {
+				execution.recoveredSource = &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: execution.claim.recovery.SourceVersionID, HeadSHA: exactHead}
 			}
 			execution.claim.recovery.Attempts = []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "saved-source", MachineID: owner}, Checkpoint: &tracker.NativeCheckpoint{Resume: "resume_session", WorktreeState: "unpushed", HeadSHA: checkpointHead, Availability: "available", Storage: "local_only"}}}
 			original := h.native.client.httpClient.Transport

@@ -1181,6 +1181,17 @@ func (o *Orchestrator) dispatchMode(ctx context.Context, state *State, issue con
 	if !cfg.Enabled {
 		return runpkg.RunModeImplement
 	}
+	if implementProgressLinkedPullRequest(issue) {
+		return runpkg.RunModeImplement
+	}
+	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
+		if execution := source.RunExecution(issue.ID); execution != nil {
+			recovery := execution.Recovery()
+			if recovery.Change != nil && recovery.Change.VersionID != "" {
+				return runpkg.RunModeImplement
+			}
+		}
+	}
 	switch normalizeState(issue.State) {
 	case "todo":
 		return runpkg.RunModePlan
