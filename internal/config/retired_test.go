@@ -1,13 +1,14 @@
 package config
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
 
-func TestRetiredConfigurationKeys(t *testing.T) {
+func TestRetiredConfigurationKeysAreIgnored(t *testing.T) {
 	t.Parallel()
 	for _, path := range []string{
 		"agent.no_progress_timeout_ms", "agent.no_progress_token_limit", "agent.no_progress_spend_limit_usd",
@@ -24,9 +25,11 @@ func TestRetiredConfigurationKeys(t *testing.T) {
 			raw = strings.Replace(raw, "{0}", "0", 1)
 			for _, input := range []string{raw, "defaults: &defaults {" + raw + "}\n<<: *defaults"} {
 				cfg := Default()
-				err := yaml.Unmarshal([]byte(input), &cfg)
-				if err == nil || !strings.Contains(err.Error(), path+" is retired") {
-					t.Fatalf("decode error = %v, want %s is retired", err, path)
+				if err := yaml.Unmarshal([]byte(input), &cfg); err != nil {
+					t.Fatalf("decode %q: %v", input, err)
+				}
+				if !reflect.DeepEqual(cfg, Default()) {
+					t.Fatalf("decode %q changed configuration", input)
 				}
 			}
 		})
