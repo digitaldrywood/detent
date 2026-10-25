@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
 	"testing"
@@ -120,7 +121,14 @@ func TestMonthlyBudgetAdmission(t *testing.T) {
 
 func TestMonthlyBudgetDrainLifecycle(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	var logs hostedLogBuffer
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("server logs:\n%s", logs.String())
+		}
+	})
+	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
 	monthlyPolicyFixture(t, f, false)
 	for _, state := range []string{"In Review", "Rework", "Merging", "Blocked", "Backlog"} {
 		dispatchable := state != "Blocked" && state != "Backlog"
