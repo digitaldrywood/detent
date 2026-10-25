@@ -25,6 +25,9 @@ func (s *Service) registerReleaseAuditRoutes(e *echo.Echo) {
 }
 
 func (s *Service) getReleaseAudit(c echo.Context) error {
+	if nativeRequestScope(c).credential.HostedRole == "reporter" {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	checkpoint, err := readReleaseAuditCheckpoint(ctx, s.database.reader, nativeRequestScope(c), c.Param("checkpoint"))
@@ -35,6 +38,9 @@ func (s *Service) getReleaseAudit(c echo.Context) error {
 }
 
 func (s *Service) publishReleaseAudit(c echo.Context) error {
+	if nativeRequestScope(c).credential.HostedRole == "reporter" {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
 	var request struct {
 		tracker.Mutation
 		releaseaudit.Checkpoint
@@ -117,6 +123,9 @@ func readReleaseAuditParts(ctx context.Context, query nativeQueryer, scope nativ
 }
 
 func (s *Service) listReleaseAudits(c echo.Context) error {
+	if nativeRequestScope(c).credential.HostedRole == "reporter" {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	scope := nativeRequestScope(c)
