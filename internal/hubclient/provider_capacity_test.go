@@ -433,10 +433,16 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 				return transport.RoundTrip(r)
 			})
 			issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
-			if err == nil || len(issues) != 0 {
+			if err != nil || len(issues) != 1 {
 				t.Fatalf("provider hydration failure = %d, %v", len(issues), err)
 			}
 			client.httpClient.Transport = transport
+			if scheduler.nativeClaims[issues[0].ID].lease.ProviderReservation == nil {
+				t.Fatal("retained claim lost its provider reservation")
+			}
+			if err := scheduler.ReleaseClaim(t.Context(), issues[0].ID, "dispatch_deferred"); err != nil {
+				t.Fatal(err)
+			}
 			evaluations = 0
 		}
 		issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
