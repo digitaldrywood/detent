@@ -10,16 +10,19 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -34,23 +37,38 @@ func TestNativeAdmissionBatch(t *testing.T) {
 
 	t.Parallel()
 	for _, test := range []struct {
-		name            string
-		slots           int
-		budget          int
-		waiting         int
-		preview         bool
-		failAfter       int
-		failClaim       int
-		want            int
-		failCode        string
-		failStatus      int
-		failPreview     bool
-		oversized       bool
-		emptyPreview    bool
-		wantError       bool
-		cancelDiscovery bool
-		cancelParent    bool
+		name             string
+		slots            int
+		budget           int
+		waiting          int
+		preview          bool
+		failAfter        int
+		failClaim        int
+		want             int
+		failCode         string
+		failStatus       int
+		failPreview      bool
+		oversized        bool
+		emptyPreview     bool
+		wantError        bool
+		cancelDiscovery  bool
+		cancelParent     bool
+		missingIsolation bool
+		refusalBody      string
 	}{
+		{name: "late missing isolation with failed release", slots: 6, budget: 14, preview: true, missingIsolation: true, wantError: true},
+		{name: "late claim unauthorized oversized body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusUnauthorized, refusalBody: "oversized", wantError: true},
+		{name: "late claim forbidden oversized body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusForbidden, refusalBody: "oversized", wantError: true},
+		{name: "late claim badrequest oversized body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusBadRequest, refusalBody: "oversized", wantError: true},
+		{name: "late claim unauthorized failing body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusUnauthorized, refusalBody: "failing", wantError: true},
+		{name: "late claim forbidden failing body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusForbidden, refusalBody: "failing", wantError: true},
+		{name: "late claim badrequest failing body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusBadRequest, refusalBody: "failing", wantError: true},
+		{name: "late hydration unauthorized oversized body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusUnauthorized, refusalBody: "oversized", wantError: true},
+		{name: "late hydration forbidden oversized body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusForbidden, refusalBody: "oversized", wantError: true},
+		{name: "late hydration badrequest oversized body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusBadRequest, refusalBody: "oversized", wantError: true},
+		{name: "late hydration unauthorized failing body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusUnauthorized, refusalBody: "failing", wantError: true},
+		{name: "late hydration forbidden failing body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusForbidden, refusalBody: "failing", wantError: true},
+		{name: "late hydration badrequest failing body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusBadRequest, refusalBody: "failing", wantError: true},
 		{name: "six slots", slots: 6, budget: 14, preview: true, want: 6},
 		{name: "oversized recovery preserves both candidates", slots: 2, budget: 2, preview: true, oversized: true, want: 2},
 		{name: "bounded hydration failure releases both candidates", slots: 2, budget: 2, preview: true, oversized: true, failAfter: 2, want: 2, wantError: true},
@@ -150,10 +168,32 @@ func TestNativeAdmissionBatch(t *testing.T) {
 			}
 			acquired := make(map[string]tracker.NativeLease)
 			released := make(map[string]bool)
+			releaseAttempts := make(map[string]int)
+			rejectedLease := ""
+			bodyError := errors.New("injected response body failure")
+			releaseError := errors.New("injected uncertain release failure")
+			refusalResponse := func(response *httptest.ResponseRecorder) *http.Response {
+				result := response.Result()
+				switch test.refusalBody {
+				case "oversized":
+					result.Body = io.NopCloser(strings.NewReader(strings.Repeat("x", maxResponseBytes+1)))
+				case "failing":
+					result.Body = io.NopCloser(iotest.ErrReader(bodyError))
+				}
+				return result
+			}
 			transport := h.failChanges.next
 			recoveries := 0
 			claims := 0
 			h.failChanges.next = executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(r.URL.Path, "/release") {
+					parts := strings.Split(r.URL.Path, "/")
+					id := parts[len(parts)-2]
+					releaseAttempts[id]++
+					if id == rejectedLease {
+						return nil, releaseError
+					}
+				}
 				if test.emptyPreview && strings.HasSuffix(r.URL.Path, "/claims/preview") {
 					response := httptest.NewRecorder()
 					response.WriteString(`{"items":[]}`)
@@ -177,7 +217,7 @@ func TestNativeAdmissionBatch(t *testing.T) {
 						response.WriteHeader(status)
 						fmt.Fprintf(response, `{"code":%q,"message":"injected refusal"}`, test.failCode)
 					}
-					return response.Result(), nil
+					return refusalResponse(response), nil
 				}
 				if r.Method == http.MethodGet && r.URL.Query().Get("view") == "recovery" {
 					recoveries++
@@ -189,7 +229,7 @@ func TestNativeAdmissionBatch(t *testing.T) {
 							response := httptest.NewRecorder()
 							response.WriteHeader(test.failStatus)
 							fmt.Fprintf(response, `{"code":%q}`, test.failCode)
-							return response.Result(), nil
+							return refusalResponse(response), nil
 						}
 						return nil, errors.New("injected hydration failure")
 					}
@@ -209,6 +249,27 @@ func TestNativeAdmissionBatch(t *testing.T) {
 						t.Fatal(err)
 					}
 					acquired[string(lease.ID)] = lease
+					if test.missingIsolation && claims == 3 {
+						h.native.client.baseURL.Scheme = "https"
+						identityPath := filepath.Join(t.TempDir(), "private", "runner.json")
+						file, err := runnerauth.Initialize(identityPath, h.native.client.baseURL.String())
+						if err != nil {
+							t.Fatal(err)
+						}
+						file.Credential = h.native.client.tokenSource()
+						file.Identity.ExpiresAt = time.Now().Add(runnerauth.CredentialTTL)
+						if err := runnerauth.Save(identityPath, file); err != nil {
+							t.Fatal(err)
+						}
+						h.native.client.runner = &runnerCredentialSource{path: identityPath}
+						rejectedLease = string(lease.ID)
+						lease.IsolationPolicy = nil
+						payload, err := json.Marshal(lease)
+						if err != nil {
+							t.Fatal(err)
+						}
+						response.Body = io.NopCloser(strings.NewReader(string(payload)))
+					}
 					if len(acquired) == 2 {
 						if test.cancelDiscovery {
 							cancelDiscovery()
@@ -238,6 +299,15 @@ func TestNativeAdmissionBatch(t *testing.T) {
 				if cached != retained[id] {
 					t.Fatalf("lease cache differs from returned batch: cached=%t retained=%t", cached, retained[id])
 				}
+				if id == rejectedLease {
+					if releaseAttempts[id] != 1 || retained[id] || released[id] {
+						t.Fatalf("uncertain release retried or retained: attempts=%d retained=%t released=%t", releaseAttempts[id], retained[id], released[id])
+					}
+					continue
+				}
+				if test.wantError && releaseAttempts[id] != 1 {
+					t.Fatalf("lease %s cleanup attempts = %d, want 1", id, releaseAttempts[id])
+				}
 				if retained[id] == released[id] {
 					t.Fatalf("acquired lease %s must be returned or released: retained=%t released=%t", id, retained[id], released[id])
 				}
@@ -255,9 +325,18 @@ func TestNativeAdmissionBatch(t *testing.T) {
 				}
 				if test.failCode != "" {
 					var failure *APIError
-					if !errors.As(err, &failure) || failure.Code != test.failCode {
+					if !errors.As(err, &failure) || (test.refusalBody == "" && failure.Code != test.failCode) || (test.failStatus != 0 && failure.Status != test.failStatus) {
 						t.Fatalf("refusal lost its typed owner: %v", err)
 					}
+				}
+				if test.refusalBody == "failing" && !errors.Is(err, bodyError) {
+					t.Fatalf("lost body error: %v", err)
+				}
+				if test.missingIsolation {
+					if rejectedLease == "" || !errors.Is(err, orchestrator.ErrSchedulingUnavailable) || !errors.Is(err, releaseError) || !strings.Contains(err.Error(), "isolation policy") {
+						t.Fatalf("lost contract or cleanup error: %v", err)
+					}
+					return
 				}
 				h.failChanges.next = transport
 				readyIDs = nil
