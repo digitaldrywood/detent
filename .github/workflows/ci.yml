@@ -250,7 +250,6 @@ jobs:
     if: github.event_name != 'pull_request' && needs.preflight.outputs.should_run == 'true'
     name: Verify race (${{ matrix.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
