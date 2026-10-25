@@ -535,16 +535,16 @@ func recordNativeSchedulingOutcome(ctx context.Context, tx *sql.Tx, scope *nativ
 	decision.At = now
 	decision.RunnerID = scope.credential.Runner.RunnerID
 	data := tracker.CollaborationData{Decision: &decision}
-	change, found, err := readLatestNativeChangeRequest(ctx, tx, *scope, item)
-	if err != nil {
+	var reference tracker.NativeChangeReference
+	err := tx.QueryRowContext(ctx, `SELECT c.id,c.claim_version_id,c.claim_head_sha FROM change_requests c
+JOIN change_issue_links l ON l.change_id=c.id
+WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? ORDER BY c.rowid DESC LIMIT 1`,
+		scope.organization, scope.project, item).Scan(&reference.ChangeID, &reference.VersionID, &reference.HeadSHA)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if found {
-		version, _, err := readNativeChangeVersion(ctx, tx, change)
-		if err != nil {
-			return err
-		}
-		data.Change = &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: change.CurrentVersion, HeadSHA: version.HeadSHA}
+	if err == nil {
+		data.Change = &reference
 	}
 	if decision.Outcome != "claimed" {
 		raw, err := previousSchedulingDecision(ctx, tx, *scope, item, decision)
@@ -567,6 +567,10 @@ func recordNativeSchedulingOutcome(ctx context.Context, tx *sql.Tx, scope *nativ
 				}
 			}
 		}
+	}
+	if prepared := claimPrepared(ctx); prepared != nil && !claimWriting(ctx) {
+		prepared.decisions = true
+		return nil
 	}
 	return appendNativeHistory(ctx, tx, *scope, item, "scheduler.decision", data, now)
 }

@@ -447,7 +447,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, data.AttemptID, scope.organi
 		if err != nil {
 			return false, false, err
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET checkpoint_json = ?, artifact_ids_json = ? WHERE id = ?", checkpoint, artifacts, data.AttemptID); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET checkpoint_json = ?, artifact_ids_json = ?, checkpoint_preserves_source = ? WHERE id = ?", checkpoint, artifacts, data.Handoff.PreservesSource(), data.AttemptID); err != nil {
 			return false, false, err
 		}
 	}

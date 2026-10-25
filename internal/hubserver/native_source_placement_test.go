@@ -1,12 +1,16 @@
 package hubserver
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -129,19 +133,32 @@ func TestNativeSourcePlacement(t *testing.T) {
 func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name, state, otherReason string
-		source, ownerOffline     bool
-		otherAllowed             bool
+		name, state, otherReason         string
+		invalidate                       string
+		source, ownerOffline             bool
+		objects, landing, readerFallback bool
+		otherAllowed                     bool
 	}{
 		{name: "local-only checkpoint is not pinned to its online owner", state: "dirty", otherAllowed: true},
 		{name: "local-only checkpoint does not wait for an offline owner", state: "unpushed", ownerOffline: true, otherAllowed: true},
 		{name: "verified durable source is not pinned to an online owner", state: "unpushed", source: true, otherAllowed: true},
 		{name: "verified durable source moves when the owner is offline", state: "unpushed", source: true, ownerOffline: true, otherAllowed: true},
+		{name: "claim prepares stored source and archived checkpoint", state: "unpushed", source: true, objects: true, otherAllowed: true},
+		{name: "claim prepares landing evidence", state: "unpushed", source: true, objects: true, landing: true, otherAllowed: true},
+		{name: "claim revalidates checkpoint sequence", state: "unpushed", source: true, objects: true, otherAllowed: true, invalidate: "checkpoint"},
+		{name: "claim revalidates review sequence", state: "unpushed", source: true, objects: true, landing: true, otherAllowed: true, invalidate: "review"},
+		{name: "claim uses general reader when claim pool is absent", state: "unpushed", source: true, objects: true, readerFallback: true, otherAllowed: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Now().UTC()
-			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}))
+			objects := &changeObjectFixture{}
+			details := &memoryRunDetails{}
+			cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}
+			if test.objects {
+				cfg.content, cfg.RunDetails = objects.call, details
+			}
+			f := newChangeFixture(t, openTestService(t, cfg))
 			owner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
 			other := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
 			owner.enroll(t)
@@ -160,9 +177,15 @@ func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 			event.Data.Handoff = nativeTestCheckpoint()
 			event.Data.Handoff.WorktreeState, event.Data.Handoff.HeadSHA = test.state, input.HeadSHA
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", owner.redemption.Credential, event), http.StatusOK)
+			var published tracker.ChangeVersion
 			if test.source {
 				input.AttemptID, input.RunID = event.Data.AttemptID, event.Data.RunID
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source"}, ChangeVersionInput: input, SourceBundle: bundle}), http.StatusOK)
+				if test.objects {
+					input.Validation = &gate.CommandResult{Command: "make check-land", HeadSHA: input.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 123, Output: "stored command output"}
+				}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source"}, ChangeVersionInput: input, SourceBundle: bundle})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &published)
 			}
 			finish := event
 			finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome, finish.Data.Handoff = "run.finished", "finished", 3, "succeeded", nil
@@ -186,7 +209,7 @@ func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 				reason  string
 			}{{owner, true, ""}, {other, test.otherAllowed, test.otherReason}} {
 				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Runner: candidate.runner.identity}}
-				allowed, reason, err := placementClaimAllowed(t.Context(), f.service.database.db, scope, candidate.runner.binding.MachineID, id, at, nil)
+				allowed, reason, err := placementClaimAllowed(f.service.runDetailContext(t.Context()), f.service.database.db, scope, candidate.runner.binding.MachineID, id, at, nil)
 				if err != nil || allowed != candidate.allowed {
 					t.Fatalf("%s allowed=%v reason=%q error=%v", candidate.runner.binding.RunnerID, allowed, reason, err)
 				}
@@ -194,6 +217,98 @@ func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 					t.Fatalf("refusal lost the waiting owner: %q", reason)
 				}
 			}
+			if test.objects {
+				if test.landing {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions/"+published.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, Decision: "approved"}), http.StatusOK)
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions/"+published.ID+"/checks", f.token, changeTestResult(published)), http.StatusOK)
+					states := append(f.project.States, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}})
+					raw, err := json.Marshal(states)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE projects SET states_json=? WHERE id=?`, string(raw), f.project.ID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO workflow_states(project_id,source_name,detent_state,dispatchable,created_at,updated_at) VALUES(?,'Merging','Merging',1,?,?)`, f.project.ID, formatHubTime(now), formatHubTime(now)); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND source_name='Merging'),revision=revision+1 WHERE id=?`, f.project.ID, id); err != nil {
+						t.Fatal(err)
+					}
+
+				}
+				var outputKey string
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT object_key FROM change_command_outputs WHERE version_id=?`, published.ID).Scan(&outputKey); err != nil {
+					t.Fatal(err)
+				}
+				objects.mu.Lock()
+				delete(objects.objects, outputKey)
+				objects.reads = 0
+				objects.mu.Unlock()
+				details.mu.Lock()
+				details.reads = 0
+				details.mu.Unlock()
+				if test.invalidate != "" {
+					credential, _, err := f.service.authenticateAPIToken(t.Context(), other.redemption.Credential, "", "")
+					if err != nil {
+						t.Fatal(err)
+					}
+					scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+					prepared := &claimPreparation{versions: make(map[string]preparedClaimVersion), checkpoints: make(map[string]preparedClaimCheckpoint), details: make(map[string]preparedClaimDetail)}
+					ctx := f.service.runDetailContext(context.WithValue(t.Context(), claimPreparationKey{}, prepared))
+					request := tracker.ClaimRequest{WorkItemID: id, MachineID: other.binding.MachineID, SessionID: "prepared-stale", TTL: time.Minute}
+					query := claimCandidateQuery{PolicyID: hubTestPolicy().ID, RequirePolicy: true, NativeScope: &scope, Scope: string(scope.project)}
+					_, err = f.service.database.claimPreflight(ctx, request, query, time.Hour)
+					var selected *claimSelected
+					if !errors.As(err, &selected) {
+						t.Fatalf("prepare claim: %v", err)
+					}
+					if test.invalidate == "checkpoint" {
+						_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET sequence=sequence+1 WHERE id=?`, event.Data.AttemptID)
+					} else {
+						raw, marshalErr := json.Marshal(tracker.ChangeReview{ID: "new-review", VersionID: published.ID, Decision: "changes_requested", CreatedAt: now})
+						if marshalErr != nil {
+							t.Fatal(marshalErr)
+						}
+						_, err = f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review',?)`, f.change.ID, published.ID, string(raw))
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					_, err = f.service.database.claimNextOn(ctx, f.service.database.db, nil, claimMode{hint: selected}, request, query, time.Hour)
+					if !errors.Is(err, errClaimHintStale) {
+						t.Fatalf("changed %s granted stale claim: %v", test.invalidate, err)
+					}
+					var granted int
+					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM leases WHERE session_id=?`, request.SessionID).Scan(&granted); err != nil || granted != 0 {
+						t.Fatalf("stale claim leases=%d error=%v", granted, err)
+					}
+					return
+				}
+				if test.readerFallback {
+					reader := f.service.database.claimReader
+					f.service.database.claimReader = nil
+					defer func() { f.service.database.claimReader = reader }()
+				}
+				claim.MachineID, claim.SessionID = other.binding.MachineID, "restored"
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", other.redemption.Credential, claim)
+				requireNativeStatus(t, response, http.StatusOK)
+				var restored tracker.NativeLease
+				decodeHubResponse(t, response, &restored)
+				if restored.WorkItemID != f.issue.WorkItemID || restored.FencingToken <= lease.FencingToken {
+					t.Fatalf("restored claim = %+v", restored)
+				}
+				objects.mu.Lock()
+				contentReads, contentWriterReads := objects.reads, objects.writerReads
+				objects.mu.Unlock()
+				details.mu.Lock()
+				detailReads, detailWriterReads := details.reads, details.writerReads
+				details.mu.Unlock()
+				if contentReads == 0 || detailReads == 0 || contentWriterReads != 0 || detailWriterReads != 0 {
+					t.Fatalf("content reads=%d writer=%d; detail reads=%d writer=%d", contentReads, contentWriterReads, detailReads, detailWriterReads)
+				}
+			}
+
 		})
 	}
 }

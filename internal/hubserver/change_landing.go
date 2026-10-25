@@ -438,36 +438,40 @@ func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nati
 			return true, false, 0, nil
 		}
 	}
-	change, found, err := readLatestNativeChangeRequest(ctx, query, *scope, item)
+	change, found, err := readClaimChange(ctx, query, *scope, item)
 	if err != nil || !found {
 		return false, true, 0, err
 	}
 	if change.CurrentLanding() != nil || change.CurrentVersion == "" {
 		return false, true, 0, nil
 	}
-	detail, err := readCurrentChangeDetail(ctx, query, *scope, change, now)
+	version, err := readClaimVersion(ctx, query, change.ID, change.CurrentVersion)
+	if err != nil {
+		return false, true, 0, err
+	}
+	detail, err := readClaimLandingDetail(ctx, query, *scope, change, version, now)
 	if err != nil {
 		return false, true, 0, err
 	}
 	if !nativeChangeLandingReady("Merging", &detail) {
 		return false, true, 0, nil
 	}
-	version, err := readChangeVersion(ctx, query, change.ID, change.CurrentVersion)
-	if err != nil {
-		return false, true, 0, err
-	}
 	if version.External == nil && version.AttemptID != "" {
-		attempt, err := readNativeAttempt(ctx, query, *scope, item, version.AttemptID, now)
+		checkpoint, err := readClaimCheckpoint(ctx, query, *scope, item, version.AttemptID)
 		if err != nil {
 			return false, true, 0, err
 		}
-		checkpoint := attempt.Checkpoint
 		if checkpoint != nil && checkpoint.Storage == "local_only" && checkpoint.WorktreeState == "unpushed" && checkpoint.HeadSHA == version.HeadSHA {
-			stored, err := nativeChangeSourceStored(ctx, query, version)
+			stored, err := readClaimSourceStored(ctx, query, version)
 			if err != nil {
 				return false, true, 0, err
 			}
-			if !stored && (attempt.MachineID != machine || attempt.RunnerID != "" && attempt.RunnerID != scope.credential.Runner.RunnerID) {
+			var owner tracker.MachineID
+			var ownerRunner string
+			if err := query.QueryRowContext(ctx, `SELECT l.machine_id,COALESCE(lr.runner_id,'') FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id WHERE a.id=? AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, version.AttemptID, scope.organization, scope.project, item).Scan(&owner, &ownerRunner); err != nil {
+				return false, true, 0, err
+			}
+			if !stored && (owner != machine || ownerRunner != "" && ownerRunner != scope.credential.Runner.RunnerID) {
 				return false, true, 0, nil
 			}
 		}

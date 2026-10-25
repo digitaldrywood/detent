@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -23,9 +24,11 @@ import (
 )
 
 type changeObjectFixture struct {
-	writes  int
-	mu      sync.Mutex
-	objects map[string][]byte
+	writes      int
+	reads       int
+	writerReads int
+	mu          sync.Mutex
+	objects     map[string][]byte
 }
 
 func (f *changeObjectFixture) call(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
@@ -50,6 +53,11 @@ func (f *changeObjectFixture) call(ctx context.Context, request entryauthority.C
 		}
 		f.objects[request.Reference.Key] = bytes.Clone(request.Data)
 		return nil, nil
+	}
+	f.reads++
+	if claimWriting(ctx) {
+		f.writerReads++
+		return nil, errors.New("content read while claim writer is held")
 	}
 	data, found := f.objects[request.Reference.Key]
 	if !found {
