@@ -15,10 +15,24 @@ const (
 	NativeTrusted = "native-trusted"
 )
 
-var ErrSandboxUnavailable = errors.New("backend sandbox is unavailable on this platform")
+var ErrSandboxUnavailable = errors.New("backend sandbox is unavailable on this platform; use Full access (native-trusted)")
 
 func SandboxAvailable() bool {
-	return runtime.GOOS == "darwin" || runtime.GOOS == "linux"
+	return ValidateTier(Sandbox, runtime.GOOS) == nil
+}
+
+func ValidateTier(tier, goos string) error {
+	switch tier {
+	case NativeTrusted:
+		return nil
+	case Sandbox:
+		if goos == "" || goos == "darwin" || goos == "linux" {
+			return nil
+		}
+		return ErrSandboxUnavailable
+	default:
+		return errors.New("unsupported isolation tier")
+	}
 }
 
 type Policy struct {
@@ -60,18 +74,19 @@ func (r Report) Supports(tier string) bool {
 	return true
 }
 
+func (r Report) SupportsOn(tier, goos string) bool {
+	return ValidateTier(tier, goos) == nil && r.Supports(tier)
+}
+
 func (p Policy) Validate() error {
 	if err := ValidateExtraNetworkDomains(p.ExtraNetworkDomains); err != nil {
 		return err
 	}
-	if p.Tier != Sandbox && p.Tier != NativeTrusted {
-		return errors.New("unsupported isolation tier")
+	if err := ValidateTier(p.Tier, runtime.GOOS); err != nil {
+		return err
 	}
 	if p.Tier == NativeTrusted {
 		return nil
-	}
-	if !SandboxAvailable() {
-		return ErrSandboxUnavailable
 	}
 	if len(p.WritableRoots) == 0 {
 		return errors.New("sandbox requires a worktree")

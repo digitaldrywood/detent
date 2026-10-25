@@ -10,6 +10,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -157,6 +158,9 @@ func (s *Service) readRunnerProjectDiagnostics(ctx context.Context, scope native
 			return runnerauth.DiagnosticPage{}, operatortool.ErrInvalidArguments
 		}
 		page.ReceivedAt = view.ObservedAt
+		if err := isolation.ValidateTier(r.IsolationTier, r.OS); err != nil {
+			page.Unavailable["isolation_tier"] = err.Error()
+		}
 		if r.ConnectionHealth != "online" {
 			page.Status = "offline"
 			page.Unavailable["runner_reachability"] = "offline_or_revoked"

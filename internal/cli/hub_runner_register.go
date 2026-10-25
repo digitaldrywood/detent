@@ -47,11 +47,11 @@ func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, 
 }
 
 func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error) *cobra.Command {
-	return newHubRunnerRegisterCommandWithReporter(version, lookupEnv, startService, privateLocation, reportRunnerSetup)
+	return newHubRunnerRegisterCommandWithReporter(version, runtime.GOOS, lookupEnv, startService, privateLocation, reportRunnerSetup)
 }
 
-func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error) *cobra.Command {
-	return newHubRunnerRegisterCommandWithGitHubAuth(version, lookupEnv, startService, privateLocation, report, func(ctx context.Context) error {
+func newHubRunnerRegisterCommandWithReporter(version, goos string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error) *cobra.Command {
+	return newHubRunnerRegisterCommandWithGitHubAuth(version, goos, lookupEnv, startService, privateLocation, report, func(ctx context.Context) error {
 		commandCtx, cancel := context.WithTimeout(ctx, runtimeCommandTimeout)
 		defer cancel()
 		_, err := defaultCommandRunner(commandCtx, "gh", "auth", "status")
@@ -59,15 +59,15 @@ func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(stri
 	})
 }
 
-func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error) *cobra.Command {
-	return newHubRunnerRegisterCommandWithServiceName(version, lookupEnv, startService, privateLocation, report, ghAuthStatus, registeredRunnerServiceName)
+func newHubRunnerRegisterCommandWithGitHubAuth(version, goos string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error) *cobra.Command {
+	return newHubRunnerRegisterCommandWithServiceName(version, goos, lookupEnv, startService, privateLocation, report, ghAuthStatus, registeredRunnerServiceName)
 }
 
-func newHubRunnerRegisterCommandWithServiceName(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error, serviceName func(string) (string, error)) *cobra.Command {
-	return newHubRunnerRegisterCommandWithCommitReport(version, lookupEnv, startService, privateLocation, report, ghAuthStatus, serviceName, workspace.ProbeCommitReport)
+func newHubRunnerRegisterCommandWithServiceName(version, goos string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error, serviceName func(string) (string, error)) *cobra.Command {
+	return newHubRunnerRegisterCommandWithCommitReport(version, goos, lookupEnv, startService, privateLocation, report, ghAuthStatus, serviceName, workspace.ProbeCommitReport)
 }
 
-func newHubRunnerRegisterCommandWithCommitReport(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error, serviceName func(string) (string, error), commitReport func(context.Context, string, workspace.CommitIdentity) (workspace.CommitReport, error)) *cobra.Command {
+func newHubRunnerRegisterCommandWithCommitReport(version, goos string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error, serviceName func(string) (string, error), commitReport func(context.Context, string, workspace.CommitIdentity) (workspace.CommitReport, error)) *cobra.Command {
 	var hubURL, token, organization, name, configPath, workspaceRoot, isolationTier string
 	var capacity int
 	var service bool
@@ -94,8 +94,11 @@ func newHubRunnerRegisterCommandWithCommitReport(version string, lookupEnv func(
 			if capacity < 1 {
 				return errors.New("--capacity must be at least 1")
 			}
-			if isolationTier != isolation.Sandbox && isolationTier != isolation.NativeTrusted {
-				return errors.New("--isolation-tier must be sandbox or native-trusted")
+			if err := isolation.ValidateTier(isolationTier, goos); err != nil {
+				if errors.Is(err, isolation.ErrSandboxUnavailable) {
+					return fmt.Errorf("%w; pass --isolation-tier native-trusted", err)
+				}
+				return fmt.Errorf("--isolation-tier must be sandbox or native-trusted: %w", err)
 			}
 			paths, err := resolveRunnerPaths(configPath, workspaceRoot, privateLocation)
 			if err != nil {

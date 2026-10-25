@@ -105,7 +105,7 @@ func TestHubRunnerRegisterDistinctServices(t *testing.T) {
 						}
 						return nil
 					}
-					command := newHubRunnerRegisterCommandWithServiceName("test", func(string) string { return "" }, starter, func(string) error { return nil }, func(context.Context, globalconfig.Config, string) error { return nil }, func(context.Context) error { return nil }, func(path string) (string, error) {
+					command := newHubRunnerRegisterCommandWithServiceName("test", "linux", func(string) string { return "" }, starter, func(string) error { return nil }, func(context.Context, globalconfig.Config, string) error { return nil }, func(context.Context) error { return nil }, func(path string) (string, error) {
 						return runnerServiceNameForPath(path, root), nil
 					})
 					output, err := executeRegister(t, command, "--url", hubs[test.hub].server.URL+"/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", path, "--workspace-root", filepath.Join(filepath.Dir(path), "work"), "--service")
@@ -163,7 +163,7 @@ func TestHubRunnerRegisterPreservesServiceName(t *testing.T) {
 				}
 				return nil
 			}
-			command := newHubRunnerRegisterCommandWithServiceName("test", func(string) string { return "" }, starter, func(string) error { return nil }, func(context.Context, globalconfig.Config, string) error { return nil }, func(context.Context) error { return nil }, func(string) (string, error) {
+			command := newHubRunnerRegisterCommandWithServiceName("test", "linux", func(string) string { return "" }, starter, func(string) error { return nil }, func(context.Context, globalconfig.Config, string) error { return nil }, func(context.Context) error { return nil }, func(string) (string, error) {
 				t.Fatal("existing config requested a new service name")
 				return "", nil
 			})

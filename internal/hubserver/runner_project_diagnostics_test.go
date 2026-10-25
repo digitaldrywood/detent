@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -513,5 +514,53 @@ WHERE r.id = ? AND o.project_id = ?`, "$."+jsonPathKey(view.ProjectID), r.bindin
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/runner-diagnostics?runner_id="+r.binding.RunnerID, r.redemption.Credential, nil), http.StatusUnauthorized)
 	if strings.Contains(logs.String(), "sentinel-secret-customer") {
 		t.Fatal("request secret leaked into logs")
+	}
+}
+
+func TestRunnerProjectDiagnosticsIsolationPlatform(t *testing.T) {
+	for _, test := range []struct {
+		name, goos, tier string
+		unsupported      bool
+		misreported      bool
+	}{
+		{"windows sandbox", "windows", isolation.Sandbox, true, false},
+		{"windows sandbox misreported", "windows", isolation.Sandbox, true, true},
+		{"windows full access", "windows", isolation.NativeTrusted, false, false},
+		{"darwin sandbox", "darwin", isolation.Sandbox, false, false},
+		{"linux sandbox", "linux", isolation.Sandbox, false, false},
+		{"legacy unspecified platform", "", isolation.Sandbox, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
+			r.redemption.IsolationTier = test.tier
+			r.redemption.OS = test.goos
+			if test.goos == "windows" {
+				r.redemption.BackendIsolation = isolation.Report{"codex": {isolation.NativeTrusted}}
+			}
+			if test.misreported {
+				r.redemption.BackendIsolation = isolation.Report{"codex": {isolation.NativeTrusted, isolation.Sandbox}}
+			}
+			r.enroll(t)
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/runner-diagnostics?runner_id="+r.binding.RunnerID, r.redemption.Credential, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page runnerauth.DiagnosticPage
+			decodeHubResponse(t, response, &page)
+			reason := page.Unavailable["isolation_tier"]
+			if test.unsupported {
+				if !strings.Contains(reason, "sandbox is unavailable on this platform") || !strings.Contains(reason, "native-trusted") {
+					t.Fatalf("diagnostics omitted platform reason: %+v", page)
+				}
+			} else if reason != "" {
+				t.Fatalf("supported platform tier reported unavailable: %+v", page)
+			}
+			issue := f.create(t, "queued")
+			claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "claim", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+			want := http.StatusOK
+			if test.unsupported {
+				want = http.StatusConflict
+			}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), want)
+		})
 	}
 }

@@ -54,7 +54,7 @@ func validateReadRunnerIsolation(ctx context.Context, tx nativeQueryer, scope na
 	if err := json.Unmarshal([]byte(encoded), &report); err != nil {
 		return err
 	}
-	if !report.Supports(runner.IsolationTier) {
+	if !report.SupportsOn(runner.IsolationTier, runner.OS) {
 		return ErrNoClaimableWork
 	}
 	return nil
