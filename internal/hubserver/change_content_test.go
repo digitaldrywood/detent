@@ -178,8 +178,12 @@ func TestChangeContentObjects(t *testing.T) {
 
 	requireUsageCountersMatchRecount(t, f.service.database)
 	legacy.service.config.content = objects.call
-	if err := legacy.service.convertLegacyStorage(t.Context(), now); err != nil {
-		t.Fatal(err)
+	conversionContext := legacy.service.contentContext(t.Context())
+	conversionScope := nativeScope{organization: legacy.project.OrganizationID, project: legacy.project.ID}
+	for _, family := range storageConversionFamilies {
+		if err := legacy.service.convertStorageFamily(conversionContext, conversionScope, family, now); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if !reflect.DeepEqual(detail, legacy.detail(t)) {
 		t.Fatal("legacy conversion changed Change API")
