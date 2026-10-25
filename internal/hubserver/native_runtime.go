@@ -166,7 +166,11 @@ func (s *Service) getNativeExplanation(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, boundedNativeExplanation(evidence))
+	result, err := boundedNativeExplanation(evidence, nil)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	return c.JSON(http.StatusOK, result)
 }
 
 func (s *Service) getNativeRuntime(c echo.Context) error {
@@ -363,6 +367,9 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 		detail.Change.Body = ""
 		detail.External = nil
 		detail.Summary.Messages = nil
+		if detail.Summary.Status == "evidence_incomplete" {
+			e.Unavailable = append(e.Unavailable, "change_gate_history_truncated")
+		}
 		detail.Change.LinkedIssues = nil
 		detail.Versions = nil
 		detail.Discussion = nil
@@ -386,7 +393,7 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 		ready = nativeChangeLandingReady("Merging", e.Change)
 	}
 	e.Scheduling = tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "unknown", At: now, WorkItemRevision: issue.Revision, Reason: "Runner-specific selectors, policy and capacity must also permit this item"}
-	if !ready {
+	if !ready && !slices.Contains(e.Unavailable, "change_gate_history_truncated") {
 		e.Scheduling.Outcome = "skipped"
 		e.Scheduling.Reason = "Current Change version is not ready for native landing"
 	}

@@ -162,6 +162,9 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 			if len(a.UnresolvedDependencies) > 0 {
 				a.Reason += "; observed required dependencies remain unfinished"
 			}
+		case !ready && slices.Contains(evidence.Unavailable, "change_gate_history_truncated"):
+			a.Reason = "Current Change gate evidence is incomplete"
+			a.Unavailable = append(a.Unavailable, "change_gate_history_truncated")
 		case !ready:
 			refuse("no_claimable_work", "Current Change version is not ready for native landing")
 		case !landingReady && landingCapacity != nativeLandingCapacityUnknown:

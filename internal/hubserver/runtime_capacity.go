@@ -13,6 +13,7 @@ import (
 
 func readRuntimeRunners(ctx context.Context, query nativeQueryer, scope nativeScope, now time.Time) ([]runnerauth.Runner, bool, error) {
 	limit := 100
+	truncated := false
 	if explanationRead(ctx) {
 		limit = 16
 	}
@@ -21,9 +22,30 @@ func readRuntimeRunners(ctx context.Context, query nativeQueryer, scope nativeSc
 	statement := runnerIdentitySelect + runnerWhere + ` ORDER BY CASE WHEN r.id = ? THEN 0 ELSE 1 END, r.id LIMIT ?`
 	args := []any{scope.organization, scope.project, scope.credential.Runner.RunnerID, limit + 1}
 	if explanationRead(ctx) {
-		statement = "SELECT * FROM (" + runnerIdentitySelect + runnerWhere + " AND r.id=?) UNION ALL SELECT * FROM (" + runnerIdentitySelect + runnerWhere + " AND r.id<>? ORDER BY r.id LIMIT ?)"
-		args = []any{scope.organization, scope.project, scope.credential.Runner.RunnerID, scope.organization, scope.project, scope.credential.Runner.RunnerID, limit + 1}
+		candidates, err := query.QueryContext(ctx, "SELECT id FROM runner_identities WHERE organization_id=? ORDER BY id LIMIT 17", scope.organization)
+		if err != nil {
+			return nil, false, err
+		}
+		ids := []any{}
+		for candidates.Next() {
+			var id string
+			if err := candidates.Scan(&id); err != nil {
+				candidates.Close()
+				return nil, false, err
+			}
+			ids = append(ids, id)
+		}
+		if err := errors.Join(candidates.Err(), candidates.Close()); err != nil {
+			return nil, false, err
+		}
+		truncated = len(ids) > limit
+		ids = ids[:min(len(ids), limit)]
+		statement = "SELECT * FROM (" + runnerIdentitySelect + runnerWhere + " AND r.id=?) UNION ALL SELECT * FROM (" + runnerIdentitySelect + runnerWhere + " AND r.id IN (" + placeholders(len(ids)) + ") AND r.id<>? ORDER BY r.id)"
+		args = []any{scope.organization, scope.project, scope.credential.Runner.RunnerID, scope.organization, scope.project}
+		args = append(args, ids...)
+		args = append(args, scope.credential.Runner.RunnerID)
 	}
+
 	rows, err := query.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, false, err
@@ -33,7 +55,6 @@ func readRuntimeRunners(ctx context.Context, query nativeQueryer, scope nativeSc
 	reports := make(map[string][]providercapacity.Report)
 	hosts := make(map[tracker.MachineID]int)
 	var machines []any
-	truncated := false
 	for rows.Next() {
 		if len(runners) == limit {
 			truncated = true

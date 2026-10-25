@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/issuecontract"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -33,12 +35,12 @@ func readRuntimeChangeDetail(ctx context.Context, q nativeQueryer, scope nativeS
 	}
 	if found {
 		detail.Versions = []tracker.ChangeVersion{version}
-		detail.Reviews, err = changeRows[tracker.ChangeReview](ctx, q, "SELECT record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' ORDER BY sequence DESC LIMIT 64", change.ID, version.ID)
+		detail.Reviews, err = changeRows[tracker.ChangeReview](ctx, q, "SELECT record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' ORDER BY sequence DESC LIMIT 65", change.ID, version.ID)
 		if err != nil {
 			return detail, err
 		}
 		slices.Reverse(detail.Reviews)
-		detail.Checks, err = changeRows[tracker.ChangeCheck](ctx, q, "SELECT record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='check' ORDER BY sequence DESC LIMIT 64", change.ID, version.ID)
+		detail.Checks, err = changeRows[tracker.ChangeCheck](ctx, q, "SELECT record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='check' ORDER BY sequence DESC LIMIT 65", change.ID, version.ID)
 		if err != nil {
 			return detail, err
 		}
@@ -49,6 +51,16 @@ func readRuntimeChangeDetail(ctx context.Context, q nativeQueryer, scope nativeS
 		return detail, err
 	}
 	detail.Summary = current.summarize(detail, now, false)
+	if len(detail.Checks) > 64 || len(detail.Reviews) > 64 {
+		detail.Summary.Status = "evidence_incomplete"
+		if len(detail.Checks) > 64 {
+			detail.Summary.Checks = "unknown"
+		}
+		if len(detail.Reviews) > 64 {
+			detail.Summary.NativeReview, detail.Summary.ExternalReview = "unknown", "unknown"
+		}
+		detail.Summary.Messages = []string{"Current-version check or review history is truncated"}
+	}
 	return detail, nil
 }
 
@@ -341,39 +353,62 @@ JOIN issues i ON i.id=d.blocker_issue_id JOIN organizations o ON o.id=i.organiza
 	return rows.Err()
 }
 
-func boundedNativeExplanation(evidence tracker.NativeRuntimeEvidence) explain.IssueExplanation {
+func boundedNativeExplanation(evidence tracker.NativeRuntimeEvidence, failure *explain.FailureSignature) (explain.IssueExplanation, error) {
 	evidence.Issue.IssueContract = nil
 	if version := evidence.CurrentVersion; version != nil {
-		version.Landing = explanationLanding(version.Landing)
+		current := *version
+		current.Landing = explanationLanding(version.Landing)
+		current.Validation = explanationCommand(version.Validation)
+		evidence.CurrentVersion = &current
+		if version.Validation != nil && (version.Validation.Pipeline != nil || version.Validation.Evidence != nil) {
+			evidence.Unavailable = append(evidence.Unavailable, "current_version_validation_evidence_omitted")
+		}
+		if version.Landing != nil {
+			evidence.Unavailable = append(evidence.Unavailable, "landing_details_omitted")
+		}
 	}
 	result := explain.FromNativeEvidence(evidence)
-	if result.NativeRuntime == nil {
-		return result
+	result.FailureSignature = failure
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return explain.IssueExplanation{}, err
 	}
-	for limit := 16; limit > 0; limit /= 2 {
-		raw, err := json.Marshal(result)
-		if err != nil || len(raw) <= 256*1024 {
-			return result
-		}
-		if !slices.Contains(result.NativeRuntime.Unavailable, "explanation_evidence_truncated") {
-			result.NativeRuntime.Unavailable = append(result.NativeRuntime.Unavailable, "explanation_evidence_truncated")
-		}
-		runtime := result.NativeRuntime
-		runtime.Capacity = runtime.Capacity[:min(len(runtime.Capacity), limit)]
-		runtime.Admission = runtime.Admission[:min(len(runtime.Admission), limit)]
-		result.Eligibility.Refusals = result.Eligibility.Refusals[:min(len(result.Eligibility.Refusals), limit)]
-		runtime.Issue.Blockers = runtime.Issue.Blockers[:min(len(runtime.Issue.Blockers), limit)]
-		runtime.Issue.Dependencies = runtime.Issue.Dependencies[:min(len(runtime.Issue.Dependencies), limit)]
-		for i := range runtime.Admission {
-			dependencies := runtime.Admission[i].UnresolvedDependencies
-			runtime.Admission[i].UnresolvedDependencies = dependencies[:min(len(dependencies), limit)]
-		}
-		for i := range result.Eligibility.Refusals {
-			dependencies := result.Eligibility.Refusals[i].UnresolvedDependencies
-			result.Eligibility.Refusals[i].UnresolvedDependencies = dependencies[:min(len(dependencies), limit)]
-		}
+	if len(raw) < 256*1024 {
+		return result, nil
 	}
-	return result
+	result.NativeRuntime = &tracker.NativeRuntimeEvidence{
+		Issue:       tracker.NativeIssue{NativeReference: evidence.Issue.NativeReference, State: evidence.Issue.State},
+		ObservedAt:  evidence.ObservedAt,
+		Unavailable: []string{"explanation_evidence_truncated"},
+	}
+	if slices.Contains(evidence.Unavailable, "change_gate_history_truncated") {
+		result.NativeRuntime.Unavailable = append(result.NativeRuntime.Unavailable, "change_gate_history_truncated")
+	}
+	result.Sources = []explain.SourceStatus{{Name: "explanation_evidence_truncated", State: explain.SourceUnavailable}}
+	result.Evidence, result.Reasons, result.LatestTransition, result.FailureSignature = nil, nil, nil, nil
+	result.Eligibility.Refusals, result.Eligibility.Latest, result.Eligibility.Current = nil, nil, nil
+	result.RequiredGate.Reason = boundedFailureText(result.RequiredGate.Reason, 4096)
+	result.RequiredGate.Failures, result.RequiredGate.Running = nil, nil
+	if result.RequiredGate.ExternalMerge != nil {
+		result.RequiredGate.ExternalMerge.Detail = boundedFailureText(result.RequiredGate.ExternalMerge.Detail, 4096)
+	}
+	raw, err = json.Marshal(result)
+	if err != nil {
+		return explain.IssueExplanation{}, err
+	}
+	if len(raw) >= 256*1024 {
+		return explain.IssueExplanation{}, errors.New("explanation identity and gate exceed response budget")
+	}
+	return result, nil
+}
+
+func explanationCommand(value *gate.CommandResult) *gate.CommandResult {
+	if value == nil {
+		return nil
+	}
+	result := *value
+	result.Pipeline, result.Evidence = nil, nil
+	return boundedChangeCommand(&result)
 }
 
 func explanationLanding(value *tracker.NativeLandingReceipt) *tracker.NativeLandingReceipt {

@@ -364,7 +364,9 @@ func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (ex
 	if err != nil {
 		return explain.IssueExplanation{}, safeWorkReadError(err)
 	}
-	out := boundedNativeExplanation(evidence)
-	out.FailureSignature = latestNativeFailureSignature(failures, partial)
+	out, err := boundedNativeExplanation(evidence, latestNativeFailureSignature(failures, partial))
+	if err != nil {
+		return explain.IssueExplanation{}, safeWorkReadError(err)
+	}
 	return out, nil
 }
