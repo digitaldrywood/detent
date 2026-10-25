@@ -30,10 +30,9 @@ CREATE INDEX native_attempts_claim_unknown ON native_attempts(id) WHERE checkpoi
 }
 
 const claimFactsRowsPerTick = 1000
-const claimFactsRowsPerTransaction = 100
 
 func (d *database) populateClaimFacts(ctx context.Context) error {
-	for range claimFactsRowsPerTick / claimFactsRowsPerTransaction {
+	for range claimFactsRowsPerTick {
 		changed, err := d.populateClaimFact(ctx)
 		if err != nil || !changed {
 			return err
@@ -48,16 +47,11 @@ func (d *database) populateClaimFact(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	defer tx.Rollback()
-	for range claimFactsRowsPerTransaction {
-		changed, err := projectLegacyClaimFact(ctx, tx)
-		if err != nil {
-			return false, err
-		}
-		if !changed {
-			return false, d.commit(ctx, tx)
-		}
+	changed, err := projectLegacyClaimFact(ctx, tx)
+	if err != nil {
+		return false, err
 	}
-	return true, d.commit(ctx, tx)
+	return changed, d.commit(ctx, tx)
 }
 
 func projectLegacyClaimFact(ctx context.Context, tx *sql.Tx) (bool, error) {

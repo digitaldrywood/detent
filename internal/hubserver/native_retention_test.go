@@ -145,6 +145,21 @@ func TestNativeRetention(t *testing.T) {
 		if err := db.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_requests WHERE claim_version_id IS NULL`).Scan(&unknown); err != nil || unknown != 0 {
 			t.Fatalf("unknown=%d: %v", unknown, err)
 		}
+		for _, row := range []struct{ id, raw string }{
+			{"isolated-first", `{}`},
+			{"isolated-second", `{"current_version_id":42}`},
+		} {
+			if _, err := db.db.ExecContext(t.Context(), `INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?,?)`, row.id, f.project.OrganizationID, f.project.ID, f.issue.WorkItemID, row.raw); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := db.populateClaimFacts(t.Context()); err == nil {
+			t.Fatal("malformed claim fact did not fail")
+		}
+		var projected bool
+		if err := db.reader.QueryRowContext(t.Context(), `SELECT claim_version_id IS NOT NULL FROM change_requests WHERE id='isolated-first'`).Scan(&projected); err != nil || !projected {
+			t.Fatalf("earlier projection rolled back: projected=%v error=%v", projected, err)
+		}
 	})
 
 	t.Run("archive error preserves independent compaction", func(t *testing.T) {
