@@ -352,15 +352,10 @@ func (c *Client) requestWithToken(ctx context.Context, httpClient *http.Client, 
 	defer response.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
-		err = fmt.Errorf("%w: read response: %w", ErrUnavailable, err)
-	} else if len(payload) > maxResponseBytes {
-		err = &responseSizeError{status: response.StatusCode}
+		return fmt.Errorf("%w: read response: %w", ErrUnavailable, err)
 	}
-	if err != nil {
-		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			return errors.Join(&APIError{Status: response.StatusCode, retryAfter: parseRetryAfter(response.Header.Get("Retry-After"))}, err)
-		}
-		return err
+	if len(payload) > maxResponseBytes {
+		return &responseSizeError{status: response.StatusCode}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		apiErr := &APIError{Status: response.StatusCode, retryAfter: parseRetryAfter(response.Header.Get("Retry-After"))}
