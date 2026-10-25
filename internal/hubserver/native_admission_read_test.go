@@ -150,6 +150,11 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET labels_json=?, body=? WHERE native_id=?", string(labels), body, issue.WorkItemID); err != nil {
 				t.Fatal(err)
 			}
+			for _, label := range labelValues {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO issue_filter_values(issue_id,kind,value) SELECT id,'label',? FROM issues WHERE native_id=?", label, issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			descriptor := hubTestPolicy()
 			if test.policy == "wrong-runner" {
 				descriptor.Requirements.RunnerID = runnerauth.NewBinding().RunnerID
