@@ -15,6 +15,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -173,6 +174,14 @@ func TestHeartbeatResponseReaderSnapshot(t *testing.T) {
 			path := f.base + "/machines/" + string(r.binding.MachineID) + "/heartbeat"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, r.redemption.Credential, map[string]any{"capacity": 0, "version": "test"}), http.StatusOK)
 			f.service.tokenUseWork.Wait()
+			var repositoryRequest struct {
+				RequestID string `json:"request_id"`
+			}
+			if test.revokeProject {
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/repositories", testHubAdminToken, map[string]any{"runner_id": r.binding.RunnerID, "idempotency_key": "heartbeat-repositories"})
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &repositoryRequest)
+			}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			observed := false
@@ -218,20 +227,29 @@ func TestHeartbeatResponseReaderSnapshot(t *testing.T) {
 					cancel()
 				}
 			}
-			request := newHubAPIRequest(t, http.MethodPost, path, r.redemption.Credential, map[string]any{"capacity": test.capacity, "version": "test", "change_cursor": ""})
+			summary := testHostSummary(f.service.config.now())
+			request := newHubAPIRequest(t, http.MethodPost, path, r.redemption.Credential, map[string]any{"capacity": test.capacity, "version": "test", "change_cursor": "", "host_metrics": []hostmetrics.Summary{summary}})
 			response := httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(ctx, timing)))
 			if test.revokeProject {
 				if !removed || observed {
 					t.Fatalf("project removed=%t claim state read=%t", removed, observed)
 				}
-				requireNativeStatus(t, response, http.StatusNotFound)
+				requireNativeStatus(t, response, http.StatusOK)
+				var snapshot runnerauth.RoutingSnapshot
+				decodeHubResponse(t, response, &snapshot)
+				if snapshot.RunnerID != r.binding.RunnerID || snapshot.Revision != 2 || len(snapshot.Routing.ProjectIDs) != 0 || snapshot.Routing.DisplayName != "Example runner" {
+					t.Fatalf("response did not preserve current routing: %+v", snapshot)
+				}
+				if snapshot.RepositoryListRequest != repositoryRequest.RequestID {
+					t.Fatalf("repository request=%q want=%q", snapshot.RepositoryListRequest, repositoryRequest.RequestID)
+				}
+				if len(snapshot.HostMetricsAcknowledged) != 1 || !snapshot.HostMetricsAcknowledged[0].Hour.Equal(summary.Hour) || !snapshot.HostMetricsAcknowledged[0].SegmentID.Equal(summary.SegmentID) {
+					t.Fatalf("committed metric acknowledgements=%+v", snapshot.HostMetricsAcknowledged)
+				}
 				denied := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items", r.redemption.Credential, nil)
 				requireNativeStatus(t, denied, http.StatusNotFound)
-				if response.Body.String() != denied.Body.String() {
-					t.Fatalf("response error=%s request error=%s", response.Body.String(), denied.Body.String())
-				}
-				for _, field := range []string{"claim_state", "changes", "github_intake"} {
+				for _, field := range []string{"claim_state", "changes", "github_intake", "project_configuration_request", "target_runner_version"} {
 					if strings.Contains(response.Body.String(), `"`+field+`"`) {
 						t.Fatalf("response disclosed %s: %s", field, response.Body.String())
 					}
