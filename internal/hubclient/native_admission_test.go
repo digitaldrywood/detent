@@ -53,6 +53,7 @@ func TestNativeAdmissionBatch(t *testing.T) {
 		wantError        bool
 		cancelDiscovery  bool
 		cancelParent     bool
+		cancelRelease    bool
 		missingIsolation bool
 		refusalBody      string
 	}{
@@ -78,6 +79,7 @@ func TestNativeAdmissionBatch(t *testing.T) {
 		{name: "direct claims", slots: 6, budget: 14, want: 6},
 		{name: "hydration retains prefix", slots: 6, budget: 14, preview: true, failAfter: 2, want: 1},
 		{name: "direct hydration retains prefix", slots: 6, budget: 14, failAfter: 2, want: 1},
+		{name: "hydration cleanup cancellation releases each lease once", slots: 6, budget: 14, preview: true, failAfter: 2, cancelRelease: true, wantError: true},
 		{name: "claim failure retains partial batch", slots: 6, budget: 14, preview: true, failClaim: 3, want: 2},
 		{name: "direct claim failure retains partial batch", slots: 6, budget: 14, failClaim: 3, want: 2},
 		{name: "preview discovery cancellation retains claims", slots: 6, budget: 14, preview: true, cancelDiscovery: true, want: 2},
@@ -282,6 +284,9 @@ func TestNativeAdmissionBatch(t *testing.T) {
 				if err == nil && response.StatusCode < 300 && strings.HasSuffix(r.URL.Path, "/release") {
 					parts := strings.Split(r.URL.Path, "/")
 					released[parts[len(parts)-2]] = true
+					if test.cancelRelease {
+						cancel()
+					}
 				}
 				return response, err
 			})
