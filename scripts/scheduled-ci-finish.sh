@@ -23,9 +23,9 @@ if [ "$run_conclusion" = cancelled ] || [ "${WORKFLOW_CANCELLED:-false}" = true 
   exit 0
 fi
 
-jobs_endpoint="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100"
+jobs_endpoint="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=50"
 if [ -n "${CI_RELEASE_BRANCH:-}" ]; then
-  jobs_endpoint="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=all&per_page=100"
+  jobs_endpoint="repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=all&per_page=50"
 fi
 gh api --paginate "$jobs_endpoint" --jq '.jobs[]' | jq -s 'group_by(.name) | map(max_by([.run_attempt // 1, .id]))' > "$jobs_file"
 
