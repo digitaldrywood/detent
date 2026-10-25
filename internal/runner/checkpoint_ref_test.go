@@ -137,14 +137,14 @@ type checkpointCaptureWorkspace struct {
 	afterCapture func()
 }
 
-func (w *checkpointCaptureWorkspace) RecoveryState(ctx context.Context, info workspace.Info, issue workspace.Issue) (workspace.RecoveryState, error) {
-	state, err := w.LocalGit.RecoveryState(ctx, info, issue)
+func (w *checkpointCaptureWorkspace) PushCheckpointRef(ctx context.Context, info workspace.Info, issue workspace.Issue, previous workspace.CheckpointRef, validate func(context.Context) error) (workspace.CheckpointRef, bool, error) {
+	checkpoint, pushed, err := w.LocalGit.PushCheckpointRef(ctx, info, issue, previous, validate)
 	if w.afterCapture != nil {
 		change := w.afterCapture
 		w.afterCapture = nil
 		change()
 	}
-	return state, err
+	return checkpoint, pushed, err
 }
 
 func TestCheckpointRefsCaptureUnchangedSnapshot(t *testing.T) {
@@ -188,7 +188,7 @@ func TestCheckpointRefsCaptureUnchangedSnapshot(t *testing.T) {
 			if !r.pushCheckpointRef(t.Context(), refs, req, "turn_completed") {
 				t.Fatal("turn did not publish its checkpoint")
 			}
-			published, captured := refs.last, *refs.captured
+			published := refs.last
 			if test.staged {
 				runRunnerGit(t, source, "restore", "--staged", "README.md")
 			} else {
@@ -198,13 +198,13 @@ func TestCheckpointRefsCaptureUnchangedSnapshot(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if state.WorkspaceFingerprint == captured.WorkspaceDigest {
+			if state.WorkspaceFingerprint == published.WorkspaceFingerprint {
 				t.Fatal("staging did not change recovery fingerprint")
 			}
 			if r.pushCheckpointRef(t.Context(), refs, req, "turn_completed") {
 				t.Fatal("equivalent tree published another checkpoint")
 			}
-			if refs.last != published || refs.captured.WorkspaceDigest != state.WorkspaceFingerprint {
+			if refs.last.CommitSHA != published.CommitSHA || refs.last.TreeSHA != published.TreeSHA || refs.last.WorkspaceFingerprint != state.WorkspaceFingerprint {
 				t.Fatal("no-op did not retain publication and refresh captured state")
 			}
 			if test.changeAfterCapture {
