@@ -383,9 +383,10 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			}
 			if prepared := claimPrepared(ctx); prepared != nil {
 				for _, progress := range prepared.selection {
-					if progress.durable && progress.dirty {
+					if progress.written {
 						progress.revision++
 						progress.dirty = false
+						progress.written = false
 					}
 				}
 			}
