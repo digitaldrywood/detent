@@ -56,6 +56,9 @@ if args[:1] == ["env"]:
     print({"GOHOSTOS": "fixture", "GOHOSTARCH": "fixture", "GOVERSION": "fixture"}[args[1]])
     sys.exit(0)
 if args[:1] == ["list"]:
+    if "PROBE_PACKAGES" in os.environ:
+        print(os.environ["PROBE_PACKAGES"])
+        sys.exit(0)
     if os.environ["PROBE_TARGET"] == "test-cover":
         print("github.com/digitaldrywood/detent/internal/hubserver")
     print("fixture")
@@ -110,12 +113,39 @@ if stage == os.environ.get("PROBE_FAILURE"):
 
 @unittest.skipIf(os.name == "nt", "landing gate requires a POSIX shell")
 class LandingGateTest(unittest.TestCase):
+    def test_race_package_partition(self):
+        packages = subprocess.check_output(["go", "list", "./..."], cwd=ROOT, text=True).splitlines()
+        module = "github.com/digitaldrywood/detent"
+        expected = set(packages) - {module + "/internal/hubserver"}
+        heavy = {module + "/internal/" + name for name in ("hubgithub", "hubclient", "cloudentry")}
+        scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
+        self.assertIsNotNone(scratch, "a supplied scratch directory is required")
+        with tempfile.TemporaryDirectory(dir=scratch) as directory:
+            root = Path(directory)
+            tool = root / "go"
+            tool.write_text(TOOL)
+            tool.chmod(0o700)
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"], PROBE_PACKAGES="\n".join(packages))
+            for total in (1, 3, 5, 7):
+                with self.subTest(total=total):
+                    assigned = []
+                    heavy_shards = set()
+                    for index in range(1, total + 1):
+                        shard = subprocess.check_output(["bash", str(ROOT / "scripts/race-packages.sh"), f"{index}/{total}"], env=env, text=True).splitlines()
+                        assigned.extend(shard)
+                        if heavy.intersection(shard):
+                            heavy_shards.add(index)
+                    self.assertEqual(set(assigned), expected)
+                    self.assertEqual(len(assigned), len(set(assigned)))
+                    self.assertEqual(len(heavy_shards), min(total, len(heavy)))
+
     def test_stage_budget_and_failures(self):
         scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
         self.assertIsNotNone(scratch, "a supplied scratch directory is required")
         cases = [("check-land", budget, failure, "") for budget, failure in ((1, ""), (2, ""), (4, ""), (7, ""), (4, "lint"), (4, "vet"), (4, "build"), (4, "unit-short"), (4, "docs"), (4, "sqlc"), (4, "invariant-manifest"), (4, "invariants"), (4, "migrations"))]
         cases += [(target, 4, "", "") for target in ("test", "test-fast", "test-race", "test-cover")]
         cases += [("test-cover", 4, failure, shard) for failure, shard in (("", "2/3"), ("", "3/3"), ("hub-2", "2/3"))]
+        cases += [("test-race", 4, "", shard) for shard in ("1/3", "2/3", "hub-2")]
         shared_ui = "web/conversation/src/app/App.tsx"
         cases += [("check-land", 4, "", path) for path in (shared_ui, "web/conversation/src/app/main.tsx", "web/conversation/src/app/router.tsx", "web/conversation/src/components/ui/button.tsx", "tests/visual/cloud-reports.spec.js")]
         cases += [("check-land", 4, failure, shared_ui) for failure in ("app", "lint", "unit-short")]
@@ -123,7 +153,7 @@ class LandingGateTest(unittest.TestCase):
             with self.subTest(target=target, budget=budget, failure=failure, changed=changed), tempfile.TemporaryDirectory(prefix="npm-nilaway-", dir=scratch) as directory:
                 root = Path(directory)
                 (root / "scripts").mkdir()
-                for name in ("Makefile", ".golangci-version", "go.mod", "scripts/check-land.sh", "scripts/check-evidence.sh", "scripts/check-browser.sh", "scripts/test-workspace.sh", "scripts/cover-packages.sh", "scripts/check-runner-enrollment-docs.py", "docs/hub-self-hosting.md", "internal/cli/hub_runner_register.go"):
+                for name in ("Makefile", ".golangci-version", "go.mod", "scripts/check-land.sh", "scripts/check-evidence.sh", "scripts/check-browser.sh", "scripts/test-workspace.sh", "scripts/cover-packages.sh", "scripts/race-packages.sh", "scripts/check-runner-enrollment-docs.py", "docs/hub-self-hosting.md", "internal/cli/hub_runner_register.go"):
                     (root / name).parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(ROOT / name, root / name)
                 for name in ("go", "git", "lint"):
@@ -145,6 +175,8 @@ class LandingGateTest(unittest.TestCase):
                 env["PROBE_CHANGED"] = changed
                 if target == "test-cover" and changed:
                     env["COVER_SHARD"] = changed
+                if target == "test-race" and changed:
+                    env["RACE_SHARD"] = changed
                 failed = bool(failure)
                 result = subprocess.run([env["PROBE_MAKE"], target, f"TEST_PROCS={budget}", f"GOLANGCI_LINT={root / 'lint'}"], cwd=root, env=env, capture_output=True, text=True, timeout=600)
                 self.assertEqual(result.returncode == 0, not failed, result.stdout + result.stderr)
