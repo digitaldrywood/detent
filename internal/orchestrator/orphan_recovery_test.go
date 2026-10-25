@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -326,4 +327,87 @@ func (s *orphanRecoveryAttemptStore) ListOrphanedAgentSessions(context.Context, 
 func (s *orphanRecoveryAttemptStore) MarkAgentSessionOrphaned(_ context.Context, sessionID int64, _ time.Time) error {
 	s.marked = append(s.marked, sessionID)
 	return nil
+}
+
+func TestOrphanRecoveryRetriesReadFailure(t *testing.T) {
+	for _, mode := range []string{"owned", "foreign owner", "expired lease", "inactive", "missing", "repeated failure"} {
+		t.Run(mode, func(t *testing.T) {
+			now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+			issue := orphanRecoveryIssue()
+			issue.Identifier = "example-org/example-project#1155"
+			issue.URL = "https://github.com/example-org/example-project/issues/1155"
+			issue.Assignees = []string{"detent-bot"}
+			issue.Fields["Detent Lease"] = formatClaimTime(now)
+			session := orphanRecoverySession(now)
+			session.Identifier, session.IssueURL = issue.Identifier, issue.URL
+			tracker := &orphanReadConnector{hydratingDispatchConnector: hydratingDispatchConnector{issue: issue}, fail: true}
+			attempts := &orphanRecoveryAttemptStore{metadata: runningWorkAttemptMetadataJSON(Running{Policy: orchestratorTestPolicy()}, nil), orphans: []store.OrphanedAgentSession{session}}
+			orch, err := New(Config{Project: scheduler.ProjectCandidate{ID: "example"}, ActiveStates: []string{"In Progress"}, ResumeOrphanedSessions: true,
+				Claiming: ClaimingConfig{Enabled: true, AssigneeLogin: "detent-bot", LeaseField: "Detent Lease", LeaseTTL: 10 * time.Minute},
+			}, Dependencies{Connector: tracker, WorkAttempts: attempts})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := newState(orch.cfg)
+			orch.recoverOrphanedAgentSessions(t.Context(), &state, attempts.orphans, now)
+			retry, ok := state.Retry[issue.ID]
+			if !ok || !retry.TrackerUnavailable || retry.ResumeState.DetentSessionID != session.ResumeState.DetentSessionID || retry.RecoveryAttemptID != session.WorkAttemptID || !retry.DueAt.After(now) || len(state.Blocked) != 0 || len(attempts.marked) != 0 {
+				t.Fatalf("failed read lost pending recovery: %+v marked=%v", retry, attempts.marked)
+			}
+			if got := orch.prepareDispatchCandidates(t.Context(), &state, []connector.Issue{issue}, now); len(got) != 0 || tracker.calls != 1 {
+				t.Fatalf("retried before backoff: candidates=%d calls=%d", len(got), tracker.calls)
+			}
+			releaseTrackerUnavailableRetries(&state, now)
+			if !state.Retry[issue.ID].TrackerUnavailable {
+				t.Fatal("unrelated tracker recovery bypassed orphan reconciliation")
+			}
+			tracker.fail = mode == "repeated failure"
+			switch mode {
+			case "foreign owner":
+				tracker.issue.Assignees = []string{"another-runner"}
+			case "expired lease":
+				tracker.issue.Fields["Detent Lease"] = formatClaimTime(now.Add(-time.Hour))
+			case "inactive":
+				tracker.issue.State = "Blocked"
+			case "missing":
+				tracker.missing = true
+			}
+			got := orch.prepareDispatchCandidates(t.Context(), &state, nil, retry.DueAt)
+			next, queued := state.Retry[issue.ID]
+			if tracker.calls != 2 || len(state.Blocked) != 0 {
+				t.Fatalf("calls=%d blocked=%v", tracker.calls, state.Blocked)
+			}
+			switch mode {
+			case "owned":
+				if !queued || next.TrackerUnavailable || len(got) != 1 || len(attempts.marked) != 1 || next.ResumeState.ProviderThreadID != session.ResumeState.ProviderThreadID || next.Policy.ID != retry.Policy.ID {
+					t.Fatalf("resume not recovered: %+v candidates=%d marked=%v", next, len(got), attempts.marked)
+				}
+			case "repeated failure":
+				if !queued || !next.TrackerUnavailable || next.Attempt <= retry.Attempt || !next.DueAt.After(retry.DueAt) || len(got) != 0 || len(attempts.marked) != 0 {
+					t.Fatalf("failure did not retain backoff: %+v", next)
+				}
+			default:
+				if queued || len(got) != 0 || len(attempts.marked) != 0 {
+					t.Fatalf("fencing bypass: queued=%t candidates=%d marked=%v", queued, len(got), attempts.marked)
+				}
+			}
+		})
+	}
+}
+
+type orphanReadConnector struct {
+	hydratingDispatchConnector
+	fail, missing bool
+	calls         int
+}
+
+func (c *orphanReadConnector) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]connector.Issue, error) {
+	c.calls++
+	if c.fail {
+		return nil, errors.New("transient read failure")
+	}
+	if c.missing {
+		return nil, nil
+	}
+	return c.hydratingDispatchConnector.FetchIssueStatesByIDs(ctx, ids)
 }

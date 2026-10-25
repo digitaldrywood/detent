@@ -286,7 +286,7 @@ func (o *Orchestrator) completeTrackerAvailabilityRecovery(state *State, recover
 
 func releaseTrackerUnavailableRetries(state *State, releasedAt time.Time) {
 	for issueID, retry := range state.Retry {
-		if !retry.TrackerUnavailable {
+		if !retry.TrackerUnavailable || retry.ResumeState.Orphaned && retry.RecoveryAttemptID != 0 {
 			continue
 		}
 		retry.DueAt = releasedAt

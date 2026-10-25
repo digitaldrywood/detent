@@ -289,6 +289,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 }
 
 func (o *Orchestrator) prepareDispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) []connector.Issue {
+	issues = o.reconcileOrphanedSessionRetries(ctx, state, issues, now)
 	issues = o.localIntakeIssues(state, issues)
 	o.reconcileIssueConfigurationHolds(ctx, state, issues, now)
 	issues = o.filterIssueContracts(ctx, state, issues, now)
@@ -383,6 +384,9 @@ func dispatchFailureRetryReason(reason string) string {
 }
 
 func (o *Orchestrator) preserveMissingDueRetry(state *State, retry Retry) bool {
+	if retry.TrackerUnavailable && retry.ResumeState.Orphaned {
+		return true
+	}
 	if normalizeState(retry.Issue.State) != normalizeState(autoPromoteMergingState) {
 		return false
 	}
