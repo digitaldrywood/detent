@@ -437,6 +437,12 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 					return nil, err
 				}
 				snapshot.HostMetricsAcknowledged = acknowledged
+				if err := authorizeNativeProject(ctx, tx, scope); err != nil {
+					if isNativeNotFound(err) {
+						return snapshot, nil
+					}
+					return nil, err
+				}
 				if err := readRunnerClaimState(ctx, tx, scope, &snapshot, now); err != nil {
 					return nil, err
 				}

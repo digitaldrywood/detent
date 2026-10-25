@@ -182,9 +182,6 @@ func (s *Service) readCommittedRunnerResponse(c echo.Context, response runnerCom
 	if err := requireCredentialAuthority(ctx, tx, scope.credential, now); err != nil {
 		return nil, err
 	}
-	if err := authorizeNativeProject(ctx, tx, scope); err != nil {
-		return nil, err
-	}
 	ctx = s.freshRunDetailContext(ctx)
 	if owner, ok := ctx.Value(runDetailContextKey{}).(*runDetailContext); ok {
 		owner.query = tx
