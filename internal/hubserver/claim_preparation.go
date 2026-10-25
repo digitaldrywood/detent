@@ -25,6 +25,7 @@ type claimPreparation struct {
 	runs          map[string]tracker.NativeRunData
 	selected      tracker.WorkItemID
 	candidateRows int
+	selection     map[tracker.ProjectID]*runnerSelectionProgress
 }
 
 const claimPreparationLimit = 100
@@ -102,7 +103,7 @@ func (d *database) claimNativePrepared(ctx context.Context, request tracker.Clai
 		case err == nil:
 			return lease, nil
 		case preflightAnswered(err):
-			if len(prepared.decisions) == 0 {
+			if len(prepared.decisions) == 0 && len(prepared.selection) == 0 {
 				return tracker.Lease{}, err
 			}
 			mode.answer = err
@@ -119,8 +120,10 @@ func (d *database) claimNativePrepared(ctx context.Context, request tracker.Clai
 
 func (d *database) prepareClaim(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, interval time.Duration) (tracker.Lease, error) {
 	prepared := claimPrepared(ctx)
+	if prepared == nil {
+		return tracker.Lease{}, errClaimHintStale
+	}
 	for range claimPreparationLimit {
-		prepared.decisions = nil
 		prepared.candidateRows = 0
 		lease, err := d.claimPreflight(ctx, request, query, interval)
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil || d.claimReader == nil {
@@ -137,7 +140,7 @@ func (d *database) prepareClaim(ctx context.Context, request tracker.ClaimReques
 			return tracker.Lease{}, err
 		}
 	}
-	return tracker.Lease{}, fmt.Errorf("claim preparation exceeded bounded snapshot work: %w", errClaimHintStale)
+	return tracker.Lease{}, ErrNoClaimableWork
 }
 
 func readClaimChange(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (tracker.ChangeRequest, bool, error) {
@@ -402,7 +405,14 @@ WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? ORDER BY c.row
 }
 
 func writePreparedClaimDecisions(ctx context.Context, tx *sql.Tx, selected *claimSelected, now time.Time) error {
-	for _, value := range claimPrepared(ctx).decisions {
+	prepared := claimPrepared(ctx)
+	if prepared == nil {
+		return errClaimHintStale
+	}
+	if err := writeRunnerSelectionProgress(ctx, tx, prepared.selection); err != nil {
+		return err
+	}
+	for _, value := range prepared.decisions {
 		if selected != nil && value.id == selected.id {
 			continue
 		}

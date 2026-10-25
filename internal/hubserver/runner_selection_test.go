@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -25,6 +26,11 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 		{"ready work beyond first candidate page wins", 100, true, "", ""},
 		{"invalid contract yields to ready project", 1, false, "missing", ""},
 		{"invalid contract yields to next candidate", 1, true, "missing", ""},
+		{"rejected prefix beyond budget in one project", 125, true, "missing", ""},
+		{"rejected prefix beyond budget across projects", 125, false, "missing", ""},
+		{"hydration exhaustion advances to next candidate", 125, true, "hydration", ""},
+		{"policy changes revisit rejected candidates", 125, true, "policy", ""},
+		{"legacy checkpoint hydration cannot exhaust a candidate", 125, true, "checkpoints", ""},
 		{"dispatch marker yields to next candidate", 1, true, "marker", ""},
 		{"unknown legacy landing ceiling cannot strand another project", 0, false, "", "legacy owner"},
 		{"positive owner pin cannot prove a foreign incoming ceiling", 0, false, "", "pinned owner"},
@@ -41,6 +47,10 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 				preferred = landing.nativeFixture
 			}
 			general := newNativeFixture(t, preferred.service, preferred.project.OrganizationID, "general-provider")
+			if scenario.unavailable > claimPreparationLimit && preferred.project.ID > general.project.ID {
+				preferred, general = general, preferred
+			}
+
 			r := prepareRunner(t, preferred, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
 			routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Provider runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{preferred.project.ID, general.project.ID}}}
@@ -98,8 +108,27 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 			for _, f := range []nativeFixture{preferred, general} {
 				approveHubTestPolicy(t, preferred.service, f.base+"/policy", hubTestPolicy())
 			}
+			var rejected tracker.NativeIssue
+			rejectedIDs := make(map[tracker.NativeWorkItemID]bool)
 			for i := range scenario.unavailable {
 				issue := preferred.create(t, fmt.Sprintf("unavailable candidate %d", i))
+				rejectedIDs[issue.WorkItemID] = true
+				if i == 0 {
+					rejected = issue
+				}
+				if scenario.contract == "hydration" {
+					tx, err := preferred.service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					attempt := seedHealthRateAttempt(t, tx, nativeScope{organization: preferred.project.OrganizationID, project: preferred.project.ID}, issue, string(r.binding.MachineID), "succeeded", tracker.NativeRunData{AttemptID: string(issue.WorkItemID)}, now, -1)
+					if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET work_item_revision=?,dispatch_generation=(SELECT dispatch_generation FROM issues WHERE native_id=?) WHERE id=?`, issue.Revision, issue.WorkItemID, attempt); err != nil {
+						t.Fatal(err)
+					}
+					if err := tx.Commit(); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if scenario.contract != "" {
 					body := ""
 					if scenario.contract == "marker" {
@@ -113,6 +142,22 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 			var preferredIssue tracker.NativeIssue
 			if scenario.ready {
 				preferredIssue = preferred.create(t, "ready after unavailable candidates")
+				if scenario.contract == "checkpoints" {
+					tx, err := preferred.service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for index := range 99 {
+						attempt := seedHealthRateAttempt(t, tx, nativeScope{organization: preferred.project.OrganizationID, project: preferred.project.ID}, preferredIssue, string(r.binding.MachineID), "failed", tracker.NativeRunData{}, now.Add(time.Duration(index)*time.Second), -1)
+						if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET checkpoint_json='{"resume":"fresh_checkout","worktree_state":"clean"}',checkpoint_preserves_source=NULL WHERE id=?`, attempt); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := tx.Commit(); err != nil {
+						t.Fatal(err)
+					}
+				}
+
 				if _, err := preferred.service.database.db.ExecContext(t.Context(), "UPDATE issues SET native_created_at = ? WHERE native_id = ?", formatHubTime(now.Add(time.Second)), preferredIssue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
@@ -128,6 +173,65 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 			if scenario.contract != "" {
 				claim.ProviderCandidates = nil
 				claim.WorkItemID = ""
+			}
+			if scenario.unavailable > claimPreparationLimit {
+				target, want := general, generalIssue
+				if scenario.ready {
+					target, want = preferred, preferredIssue
+					routing.ExpectedRevision = 2
+					routing.ProjectIDs = []tracker.ProjectID{preferred.project.ID}
+					requireNativeStatus(t, performHubAPIRequest(t, preferred.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
+				}
+				claimed := false
+				for attempt := range 5 {
+					claim.SessionID = fmt.Sprintf("bounded-%d", attempt)
+					response := performHubAPIRequest(t, preferred.service, http.MethodPost, target.base+"/claims", r.redemption.Credential, claim)
+					if response.Code == http.StatusConflict {
+						continue
+					}
+					requireNativeStatus(t, response, http.StatusOK)
+					var lease tracker.NativeLease
+					decodeHubResponse(t, response, &lease)
+					if lease.WorkItemID != want.WorkItemID {
+						t.Fatalf("claimed %s, want %s", lease.WorkItemID, want.WorkItemID)
+					}
+					if scenario.ready && attempt == 0 {
+						t.Fatal("claim exceeded the request budget")
+					}
+					claimed = true
+					break
+				}
+				if !claimed {
+					t.Fatal("eligible candidate starved beyond the budget")
+				}
+				if scenario.contract == "policy" {
+					workflow := config.Workflow{Config: config.Default()}
+					workflow.Config.Tracker.Kind = config.TrackerHubNative
+					workflow.Config.BacklogAdmission.TargetState = "In Progress"
+					descriptor, err := config.ResolvePolicy(workflow)
+					if err != nil {
+						t.Fatal(err)
+					}
+					approveHubTestPolicy(t, preferred.service, preferred.base+"/policy", descriptor)
+					claim.PolicyID = descriptor.ID
+				} else if _, err := preferred.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=?,revision=revision+1 WHERE native_id=?", rejected.Body, rejected.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				for attempt := range 6 {
+					claim.SessionID = fmt.Sprintf("revised-%d", attempt)
+					response := performHubAPIRequest(t, preferred.service, http.MethodPost, preferred.base+"/claims", r.redemption.Credential, claim)
+					if response.Code == http.StatusConflict {
+						continue
+					}
+					requireNativeStatus(t, response, http.StatusOK)
+					var lease tracker.NativeLease
+					decodeHubResponse(t, response, &lease)
+					if scenario.contract == "policy" && !rejectedIDs[lease.WorkItemID] || scenario.contract != "policy" && lease.WorkItemID != rejected.WorkItemID {
+						t.Fatalf("revised claim=%s, want %s", lease.WorkItemID, rejected.WorkItemID)
+					}
+					return
+				}
+				t.Fatal("historical refusal vetoed revised work")
 			}
 			response := performHubAPIRequest(t, preferred.service, http.MethodPost, general.base+"/claims", r.redemption.Credential, claim)
 			if scenario.ready {

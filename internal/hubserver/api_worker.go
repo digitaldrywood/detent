@@ -45,6 +45,7 @@ type claimCandidateQuery struct {
 	LandingBatchGroup       string
 	Limit                   int
 	After                   tracker.WorkItemID
+	SelectionCursor         *runnerSelectionCursor
 	WorkItemID              tracker.WorkItemID
 	OnlyIDs                 []tracker.WorkItemID
 	AvailableAt             time.Time

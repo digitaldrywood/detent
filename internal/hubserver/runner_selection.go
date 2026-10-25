@@ -48,12 +48,9 @@ func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query
 	var preferredHead tracker.WorkItemID
 	var heads []tracker.WorkItemID
 	var contractRefusal error
-	remaining := claimPreparationLimit
+	quota := max(1, claimPreparationLimit/len(projects))
 projects:
 	for _, project := range projects {
-		if remaining <= 0 {
-			break
-		}
 		projectScope := scope
 		projectScope.project = project
 		projectQuery := probe
@@ -88,52 +85,69 @@ projects:
 				return 0, false, err
 			}
 		}
-		for remaining > 0 {
-			projectQuery.Limit = min(projectQuery.Limit, remaining)
+		if resolver == nil && len(query.ProviderCandidates) > 0 {
+			projectQuery.ProviderCandidates = query.ProviderCandidates
+		}
+		progress, err := readRunnerSelectionProgress(ctx, tx, projectScope, projectQuery)
+		if err != nil {
+			return 0, false, err
+		}
+		for !progress.done && progress.visits < quota {
+			projectQuery.Limit = 1
+			before := progress.cursor
+			projectQuery.SelectionCursor = &progress.cursor
 			projectIDs, err := claimCandidateIDs(ctx, tx, projectQuery, query.RepositoryIDs, normalizedQueryStrings(query.Repositories), states, normalizedQueryStrings(query.Authors), normalizedQueryStrings(query.Assignees), normalizedQueryStrings(query.LabelInclude), normalizedQueryStrings(query.LabelExclude), nil)
 			if err != nil {
+				progress.cursor = before
 				return 0, false, err
 			}
-			if len(projectIDs) == 0 && project == query.NativeScope.project && query.WorkItemID > 0 {
-				if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, query.WorkItemID, tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "skipped", Reason: "no_claimable_work"}, now); err != nil {
-					return 0, false, err
+			if len(projectIDs) == 0 {
+				if project == query.NativeScope.project && query.WorkItemID > 0 {
+					if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, query.WorkItemID, tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "skipped", Reason: "no_claimable_work"}, now); err != nil {
+						progress.cursor = before
+						return 0, false, err
+					}
 				}
+				progress.visits++
+				progress.dirty = true
+				progress.done = progress.cursor.ID == 0
+				continue
 			}
-			for _, id := range projectIDs {
-				remaining--
+			id := projectIDs[0]
+			allowed, err := func() (bool, error) {
 				current, found, err := readUnreleasedLease(ctx, tx, id)
 				if err != nil {
-					return 0, false, err
+					return false, err
 				}
 				if found && current.session.ExpiresAt.After(now) {
-					continue
+					return false, nil
 				}
 				candidateScope := scope
 				candidateScope.project = project
 				contract, err := readNativeIssueContractEvaluation(ctx, tx, candidateScope, id)
 				if err != nil {
-					return 0, false, err
+					return false, err
 				}
 				if !contract.Allowed {
 					if err := recordNativeSchedulingOutcome(ctx, tx, &candidateScope, id, tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "skipped", Reason: contract.Reason}, now); err != nil {
-						return 0, false, err
+						return false, err
 					}
 					if project == query.NativeScope.project && contract.ReasonCode == "issue_contract_unsatisfied" {
 						contractRefusal = &nativeError{Code: contract.ReasonCode, Message: contract.Reason, status: http.StatusConflict, publicMessage: true}
 					}
-					continue
+					return false, nil
 				}
 				ready, evaluated, capacity, err := nativeLandingCandidateReady(ctx, tx, &candidateScope, id, r.MachineID, projectQuery.LandingCapacity, now)
 				if err != nil {
-					return 0, false, err
+					return false, err
 				}
 				if !ready {
 					if evaluated {
 						if err := recordNativeSchedulingDecision(ctx, tx, &candidateScope, id, ready, capacity, now); err != nil {
-							return 0, false, err
+							return false, err
 						}
 					}
-					continue
+					return false, nil
 				}
 				joining := ""
 				if id == query.WorkItemID {
@@ -143,56 +157,65 @@ projects:
 				if resolver != nil {
 					var native tracker.NativeWorkItemID
 					if err := tx.QueryRowContext(ctx, `SELECT native_id FROM issues WHERE id=?`, id).Scan(&native); err != nil {
-						return 0, false, err
+						return false, err
 					}
 					issue, _, err := readNativeIssue(ctx, tx, candidateScope, string(native))
 					if err != nil {
-						return 0, false, err
+						return false, err
 					}
 					identity, err := resolver.Identity(connector.Issue{Title: issue.Title, Description: issue.Body, Labels: issue.Labels, State: issue.State})
 					if err != nil {
-						continue
+						return false, nil
 					}
 					capacityQuery.NativeScope = &candidateScope
 					capacityQuery.ProviderCandidates = []tracker.NativeCapacityCandidate{{WorkItemID: native, Revision: issue.Revision, Requirement: providercapacity.Requirement{Role: identity.Role, Backend: identity.BackendKind, Model: identity.RequestedModel.Value}}}
 				}
 				allowed, reason, err := placementClaimAllowed(ctx, tx, candidateScope, r.MachineID, id, now, capacityQuery.ProviderCandidates, joining)
 				if err != nil {
-					return 0, false, err
+					return false, err
 				}
 				if !allowed {
 					if err := recordNativeSchedulingOutcome(ctx, tx, &candidateScope, id, tracker.NativeSchedulerDecision{Source: "native_runner_routing", Outcome: "skipped", Reason: reason}, now); err != nil {
-						return 0, false, err
+						return false, err
 					}
-					continue
+					return false, nil
 				}
 
 				decision, _, err := checkMonthlyClaim(ctx, tx, candidateScope, r.MachineID, id, false, now)
 				if err != nil {
-					return 0, false, err
+					return false, err
 				}
 				if !decision.Allowed {
 					if err := recordNativeSchedulingOutcome(ctx, tx, &candidateScope, id, tracker.NativeSchedulerDecision{Source: "native_provider_capacity", Outcome: "skipped", Reason: monthlyBudgetRefusal(decision)}, now); err != nil {
-						return 0, false, err
+						return false, err
 					}
-					continue
+					return false, nil
 				}
 				if _, _, err := selectProviderCapacity(ctx, tx, capacityQuery, id, now); err != nil {
 					if errors.Is(err, ErrNoClaimableWork) || isProviderWait(err) {
-						continue
+						return false, nil
 					}
-					return 0, false, err
+					return false, err
 				}
-				if project == preferred {
-					preferredHead = id
-				}
-				heads = append(heads, id)
-				continue projects
+				return true, nil
+			}()
+			if err != nil {
+				progress.cursor = before
+				return 0, false, err
 			}
-			if len(projectIDs) < projectQuery.Limit || projectIDs[len(projectIDs)-1] == 0 {
-				break
+			progress.visits++
+			progress.dirty = true
+			if allowed {
+				progress.cursor = before
+				progress.head = id
+				progress.done = true
 			}
-			projectQuery.After = projectIDs[len(projectIDs)-1]
+		}
+		if progress.head != 0 {
+			if project == preferred {
+				preferredHead = progress.head
+			}
+			heads = append(heads, progress.head)
 		}
 	}
 	if preferredHead != 0 {
@@ -214,4 +237,58 @@ projects:
 		return 0, true, contractRefusal
 	}
 	return selected, true, nil
+}
+
+type runnerSelectionCursor struct {
+	ID                       tracker.WorkItemID
+	Priority, Aging, Landing int
+	Created, Identifier      string
+}
+
+type runnerSelectionProgress struct {
+	cursor               runnerSelectionCursor
+	runner               string
+	project              tracker.ProjectID
+	revision             int64
+	visits               int
+	head                 tracker.WorkItemID
+	done, dirty, durable bool
+}
+
+func readRunnerSelectionProgress(ctx context.Context, q nativeQueryer, scope nativeScope, query claimCandidateQuery) (*runnerSelectionProgress, error) {
+	prepared := claimPrepared(ctx)
+	if prepared != nil {
+		if progress := prepared.selection[scope.project]; progress != nil {
+			return progress, nil
+		}
+	}
+	progress := &runnerSelectionProgress{runner: string(scope.credential.Runner.RunnerID), project: scope.project, durable: prepared != nil && query.WorkItemID == 0 && len(query.ProviderCandidates) == 0}
+	if progress.durable {
+		err := q.QueryRowContext(ctx, `SELECT issue_id,priority,aging,landing,created,identifier,revision FROM runner_selection_cursors WHERE runner_id=? AND project_id=?`, progress.runner, progress.project).Scan(&progress.cursor.ID, &progress.cursor.Priority, &progress.cursor.Aging, &progress.cursor.Landing, &progress.cursor.Created, &progress.cursor.Identifier, &progress.revision)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+	}
+	if prepared != nil {
+		if prepared.selection == nil {
+			prepared.selection = make(map[tracker.ProjectID]*runnerSelectionProgress)
+		}
+		prepared.selection[scope.project] = progress
+	}
+	return progress, nil
+}
+
+func writeRunnerSelectionProgress(ctx context.Context, tx *sql.Tx, selection map[tracker.ProjectID]*runnerSelectionProgress) error {
+	for _, progress := range selection {
+		if !progress.durable || !progress.dirty {
+			continue
+		}
+		cursor := progress.cursor
+		_, err := tx.ExecContext(ctx, `INSERT INTO runner_selection_cursors(runner_id,project_id,issue_id,priority,aging,landing,created,identifier,revision)
+VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(runner_id,project_id) DO UPDATE SET issue_id=excluded.issue_id,priority=excluded.priority,aging=excluded.aging,landing=excluded.landing,created=excluded.created,identifier=excluded.identifier,revision=excluded.revision WHERE runner_selection_cursors.revision=?`, progress.runner, progress.project, cursor.ID, cursor.Priority, cursor.Aging, cursor.Landing, cursor.Created, cursor.Identifier, progress.revision+1, progress.revision)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
