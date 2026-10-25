@@ -124,7 +124,7 @@ func TestNativeRetention(t *testing.T) {
 			t.Fatal(err)
 		}
 		db := f.service.database
-		for i := range storageConversionRows + 2 {
+		for i := range claimFactsRowsPerTick*3 + 2 {
 			id := fmt.Sprintf("legacy-change-%03d", i)
 			if _, err := db.db.ExecContext(t.Context(), `INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?,?)`, id, f.project.OrganizationID, f.project.ID, f.issue.WorkItemID, `{}`); err != nil {
 				t.Fatal(err)
@@ -134,11 +134,13 @@ func TestNativeRetention(t *testing.T) {
 			t.Fatal(err)
 		}
 		var unknown int
-		if err := db.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_requests WHERE claim_version_id IS NULL`).Scan(&unknown); err != nil || unknown != 2 {
+		if err := db.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_requests WHERE claim_version_id IS NULL`).Scan(&unknown); err != nil || unknown != claimFactsRowsPerTick*2+2 {
 			t.Fatalf("unknown=%d: %v", unknown, err)
 		}
-		if err := db.populateClaimFacts(t.Context()); err != nil {
-			t.Fatal(err)
+		for range 3 {
+			if err := db.populateClaimFacts(t.Context()); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if err := db.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_requests WHERE claim_version_id IS NULL`).Scan(&unknown); err != nil || unknown != 0 {
 			t.Fatalf("unknown=%d: %v", unknown, err)

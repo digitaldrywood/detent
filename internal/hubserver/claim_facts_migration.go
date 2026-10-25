@@ -29,9 +29,12 @@ CREATE INDEX native_attempts_claim_unknown ON native_attempts(id) WHERE checkpoi
 	return err
 }
 
+const claimFactsRowsPerTick = 1000
+const claimFactsRowsPerTransaction = 100
+
 func (d *database) populateClaimFacts(ctx context.Context) error {
-	for range storageConversionRows {
-		changed, err := d.populateClaimFact(ctx)
+	for range claimFactsRowsPerTick / claimFactsRowsPerTransaction {
+		changed, err := d.populateClaimFactsBatch(ctx)
 		if err != nil || !changed {
 			return err
 		}
@@ -39,14 +42,27 @@ func (d *database) populateClaimFacts(ctx context.Context) error {
 	return nil
 }
 
-func (d *database) populateClaimFact(ctx context.Context) (bool, error) {
+func (d *database) populateClaimFactsBatch(ctx context.Context) (bool, error) {
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
+	for range claimFactsRowsPerTransaction {
+		changed, err := populateClaimFact(ctx, tx)
+		if err != nil {
+			return false, err
+		}
+		if !changed {
+			return false, d.commit(ctx, tx)
+		}
+	}
+	return true, d.commit(ctx, tx)
+}
+
+func populateClaimFact(ctx context.Context, tx *sql.Tx) (bool, error) {
 	var id, raw string
-	err = tx.QueryRowContext(ctx, `SELECT id,record_json FROM change_requests WHERE claim_version_id IS NULL OR claim_head_sha IS NULL ORDER BY id LIMIT 1`).Scan(&id, &raw)
+	err := tx.QueryRowContext(ctx, `SELECT id,record_json FROM change_requests WHERE claim_version_id IS NULL OR claim_head_sha IS NULL ORDER BY id LIMIT 1`).Scan(&id, &raw)
 	if err == nil {
 		version, head, err := claimChangeIdentity(ctx, tx, id, raw)
 		if err != nil {
@@ -71,7 +87,7 @@ func (d *database) populateClaimFact(ctx context.Context) (bool, error) {
 			if err := projectClaimReview(ctx, tx, sequence, change, version, raw); err != nil {
 				return false, err
 			}
-			return true, d.commit(ctx, tx)
+			return true, nil
 		}
 		if err != nil {
 			return false, err
@@ -88,7 +104,7 @@ func (d *database) populateClaimFact(ctx context.Context) (bool, error) {
 	} else {
 		return false, err
 	}
-	return true, d.commit(ctx, tx)
+	return true, nil
 }
 
 func claimChangeIdentity(ctx context.Context, q nativeQueryer, id, raw string) (string, string, error) {
