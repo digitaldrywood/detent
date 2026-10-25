@@ -29,8 +29,10 @@ CREATE INDEX native_attempts_claim_unknown ON native_attempts(id) WHERE checkpoi
 	return err
 }
 
+const claimFactsRowsPerTick = 1000
+
 func (d *database) populateClaimFacts(ctx context.Context) error {
-	for range storageConversionRows {
+	for range claimFactsRowsPerTick {
 		changed, err := d.populateClaimFact(ctx)
 		if err != nil || !changed {
 			return err
@@ -45,8 +47,16 @@ func (d *database) populateClaimFact(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	defer tx.Rollback()
+	changed, err := projectLegacyClaimFact(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	return changed, d.commit(ctx, tx)
+}
+
+func projectLegacyClaimFact(ctx context.Context, tx *sql.Tx) (bool, error) {
 	var id, raw string
-	err = tx.QueryRowContext(ctx, `SELECT id,record_json FROM change_requests WHERE claim_version_id IS NULL OR claim_head_sha IS NULL ORDER BY id LIMIT 1`).Scan(&id, &raw)
+	err := tx.QueryRowContext(ctx, `SELECT id,record_json FROM change_requests WHERE claim_version_id IS NULL OR claim_head_sha IS NULL ORDER BY id LIMIT 1`).Scan(&id, &raw)
 	if err == nil {
 		version, head, err := claimChangeIdentity(ctx, tx, id, raw)
 		if err != nil {
@@ -71,7 +81,7 @@ func (d *database) populateClaimFact(ctx context.Context) (bool, error) {
 			if err := projectClaimReview(ctx, tx, sequence, change, version, raw); err != nil {
 				return false, err
 			}
-			return true, d.commit(ctx, tx)
+			return true, nil
 		}
 		if err != nil {
 			return false, err
@@ -88,7 +98,7 @@ func (d *database) populateClaimFact(ctx context.Context) (bool, error) {
 	} else {
 		return false, err
 	}
-	return true, d.commit(ctx, tx)
+	return true, nil
 }
 
 func claimChangeIdentity(ctx context.Context, q nativeQueryer, id, raw string) (string, string, error) {

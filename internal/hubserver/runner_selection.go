@@ -171,6 +171,9 @@ projects:
 					capacityQuery.ProviderCandidates = []tracker.NativeCapacityCandidate{{WorkItemID: native, Revision: issue.Revision, Requirement: providercapacity.Requirement{Role: identity.Role, Backend: identity.BackendKind, Model: identity.RequestedModel.Value}}}
 				}
 				allowed, reason, err := placementClaimAllowed(ctx, tx, candidateScope, r.MachineID, id, now, capacityQuery.ProviderCandidates, joining)
+				if errors.Is(err, errClaimHintStale) && !claimWriting(ctx) {
+					return false, nil
+				}
 				if err != nil {
 					return false, err
 				}

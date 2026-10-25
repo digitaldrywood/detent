@@ -318,6 +318,10 @@ func TestHeartbeatResponseArchivedCheckpoint(t *testing.T) {
 			if err := json.Unmarshal([]byte(raw), &checkpoint); err != nil || checkpoint.Detail == nil {
 				t.Fatalf("checkpoint is not archived: %s error=%v", raw, err)
 			}
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			f.service.stopSpriteRunners()
 			f.service.tokenUseWork.Wait()
 			store.mu.Lock()
 			store.reads = 0
@@ -372,5 +376,82 @@ func TestHeartbeatResponseArchivedCheckpoint(t *testing.T) {
 				t.Fatalf("archive reads=%d want=%d", reads, concurrent)
 			}
 		})
+	}
+}
+
+func TestHeartbeatClaimSkipsUnknownLegacySource(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	r := placementFixtureRunner(t, f, "legacy-worker", "local", false, 1, "gpt-6.1-sol", "test-model")
+	unknown := f.create(t, "Unknown legacy source")
+	known := f.create(t, "Known repository source")
+	at := formatHubTime(f.service.config.now())
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for index, item := range []tracker.NativeWorkItemID{unknown.WorkItemID, known.WorkItemID} {
+		count := 11482
+		checkpoint := `{}`
+		if index == 1 {
+			count = 1
+			checkpoint = `{"worktree_state":"dirty","resume":"checkpoint","ref":"refs/heads/example","sha":"` + strings.Repeat("a", 40) + `"}`
+		}
+		for i := range count {
+			id := fmt.Sprintf("legacy-%d-%d", index, i)
+			result, err := tx.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) VALUES(?,(SELECT id FROM issues WHERE organization_id=? AND project_id=? AND native_id=?),?,?,?,?,?,?,?,?)`, id, f.project.OrganizationID, f.project.ID, item, r.binding.MachineID, id, at, at, at, at, at, at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fence, err := result.LastInsertId()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO lease_runners(lease_id,runner_id) VALUES(?,?)`, id, r.binding.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,checkpoint_json,started_at,updated_at) VALUES(?,?,?,?,?,?,?,1,'interrupted','{}',?,?,?)`, id, f.project.OrganizationID, f.project.ID, item, id, fence, id, checkpoint, at, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"capacity": 1, "version": "test", "backend_isolation": r.redemption.BackendIsolation})
+	requireNativeStatus(t, response, http.StatusOK)
+	var snapshot runnerauth.RoutingSnapshot
+	decodeHubResponse(t, response, &snapshot)
+	if snapshot.RunnerID != r.binding.RunnerID || snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 1 || snapshot.ClaimState.ReleasedExecutions[0].WorkItemID != known.WorkItemID {
+		t.Fatalf("heartbeat lost routing or included unknown source: %+v", snapshot)
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, tracker.NativeClaim{
+		PolicyID: hubTestPolicy().ID, MachineID: r.binding.MachineID, SessionID: "next-candidate", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability},
+		ProviderCandidates: append(providerClaim(r, unknown, "").ProviderCandidates, providerClaim(r, known, "").ProviderCandidates...),
+	})
+	requireNativeStatus(t, response, http.StatusOK)
+	var lease tracker.NativeLease
+	decodeHubResponse(t, response, &lease)
+	if lease.WorkItemID != known.WorkItemID {
+		t.Fatalf("claimed %s, want %s", lease.WorkItemID, known.WorkItemID)
+	}
+	for tick := range 12 {
+		ctx, cancel := context.WithTimeout(t.Context(), backgroundStorageBudget)
+		err := f.service.database.populateClaimFacts(ctx)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var unknownRows int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM native_attempts WHERE checkpoint_preserves_source IS NULL`).Scan(&unknownRows); err != nil {
+			t.Fatal(err)
+		}
+		if want := max(0, 11483-(tick+1)*claimFactsRowsPerTick); unknownRows != want {
+			t.Fatalf("tick %d: unknown=%d want=%d", tick+1, unknownRows, want)
+		}
 	}
 }
