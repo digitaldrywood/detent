@@ -212,6 +212,7 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope
 			}
 		}()
 		defer cancel()
+		wakeContext = s.freshRunDetailContext(wakeContext)
 		if state != "" {
 			if _, err := s.wakeOrganizationSpriteRunners(wakeContext, scope); err != nil {
 				if wakeContext.Err() == nil {

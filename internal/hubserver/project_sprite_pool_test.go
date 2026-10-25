@@ -1753,3 +1753,36 @@ func TestProjectSpriteLoginReadiness(t *testing.T) {
 		})
 	}
 }
+
+func TestSpriteLifecycleReadsArchivedRunDetails(t *testing.T) {
+	f, scope, provider := newSpritePoolFixture(t, "")
+	keys, hosted := f.service.config.SecretKeys, f.service.config.Hosted
+	f.service.config.SecretKeys, f.service.config.Hosted = nil, nil
+	store := &memoryRunDetails{}
+	f.service.config.RunDetails = store
+	r := placementFixtureRunner(t, f, "archive-worker", "local", false, 1, "gpt-6.1-sol", "test-model")
+	issue := f.create(t, "Archived execution")
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "archived-run"))
+	requireNativeStatus(t, response, http.StatusOK)
+	var lease tracker.NativeLease
+	decodeHubResponse(t, response, &lease)
+	event := nativeStartedEvent(lease)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, event), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", r.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
+	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET status='succeeded',work_item_revision=1000,dispatch_generation=1000 WHERE id=?`, event.Data.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	setPlacementFixture(t, f, policy.Placement{Mode: "sprites_only"}, 2)
+	f.service.config.SecretKeys, f.service.config.Hosted = keys, hosted
+	store.mu.Lock()
+	store.reads = 0
+	store.mu.Unlock()
+	f.service.scheduleSpriteLifecycle(t.Context(), scope, "Todo")
+	f.service.spriteWakeWork.Wait()
+	store.mu.Lock()
+	reads := store.reads
+	store.mu.Unlock()
+	if reads == 0 || len(provider.created) != 2 {
+		t.Fatalf("archived run reads=%d created Sprites=%d", reads, len(provider.created))
+	}
+}
