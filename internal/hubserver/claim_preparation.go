@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -14,10 +16,36 @@ type claimPreparationKey struct{}
 type claimWriterKey struct{}
 
 type claimPreparation struct {
-	versions    map[string]preparedClaimVersion
-	checkpoints map[string]preparedClaimCheckpoint
-	details     map[string]preparedClaimDetail
-	decisions   bool
+	versions      map[string]preparedClaimVersion
+	checkpoints   map[string]preparedClaimCheckpoint
+	details       map[string]preparedClaimDetail
+	decisions     []preparedClaimDecision
+	hydrating     bool
+	references    map[string]preparedClaimReference
+	runs          map[string]tracker.NativeRunData
+	selected      tracker.WorkItemID
+	candidateRows int
+}
+
+const claimPreparationLimit = 100
+const claimEvidenceLimit = 1000
+
+type claimHydration struct {
+	run func(context.Context, nativeQueryer) error
+}
+
+func (*claimHydration) Error() string { return "claim content requires preparation" }
+
+type preparedClaimDecision struct {
+	scope nativeScope
+	id    tracker.WorkItemID
+	item  string
+	data  tracker.CollaborationData
+}
+
+type preparedClaimReference struct {
+	raw       string
+	reference tracker.NativeChangeReference
 }
 
 type preparedClaimVersion struct {
@@ -46,7 +74,7 @@ type preparedClaimDetail struct {
 	sequence               int64
 	policyID, reviewID     string
 	evaluatedAt, recheckAt time.Time
-	summary                tracker.ChangeSummary
+	detail                 tracker.ChangeDetail
 }
 
 func claimPrepared(ctx context.Context) *claimPreparation {
@@ -65,22 +93,20 @@ func (d *database) claimNativePrepared(ctx context.Context, request tracker.Clai
 	for range 2 {
 		prepared := &claimPreparation{versions: make(map[string]preparedClaimVersion), checkpoints: make(map[string]preparedClaimCheckpoint), details: make(map[string]preparedClaimDetail)}
 		pass := context.WithValue(ctx, claimPreparationKey{}, prepared)
-		lease, err := d.claimPreflight(pass, request, query, interval)
-		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil || d.claimReader == nil {
-			lease, err = d.claimNextOn(pass, d.reader, &sql.TxOptions{ReadOnly: true}, claimMode{preflight: true}, request, query, interval)
-		}
+		lease, err := d.prepareClaim(pass, request, query, interval)
 		var selected *claimSelected
 		mode := claimMode{}
 		switch {
 		case errors.As(err, &selected):
-			if !prepared.decisions {
-				mode.hint = selected
-			}
+			mode.hint = selected
 		case err == nil:
 			return lease, nil
-		case !prepared.decisions && preflightAnswered(err):
-			return tracker.Lease{}, err
-		case !preflightAnswered(err) && !preflightReadOnly(err):
+		case preflightAnswered(err):
+			if len(prepared.decisions) == 0 {
+				return tracker.Lease{}, err
+			}
+			mode.answer = err
+		default:
 			return tracker.Lease{}, err
 		}
 		lease, err = d.claimNextOn(pass, d.db, nil, mode, request, query, interval)
@@ -89,6 +115,29 @@ func (d *database) claimNativePrepared(ctx context.Context, request tracker.Clai
 		}
 	}
 	return tracker.Lease{}, ErrNoClaimableWork
+}
+
+func (d *database) prepareClaim(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, interval time.Duration) (tracker.Lease, error) {
+	prepared := claimPrepared(ctx)
+	for range claimPreparationLimit {
+		prepared.decisions = nil
+		prepared.candidateRows = 0
+		lease, err := d.claimPreflight(ctx, request, query, interval)
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil || d.claimReader == nil {
+			lease, err = d.claimNextOn(ctx, d.reader, &sql.TxOptions{ReadOnly: true}, claimMode{preflight: true}, request, query, interval)
+		}
+		var hydration *claimHydration
+		if !errors.As(err, &hydration) {
+			return lease, err
+		}
+		prepared.hydrating = true
+		err = hydration.run(ctx, d.reader)
+		prepared.hydrating = false
+		if err != nil {
+			return tracker.Lease{}, err
+		}
+	}
+	return tracker.Lease{}, fmt.Errorf("claim preparation exceeded bounded snapshot work: %w", errClaimHintStale)
 }
 
 func readClaimChange(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (tracker.ChangeRequest, bool, error) {
@@ -142,7 +191,13 @@ func readClaimVersion(ctx context.Context, q nativeQueryer, change, version stri
 		return value.version, nil
 	}
 	if claimWriting(ctx) {
-		return tracker.ChangeVersion{}, errClaimHintStale
+		return tracker.ChangeVersion{}, fmt.Errorf("claim version facts changed: %w", errClaimHintStale)
+	}
+	if !prepared.hydrating {
+		return tracker.ChangeVersion{}, &claimHydration{run: func(ctx context.Context, q nativeQueryer) error {
+			_, err := readClaimVersion(ctx, q, change, version)
+			return err
+		}}
 	}
 	value, err := readChangeVersion(ctx, q, change, version)
 	if err != nil {
@@ -162,7 +217,13 @@ func readClaimSourceStored(ctx context.Context, q nativeQueryer, version tracker
 		return value.source, nil
 	}
 	if claimWriting(ctx) {
-		return false, errClaimHintStale
+		return false, fmt.Errorf("claim source was not prepared: %w", errClaimHintStale)
+	}
+	if !prepared.hydrating {
+		return false, &claimHydration{run: func(ctx context.Context, q nativeQueryer) error {
+			_, err := readClaimSourceStored(ctx, q, version)
+			return err
+		}}
 	}
 	stored, err := nativeChangeSourceStored(ctx, q, version)
 	if err == nil {
@@ -187,8 +248,17 @@ WHERE id=? AND organization_id=? AND project_id=? AND work_item_id=?`, attempt, 
 			return value.checkpoint, nil
 		}
 		if claimWriting(ctx) {
-			return nil, errClaimHintStale
+			return nil, fmt.Errorf("claim checkpoint identity changed: %w", errClaimHintStale)
 		}
+	}
+	if prepared != nil && !prepared.hydrating {
+		return nil, &claimHydration{run: func(ctx context.Context, _ nativeQueryer) error {
+			checkpoint, err := decodeRunCheckpoint(ctx, raw.String)
+			if err == nil {
+				prepared.checkpoints[attempt] = preparedClaimCheckpoint{sequence: sequence, attachment: attachment, checkpoint: checkpoint}
+			}
+			return err
+		}}
 	}
 	checkpoint, err := decodeRunCheckpoint(ctx, raw.String)
 	if err == nil && prepared != nil {
@@ -211,21 +281,31 @@ func readClaimLandingDetail(ctx context.Context, q nativeQueryer, scope nativeSc
 	prepared := claimPrepared(ctx)
 	if prepared != nil {
 		if value, ok := prepared.details[version.ID]; ok && value.sequence == sequence && value.policyID == current.approval.Policy.ID && value.reviewID == current.rules.ID && !now.Before(value.evaluatedAt) && (value.recheckAt.IsZero() || now.Before(value.recheckAt)) {
-			detail.Summary = value.summary
+			detail = value.detail
+			detail.Change = change
 			return detail, nil
 		}
 		if claimWriting(ctx) {
-			return detail, errClaimHintStale
+			return detail, fmt.Errorf("claim evidence or policy changed: %w", errClaimHintStale)
 		}
 	}
+	if prepared != nil && !prepared.hydrating {
+		return detail, &claimHydration{run: func(ctx context.Context, q nativeQueryer) error {
+			_, err := readClaimLandingDetail(ctx, q, scope, change, version, now)
+			return err
+		}}
+	}
 	detail.Versions = []tracker.ChangeVersion{version}
-	detail.Reviews, err = changeRows[tracker.ChangeReview](ctx, q, `SELECT record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' ORDER BY sequence`, change.ID, version.ID)
+	detail.Reviews, err = readClaimReviews(ctx, q, change.ID, version.ID)
 	if err != nil {
 		return detail, err
 	}
-	detail.Checks, err = changeRows[tracker.ChangeCheck](ctx, q, `SELECT record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='check' ORDER BY sequence`, change.ID, version.ID)
-	if err != nil {
-		return detail, err
+	for _, expected := range version.Checks {
+		checks, readErr := claimEvidenceRows[tracker.ChangeCheck](ctx, q, `SELECT record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='check' AND source_key=? ORDER BY sequence`, change.ID, version.ID, expected.CheckRunID)
+		if readErr != nil {
+			return detail, readErr
+		}
+		detail.Checks = append(detail.Checks, checks...)
 	}
 	detail.Summary = current.summarize(detail, now, false)
 	var recheckAt time.Time
@@ -242,8 +322,176 @@ func readClaimLandingDetail(ctx context.Context, q nativeQueryer, scope nativeSc
 		}
 	}
 	if prepared != nil {
-		prepared.details[version.ID] = preparedClaimDetail{sequence: sequence, policyID: current.approval.Policy.ID, reviewID: current.rules.ID, evaluatedAt: now, recheckAt: recheckAt, summary: detail.Summary}
+		prepared.details[version.ID] = preparedClaimDetail{sequence: sequence, policyID: current.approval.Policy.ID, reviewID: current.rules.ID, evaluatedAt: now, recheckAt: recheckAt, detail: detail}
 	}
-	detail.Reviews, detail.Checks, detail.Versions = nil, nil, nil
 	return detail, nil
+}
+
+func claimEvidenceRows[T any](ctx context.Context, q nativeQueryer, statement string, args ...any) ([]T, error) {
+	args = append(args, claimEvidenceLimit+1)
+	rows, err := q.QueryContext(ctx, statement+" LIMIT ?", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var records []string
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		records = append(records, raw)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	if len(records) > claimEvidenceLimit {
+		return nil, fmt.Errorf("claim evidence exceeds bounded preparation: %w", errClaimHintStale)
+	}
+	result := make([]T, len(records))
+	for i, raw := range records {
+		if err := decodeStorageJSON(ctx, []byte(raw), &result[i]); err != nil {
+			return nil, err
+		}
+		if err := hydrateChangeRecord(ctx, q, &result[i]); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func readClaimReference(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (tracker.NativeChangeReference, error) {
+	var ref tracker.NativeChangeReference
+	var version, head sql.NullString
+	var raw string
+	err := q.QueryRowContext(ctx, `SELECT c.id,c.claim_version_id,c.claim_head_sha,c.record_json FROM change_requests c JOIN change_issue_links l ON l.change_id=c.id
+WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? ORDER BY c.rowid DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&ref.ChangeID, &version, &head, &raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ref, nil
+	}
+	if err != nil {
+		return ref, err
+	}
+	if version.Valid && head.Valid {
+		ref.VersionID, ref.HeadSHA = version.String, head.String
+		return ref, nil
+	}
+	prepared := claimPrepared(ctx)
+	if prepared != nil {
+		if value, ok := prepared.references[ref.ChangeID]; ok && value.raw == raw {
+			return value.reference, nil
+		}
+		if claimWriting(ctx) {
+			return ref, fmt.Errorf("claim reference changed: %w", errClaimHintStale)
+		}
+		if !prepared.hydrating {
+			return ref, &claimHydration{run: func(ctx context.Context, q nativeQueryer) error {
+				_, err := readClaimReference(ctx, q, scope, item)
+				return err
+			}}
+		}
+	}
+	ref.VersionID, ref.HeadSHA, err = claimChangeIdentity(ctx, q, ref.ChangeID, raw)
+	if err == nil && prepared != nil {
+		if prepared.references == nil {
+			prepared.references = make(map[string]preparedClaimReference)
+		}
+		prepared.references[ref.ChangeID] = preparedClaimReference{raw: raw, reference: ref}
+	}
+	return ref, err
+}
+
+func writePreparedClaimDecisions(ctx context.Context, tx *sql.Tx, selected *claimSelected, now time.Time) error {
+	for _, value := range claimPrepared(ctx).decisions {
+		if selected != nil && value.id == selected.id {
+			continue
+		}
+		var revision int64
+		err := tx.QueryRowContext(ctx, `SELECT revision FROM issues WHERE id=? AND organization_id=? AND project_id=?`, value.id, value.scope.organization, value.scope.project).Scan(&revision)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if tracker.Revision(revision) != value.data.Decision.WorkItemRevision {
+			continue
+		}
+		reference, err := readClaimReference(ctx, tx, value.scope, value.item)
+		if errors.Is(err, errClaimHintStale) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		var previous tracker.NativeChangeReference
+		if value.data.Change != nil {
+			previous = *value.data.Change
+		}
+		if reference != previous {
+			continue
+		}
+		if err := recordNativeSchedulingOutcome(ctx, tx, &value.scope, value.id, *value.data.Decision, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func readClaimReviews(ctx context.Context, q nativeQueryer, change, version string) ([]tracker.ChangeReview, error) {
+	var unknown bool
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM change_evidence INDEXED BY change_evidence_claim_unknown WHERE change_id=? AND version_id=? AND kind='review' AND claim_review_current IS NULL)`, change, version).Scan(&unknown); err != nil {
+		return nil, err
+	}
+	if unknown {
+		return claimEvidenceRows[tracker.ChangeReview](ctx, q, `SELECT record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' ORDER BY sequence`, change, version)
+	}
+	type record struct {
+		sequence int64
+		raw      string
+	}
+	records := make(map[int64]string)
+	for _, selection := range []struct {
+		kind, decision string
+		current        bool
+	}{
+		{kind: "implementation", current: true}, {kind: "validator", current: true}, {kind: "audit", current: true},
+		{kind: "audit", decision: "changes_requested"}, {kind: "landing_audit", decision: "changes_requested"},
+		{kind: "human", decision: "approved", current: true}, {kind: "human", decision: "changes_requested", current: true},
+	} {
+		statement := `SELECT sequence,record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' AND claim_review_kind=?`
+		args := []any{change, version, selection.kind}
+		if selection.current {
+			statement += ` AND claim_review_current=1`
+		}
+		if selection.decision != "" {
+			statement += ` AND claim_review_decision=?`
+			args = append(args, selection.decision)
+		} else {
+			statement += ` AND claim_review_actor=''`
+		}
+		var value record
+		err := q.QueryRowContext(ctx, statement+` ORDER BY sequence DESC LIMIT 1`, args...).Scan(&value.sequence, &value.raw)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		records[value.sequence] = value.raw
+	}
+	keys := make([]int64, 0, len(records))
+	for sequence := range records {
+		keys = append(keys, sequence)
+	}
+	slices.Sort(keys)
+	reviews := make([]tracker.ChangeReview, 0, len(keys))
+	for _, sequence := range keys {
+		var review tracker.ChangeReview
+		if err := decodeStorageJSON(ctx, []byte(records[sequence]), &review); err != nil {
+			return nil, err
+		}
+		reviews = append(reviews, review)
+	}
+	return reviews, nil
 }

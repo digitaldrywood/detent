@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -21,6 +22,129 @@ import (
 )
 
 func TestNativeRetention(t *testing.T) {
+	t.Run("claim reviews retain each reviewer across historical backfill", func(t *testing.T) {
+		f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}))
+		if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+			t.Fatal(err)
+		}
+		first := f.publish(t, "first", "", true)
+		second := f.publish(t, "second", first.ID, true)
+		db := f.service.database
+		tx, err := db.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		for i := range claimEvidenceLimit + 1 {
+			review := tracker.ChangeReview{VersionID: first.ID, Actor: tracker.Actor{PrincipalID: "reviewer-one"}, Decision: "commented"}
+			if i == 0 {
+				review.Decision = "changes_requested"
+			}
+			raw, err := json.Marshal(review)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review',?)`, f.change.ID, first.ID, string(raw)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, version := range []string{first.ID, second.ID} {
+			for _, review := range []tracker.ChangeReview{
+				{VersionID: version, Actor: tracker.Actor{PrincipalID: "reviewer-one"}, Decision: "approved"},
+				{VersionID: version, Actor: tracker.Actor{PrincipalID: "reviewer-two"}, Decision: "changes_requested"},
+			} {
+				if err := insertChangeEvidence(t.Context(), tx, f.change.ID, version, "review", "", review); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readClaimReviews(t.Context(), db.reader, f.change.ID, first.ID); !errors.Is(err, errClaimHintStale) {
+			t.Fatalf("unknown evidence authorized truncated history: %v", err)
+		}
+		for range (claimEvidenceLimit+1)/storageConversionRows + 2 {
+			if err := db.populateClaimFacts(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, version := range []string{first.ID, second.ID} {
+			reviews, err := readClaimReviews(t.Context(), db.reader, f.change.ID, version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decisions := make(map[string]string)
+			for _, review := range reviews {
+				decisions[review.Actor.PrincipalID] = review.Decision
+			}
+			if len(reviews) != 2 || decisions["reviewer-one"] != "approved" || decisions["reviewer-two"] != "changes_requested" {
+				t.Fatalf("projected reviews lost current authority: %+v", reviews)
+			}
+		}
+		for _, update := range []struct{ actor, decision string }{{"reviewer-two", "approved"}, {"reviewer-one", "changes_requested"}} {
+			tx, err := db.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			review := tracker.ChangeReview{VersionID: first.ID, Actor: tracker.Actor{PrincipalID: update.actor}, Decision: update.decision}
+			if err := insertChangeEvidence(t.Context(), tx, f.change.ID, first.ID, "review", "", review); err != nil {
+				tx.Rollback()
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readClaimReviews(t.Context(), db.reader, f.change.ID, first.ID); !errors.Is(err, errClaimHintStale) {
+				t.Fatalf("new unknown review reused old projection: %v", err)
+			}
+			if err := db.populateClaimFacts(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		reviews, err := readClaimReviews(t.Context(), db.reader, f.change.ID, first.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decisions := make(map[string]string)
+		for _, review := range reviews {
+			decisions[review.Actor.PrincipalID] = review.Decision
+		}
+		if decisions["reviewer-one"] != "changes_requested" || decisions["reviewer-two"] != "approved" {
+			t.Fatalf("new review authority was hidden: %+v", reviews)
+		}
+		if _, err := db.db.ExecContext(t.Context(), `UPDATE change_evidence SET record_json='{}' WHERE change_id=?`, f.change.ID); err == nil {
+			t.Fatal("evidence immutability trigger was not restored")
+		}
+	})
+
+	t.Run("claim facts resume from durable unknown rows", func(t *testing.T) {
+		f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}))
+		if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+			t.Fatal(err)
+		}
+		db := f.service.database
+		for i := range storageConversionRows + 2 {
+			id := fmt.Sprintf("legacy-change-%03d", i)
+			if _, err := db.db.ExecContext(t.Context(), `INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?,?)`, id, f.project.OrganizationID, f.project.ID, f.issue.WorkItemID, `{}`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := db.populateClaimFacts(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		var unknown int
+		if err := db.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_requests WHERE claim_version_id IS NULL`).Scan(&unknown); err != nil || unknown != 2 {
+			t.Fatalf("unknown=%d: %v", unknown, err)
+		}
+		if err := db.populateClaimFacts(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_requests WHERE claim_version_id IS NULL`).Scan(&unknown); err != nil || unknown != 0 {
+			t.Fatalf("unknown=%d: %v", unknown, err)
+		}
+	})
+
 	t.Run("archive error preserves independent compaction", func(t *testing.T) {
 		f := newStorageArchiveFixture(t)
 		issue := f.nativeFixture.create(t, "archive failure")

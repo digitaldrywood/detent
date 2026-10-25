@@ -303,11 +303,22 @@ SELECT 'second-change',organization_id,project_id,native_id,'{"current_version_i
 					t.Fatal(err)
 				}
 			}
+			if _, err := runMigrations(t.Context(), db, discardLogger()); err != nil {
+				t.Fatal(err)
+			}
+			var unknown int
+			if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM change_requests WHERE claim_version_id IS NULL AND claim_head_sha IS NULL`).Scan(&unknown); err != nil || unknown != 2 {
+				t.Fatalf("startup claim projections=%d unknown: %v", unknown, err)
+			}
 			if err := db.Close(); err != nil {
 				t.Fatal(err)
 			}
 			cfg := Config{DatabasePath: path}
 			service := openTestService(t, cfg)
+			if err := service.database.populateClaimFacts(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+
 			if !test.viewed {
 				if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO change_viewed_files (version_id, principal_id, manifest_sha256, file_sha256, viewed) VALUES ('existing-version', 'reviewer', ?, ?, 1)`, strings.Repeat("a", 64), strings.Repeat("b", 64)); err != nil {
 					t.Fatal(err)

@@ -19,19 +19,30 @@ type nativeSourceCheckpoint struct {
 }
 
 func readNativeSourceCheckpoint(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (nativeSourceCheckpoint, error) {
-	var source nativeSourceCheckpoint
-	err := q.QueryRowContext(ctx, `SELECT a.id,l.machine_id,COALESCE(lr.runner_id,''),COALESCE(NULLIF(r.display_name,''),m.hostname,''),a.status,l.released_at
+	var before int64 = 1<<63 - 1
+	for range claimPreparationLimit {
+		var source nativeSourceCheckpoint
+		var fence int64
+		err := q.QueryRowContext(ctx, `SELECT a.id,l.machine_id,COALESCE(lr.runner_id,''),COALESCE(NULLIF(r.display_name,''),m.hostname,''),a.status,l.released_at,a.fencing_token
 FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id
 LEFT JOIN runner_identities r ON r.id=lr.runner_id AND r.organization_id=a.organization_id LEFT JOIN machines m ON m.id=l.machine_id AND m.organization_id=a.organization_id
-WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.checkpoint_preserves_source=1 ORDER BY a.fencing_token DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&source.AttemptID, &source.MachineID, &source.RunnerID, &source.RunnerName, &source.Status, &source.Released)
-	if errors.Is(err, sql.ErrNoRows) {
-		return source, nil
+WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND (a.checkpoint_preserves_source=1 OR a.checkpoint_preserves_source IS NULL) AND a.fencing_token<? ORDER BY a.fencing_token DESC LIMIT 1`, scope.organization, scope.project, item, before).Scan(&source.AttemptID, &source.MachineID, &source.RunnerID, &source.RunnerName, &source.Status, &source.Released, &fence)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nativeSourceCheckpoint{}, nil
+		}
+		if err != nil {
+			return source, err
+		}
+		source.Checkpoint, err = readClaimCheckpoint(ctx, q, scope, item, source.AttemptID)
+		if err != nil {
+			return source, err
+		}
+		if source.Checkpoint.PreservesSource() {
+			return source, nil
+		}
+		before = fence
 	}
-	if err != nil {
-		return source, err
-	}
-	source.Checkpoint, err = readClaimCheckpoint(ctx, q, scope, item, source.AttemptID)
-	return source, err
+	return nativeSourceCheckpoint{}, fmt.Errorf("claim checkpoint preparation exceeded bounded history: %w", errClaimHintStale)
 }
 
 // nativeSourceClaimAllowed never routes work by where earlier work ran

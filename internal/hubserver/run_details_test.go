@@ -30,6 +30,7 @@ type memoryRunDetails struct {
 	reads       int
 	writerReads int
 	afterStore  func(attachment.ArchiveReference)
+	beforeRead  func(context.Context) error
 }
 
 func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
@@ -59,6 +60,11 @@ func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, d
 }
 
 func (m *memoryRunDetails) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	if m.beforeRead != nil {
+		if err := m.beforeRead(ctx); err != nil {
+			return nil, err
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if ref.Validate(organization) != nil {

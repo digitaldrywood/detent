@@ -304,6 +304,7 @@ func (d *database) claimPreflight(ctx context.Context, request tracker.ClaimRequ
 // candidate, or the full write pass.
 type claimMode struct {
 	hint      *claimSelected
+	answer    error
 	preflight bool
 }
 
@@ -384,6 +385,9 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			}
 		}
 	}()
+	if mode.hint != nil && claimPrepared(ctx) != nil {
+		claimPrepared(ctx).selected = mode.hint.id
+	}
 	now, err := d.currentTime()
 	if err != nil {
 		return tracker.Lease{}, err
@@ -394,6 +398,17 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 	if query.NativeScope != nil {
 		if err := requireRunnerAuthority(ctx, tx, *query.NativeScope, now); err != nil {
 			return tracker.Lease{}, err
+		}
+	}
+	if !mode.preflight && claimPrepared(ctx) != nil {
+		if err := writePreparedClaimDecisions(ctx, tx, mode.hint, now); err != nil {
+			return tracker.Lease{}, err
+		}
+		if mode.answer != nil {
+			if err := commit(); err != nil {
+				return tracker.Lease{}, err
+			}
+			return tracker.Lease{}, mode.answer
 		}
 	}
 	var policyScope string
@@ -430,6 +445,9 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			return tracker.Lease{}, err
 		}
 		if query.NativeScope != nil && query.LandingCapacity > 0 {
+			if mode.preflight {
+				return tracker.Lease{}, &claimSelected{id: existing.issueID}
+			}
 			if err := tightenNativeLandingCapacity(ctx, tx, existing.session.ID, query.LandingCapacity); err != nil {
 				return tracker.Lease{}, err
 			}
@@ -664,8 +682,14 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		}
 		if mode.preflight {
 			var revision int64
-			if err := tx.QueryRowContext(ctx, "SELECT revision FROM issues WHERE id = ?", id).Scan(&revision); err != nil {
+			var item string
+			if err := tx.QueryRowContext(ctx, "SELECT revision,COALESCE(native_id,'') FROM issues WHERE id = ?", id).Scan(&revision, &item); err != nil {
 				return tracker.Lease{}, err
+			}
+			if query.NativeScope != nil {
+				if _, err := readClaimReference(ctx, tx, *query.NativeScope, item); err != nil {
+					return tracker.Lease{}, err
+				}
 			}
 			return tracker.Lease{}, &claimSelected{id: id, revision: revision}
 		}

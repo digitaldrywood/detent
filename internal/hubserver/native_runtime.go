@@ -504,9 +504,16 @@ func (d *database) recordNativeClaimRefusal(ctx context.Context, tx *sql.Tx, que
 	if query.NativeScope == nil || failure.status != http.StatusConflict {
 		return refusal
 	}
+	if prepared := claimPrepared(ctx); prepared != nil && claimWriting(ctx) && id == 0 {
+		id = prepared.selected
+		if id == 0 {
+			return refusal
+		}
+	}
 	ids := []tracker.WorkItemID{id}
 	if id == 0 {
 		query.AvailableAt = now
+		query.Limit = claimPreparationLimit
 		var err error
 		ids, err = nativeCandidateIDs(ctx, tx, query, query.RepositoryIDs, normalizedQueryStrings(query.Repositories), normalizedQueryStrings(query.WorkflowStates), normalizedQueryStrings(query.Authors), normalizedQueryStrings(query.Assignees), normalizedQueryStrings(query.LabelInclude), normalizedQueryStrings(query.LabelExclude))
 		if err != nil {
@@ -517,6 +524,9 @@ func (d *database) recordNativeClaimRefusal(ctx context.Context, tx *sql.Tx, que
 		if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: source, Outcome: "skipped", Reason: failure.Code}, now); err != nil {
 			return err
 		}
+	}
+	if prepared := claimPrepared(ctx); prepared != nil && !claimWriting(ctx) {
+		return refusal
 	}
 	if err := d.commit(ctx, tx); err != nil {
 		return err
@@ -535,15 +545,11 @@ func recordNativeSchedulingOutcome(ctx context.Context, tx *sql.Tx, scope *nativ
 	decision.At = now
 	decision.RunnerID = scope.credential.Runner.RunnerID
 	data := tracker.CollaborationData{Decision: &decision}
-	var reference tracker.NativeChangeReference
-	err := tx.QueryRowContext(ctx, `SELECT c.id,c.claim_version_id,c.claim_head_sha FROM change_requests c
-JOIN change_issue_links l ON l.change_id=c.id
-WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? ORDER BY c.rowid DESC LIMIT 1`,
-		scope.organization, scope.project, item).Scan(&reference.ChangeID, &reference.VersionID, &reference.HeadSHA)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	reference, err := readClaimReference(ctx, tx, *scope, item)
+	if err != nil {
 		return err
 	}
-	if err == nil {
+	if reference.ChangeID != "" {
 		data.Change = &reference
 	}
 	if decision.Outcome != "claimed" {
@@ -569,7 +575,9 @@ WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? ORDER BY c.row
 		}
 	}
 	if prepared := claimPrepared(ctx); prepared != nil && !claimWriting(ctx) {
-		prepared.decisions = true
+		if len(prepared.decisions) < claimPreparationLimit {
+			prepared.decisions = append(prepared.decisions, preparedClaimDecision{scope: *scope, id: id, item: item, data: data})
+		}
 		return nil
 	}
 	return appendNativeHistory(ctx, tx, *scope, item, "scheduler.decision", data, now)

@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -22,11 +24,14 @@ func TestNativeSourcePlacement(t *testing.T) {
 		source, initial, newerClean, uncertain bool
 		corrupt, missing, wrongHead, pushed    bool
 		owner, destination                     bool
+		unknown                                bool
 	}{
 		{name: "legacy local dirty is not pinned", state: "dirty", owner: true, destination: true},
 		{name: "legacy unpushed is not pinned", state: "unpushed", owner: true, destination: true},
 		{name: "pushed checkpoint restores anywhere", state: "dirty", pushed: true, owner: true, destination: true},
 		{name: "pushed checkpoint ignores a missing Hub bundle", state: "unpushed", pushed: true, source: true, missing: true, owner: true, destination: true},
+		{name: "unknown missing local source", state: "dirty", availability: "missing", unknown: true},
+		{name: "unknown clean checkpoint", state: "clean", initial: true, unknown: true, owner: true, destination: true},
 		{name: "missing local source", state: "dirty", availability: "missing"},
 		{name: "inaccessible local source", state: "dirty", availability: "inaccessible"},
 		{name: "verified immutable source", state: "unpushed", source: true, owner: true, destination: true},
@@ -71,6 +76,11 @@ func TestNativeSourcePlacement(t *testing.T) {
 				event.Data.Handoff.CommitSHA, event.Data.Handoff.TreeSHA = strings.Repeat("c", 40), strings.Repeat("e", 40)
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
+			if test.unknown {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET checkpoint_preserves_source=NULL WHERE id=?`, event.Data.AttemptID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.source {
 				input.AttemptID, input.RunID = event.Data.AttemptID, event.Data.RunID
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source-version"}, ChangeVersionInput: input, SourceBundle: bundle}), http.StatusOK)
@@ -138,6 +148,7 @@ func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 		source, ownerOffline             bool
 		objects, landing, readerFallback bool
 		otherAllowed                     bool
+		saturated, unknown               bool
 	}{
 		{name: "local-only checkpoint is not pinned to its online owner", state: "dirty", otherAllowed: true},
 		{name: "local-only checkpoint does not wait for an offline owner", state: "unpushed", ownerOffline: true, otherAllowed: true},
@@ -147,6 +158,8 @@ func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 		{name: "claim prepares landing evidence", state: "unpushed", source: true, objects: true, landing: true, otherAllowed: true},
 		{name: "claim revalidates checkpoint sequence", state: "unpushed", source: true, objects: true, otherAllowed: true, invalidate: "checkpoint"},
 		{name: "claim revalidates review sequence", state: "unpushed", source: true, objects: true, landing: true, otherAllowed: true, invalidate: "review"},
+		{name: "claim progresses with saturated reader pool", state: "unpushed", source: true, objects: true, readerFallback: true, saturated: true, otherAllowed: true},
+		{name: "claim prepares unknown source and version identities", state: "unpushed", source: true, objects: true, unknown: true, otherAllowed: true},
 		{name: "claim uses general reader when claim pool is absent", state: "unpushed", source: true, objects: true, readerFallback: true, otherAllowed: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -258,7 +271,7 @@ func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 					ctx := f.service.runDetailContext(context.WithValue(t.Context(), claimPreparationKey{}, prepared))
 					request := tracker.ClaimRequest{WorkItemID: id, MachineID: other.binding.MachineID, SessionID: "prepared-stale", TTL: time.Minute}
 					query := claimCandidateQuery{PolicyID: hubTestPolicy().ID, RequirePolicy: true, NativeScope: &scope, Scope: string(scope.project)}
-					_, err = f.service.database.claimPreflight(ctx, request, query, time.Hour)
+					_, err = f.service.database.prepareClaim(ctx, request, query, time.Hour)
 					var selected *claimSelected
 					if !errors.As(err, &selected) {
 						t.Fatalf("prepare claim: %v", err)
@@ -289,6 +302,101 @@ func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 					reader := f.service.database.claimReader
 					f.service.database.claimReader = nil
 					defer func() { f.service.database.claimReader = reader }()
+				}
+				if test.unknown {
+					if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET checkpoint_preserves_source=NULL WHERE id=?`, event.Data.AttemptID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE change_requests SET claim_version_id=NULL,claim_head_sha=NULL WHERE id=?`, f.change.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.unknown {
+					db := f.service.database
+					credential, _, err := f.service.authenticateAPIToken(t.Context(), other.redemption.Credential, "", "")
+					if err != nil {
+						t.Fatal(err)
+					}
+					scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+					prepared := &claimPreparation{versions: make(map[string]preparedClaimVersion), checkpoints: make(map[string]preparedClaimCheckpoint), details: make(map[string]preparedClaimDetail)}
+					ctx := f.service.runDetailContext(f.service.contentContext(context.WithValue(t.Context(), claimPreparationKey{}, prepared)))
+					request := tracker.ClaimRequest{WorkItemID: id, MachineID: other.binding.MachineID, SessionID: "unknown", TTL: time.Minute}
+					query := claimCandidateQuery{PolicyID: hubTestPolicy().ID, RequirePolicy: true, NativeScope: &scope, Scope: string(scope.project)}
+					_, err = db.prepareClaim(ctx, request, query, time.Hour)
+					var selected *claimSelected
+					if !errors.As(err, &selected) {
+						t.Fatalf("unknown preparation: %v", err)
+					}
+					restored, err := db.claimNextOn(ctx, db.db, nil, claimMode{hint: selected}, request, query, time.Hour)
+					if err != nil {
+						t.Fatalf("unknown writer: %v", err)
+					}
+					if restored.WorkItemID != id || restored.FencingToken <= lease.FencingToken {
+						t.Fatalf("unknown claim: %+v", restored)
+					}
+					return
+				}
+				if test.saturated {
+					db := f.service.database
+					credential, _, err := f.service.authenticateAPIToken(t.Context(), other.redemption.Credential, "", "")
+					if err != nil {
+						t.Fatal(err)
+					}
+					scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+					db.reader.SetMaxOpenConns(1)
+					entered := make(chan struct{}, 1)
+					released := make(chan struct{})
+					var first sync.Once
+					details.beforeRead = func(ctx context.Context) error {
+						first.Do(func() {
+							entered <- struct{}{}
+							select {
+							case <-released:
+							case <-ctx.Done():
+							}
+						})
+						var value int
+						return db.reader.QueryRowContext(ctx, "SELECT 1").Scan(&value)
+					}
+					request := tracker.ClaimRequest{WorkItemID: id, MachineID: other.binding.MachineID, SessionID: "saturated", TTL: time.Minute}
+					query := claimCandidateQuery{PolicyID: hubTestPolicy().ID, RequirePolicy: true, NativeScope: &scope, Scope: string(scope.project)}
+					ctx := f.service.runDetailContext(f.service.contentContext(testenv.WaitContext(t, t.Context())))
+					done := make(chan error, 1)
+					go func() { _, err := db.claimNativePrepared(ctx, request, query, time.Hour); done <- err }()
+					select {
+					case <-entered:
+					case err := <-done:
+						t.Fatalf("claim did not reach archive fetch: %v", err)
+					case <-ctx.Done():
+						t.Fatal("claim retained a reader before archive fetch")
+					}
+					held, err := db.reader.Conn(ctx)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if db.reader.Stats().InUse != 1 {
+						t.Fatal("reader pool is not saturated")
+					}
+					if err := held.Close(); err != nil {
+						t.Fatal(err)
+					}
+					close(released)
+					select {
+					case err := <-done:
+						if err != nil {
+							t.Fatal(err)
+						}
+					case <-ctx.Done():
+						t.Fatal("claim waited for its own reader connection")
+					}
+					var leases int
+					if err := db.reader.QueryRowContext(ctx, `SELECT count(*) FROM leases WHERE session_id='saturated'`).Scan(&leases); err != nil || leases != 1 {
+						t.Fatalf("leases=%d: %v", leases, err)
+					}
+					return
 				}
 				claim.MachineID, claim.SessionID = other.binding.MachineID, "restored"
 				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", other.redemption.Credential, claim)

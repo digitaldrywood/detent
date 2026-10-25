@@ -22,7 +22,7 @@ func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query
 	if err != nil {
 		return 0, false, err
 	}
-	projects, err := readRunnerProjects(ctx, tx, query.NativeScope.credential.ID)
+	projects, err := readRunnerProjects(ctx, tx, query.NativeScope.credential.ID, claimPreparationLimit)
 	if err != nil {
 		return 0, false, err
 	}
@@ -48,8 +48,12 @@ func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query
 	var preferredHead tracker.WorkItemID
 	var heads []tracker.WorkItemID
 	var contractRefusal error
+	remaining := claimPreparationLimit
 projects:
 	for _, project := range projects {
+		if remaining <= 0 {
+			break
+		}
 		projectScope := scope
 		projectScope.project = project
 		projectQuery := probe
@@ -84,7 +88,8 @@ projects:
 				return 0, false, err
 			}
 		}
-		for {
+		for remaining > 0 {
+			projectQuery.Limit = min(projectQuery.Limit, remaining)
 			projectIDs, err := claimCandidateIDs(ctx, tx, projectQuery, query.RepositoryIDs, normalizedQueryStrings(query.Repositories), states, normalizedQueryStrings(query.Authors), normalizedQueryStrings(query.Assignees), normalizedQueryStrings(query.LabelInclude), normalizedQueryStrings(query.LabelExclude), nil)
 			if err != nil {
 				return 0, false, err
@@ -95,6 +100,7 @@ projects:
 				}
 			}
 			for _, id := range projectIDs {
+				remaining--
 				current, found, err := readUnreleasedLease(ctx, tx, id)
 				if err != nil {
 					return 0, false, err

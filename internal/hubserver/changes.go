@@ -673,7 +673,7 @@ func (s *Service) createChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO change_requests (id, organization_id, project_id, work_item_id, record_json) VALUES (?, ?, ?, ?, ?)", change.ID, scope.organization, scope.project, change.WorkItemID, raw); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO change_requests (id, organization_id, project_id, work_item_id, record_json, claim_version_id, claim_head_sha) VALUES (?, ?, ?, ?, ?, '', '')", change.ID, scope.organization, scope.project, change.WorkItemID, raw); err != nil {
 		return nil, err
 	}
 	for _, id := range change.LinkedIssues {

@@ -211,6 +211,15 @@ WHERE i.organization_id = `,
 	}
 	baseArgs := args
 	readPage := func(after tracker.WorkItemID, limit int, anchor bool) ([]tracker.WorkItemID, tracker.WorkItemID, int, error) {
+		prepared := claimPrepared(ctx)
+		bounded := prepared != nil && !anchor && len(query.OnlyIDs) == 0
+		if bounded {
+			limit = min(limit, claimPreparationLimit-prepared.candidateRows)
+			if limit <= 0 {
+				return nil, 0, 0, nil
+			}
+		}
+
 		args = append([]any(nil), baseArgs...)
 		page := statement + `, page AS MATERIALIZED (SELECT * FROM candidates WHERE 1 = 1`
 		if anchor {
@@ -224,7 +233,11 @@ WHERE i.organization_id = `,
 			}
 		}
 		page += ` ORDER BY ` + order + ` LIMIT ` + bind(limit) + `)`
-		return readNativeCandidatePage(ctx, tx, page+nativeCandidateCompletionEvidence+` ORDER BY page.`+strings.ReplaceAll(order, ", ", ", page."), args)
+		ids, last, scanned, err := readNativeCandidatePage(ctx, tx, page+nativeCandidateCompletionEvidence+` ORDER BY page.`+strings.ReplaceAll(order, ", ", ", page."), args)
+		if bounded {
+			prepared.candidateRows += scanned
+		}
+		return ids, last, scanned, err
 	}
 	if query.After > 0 {
 		ids, _, _, err := readPage(query.After, 1, true)
@@ -245,12 +258,17 @@ WHERE i.organization_id = `,
 	}
 	var ids []tracker.WorkItemID
 	after := query.After
+	scannedTotal := 0
 	for len(ids) < limit {
+		if claimPrepared(ctx) != nil && scannedTotal >= claimPreparationLimit {
+			break
+		}
 		remaining := limit - len(ids)
 		page, last, scanned, err := readPage(after, remaining, false)
 		if err != nil {
 			return nil, err
 		}
+		scannedTotal += scanned
 		ids = append(ids, page...)
 		if scanned < remaining {
 			break
@@ -370,7 +388,23 @@ func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.Wo
 	if finalization == nil || !finalization.Changed || finalization.ChangeID == "" || finalization.VersionID == "" || finalization.HeadSHA != source.HeadSHA || finalization.VersionError != "" {
 		return tracker.NativeAnsweredExclusion{}, nil
 	}
-	detail, err := readChangeDetail(ctx, q, scope, item, finalization.ChangeID, now)
+	var detail tracker.ChangeDetail
+	if claimPrepared(ctx) != nil {
+		change, readErr := readChange(ctx, q, scope, item, finalization.ChangeID)
+		if readErr != nil {
+			return tracker.NativeAnsweredExclusion{}, readErr
+		}
+		if change.CurrentVersion != finalization.VersionID {
+			return tracker.NativeAnsweredExclusion{}, nil
+		}
+		version, readErr := readClaimVersion(ctx, q, change.ID, change.CurrentVersion)
+		if readErr != nil {
+			return tracker.NativeAnsweredExclusion{}, readErr
+		}
+		detail, err = readClaimLandingDetail(ctx, q, scope, change, version, now)
+	} else {
+		detail, err = readChangeDetail(ctx, q, scope, item, finalization.ChangeID, now)
+	}
 	if err != nil {
 		return tracker.NativeAnsweredExclusion{}, err
 	}
