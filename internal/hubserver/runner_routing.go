@@ -806,6 +806,9 @@ func readRunnerClaimState(ctx context.Context, db nativeQueryer, scope nativeSco
 	}
 	for _, item := range items {
 		source, err := readNativeSourceCheckpoint(ctx, db, scope, string(item))
+		if errors.Is(err, errClaimHintStale) {
+			continue
+		}
 		if err != nil {
 			return err
 		}

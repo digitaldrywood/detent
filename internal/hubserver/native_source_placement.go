@@ -38,6 +38,9 @@ WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND (a.checkpo
 		if errors.As(err, &hydration) {
 			return source, &claimHydration{run: func(ctx context.Context, q nativeQueryer) error {
 				_, err := readNativeSourceCheckpoint(ctx, q, scope, item)
+				if errors.Is(err, errClaimHintStale) {
+					return nil
+				}
 				return err
 			}}
 		}
