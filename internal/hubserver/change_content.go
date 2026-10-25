@@ -18,7 +18,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -142,14 +141,15 @@ func hydrateChangeRecord(ctx context.Context, query nativeQueryer, value any) er
 			if err := query.QueryRowContext(ctx, `SELECT metadata_json FROM policy_revisions WHERE scope=? AND policy_id=?`, scope, revision).Scan(&raw); err != nil {
 				return err
 			}
-			approved, err := decodeProjectPolicy(raw, policy.Approval{})
-			if err != nil {
+			if err := json.Unmarshal([]byte(raw), &record.Policy); err != nil {
 				return err
 			}
-			if approved.Policy.ID != record.PolicyID || revision != record.PolicyID {
+			if err := record.Policy.Validate(); err != nil {
+				return err
+			}
+			if record.Policy.ID != record.PolicyID || revision != record.PolicyID {
 				return errors.New("version policy reference mismatch")
 			}
-			record.Policy = approved.Policy
 			if record.ReviewPolicy.PolicyID == "" {
 				record.ReviewPolicy.PolicyID = record.PolicyID
 			}

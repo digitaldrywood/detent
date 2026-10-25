@@ -3,6 +3,7 @@ package hubserver
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -594,6 +596,65 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 			response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "restored-review-rule"}, ExpectedID: f.rules.ID, Policy: rules})
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &f.rules)
+		}},
+		{"historical retired operator action", "", 2, func(t *testing.T) {
+			cfg := workflowconfig.Default()
+			cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+			descriptor, err := workflowconfig.ResolvePolicy(workflowconfig.Workflow{
+				Config:   cfg,
+				Authored: &policy.Authored{Version: workflowconfig.NativePolicyCanonicalizationVersion},
+				DefinitionSources: &workflowconfig.ProjectDefinitionSources{
+					Workflow: []byte("---\ntracker:\n  kind: hub_native\noperator:\n  actions: [clear_closed_dependencies, return_retired_parks]\n---\nHistorical instructions."),
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := workflowconfig.ResolveSharedPolicy(descriptor); err == nil || !strings.Contains(err.Error(), "operator.actions") {
+				t.Fatalf("new policy admission error = %v", err)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: hubTestPolicy().ID, Policy: descriptor})
+			requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+			raw, err := json.Marshal(descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO policy_revisions(scope,policy_id,metadata_json,approved_by,approved_at) VALUES(?,?,?,?,?)", string(scope.organization)+"/"+string(scope.project), descriptor.ID, string(raw), "historical-owner", formatHubTime(now)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER change_versions_immutable"); err != nil {
+				t.Fatal(err)
+			}
+			version = f.detail(t).Versions[0]
+			original, err := compactChangeVersion(version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			originalPolicyID := version.PolicyID
+			ctx := t.Context()
+			t.Cleanup(func() {
+				version.PolicyID = originalPolicyID
+				if _, err := f.service.database.db.ExecContext(context.WithoutCancel(ctx), "UPDATE change_versions SET policy_revision_id=?,record_json=? WHERE id=?", originalPolicyID, original, version.ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(context.WithoutCancel(ctx), "INSERT OR IGNORE INTO native_board_dirty(work_item_id) VALUES(?)", f.issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			})
+			version.PolicyID = descriptor.ID
+			record, err := compactChangeVersion(version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_versions SET policy_revision_id=?,record_json=? WHERE id=?", descriptor.ID, record, version.ID); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.detail(t).Versions[0].Policy; !reflect.DeepEqual(got, descriptor) {
+				t.Fatal("historical policy changed during hydration")
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT OR IGNORE INTO native_board_dirty(work_item_id) VALUES(?)", f.issue.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
