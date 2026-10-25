@@ -22,12 +22,13 @@ const (
 )
 
 type CheckpointRef struct {
-	Ref         string
-	CommitSHA   string
-	HeadSHA     string
-	BaseSHA     string
-	TreeSHA     string
-	transaction *checkpointTransaction
+	Ref                  string
+	CommitSHA            string
+	HeadSHA              string
+	BaseSHA              string
+	TreeSHA              string
+	WorkspaceFingerprint string
+	transaction          *checkpointTransaction
 }
 
 type CheckpointRefPublisher interface {
@@ -102,11 +103,13 @@ func (l *LocalGit) PushCheckpointRef(ctx context.Context, info Info, issue Issue
 	}
 	defer func() { err = errors.Join(err, os.RemoveAll(scratch)) }()
 	index := checkpointRefGit(info.Path, "GIT_INDEX_FILE="+filepath.Join(scratch, "index"))
-	head, tree, included, err := checkpointSnapshot(ctx, git, index)
+	capture, err := checkpointSnapshot(ctx, git, index)
 	if err != nil {
 		return previous, false, err
 	}
+	head, tree, included := capture.HeadSHA, capture.TreeSHA, capture.Included
 	if previous.CommitSHA != "" && previous.HeadSHA == head && previous.TreeSHA == tree {
+		previous.WorkspaceFingerprint = capture.fingerprint()
 		return previous, false, nil
 	}
 	for _, path := range included {
@@ -153,7 +156,7 @@ func (l *LocalGit) PushCheckpointRef(ctx context.Context, info Info, issue Issue
 	if _, err := git(ctx, "-c", "core.hooksPath="+os.DevNull, "-c", "push.followTags=false", "push", "--no-verify", "--force", "--recurse-submodules=no", defaultGitRemote, commit+":"+ref); err != nil {
 		return previous, false, fmt.Errorf("push checkpoint ref: %w", err)
 	}
-	return CheckpointRef{Ref: ref, CommitSHA: commit, HeadSHA: head, BaseSHA: base, TreeSHA: tree}, true, nil
+	return CheckpointRef{Ref: ref, CommitSHA: commit, HeadSHA: head, BaseSHA: base, TreeSHA: tree, WorkspaceFingerprint: capture.fingerprint()}, true, nil
 }
 
 // deleteCheckpointRef retires a terminal item's checkpoint ref as part of the
@@ -170,23 +173,58 @@ func (l *LocalGit) deleteCheckpointRef(ctx context.Context, issue Issue) {
 	}
 }
 
+type checkpointCapture struct {
+	HeadSHA  string
+	TreeSHA  string
+	Index    []checkpointIndexEntry
+	Included []string
+}
+
+func (c checkpointCapture) fingerprint() string {
+	parts := []string{"checkpoint-v1", c.HeadSHA, "worktree", c.TreeSHA, "index"}
+	for _, entry := range c.Index {
+		parts = append(parts, entry.Path, entry.Mode, entry.Blob, strconv.Itoa(entry.Stage))
+	}
+	return workspaceRecoveryFingerprint(parts...)
+}
+
 // checkpointSnapshot writes HEAD plus every uncommitted, non-ignored change
 // into the temporary index, leaving excluded paths at their HEAD version.
-func checkpointSnapshot(ctx context.Context, git, index checkpointGitRunner) (head, tree string, included []string, err error) {
+func checkpointSnapshot(ctx context.Context, git, index checkpointGitRunner) (checkpointCapture, error) {
+	capture := checkpointCapture{}
 	output, err := git(ctx, "rev-parse", "HEAD")
 	if err != nil {
-		return "", "", nil, fmt.Errorf("read checkpoint head: %w", err)
+		return capture, fmt.Errorf("read checkpoint head: %w", err)
 	}
-	head = strings.TrimSpace(output)
-	if _, err := index(ctx, "read-tree", "HEAD"); err != nil {
-		return "", "", nil, fmt.Errorf("seed checkpoint index: %w", err)
+	capture.HeadSHA = strings.TrimSpace(output)
+	output, err = git(ctx, "ls-files", "--stage", "-z")
+	if err != nil {
+		return capture, err
+	}
+	for _, entry := range strings.Split(strings.TrimSuffix(output, "\x00"), "\x00") {
+		if entry == "" {
+			continue
+		}
+		header, path, ok := strings.Cut(entry, "\t")
+		fields := strings.Fields(header)
+		if !ok || len(fields) != 3 {
+			return capture, ErrCheckpointUnsafe
+		}
+		stage, err := strconv.Atoi(fields[2])
+		if err != nil {
+			return capture, err
+		}
+		capture.Index = append(capture.Index, checkpointIndexEntry{Path: path, Mode: fields[0], Blob: fields[1], Stage: stage})
+	}
+	if _, err := index(ctx, "read-tree", capture.HeadSHA); err != nil {
+		return capture, fmt.Errorf("seed checkpoint index: %w", err)
 	}
 	if _, err := index(ctx, "add", "-A", "--", "."); err != nil {
-		return "", "", nil, fmt.Errorf("stage checkpoint content: %w", err)
+		return capture, fmt.Errorf("stage checkpoint content: %w", err)
 	}
-	changed, err := index(ctx, "diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD", "--")
+	changed, err := index(ctx, "diff", "--cached", "--name-only", "--no-renames", "-z", capture.HeadSHA, "--")
 	if err != nil {
-		return "", "", nil, err
+		return capture, err
 	}
 	var excluded []string
 	for _, path := range strings.Split(strings.TrimSuffix(changed, "\x00"), "\x00") {
@@ -195,19 +233,20 @@ func checkpointSnapshot(ctx context.Context, git, index checkpointGitRunner) (he
 		case !checkpointPathAllowed(path) || slices.ContainsFunc(detentHandoffDiffExcludes, func(exclude string) bool { return strings.HasPrefix(path, exclude) }):
 			excluded = append(excluded, path)
 		default:
-			included = append(included, path)
+			capture.Included = append(capture.Included, path)
 		}
 	}
 	if len(excluded) != 0 {
-		if _, err := index(ctx, append([]string{"reset", "-q", "HEAD", "--"}, excluded...)...); err != nil {
-			return "", "", nil, fmt.Errorf("exclude checkpoint paths: %w", err)
+		if _, err := index(ctx, append([]string{"reset", "-q", capture.HeadSHA, "--"}, excluded...)...); err != nil {
+			return capture, fmt.Errorf("exclude checkpoint paths: %w", err)
 		}
 	}
 	output, err = index(ctx, "write-tree")
 	if err != nil {
-		return "", "", nil, fmt.Errorf("write checkpoint tree: %w", err)
+		return capture, fmt.Errorf("write checkpoint tree: %w", err)
 	}
-	return head, strings.TrimSpace(output), included, nil
+	capture.TreeSHA = strings.TrimSpace(output)
+	return capture, nil
 }
 
 // checkpointMatches reports whether an existing worktree already holds the
@@ -221,8 +260,8 @@ func checkpointMatches(ctx context.Context, path string, checkpoint *CheckpointR
 		return false
 	}
 	defer func() { matched = os.RemoveAll(scratch) == nil && matched }()
-	head, tree, _, err := checkpointSnapshot(ctx, checkpointRefGit(path), checkpointRefGit(path, "GIT_INDEX_FILE="+filepath.Join(scratch, "index")))
-	return err == nil && head == checkpoint.HeadSHA && tree == checkpoint.TreeSHA
+	capture, err := checkpointSnapshot(ctx, checkpointRefGit(path), checkpointRefGit(path, "GIT_INDEX_FILE="+filepath.Join(scratch, "index")))
+	return err == nil && capture.HeadSHA == checkpoint.HeadSHA && capture.TreeSHA == checkpoint.TreeSHA
 }
 
 func checkpointUnpublishedHistory(ctx context.Context, git checkpointGitRunner, head string) error {

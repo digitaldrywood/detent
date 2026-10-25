@@ -216,6 +216,81 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 	}
 }
 
+func TestCheckpointRefCaptureIdentity(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		restage bool
+		change  bool
+	}{
+		{name: "verified no-op"},
+		{name: "index-only restaging", restage: true},
+		{name: "content changes", change: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			remote, source := initBareRemote(t), initSourceRepo(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+			backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := Issue{ID: "wi_identity", Identifier: "prj#1"}
+			info, err := backend.Create(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeCheckpointFile(t, info.Path, "work.go", "package work\n")
+			publishedState, err := backend.RecoveryState(t.Context(), info, issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var duringState RecoveryState
+			checkpoint, pushed, err := backend.PushCheckpointRef(t.Context(), info, issue, CheckpointRef{}, func(ctx context.Context) error {
+				writeCheckpointFile(t, info.Path, "work.go", "package temporaryB\n")
+				var err error
+				duringState, err = backend.RecoveryState(ctx, info, issue)
+				return err
+			})
+			if err != nil || !pushed {
+				t.Fatalf("initial publication: %+v %t %v", checkpoint, pushed, err)
+			}
+			if checkpoint.WorkspaceFingerprint != publishedState.WorkspaceFingerprint || checkpoint.WorkspaceFingerprint == duringState.WorkspaceFingerprint {
+				t.Fatalf("capture acquired later identity: checkpoint=%+v before=%+v during=%+v", checkpoint, publishedState, duringState)
+			}
+			if got := runGit(t, remote, "show", checkpoint.CommitSHA+":work.go"); got != "package work\n" {
+				t.Fatalf("published capture changed: %q", got)
+			}
+			writeCheckpointFile(t, info.Path, "work.go", "package work\n")
+			before, err := backend.RecoveryState(t.Context(), info, issue)
+			if err != nil || before.WorkspaceFingerprint != checkpoint.WorkspaceFingerprint {
+				t.Fatalf("initial identity mismatch: %+v %v", before, err)
+			}
+			if test.restage {
+				runGit(t, info.Path, "add", "work.go")
+			}
+			if test.change {
+				writeCheckpointFile(t, info.Path, "work.go", "package changed\n")
+			}
+			next, pushed, err := backend.PushCheckpointRef(t.Context(), info, issue, checkpoint, func(ctx context.Context) error { return ctx.Err() })
+			if err != nil || pushed != test.change {
+				t.Fatalf("next publication: %+v %t %v", next, pushed, err)
+			}
+			after, err := backend.RecoveryState(t.Context(), info, issue)
+			if err != nil || next.WorkspaceFingerprint != after.WorkspaceFingerprint {
+				t.Fatalf("snapshot identity mismatch: checkpoint=%+v state=%+v err=%v", next, after, err)
+			}
+			if (next.WorkspaceFingerprint != checkpoint.WorkspaceFingerprint) != (test.restage || test.change) {
+				t.Fatalf("identity did not track index/worktree: before=%+v after=%+v", checkpoint, next)
+			}
+			if !test.change && (next.CommitSHA != checkpoint.CommitSHA || next.TreeSHA != checkpoint.TreeSHA) {
+				t.Fatalf("no-op republished source: %+v", next)
+			}
+		})
+	}
+}
+
 func TestTerminalCleanupDeletesCheckpointRef(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
@@ -331,10 +406,29 @@ func verifyPortableReworkCheckpoint(t *testing.T, source *LocalGit, info Info, i
 	index := runGit(t, info.Path, "ls-files", "--stage", "-z")
 	staged := runGit(t, info.Path, "diff", "--cached", "--binary")
 	status := runGit(t, info.Path, "status", "--porcelain")
-	checkpoint, pushed, err := source.PushCheckpointRef(t.Context(), info, issue, initial, func(ctx context.Context) error { return ctx.Err() })
+	publishedState, err := source.RecoveryState(t.Context(), info, issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var duringState RecoveryState
+	checkpoint, pushed, err := source.PushCheckpointRef(t.Context(), info, issue, initial, func(ctx context.Context) error {
+		writeCheckpointFile(t, info.Path, "later.txt", "temporary B\n")
+		var err error
+		duringState, err = source.RecoveryState(ctx, info, issue)
+		return err
+	})
 	if err != nil || !pushed {
 		t.Fatalf("capture = %#v, %v, %v", checkpoint, pushed, err)
 	}
+	if checkpoint.WorkspaceFingerprint != publishedState.WorkspaceFingerprint || checkpoint.WorkspaceFingerprint == duringState.WorkspaceFingerprint {
+		t.Fatalf("rebase capture acquired later identity: checkpoint=%+v before=%+v during=%+v", checkpoint, publishedState, duringState)
+	}
+	writeCheckpointFile(t, info.Path, "later.txt", "partial later resolution\n")
+	state, err := source.RecoveryState(t.Context(), info, issue)
+	if err != nil || checkpoint.WorkspaceFingerprint != state.WorkspaceFingerprint {
+		t.Fatalf("transaction identity differs from live source: checkpoint=%+v state=%+v err=%v", checkpoint, state, err)
+	}
+
 	if tree := strings.TrimSpace(runGit(t, remote, "rev-parse", checkpoint.CommitSHA+"^{tree}")); tree == checkpoint.TreeSHA {
 		t.Fatal("old reader could interpret a transaction as ordinary source")
 	}

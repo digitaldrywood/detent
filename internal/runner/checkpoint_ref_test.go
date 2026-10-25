@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -59,15 +60,27 @@ func TestNativeRestorableCheckpoint(t *testing.T) {
 
 type checkpointFinalizingWorkspace struct {
 	*wipExecutionWorkspace
-	onFinalize func() error
-	unchanged  bool
+	onFinalize   func() error
+	unchanged    bool
+	afterCapture func()
 }
 
 func (w *checkpointFinalizingWorkspace) PushCheckpointRef(ctx context.Context, info workspace.Info, issue workspace.Issue, previous workspace.CheckpointRef, validate func(context.Context) error) (workspace.CheckpointRef, bool, error) {
+	var next workspace.CheckpointRef
+	var pushed bool
+	var err error
 	if w.unchanged {
-		return previous, false, validate(ctx)
+		next = previous
+		state, stateErr := w.RecoveryState(ctx, info, issue)
+		next.HeadSHA, next.WorkspaceFingerprint = state.HeadSHA, state.WorkspaceFingerprint
+		err = errors.Join(stateErr, validate(ctx))
+	} else {
+		next, pushed, err = w.wipExecutionWorkspace.PushCheckpointRef(ctx, info, issue, previous, validate)
 	}
-	return w.wipExecutionWorkspace.PushCheckpointRef(ctx, info, issue, previous, validate)
+	if w.afterCapture != nil {
+		w.afterCapture()
+	}
+	return next, pushed, err
 }
 
 func (w *checkpointFinalizingWorkspace) FinalizeNativeWork(ctx context.Context, _ workspace.Info, _ workspace.Issue, validate func(context.Context) error) (string, error) {
@@ -210,6 +223,78 @@ func TestCheckpointRefsCaptureUnchangedSnapshot(t *testing.T) {
 			if len(execution.steps) != 1 || execution.steps[0].Source.WorkspaceDigest != state.WorkspaceFingerprint || execution.steps[0].Source.CommitSHA != published.CommitSHA || execution.steps[0].Source.TreeSHA != published.TreeSHA {
 				t.Fatalf("completed turn lost current fingerprint or published snapshot: %+v", execution.steps)
 			}
+		})
+	}
+}
+
+func TestCheckpointRefsDoNotCaptureLaterWrites(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		reason    string
+		unchanged bool
+		missing   string
+	}{
+		{name: "periodic push", reason: "periodic"},
+		{name: "periodic no-op", reason: "periodic", unchanged: true},
+		{name: "final push", reason: "stage_finished"},
+		{name: "final no-op", reason: "stage_finished", unchanged: true},
+		{name: "failed first publication", missing: "fresh"},
+		{name: "failed restored publication without captured identity", missing: "restored"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				state := workspace.RecoveryState{HeadSHA: strings.Repeat("a", 40), WorkspaceFingerprint: "published A", TrackedPaths: []string{"work.go"}}
+				backend := &checkpointFinalizingWorkspace{wipExecutionWorkspace: &wipExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{recoveryStates: []workspace.RecoveryState{state}}}}}
+				execution := &retryStepExecution{finalizingTestExecution: &finalizingTestExecution{}}
+				r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now}
+				refs := newCheckpointRefs(backend, execution, workspace.Info{}, workspace.Issue{}, nil)
+				req := RunRequest{Execution: execution, checkpointRefs: refs}
+				if test.missing != "" {
+					if test.missing == "restored" {
+						refs.last = workspace.CheckpointRef{Ref: workspace.CheckpointRefPrefix + "work", CommitSHA: strings.Repeat("c", 40), HeadSHA: state.HeadSHA}
+					}
+					backend.publishErr = errors.New("publication failed")
+					if err := r.recordAgentStep(t.Context(), req, backend, workspace.Info{}, workspace.Issue{}, "complete unpublished source"); !errors.Is(err, ErrNativeRecoveryRequired) {
+						t.Fatalf("unpublished source accepted: %v", err)
+					}
+					if len(execution.steps) != 0 {
+						t.Fatalf("unpublished turn recorded: %+v", execution.steps)
+					}
+					return
+				}
+				if !r.pushCheckpointRef(t.Context(), refs, req, test.reason) {
+					t.Fatal("initial publication failed")
+				}
+				backend.unchanged = test.unchanged
+				backend.afterCapture = func() {
+					changed := state
+					changed.WorkspaceFingerprint = "unpublished B"
+					backend.recoveryStates = []workspace.RecoveryState{changed}
+				}
+				r.pushCheckpointRef(t.Context(), refs, req, test.reason)
+				source := executionCheckpoint(&state)
+				refs.apply(&source)
+				if source.WorkspaceDigest != "published A" {
+					t.Fatalf("published A acquired later identity: %+v", source)
+				}
+				backend.afterCapture = nil
+				backend.recoveryStates = []workspace.RecoveryState{state}
+				if err := r.recordAgentStep(t.Context(), req, backend, workspace.Info{}, workspace.Issue{}, "complete A"); err != nil {
+					t.Fatal(err)
+				}
+				state.WorkspaceFingerprint = "unpublished B"
+				backend.recoveryStates = []workspace.RecoveryState{state}
+				backend.unchanged = false
+				backend.publishErr = errors.New("final publication failed")
+				if err := r.recordAgentStep(t.Context(), req, backend, workspace.Info{}, workspace.Issue{}, "complete B"); !errors.Is(err, ErrNativeRecoveryRequired) {
+					t.Fatalf("unpublished source accepted: %v", err)
+				}
+				if len(execution.steps) != 1 {
+					t.Fatalf("unpublished turn recorded: %+v", execution.steps)
+				}
+			})
 		})
 	}
 }

@@ -163,29 +163,12 @@ func captureCheckpointTransaction(ctx context.Context, path, branch, scratch str
 		return nil, errors.Join(fmt.Errorf("%w: altered message metadata", ErrCheckpointUnsafe), err)
 	}
 	index := checkpointRefGit(path, "GIT_INDEX_FILE="+filepath.Join(scratch, "worktree-index"))
-	t.Head, t.Worktree, _, err = checkpointSnapshot(ctx, git, index)
+	capture, err := checkpointSnapshot(ctx, git, index)
 	if err != nil {
 		return nil, err
 	}
-	output, err := git(ctx, "ls-files", "--stage", "-z")
-	if err != nil {
-		return nil, err
-	}
-	for _, entry := range strings.Split(strings.TrimSuffix(output, "\x00"), "\x00") {
-		if entry == "" {
-			continue
-		}
-		header, path, ok := strings.Cut(entry, "\t")
-		fields := strings.Fields(header)
-		if !ok || len(fields) != 3 {
-			return nil, ErrCheckpointUnsafe
-		}
-		stage, err := strconv.Atoi(fields[2])
-		if err != nil {
-			return nil, err
-		}
-		t.Index = append(t.Index, checkpointIndexEntry{Path: path, Mode: fields[0], Blob: fields[1], Stage: stage})
-	}
+	t.Head, t.Worktree, t.Index = capture.HeadSHA, capture.TreeSHA, capture.Index
+
 	return t, nil
 }
 
@@ -351,7 +334,9 @@ func (l *LocalGit) pushReworkCheckpoint(ctx context.Context, info Info, issue Is
 		return previous, false, err
 	}
 	digest := strings.TrimSpace(output)
+	fingerprint := (checkpointCapture{HeadSHA: t.Head, TreeSHA: t.Worktree, Index: t.Index}).fingerprint()
 	if previous.TreeSHA == digest && previous.HeadSHA == t.Head {
+		previous.WorkspaceFingerprint = fingerprint
 		return previous, false, nil
 	}
 	index := checkpointRefGit(info.Path, "GIT_INDEX_FILE="+filepath.Join(scratch, "transaction-index"))
@@ -402,7 +387,7 @@ func (l *LocalGit) pushReworkCheckpoint(ctx context.Context, info Info, issue Is
 	if _, err := git(ctx, "-c", "core.hooksPath="+os.DevNull, "-c", "push.followTags=false", "push", "--no-verify", "--force", "--recurse-submodules=no", defaultGitRemote, commit+":"+ref); err != nil {
 		return previous, false, err
 	}
-	return CheckpointRef{Ref: ref, CommitSHA: commit, HeadSHA: t.Head, BaseSHA: t.Onto, TreeSHA: digest, transaction: t}, true, nil
+	return CheckpointRef{Ref: ref, CommitSHA: commit, HeadSHA: t.Head, BaseSHA: t.Onto, TreeSHA: digest, WorkspaceFingerprint: fingerprint, transaction: t}, true, nil
 }
 
 func readCheckpointTransaction(ctx context.Context, git checkpointGitRunner, checkpoint *CheckpointRef) (*checkpointTransaction, error) {

@@ -187,7 +187,7 @@ func (l *LocalGit) DiffStat(ctx context.Context, info Info, issue Issue) (DiffSt
 	return GitDiffStat(ctx, normalized.Path)
 }
 
-func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (RecoveryState, error) {
+func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (_ RecoveryState, err error) {
 	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {
 		return RecoveryState{}, err
@@ -212,11 +212,17 @@ func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (R
 	if err != nil {
 		return RecoveryState{}, err
 	}
-	head, err := runGitAt(ctx, normalized.Path, "rev-parse", "--verify", "HEAD")
+	scratch, err := changeSourceScratch()
 	if err != nil {
-		return RecoveryState{}, fmt.Errorf("git resolve recovery head: %w", err)
+		return RecoveryState{}, err
 	}
-	head = strings.TrimSpace(head)
+	defer func() { err = errors.Join(err, os.RemoveAll(scratch)) }()
+	capture, err := checkpointSnapshot(ctx, checkpointRefGit(normalized.Path), checkpointRefGit(normalized.Path, "GIT_INDEX_FILE="+filepath.Join(scratch, "index")))
+	if err != nil {
+		return RecoveryState{}, err
+	}
+	head := capture.HeadSHA
+
 	commitsNotInPullRequest, comparisonAvailable, err := gitCommitsNotInPullRequest(
 		ctx,
 		normalized.Path,
@@ -231,7 +237,7 @@ func (l *LocalGit) RecoveryState(ctx context.Context, info Info, issue Issue) (R
 		DiffStat:                       stat,
 		BaseFingerprint:                gitRecoveryBaseFingerprint(ctx, normalized.Path, issue.BaseRef),
 		HeadSHA:                        head,
-		WorkspaceFingerprint:           workspaceRecoveryFingerprint(head, stat.Fingerprint),
+		WorkspaceFingerprint:           capture.fingerprint(),
 		UnpushedCommits:                unpushedCommits,
 		UnpushedCommitRefs:             unpushedCommitRefs,
 		TrackedPaths:                   trackedPaths,

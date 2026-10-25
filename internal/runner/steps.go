@@ -125,8 +125,8 @@ func (r *Runner) recordAgentStep(ctx context.Context, req RunRequest, backend wo
 		return failedStep("checkpoint_recovery", ErrNativeRecoveryRequired)
 	}
 	source := executionCheckpoint(state)
-	req.checkpointRefs.apply(&source)
-	if source.HeadSHA != state.HeadSHA || source.WorkspaceDigest != state.WorkspaceFingerprint {
+	published := req.checkpointRefs.apply(&source)
+	if !published || source.HeadSHA != state.HeadSHA || source.WorkspaceDigest != state.WorkspaceFingerprint {
 		return failedStep("checkpoint_recovery", ErrNativeRecoveryRequired)
 	}
 	receipt := stepBinding(req.Execution, "agent_turn", source, tracker.NativeChangeReference{})
@@ -175,8 +175,8 @@ func (r *Runner) finalizeNativeCommit(ctx context.Context, req RunRequest, backe
 		return "", failedStep("checkpoint_recovery", err)
 	}
 	observed := receipt.Source
-	req.checkpointRefs.apply(&receipt.Source)
-	if receipt.Source.HeadSHA != observed.HeadSHA || receipt.Source.WorkspaceDigest != observed.WorkspaceDigest {
+	published := req.checkpointRefs.apply(&receipt.Source)
+	if !published || receipt.Source.HeadSHA != observed.HeadSHA || receipt.Source.WorkspaceDigest != observed.WorkspaceDigest {
 		return "", failedStep("checkpoint_recovery", ErrNativeRecoveryRequired)
 	}
 	receipt.FinalizedBaseSHA = base

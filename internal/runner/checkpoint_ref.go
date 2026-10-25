@@ -23,17 +23,15 @@ const (
 // (INV-17) and remembers the newest pushed checkpoint so every Hub checkpoint
 // names it. A failed push is logged and retried at the next trigger.
 type checkpointRefs struct {
-	backend   workspace.Backend
 	publisher workspace.CheckpointRefPublisher
 	execution Execution
 	info      workspace.Info
 	issue     workspace.Issue
 
-	mu       sync.Mutex
-	last     workspace.CheckpointRef
-	failed   bool
-	saved    *tracker.NativeCheckpoint
-	captured *tracker.NativeCheckpoint
+	mu     sync.Mutex
+	last   workspace.CheckpointRef
+	failed bool
+	saved  *tracker.NativeCheckpoint
 
 	nudge chan struct{}
 	stop  func()
@@ -79,7 +77,7 @@ func newCheckpointRefs(backend workspace.Backend, execution Execution, info work
 	if !ok || execution == nil {
 		return nil
 	}
-	c := &checkpointRefs{backend: backend, publisher: publisher, execution: execution, info: info, issue: issue, nudge: make(chan struct{}, 1), stop: func() {}}
+	c := &checkpointRefs{publisher: publisher, execution: execution, info: info, issue: issue, nudge: make(chan struct{}, 1), stop: func() {}}
 	if issue.Checkpoint != nil {
 		c.last = *issue.Checkpoint
 		if previous := execution.Recovery().SourceAttempt(); previous != nil && previous.Checkpoint.GitRef() {
@@ -95,9 +93,9 @@ func newCheckpointRefs(backend workspace.Backend, execution Execution, info work
 	return c
 }
 
-func (c *checkpointRefs) apply(checkpoint *tracker.NativeCheckpoint) {
+func (c *checkpointRefs) apply(checkpoint *tracker.NativeCheckpoint) bool {
 	if c == nil || checkpoint.WorktreeState == "clean" || checkpoint.UncertainForgeEffect() {
-		return
+		return true
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -105,17 +103,18 @@ func (c *checkpointRefs) apply(checkpoint *tracker.NativeCheckpoint) {
 		checkpoint.HeadSHA, checkpoint.WorkspaceDigest, checkpoint.WorktreeState = c.saved.HeadSHA, c.saved.WorkspaceDigest, c.saved.WorktreeState
 		checkpoint.Storage, checkpoint.Availability = c.saved.Storage, c.saved.Availability
 		checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA = c.saved.Ref, c.saved.CommitSHA, c.saved.BaseSHA, c.saved.TreeSHA
-		return
+		return true
 	}
 	last := c.last
 	if last.CommitSHA == "" {
-		return
+		return !c.failed
 	}
-	if c.captured != nil {
-		checkpoint.HeadSHA, checkpoint.WorkspaceDigest, checkpoint.WorktreeState = c.captured.HeadSHA, c.captured.WorkspaceDigest, c.captured.WorktreeState
+	if last.WorkspaceFingerprint != "" {
+		checkpoint.HeadSHA, checkpoint.WorkspaceDigest = last.HeadSHA, last.WorkspaceFingerprint
 	}
 	checkpoint.Storage, checkpoint.Availability = "git_ref", "available"
 	checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA = last.Ref, last.CommitSHA, last.BaseSHA, last.TreeSHA
+	return last.WorkspaceFingerprint != ""
 }
 
 func (r *Runner) pushCheckpointRef(ctx context.Context, c *checkpointRefs, req RunRequest, reason string) bool {
@@ -132,14 +131,9 @@ func (r *Runner) pushCheckpointRef(ctx context.Context, c *checkpointRefs, req R
 		r.logWorkerEventLevel(slog.LevelWarn, req.Issue, "worker_checkpoint_ref_failed", "reason", reason, "error", err)
 		return false
 	}
+	c.last = next
 	if pushed {
-		c.last = next
 		r.logWorkerEvent(req.Issue, "worker_checkpoint_ref_pushed", "reason", reason, "ref", next.Ref, "commit_sha", next.CommitSHA, "head_sha", next.HeadSHA)
-	}
-	state := r.workspaceRecoveryState(c.backend, pushCtx, c.info, c.issue, "checkpoint_ref")
-	if state != nil {
-		checkpoint := executionCheckpoint(state)
-		c.captured = &checkpoint
 	}
 	return pushed
 }

@@ -573,7 +573,7 @@ func (w *reapedExecutionWorkspace) PushCheckpointRef(ctx context.Context, _ work
 	if w.captureErr != nil {
 		return previous, false, w.captureErr
 	}
-	return workspace.CheckpointRef{Ref: tracker.CheckpointRefPrefix + "work", CommitSHA: strings.Repeat("c", 40), HeadSHA: "completed-head", BaseSHA: strings.Repeat("b", 40), TreeSHA: strings.Repeat("e", 40)}, true, nil
+	return workspace.CheckpointRef{Ref: tracker.CheckpointRefPrefix + "work", CommitSHA: strings.Repeat("c", 40), HeadSHA: "completed-head", WorkspaceFingerprint: "completed-digest", BaseSHA: strings.Repeat("b", 40), TreeSHA: strings.Repeat("e", 40)}, true, nil
 }
 
 func (w *reapedExecutionWorkspace) RestoreCheckpointForFinalization(_ context.Context, original workspace.Info, issue workspace.Issue, checkpoint workspace.CheckpointRef) (workspace.Info, workspace.Issue, error) {

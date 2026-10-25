@@ -1887,7 +1887,11 @@ func (w *wipExecutionWorkspace) PushCheckpointRef(ctx context.Context, _ workspa
 	if w.publishErr != nil {
 		return previous, false, w.publishErr
 	}
-	return workspace.CheckpointRef{Ref: workspace.CheckpointRefPrefix + "work", CommitSHA: strings.Repeat("c", 40), HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("e", 40)}, true, nil
+	state, err := w.RecoveryState(ctx, workspace.Info{}, workspace.Issue{})
+	if err != nil {
+		return previous, false, err
+	}
+	return workspace.CheckpointRef{Ref: workspace.CheckpointRefPrefix + "work", CommitSHA: strings.Repeat("c", 40), HeadSHA: state.HeadSHA, TreeSHA: strings.Repeat("e", 40), WorkspaceFingerprint: state.WorkspaceFingerprint}, true, nil
 }
 
 func TestStageEndPushesCheckpointRef(t *testing.T) {
