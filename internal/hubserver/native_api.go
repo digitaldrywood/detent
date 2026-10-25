@@ -341,6 +341,8 @@ func (s *Service) requireNativeScope(roles ...apiScope) echo.MiddlewareFunc {
 				write := !hostedReadRequest(c) && !artifactReadGrantRequest(c) && !relayTicketRequest(c)
 				if write && credential.HostedRole == "reporter" {
 					switch c.Request().Method + " " + c.Path() {
+					case "POST " + nativeBase + "/release-audits":
+						return s.nativeAPIError(c, nativeNotFound())
 					case "PATCH " + nativeBase + "/work-items/:item":
 						scope.action = operatortool.EditItem
 					case "POST " + nativeBase + "/work-items":
