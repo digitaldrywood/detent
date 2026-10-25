@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -18,9 +21,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/releaseaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -274,6 +279,58 @@ func TestReporterNativeCommands(t *testing.T) {
 			for _, test := range []struct{ method, suffix string }{{http.MethodPost, "/dependencies"}, {http.MethodPost, "/restore"}, {http.MethodPost, "/archive"}} {
 				r := request(u, test.method, f.base+"/work-items/"+string(other.WorkItemID)+test.suffix, map[string]any{"idempotency_key": "denied"})
 				requireNativeStatus(t, r, http.StatusForbidden)
+			}
+			auditBytes, checkpoint, err := releaseaudit.SnapshotBytes(releaseaudit.Snapshot{
+				Identity: releaseaudit.Identity{ProjectID: string(f.project), Repository: "example-org/example-project", Commit: strings.Repeat("a", 40), ReleaseSeries: "release/v1.0", RunID: "run", Attempt: "1", JobID: "audit", RunURL: "https://example.test/runs/1"},
+				Sequence: 1, Status: "incomplete", BundleCommit: releaseaudit.BundleCommit, BundleDigest: releaseaudit.BundleDigest,
+				Allowance: releaseaudit.Allowance{Invocations: 20}, Ledger: []byte(`[]`),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			auditPart := attachment.Metadata{ID: conversation.NewAttachmentID(), Name: "audit.txt", ContentType: "text/plain", Size: int64(len(auditBytes)), SHA256: artifact.Digest(auditBytes)}
+			requireNativeStatus(t, request(member, http.MethodPost, f.base+"/attachment-metadata", auditPart), http.StatusCreated)
+			checkpoint.Parts = []releaseaudit.Part{{AttachmentID: auditPart.ID, Index: 0, Bytes: len(auditBytes), Digest: auditPart.SHA256}}
+			operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET checkout_repository=? WHERE id=?", checkpoint.Identity.Repository, f.project)
+			auditRequest := struct {
+				tracker.Mutation
+				releaseaudit.Checkpoint
+			}{tracker.Mutation{IdempotencyKey: "release-audit"}, checkpoint}
+			requireNativeStatus(t, request(member, http.MethodPost, f.base+"/release-audits", auditRequest), http.StatusOK)
+			for _, access := range []struct {
+				method, suffix string
+				body           any
+			}{
+				{http.MethodGet, "/release-audits", nil},
+				{http.MethodGet, "/release-audits/" + checkpoint.ID, nil},
+				{http.MethodPost, "/release-audits", auditRequest},
+				{http.MethodGet, "/attachment-metadata/" + auditPart.ID, nil},
+			} {
+				t.Run(access.method+access.suffix, func(t *testing.T) {
+					requireNativeStatus(t, request(u, access.method, f.base+access.suffix, access.body), http.StatusNotFound)
+					requireNativeStatus(t, request(member, access.method, f.base+access.suffix, access.body), http.StatusOK)
+				})
+			}
+			attachmentContexts := make(chan context.Context, 1)
+			f.service.echo.GET("/release-audit-attachment-test", func(c echo.Context) error {
+				attachmentContexts <- operatortool.BindConnection(c.Request().Context(), "audit-attachment", "test")
+				return c.NoContent(http.StatusOK)
+			}, f.service.operatorAuthority)
+			requireNativeStatus(t, request(u, http.MethodGet, "/organizations/org_security/release-audit-attachment-test", nil), http.StatusOK)
+			attachmentContext := <-attachmentContexts
+			executor := hostedOperatorExecutor{f.service}
+			if err := executor.OpenConnection(attachmentContext); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{operatortool.ReadAttachmentMetadata, operatortool.ReadAttachment} {
+				raw, err := json.Marshal(map[string]string{"project_id": string(f.project), "attachment_id": auditPart.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = executor.Execute(attachmentContext, operatortool.Call{Name: name, Arguments: raw})
+				if !errors.Is(err, explain.ErrNotFound) {
+					t.Fatalf("%s release audit evidence: %v", name, err)
+				}
 			}
 			operatorSQL(t, f.hostedSecurityFixture, "DELETE FROM hosted_project_grants WHERE user_id=?", u.identity.Subject)
 			requireNativeStatus(t, request(u, http.MethodGet, f.base+"/work-items", nil), http.StatusNotFound)
