@@ -164,8 +164,7 @@ HUB_SLICE_2 := -run '^Test[HMP]'
 HUB_SLICE_3 := -run '^Test[ACGS]'
 HUB_SLICE_4 := -skip '^Test[ABCDEFGHILMNPQSTUV]'
 
-# RACE_SHARD=i/n races one balanced slice of the packages outside the hub server (shard 1 also owns
-# workspace and web); RACE_SHARD=hub-N races hub server slice N.
+# RACE_SHARD=i/n races one balanced slice of the packages outside the hub server; RACE_SHARD=hub-N races hub server slice N.
 RACE_SHARD ?=
 RACE_HUB_SLICE := $(patsubst hub-%,%,$(filter hub-%,$(RACE_SHARD)))
 
@@ -175,8 +174,7 @@ test-race: generate-docs
 	elif [ -n "$(RACE_HUB_SLICE)" ]; then \
 		$(GO_TEST) -short -race -timeout=30m ./internal/hubserver -count=1 $(HUB_SLICE_$(RACE_HUB_SLICE)); \
 	else \
-		packages="$$(COVER_SKIP_HUB=1 bash scripts/cover-packages.sh $(RACE_SHARD))"; \
-		if [ "$(firstword $(subst /, ,$(RACE_SHARD)))" = 1 ]; then packages="$$packages ./internal/workspace ./internal/web"; fi; \
+		packages="$$(bash scripts/race-packages.sh $(RACE_SHARD))"; \
 		$(GO_TEST) -short -race -timeout=30m $$packages -count=1; \
 	fi
 
