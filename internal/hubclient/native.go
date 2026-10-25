@@ -16,7 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudorigin"
 	isolationpolicy "github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
-	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -336,7 +335,7 @@ func (c *NativeClient) Claim(ctx context.Context, request tracker.NativeClaim) (
 	}
 	err := c.client.request(ctx, http.MethodPost, c.base()+"/claims", request, &result)
 	if err == nil && c.client.runner != nil && result.IsolationPolicy == nil {
-		return result, errors.Join(fmt.Errorf("%w: runner claim isolation policy is unavailable", orchestrator.ErrSchedulingUnavailable), c.Release(context.WithoutCancel(ctx), result, "work_item_hydration_failed"))
+		return result, errors.Join(errors.New("runner claim isolation policy is unavailable"), c.Release(context.WithoutCancel(ctx), result, "work_item_hydration_failed"))
 	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && apiErr.Code == "no_claimable_work" {
