@@ -16,6 +16,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestHeartbeatScaleBenchmark(t *testing.T) {
@@ -160,10 +161,11 @@ func TestHeartbeatScaleBenchmark(t *testing.T) {
 
 func TestHeartbeatResponseReaderSnapshot(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		capacity int
-		failRead bool
-	}{{name: "committed observation", capacity: 2}, {name: "committed observation survives response failure", capacity: 1, failRead: true}} {
+		name          string
+		capacity      int
+		failRead      bool
+		revokeProject bool
+	}{{name: "committed observation", capacity: 2}, {name: "committed observation survives response failure", capacity: 1, failRead: true}, {name: "project removed before response snapshot", capacity: 2, revokeProject: true}} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "heartbeat-reader")
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
@@ -174,8 +176,27 @@ func TestHeartbeatResponseReaderSnapshot(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			observed := false
+			removed := false
+			heartbeatWritten := false
+			if test.revokeProject {
+				now := f.service.database.now
+				f.service.database.now = func() time.Time {
+					if heartbeatWritten && !removed && f.service.database.db.Stats().InUse == 0 {
+						removed = true
+						change := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{
+							DisplayName: "Example runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{},
+						}}
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, change), http.StatusOK)
+					}
+					return now()
+				}
+				defer func() { f.service.database.now = now }()
+			}
 			timing := &requestTiming{}
 			timing.trace = func(query string, _ []driver.NamedValue) {
+				if strings.HasPrefix(query, "UPDATE runner_identities SET") {
+					heartbeatWritten = true
+				}
 				if observed || !strings.HasPrefix(query, "SELECT m.capacity, min(r.capacity_limit, r.reported_capacity)") {
 					return
 				}
@@ -197,9 +218,30 @@ func TestHeartbeatResponseReaderSnapshot(t *testing.T) {
 					cancel()
 				}
 			}
-			request := newHubAPIRequest(t, http.MethodPost, path, r.redemption.Credential, map[string]any{"capacity": test.capacity, "version": "test"})
+			request := newHubAPIRequest(t, http.MethodPost, path, r.redemption.Credential, map[string]any{"capacity": test.capacity, "version": "test", "change_cursor": ""})
 			response := httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(ctx, timing)))
+			if test.revokeProject {
+				if !removed || observed {
+					t.Fatalf("project removed=%t claim state read=%t", removed, observed)
+				}
+				requireNativeStatus(t, response, http.StatusNotFound)
+				denied := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items", r.redemption.Credential, nil)
+				requireNativeStatus(t, denied, http.StatusNotFound)
+				if response.Body.String() != denied.Body.String() {
+					t.Fatalf("response error=%s request error=%s", response.Body.String(), denied.Body.String())
+				}
+				for _, field := range []string{"claim_state", "changes", "github_intake"} {
+					if strings.Contains(response.Body.String(), `"`+field+`"`) {
+						t.Fatalf("response disclosed %s: %s", field, response.Body.String())
+					}
+				}
+				var capacity int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT reported_capacity FROM runner_identities WHERE id=?", r.binding.RunnerID).Scan(&capacity); err != nil || capacity != test.capacity {
+					t.Fatalf("committed capacity=%d want=%d error=%v", capacity, test.capacity, err)
+				}
+				return
+			}
 			if !observed {
 				t.Fatal("response did not read claim state")
 			}
@@ -221,6 +263,95 @@ func TestHeartbeatResponseReaderSnapshot(t *testing.T) {
 			}
 			if capacity != 0 {
 				t.Fatalf("concurrent writer capacity=%d want=0", capacity)
+			}
+		})
+	}
+}
+
+func TestHeartbeatResponseArchivedCheckpoint(t *testing.T) {
+	for _, concurrent := range []int{1, readerConnections} {
+		t.Run(fmt.Sprintf("responses=%d", concurrent), func(t *testing.T) {
+			store := &memoryRunDetails{}
+			f := newDefaultNativeFixture(t, Config{RunDetails: store})
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
+			r.enroll(t)
+			issue := f.create(t, "archived checkpoint")
+			worker := r.redemption.Credential
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{
+				PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "checkpoint-session",
+				TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability},
+			})
+			requireNativeStatus(t, response, http.StatusOK)
+			var lease tracker.NativeLease
+			decodeHubResponse(t, response, &lease)
+			event := nativeStartedEvent(lease)
+			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+			event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "checkpoint", 2
+			event.Data.Handoff = nativeTestCheckpoint()
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
+			var raw string
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT checkpoint_json FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			var checkpoint storedRunCheckpoint
+			if err := json.Unmarshal([]byte(raw), &checkpoint); err != nil || checkpoint.Detail == nil {
+				t.Fatalf("checkpoint is not archived: %s error=%v", raw, err)
+			}
+			f.service.tokenUseWork.Wait()
+			store.mu.Lock()
+			store.reads = 0
+			store.mu.Unlock()
+			ready := make(chan struct{}, concurrent)
+			release := make(chan struct{})
+			results := make(chan *httptest.ResponseRecorder, concurrent)
+			for range concurrent {
+				request := newHubAPIRequest(t, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"capacity": 1, "version": "test"})
+				timing := &requestTiming{}
+				observed := false
+				timing.trace = func(query string, _ []driver.NamedValue) {
+					if observed || !strings.HasPrefix(query, "SELECT a.id,l.machine_id,") {
+						return
+					}
+					observed = true
+					ready <- struct{}{}
+					<-release
+				}
+				go func() {
+					response := httptest.NewRecorder()
+					f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(t.Context(), timing)))
+					results <- response
+				}()
+			}
+			for range concurrent {
+				select {
+				case <-ready:
+				case response := <-results:
+					close(release)
+					t.Fatalf("response completed before archive read: status=%d body=%s", response.Code, response.Body.String())
+				}
+			}
+			inUse := f.service.database.reader.Stats().InUse
+			close(release)
+			if inUse != concurrent {
+				t.Errorf("occupied readers=%d want=%d", inUse, concurrent)
+			}
+			for range concurrent {
+				response := <-results
+				requireNativeStatus(t, response, http.StatusOK)
+				var snapshot runnerauth.RoutingSnapshot
+				decodeHubResponse(t, response, &snapshot)
+				if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 1 || snapshot.ClaimState.ReleasedExecutions[0].AttemptID != event.Data.AttemptID {
+					t.Fatalf("archived execution missing from response: %+v", snapshot.ClaimState)
+				}
+			}
+			store.mu.Lock()
+			reads := store.reads
+			store.mu.Unlock()
+			if reads != concurrent {
+				t.Fatalf("archive reads=%d want=%d", reads, concurrent)
 			}
 		})
 	}
