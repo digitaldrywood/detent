@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"testing/fstest"
+
+	"github.com/pressly/goose/v3"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -66,9 +69,10 @@ func TestReporterAndTriageMigration(t *testing.T) {
 		}
 		migrations[file.Name()] = &fstest.MapFile{Data: data}
 	}
+	goMigrations := slices.DeleteFunc(hubGoMigrations(discardLogger()), func(m *goose.Migration) bool { return m.Version >= 20261013050000 })
 	migrate := func() {
 		t.Helper()
-		if _, err := runMigrationsFromFS(t.Context(), db, migrations, discardLogger(), hubGoMigrations(discardLogger())); err != nil {
+		if _, err := runMigrationsFromFS(t.Context(), db, migrations, discardLogger(), goMigrations); err != nil {
 			t.Fatal(err)
 		}
 	}
