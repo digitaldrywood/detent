@@ -16,27 +16,30 @@ import (
 func TestRunnerAllowedProviderEligibility(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []struct {
-		name        string
-		unavailable int
-		ready       bool
-		contract    string
-		landing     string
+		name         string
+		unavailable  int
+		ready        bool
+		contract     string
+		landing      string
+		providerPage bool
 	}{
-		{"unavailable project yields to ready project", 1, false, "", ""},
-		{"ready work beyond first candidate page wins", 100, true, "", ""},
-		{"invalid contract yields to ready project", 1, false, "missing", ""},
-		{"invalid contract yields to next candidate", 1, true, "missing", ""},
-		{"rejected prefix beyond budget in one project", 125, true, "missing", ""},
-		{"rejected prefix beyond budget across projects", 125, false, "missing", ""},
-		{"hydration exhaustion advances to next candidate", 125, true, "hydration", ""},
-		{"policy changes revisit rejected candidates", 125, true, "policy", ""},
-		{"legacy checkpoint hydration cannot exhaust a candidate", 125, true, "checkpoints", ""},
-		{"dispatch marker yields to next candidate", 1, true, "marker", ""},
-		{"unknown legacy landing ceiling cannot strand another project", 0, false, "", "legacy owner"},
-		{"positive owner pin cannot prove a foreign incoming ceiling", 0, false, "", "pinned owner"},
-		{"native-only request preserves unknown foreign capacity", 0, false, "", "native-only request"},
-		{"all legacy cross-project claims preserve unbounded behavior", 0, false, "", "legacy request"},
-		{"unoccupied foreign landing retains project ranking", 0, false, "", "unoccupied"},
+		{"unavailable project yields to ready project", 1, false, "", "", false},
+		{"ready work beyond first candidate page wins", 100, true, "", "", false},
+		{"invalid contract yields to ready project", 1, false, "missing", "", false},
+		{"invalid contract yields to next candidate", 1, true, "missing", "", false},
+		{"provider page beyond project quota", 50, true, "missing", "", true},
+		{"provider page hydration exhaustion", 99, true, "hydration", "", true},
+		{"rejected prefix beyond budget in one project", 125, true, "missing", "", false},
+		{"rejected prefix beyond budget across projects", 125, false, "missing", "", false},
+		{"hydration exhaustion advances to next candidate", 125, true, "hydration", "", false},
+		{"policy changes revisit rejected candidates", 125, true, "policy", "", false},
+		{"legacy checkpoint hydration cannot exhaust a candidate", 125, true, "checkpoints", "", false},
+		{"dispatch marker yields to next candidate", 1, true, "marker", "", false},
+		{"unknown legacy landing ceiling cannot strand another project", 0, false, "", "legacy owner", false},
+		{"positive owner pin cannot prove a foreign incoming ceiling", 0, false, "", "pinned owner", false},
+		{"native-only request preserves unknown foreign capacity", 0, false, "", "native-only request", false},
+		{"all legacy cross-project claims preserve unbounded behavior", 0, false, "", "legacy request", false},
+		{"unoccupied foreign landing retains project ranking", 0, false, "", "unoccupied", false},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
@@ -108,11 +111,15 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 			for _, f := range []nativeFixture{preferred, general} {
 				approveHubTestPolicy(t, preferred.service, f.base+"/policy", hubTestPolicy())
 			}
+			var providerCandidates []tracker.NativeCapacityCandidate
 			var rejected tracker.NativeIssue
 			rejectedIDs := make(map[tracker.NativeWorkItemID]bool)
 			for i := range scenario.unavailable {
 				issue := preferred.create(t, fmt.Sprintf("unavailable candidate %d", i))
 				rejectedIDs[issue.WorkItemID] = true
+				if scenario.providerPage {
+					providerCandidates = append(providerCandidates, providerClaim(r, issue, "").ProviderCandidates[0])
+				}
 				if i == 0 {
 					rejected = issue
 				}
@@ -162,8 +169,11 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			generalIssue := general.create(t, "available model")
-			if scenario.contract == "" {
+			var generalIssue tracker.NativeIssue
+			if !scenario.providerPage {
+				generalIssue = general.create(t, "available model")
+			}
+			if scenario.contract == "" || scenario.providerPage {
 				publishCapacity(t, preferred, r, capacityReport(now))
 			}
 			claim := providerClaim(r, generalIssue, "general-provider")
@@ -174,13 +184,18 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 				claim.ProviderCandidates = nil
 				claim.WorkItemID = ""
 			}
-			if scenario.unavailable > claimPreparationLimit {
+			if scenario.providerPage {
+				claim.ProviderCandidates = append(providerCandidates, providerClaim(r, preferredIssue, "").ProviderCandidates[0])
+			}
+			if scenario.unavailable > claimPreparationLimit || scenario.providerPage {
 				target, want := general, generalIssue
 				if scenario.ready {
 					target, want = preferred, preferredIssue
-					routing.ExpectedRevision = 2
-					routing.ProjectIDs = []tracker.ProjectID{preferred.project.ID}
-					requireNativeStatus(t, performHubAPIRequest(t, preferred.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
+					if !scenario.providerPage || scenario.contract == "hydration" {
+						routing.ExpectedRevision = 2
+						routing.ProjectIDs = []tracker.ProjectID{preferred.project.ID}
+						requireNativeStatus(t, performHubAPIRequest(t, preferred.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
+					}
 				}
 				claimed := false
 				for attempt := range 5 {
@@ -203,6 +218,9 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 				}
 				if !claimed {
 					t.Fatal("eligible candidate starved beyond the budget")
+				}
+				if scenario.providerPage {
+					return
 				}
 				if scenario.contract == "policy" {
 					workflow := config.Workflow{Config: config.Default()}

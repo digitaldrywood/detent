@@ -262,7 +262,7 @@ func readRunnerSelectionProgress(ctx context.Context, q nativeQueryer, scope nat
 			return progress, nil
 		}
 	}
-	progress := &runnerSelectionProgress{runner: scope.credential.Runner.RunnerID, project: scope.project, durable: prepared != nil && query.WorkItemID == 0 && len(query.ProviderCandidates) == 0}
+	progress := &runnerSelectionProgress{runner: scope.credential.Runner.RunnerID, project: scope.project, durable: prepared != nil && query.WorkItemID == 0}
 	if progress.durable {
 		err := q.QueryRowContext(ctx, `SELECT issue_id,priority,aging,landing,created,identifier,revision FROM runner_selection_cursors WHERE runner_id=? AND project_id=?`, progress.runner, progress.project).Scan(&progress.cursor.ID, &progress.cursor.Priority, &progress.cursor.Aging, &progress.cursor.Landing, &progress.cursor.Created, &progress.cursor.Identifier, &progress.revision)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
