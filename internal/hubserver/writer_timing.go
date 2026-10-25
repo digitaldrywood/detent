@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,8 +18,10 @@ import (
 // connection, so slow requests can be attributed to their own writes or to
 // waiting behind someone else's.
 type writerTiming struct {
-	hold atomic.Int64
-	txs  atomic.Int64
+	hold  atomic.Int64
+	txs   atomic.Int64
+	mu    sync.Mutex
+	spans []timingSpan
 }
 
 type writerTimingKey struct{}
@@ -40,6 +44,37 @@ func (t *writerTiming) add(start time.Time) {
 	}
 	t.hold.Add(int64(time.Since(start)))
 	t.txs.Add(1)
+}
+
+func heartbeatWriterSteps(ctx context.Context) func(string) {
+	timing := writerTimingFrom(ctx)
+	if timing == nil {
+		return func(string) {}
+	}
+	var name string
+	var start time.Time
+	return func(next string) {
+		now := time.Now()
+		if name != "" {
+			timing.mu.Lock()
+			timing.spans = append(timing.spans, timingSpan{name: name, duration: now.Sub(start)})
+			timing.mu.Unlock()
+		}
+		name, start = next, now
+	}
+}
+
+func (t *writerTiming) logAttrs() []any {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.spans) == 0 {
+		return nil
+	}
+	spans := make([]any, 0, len(t.spans))
+	for _, span := range t.spans {
+		spans = append(spans, slog.Float64(span.name, milliseconds(span.duration)))
+	}
+	return []any{slog.Group("heartbeat_writer_ms", spans...)}
 }
 
 // openTimedWriter opens the writer pool through a connector that records each
@@ -230,8 +265,11 @@ func (s *Service) timeWriterUse(next echo.HandlerFunc) echo.HandlerFunc {
 		elapsed := time.Since(start)
 		hold := time.Duration(timing.hold.Load())
 		if elapsed >= slowRequest || hold >= slowRequest/5 {
-			s.config.Logger.Info("hub request timing", append([]any{"method", c.Request().Method, "route", c.Path(), "status", c.Response().Status,
-				"duration_ms", elapsed.Milliseconds(), "writer_hold_ms", hold.Milliseconds(), "writer_txs", timing.txs.Load()}, request.logAttrs()...)...)
+			attrs := []any{"method", c.Request().Method, "route", c.Path(), "status", c.Response().Status,
+				"duration_ms", elapsed.Milliseconds(), "writer_hold_ms", hold.Milliseconds(), "writer_txs", timing.txs.Load()}
+			attrs = append(attrs, request.logAttrs()...)
+			attrs = append(attrs, timing.logAttrs()...)
+			s.config.Logger.Info("hub request timing", attrs...)
 		}
 		s.logWriterWaits()
 		return err

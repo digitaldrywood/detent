@@ -61,6 +61,8 @@ func runnerCollision() error {
 	return &nativeError{Code: "identity_collision", Message: "Identity is already registered; create a fresh host identity and enroll it explicitly", status: http.StatusConflict, publicMessage: true}
 }
 
+type runnerCommittedResponse func(context.Context, *sql.Tx, time.Time) (any, error)
+
 func (s *Service) runnerTransaction(c echo.Context, status int, operation func(context.Context, *sql.Tx, time.Time) (any, error)) error {
 	ctx := c.Request().Context()
 	metrics := hostedRunnerTransactionMetrics(c.Path())
@@ -70,6 +72,12 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 		return s.nativeAPIError(c, err)
 	}
 	defer tx.Rollback()
+	step := func(string) {}
+	if heartbeat {
+		step = heartbeatWriterSteps(ctx)
+	}
+	defer step("")
+	step("authority")
 	now, err := s.database.currentTime()
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -82,10 +90,12 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 			return s.nativeAPIError(c, err)
 		}
 	}
+	step("consumption_before")
 	before, err := s.database.hostedConsumption(ctx, tx, now, metrics...)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	step("dispatch_before")
 	var dispatchBefore string
 	if heartbeat {
 		dispatchBefore, err = runnerDispatchFingerprint(ctx, tx, nativeRequestScope(c), c.Param("machine"), now)
@@ -93,10 +103,12 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 			return s.nativeAPIError(c, err)
 		}
 	}
+	step("")
 	value, err := operation(ctx, tx, now)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	step("dispatch_after")
 	notify := !heartbeat && c.Request().Method != http.MethodGet && c.Path() != nativeBase+"/claims/preview" && !strings.HasSuffix(c.Path(), "/renew") && !strings.HasSuffix(c.Path(), "/validate")
 	if heartbeat {
 		after, err := runnerDispatchFingerprint(ctx, tx, nativeRequestScope(c), c.Param("machine"), now)
@@ -105,6 +117,7 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 		}
 		notify = dispatchBefore != after
 	}
+	step("consumption_after")
 	completion := c.Request().Method == http.MethodDelete
 	if s.database.plans() != nil && (heartbeat || strings.HasSuffix(c.Path(), "/machines/register")) {
 		credential, ok := c.Get("hub_api_credential").(apiCredential)
@@ -120,25 +133,60 @@ func (s *Service) runnerTransaction(c echo.Context, status int, operation func(c
 	if err := s.database.checkHostedGrowth(ctx, tx, before, now, completion, metrics...); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	step("usage")
 	if heartbeat {
 		if err := s.database.recordHostedUsage(ctx, tx, now, "heartbeats", 1); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}
+	step("commit")
 	if err := tx.Commit(); err != nil {
 		return s.nativeAPIError(c, err)
 	}
+	step("")
 	if notify {
 		s.notifications.notify(dispatchNotificationKey(tracker.OrganizationID(c.Param("organization"))))
 	}
 	if heartbeat {
 		s.startSpriteLifecycle(nativeRequestScope(c), "")
 	}
+	if response, ok := value.(runnerCommittedResponse); ok {
+		value, err = s.readCommittedRunnerResponse(c, response)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+	}
 	c.Response().Header().Set("Cache-Control", "no-store")
 	if status == http.StatusNoContent {
 		return c.NoContent(status)
 	}
 	return c.JSON(status, value)
+}
+
+func (s *Service) readCommittedRunnerResponse(c echo.Context, response runnerCommittedResponse) (any, error) {
+	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
+	defer cancel()
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	now, err := s.database.currentTime()
+	if err != nil {
+		return nil, err
+	}
+	scope := nativeRequestScope(c)
+	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
+		return nil, err
+	}
+	if err := requireCredentialAuthority(ctx, tx, scope.credential, now); err != nil {
+		return nil, err
+	}
+	ctx = s.freshRunDetailContext(ctx)
+	if owner, ok := ctx.Value(runDetailContextKey{}).(*runDetailContext); ok {
+		owner.query = tx
+	}
+	return response(ctx, tx, now)
 }
 
 // runnerReadTransaction answers a runner request that only reads, from a

@@ -399,15 +399,56 @@ func readGitHubBatchTask(ctx context.Context, tx *sql.Tx, scope nativeScope) (*t
 	if batch.HubOwned || batch.RunnerID != scope.credential.Runner.RunnerID || batch.Status != "importing" && batch.Status != "discovering" {
 		return nil, nil //nolint:nilnil // This runner has no assigned task.
 	}
-	return nextGitHubBatchTask(ctx, tx, scope, batch)
+	return githubBatchTask(scope, batch)
 }
 
-func nextGitHubBatchTask(ctx context.Context, tx *sql.Tx, scope nativeScope, batch *tracker.GitHubBatch) (*tracker.GitHubBatchTask, error) {
+func githubBatchTask(scope nativeScope, batch *tracker.GitHubBatch) (*tracker.GitHubBatchTask, error) {
 	if batch.Status == "discovering" {
 		return &tracker.GitHubBatchTask{ProjectID: scope.project, BatchID: batch.ID, Revision: batch.Revision, Discovery: &batch.Discovery}, nil
 	}
+	var previews []tracker.GitHubIssuePreview
+	for _, item := range batch.Items {
+		if item.Status != "pending" {
+			continue
+		}
+		index := slices.IndexFunc(batch.Page.Issues, func(p tracker.GitHubIssuePreview) bool { return p.Number == item.Number })
+		if index < 0 {
+			return nil, errors.New("intake item missing preview")
+		}
+		previews = append(previews, batch.Page.Issues[index])
+		if len(previews) == 100 {
+			break
+		}
+	}
+	if len(previews) == 0 {
+		return nil, nil //nolint:nilnil // No pending preview means this batch has no task.
+	}
+	return &tracker.GitHubBatchTask{ProjectID: scope.project, BatchID: batch.ID, Revision: batch.Revision, Item: &previews[0], Items: previews}, nil
+}
+
+func prepareGitHubBatchTask(ctx context.Context, tx *sql.Tx, scope nativeScope) error {
+	batch, err := readGitHubBatch(ctx, tx, scope)
+	if err != nil || batch == nil {
+		return err
+	}
+	if batch.HubOwned || batch.RunnerID != scope.credential.Runner.RunnerID || batch.Status != "importing" {
+		return nil
+	}
+	return completeGitHubBatchItems(ctx, tx, scope, batch)
+}
+
+func nextGitHubBatchTask(ctx context.Context, tx *sql.Tx, scope nativeScope, batch *tracker.GitHubBatch) (*tracker.GitHubBatchTask, error) {
+	if batch.Status != "discovering" {
+		if err := completeGitHubBatchItems(ctx, tx, scope, batch); err != nil {
+			return nil, err
+		}
+	}
+	return githubBatchTask(scope, batch)
+}
+
+func completeGitHubBatchItems(ctx context.Context, tx *sql.Tx, scope nativeScope, batch *tracker.GitHubBatch) error {
 	changed := false
-	previews := []tracker.GitHubIssuePreview{}
+	pending := 0
 	for i, item := range batch.Items {
 		if item.Status == "pending" {
 			// An explicitly dispatchable selection can complete the same one-time
@@ -415,7 +456,7 @@ func nextGitHubBatchTask(ctx context.Context, tx *sql.Tx, scope nativeScope, bat
 			var complete bool
 			if item.WorkItemID != "" {
 				if err := tx.QueryRowContext(ctx, "SELECT snapshot_json IS NOT NULL FROM linked_issue_sources WHERE work_item_id=?", item.WorkItemID).Scan(&complete); err != nil {
-					return nil, err
+					return err
 				}
 			}
 			if complete {
@@ -423,12 +464,8 @@ func nextGitHubBatchTask(ctx context.Context, tx *sql.Tx, scope nativeScope, bat
 				changed = true
 				continue
 			}
-			index := slices.IndexFunc(batch.Page.Issues, func(p tracker.GitHubIssuePreview) bool { return p.Number == item.Number })
-			if index < 0 {
-				return nil, errors.New("intake item missing preview")
-			}
-			previews = append(previews, batch.Page.Issues[index])
-			if len(previews) == 100 {
+			pending++
+			if pending == 100 {
 				break
 			}
 		}
@@ -438,13 +475,10 @@ func nextGitHubBatchTask(ctx context.Context, tx *sql.Tx, scope nativeScope, bat
 			batch.Status = "finished"
 		}
 		if err := saveGitHubBatch(ctx, tx, scope, batch); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	if len(previews) == 0 {
-		return nil, nil //nolint:nilnil // No pending preview means this batch has no task.
-	}
-	return &tracker.GitHubBatchTask{ProjectID: scope.project, BatchID: batch.ID, Revision: batch.Revision, Item: &previews[0], Items: previews}, nil
+	return nil
 }
 
 func (s *Service) reportGitHubBatch(c echo.Context) error {
