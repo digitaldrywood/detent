@@ -318,6 +318,10 @@ func TestHeartbeatResponseArchivedCheckpoint(t *testing.T) {
 			if err := json.Unmarshal([]byte(raw), &checkpoint); err != nil || checkpoint.Detail == nil {
 				t.Fatalf("checkpoint is not archived: %s error=%v", raw, err)
 			}
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			f.service.stopSpriteRunners()
 			f.service.tokenUseWork.Wait()
 			store.mu.Lock()
 			store.reads = 0
