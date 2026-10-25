@@ -45,6 +45,7 @@ type claimCandidateQuery struct {
 	LandingBatchGroup       string
 	Limit                   int
 	After                   tracker.WorkItemID
+	SelectionCursor         *runnerSelectionCursor
 	WorkItemID              tracker.WorkItemID
 	OnlyIDs                 []tracker.WorkItemID
 	AvailableAt             time.Time
@@ -255,12 +256,10 @@ func (s *Service) trackerAPIError(c echo.Context, err error) error {
 	return s.refusedAPIError(c, status, code, message, apiErrorResponse{Code: code, Message: message})
 }
 
-// claimNext decides most claim attempts without the writer. A preflight runs
-// the whole claim on a read-only snapshot: refusals that record nothing new
-// are answered from it, and a selected candidate is claimed by a short write
-// transaction that re-validates only that candidate. Anything the preflight
-// cannot settle runs the full claim under the write lock, as before.
 func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, reconcileInterval time.Duration) (tracker.Lease, error) {
+	if query.NativeScope != nil {
+		return d.claimNativePrepared(ctx, request, query, reconcileInterval)
+	}
 	if d.claimReader != nil {
 		lease, err := d.claimPreflight(ctx, request, query, reconcileInterval)
 		var selected *claimSelected
@@ -284,6 +283,9 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 const claimPreflightAcquire = 250 * time.Millisecond
 
 func (d *database) claimPreflight(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, reconcileInterval time.Duration) (lease tracker.Lease, resultErr error) {
+	if d.claimReader == nil {
+		return tracker.Lease{}, context.DeadlineExceeded
+	}
 	acquire, cancel := context.WithTimeout(ctx, claimPreflightAcquire)
 	conn, err := d.claimReader.Conn(acquire)
 	cancel()
@@ -303,6 +305,7 @@ func (d *database) claimPreflight(ctx context.Context, request tracker.ClaimRequ
 // candidate, or the full write pass.
 type claimMode struct {
 	hint      *claimSelected
+	answer    error
 	preflight bool
 }
 
@@ -319,12 +322,13 @@ func (s *claimSelected) Error() string { return fmt.Sprintf("claim candidate %d 
 
 var errClaimHintStale = errors.New("selected claim candidate is no longer claimable")
 
-// preflightAnswered reports whether a preflight result is the claim's answer.
-// Write attempts on the read-only snapshot and unexpected failures defer to
-// the full write pass instead.
-func preflightAnswered(err error) bool {
+func preflightReadOnly(err error) bool {
 	var failure *sqlite.Error
-	if errors.As(err, &failure) && failure.Code()&0xff == sqlite3.SQLITE_READONLY {
+	return errors.As(err, &failure) && failure.Code()&0xff == sqlite3.SQLITE_READONLY
+}
+
+func preflightAnswered(err error) bool {
+	if preflightReadOnly(err) {
 		return false
 	}
 	var refusal *nativeError
@@ -332,6 +336,7 @@ func preflightAnswered(err error) bool {
 }
 
 func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *sql.TxOptions, mode claimMode, request tracker.ClaimRequest, query claimCandidateQuery, reconcileInterval time.Duration) (lease tracker.Lease, resultErr error) {
+	ctx = context.WithValue(ctx, claimWriterKey{}, !mode.preflight)
 	request.MachineID = tracker.MachineID(strings.TrimSpace(string(request.MachineID)))
 	request.SessionID = strings.TrimSpace(request.SessionID)
 	query.Scope = strings.TrimSpace(query.Scope)
@@ -381,6 +386,9 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			}
 		}
 	}()
+	if prepared := claimPrepared(ctx); mode.hint != nil && prepared != nil {
+		prepared.selected = mode.hint.id
+	}
 	now, err := d.currentTime()
 	if err != nil {
 		return tracker.Lease{}, err
@@ -391,6 +399,17 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 	if query.NativeScope != nil {
 		if err := requireRunnerAuthority(ctx, tx, *query.NativeScope, now); err != nil {
 			return tracker.Lease{}, err
+		}
+	}
+	if !mode.preflight && claimPrepared(ctx) != nil {
+		if err := writePreparedClaimDecisions(ctx, tx, mode.hint, now); err != nil {
+			return tracker.Lease{}, err
+		}
+		if mode.answer != nil {
+			if err := commit(); err != nil {
+				return tracker.Lease{}, err
+			}
+			return tracker.Lease{}, mode.answer
 		}
 	}
 	var policyScope string
@@ -427,6 +446,9 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			return tracker.Lease{}, err
 		}
 		if query.NativeScope != nil && query.LandingCapacity > 0 {
+			if mode.preflight {
+				return tracker.Lease{}, &claimSelected{id: existing.issueID}
+			}
 			if err := tightenNativeLandingCapacity(ctx, tx, existing.session.ID, query.LandingCapacity); err != nil {
 				return tracker.Lease{}, err
 			}
@@ -661,8 +683,14 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		}
 		if mode.preflight {
 			var revision int64
-			if err := tx.QueryRowContext(ctx, "SELECT revision FROM issues WHERE id = ?", id).Scan(&revision); err != nil {
+			var item string
+			if err := tx.QueryRowContext(ctx, "SELECT revision,COALESCE(native_id,'') FROM issues WHERE id = ?", id).Scan(&revision, &item); err != nil {
 				return tracker.Lease{}, err
+			}
+			if query.NativeScope != nil {
+				if _, err := readClaimReference(ctx, tx, *query.NativeScope, item); err != nil {
+					return tracker.Lease{}, err
+				}
 			}
 			return tracker.Lease{}, &claimSelected{id: id, revision: revision}
 		}

@@ -504,9 +504,16 @@ func (d *database) recordNativeClaimRefusal(ctx context.Context, tx *sql.Tx, que
 	if query.NativeScope == nil || failure.status != http.StatusConflict {
 		return refusal
 	}
+	if prepared := claimPrepared(ctx); prepared != nil && claimWriting(ctx) && id == 0 {
+		id = prepared.selected
+		if id == 0 {
+			return refusal
+		}
+	}
 	ids := []tracker.WorkItemID{id}
 	if id == 0 {
 		query.AvailableAt = now
+		query.Limit = claimPreparationLimit
 		var err error
 		ids, err = nativeCandidateIDs(ctx, tx, query, query.RepositoryIDs, normalizedQueryStrings(query.Repositories), normalizedQueryStrings(query.WorkflowStates), normalizedQueryStrings(query.Authors), normalizedQueryStrings(query.Assignees), normalizedQueryStrings(query.LabelInclude), normalizedQueryStrings(query.LabelExclude))
 		if err != nil {
@@ -517,6 +524,9 @@ func (d *database) recordNativeClaimRefusal(ctx context.Context, tx *sql.Tx, que
 		if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: source, Outcome: "skipped", Reason: failure.Code}, now); err != nil {
 			return err
 		}
+	}
+	if prepared := claimPrepared(ctx); prepared != nil && !claimWriting(ctx) {
+		return refusal
 	}
 	if err := d.commit(ctx, tx); err != nil {
 		return err
@@ -535,16 +545,12 @@ func recordNativeSchedulingOutcome(ctx context.Context, tx *sql.Tx, scope *nativ
 	decision.At = now
 	decision.RunnerID = scope.credential.Runner.RunnerID
 	data := tracker.CollaborationData{Decision: &decision}
-	change, found, err := readLatestNativeChangeRequest(ctx, tx, *scope, item)
+	reference, err := readClaimReference(ctx, tx, *scope, item)
 	if err != nil {
 		return err
 	}
-	if found {
-		version, _, err := readNativeChangeVersion(ctx, tx, change)
-		if err != nil {
-			return err
-		}
-		data.Change = &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: change.CurrentVersion, HeadSHA: version.HeadSHA}
+	if reference.ChangeID != "" {
+		data.Change = &reference
 	}
 	if decision.Outcome != "claimed" {
 		raw, err := previousSchedulingDecision(ctx, tx, *scope, item, decision)
@@ -567,6 +573,12 @@ func recordNativeSchedulingOutcome(ctx context.Context, tx *sql.Tx, scope *nativ
 				}
 			}
 		}
+	}
+	if prepared := claimPrepared(ctx); prepared != nil && !claimWriting(ctx) {
+		if len(prepared.decisions) < claimPreparationLimit {
+			prepared.decisions = append(prepared.decisions, preparedClaimDecision{scope: *scope, id: id, item: item, data: data})
+		}
+		return nil
 	}
 	return appendNativeHistory(ctx, tx, *scope, item, "scheduler.decision", data, now)
 }

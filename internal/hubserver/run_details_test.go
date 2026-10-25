@@ -23,12 +23,14 @@ import (
 )
 
 type memoryRunDetails struct {
-	mu         sync.Mutex
-	data       map[string][]byte
-	fail       bool
-	uploads    int
-	reads      int
-	afterStore func(attachment.ArchiveReference)
+	mu          sync.Mutex
+	data        map[string][]byte
+	fail        bool
+	uploads     int
+	reads       int
+	writerReads int
+	afterStore  func(attachment.ArchiveReference)
+	beforeRead  func(context.Context) error
 }
 
 func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
@@ -57,13 +59,22 @@ func (m *memoryRunDetails) StoreDetail(_ context.Context, organization string, d
 	return ref, nil
 }
 
-func (m *memoryRunDetails) ReadDetail(_ context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+func (m *memoryRunDetails) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	if m.beforeRead != nil {
+		if err := m.beforeRead(ctx); err != nil {
+			return nil, err
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if ref.Validate(organization) != nil {
 		return nil, attachment.ErrInvalid
 	}
 	m.reads++
+	if claimWriting(ctx) {
+		m.writerReads++
+		return nil, errors.New("detail read while claim writer is held")
+	}
 	data, ok := m.data[ref.Key]
 	if !ok {
 		return nil, attachment.ErrInvalid
@@ -602,7 +613,7 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=?,checkpoint_json=? WHERE id=?", encoded, checkpointJSON, latest); err != nil {
+					if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=?,checkpoint_json=?,checkpoint_preserves_source=? WHERE id=?", encoded, checkpointJSON, data.Handoff.PreservesSource(), latest); err != nil {
 						t.Fatal(err)
 					}
 					if err := recordRunDetailReference(ctx, tx, scope, issue.WorkItemID, data, formatHubTime(f.service.config.now())); err != nil {

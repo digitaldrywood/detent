@@ -84,6 +84,27 @@ func (s *Service) runDetailMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 }
 
 func decodeRunDetail(ctx context.Context, raw string, result *tracker.NativeRunData) error {
+	if prepared := claimPrepared(ctx); prepared != nil && !prepared.hydrating {
+		if value, ok := prepared.runs[raw]; ok {
+			*result = value
+			return nil
+		}
+		if claimWriting(ctx) {
+			return errClaimHintStale
+		}
+		return &claimHydration{run: func(ctx context.Context, _ nativeQueryer) error {
+			var value tracker.NativeRunData
+			if err := decodeRunDetail(ctx, raw, &value); err != nil {
+				return err
+			}
+			if prepared.runs == nil {
+				prepared.runs = make(map[string]tracker.NativeRunData)
+			}
+			prepared.runs[raw] = value
+			return nil
+		}}
+	}
+
 	var stored storedRun
 	if err := decodeStorageJSON(ctx, []byte(raw), &stored); err != nil {
 		return err
@@ -356,7 +377,7 @@ func recordRunDetailReference(ctx context.Context, tx *sql.Tx, scope nativeScope
 		return err
 	}
 	if data.Handoff != nil {
-		_, err = tx.ExecContext(ctx, "UPDATE native_attempts SET checkpoint_attachment_id=? WHERE id=?", id, data.AttemptID)
+		_, err = tx.ExecContext(ctx, "UPDATE native_attempts SET checkpoint_attachment_id=?,checkpoint_preserves_source=? WHERE id=?", id, data.Handoff.PreservesSource(), data.AttemptID)
 	}
 	return err
 }

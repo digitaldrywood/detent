@@ -211,12 +211,23 @@ WHERE i.organization_id = `,
 	}
 	baseArgs := args
 	readPage := func(after tracker.WorkItemID, limit int, anchor bool) ([]tracker.WorkItemID, tracker.WorkItemID, int, error) {
+		prepared := claimPrepared(ctx)
+		bounded := prepared != nil && !anchor && len(query.OnlyIDs) == 0
+		if bounded {
+			limit = min(limit, claimPreparationLimit-prepared.candidateRows)
+			if limit <= 0 {
+				return nil, 0, 0, nil
+			}
+		}
+
 		args = append([]any(nil), baseArgs...)
 		page := statement + `, page AS MATERIALIZED (SELECT * FROM candidates WHERE 1 = 1`
 		if anchor {
 			page += ` AND id = ` + bind(after)
 		} else {
-			if after > 0 {
+			if cursor := query.SelectionCursor; cursor != nil && cursor.ID > 0 {
+				page += ` AND (priority, aging_boost, landing, created, identifier, id) > (` + bind(cursor.Priority) + `,` + bind(cursor.Aging) + `,` + bind(cursor.Landing) + `,` + bind(cursor.Created) + `,` + bind(cursor.Identifier) + `,` + bind(cursor.ID) + `)`
+			} else if after > 0 {
 				page += ` AND (` + order + `) > (SELECT ` + order + ` FROM candidates WHERE id = ` + bind(after) + `)`
 			}
 			if !query.AvailableAt.IsZero() {
@@ -224,7 +235,11 @@ WHERE i.organization_id = `,
 			}
 		}
 		page += ` ORDER BY ` + order + ` LIMIT ` + bind(limit) + `)`
-		return readNativeCandidatePage(ctx, tx, page+nativeCandidateCompletionEvidence+` ORDER BY page.`+strings.ReplaceAll(order, ", ", ", page."), args)
+		ids, last, scanned, err := readNativeCandidatePage(ctx, tx, page+nativeCandidateCompletionEvidence+` ORDER BY page.`+strings.ReplaceAll(order, ", ", ", page."), args, query.SelectionCursor)
+		if bounded {
+			prepared.candidateRows += scanned
+		}
+		return ids, last, scanned, err
 	}
 	if query.After > 0 {
 		ids, _, _, err := readPage(query.After, 1, true)
@@ -245,11 +260,19 @@ WHERE i.organization_id = `,
 	}
 	var ids []tracker.WorkItemID
 	after := query.After
+	scannedTotal := 0
 	for len(ids) < limit {
+		if claimPrepared(ctx) != nil && scannedTotal >= claimPreparationLimit {
+			break
+		}
 		remaining := limit - len(ids)
 		page, last, scanned, err := readPage(after, remaining, false)
 		if err != nil {
 			return nil, err
+		}
+		scannedTotal += scanned
+		if query.SelectionCursor != nil {
+			return page, nil
 		}
 		ids = append(ids, page...)
 		if scanned < remaining {
@@ -261,7 +284,7 @@ WHERE i.organization_id = `,
 }
 
 const nativeCandidateCompletionEvidence = `
- SELECT page.id, ` + notAlreadyAnsweredClause + `, i.project_id,
+ SELECT page.id, page.priority, page.aging_boost, page.landing, page.created, page.identifier, ` + notAlreadyAnsweredClause + `, i.project_id,
  COALESCE(a.data_json, '{}') AS completion_evidence
  FROM page JOIN issues i ON i.id = page.id
  JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
@@ -272,7 +295,7 @@ const nativeCandidateCompletionEvidence = `
  AND a.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest
    WHERE latest.organization_id = a.organization_id AND latest.project_id = a.project_id AND latest.work_item_id = a.work_item_id)`
 
-func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement string, args []any) ([]tracker.WorkItemID, tracker.WorkItemID, int, error) {
+func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement string, args []any, cursor *runnerSelectionCursor) ([]tracker.WorkItemID, tracker.WorkItemID, int, error) {
 	rows, err := q.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("query native candidates: %w", err)
@@ -281,13 +304,15 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 	var ids []tracker.WorkItemID
 	var last tracker.WorkItemID
 	scanned := 0
+	var position runnerSelectionCursor
 	for rows.Next() {
 		var unanswered bool
 		var project, runRaw string
-		if err := rows.Scan(&last, &unanswered, &project, &runRaw); err != nil {
+		if err := rows.Scan(&last, &position.Priority, &position.Aging, &position.Landing, &position.Created, &position.Identifier, &unanswered, &project, &runRaw); err != nil {
 			return nil, 0, 0, err
 		}
 		scanned++
+		position.ID = last
 		if !unanswered {
 			continue
 		}
@@ -320,6 +345,9 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 		if waiting.Kind == "" {
 			runnable = append(runnable, id)
 		}
+	}
+	if cursor != nil {
+		*cursor = position
 	}
 	return runnable, last, scanned, nil
 }
@@ -370,7 +398,23 @@ func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.Wo
 	if finalization == nil || !finalization.Changed || finalization.ChangeID == "" || finalization.VersionID == "" || finalization.HeadSHA != source.HeadSHA || finalization.VersionError != "" {
 		return tracker.NativeAnsweredExclusion{}, nil
 	}
-	detail, err := readChangeDetail(ctx, q, scope, item, finalization.ChangeID, now)
+	var detail tracker.ChangeDetail
+	if claimPrepared(ctx) != nil {
+		change, readErr := readChange(ctx, q, scope, item, finalization.ChangeID)
+		if readErr != nil {
+			return tracker.NativeAnsweredExclusion{}, readErr
+		}
+		if change.CurrentVersion != finalization.VersionID {
+			return tracker.NativeAnsweredExclusion{}, nil
+		}
+		version, readErr := readClaimVersion(ctx, q, change.ID, change.CurrentVersion)
+		if readErr != nil {
+			return tracker.NativeAnsweredExclusion{}, readErr
+		}
+		detail, err = readClaimLandingDetail(ctx, q, scope, change, version, now)
+	} else {
+		detail, err = readChangeDetail(ctx, q, scope, item, finalization.ChangeID, now)
+	}
 	if err != nil {
 		return tracker.NativeAnsweredExclusion{}, err
 	}

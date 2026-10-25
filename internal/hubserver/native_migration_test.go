@@ -275,10 +275,17 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_requests (id, organization_id, project_id, work_item_id, record_json)
-				SELECT 'existing-change', organization_id, project_id, native_id, '{}' FROM issues WHERE id = ?`, issueID); err != nil {
+				SELECT 'existing-change', organization_id, project_id, native_id, '{"current_version_id":"existing-version"}' FROM issues WHERE id = ?`, issueID); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_versions (id, change_id, number, record_json) VALUES ('existing-version', 'existing-change', 1, '{"head_sha":"preserved"}')`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_requests (id,organization_id,project_id,work_item_id,record_json)
+SELECT 'second-change',organization_id,project_id,native_id,'{"current_version_id":"second-version"}' FROM issues WHERE id=?`, issueID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_versions(id,change_id,number,record_json) VALUES('second-version','second-change',1,'{"head_sha":"second-head"}')`); err != nil {
 				t.Fatal(err)
 			}
 			if test.version >= 17 {
@@ -296,11 +303,22 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if _, err := runMigrations(t.Context(), db, discardLogger()); err != nil {
+				t.Fatal(err)
+			}
+			var unknown int
+			if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM change_requests WHERE claim_version_id IS NULL AND claim_head_sha IS NULL`).Scan(&unknown); err != nil || unknown != 2 {
+				t.Fatalf("startup claim projections=%d unknown: %v", unknown, err)
+			}
 			if err := db.Close(); err != nil {
 				t.Fatal(err)
 			}
 			cfg := Config{DatabasePath: path}
 			service := openTestService(t, cfg)
+			if err := service.database.populateClaimFacts(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+
 			if !test.viewed {
 				if _, err := service.database.db.ExecContext(t.Context(), `INSERT INTO change_viewed_files (version_id, principal_id, manifest_sha256, file_sha256, viewed) VALUES ('existing-version', 'reviewer', ?, ?, 1)`, strings.Repeat("a", 64), strings.Repeat("b", 64)); err != nil {
 					t.Fatal(err)
@@ -328,6 +346,8 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 				{"identity migration", "SELECT count(*) FROM hub_schema_version WHERE version_id = 17 AND is_applied = 1", "1"},
 				{"version 18 recorded once", "SELECT count(*) FROM hub_schema_version WHERE version_id = 18 AND is_applied = 1", "1"},
 				{"existing code version", "SELECT record_json FROM change_versions WHERE id = 'existing-version'", `{"head_sha":"preserved"}`},
+				{"first claim version", "SELECT claim_version_id||':'||claim_head_sha FROM change_requests WHERE id='existing-change'", "existing-version:preserved"},
+				{"second claim version", "SELECT claim_version_id||':'||claim_head_sha FROM change_requests WHERE id='second-change'", "second-version:second-head"},
 				{"viewed state", "SELECT viewed FROM change_viewed_files WHERE version_id = 'existing-version' AND principal_id = 'reviewer'", "1"},
 				{"hosted sessions", "SELECT count(*) FROM hosted_sessions WHERE token_hash = 'existing-session' AND email = 'reviewer@example.test'", test.hostedSessions},
 				{"foreign keys", "SELECT count(*) FROM pragma_foreign_key_check", "0"},

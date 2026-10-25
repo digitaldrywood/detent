@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -23,9 +24,11 @@ import (
 )
 
 type changeObjectFixture struct {
-	writes  int
-	mu      sync.Mutex
-	objects map[string][]byte
+	writes      int
+	reads       int
+	writerReads int
+	mu          sync.Mutex
+	objects     map[string][]byte
 }
 
 func (f *changeObjectFixture) call(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
@@ -50,6 +53,11 @@ func (f *changeObjectFixture) call(ctx context.Context, request entryauthority.C
 		}
 		f.objects[request.Reference.Key] = bytes.Clone(request.Data)
 		return nil, nil
+	}
+	f.reads++
+	if claimWriting(ctx) {
+		f.writerReads++
+		return nil, errors.New("content read while claim writer is held")
 	}
 	data, found := f.objects[request.Reference.Key]
 	if !found {
@@ -170,8 +178,12 @@ func TestChangeContentObjects(t *testing.T) {
 
 	requireUsageCountersMatchRecount(t, f.service.database)
 	legacy.service.config.content = objects.call
-	if err := legacy.service.convertLegacyStorage(t.Context(), now); err != nil {
-		t.Fatal(err)
+	conversionContext := legacy.service.contentContext(t.Context())
+	conversionScope := nativeScope{organization: legacy.project.OrganizationID, project: legacy.project.ID}
+	for _, family := range storageConversionFamilies {
+		if err := legacy.service.convertStorageFamily(conversionContext, conversionScope, family, now); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if !reflect.DeepEqual(detail, legacy.detail(t)) {
 		t.Fatal("legacy conversion changed Change API")
