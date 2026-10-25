@@ -157,11 +157,11 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 }
 
 func (s *Service) getNativeExplanation(c echo.Context) error {
+	ctx := context.WithValue(c.Request().Context(), explanationReadKey{}, true)
+	c.SetRequest(c.Request().WithContext(ctx))
 	if len(c.QueryParams()) != 0 {
 		return s.nativeAPIError(c, nativePublicInvalid("Unsupported explanation selector"))
 	}
-	ctx := context.WithValue(c.Request().Context(), explanationReadKey{}, true)
-	c.SetRequest(c.Request().WithContext(ctx))
 	evidence, err := s.readNativeRuntime(ctx, nativeRequestScope(c), c.Param("item"), "")
 	if err != nil {
 		return s.nativeAPIError(c, err)

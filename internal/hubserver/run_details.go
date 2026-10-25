@@ -178,17 +178,11 @@ func compactRun(data tracker.NativeRunData) tracker.NativeRunData {
 		result.Disposition = &disposition
 	}
 	if data.TerminalFailure != nil {
-		failure := *data.TerminalFailure
-		failure.Error = ""
+		failure := data.TerminalFailure.Public()
 		result.TerminalFailure = &failure
 	}
 	if data.Finalization != nil {
-		finalization := *data.Finalization
-		finalization.Error, finalization.VersionError, finalization.Unavailable = "", "", nil
-		if finalization.Publication != nil {
-			publication := *finalization.Publication
-			finalization.Publication = &tracker.NativePRPublication{VersionID: publication.VersionID, External: tracker.ChangeExternalReference{URL: publication.External.URL}}
-		}
+		finalization := data.Finalization.Public()
 		result.Finalization = &finalization
 	}
 	if data.Runtime != nil {

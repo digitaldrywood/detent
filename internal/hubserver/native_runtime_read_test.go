@@ -283,6 +283,31 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 			if err != nil || len(explanationRunners) != min(total, 16) || partial != (total > 16) || len(bounded.statements) != 4 {
 				t.Fatalf("unbounded explanation capacity: runners=%d partial=%v queries=%d error=%v", len(explanationRunners), partial, len(bounded.statements), err)
 			}
+			landingQuery := &runtimeReadQuery{nativeQueryer: f.service.database.reader}
+			landingEvidence := tracker.NativeRuntimeEvidence{Issue: tracker.NativeIssue{State: "Merging"}}
+			landingReady, landingCapacity, err := readAdmissionLandingCapacity(context.WithValue(t.Context(), explanationReadKey{}, true), landingQuery, scope, 0, &landingEvidence, now)
+			if err != nil || landingReady != (total <= 64) || total > 64 && landingCapacity != nativeLandingCapacityUnknown {
+				t.Fatalf("landing capacity lost bounded current facts: ready=%v capacity=%d error=%v", landingReady, landingCapacity, err)
+			}
+			if total <= 64 {
+				rows, err := f.service.database.reader.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+landingQuery.statements[1], landingQuery.arguments[1]...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for rows.Next() {
+					var id, parent, unused int
+					var plan string
+					if err := rows.Scan(&id, &parent, &unused, &plan); err != nil {
+						t.Fatal(err)
+					}
+					if strings.Contains(plan, "SCAN i") || strings.Contains(plan, "USE TEMP B-TREE FOR ORDER BY") {
+						t.Fatalf("landing capacity scans project history: %s", plan)
+					}
+				}
+				if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+					t.Fatal(err)
+				}
+			}
 			t.Logf("%d runners sharing a host/provider: %d capacity queries", total, len(q.statements))
 		})
 	}

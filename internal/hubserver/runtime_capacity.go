@@ -62,7 +62,7 @@ WHERE l.machine_id IN (` + placeholders(len(machines)) + `) AND l.released_at IS
 	leaseArgs := machines
 	if explanationRead(ctx) {
 		leaseStatement = `SELECT l.machine_id,coalesce(lr.runner_id,''),l.expires_at,l.session_id,l.lease_id,coalesce(i.project_id,''),''
-FROM leases l JOIN issues i ON i.id=l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id
+FROM leases l INDEXED BY health_active_host JOIN issues i ON i.id=l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id
 WHERE l.machine_id IN (` + placeholders(len(machines)) + `) AND l.released_at IS NULL AND l.expires_at>? ORDER BY l.machine_id,l.expires_at,l.lease_id LIMIT 1025`
 		leaseArgs = append(append([]any(nil), machines...), formatHubTime(now))
 	}

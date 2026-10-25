@@ -177,7 +177,7 @@ FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organiza
 	args := []any{organization}
 	if explanationRead(ctx) {
 		statement = `SELECT p.reservation_json,l.expires_at,l.session_id,l.machine_id,COALESCE(lr.runner_id,''),''
-FROM leases l JOIN provider_reservations p ON p.lease_id=l.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id
+FROM leases l INDEXED BY health_active_host JOIN provider_reservations p ON p.lease_id=l.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id
 WHERE l.machine_id IN (SELECT machine_id FROM runner_identities WHERE organization_id=? ORDER BY id LIMIT 65)
 AND l.released_at IS NULL AND l.expires_at>? AND p.organization_id=? ORDER BY l.machine_id,l.expires_at,l.lease_id LIMIT 1025`
 		args = []any{organization, formatHubTime(now), organization}

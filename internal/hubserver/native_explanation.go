@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -176,7 +175,6 @@ func explanationRun(data tracker.NativeRunData) tracker.NativeRunData {
 	result := compactRun(data)
 	runtime := data.Runtime.WithoutActivitySpans()
 	if runtime != nil && result.Runtime != nil {
-		result.Runtime.Validation = boundedChangeCommand(runtime.Validation)
 		result.Runtime.Landing = explanationLanding(runtime.Landing)
 	}
 	result.ArtifactIDs = result.ArtifactIDs[:min(len(result.ArtifactIDs), 16)]
@@ -190,20 +188,36 @@ func readAdmissionLandingCapacity(ctx context.Context, q nativeQueryer, scope na
 	if evidence.Issue.State != "Merging" && (evidence.Issue.ListChange == nil || !evidence.Issue.ListChange.LandingPending) {
 		return true, 0, nil
 	}
-	rows, err := q.QueryContext(ctx, `SELECT l.landing_capacity FROM issues i JOIN leases l ON l.issue_id=i.id JOIN workflow_states w ON w.id=i.workflow_state_id
-WHERE i.organization_id=? AND i.project_id=? AND l.released_at IS NULL AND l.expires_at>? AND (l.landing_capacity>0 OR w.detent_state='Merging') ORDER BY i.id,l.lease_id LIMIT 1025`, scope.organization, scope.project, formatHubTime(now))
+	var owners int
+	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM (SELECT id FROM runner_identities WHERE organization_id=? ORDER BY id LIMIT 65)", scope.organization).Scan(&owners); err != nil {
+		return false, 0, err
+	}
+	if owners > 64 {
+		return false, nativeLandingCapacityUnknown, nil
+	}
+	rows, err := q.QueryContext(ctx, `SELECT l.landing_capacity,i.organization_id,i.project_id,COALESCE(w.detent_state,'') FROM
+(SELECT issue_id,landing_capacity FROM leases INDEXED BY health_active_host WHERE machine_id IN (SELECT machine_id FROM runner_identities WHERE organization_id=? ORDER BY id LIMIT 64)
+AND released_at IS NULL AND expires_at>? ORDER BY machine_id,expires_at,lease_id LIMIT 1025) l
+JOIN issues i ON i.id=l.issue_id LEFT JOIN workflow_states w ON w.id=i.workflow_state_id`, scope.organization, formatHubTime(now))
 	if err != nil {
 		return false, 0, err
 	}
 	defer rows.Close()
-	used, capacity := 0, 0
+	observed, used, capacity := 0, 0, 0
 	for rows.Next() {
-		if used == 1024 {
+		if observed == 1024 {
 			return false, nativeLandingCapacityUnknown, nil
 		}
+		observed++
 		var declared int
-		if err := rows.Scan(&declared); err != nil {
+		var organization tracker.OrganizationID
+		var project tracker.ProjectID
+		var state string
+		if err := rows.Scan(&declared, &organization, &project, &state); err != nil {
 			return false, 0, err
+		}
+		if organization != scope.organization || project != scope.project || declared <= 0 && state != "Merging" {
+			continue
 		}
 		used++
 		if declared > 0 && (capacity == 0 || declared < capacity) {
@@ -232,9 +246,6 @@ func readExplanationIssue(ctx context.Context, q nativeQueryer, scope nativeScop
 (SELECT priority_override FROM queue_entries WHERE issue_id=i.id ORDER BY id LIMIT 1)
 FROM issues i JOIN organizations o ON o.id=i.organization_id JOIN projects p ON p.id=i.project_id AND p.organization_id=i.organization_id LEFT JOIN workflow_states w ON w.id=i.workflow_state_id
 WHERE i.organization_id=? AND i.project_id=? AND i.native_id=?`, args...).Scan(&id, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile, &issue.Title, &issue.Body, &issue.State, &issue.Terminal, &issue.Archived, &labels, &assignees, &actor, &contract, &created, &updated, &activity, &issue.IgnoreDependencies, &organizationSlug, &projectSlug, &priority)
-	if errors.Is(err, sql.ErrNoRows) {
-		return issue, 0, nativeNotFound()
-	}
 	if err != nil {
 		return issue, 0, err
 	}
@@ -253,7 +264,7 @@ WHERE i.organization_id=? AND i.project_id=? AND i.native_id=?`, args...).Scan(&
 		}
 	}
 	if scope.credential.HostedRole == "reporter" && (scope.actor().PrincipalID == "" || issue.Actor.PrincipalID != scope.actor().PrincipalID) {
-		return tracker.NativeIssue{}, 0, nativeNotFound()
+		return tracker.NativeIssue{}, 0, sql.ErrNoRows
 	}
 	var legacy struct {
 		Body string `json:"confirmed_body"`
