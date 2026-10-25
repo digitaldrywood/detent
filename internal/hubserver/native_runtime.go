@@ -18,7 +18,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -161,11 +160,13 @@ func (s *Service) getNativeExplanation(c echo.Context) error {
 	if len(c.QueryParams()) != 0 {
 		return s.nativeAPIError(c, nativePublicInvalid("Unsupported explanation selector"))
 	}
-	evidence, err := s.readNativeRuntime(c.Request().Context(), nativeRequestScope(c), c.Param("item"), "")
+	ctx := context.WithValue(c.Request().Context(), explanationReadKey{}, true)
+	c.SetRequest(c.Request().WithContext(ctx))
+	evidence, err := s.readNativeRuntime(ctx, nativeRequestScope(c), c.Param("item"), "")
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, explain.FromNativeEvidence(evidence))
+	return c.JSON(http.StatusOK, boundedNativeExplanation(evidence))
 }
 
 func (s *Service) getNativeRuntime(c echo.Context) error {
@@ -339,7 +340,7 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 		return e, err
 	}
 	if found {
-		detail, err := readCurrentChangeDetailWithVersion(ctx, query, scope, change, now)
+		detail, err := readRuntimeChangeDetail(ctx, query, scope, change, now)
 		if err != nil {
 			return e, err
 		}
@@ -368,6 +369,17 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 		detail.Reviews = nil
 		detail.Checks = nil
 		e.Change = &detail
+	}
+	if explanationRead(ctx) && e.Attempt != nil && e.Attempt.Runtime != nil && e.Attempt.Runtime.Landing != nil && e.CurrentVersion != nil {
+		landing := e.Attempt.Runtime.Landing
+		var generation int64
+		if err := query.QueryRowContext(ctx, "SELECT dispatch_generation FROM issues WHERE id=?", id).Scan(&generation); err != nil {
+			return e, err
+		}
+		if landing.Waiting && landing.ChangeID == e.CurrentVersion.ChangeID && landing.VersionID == e.CurrentVersion.VersionID && landing.HeadSHA == e.CurrentVersion.HeadSHA && e.Attempt.WorkItemRevision >= issue.Revision && e.Attempt.DispatchGeneration >= generation {
+			issue.ListChange = &tracker.NativeListChange{LandingPending: true, HeadSHA: e.CurrentVersion.HeadSHA}
+			e.Issue.ListChange = issue.ListChange
+		}
 	}
 	ready := nativeChangeLandingReady(issue.State, e.Change)
 	if issue.ListChange != nil && issue.ListChange.LandingPending {
@@ -437,11 +449,21 @@ func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope native
 	var actor, data, at string
 	statement := "SELECT id, sequence, type, schema_version, actor_json, data_json, recorded_at FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type=?"
 	args := []any{scope.organization, scope.project, item, kind}
-	if outcome != "" {
-		statement += " AND (scheduler_outcome=? OR scheduler_outcome IS NULL)"
-		args = append(args, outcome)
+	if outcome != "" && explanationRead(ctx) {
+		base := statement
+		statement = "SELECT * FROM (" + base + " AND scheduler_outcome=? ORDER BY sequence DESC LIMIT 1) UNION ALL SELECT * FROM (" + base + " AND scheduler_outcome IS NULL ORDER BY sequence DESC LIMIT 64) ORDER BY sequence DESC"
+		args = append(args, outcome, scope.organization, scope.project, item, kind)
+	} else {
+		if outcome != "" {
+			statement += " AND (scheduler_outcome=? OR scheduler_outcome IS NULL)"
+			args = append(args, outcome)
+		}
+		statement += " ORDER BY sequence DESC"
+		if explanationRead(ctx) {
+			statement += " LIMIT 64"
+		}
 	}
-	rows, err := q.QueryContext(ctx, statement+" ORDER BY sequence DESC", args...)
+	rows, err := q.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return tracker.CollaborationEvent{}, err
 	}

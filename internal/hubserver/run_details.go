@@ -109,8 +109,11 @@ func decodeRunDetail(ctx context.Context, raw string, result *tracker.NativeRunD
 	if err := decodeStorageJSON(ctx, []byte(raw), &stored); err != nil {
 		return err
 	}
-	if stored.Detail == nil {
+	if stored.Detail == nil || explanationRead(ctx) {
 		*result = stored.NativeRunData
+		if explanationRead(ctx) {
+			*result = explanationRun(*result)
+		}
 		return nil
 	}
 	runs, err := readRunDetailSegment(ctx, stored.Detail)
@@ -191,6 +194,11 @@ func compactRun(data tracker.NativeRunData) tracker.NativeRunData {
 	if data.Runtime != nil {
 		runtime := *data.Runtime
 		runtime.Activity, runtime.REST, runtime.GitHub = nil, nil, nil
+		if data.Runtime.Activity != nil {
+			activity := *data.Runtime.Activity
+			activity.Spans, activity.Sources, activity.Summary, activity.CoverageNotes = nil, nil, nil, nil
+			runtime.Activity = &activity
+		}
 
 		runtime.Phases, runtime.Pipeline, runtime.WorkerLaunch = nil, nil, nil
 		if runtime.Validation != nil {
@@ -261,7 +269,7 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 		if err := json.Unmarshal([]byte(previous), &stored); err != nil {
 			return ctx, err
 		}
-		if stored.Detail == nil {
+		if stored.Detail == nil || explanationRead(ctx) {
 			return ctx, nil
 		}
 		var run tracker.NativeRunData
@@ -430,7 +438,7 @@ func decodeRunCheckpoint(ctx context.Context, raw string) (*tracker.NativeCheckp
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
 		return nil, err
 	}
-	if stored.Detail == nil {
+	if stored.Detail == nil || explanationRead(ctx) {
 		return stored.NativeCheckpoint, nil
 	}
 	runs, err := readRunDetailSegment(ctx, stored.Detail)

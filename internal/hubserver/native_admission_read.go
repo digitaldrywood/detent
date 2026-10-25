@@ -110,7 +110,7 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 		evidence.Scheduling.Outcome = "skipped"
 		evidence.Scheduling.Reason = nonExecutableReason
 	}
-	landingReady, landingCapacity, err := nativeLandingClaimCapacity(ctx, q, id, nativeLandingCapacityUnknown, now)
+	landingReady, landingCapacity, err := readAdmissionLandingCapacity(ctx, q, scope, id, evidence, now)
 	if err != nil {
 		return err
 	}
@@ -129,6 +129,9 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 			selectorSource = "registered_runner_published_context"
 		}
 		a := tracker.NativeRuntimeAdmission{RunnerID: r.RunnerID, RunnerRevision: r.Revision, PolicyID: policyID, Source: "native_claim_candidate_snapshot", ObservedAt: now, Outcome: "unknown", Reason: "Current native candidate predicates match; runner request selectors are unavailable", Unavailable: []string{}}
+		if truncated {
+			a.Unavailable = append(a.Unavailable, "capacity_projection_truncated")
+		}
 		refuse := func(code, reason string) {
 			a.Outcome, a.ReasonCode, a.Reason = "skipped", code, reason
 		}
@@ -173,19 +176,32 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 			if err != nil {
 				return err
 			}
+			if allowed && reason == "placement_capacity_unavailable" {
+				a.Unavailable = append(a.Unavailable, "placement_capacity")
+			}
 			if !allowed {
 				refuse("no_claimable_work", reason)
 				evidence.Admission = append(evidence.Admission, a)
 				continue
 			}
-			decision, _, err := checkMonthlyClaim(ctx, q, scope, r.MachineID, id, false, now)
-			if err != nil {
-				return err
-			}
-			if !decision.Allowed {
-				refuse("provider_capacity", monthlyBudgetRefusal(decision))
-				evidence.Admission = append(evidence.Admission, a)
-				continue
+			if explanationRead(ctx) {
+				available, err := explanationBudgetAvailable(ctx, q, scope)
+				if err != nil {
+					return err
+				}
+				if !available {
+					a.Unavailable = append(a.Unavailable, "monthly_budget_admission")
+				}
+			} else {
+				decision, _, err := checkMonthlyClaim(ctx, q, scope, r.MachineID, id, false, now)
+				if err != nil {
+					return err
+				}
+				if !decision.Allowed {
+					refuse("provider_capacity", monthlyBudgetRefusal(decision))
+					evidence.Admission = append(evidence.Admission, a)
+					continue
+				}
 			}
 			exclusions := r.Exclusions(scope.project, requirements, false)
 			if len(exclusions) > 0 {

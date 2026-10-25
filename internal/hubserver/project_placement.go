@@ -479,6 +479,9 @@ func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, sco
 }
 
 func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID, now time.Time, overrides []tracker.NativeCapacityCandidate, joining ...string) (bool, string, error) {
+	if explanationRead(ctx) {
+		return explanationPlacementAllowed(ctx, q, scope, machine, id)
+	}
 	if allowed, reason, err := nativeSourceClaimAllowed(ctx, q, scope, machine, id); err != nil || !allowed {
 		return allowed, reason, err
 	}

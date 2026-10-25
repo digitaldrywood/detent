@@ -343,6 +343,7 @@ func (operatorWorkReads) WorkReadNames(context.Context) []string {
 }
 
 func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (explain.IssueExplanation, error) {
+	ctx = context.WithValue(ctx, explanationReadKey{}, true)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: query.ProjectID})
@@ -359,11 +360,11 @@ func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (ex
 	if err != nil {
 		return explain.IssueExplanation{}, safeWorkReadError(err)
 	}
-	failures, partial, err := readNativeFailures(ctx, r.service.database.reader, scope, string(issue.WorkItemID), nil)
+	failures, partial, err := readExplanationFailures(ctx, r.service.database.reader, scope, string(issue.WorkItemID))
 	if err != nil {
 		return explain.IssueExplanation{}, safeWorkReadError(err)
 	}
-	out := explain.FromNativeEvidence(evidence)
+	out := boundedNativeExplanation(evidence)
 	out.FailureSignature = latestNativeFailureSignature(failures, partial)
 	return out, nil
 }
