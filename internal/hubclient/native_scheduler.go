@@ -567,6 +567,7 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 			if releaseErr := release(leases[i:], nil); releaseErr != nil {
 				return nil, release(leases[:i], errors.Join(degraded, err, releaseErr))
 			}
+			leases = leases[:i]
 			degraded = errors.Join(degraded, err)
 			break
 		}
@@ -577,7 +578,7 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		claims = append(claims, nativeClaim{landingCapacity: request.LandingCapacity, availabilityDeadline: availabilityDeadline, source: source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(claimStarted, lease)})
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, release(leases[:len(claims)], errors.Join(degraded, err))
+		return nil, release(leases, errors.Join(degraded, err))
 	}
 	if degraded != nil {
 		slog.Default().Warn("native candidate fetch degraded", "project_id", source.client.project, "retained", len(claims), "error", degraded)
