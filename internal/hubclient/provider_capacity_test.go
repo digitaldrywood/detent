@@ -422,24 +422,67 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		}
 		transport := client.httpClient.Transport
 		if unavailable == "provider hydration" {
-			reads := 0
+			var acquired []tracker.NativeLease
+			var recoveryIDs []string
+			released := make(map[tracker.LeaseID]int)
 			client.httpClient.Transport = executionRoundTrip(func(r *http.Request) (*http.Response, error) {
 				if r.Method == http.MethodGet && r.URL.Query().Get("view") == "recovery" {
-					reads++
-					if reads == 2 {
+					parts := strings.Split(r.URL.Path, "/")
+					recoveryIDs = append(recoveryIDs, parts[len(parts)-1])
+					if len(recoveryIDs) == 2 {
 						return nil, errors.New("injected hydration failure")
 					}
 				}
-				return transport.RoundTrip(r)
+				response, err := transport.RoundTrip(r)
+				if err == nil && response.StatusCode == http.StatusOK && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claims") {
+					payload, readErr := io.ReadAll(response.Body)
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					if err := response.Body.Close(); err != nil {
+						t.Fatal(err)
+					}
+					response.Body = io.NopCloser(strings.NewReader(string(payload)))
+					var lease tracker.NativeLease
+					if err := json.Unmarshal(payload, &lease); err != nil {
+						t.Fatal(err)
+					}
+					acquired = append(acquired, lease)
+				}
+				if err == nil && response.StatusCode < 300 && strings.HasSuffix(r.URL.Path, "/release") {
+					parts := strings.Split(r.URL.Path, "/")
+					released[tracker.LeaseID(parts[len(parts)-2])]++
+				}
+				return response, err
 			})
 			issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
-			if err != nil || len(issues) != 1 {
-				t.Fatalf("provider hydration failure = %d, %v", len(issues), err)
+			if err != nil || len(issues) != 1 || len(acquired) != 6 || len(recoveryIDs) != 2 {
+				t.Fatalf("provider hydration = %d issues, %d leases, %d recoveries, %v", len(issues), len(acquired), len(recoveryIDs), err)
+			}
+			if issues[0].ID != string(acquired[0].WorkItemID) || issues[0].ID != recoveryIDs[0] || recoveryIDs[1] != string(acquired[1].WorkItemID) || recoveryIDs[0] == recoveryIDs[1] {
+				t.Fatal("partial batch did not retain only the successfully hydrated lease")
+			}
+			if len(scheduler.nativeClaims) != 1 || len(scheduler.claims) != 1 || len(scheduler.claimPolicies) != 1 || len(released) != 5 {
+				t.Fatal("partial batch retained claims outside the hydrated prefix")
+			}
+			for i, lease := range acquired {
+				wantReleased := 1
+				if i == 0 {
+					wantReleased = 0
+				}
+				if lease.ProviderReservation == nil || released[lease.ID] != wantReleased {
+					t.Fatalf("lease %s: reservation=%v releases=%d, want %d", lease.ID, lease.ProviderReservation, released[lease.ID], wantReleased)
+				}
+				_, cached := client.nativeLeases.Load(native.base() + "/" + string(lease.WorkItemID))
+				if cached != (i == 0) {
+					t.Fatalf("lease %s cache retained=%t", lease.ID, cached)
+				}
+			}
+			retained := scheduler.nativeClaims[issues[0].ID]
+			if !reflect.DeepEqual(retained.lease.ProviderReservation, acquired[0].ProviderReservation) || retained.lease.PolicyID != descriptor.ID {
+				t.Fatal("retained lease lost its provider reservation or immutable policy")
 			}
 			client.httpClient.Transport = transport
-			if scheduler.nativeClaims[issues[0].ID].lease.ProviderReservation == nil {
-				t.Fatal("retained claim lost its provider reservation")
-			}
 			if err := scheduler.ReleaseClaim(t.Context(), issues[0].ID, "dispatch_deferred"); err != nil {
 				t.Fatal(err)
 			}
