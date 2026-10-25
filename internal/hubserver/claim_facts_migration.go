@@ -34,7 +34,7 @@ const claimFactsRowsPerTransaction = 100
 
 func (d *database) populateClaimFacts(ctx context.Context) error {
 	for range claimFactsRowsPerTick / claimFactsRowsPerTransaction {
-		changed, err := d.populateClaimFactsBatch(ctx)
+		changed, err := d.populateClaimFact(ctx)
 		if err != nil || !changed {
 			return err
 		}
@@ -42,14 +42,14 @@ func (d *database) populateClaimFacts(ctx context.Context) error {
 	return nil
 }
 
-func (d *database) populateClaimFactsBatch(ctx context.Context) (bool, error) {
+func (d *database) populateClaimFact(ctx context.Context) (bool, error) {
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
 	for range claimFactsRowsPerTransaction {
-		changed, err := populateClaimFact(ctx, tx)
+		changed, err := projectLegacyClaimFact(ctx, tx)
 		if err != nil {
 			return false, err
 		}
@@ -60,7 +60,7 @@ func (d *database) populateClaimFactsBatch(ctx context.Context) (bool, error) {
 	return true, d.commit(ctx, tx)
 }
 
-func populateClaimFact(ctx context.Context, tx *sql.Tx) (bool, error) {
+func projectLegacyClaimFact(ctx context.Context, tx *sql.Tx) (bool, error) {
 	var id, raw string
 	err := tx.QueryRowContext(ctx, `SELECT id,record_json FROM change_requests WHERE claim_version_id IS NULL OR claim_head_sha IS NULL ORDER BY id LIMIT 1`).Scan(&id, &raw)
 	if err == nil {
