@@ -351,6 +351,9 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	return s.runnerTransaction(c, status, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
+		step := heartbeatWriterSteps(ctx)
+		defer step("")
+		step("sprite")
 		if scope.credential.Runner.RunnerID != "" {
 			if request.SpriteName != "" {
 				if !validSpritesSlug(request.SpriteName) {
@@ -368,70 +371,90 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 					return nil, nativePublicInvalid("Sprite name must match the runner hostname")
 				}
 			}
+			step("admission")
 			if err := storeEncodedRunnerAdmission(ctx, tx, scope, admission); err != nil {
 				return nil, err
 			}
+			step("update")
 			if err := s.storeRunnerUpdateObservation(ctx, tx, scope, request.Update, request.ProtocolMajor, request.Version, request.OS, request.Architecture, now); err != nil {
 				return nil, err
 			}
+			step("capacity")
 			if capacityRaw != "" {
 				if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET capacity_configuration_json = ? WHERE organization_id = ? AND id = ?", capacityRaw, scope.organization, scope.credential.Runner.RunnerID); err != nil {
 					return nil, err
 				}
 			}
+			step("isolation")
 			if err := storeEncodedRunnerIsolationReport(ctx, tx, scope, isolationRaw); err != nil {
 				return nil, err
 			}
+			step("heartbeat")
 			if err := updateRunnerHeartbeat(ctx, tx, scope, request.Capacity, request.Version, request.OS, request.Architecture, now); err != nil {
 				return nil, err
 			}
+			step("workspace")
 			if err := storeEncodedRunnerWorkspaceReport(ctx, tx, scope, workspaceRaw, request.WorkspaceIsolation); err != nil {
 				return nil, err
 			}
+			step("skills")
 			if err := storeEncodedRunnerSkills(ctx, tx, scope, skillsRaw, receivedAt); err != nil {
 				return nil, err
 			}
+			step("checkout")
 			if err := updateRunnerCheckoutReport(ctx, tx, scope, request.CheckoutRepository, now); err != nil {
 				return nil, err
 			}
+			step("providers")
 			if err := updateProviderReports(ctx, tx, scope, request.ProviderReports, now); err != nil {
 				return nil, err
 			}
+			step("local_checks")
 			if checksRaw != "" {
 				_, err := tx.ExecContext(ctx, "UPDATE runner_identities SET local_checks_json = json_set(local_checks_json, ?, json(?)) WHERE id = ? AND organization_id = ?", "$."+string(scope.project), checksRaw, scope.credential.Runner.RunnerID, scope.organization)
 				if err != nil {
 					return nil, err
 				}
 			}
-			snapshot, err := readRunnerRoutingSnapshot(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
-			if err != nil {
-				return nil, err
-			}
-			snapshot.HostMetricsAcknowledged = s.mergeRunnerHostMetrics(ctx, tx, scope, request.HostMetrics, now)
-			if err := readRunnerClaimState(ctx, tx, scope, &snapshot, now); err != nil {
-				return nil, err
-			}
-			if request.ChangeCursor != nil {
-				snapshot.Changes, err = readHeartbeatChanges(ctx, tx, scope, changeCursor, changeKey, changeReset, digest, snapshot.ClaimState.PolicyIDs[scope.project], now)
-				if err != nil {
-					return nil, err
-				}
-			}
+			step("host_metrics")
+			acknowledged := s.mergeRunnerHostMetrics(ctx, tx, scope, request.HostMetrics, now)
+			step("configuration")
 			configurationRequest, err := s.runnerProjectConfiguration(ctx, tx, scope, configuration, configurationIssuer, now)
 			if err != nil {
 				return nil, err
 			}
+			step("problems")
 			if err := updateRunnerProblems(ctx, tx, scope, request.Problems, request.ProtocolMajor, request.SettingsRejected, now); err != nil {
 				return nil, err
 			}
-			if configurationRequest.RequestID != "" {
-				snapshot.ProjectConfigurationRequest = &configurationRequest
+			step("github_batch_completion")
+			if err := prepareGitHubBatchTask(ctx, tx, scope); err != nil {
+				return nil, err
 			}
-			if published {
-				snapshot.TargetRunnerVersion = strings.TrimPrefix(target, "v")
-			}
-			snapshot.GitHubIntake, err = readGitHubBatchTask(ctx, tx, scope)
-			return snapshot, err
+			return runnerCommittedResponse(func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
+				snapshot, err := readRunnerRoutingSnapshot(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
+				if err != nil {
+					return nil, err
+				}
+				snapshot.HostMetricsAcknowledged = acknowledged
+				if err := readRunnerClaimState(ctx, tx, scope, &snapshot, now); err != nil {
+					return nil, err
+				}
+				if request.ChangeCursor != nil {
+					snapshot.Changes, err = readHeartbeatChanges(ctx, tx, scope, changeCursor, changeKey, changeReset, digest, snapshot.ClaimState.PolicyIDs[scope.project], now)
+					if err != nil {
+						return nil, err
+					}
+				}
+				if configurationRequest.RequestID != "" {
+					snapshot.ProjectConfigurationRequest = &configurationRequest
+				}
+				if published {
+					snapshot.TargetRunnerVersion = strings.TrimPrefix(target, "v")
+				}
+				snapshot.GitHubIntake, err = readGitHubBatchTask(ctx, tx, scope)
+				return snapshot, err
+			}), nil
 		}
 		if request.Admission != nil {
 			return nil, nativePublicInvalid("Admission observations require an enrolled runner")
