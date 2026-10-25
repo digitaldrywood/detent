@@ -39,6 +39,7 @@ func TestScheduledFinalizer(t *testing.T) {
 		differentSeries                                                                    bool
 		releaseRun                                                                         bool
 		newerFailure                                                                       bool
+		pageBoundary                                                                       bool
 		preflightSkipped                                                                   bool
 	}{
 		{name: "missing release dispatch recovered without recreating tag", repository: "digitaldrywood/detent", unchanged: true},
@@ -65,6 +66,8 @@ func TestScheduledFinalizer(t *testing.T) {
 		{name: "skipped required job", repository: "digitaldrywood/detent", skippedJob: true},
 		{name: "latest attempt failure overrides success", repository: "digitaldrywood/detent", latestFailed: true, rerun: true},
 		{name: "latest attempt success replaces failure", repository: "digitaldrywood/detent", repaired: true, rerun: true},
+		{name: "older success on page one newer failure on page two", repository: "digitaldrywood/detent", latestFailed: true, rerun: true, pageBoundary: true},
+		{name: "older failure on page one newer success on page two", repository: "digitaldrywood/detent", repaired: true, rerun: true, pageBoundary: true},
 		{name: "native green evidence", repository: "digitaldrywood/detent"},
 		{name: "develop records evidence without tagging", repository: "digitaldrywood/detent", develop: true},
 		{name: "preflight skip reports activity without validation publication", repository: "digitaldrywood/detent", develop: true, preflightSkipped: true},
@@ -128,6 +131,11 @@ func TestScheduledFinalizer(t *testing.T) {
 			if tt.timedOutJob {
 				jobs[1].Conclusion = "timed_out"
 			}
+			if tt.pageBoundary {
+				for len(jobs) < 50 {
+					jobs = append(jobs, jobs[1])
+				}
+			}
 			var fixture strings.Builder
 			for _, j := range jobs {
 				raw, err := json.Marshal(j)
@@ -169,8 +177,26 @@ set -euo pipefail
 printf 'forge %s\n' "$*" >> "$FIXTURE_LOG"
 case "$*" in
   *'/attempts/'*' --jq .conclusion') printf '%s\n' "$FIXTURE_CONCLUSION" ;;
-  *'/jobs?filter=all&per_page=100'*) cat "$FIXTURE_JOBS" ;;
-  *'/jobs?per_page=100'*) if [ "$GITHUB_RUN_ATTEMPT" = 2 ]; then printf '%s\n' '{"id":200,"name":"Finalize scheduled validation","conclusion":null}'; exit; fi; cat "$FIXTURE_JOBS" ;;
+  *'/jobs?filter=all&per_page='*)
+    page_size=0
+    paginate=false
+    for arg in "$@"; do
+      case "$arg" in
+        *'/jobs?filter=all&per_page='*) page_size="${arg##*per_page=}" ;;
+        --paginate) paginate=true ;;
+      esac
+    done
+    if [ "$page_size" -ge 100 ]; then
+      echo "HTTP 502" >&2
+      exit 1
+    fi
+    test "$page_size" -gt 0
+    count="$(jq -s length "$FIXTURE_JOBS")"
+    for ((offset=0; offset<count; offset+=page_size)); do
+      jq -s --argjson offset "$offset" --argjson size "$page_size" '.[$offset:$offset + $size][]' "$FIXTURE_JOBS"
+      if [ "$paginate" = false ]; then break; fi
+    done ;;
+  *'/jobs?per_page=50'*) if [ "$GITHUB_RUN_ATTEMPT" = 2 ]; then printf '%s\n' '{"id":200,"name":"Finalize scheduled validation","conclusion":null}'; exit; fi; cat "$FIXTURE_JOBS" ;;
   *'/runs/123/artifacts?per_page=100'*) printf '7\n' ;;
   *'-X DELETE '*'/actions/artifacts/7') ;;
   *'/statuses/'*) printf '123\n' ;;

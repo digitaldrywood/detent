@@ -18,24 +18,27 @@ const (
 )
 
 func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) error {
-	ctx, cancel := context.WithTimeout(ctx, backgroundStorageBudget)
-	defer cancel()
-	if err := s.database.populateTimeIndexes(ctx); err != nil {
-		return err
+	stages := []struct {
+		name string
+		run  func(context.Context) error
+	}{
+		{"populate time indexes", s.database.populateTimeIndexes},
+		{"expire native records", func(ctx context.Context) error { return s.expireNativeRecords(ctx, now) }},
+		{"archive closed issues", func(ctx context.Context) error { return s.archiveClosedNativeIssues(ctx, now) }},
+		{"compact retained events", func(ctx context.Context) error { return s.compactRetainedEvents(ctx, now) }},
+		{"compact analytics samples", func(ctx context.Context) error { return s.database.compactAnalyticsSamples(ctx, now) }},
+		{"reclaim storage", s.database.reclaimStorage},
 	}
-	if err := s.expireNativeRecords(ctx, now); err != nil {
-		return err
+	var failures []error
+	for _, stage := range stages {
+		stageCtx, cancel := context.WithTimeout(ctx, backgroundStorageBudget)
+		err := stage.run(stageCtx)
+		cancel()
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", stage.name, err))
+		}
 	}
-	if err := s.archiveClosedNativeIssues(ctx, now); err != nil {
-		return fmt.Errorf("archive closed issues: %w", err)
-	}
-	if err := s.compactRetainedEvents(ctx, now); err != nil {
-		return fmt.Errorf("compact retained events: %w", err)
-	}
-	if err := s.database.compactAnalyticsSamples(ctx, now); err != nil {
-		return fmt.Errorf("compact analytics samples: %w", err)
-	}
-	return s.database.reclaimStorage(ctx)
+	return errors.Join(failures...)
 }
 
 func (s *Service) expireNativeRecords(ctx context.Context, now time.Time) error {

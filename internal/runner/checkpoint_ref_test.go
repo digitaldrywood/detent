@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -58,6 +60,14 @@ func TestNativeRestorableCheckpoint(t *testing.T) {
 type checkpointFinalizingWorkspace struct {
 	*wipExecutionWorkspace
 	onFinalize func() error
+	unchanged  bool
+}
+
+func (w *checkpointFinalizingWorkspace) PushCheckpointRef(ctx context.Context, info workspace.Info, issue workspace.Issue, previous workspace.CheckpointRef, validate func(context.Context) error) (workspace.CheckpointRef, bool, error) {
+	if w.unchanged {
+		return previous, false, validate(ctx)
+	}
+	return w.wipExecutionWorkspace.PushCheckpointRef(ctx, info, issue, previous, validate)
 }
 
 func (w *checkpointFinalizingWorkspace) FinalizeNativeWork(ctx context.Context, _ workspace.Info, _ workspace.Issue, validate func(context.Context) error) (string, error) {
@@ -106,6 +116,101 @@ func TestCheckpointRefsPushAfterCompletedTurn(t *testing.T) {
 	}
 	if !finalized {
 		t.Fatal("completed turn did not finalize its source")
+	}
+}
+
+type checkpointCaptureWorkspace struct {
+	*workspace.LocalGit
+	afterCapture func()
+}
+
+func (w *checkpointCaptureWorkspace) RecoveryState(ctx context.Context, info workspace.Info, issue workspace.Issue) (workspace.RecoveryState, error) {
+	state, err := w.LocalGit.RecoveryState(ctx, info, issue)
+	if w.afterCapture != nil {
+		change := w.afterCapture
+		w.afterCapture = nil
+		change()
+	}
+	return state, err
+}
+
+func TestCheckpointRefsCaptureUnchangedSnapshot(t *testing.T) {
+	isolateAttemptDiffGitConfig(t)
+	for _, test := range []struct {
+		name               string
+		staged             bool
+		changeAfterCapture bool
+	}{
+		{name: "worktree to index"},
+		{name: "index to worktree", staged: true},
+		{name: "different content after capture", changeAfterCapture: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := initRunnerSourceRepo(t)
+			remote := filepath.Join(t.TempDir(), "origin.git")
+			runRunnerGit(t, source, "init", "--bare", remote)
+			runRunnerGit(t, source, "remote", "add", "origin", remote)
+			runRunnerGit(t, source, "push", "-u", "origin", "main")
+			local, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Dir(source), SourceRoot: source})
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend := &checkpointCaptureWorkspace{LocalGit: local}
+			info := workspace.Info{Path: source, Branch: "main"}
+			issue := workspace.Issue{ID: "work", Identifier: "work", BaseRef: "origin/main"}
+			write := func(content string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(source, "README.md"), []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write("edited\n")
+			if test.staged {
+				runRunnerGit(t, source, "add", "README.md")
+			}
+			execution := &retryStepExecution{finalizingTestExecution: &finalizingTestExecution{}}
+			r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), now: time.Now}
+			refs := newCheckpointRefs(backend, execution, info, issue, nil)
+			req := RunRequest{Execution: execution, checkpointRefs: refs}
+			if !r.pushCheckpointRef(t.Context(), refs, req, "turn_completed") {
+				t.Fatal("turn did not publish its checkpoint")
+			}
+			published, captured := refs.last, *refs.captured
+			if test.staged {
+				runRunnerGit(t, source, "restore", "--staged", "README.md")
+			} else {
+				runRunnerGit(t, source, "add", "README.md")
+			}
+			state, err := backend.RecoveryState(t.Context(), info, issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.WorkspaceFingerprint == captured.WorkspaceDigest {
+				t.Fatal("staging did not change recovery fingerprint")
+			}
+			if r.pushCheckpointRef(t.Context(), refs, req, "turn_completed") {
+				t.Fatal("equivalent tree published another checkpoint")
+			}
+			if refs.last != published || refs.captured.WorkspaceDigest != state.WorkspaceFingerprint {
+				t.Fatal("no-op did not retain publication and refresh captured state")
+			}
+			if test.changeAfterCapture {
+				backend.afterCapture = func() { write("different content\n") }
+			}
+			err = r.recordAgentStep(t.Context(), req, backend, info, issue, "complete")
+			if test.changeAfterCapture {
+				if !errors.Is(err, ErrNativeRecoveryRequired) || len(execution.steps) != 0 {
+					t.Fatalf("changed source: steps=%+v err=%v", execution.steps, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(execution.steps) != 1 || execution.steps[0].Source.WorkspaceDigest != state.WorkspaceFingerprint || execution.steps[0].Source.CommitSHA != published.CommitSHA || execution.steps[0].Source.TreeSHA != published.TreeSHA {
+				t.Fatalf("completed turn lost current fingerprint or published snapshot: %+v", execution.steps)
+			}
+		})
 	}
 }
 

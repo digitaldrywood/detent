@@ -16,7 +16,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
-	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -26,8 +25,6 @@ type sourceRepairAgent struct {
 	auditRework    bool
 	requests       []runner.AgentTurnRequest
 	workspaceHooks *sourceLoopWorkspace
-	checkpointed   <-chan struct{}
-	waitDone       <-chan struct{}
 }
 
 type sourceLoopWorkspace struct {
@@ -36,7 +33,6 @@ type sourceLoopWorkspace struct {
 	afterRuns        int
 	reviewBeforeRuns int
 	reviewAfterRuns  int
-	checkpointed     chan struct{}
 }
 
 func (w *sourceLoopWorkspace) BeforeRun(ctx context.Context, info workspace.Info, issue workspace.Issue) error {
@@ -55,19 +51,6 @@ func (w *sourceLoopWorkspace) AfterRun(ctx context.Context, info workspace.Info,
 		w.afterRuns++
 	}
 	w.LocalGit.AfterRun(ctx, info, issue)
-}
-
-func (w *sourceLoopWorkspace) PushCheckpointRef(ctx context.Context, info workspace.Info, issue workspace.Issue, previous workspace.CheckpointRef, validate func(context.Context) error) (workspace.CheckpointRef, bool, error) {
-	checkpoint, pushed, err := w.LocalGit.PushCheckpointRef(ctx, info, issue, previous, validate)
-	if err == nil && pushed {
-		if err := exec.CommandContext(ctx, "git", "-C", info.Path, "cat-file", "-e", checkpoint.CommitSHA+":REPAIR.md").Run(); err == nil {
-			select {
-			case w.checkpointed <- struct{}{}:
-			default:
-			}
-		}
-	}
-	return checkpoint, pushed, err
 }
 
 func (*sourceRepairAgent) VerifyResume(_ context.Context, _ runner.AgentProcessRequest, resume runner.AgentResume) error {
@@ -119,13 +102,6 @@ func (a *sourceRepairAgent) RunTurnWithTools(ctx context.Context, request runner
 		}
 		if err := update(runner.AgentUpdate{Type: runner.AgentUpdateTurnCompleted, ThreadID: "thread-native", TurnID: "repair-checkpoint", Status: "completed"}); err != nil {
 			return runner.AgentTurnResult{}, err
-		}
-		select {
-		case <-a.checkpointed:
-		case <-ctx.Done():
-			return runner.AgentTurnResult{}, errors.New("repair turn did not publish its checkpoint before returning")
-		case <-a.waitDone:
-			return runner.AgentTurnResult{}, errors.New("repair turn did not publish its checkpoint before returning")
 		}
 		a.validator, a.sourceVerdict = "pass", "pass"
 	}
@@ -186,13 +162,13 @@ func TestNativeSourceReviewLoop(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			loopWorkspace := &sourceLoopWorkspace{LocalGit: backend.(*workspace.LocalGit), checkpointed: make(chan struct{}, 1)}
+			loopWorkspace := &sourceLoopWorkspace{LocalGit: backend.(*workspace.LocalGit)}
 			sessions, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer sessions.Close()
-			provider := &sourceRepairAgent{workspaceHooks: loopWorkspace, checkpointed: loopWorkspace.checkpointed, waitDone: testenv.WaitContext(t, t.Context()).Done(), auditRework: test.auditRework, committingAgent: committingAgent{staged: true, complete: true, validator: test.verdict}}
+			provider := &sourceRepairAgent{workspaceHooks: loopWorkspace, auditRework: test.auditRework, committingAgent: committingAgent{staged: true, complete: true, validator: test.verdict}}
 			if test.sourceReview {
 				provider.sourceVerdict = "rework"
 			}
