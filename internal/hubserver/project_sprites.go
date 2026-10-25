@@ -195,7 +195,7 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope
 		}
 		return
 	}
-	wakeContext, cancel := context.WithTimeout(ctx, runnerauth.MaxEnrollmentTTL)
+	wakeContext, cancel := context.WithTimeout(s.freshRunDetailContext(ctx), runnerauth.MaxEnrollmentTTL)
 	pass := &spriteLifecyclePass{done: make(chan struct{}), cancel: cancel}
 	s.spriteWakes[key] = pass
 	s.spriteWakeWork.Add(1)
@@ -212,7 +212,6 @@ func (s *Service) scheduleSpriteLifecycle(ctx context.Context, scope nativeScope
 			}
 		}()
 		defer cancel()
-		wakeContext = s.freshRunDetailContext(wakeContext)
 		if state != "" {
 			if _, err := s.wakeOrganizationSpriteRunners(wakeContext, scope); err != nil {
 				if wakeContext.Err() == nil {
