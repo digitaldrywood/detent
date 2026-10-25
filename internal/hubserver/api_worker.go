@@ -385,8 +385,8 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			}
 		}
 	}()
-	if mode.hint != nil && claimPrepared(ctx) != nil {
-		claimPrepared(ctx).selected = mode.hint.id
+	if prepared := claimPrepared(ctx); mode.hint != nil && prepared != nil {
+		prepared.selected = mode.hint.id
 	}
 	now, err := d.currentTime()
 	if err != nil {
