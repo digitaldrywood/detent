@@ -26,11 +26,11 @@ func readRuntimeRunners(ctx context.Context, query nativeQueryer, scope nativeSc
 		if err != nil {
 			return nil, false, err
 		}
+		defer candidates.Close()
 		ids := []any{}
 		for candidates.Next() {
 			var id string
 			if err := candidates.Scan(&id); err != nil {
-				candidates.Close()
 				return nil, false, err
 			}
 			ids = append(ids, id)
