@@ -5,17 +5,20 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -1414,7 +1417,7 @@ func TestAnalyticsRollupLargeItemWriterBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	for i := range 257 {
+	for i := range 1000 {
 		id := fmt.Sprintf("bounded_%04d", i)
 		if _, err := tx.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) SELECT ?,issue_id,machine_id,?,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at FROM leases WHERE lease_id='lease_browser_usage_0_0'`, id, id); err != nil {
 			t.Fatal(err)
@@ -1450,6 +1453,16 @@ func TestAnalyticsRollupLargeItemWriterBound(t *testing.T) {
 	convertTestAnalyticsProjections(t, f.service)
 	var transactions int
 	var changedDuringRead bool
+	writerCtx, cancelWriter := context.WithCancel(t.Context())
+	defer cancelWriter()
+	var acquired atomic.Bool
+	var writerResult chan error
+	t.Cleanup(func() {
+		cancelWriter()
+		if writerResult != nil {
+			<-writerResult
+		}
+	})
 	drainBounded := func() {
 		for {
 			var before, after int
@@ -1457,9 +1470,31 @@ func TestAnalyticsRollupLargeItemWriterBound(t *testing.T) {
 				t.Fatal(err)
 			}
 			var writerStatements int
+			inWriter := false
 			traceCtx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
-				if d.db.Stats().InUse > 0 {
+				if strings.HasPrefix(query, "SELECT coalesce((SELECT analytics_revision") {
+					inWriter = true
+				}
+				if inWriter {
 					writerStatements++
+					if strings.HasPrefix(query, "SELECT coalesce((SELECT analytics_revision") && writerResult != nil && !acquired.Load() {
+						t.Error("queued foreground writer did not interleave between analytics pages")
+					}
+					if strings.HasPrefix(query, "INSERT INTO analytics_hourly_rollups") && writerResult == nil {
+						writerResult = make(chan error, 1)
+						waits := d.db.Stats().WaitCount
+						go func() {
+							observation := &requestTiming{trace: func(string, []driver.NamedValue) { acquired.Store(true) }}
+							_, err := d.db.ExecContext(withRequestTiming(writerCtx, observation), "UPDATE machines SET capacity=capacity")
+							writerResult <- err
+						}()
+						testenv.WaitUntil(t, t.Context(), func() error {
+							if d.db.Stats().WaitCount <= waits {
+								return errors.New("foreground writer has not queued")
+							}
+							return nil
+						})
+					}
 				}
 				if !changedDuringRead && strings.Contains(query, "FROM native_attempts a WHERE") {
 					changedDuringRead = true
@@ -1501,6 +1536,17 @@ func TestAnalyticsRollupLargeItemWriterBound(t *testing.T) {
 	}
 	if !changedDuringRead {
 		t.Fatal("source change during reader preparation was not exercised")
+	}
+	if writerResult == nil {
+		t.Fatal("foreground writer was never queued")
+	}
+	writerErr := <-writerResult
+	writerResult = nil
+	if writerErr != nil {
+		t.Fatal(writerErr)
+	}
+	if !acquired.Load() {
+		t.Fatal("foreground writer never acquired the writer")
 	}
 	t.Logf("large history completed across %d bounded writer transactions", transactions)
 	got := readTestRollupRows(t, d.reader, scope)

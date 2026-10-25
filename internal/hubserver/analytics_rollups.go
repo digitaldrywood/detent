@@ -159,7 +159,14 @@ AND EXISTS(SELECT 1 FROM issues i JOIN analytics_rollup_backfill b ON b.organiza
 	return failures
 }
 
+type analyticsMaintenanceStep struct {
+	name string
+	run  func(context.Context, time.Time) (bool, error)
+}
+
 func (s *Service) maintainAnalyticsRollups(ctx context.Context, now time.Time, retryFailed bool) {
+	ctx, cancel := context.WithTimeout(ctx, backgroundStorageBudget)
+	defer cancel()
 	if err := s.convertSchedulerDecisions(ctx); err != nil {
 		s.config.Logger.ErrorContext(ctx, "convert analytics events", "error", err)
 		return
@@ -176,32 +183,48 @@ func (s *Service) maintainAnalyticsRollups(ctx context.Context, now time.Time, r
 	if pending {
 		return
 	}
-	deadline := time.Now().Add(analyticsBackfillBudget)
-	for _, step := range []struct {
-		name string
-		run  func(context.Context, time.Time) (bool, error)
-	}{
-		{"drain analytics rollups", s.database.drainAnalyticsDirty},
-		{"backfill analytics rollups", s.database.backfillAnalyticsRollups},
-	} {
-		for range analyticsBackfillBatch {
-			if !time.Now().Before(deadline) || ctx.Err() != nil {
+	var steps []analyticsMaintenanceStep
+	if retryFailed {
+		steps = append(steps, analyticsMaintenanceStep{"retry failed analytics rollups", func(ctx context.Context, now time.Time) (bool, error) {
+			return false, s.database.retryFailedAnalyticsRollups(ctx, now)
+		}})
+	}
+	steps = append(steps,
+		analyticsMaintenanceStep{"backfill analytics rollups", s.database.backfillAnalyticsRollups},
+		analyticsMaintenanceStep{"drain analytics rollups", s.database.drainAnalyticsDirty},
+	)
+	s.runAnalyticsMaintenance(ctx, now, steps)
+}
+
+func (s *Service) runAnalyticsMaintenance(ctx context.Context, now time.Time, steps []analyticsMaintenanceStep) {
+	ctx, cancel := context.WithTimeout(ctx, backgroundStorageBudget)
+	defer cancel()
+	ctx, timing := withWriterTiming(ctx)
+	start := time.Now()
+	defer func() {
+		if time.Since(start) >= slowRequest {
+			attrs := []any{"duration_ms", time.Since(start).Milliseconds(), "writer_hold_ms", milliseconds(time.Duration(timing.hold.Load())), "writer_txs", timing.txs.Load()}
+			attrs = append(attrs, timing.stepAttrs("analytics_steps_ms")...)
+			s.config.Logger.InfoContext(ctx, "hub analytics timing", attrs...)
+		}
+	}()
+	for len(steps) > 0 && ctx.Err() == nil {
+		next := steps[:0]
+		for _, step := range steps {
+			if ctx.Err() != nil {
 				break
 			}
+			stepStarted := time.Now()
 			more, err := step.run(ctx, now)
-			if err != nil && !errors.Is(err, context.Canceled) {
+			timing.span(step.name, stepStarted)
+			if err != nil && ctx.Err() == nil {
 				s.config.Logger.ErrorContext(ctx, step.name, "error", err)
 			}
-			if !more {
-				break
+			if more {
+				next = append(next, step)
 			}
 		}
-	}
-	if !retryFailed || ctx.Err() != nil {
-		return
-	}
-	if err := s.database.retryFailedAnalyticsRollups(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
-		s.config.Logger.ErrorContext(ctx, "retry failed analytics rollups", "error", err)
+		steps = next
 	}
 }
 

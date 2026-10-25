@@ -68,6 +68,10 @@ func heartbeatWriterSteps(ctx context.Context) func(string) {
 }
 
 func (t *writerTiming) logAttrs() []any {
+	return t.stepAttrs("heartbeat_writer_ms")
+}
+
+func (t *writerTiming) stepAttrs(group string) []any {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(t.spans) == 0 {
@@ -77,7 +81,22 @@ func (t *writerTiming) logAttrs() []any {
 	for _, span := range t.spans {
 		spans = append(spans, slog.Float64(span.name, milliseconds(span.duration)))
 	}
-	return []any{slog.Group("heartbeat_writer_ms", spans...)}
+	return []any{slog.Group(group, spans...)}
+}
+
+func (t *writerTiming) span(name string, start time.Time) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for i := range t.spans {
+		if t.spans[i].name == name {
+			t.spans[i].duration += time.Since(start)
+			return
+		}
+	}
+	t.spans = append(t.spans, timingSpan{name: name, duration: time.Since(start)})
 }
 
 // openTimedWriter opens the writer pool through a connector that records each
