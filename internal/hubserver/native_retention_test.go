@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 
 	"github.com/digitaldrywood/detent/internal/hostmetrics"
@@ -20,6 +21,49 @@ import (
 )
 
 func TestNativeRetention(t *testing.T) {
+	t.Run("archive error preserves independent compaction", func(t *testing.T) {
+		f := newStorageArchiveFixture(t)
+		issue := f.nativeFixture.create(t, "archive failure")
+		f.transition(t, string(issue.WorkItemID), "Done", f.now.Add(-73*time.Hour))
+		archiveErr := errors.New("injected archive failure")
+		f.hook = func(entryauthority.ContentRequest) error { return archiveErr }
+		at := f.now.Add(-31 * 24 * time.Hour)
+		record := f.record(f.owner, "old conversation", at)
+		record.Status = conversation.StatusSettled
+		record.SettledAt = &at
+		record.Execution.Status = conversation.ExecutionCompleted
+		record = f.create(t, record)
+		tx := f.tx(t)
+		message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "final answer", Delivery: conversation.DeliveryCompleted, CreatedAt: at, UpdatedAt: at, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "example-runner"}}
+		if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventMessageDelta, conversationDeltaBody(message.ID, 0, "fragment"), at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,?,'slots','example',3,'{}')`, f.project.OrganizationID, f.project.ID, at.Truncate(time.Hour).Unix()); err != nil {
+			t.Fatal(err)
+		}
+		f.commit(t, tx)
+		if err := f.service.maintainNativeRetention(t.Context(), f.now); !errors.Is(err, archiveErr) {
+			t.Fatalf("retention error=%v", err)
+		}
+		var deltas, samples, summaries int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_events WHERE conversation_id=? AND type='message.delta'", record.ID).Scan(&deltas); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_hourly_rollups WHERE project_id=? AND metric='slots'", f.project.ID).Scan(&samples); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_sample_hours WHERE project_id=? AND metric='slots'", f.project.ID).Scan(&summaries); err != nil {
+			t.Fatal(err)
+		}
+		if deltas != 0 || samples != 0 || summaries != 1 {
+			t.Fatalf("deltas=%d samples=%d summaries=%d", deltas, samples, summaries)
+		}
+	})
 	t.Run("command receipts and storage accounting", func(t *testing.T) {
 		now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
 		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})

@@ -614,7 +614,7 @@ func (s *Service) retireStorageArchiveSections(ctx context.Context, now time.Tim
 						tx.Rollback()
 						return attachment.ErrInvalid
 					}
-					statement = `DELETE FROM conversation_messages WHERE rowid=? AND conversation_id=? AND id=? AND EXISTS(SELECT 1 FROM conversations c WHERE c.id=conversation_id AND c.organization_id=? AND c.project_id=? AND c.work_item_id=? AND c.visibility='shared')`
+					statement = `DELETE FROM conversation_messages WHERE rowid=? AND conversation_id=? AND id=? AND NOT EXISTS(SELECT 1 FROM message_references r WHERE r.message_id=conversation_messages.id) AND NOT EXISTS(SELECT 1 FROM conversation_attachments a WHERE a.message_id=conversation_messages.id) AND EXISTS(SELECT 1 FROM conversations c WHERE c.id=conversation_id AND c.organization_id=? AND c.project_id=? AND c.work_item_id=? AND c.visibility='shared')`
 					args = []any{rowid, p.subject, id, p.c.scope.organization, p.c.scope.project, p.c.item}
 				case "collaboration_versions":
 					var revision int64

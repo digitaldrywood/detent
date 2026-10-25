@@ -118,11 +118,44 @@ func archiveTestBytes(t *testing.T, data []byte) []byte {
 }
 
 func TestNativeStorageArchivePublication(t *testing.T) {
-	for _, phase := range []string{"sections uploaded", "root uploaded", "pointer commit", "pointer committed", "chunk retired", "reopened at sections", "reopened at root", "reopened at retirement"} {
+	for _, phase := range []string{"sections uploaded", "root uploaded", "pointer commit", "pointer committed", "chunk retired", "reopened at sections", "reopened at root", "reopened at retirement", "message children"} {
 		t.Run(phase, func(t *testing.T) {
 			f := newStorageArchiveFixture(t)
 			issue := f.nativeFixture.create(t, "closed history")
 			record := f.messages(t, string(issue.WorkItemID), 600, conversation.VisibilityShared)
+
+			var childMessages []string
+			if phase == "message children" {
+				rows, err := f.service.database.reader.QueryContext(t.Context(), "SELECT id FROM conversation_messages WHERE conversation_id=? ORDER BY seq LIMIT 2", record.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer rows.Close()
+				for rows.Next() {
+					var id string
+					if err := rows.Scan(&id); err != nil {
+						t.Fatal(err)
+					}
+					childMessages = append(childMessages, id)
+				}
+				if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+					t.Fatal(err)
+				}
+				if len(childMessages) != 2 {
+					t.Fatal("missing child messages")
+				}
+				tx := f.tx(t)
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO message_references(message_id,conversation_id,target_kind,target_id,label,created_at) VALUES(?,?,'issue',?,'retained reference',?)`, childMessages[0], record.ID, issue.WorkItemID, conversationTime(f.now)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO conversation_attachments(id,conversation_id,message_id,principal_id,name,mime,size,artifact_ref,created_at) VALUES(?,?,?,?, 'history.txt','text/plain',7,?,?)`, "attachment-"+record.ID, record.ID, childMessages[1], f.owner, "blob-"+record.ID, conversationTime(f.now)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO conversation_attachment_blobs(artifact_ref,content) VALUES(?,?)`, "blob-"+record.ID, []byte("history")); err != nil {
+					t.Fatal(err)
+				}
+				f.commit(t, tx)
+			}
 			issue = f.transition(t, string(issue.WorkItemID), "Done", f.now.Add(-73*time.Hour))
 			stopped := false
 			f.hook = func(r entryauthority.ContentRequest) error {
@@ -156,14 +189,14 @@ func TestNativeStorageArchivePublication(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantRemaining := 600
-			if phase == "chunk retired" {
-				wantRemaining = 100
+			if phase == "chunk retired" || phase == "message children" {
+				wantRemaining = 100 + len(childMessages)
 			}
 			if remaining != wantRemaining {
 				t.Fatalf("remaining=%d want=%d", remaining, wantRemaining)
 			}
 			wantPointer := 0
-			if phase == "chunk retired" || phase == "pointer committed" || phase == "reopened at retirement" {
+			if phase == "message children" || phase == "chunk retired" || phase == "pointer committed" || phase == "reopened at retirement" {
 				wantPointer = 1
 			}
 			if pointers != wantPointer {
@@ -205,8 +238,31 @@ func TestNativeStorageArchivePublication(t *testing.T) {
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE conversation_id=?", record.ID).Scan(&remaining); err != nil {
 				t.Fatal(err)
 			}
-			if remaining != 0 {
-				t.Fatalf("resume left %d messages", remaining)
+			if remaining != len(childMessages) {
+				t.Fatalf("resume left %d messages, want %d", remaining, len(childMessages))
+			}
+			if len(childMessages) > 0 {
+				messages := []*conversationMessageRecord{{ID: childMessages[0]}, {ID: childMessages[1]}}
+				if err := resolveMessageReferences(t.Context(), f.service.database.reader, messages); err != nil {
+					t.Fatal(err)
+				}
+				if err := resolveMessageAttachments(t.Context(), f.service.database.reader, messages); err != nil {
+					t.Fatal(err)
+				}
+				if len(messages[0].References) != 1 || messages[0].References[0].Label != "retained reference" || len(messages[1].Attachments) != 1 {
+					t.Fatalf("children not readable: %+v %+v", messages[0], messages[1])
+				}
+				content, err := f.store.readAttachmentContent(t.Context(), f.service.database.reader, "blob-"+record.ID)
+				if err != nil || string(content) != "history" {
+					t.Fatalf("attachment content=%q error=%v", content, err)
+				}
+				var pending int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_archive_sections WHERE work_item_id=? AND retirement_complete=0", issue.WorkItemID).Scan(&pending); err != nil {
+					t.Fatal(err)
+				}
+				if pending != 0 {
+					t.Fatalf("pending sections=%d", pending)
+				}
 			}
 			if len(f.objects) != 2 {
 				t.Fatalf("interruption duplicated archive objects: %d", len(f.objects))
