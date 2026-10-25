@@ -362,10 +362,13 @@ func TestRunnerSettingsPersistAndReachHeartbeat(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &stored)
 	response = performHubAPIRequest(t, f.service, http.MethodPost, r.base+"/projects/"+string(f.project.ID)+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, heartbeat)
+	requireNativeStatus(t, response, http.StatusNotFound)
+	response = performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", r.redemption.Credential, nil)
 	requireNativeStatus(t, response, http.StatusOK)
-	decodeHubResponse(t, response, &snapshot)
-	if len(snapshot.Routing.ProjectIDs) != 0 || snapshot.Revision != stored.Revision {
-		t.Fatalf("unassigned runner heartbeat routing = %#v", snapshot)
+	var unassignedRunner runnerauth.Runner
+	decodeHubResponse(t, response, &unassignedRunner)
+	if len(unassignedRunner.ProjectIDs) != 0 || unassignedRunner.Revision != stored.Revision {
+		t.Fatalf("unassigned runner routing = %#v", unassignedRunner)
 	}
 
 	for _, test := range []struct {
