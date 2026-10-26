@@ -1,4 +1,4 @@
-db/queries/store.sql 56
+db/queries/store.sql 25
 db/queries/worker_generations.sql 1
 internal/hubserver/account_commands.go 4
 internal/hubserver/analytics_capacity_rollups.go 8
@@ -103,9 +103,5 @@ internal/hubserver/usage_cost_report.go 4
 internal/hubserver/usage_costs.go 3
 internal/hubserver/validation_evidence.go 2
 internal/hubserver/workflow_policy.go 4
-internal/store/admission.go 3
-internal/store/lane_ledger.go 1
-internal/store/operator_mutation.go 13
-internal/store/pool_contention.go 1
-internal/store/sqlc/store.sql.go 56
+internal/store/sqlc/store.sql.go 25
 internal/store/sqlc/worker_generations.sql.go 1

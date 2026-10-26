@@ -160,7 +160,7 @@ WITH outcomes AS (
      WHERE phase.project_id = lane.project_id AND phase.issue_id = lane.issue_id
        AND phase.phase_type = 'lane' AND phase.status = 'entered'
        AND phase.phase_name = lane.to_state AND phase.started_at = lane.written_at
-       AND json_extract(phase.metadata_json, '$.terminal_outcome') = 'artifact'
+       AND phase.terminal_outcome = 'artifact'
    ))
  )
 )
@@ -179,7 +179,11 @@ ORDER BY outcome.project_id, outcome.issue_id`
 // cards or successful sessions. Keep the first such outcome for an issue across
 // all history so a repeated/imported observation cannot move it to another day.
 func (s *sqliteStore) ShippedOutcomes(ctx context.Context) ([]ShippedOutcome, error) {
-	rows, err := s.db.QueryContext(ctx, shippedOutcomesSQL)
+	reader, err := s.projectionReader(ctx, "workflow_phase_events", "")
+	if err != nil {
+		return nil, err
+	}
+	rows, err := reader.QueryContext(ctx, shippedOutcomesSQL)
 	if err != nil {
 		return nil, fmt.Errorf("read shipped outcomes: %w", err)
 	}

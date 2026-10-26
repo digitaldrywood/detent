@@ -144,6 +144,14 @@ type BacklogAdmissionRun struct {
 	ResumeAt              sql.NullString `json:"resume_at"`
 	MalformedJson         string         `json:"malformed_json"`
 	CandidateProgressJson string         `json:"candidate_progress_json"`
+	ProjectionReady       sql.NullInt64  `json:"projection_ready"`
+}
+
+type BacklogAdmissionRunIssue struct {
+	RunID       int64  `json:"run_id"`
+	Position    int64  `json:"position"`
+	IssueID     string `json:"issue_id"`
+	Fingerprint string `json:"fingerprint"`
 }
 
 type BudgetOverride struct {
@@ -448,6 +456,8 @@ type SchedulerDecision struct {
 	CapacitySnapshotJson   string         `json:"capacity_snapshot_json"`
 	GithubRateSnapshotJson string         `json:"github_rate_snapshot_json"`
 	MetadataJson           string         `json:"metadata_json"`
+	GlobalAvailable        sql.NullInt64  `json:"global_available"`
+	ProjectionReady        sql.NullInt64  `json:"projection_ready"`
 }
 
 type SecurityAuditDisposition struct {
@@ -567,42 +577,53 @@ type ValidatorVerdict struct {
 }
 
 type WorkAttempt struct {
-	ID                     int64          `json:"id"`
-	ProjectID              string         `json:"project_id"`
-	IssueID                sql.NullString `json:"issue_id"`
-	Identifier             sql.NullString `json:"identifier"`
-	IssueURL               sql.NullString `json:"issue_url"`
-	PrNumber               sql.NullInt64  `json:"pr_number"`
-	Repo                   sql.NullString `json:"repo"`
-	WorkerType             string         `json:"worker_type"`
-	WorkerHost             sql.NullString `json:"worker_host"`
-	Lane                   sql.NullString `json:"lane"`
-	AttemptNumber          int64          `json:"attempt_number"`
-	Status                 string         `json:"status"`
-	StartedAt              string         `json:"started_at"`
-	LeaseExpiresAt         sql.NullString `json:"lease_expires_at"`
-	HeartbeatAt            sql.NullString `json:"heartbeat_at"`
-	CompletedAt            sql.NullString `json:"completed_at"`
-	TerminalState          sql.NullString `json:"terminal_state"`
-	ErrorClass             sql.NullString `json:"error_class"`
-	ErrorMessage           sql.NullString `json:"error_message"`
-	Phase                  sql.NullString `json:"phase"`
-	StatusMessage          sql.NullString `json:"status_message"`
-	CurrentStep            sql.NullInt64  `json:"current_step"`
-	TotalSteps             sql.NullInt64  `json:"total_steps"`
-	ProgressPercent        sql.NullInt64  `json:"progress_percent"`
-	CurrentCommand         sql.NullString `json:"current_command"`
-	WaitReason             sql.NullString `json:"wait_reason"`
-	GithubRateSnapshotJson string         `json:"github_rate_snapshot_json"`
-	CiState                sql.NullString `json:"ci_state"`
-	CapacitySnapshotJson   string         `json:"capacity_snapshot_json"`
-	WorkerMetadataJson     string         `json:"worker_metadata_json"`
-	MetricsJson            string         `json:"metrics_json"`
-	NextAction             sql.NullString `json:"next_action"`
-	DetentSessionID        sql.NullInt64  `json:"detent_session_id"`
-	ProviderSessionID      sql.NullString `json:"provider_session_id"`
-	RuntimeIdentityJson    string         `json:"runtime_identity_json"`
-	OwnerGeneration        sql.NullInt64  `json:"owner_generation"`
+	ID                      int64          `json:"id"`
+	ProjectID               string         `json:"project_id"`
+	IssueID                 sql.NullString `json:"issue_id"`
+	Identifier              sql.NullString `json:"identifier"`
+	IssueURL                sql.NullString `json:"issue_url"`
+	PrNumber                sql.NullInt64  `json:"pr_number"`
+	Repo                    sql.NullString `json:"repo"`
+	WorkerType              string         `json:"worker_type"`
+	WorkerHost              sql.NullString `json:"worker_host"`
+	Lane                    sql.NullString `json:"lane"`
+	AttemptNumber           int64          `json:"attempt_number"`
+	Status                  string         `json:"status"`
+	StartedAt               string         `json:"started_at"`
+	LeaseExpiresAt          sql.NullString `json:"lease_expires_at"`
+	HeartbeatAt             sql.NullString `json:"heartbeat_at"`
+	CompletedAt             sql.NullString `json:"completed_at"`
+	TerminalState           sql.NullString `json:"terminal_state"`
+	ErrorClass              sql.NullString `json:"error_class"`
+	ErrorMessage            sql.NullString `json:"error_message"`
+	Phase                   sql.NullString `json:"phase"`
+	StatusMessage           sql.NullString `json:"status_message"`
+	CurrentStep             sql.NullInt64  `json:"current_step"`
+	TotalSteps              sql.NullInt64  `json:"total_steps"`
+	ProgressPercent         sql.NullInt64  `json:"progress_percent"`
+	CurrentCommand          sql.NullString `json:"current_command"`
+	WaitReason              sql.NullString `json:"wait_reason"`
+	GithubRateSnapshotJson  string         `json:"github_rate_snapshot_json"`
+	CiState                 sql.NullString `json:"ci_state"`
+	CapacitySnapshotJson    string         `json:"capacity_snapshot_json"`
+	WorkerMetadataJson      string         `json:"worker_metadata_json"`
+	MetricsJson             string         `json:"metrics_json"`
+	NextAction              sql.NullString `json:"next_action"`
+	DetentSessionID         sql.NullInt64  `json:"detent_session_id"`
+	ProviderSessionID       sql.NullString `json:"provider_session_id"`
+	RuntimeIdentityJson     string         `json:"runtime_identity_json"`
+	OwnerGeneration         sql.NullInt64  `json:"owner_generation"`
+	MetadataPrNumber        sql.NullInt64  `json:"metadata_pr_number"`
+	MetadataPrHeadSha       sql.NullString `json:"metadata_pr_head_sha"`
+	MetadataPrBaseSha       sql.NullString `json:"metadata_pr_base_sha"`
+	MetadataRunMode         sql.NullString `json:"metadata_run_mode"`
+	OutcomeExcluded         sql.NullInt64  `json:"outcome_excluded"`
+	ForgeWaitPresent        sql.NullInt64  `json:"forge_wait_present"`
+	ForgeWaitHost           sql.NullString `json:"forge_wait_host"`
+	ForgeWaitErrorClass     sql.NullString `json:"forge_wait_error_class"`
+	ForgeWriteCompletedHost sql.NullString `json:"forge_write_completed_host"`
+	MetricsTurns            sql.NullInt64  `json:"metrics_turns"`
+	ProjectionReady         sql.NullInt64  `json:"projection_ready"`
 }
 
 type WorkerGeneration struct {
@@ -650,4 +671,9 @@ type WorkflowPhaseEvent struct {
 	CachedInputTokens     sql.NullInt64  `json:"cached_input_tokens"`
 	ReasoningOutputTokens sql.NullInt64  `json:"reasoning_output_tokens"`
 	ModelContextWindow    sql.NullInt64  `json:"model_context_window"`
+	RetryIdentity         sql.NullString `json:"retry_identity"`
+	InputHash             sql.NullString `json:"input_hash"`
+	CorrelationID         sql.NullString `json:"correlation_id"`
+	TerminalOutcome       sql.NullString `json:"terminal_outcome"`
+	ProjectionReady       sql.NullInt64  `json:"projection_ready"`
 }

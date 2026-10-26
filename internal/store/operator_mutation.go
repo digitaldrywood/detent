@@ -31,22 +31,63 @@ type OperatorMutations interface {
 }
 
 func (s *sqliteStore) OperatorMutation(ctx context.Context, m mutation.Metadata) (OperatorReceipt, bool, error) {
-	var raw string
-	err := s.db.QueryRowContext(ctx, `SELECT metadata_json FROM workflow_phase_events WHERE phase_type='operator_action' AND json_valid(metadata_json) AND json_extract(metadata_json,'$.retry_identity') IS NOT NULL AND json_extract(metadata_json,'$.retry_identity')=?`, m.RetryIdentity).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return OperatorReceipt{}, false, nil
+	receipt, _, _, found, err := readOperatorMutation(ctx, s.db, m)
+	return receipt, found, err
+}
+
+type operatorMutationReader interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func readOperatorMutation(ctx context.Context, db operatorMutationReader, m mutation.Metadata) (OperatorReceipt, int64, string, bool, error) {
+	receipt, id, raw, found, err := readOperatorMutationRows(ctx, db, m, `SELECT id,metadata_json,retry_identity,input_hash,correlation_id,projection_ready FROM workflow_phase_events WHERE phase_type='operator_action' AND retry_identity=? LIMIT 1`, m.RetryIdentity)
+	if found || err != nil {
+		return receipt, id, raw, found, err
 	}
+	return readOperatorMutationRows(ctx, db, m, `SELECT id,metadata_json,retry_identity,input_hash,correlation_id,projection_ready FROM workflow_phase_events WHERE phase_type='operator_action' AND projection_ready IS NULL ORDER BY id LIMIT 129`)
+}
+
+func readOperatorMutationRows(ctx context.Context, db operatorMutationReader, m mutation.Metadata, query string, args ...any) (OperatorReceipt, int64, string, bool, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return OperatorReceipt{}, false, err
+		return OperatorReceipt{}, 0, "", false, err
 	}
-	var receipt OperatorReceipt
-	if err := json.Unmarshal([]byte(raw), &receipt); err != nil {
-		return receipt, false, err
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+		var id int64
+		var raw string
+		var retry, hash, correlation sql.NullString
+		var ready sql.NullInt64
+		if err := rows.Scan(&id, &raw, &retry, &hash, &correlation, &ready); err != nil {
+			return OperatorReceipt{}, 0, "", false, err
+		}
+		var receipt OperatorReceipt
+		if err := json.Unmarshal([]byte(raw), &receipt); err != nil {
+			if ready.Valid || projectPhase(raw).retry.String == m.RetryIdentity {
+				return OperatorReceipt{}, 0, "", false, err
+			}
+			continue
+		}
+		if ready.Valid {
+			receipt.RetryIdentity, receipt.InputHash, receipt.CorrelationID = retry.String, hash.String, correlation.String
+		}
+		if receipt.RetryIdentity != m.RetryIdentity {
+			continue
+		}
+		if receipt.InputHash != m.InputHash {
+			return receipt, id, raw, true, mutation.ErrConflict
+		}
+		return receipt, id, raw, true, nil
 	}
-	if receipt.InputHash != m.InputHash {
-		return receipt, true, mutation.ErrConflict
+	if err := rows.Err(); err != nil {
+		return OperatorReceipt{}, 0, "", false, err
 	}
-	return receipt, true, nil
+	if count == 129 {
+		return OperatorReceipt{}, 0, "", false, mutation.ErrUncertain
+	}
+	return OperatorReceipt{}, 0, "", false, nil
 }
 
 func (s *sqliteStore) ReserveOperatorMutation(ctx context.Context, m mutation.Metadata) (bool, error) {
@@ -54,43 +95,102 @@ func (s *sqliteStore) ReserveOperatorMutation(ctx context.Context, m mutation.Me
 	if err != nil {
 		return false, err
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, _, _, found, err := readOperatorMutation(ctx, tx, m); err != nil || found {
+		if errors.Is(err, mutation.ErrConflict) {
+			return false, nil
+		}
+		return false, err
+	}
 	now := time.Now().UTC()
-	result, err := s.db.ExecContext(ctx, `INSERT INTO workflow_phase_events(project_id,issue_id,phase_type,phase_name,status,started_at,event_day,endpoint_family,metadata_json) VALUES(?,?,'operator_action',?,'pending',?,?,'mcp',?) ON CONFLICT DO NOTHING`, m.ProjectID, m.ResourceID, m.Action, now.Format(time.RFC3339Nano), now.Format("2006-01-02"), string(raw))
+	projection := projectPhase(string(raw))
+	result, err := tx.ExecContext(ctx, `INSERT INTO workflow_phase_events(project_id,issue_id,phase_type,phase_name,status,started_at,event_day,endpoint_family,metadata_json,retry_identity,input_hash,correlation_id,projection_ready) VALUES(?,?,'operator_action',?,'pending',?,?,'mcp',?,?,?,?,1) ON CONFLICT DO NOTHING`, m.ProjectID, m.ResourceID, m.Action, now.Format(time.RFC3339Nano), now.Format("2006-01-02"), string(raw), projection.retry, projection.hash, projection.correlation)
 	if err != nil {
 		return false, err
 	}
 	count, err := result.RowsAffected()
-	return count == 1, err
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return count == 1, nil
 }
 
-// ClaimOperatorMutation starts only the original submission. A correlation
-// belongs to a server-created action, not a client-supplied replay or takeover.
 func (s *sqliteStore) ClaimOperatorMutation(ctx context.Context, m mutation.Metadata) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	receipt, id, previous, found, err := readOperatorMutation(ctx, tx, m)
+	if err != nil || !found {
+		if errors.Is(err, mutation.ErrConflict) {
+			return false, nil
+		}
+		return false, err
+	}
+	if receipt.CorrelationID != m.CorrelationID {
+		return false, nil
+	}
 	raw, err := json.Marshal(OperatorReceipt{Metadata: m, Outcome: "pending"})
 	if err != nil {
 		return false, err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE workflow_phase_events SET status='running',metadata_json=? WHERE phase_type='operator_action' AND json_valid(metadata_json) AND json_extract(metadata_json,'$.retry_identity') IS NOT NULL AND json_extract(metadata_json,'$.retry_identity')=? AND json_extract(metadata_json,'$.input_hash')=? AND json_extract(metadata_json,'$.correlation_id')=? AND status='pending'`, string(raw), m.RetryIdentity, m.InputHash, m.CorrelationID)
+	projection := projectPhase(string(raw))
+	existingProjection := projectPhase(previous)
+	result, err := tx.ExecContext(ctx, `UPDATE workflow_phase_events SET status='running',metadata_json=?,retry_identity=?,input_hash=?,correlation_id=?,terminal_outcome=NULL,projection_ready=1 WHERE id=? AND metadata_json=? AND status='pending' AND CASE WHEN projection_ready IS NULL THEN ? ELSE retry_identity END=? AND CASE WHEN projection_ready IS NULL THEN ? ELSE input_hash END=? AND CASE WHEN projection_ready IS NULL THEN ? ELSE correlation_id END=?`, string(raw), projection.retry, projection.hash, projection.correlation, id, previous, existingProjection.retry, m.RetryIdentity, existingProjection.hash, m.InputHash, existingProjection.correlation, m.CorrelationID)
 	if err != nil {
 		return false, err
 	}
 	count, err := result.RowsAffected()
-	return count == 1, err
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return count == 1, nil
 }
 
 func (s *sqliteStore) CompleteOperatorMutation(ctx context.Context, receipt OperatorReceipt) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	existing, id, previous, found, err := readOperatorMutation(ctx, tx, receipt.Metadata)
+	if err != nil {
+		if errors.Is(err, mutation.ErrConflict) {
+			return mutation.ErrUncertain
+		}
+		return err
+	}
+	if !found || existing.CorrelationID != receipt.CorrelationID {
+		return mutation.ErrUncertain
+	}
 	receipt.CompletedAt = time.Now().UTC()
 	raw, err := json.Marshal(receipt)
 	if err != nil {
 		return err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE workflow_phase_events SET issue_id=?,identifier=?,issue_url=?,status=?,finished_at=?,metadata_json=? WHERE phase_type='operator_action' AND json_valid(metadata_json) AND json_extract(metadata_json,'$.retry_identity') IS NOT NULL AND json_extract(metadata_json,'$.retry_identity')=? AND json_extract(metadata_json,'$.input_hash')=? AND json_extract(metadata_json,'$.correlation_id')=? AND status IN ('pending','running')`, receipt.ResourceID, receipt.Identifier, receipt.URL, receipt.Outcome, receipt.CompletedAt.Format(time.RFC3339Nano), string(raw), receipt.RetryIdentity, receipt.InputHash, receipt.CorrelationID)
+	projection := projectPhase(string(raw))
+	existingProjection := projectPhase(previous)
+	result, err := tx.ExecContext(ctx, `UPDATE workflow_phase_events SET issue_id=?,identifier=?,issue_url=?,status=?,finished_at=?,metadata_json=?,retry_identity=?,input_hash=?,correlation_id=?,terminal_outcome=NULL,projection_ready=1 WHERE id=? AND metadata_json=? AND status IN ('pending','running') AND CASE WHEN projection_ready IS NULL THEN ? ELSE retry_identity END=? AND CASE WHEN projection_ready IS NULL THEN ? ELSE input_hash END=? AND CASE WHEN projection_ready IS NULL THEN ? ELSE correlation_id END=?`, receipt.ResourceID, receipt.Identifier, receipt.URL, receipt.Outcome, receipt.CompletedAt.Format(time.RFC3339Nano), string(raw), projection.retry, projection.hash, projection.correlation, id, previous, existingProjection.retry, receipt.RetryIdentity, existingProjection.hash, receipt.InputHash, existingProjection.correlation, receipt.CorrelationID)
 	if err != nil {
 		return err
 	}
 	count, err := result.RowsAffected()
-	if err == nil && count != 1 {
+	if err != nil {
+		return err
+	}
+	if count != 1 {
 		return mutation.ErrUncertain
 	}
-	return err
+	return tx.Commit()
 }

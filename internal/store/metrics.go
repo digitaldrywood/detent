@@ -45,6 +45,7 @@ func (s *sqliteStore) RecordWorkflowPhaseEvent(ctx context.Context, attrs Workfl
 		metadataJSON = "{}"
 	}
 
+	projection := projectPhase(metadataJSON)
 	event, err := s.queries.CreateWorkflowPhaseEvent(ctx, sqlc.CreateWorkflowPhaseEventParams{
 		ProjectID:             projectID,
 		RunID:                 nullPositiveInt64(attrs.RunID),
@@ -73,6 +74,10 @@ func (s *sqliteStore) RecordWorkflowPhaseEvent(ctx context.Context, attrs Workfl
 		ModelContextWindow:    nullOptionalInt64(attrs.ModelContextWindow),
 		EndpointFamily:        nullString(attrs.EndpointFamily),
 		MetadataJson:          metadataJSON,
+		RetryIdentity:         projection.retry,
+		InputHash:             projection.hash,
+		CorrelationID:         projection.correlation,
+		TerminalOutcome:       projection.terminal,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("recording workflow phase event: %w", err)
@@ -88,10 +93,11 @@ func (s *sqliteStore) UpdateWorkflowPhaseEventMetadata(ctx context.Context, even
 	if metadataJSON == "" {
 		metadataJSON = "{}"
 	}
+	projection := projectPhase(metadataJSON)
 	result, err := s.db.ExecContext(ctx, `
 UPDATE workflow_phase_events
-SET metadata_json = ?
-WHERE id = ?`, metadataJSON, eventID)
+SET metadata_json = ?, retry_identity=?, input_hash=?, correlation_id=?, terminal_outcome=?, projection_ready=1
+WHERE id = ?`, metadataJSON, projection.retry, projection.hash, projection.correlation, projection.terminal, eventID)
 	if err != nil {
 		return fmt.Errorf("updating workflow phase event metadata: %w", err)
 	}

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -35,6 +36,16 @@ func (r *failingRetentionReaper) SweepRetention(_ context.Context, request works
 	return workspace.RetentionTotals{Workdir: "test", At: request.Now}, r.err
 }
 
+type retentionProjectionStore struct {
+	store.WorkAttemptStore
+	calls int
+}
+
+func (s *retentionProjectionStore) BackfillTypedProjections(context.Context) (int, error) {
+	s.calls++
+	return 0, nil
+}
+
 func TestRetentionQuarantineWarningOncePerPath(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -50,12 +61,17 @@ func TestRetentionQuarantineWarningOncePerPath(t *testing.T) {
 				failures = append(failures, &os.PathError{Op: "RemoveAll", Path: path, Err: fs.ErrPermission})
 			}
 			var logs bytes.Buffer
+			projections := &retentionProjectionStore{}
 			o := &Orchestrator{
-				reaper: &failingRetentionReaper{err: errors.Join(failures...)},
-				logger: slog.New(slog.NewTextHandler(&logs, nil)),
+				reaper:       &failingRetentionReaper{err: errors.Join(failures...)},
+				workAttempts: projections,
+				logger:       slog.New(slog.NewTextHandler(&logs, nil)),
 			}
 			for range 3 {
 				o.sweepRetention(t.Context(), &State{}, time.Now())
+			}
+			if projections.calls != 3 {
+				t.Fatalf("retention projection ticks=%d", projections.calls)
 			}
 			if got := strings.Count(logs.String(), "workspace retention failed"); got != len(test.paths) {
 				t.Fatalf("warnings=%d want=%d: %s", got, len(test.paths), logs.String())

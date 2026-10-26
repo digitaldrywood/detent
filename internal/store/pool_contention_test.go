@@ -109,23 +109,47 @@ func TestQueryCrossClassPoolContention(t *testing.T) {
 		})
 	}
 
-	got, err := QueryCrossClassPoolContention(ctx, sqliteBackend.db, PoolContentionQuery{
-		Since: now.Add(-7 * 24 * time.Hour),
-		ProjectClasses: map[string]string{
-			"detent":    "local-heavy",
-			"gopher-ai": "local-heavy",
-			"video":     "cloud-only",
-			"podcast":   "cloud-only",
-		},
-	})
-	if err != nil {
-		t.Fatalf("QueryCrossClassPoolContention() error = %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("contention = %#v, want one cross-class aggregate", got)
-	}
-	if got[0].Pool != "default" || got[0].WaitingClass != "cloud-only" ||
-		got[0].HoldingClass != "local-heavy" || got[0].WaitCount != 4 {
-		t.Fatalf("contention[0] = %#v, want four exhausted cloud-only waits held by local-heavy", got[0])
+	for _, stage := range []string{"typed", "legacy", "backfilled", "typed filter"} {
+		if stage == "legacy" {
+			if _, err := sqliteBackend.db.ExecContext(ctx, `UPDATE scheduler_decisions SET global_available=NULL,projection_ready=NULL`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if stage == "backfilled" {
+			if count, err := sqliteBackend.BackfillTypedProjections(ctx); err != nil || count != len(rows) {
+				t.Fatalf("capacity backfill=%d err=%v", count, err)
+			}
+		}
+		if stage == "typed filter" {
+			if _, err := sqliteBackend.db.ExecContext(ctx, `UPDATE scheduler_decisions SET global_available=1`); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		got, err := QueryCrossClassPoolContention(ctx, sqliteBackend.db, PoolContentionQuery{
+			Since: now.Add(-7 * 24 * time.Hour),
+			ProjectClasses: map[string]string{
+				"detent":    "local-heavy",
+				"gopher-ai": "local-heavy",
+				"video":     "cloud-only",
+				"podcast":   "cloud-only",
+			},
+		})
+		if err != nil {
+			t.Fatalf("QueryCrossClassPoolContention() error = %v", err)
+		}
+		if stage == "typed filter" {
+			if len(got) != 0 {
+				t.Fatalf("typed capacity ignored: %v", got)
+			}
+			continue
+		}
+		if len(got) != 1 {
+			t.Fatalf("contention = %#v, want one cross-class aggregate", got)
+		}
+		if got[0].Pool != "default" || got[0].WaitingClass != "cloud-only" ||
+			got[0].HoldingClass != "local-heavy" || got[0].WaitCount != 4 {
+			t.Fatalf("contention[0] = %#v, want four exhausted cloud-only waits held by local-heavy", got[0])
+		}
 	}
 }

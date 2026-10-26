@@ -103,6 +103,27 @@ func TestShippedOutcomesUsesIssueArtifactLookup(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("shipped outcomes = %#v, want %#v", got, want)
 	}
+
+	for _, stage := range []string{"legacy", "backfilled", "typed source"} {
+		switch stage {
+		case "legacy":
+			if _, err := sqliteBackend.db.ExecContext(ctx, `UPDATE workflow_phase_events SET projection_ready=NULL,terminal_outcome=NULL WHERE issue_id='artifact'`); err != nil {
+				t.Fatal(err)
+			}
+		case "backfilled":
+			if count, err := sqliteBackend.BackfillTypedProjections(ctx); err != nil || count != 2 {
+				t.Fatalf("phase backfill=%d err=%v", count, err)
+			}
+		case "typed source":
+			if _, err := sqliteBackend.db.ExecContext(ctx, `UPDATE workflow_phase_events SET metadata_json='{}' WHERE issue_id='artifact'`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, err := backend.(ShippedOutcomeStore).ShippedOutcomes(ctx)
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s shipped outcomes=%#v err=%v", stage, got, err)
+		}
+	}
 	rows, err := sqliteBackend.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+shippedOutcomesSQL)
 	if err != nil {
 		t.Fatal(err)

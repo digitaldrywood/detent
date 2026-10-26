@@ -121,50 +121,71 @@ func (q *Queries) ClearWorkAttemptCapacityRelease(ctx context.Context, workAttem
 
 const completeWorkAttempt = `-- name: CompleteWorkAttempt :execrows
 UPDATE work_attempts
-SET status = ?,
-    terminal_state = ?,
-    completed_at = ?,
-    heartbeat_at = ?,
-    lease_expires_at = ?,
-    error_class = ?,
-    error_message = ?,
-    phase = ?,
-    status_message = ?,
-    wait_reason = ?,
-    github_rate_snapshot_json = ?,
-    ci_state = ?,
-    capacity_snapshot_json = ?,
-    worker_metadata_json = ?,
-    metrics_json = ?,
-    next_action = ?,
-    detent_session_id = COALESCE(?17, detent_session_id),
-    provider_session_id = COALESCE(?18, provider_session_id),
-    runtime_identity_json = COALESCE(NULLIF(?19, '{}'), runtime_identity_json)
-WHERE id = ?20
+SET status = ?1,
+    terminal_state = ?2,
+    completed_at = ?3,
+    heartbeat_at = ?4,
+    lease_expires_at = ?5,
+    error_class = ?6,
+    error_message = ?7,
+    phase = ?8,
+    status_message = ?9,
+    wait_reason = ?10,
+    github_rate_snapshot_json = ?11,
+    ci_state = ?12,
+    capacity_snapshot_json = ?13,
+    worker_metadata_json = ?14,
+    metadata_pr_number = ?15,
+    metadata_pr_head_sha = ?16,
+    metadata_pr_base_sha = ?17,
+    metadata_run_mode = ?18,
+    outcome_excluded = ?19,
+    forge_wait_present = ?20,
+    forge_wait_host = ?21,
+    forge_wait_error_class = ?22,
+    forge_write_completed_host = ?23,
+    projection_ready = 1,
+    metrics_json = ?24,
+    metrics_turns = ?25,
+    next_action = ?26,
+    detent_session_id = COALESCE(?27, detent_session_id),
+    provider_session_id = COALESCE(?28, provider_session_id),
+    runtime_identity_json = COALESCE(NULLIF(?29, '{}'), runtime_identity_json)
+WHERE id = ?30
   AND completed_at IS NULL
 `
 
 type CompleteWorkAttemptParams struct {
-	Status                 string         `json:"status"`
-	TerminalState          sql.NullString `json:"terminal_state"`
-	CompletedAt            sql.NullString `json:"completed_at"`
-	HeartbeatAt            sql.NullString `json:"heartbeat_at"`
-	LeaseExpiresAt         sql.NullString `json:"lease_expires_at"`
-	ErrorClass             sql.NullString `json:"error_class"`
-	ErrorMessage           sql.NullString `json:"error_message"`
-	Phase                  sql.NullString `json:"phase"`
-	StatusMessage          sql.NullString `json:"status_message"`
-	WaitReason             sql.NullString `json:"wait_reason"`
-	GithubRateSnapshotJson string         `json:"github_rate_snapshot_json"`
-	CiState                sql.NullString `json:"ci_state"`
-	CapacitySnapshotJson   string         `json:"capacity_snapshot_json"`
-	WorkerMetadataJson     string         `json:"worker_metadata_json"`
-	MetricsJson            string         `json:"metrics_json"`
-	NextAction             sql.NullString `json:"next_action"`
-	DetentSessionID        sql.NullInt64  `json:"detent_session_id"`
-	ProviderSessionID      sql.NullString `json:"provider_session_id"`
-	RuntimeIdentityJson    interface{}    `json:"runtime_identity_json"`
-	WorkAttemptID          int64          `json:"work_attempt_id"`
+	Status                  string         `json:"status"`
+	TerminalState           sql.NullString `json:"terminal_state"`
+	CompletedAt             sql.NullString `json:"completed_at"`
+	HeartbeatAt             sql.NullString `json:"heartbeat_at"`
+	LeaseExpiresAt          sql.NullString `json:"lease_expires_at"`
+	ErrorClass              sql.NullString `json:"error_class"`
+	ErrorMessage            sql.NullString `json:"error_message"`
+	Phase                   sql.NullString `json:"phase"`
+	StatusMessage           sql.NullString `json:"status_message"`
+	WaitReason              sql.NullString `json:"wait_reason"`
+	GithubRateSnapshotJson  string         `json:"github_rate_snapshot_json"`
+	CiState                 sql.NullString `json:"ci_state"`
+	CapacitySnapshotJson    string         `json:"capacity_snapshot_json"`
+	WorkerMetadataJson      string         `json:"worker_metadata_json"`
+	MetadataPrNumber        sql.NullInt64  `json:"metadata_pr_number"`
+	MetadataPrHeadSha       sql.NullString `json:"metadata_pr_head_sha"`
+	MetadataPrBaseSha       sql.NullString `json:"metadata_pr_base_sha"`
+	MetadataRunMode         sql.NullString `json:"metadata_run_mode"`
+	OutcomeExcluded         sql.NullInt64  `json:"outcome_excluded"`
+	ForgeWaitPresent        sql.NullInt64  `json:"forge_wait_present"`
+	ForgeWaitHost           sql.NullString `json:"forge_wait_host"`
+	ForgeWaitErrorClass     sql.NullString `json:"forge_wait_error_class"`
+	ForgeWriteCompletedHost sql.NullString `json:"forge_write_completed_host"`
+	MetricsJson             string         `json:"metrics_json"`
+	MetricsTurns            sql.NullInt64  `json:"metrics_turns"`
+	NextAction              sql.NullString `json:"next_action"`
+	DetentSessionID         sql.NullInt64  `json:"detent_session_id"`
+	ProviderSessionID       sql.NullString `json:"provider_session_id"`
+	RuntimeIdentityJson     interface{}    `json:"runtime_identity_json"`
+	WorkAttemptID           int64          `json:"work_attempt_id"`
 }
 
 func (q *Queries) CompleteWorkAttempt(ctx context.Context, arg CompleteWorkAttemptParams) (int64, error) {
@@ -183,7 +204,17 @@ func (q *Queries) CompleteWorkAttempt(ctx context.Context, arg CompleteWorkAttem
 		arg.CiState,
 		arg.CapacitySnapshotJson,
 		arg.WorkerMetadataJson,
+		arg.MetadataPrNumber,
+		arg.MetadataPrHeadSha,
+		arg.MetadataPrBaseSha,
+		arg.MetadataRunMode,
+		arg.OutcomeExcluded,
+		arg.ForgeWaitPresent,
+		arg.ForgeWaitHost,
+		arg.ForgeWaitErrorClass,
+		arg.ForgeWriteCompletedHost,
 		arg.MetricsJson,
+		arg.MetricsTurns,
 		arg.NextAction,
 		arg.DetentSessionID,
 		arg.ProviderSessionID,
@@ -210,7 +241,7 @@ WITH issue_sessions AS (
     AND NOT EXISTS (
       SELECT 1 FROM work_attempts AS attempt
       WHERE attempt.id = codex_sessions.work_attempt_id
-        AND (attempt.phase = 'completion_deferred' OR NOT (COALESCE(json_extract(CASE WHEN json_valid(attempt.worker_metadata_json) THEN attempt.worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0))
+        AND (attempt.phase = 'completion_deferred' OR (attempt.outcome_excluded IS NULL OR attempt.outcome_excluded != 0))
     )
 ),
 successful_issues AS (
@@ -706,9 +737,11 @@ INSERT INTO scheduler_decisions (
   wait_reason,
   capacity_snapshot_json,
   github_rate_snapshot_json,
-  metadata_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, lane, queue_position, result, reason, selected, retry, attempt_number, worker_host, decision_at, wait_reason, capacity_snapshot_json, github_rate_snapshot_json, metadata_json
+  metadata_json,
+  global_available,
+  projection_ready
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, 1)
+RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, lane, queue_position, result, reason, selected, retry, attempt_number, worker_host, decision_at, wait_reason, capacity_snapshot_json, github_rate_snapshot_json, metadata_json, global_available, projection_ready
 `
 
 type CreateSchedulerDecisionParams struct {
@@ -731,6 +764,7 @@ type CreateSchedulerDecisionParams struct {
 	CapacitySnapshotJson   string         `json:"capacity_snapshot_json"`
 	GithubRateSnapshotJson string         `json:"github_rate_snapshot_json"`
 	MetadataJson           string         `json:"metadata_json"`
+	GlobalAvailable        sql.NullInt64  `json:"global_available"`
 }
 
 func (q *Queries) CreateSchedulerDecision(ctx context.Context, arg CreateSchedulerDecisionParams) (SchedulerDecision, error) {
@@ -754,6 +788,7 @@ func (q *Queries) CreateSchedulerDecision(ctx context.Context, arg CreateSchedul
 		arg.CapacitySnapshotJson,
 		arg.GithubRateSnapshotJson,
 		arg.MetadataJson,
+		arg.GlobalAvailable,
 	)
 	var i SchedulerDecision
 	err := row.Scan(
@@ -777,6 +812,8 @@ func (q *Queries) CreateSchedulerDecision(ctx context.Context, arg CreateSchedul
 		&i.CapacitySnapshotJson,
 		&i.GithubRateSnapshotJson,
 		&i.MetadataJson,
+		&i.GlobalAvailable,
+		&i.ProjectionReady,
 	)
 	return i, err
 }
@@ -1104,43 +1141,64 @@ INSERT INTO work_attempts (
   detent_session_id,
   provider_session_id,
   runtime_identity_json,
-  owner_generation
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation
+  owner_generation,
+  metadata_pr_number,
+  metadata_pr_head_sha,
+  metadata_pr_base_sha,
+  metadata_run_mode,
+  outcome_excluded,
+  forge_wait_present,
+  forge_wait_host,
+  forge_wait_error_class,
+  forge_write_completed_host,
+  metrics_turns,
+  projection_ready
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41, 1)
+RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation, metadata_pr_number, metadata_pr_head_sha, metadata_pr_base_sha, metadata_run_mode, outcome_excluded, forge_wait_present, forge_wait_host, forge_wait_error_class, forge_write_completed_host, metrics_turns, projection_ready
 `
 
 type CreateWorkAttemptParams struct {
-	ProjectID              string         `json:"project_id"`
-	IssueID                sql.NullString `json:"issue_id"`
-	Identifier             sql.NullString `json:"identifier"`
-	IssueURL               sql.NullString `json:"issue_url"`
-	PrNumber               sql.NullInt64  `json:"pr_number"`
-	Repo                   sql.NullString `json:"repo"`
-	WorkerType             string         `json:"worker_type"`
-	WorkerHost             sql.NullString `json:"worker_host"`
-	Lane                   sql.NullString `json:"lane"`
-	AttemptNumber          int64          `json:"attempt_number"`
-	Status                 string         `json:"status"`
-	StartedAt              string         `json:"started_at"`
-	LeaseExpiresAt         sql.NullString `json:"lease_expires_at"`
-	HeartbeatAt            sql.NullString `json:"heartbeat_at"`
-	Phase                  sql.NullString `json:"phase"`
-	StatusMessage          sql.NullString `json:"status_message"`
-	CurrentStep            sql.NullInt64  `json:"current_step"`
-	TotalSteps             sql.NullInt64  `json:"total_steps"`
-	ProgressPercent        sql.NullInt64  `json:"progress_percent"`
-	CurrentCommand         sql.NullString `json:"current_command"`
-	WaitReason             sql.NullString `json:"wait_reason"`
-	GithubRateSnapshotJson string         `json:"github_rate_snapshot_json"`
-	CiState                sql.NullString `json:"ci_state"`
-	CapacitySnapshotJson   string         `json:"capacity_snapshot_json"`
-	WorkerMetadataJson     string         `json:"worker_metadata_json"`
-	MetricsJson            string         `json:"metrics_json"`
-	NextAction             sql.NullString `json:"next_action"`
-	DetentSessionID        sql.NullInt64  `json:"detent_session_id"`
-	ProviderSessionID      sql.NullString `json:"provider_session_id"`
-	RuntimeIdentityJson    string         `json:"runtime_identity_json"`
-	OwnerGeneration        sql.NullInt64  `json:"owner_generation"`
+	ProjectID               string         `json:"project_id"`
+	IssueID                 sql.NullString `json:"issue_id"`
+	Identifier              sql.NullString `json:"identifier"`
+	IssueURL                sql.NullString `json:"issue_url"`
+	PrNumber                sql.NullInt64  `json:"pr_number"`
+	Repo                    sql.NullString `json:"repo"`
+	WorkerType              string         `json:"worker_type"`
+	WorkerHost              sql.NullString `json:"worker_host"`
+	Lane                    sql.NullString `json:"lane"`
+	AttemptNumber           int64          `json:"attempt_number"`
+	Status                  string         `json:"status"`
+	StartedAt               string         `json:"started_at"`
+	LeaseExpiresAt          sql.NullString `json:"lease_expires_at"`
+	HeartbeatAt             sql.NullString `json:"heartbeat_at"`
+	Phase                   sql.NullString `json:"phase"`
+	StatusMessage           sql.NullString `json:"status_message"`
+	CurrentStep             sql.NullInt64  `json:"current_step"`
+	TotalSteps              sql.NullInt64  `json:"total_steps"`
+	ProgressPercent         sql.NullInt64  `json:"progress_percent"`
+	CurrentCommand          sql.NullString `json:"current_command"`
+	WaitReason              sql.NullString `json:"wait_reason"`
+	GithubRateSnapshotJson  string         `json:"github_rate_snapshot_json"`
+	CiState                 sql.NullString `json:"ci_state"`
+	CapacitySnapshotJson    string         `json:"capacity_snapshot_json"`
+	WorkerMetadataJson      string         `json:"worker_metadata_json"`
+	MetricsJson             string         `json:"metrics_json"`
+	NextAction              sql.NullString `json:"next_action"`
+	DetentSessionID         sql.NullInt64  `json:"detent_session_id"`
+	ProviderSessionID       sql.NullString `json:"provider_session_id"`
+	RuntimeIdentityJson     string         `json:"runtime_identity_json"`
+	OwnerGeneration         sql.NullInt64  `json:"owner_generation"`
+	MetadataPrNumber        sql.NullInt64  `json:"metadata_pr_number"`
+	MetadataPrHeadSha       sql.NullString `json:"metadata_pr_head_sha"`
+	MetadataPrBaseSha       sql.NullString `json:"metadata_pr_base_sha"`
+	MetadataRunMode         sql.NullString `json:"metadata_run_mode"`
+	OutcomeExcluded         sql.NullInt64  `json:"outcome_excluded"`
+	ForgeWaitPresent        sql.NullInt64  `json:"forge_wait_present"`
+	ForgeWaitHost           sql.NullString `json:"forge_wait_host"`
+	ForgeWaitErrorClass     sql.NullString `json:"forge_wait_error_class"`
+	ForgeWriteCompletedHost sql.NullString `json:"forge_write_completed_host"`
+	MetricsTurns            sql.NullInt64  `json:"metrics_turns"`
 }
 
 func (q *Queries) CreateWorkAttempt(ctx context.Context, arg CreateWorkAttemptParams) (WorkAttempt, error) {
@@ -1176,6 +1234,16 @@ func (q *Queries) CreateWorkAttempt(ctx context.Context, arg CreateWorkAttemptPa
 		arg.ProviderSessionID,
 		arg.RuntimeIdentityJson,
 		arg.OwnerGeneration,
+		arg.MetadataPrNumber,
+		arg.MetadataPrHeadSha,
+		arg.MetadataPrBaseSha,
+		arg.MetadataRunMode,
+		arg.OutcomeExcluded,
+		arg.ForgeWaitPresent,
+		arg.ForgeWaitHost,
+		arg.ForgeWaitErrorClass,
+		arg.ForgeWriteCompletedHost,
+		arg.MetricsTurns,
 	)
 	var i WorkAttempt
 	err := row.Scan(
@@ -1215,6 +1283,17 @@ func (q *Queries) CreateWorkAttempt(ctx context.Context, arg CreateWorkAttemptPa
 		&i.ProviderSessionID,
 		&i.RuntimeIdentityJson,
 		&i.OwnerGeneration,
+		&i.MetadataPrNumber,
+		&i.MetadataPrHeadSha,
+		&i.MetadataPrBaseSha,
+		&i.MetadataRunMode,
+		&i.OutcomeExcluded,
+		&i.ForgeWaitPresent,
+		&i.ForgeWaitHost,
+		&i.ForgeWaitErrorClass,
+		&i.ForgeWriteCompletedHost,
+		&i.MetricsTurns,
+		&i.ProjectionReady,
 	)
 	return i, err
 }
@@ -1247,9 +1326,14 @@ INSERT INTO workflow_phase_events (
   total_tokens,
   model_context_window,
   endpoint_family,
-  metadata_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, project_id, run_id, session_id, issue_id, identifier, issue_url, pr_number, phase_type, phase_name, previous_phase_name, reason, status, started_at, finished_at, duration_seconds, event_day, command_name, exit_code, turns, input_tokens, output_tokens, total_tokens, endpoint_family, metadata_json, cached_input_tokens, reasoning_output_tokens, model_context_window
+  metadata_json,
+  retry_identity,
+  input_hash,
+  correlation_id,
+  terminal_outcome,
+  projection_ready
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, 1)
+RETURNING id, project_id, run_id, session_id, issue_id, identifier, issue_url, pr_number, phase_type, phase_name, previous_phase_name, reason, status, started_at, finished_at, duration_seconds, event_day, command_name, exit_code, turns, input_tokens, output_tokens, total_tokens, endpoint_family, metadata_json, cached_input_tokens, reasoning_output_tokens, model_context_window, retry_identity, input_hash, correlation_id, terminal_outcome, projection_ready
 `
 
 type CreateWorkflowPhaseEventParams struct {
@@ -1280,6 +1364,10 @@ type CreateWorkflowPhaseEventParams struct {
 	ModelContextWindow    sql.NullInt64  `json:"model_context_window"`
 	EndpointFamily        sql.NullString `json:"endpoint_family"`
 	MetadataJson          string         `json:"metadata_json"`
+	RetryIdentity         sql.NullString `json:"retry_identity"`
+	InputHash             sql.NullString `json:"input_hash"`
+	CorrelationID         sql.NullString `json:"correlation_id"`
+	TerminalOutcome       sql.NullString `json:"terminal_outcome"`
 }
 
 func (q *Queries) CreateWorkflowPhaseEvent(ctx context.Context, arg CreateWorkflowPhaseEventParams) (WorkflowPhaseEvent, error) {
@@ -1311,6 +1399,10 @@ func (q *Queries) CreateWorkflowPhaseEvent(ctx context.Context, arg CreateWorkfl
 		arg.ModelContextWindow,
 		arg.EndpointFamily,
 		arg.MetadataJson,
+		arg.RetryIdentity,
+		arg.InputHash,
+		arg.CorrelationID,
+		arg.TerminalOutcome,
 	)
 	var i WorkflowPhaseEvent
 	err := row.Scan(
@@ -1342,6 +1434,11 @@ func (q *Queries) CreateWorkflowPhaseEvent(ctx context.Context, arg CreateWorkfl
 		&i.CachedInputTokens,
 		&i.ReasoningOutputTokens,
 		&i.ModelContextWindow,
+		&i.RetryIdentity,
+		&i.InputHash,
+		&i.CorrelationID,
+		&i.TerminalOutcome,
+		&i.ProjectionReady,
 	)
 	return i, err
 }
@@ -1403,7 +1500,7 @@ WHERE (?1 = '' OR project_id IN (SELECT value FROM json_each(?1)))
   AND completed_at >= ?2
   AND completed_at < ?3
   AND lower(trim(COALESCE(terminal_state, ''))) IN ('failure', 'timed_out', 'no_progress', 'capacity')
-  AND COALESCE(json_extract(CASE WHEN json_valid(worker_metadata_json) THEN worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0
+  AND outcome_excluded = 0
 GROUP BY COALESCE(NULLIF(trim(error_class), ''), 'unknown')
 ORDER BY failures DESC, error_class
 LIMIT 1
@@ -1873,29 +1970,18 @@ WHERE s.completed_at IS NOT NULL
   AND (COALESCE(s.provider_thread_id, '') != '' OR COALESCE(s.provider_session_id, '') != ''
     OR (CAST(?1 AS INTEGER) > 0
       AND lower(trim(COALESCE(s.final_state, ''))) = 'failed'
-      AND (s.turns = 0 OR (s.turns = 1 AND CASE WHEN json_valid(w.metrics_json)
-        THEN json_type(w.metrics_json, '$.turns') = 'integer' AND json_extract(w.metrics_json, '$.turns') = 0
-        ELSE 0 END))
+      AND (s.turns = 0 OR (s.turns = 1 AND w.metrics_turns = 0))
       AND s.input_tokens = 0 AND s.cached_input_tokens = 0
       AND s.output_tokens = 0 AND s.reasoning_output_tokens = 0 AND s.total_tokens = 0))
   AND s.project_id = ?2
   AND w.project_id = ?2
   AND (CAST(?1 AS INTEGER) > 0 OR (COALESCE(
-    CASE WHEN json_valid(w.worker_metadata_json)
-      THEN CAST(json_extract(w.worker_metadata_json, '$.pr_number') AS INTEGER)
-      ELSE NULL
-    END,
+    w.metadata_pr_number,
     w.pr_number,
     0
   ) = CAST(?3 AS INTEGER)
-  AND CASE WHEN json_valid(w.worker_metadata_json)
-    THEN CAST(COALESCE(json_extract(w.worker_metadata_json, '$.pr_head_sha'), '') AS TEXT)
-    ELSE ''
-  END = ?4
-  AND CASE WHEN json_valid(w.worker_metadata_json)
-    THEN CAST(COALESCE(json_extract(w.worker_metadata_json, '$.pr_base_sha'), '') AS TEXT)
-    ELSE ''
-  END = ?5))
+  AND w.metadata_pr_head_sha = ?4
+  AND w.metadata_pr_base_sha = ?5))
   AND COALESCE(s.agent_backend_id, '') = ?6
   AND COALESCE(s.agent_backend_kind, '') = ?7
   AND COALESCE(s.agent_role, '') = ?8
@@ -1921,8 +2007,8 @@ type GetLatestAgentResumeStateParams struct {
 	WorkAttemptID    int64          `json:"work_attempt_id"`
 	ProjectID        sql.NullString `json:"project_id"`
 	PrNumber         int64          `json:"pr_number"`
-	PrHeadSha        string         `json:"pr_head_sha"`
-	PrBaseSha        string         `json:"pr_base_sha"`
+	PrHeadSha        sql.NullString `json:"pr_head_sha"`
+	PrBaseSha        sql.NullString `json:"pr_base_sha"`
 	AgentBackendID   sql.NullString `json:"agent_backend_id"`
 	AgentBackendKind sql.NullString `json:"agent_backend_kind"`
 	AgentRole        sql.NullString `json:"agent_role"`
@@ -2273,7 +2359,7 @@ func (q *Queries) GetWebSession(ctx context.Context, arg GetWebSessionParams) (G
 }
 
 const getWorkAttempt = `-- name: GetWorkAttempt :one
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation, metadata_pr_number, metadata_pr_head_sha, metadata_pr_base_sha, metadata_run_mode, outcome_excluded, forge_wait_present, forge_wait_host, forge_wait_error_class, forge_write_completed_host, metrics_turns, projection_ready
 FROM work_attempts
 WHERE id = ?
 `
@@ -2318,6 +2404,17 @@ func (q *Queries) GetWorkAttempt(ctx context.Context, id int64) (WorkAttempt, er
 		&i.ProviderSessionID,
 		&i.RuntimeIdentityJson,
 		&i.OwnerGeneration,
+		&i.MetadataPrNumber,
+		&i.MetadataPrHeadSha,
+		&i.MetadataPrBaseSha,
+		&i.MetadataRunMode,
+		&i.OutcomeExcluded,
+		&i.ForgeWaitPresent,
+		&i.ForgeWaitHost,
+		&i.ForgeWaitErrorClass,
+		&i.ForgeWriteCompletedHost,
+		&i.MetricsTurns,
+		&i.ProjectionReady,
 	)
 	return i, err
 }
@@ -2437,7 +2534,7 @@ WHERE usage_events.project_id = ?1
     'forge_unavailable'
   )
   AND lower(trim(COALESCE(attempt.error_class, ''))) NOT LIKE 'backend_startup_%'
-  AND COALESCE(json_extract(CASE WHEN json_valid(attempt.worker_metadata_json) THEN attempt.worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0
+  AND (attempt.id IS NULL OR attempt.outcome_excluded = 0)
   AND usage_events.id IN (
     SELECT usage_by_id.id FROM usage_events AS usage_by_id
     WHERE usage_by_id.project_id = ?1
@@ -2565,7 +2662,7 @@ func (q *Queries) IssueTokenSpend(ctx context.Context, arg IssueTokenSpendParams
 }
 
 const issueWorkflowTimelineRows = `-- name: IssueWorkflowTimelineRows :many
-SELECT event.id, event.project_id, event.run_id, event.session_id, event.issue_id, event.identifier, event.issue_url, event.pr_number, event.phase_type, event.phase_name, event.previous_phase_name, event.reason, event.status, event.started_at, event.finished_at, event.duration_seconds, event.event_day, event.command_name, event.exit_code, event.turns, event.input_tokens, event.output_tokens, event.total_tokens, event.endpoint_family, event.metadata_json, event.cached_input_tokens, event.reasoning_output_tokens, event.model_context_window
+SELECT event.id, event.project_id, event.run_id, event.session_id, event.issue_id, event.identifier, event.issue_url, event.pr_number, event.phase_type, event.phase_name, event.previous_phase_name, event.reason, event.status, event.started_at, event.finished_at, event.duration_seconds, event.event_day, event.command_name, event.exit_code, event.turns, event.input_tokens, event.output_tokens, event.total_tokens, event.endpoint_family, event.metadata_json, event.cached_input_tokens, event.reasoning_output_tokens, event.model_context_window, event.retry_identity, event.input_hash, event.correlation_id, event.terminal_outcome, event.projection_ready
 FROM workflow_phase_events AS event
 WHERE event.id IN (
   SELECT by_id.id
@@ -2633,6 +2730,11 @@ func (q *Queries) IssueWorkflowTimelineRows(ctx context.Context, arg IssueWorkfl
 			&i.CachedInputTokens,
 			&i.ReasoningOutputTokens,
 			&i.ModelContextWindow,
+			&i.RetryIdentity,
+			&i.InputHash,
+			&i.CorrelationID,
+			&i.TerminalOutcome,
+			&i.ProjectionReady,
 		); err != nil {
 			return nil, err
 		}
@@ -2992,7 +3094,7 @@ func (q *Queries) ListActiveBudgetOverrides(ctx context.Context, now string) ([]
 }
 
 const listActiveWorkAttempts = `-- name: ListActiveWorkAttempts :many
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation, metadata_pr_number, metadata_pr_head_sha, metadata_pr_base_sha, metadata_run_mode, outcome_excluded, forge_wait_present, forge_wait_host, forge_wait_error_class, forge_write_completed_host, metrics_turns, projection_ready
 FROM work_attempts
 WHERE completed_at IS NULL
   AND (?1 = '' OR project_id = ?1)
@@ -3051,6 +3153,17 @@ func (q *Queries) ListActiveWorkAttempts(ctx context.Context, arg ListActiveWork
 			&i.ProviderSessionID,
 			&i.RuntimeIdentityJson,
 			&i.OwnerGeneration,
+			&i.MetadataPrNumber,
+			&i.MetadataPrHeadSha,
+			&i.MetadataPrBaseSha,
+			&i.MetadataRunMode,
+			&i.OutcomeExcluded,
+			&i.ForgeWaitPresent,
+			&i.ForgeWaitHost,
+			&i.ForgeWaitErrorClass,
+			&i.ForgeWriteCompletedHost,
+			&i.MetricsTurns,
+			&i.ProjectionReady,
 		); err != nil {
 			return nil, err
 		}
@@ -3596,7 +3709,7 @@ func (q *Queries) ListIssueCodexSessions(ctx context.Context, arg ListIssueCodex
 }
 
 const listIssueSchedulerDecisions = `-- name: ListIssueSchedulerDecisions :many
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, lane, queue_position, result, reason, selected, retry, attempt_number, worker_host, decision_at, wait_reason, capacity_snapshot_json, github_rate_snapshot_json, metadata_json
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, lane, queue_position, result, reason, selected, retry, attempt_number, worker_host, decision_at, wait_reason, capacity_snapshot_json, github_rate_snapshot_json, metadata_json, global_available, projection_ready
 FROM scheduler_decisions NOT INDEXED
 WHERE scheduler_decisions.project_id = ?1
   AND scheduler_decisions.id IN (
@@ -3663,6 +3776,8 @@ func (q *Queries) ListIssueSchedulerDecisions(ctx context.Context, arg ListIssue
 			&i.CapacitySnapshotJson,
 			&i.GithubRateSnapshotJson,
 			&i.MetadataJson,
+			&i.GlobalAvailable,
+			&i.ProjectionReady,
 		); err != nil {
 			return nil, err
 		}
@@ -3678,7 +3793,7 @@ func (q *Queries) ListIssueSchedulerDecisions(ctx context.Context, arg ListIssue
 }
 
 const listIssueWorkAttempts = `-- name: ListIssueWorkAttempts :many
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation, metadata_pr_number, metadata_pr_head_sha, metadata_pr_base_sha, metadata_run_mode, outcome_excluded, forge_wait_present, forge_wait_host, forge_wait_error_class, forge_write_completed_host, metrics_turns, projection_ready
 FROM work_attempts NOT INDEXED
 WHERE work_attempts.project_id = ?1
   AND work_attempts.id IN (
@@ -3758,6 +3873,17 @@ func (q *Queries) ListIssueWorkAttempts(ctx context.Context, arg ListIssueWorkAt
 			&i.ProviderSessionID,
 			&i.RuntimeIdentityJson,
 			&i.OwnerGeneration,
+			&i.MetadataPrNumber,
+			&i.MetadataPrHeadSha,
+			&i.MetadataPrBaseSha,
+			&i.MetadataRunMode,
+			&i.OutcomeExcluded,
+			&i.ForgeWaitPresent,
+			&i.ForgeWaitHost,
+			&i.ForgeWaitErrorClass,
+			&i.ForgeWriteCompletedHost,
+			&i.MetricsTurns,
+			&i.ProjectionReady,
 		); err != nil {
 			return nil, err
 		}
@@ -3774,8 +3900,7 @@ func (q *Queries) ListIssueWorkAttempts(ctx context.Context, arg ListIssueWorkAt
 
 const listLocalAdmittedIssueIDs = `-- name: ListLocalAdmittedIssueIDs :many
 SELECT DISTINCT issue_id FROM work_attempts
-WHERE project_id = ?1 AND json_valid(worker_metadata_json)
-  AND COALESCE(json_extract(worker_metadata_json, '$.run_mode'), '') != ''
+WHERE project_id = ?1 AND metadata_run_mode != ''
   AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(?2)))
 ORDER BY issue_id
 `
@@ -3913,7 +4038,7 @@ func (q *Queries) ListOrphanedAgentSessions(ctx context.Context, arg ListOrphane
 }
 
 const listPendingForgeAvailabilityWaits = `-- name: ListPendingForgeAvailabilityWaits :many
-SELECT waiting.id, waiting.project_id, waiting.issue_id, waiting.identifier, waiting.issue_url, waiting.pr_number, waiting.repo, waiting.worker_type, waiting.worker_host, waiting.lane, waiting.attempt_number, waiting.status, waiting.started_at, waiting.lease_expires_at, waiting.heartbeat_at, waiting.completed_at, waiting.terminal_state, waiting.error_class, waiting.error_message, waiting.phase, waiting.status_message, waiting.current_step, waiting.total_steps, waiting.progress_percent, waiting.current_command, waiting.wait_reason, waiting.github_rate_snapshot_json, waiting.ci_state, waiting.capacity_snapshot_json, waiting.worker_metadata_json, waiting.metrics_json, waiting.next_action, waiting.detent_session_id, waiting.provider_session_id, waiting.runtime_identity_json, waiting.owner_generation
+SELECT waiting.id, waiting.project_id, waiting.issue_id, waiting.identifier, waiting.issue_url, waiting.pr_number, waiting.repo, waiting.worker_type, waiting.worker_host, waiting.lane, waiting.attempt_number, waiting.status, waiting.started_at, waiting.lease_expires_at, waiting.heartbeat_at, waiting.completed_at, waiting.terminal_state, waiting.error_class, waiting.error_message, waiting.phase, waiting.status_message, waiting.current_step, waiting.total_steps, waiting.progress_percent, waiting.current_command, waiting.wait_reason, waiting.github_rate_snapshot_json, waiting.ci_state, waiting.capacity_snapshot_json, waiting.worker_metadata_json, waiting.metrics_json, waiting.next_action, waiting.detent_session_id, waiting.provider_session_id, waiting.runtime_identity_json, waiting.owner_generation, waiting.metadata_pr_number, waiting.metadata_pr_head_sha, waiting.metadata_pr_base_sha, waiting.metadata_run_mode, waiting.outcome_excluded, waiting.forge_wait_present, waiting.forge_wait_host, waiting.forge_wait_error_class, waiting.forge_write_completed_host, waiting.metrics_turns, waiting.projection_ready
 FROM work_attempts AS waiting
 WHERE waiting.project_id = ?1
   AND waiting.completed_at IS NOT NULL
@@ -3921,26 +4046,26 @@ WHERE waiting.project_id = ?1
   AND waiting.terminal_state = 'capacity'
   AND waiting.error_class = 'forge_unavailable'
   AND COALESCE(TRIM(waiting.issue_id), '') != ''
-  AND json_type(CASE WHEN json_valid(waiting.worker_metadata_json) THEN waiting.worker_metadata_json ELSE '{}' END, '$.forge_wait') = 'object'
-  AND COALESCE(json_extract(CASE WHEN json_valid(waiting.worker_metadata_json) THEN waiting.worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0
+  AND waiting.forge_wait_present = 1
+  AND waiting.outcome_excluded = 0
   AND NOT EXISTS (
     SELECT 1
     FROM work_attempts AS newer
     WHERE newer.project_id = waiting.project_id
       AND newer.completed_at IS NOT NULL
       AND newer.status = 'terminal'
-      AND COALESCE(json_extract(CASE WHEN json_valid(newer.worker_metadata_json) THEN newer.worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0
+      AND newer.outcome_excluded = 0
       AND (newer.completed_at > waiting.completed_at OR (newer.completed_at = waiting.completed_at AND newer.id > waiting.id))
       AND (
-        json_extract(CASE WHEN json_valid(newer.worker_metadata_json) THEN newer.worker_metadata_json ELSE '{}' END, '$.forge_write_completed_host') =
-          json_extract(waiting.worker_metadata_json, '$.forge_wait.host')
+        newer.forge_write_completed_host =
+          waiting.forge_wait_host
         OR (
           newer.issue_id = waiting.issue_id
           AND (
-            COALESCE(json_extract(waiting.worker_metadata_json, '$.forge_wait.error_class'), '') != 'worker_github_credential_unavailable'
+            COALESCE(waiting.forge_wait_error_class, '') != 'worker_github_credential_unavailable'
             OR (
               newer.terminal_state = 'capacity' AND newer.error_class = 'forge_unavailable'
-              AND json_extract(CASE WHEN json_valid(newer.worker_metadata_json) THEN newer.worker_metadata_json ELSE '{}' END, '$.forge_wait.error_class') = 'worker_github_credential_unavailable'
+              AND newer.forge_wait_error_class = 'worker_github_credential_unavailable'
             )
           )
         )
@@ -3995,6 +4120,17 @@ func (q *Queries) ListPendingForgeAvailabilityWaits(ctx context.Context, project
 			&i.ProviderSessionID,
 			&i.RuntimeIdentityJson,
 			&i.OwnerGeneration,
+			&i.MetadataPrNumber,
+			&i.MetadataPrHeadSha,
+			&i.MetadataPrBaseSha,
+			&i.MetadataRunMode,
+			&i.OutcomeExcluded,
+			&i.ForgeWaitPresent,
+			&i.ForgeWaitHost,
+			&i.ForgeWaitErrorClass,
+			&i.ForgeWriteCompletedHost,
+			&i.MetricsTurns,
+			&i.ProjectionReady,
 		); err != nil {
 			return nil, err
 		}
@@ -4010,7 +4146,7 @@ func (q *Queries) ListPendingForgeAvailabilityWaits(ctx context.Context, project
 }
 
 const listPendingOperatorStops = `-- name: ListPendingOperatorStops :many
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation, metadata_pr_number, metadata_pr_head_sha, metadata_pr_base_sha, metadata_run_mode, outcome_excluded, forge_wait_present, forge_wait_host, forge_wait_error_class, forge_write_completed_host, metrics_turns, projection_ready
 FROM work_attempts
 WHERE project_id = ?1
   AND terminal_state = 'operator_stopped'
@@ -4070,6 +4206,17 @@ func (q *Queries) ListPendingOperatorStops(ctx context.Context, arg ListPendingO
 			&i.ProviderSessionID,
 			&i.RuntimeIdentityJson,
 			&i.OwnerGeneration,
+			&i.MetadataPrNumber,
+			&i.MetadataPrHeadSha,
+			&i.MetadataPrBaseSha,
+			&i.MetadataRunMode,
+			&i.OutcomeExcluded,
+			&i.ForgeWaitPresent,
+			&i.ForgeWaitHost,
+			&i.ForgeWaitErrorClass,
+			&i.ForgeWriteCompletedHost,
+			&i.MetricsTurns,
+			&i.ProjectionReady,
 		); err != nil {
 			return nil, err
 		}
@@ -4085,7 +4232,7 @@ func (q *Queries) ListPendingOperatorStops(ctx context.Context, arg ListPendingO
 }
 
 const listPendingWorkAttemptCapacityReleases = `-- name: ListPendingWorkAttemptCapacityReleases :many
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation, metadata_pr_number, metadata_pr_head_sha, metadata_pr_base_sha, metadata_run_mode, outcome_excluded, forge_wait_present, forge_wait_host, forge_wait_error_class, forge_write_completed_host, metrics_turns, projection_ready
 FROM work_attempts
 WHERE project_id = ?1
   AND status = 'terminal'
@@ -4146,6 +4293,17 @@ func (q *Queries) ListPendingWorkAttemptCapacityReleases(ctx context.Context, ar
 			&i.ProviderSessionID,
 			&i.RuntimeIdentityJson,
 			&i.OwnerGeneration,
+			&i.MetadataPrNumber,
+			&i.MetadataPrHeadSha,
+			&i.MetadataPrBaseSha,
+			&i.MetadataRunMode,
+			&i.OutcomeExcluded,
+			&i.ForgeWaitPresent,
+			&i.ForgeWaitHost,
+			&i.ForgeWaitErrorClass,
+			&i.ForgeWriteCompletedHost,
+			&i.MetricsTurns,
+			&i.ProjectionReady,
 		); err != nil {
 			return nil, err
 		}
@@ -4243,7 +4401,7 @@ func (q *Queries) ListRecentCodexSessions(ctx context.Context, limit int64) ([]C
 }
 
 const listRecentProjectSchedulerDecisions = `-- name: ListRecentProjectSchedulerDecisions :many
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, lane, queue_position, result, reason, selected, retry, attempt_number, worker_host, decision_at, wait_reason, capacity_snapshot_json, github_rate_snapshot_json, metadata_json FROM scheduler_decisions
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, lane, queue_position, result, reason, selected, retry, attempt_number, worker_host, decision_at, wait_reason, capacity_snapshot_json, github_rate_snapshot_json, metadata_json, global_available, projection_ready FROM scheduler_decisions
 WHERE project_id = ?1
 ORDER BY decision_at DESC, id DESC
 LIMIT ?2
@@ -4284,6 +4442,8 @@ func (q *Queries) ListRecentProjectSchedulerDecisions(ctx context.Context, arg L
 			&i.CapacitySnapshotJson,
 			&i.GithubRateSnapshotJson,
 			&i.MetadataJson,
+			&i.GlobalAvailable,
+			&i.ProjectionReady,
 		); err != nil {
 			return nil, err
 		}
@@ -4299,7 +4459,7 @@ func (q *Queries) ListRecentProjectSchedulerDecisions(ctx context.Context, arg L
 }
 
 const listRecentSchedulerDecisions = `-- name: ListRecentSchedulerDecisions :many
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, lane, queue_position, result, reason, selected, retry, attempt_number, worker_host, decision_at, wait_reason, capacity_snapshot_json, github_rate_snapshot_json, metadata_json FROM scheduler_decisions
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, lane, queue_position, result, reason, selected, retry, attempt_number, worker_host, decision_at, wait_reason, capacity_snapshot_json, github_rate_snapshot_json, metadata_json, global_available, projection_ready FROM scheduler_decisions
 ORDER BY decision_at DESC, id DESC
 LIMIT ?1
 `
@@ -4334,6 +4494,8 @@ func (q *Queries) ListRecentSchedulerDecisions(ctx context.Context, limit int64)
 			&i.CapacitySnapshotJson,
 			&i.GithubRateSnapshotJson,
 			&i.MetadataJson,
+			&i.GlobalAvailable,
+			&i.ProjectionReady,
 		); err != nil {
 			return nil, err
 		}
@@ -4349,11 +4511,11 @@ func (q *Queries) ListRecentSchedulerDecisions(ctx context.Context, limit int64)
 }
 
 const listRecentTerminalWorkAttempts = `-- name: ListRecentTerminalWorkAttempts :many
-SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation, metadata_pr_number, metadata_pr_head_sha, metadata_pr_base_sha, metadata_run_mode, outcome_excluded, forge_wait_present, forge_wait_host, forge_wait_error_class, forge_write_completed_host, metrics_turns, projection_ready
 FROM work_attempts
 WHERE completed_at IS NOT NULL
   AND status = 'terminal'
-  AND COALESCE(json_extract(CASE WHEN json_valid(worker_metadata_json) THEN worker_metadata_json ELSE '{}' END, '$.historical_completion_fence.excluded_from_worker_outcomes'), 0) = 0
+  AND outcome_excluded = 0
   AND (?1 = '' OR project_id = ?1)
   AND (?2 = '' OR worker_type = ?2)
   AND (
@@ -4429,6 +4591,17 @@ func (q *Queries) ListRecentTerminalWorkAttempts(ctx context.Context, arg ListRe
 			&i.ProviderSessionID,
 			&i.RuntimeIdentityJson,
 			&i.OwnerGeneration,
+			&i.MetadataPrNumber,
+			&i.MetadataPrHeadSha,
+			&i.MetadataPrBaseSha,
+			&i.MetadataRunMode,
+			&i.OutcomeExcluded,
+			&i.ForgeWaitPresent,
+			&i.ForgeWaitHost,
+			&i.ForgeWaitErrorClass,
+			&i.ForgeWriteCompletedHost,
+			&i.MetricsTurns,
+			&i.ProjectionReady,
 		); err != nil {
 			return nil, err
 		}
@@ -4853,7 +5026,7 @@ WHERE completed_at IS NULL
            AND id IN (SELECT value FROM json_each(?11))))
   AND id NOT IN (SELECT value FROM json_each(?12))
   AND (owner_generation IS NULL OR owner_generation NOT IN (SELECT value FROM json_each(?13)))
-RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation
+RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action, detent_session_id, provider_session_id, runtime_identity_json, owner_generation, metadata_pr_number, metadata_pr_head_sha, metadata_pr_base_sha, metadata_run_mode, outcome_excluded, forge_wait_present, forge_wait_host, forge_wait_error_class, forge_write_completed_host, metrics_turns, projection_ready
 `
 
 type TimeoutExpiredWorkAttemptsParams struct {
@@ -4932,6 +5105,17 @@ func (q *Queries) TimeoutExpiredWorkAttempts(ctx context.Context, arg TimeoutExp
 			&i.ProviderSessionID,
 			&i.RuntimeIdentityJson,
 			&i.OwnerGeneration,
+			&i.MetadataPrNumber,
+			&i.MetadataPrHeadSha,
+			&i.MetadataPrBaseSha,
+			&i.MetadataRunMode,
+			&i.OutcomeExcluded,
+			&i.ForgeWaitPresent,
+			&i.ForgeWaitHost,
+			&i.ForgeWaitErrorClass,
+			&i.ForgeWriteCompletedHost,
+			&i.MetricsTurns,
+			&i.ProjectionReady,
 		); err != nil {
 			return nil, err
 		}
@@ -5192,17 +5376,36 @@ UPDATE work_attempts
 SET phase = ?1,
     status_message = ?2,
     worker_metadata_json = ?3,
-    next_action = ?4
-WHERE id = ?5
+    metadata_pr_number = ?4,
+    metadata_pr_head_sha = ?5,
+    metadata_pr_base_sha = ?6,
+    metadata_run_mode = ?7,
+    outcome_excluded = ?8,
+    forge_wait_present = ?9,
+    forge_wait_host = ?10,
+    forge_wait_error_class = ?11,
+    forge_write_completed_host = ?12,
+    projection_ready = projection_ready,
+    next_action = ?13
+WHERE id = ?14
   AND terminal_state = 'operator_stopped'
 `
 
 type UpdateOperatorStopParams struct {
-	Phase              sql.NullString `json:"phase"`
-	StatusMessage      sql.NullString `json:"status_message"`
-	WorkerMetadataJson string         `json:"worker_metadata_json"`
-	NextAction         sql.NullString `json:"next_action"`
-	WorkAttemptID      int64          `json:"work_attempt_id"`
+	Phase                   sql.NullString `json:"phase"`
+	StatusMessage           sql.NullString `json:"status_message"`
+	WorkerMetadataJson      string         `json:"worker_metadata_json"`
+	MetadataPrNumber        sql.NullInt64  `json:"metadata_pr_number"`
+	MetadataPrHeadSha       sql.NullString `json:"metadata_pr_head_sha"`
+	MetadataPrBaseSha       sql.NullString `json:"metadata_pr_base_sha"`
+	MetadataRunMode         sql.NullString `json:"metadata_run_mode"`
+	OutcomeExcluded         sql.NullInt64  `json:"outcome_excluded"`
+	ForgeWaitPresent        sql.NullInt64  `json:"forge_wait_present"`
+	ForgeWaitHost           sql.NullString `json:"forge_wait_host"`
+	ForgeWaitErrorClass     sql.NullString `json:"forge_wait_error_class"`
+	ForgeWriteCompletedHost sql.NullString `json:"forge_write_completed_host"`
+	NextAction              sql.NullString `json:"next_action"`
+	WorkAttemptID           int64          `json:"work_attempt_id"`
 }
 
 func (q *Queries) UpdateOperatorStop(ctx context.Context, arg UpdateOperatorStopParams) (int64, error) {
@@ -5210,6 +5413,15 @@ func (q *Queries) UpdateOperatorStop(ctx context.Context, arg UpdateOperatorStop
 		arg.Phase,
 		arg.StatusMessage,
 		arg.WorkerMetadataJson,
+		arg.MetadataPrNumber,
+		arg.MetadataPrHeadSha,
+		arg.MetadataPrBaseSha,
+		arg.MetadataRunMode,
+		arg.OutcomeExcluded,
+		arg.ForgeWaitPresent,
+		arg.ForgeWaitHost,
+		arg.ForgeWaitErrorClass,
+		arg.ForgeWriteCompletedHost,
 		arg.NextAction,
 		arg.WorkAttemptID,
 	)
@@ -5226,22 +5438,41 @@ SET terminal_state = ?1,
     error_message = ?3,
     phase = ?4,
     status_message = ?5,
-    worker_metadata_json = ?6
-WHERE id = ?7
+    worker_metadata_json = ?6,
+    metadata_pr_number = ?7,
+    metadata_pr_head_sha = ?8,
+    metadata_pr_base_sha = ?9,
+    metadata_run_mode = ?10,
+    outcome_excluded = ?11,
+    forge_wait_present = ?12,
+    forge_wait_host = ?13,
+    forge_wait_error_class = ?14,
+    forge_write_completed_host = ?15,
+    projection_ready = projection_ready
+WHERE id = ?16
   AND status = 'terminal'
   AND completed_at IS NOT NULL
-  AND error_class = ?8
+  AND error_class = ?17
 `
 
 type UpdateTerminalWorkAttemptWaitParams struct {
-	TerminalState      sql.NullString `json:"terminal_state"`
-	ErrorClass         sql.NullString `json:"error_class"`
-	ErrorMessage       sql.NullString `json:"error_message"`
-	Phase              sql.NullString `json:"phase"`
-	StatusMessage      sql.NullString `json:"status_message"`
-	WorkerMetadataJson string         `json:"worker_metadata_json"`
-	WorkAttemptID      int64          `json:"work_attempt_id"`
-	ExpectedErrorClass sql.NullString `json:"expected_error_class"`
+	TerminalState           sql.NullString `json:"terminal_state"`
+	ErrorClass              sql.NullString `json:"error_class"`
+	ErrorMessage            sql.NullString `json:"error_message"`
+	Phase                   sql.NullString `json:"phase"`
+	StatusMessage           sql.NullString `json:"status_message"`
+	WorkerMetadataJson      string         `json:"worker_metadata_json"`
+	MetadataPrNumber        sql.NullInt64  `json:"metadata_pr_number"`
+	MetadataPrHeadSha       sql.NullString `json:"metadata_pr_head_sha"`
+	MetadataPrBaseSha       sql.NullString `json:"metadata_pr_base_sha"`
+	MetadataRunMode         sql.NullString `json:"metadata_run_mode"`
+	OutcomeExcluded         sql.NullInt64  `json:"outcome_excluded"`
+	ForgeWaitPresent        sql.NullInt64  `json:"forge_wait_present"`
+	ForgeWaitHost           sql.NullString `json:"forge_wait_host"`
+	ForgeWaitErrorClass     sql.NullString `json:"forge_wait_error_class"`
+	ForgeWriteCompletedHost sql.NullString `json:"forge_write_completed_host"`
+	WorkAttemptID           int64          `json:"work_attempt_id"`
+	ExpectedErrorClass      sql.NullString `json:"expected_error_class"`
 }
 
 func (q *Queries) UpdateTerminalWorkAttemptWait(ctx context.Context, arg UpdateTerminalWorkAttemptWaitParams) (int64, error) {
@@ -5252,6 +5483,15 @@ func (q *Queries) UpdateTerminalWorkAttemptWait(ctx context.Context, arg UpdateT
 		arg.Phase,
 		arg.StatusMessage,
 		arg.WorkerMetadataJson,
+		arg.MetadataPrNumber,
+		arg.MetadataPrHeadSha,
+		arg.MetadataPrBaseSha,
+		arg.MetadataRunMode,
+		arg.OutcomeExcluded,
+		arg.ForgeWaitPresent,
+		arg.ForgeWaitHost,
+		arg.ForgeWaitErrorClass,
+		arg.ForgeWriteCompletedHost,
 		arg.WorkAttemptID,
 		arg.ExpectedErrorClass,
 	)
@@ -5263,52 +5503,73 @@ func (q *Queries) UpdateTerminalWorkAttemptWait(ctx context.Context, arg UpdateT
 
 const updateWorkAttemptHeartbeat = `-- name: UpdateWorkAttemptHeartbeat :execrows
 UPDATE work_attempts
-SET heartbeat_at = ?,
-    lease_expires_at = ?,
-    phase = ?,
-    status_message = ?,
-    current_step = ?,
-    total_steps = ?,
-    progress_percent = ?,
-    current_command = ?,
-    wait_reason = ?,
-    github_rate_snapshot_json = ?,
-    ci_state = ?,
-    capacity_snapshot_json = ?,
-    worker_metadata_json = ?,
-    metrics_json = ?,
-    next_action = ?,
-    error_class = ?,
-    error_message = ?,
-    detent_session_id = COALESCE(?18, detent_session_id),
-    provider_session_id = COALESCE(?19, provider_session_id),
-    runtime_identity_json = COALESCE(NULLIF(?20, '{}'), runtime_identity_json)
-WHERE id = ?21
+SET heartbeat_at = ?1,
+    lease_expires_at = ?2,
+    phase = ?3,
+    status_message = ?4,
+    current_step = ?5,
+    total_steps = ?6,
+    progress_percent = ?7,
+    current_command = ?8,
+    wait_reason = ?9,
+    github_rate_snapshot_json = ?10,
+    ci_state = ?11,
+    capacity_snapshot_json = ?12,
+    worker_metadata_json = ?13,
+    metadata_pr_number = ?14,
+    metadata_pr_head_sha = ?15,
+    metadata_pr_base_sha = ?16,
+    metadata_run_mode = ?17,
+    outcome_excluded = ?18,
+    forge_wait_present = ?19,
+    forge_wait_host = ?20,
+    forge_wait_error_class = ?21,
+    forge_write_completed_host = ?22,
+    projection_ready = 1,
+    metrics_json = ?23,
+    metrics_turns = ?24,
+    next_action = ?25,
+    error_class = ?26,
+    error_message = ?27,
+    detent_session_id = COALESCE(?28, detent_session_id),
+    provider_session_id = COALESCE(?29, provider_session_id),
+    runtime_identity_json = COALESCE(NULLIF(?30, '{}'), runtime_identity_json)
+WHERE id = ?31
   AND completed_at IS NULL
 `
 
 type UpdateWorkAttemptHeartbeatParams struct {
-	HeartbeatAt            sql.NullString `json:"heartbeat_at"`
-	LeaseExpiresAt         sql.NullString `json:"lease_expires_at"`
-	Phase                  sql.NullString `json:"phase"`
-	StatusMessage          sql.NullString `json:"status_message"`
-	CurrentStep            sql.NullInt64  `json:"current_step"`
-	TotalSteps             sql.NullInt64  `json:"total_steps"`
-	ProgressPercent        sql.NullInt64  `json:"progress_percent"`
-	CurrentCommand         sql.NullString `json:"current_command"`
-	WaitReason             sql.NullString `json:"wait_reason"`
-	GithubRateSnapshotJson string         `json:"github_rate_snapshot_json"`
-	CiState                sql.NullString `json:"ci_state"`
-	CapacitySnapshotJson   string         `json:"capacity_snapshot_json"`
-	WorkerMetadataJson     string         `json:"worker_metadata_json"`
-	MetricsJson            string         `json:"metrics_json"`
-	NextAction             sql.NullString `json:"next_action"`
-	ErrorClass             sql.NullString `json:"error_class"`
-	ErrorMessage           sql.NullString `json:"error_message"`
-	DetentSessionID        sql.NullInt64  `json:"detent_session_id"`
-	ProviderSessionID      sql.NullString `json:"provider_session_id"`
-	RuntimeIdentityJson    interface{}    `json:"runtime_identity_json"`
-	WorkAttemptID          int64          `json:"work_attempt_id"`
+	HeartbeatAt             sql.NullString `json:"heartbeat_at"`
+	LeaseExpiresAt          sql.NullString `json:"lease_expires_at"`
+	Phase                   sql.NullString `json:"phase"`
+	StatusMessage           sql.NullString `json:"status_message"`
+	CurrentStep             sql.NullInt64  `json:"current_step"`
+	TotalSteps              sql.NullInt64  `json:"total_steps"`
+	ProgressPercent         sql.NullInt64  `json:"progress_percent"`
+	CurrentCommand          sql.NullString `json:"current_command"`
+	WaitReason              sql.NullString `json:"wait_reason"`
+	GithubRateSnapshotJson  string         `json:"github_rate_snapshot_json"`
+	CiState                 sql.NullString `json:"ci_state"`
+	CapacitySnapshotJson    string         `json:"capacity_snapshot_json"`
+	WorkerMetadataJson      string         `json:"worker_metadata_json"`
+	MetadataPrNumber        sql.NullInt64  `json:"metadata_pr_number"`
+	MetadataPrHeadSha       sql.NullString `json:"metadata_pr_head_sha"`
+	MetadataPrBaseSha       sql.NullString `json:"metadata_pr_base_sha"`
+	MetadataRunMode         sql.NullString `json:"metadata_run_mode"`
+	OutcomeExcluded         sql.NullInt64  `json:"outcome_excluded"`
+	ForgeWaitPresent        sql.NullInt64  `json:"forge_wait_present"`
+	ForgeWaitHost           sql.NullString `json:"forge_wait_host"`
+	ForgeWaitErrorClass     sql.NullString `json:"forge_wait_error_class"`
+	ForgeWriteCompletedHost sql.NullString `json:"forge_write_completed_host"`
+	MetricsJson             string         `json:"metrics_json"`
+	MetricsTurns            sql.NullInt64  `json:"metrics_turns"`
+	NextAction              sql.NullString `json:"next_action"`
+	ErrorClass              sql.NullString `json:"error_class"`
+	ErrorMessage            sql.NullString `json:"error_message"`
+	DetentSessionID         sql.NullInt64  `json:"detent_session_id"`
+	ProviderSessionID       sql.NullString `json:"provider_session_id"`
+	RuntimeIdentityJson     interface{}    `json:"runtime_identity_json"`
+	WorkAttemptID           int64          `json:"work_attempt_id"`
 }
 
 func (q *Queries) UpdateWorkAttemptHeartbeat(ctx context.Context, arg UpdateWorkAttemptHeartbeatParams) (int64, error) {
@@ -5326,7 +5587,17 @@ func (q *Queries) UpdateWorkAttemptHeartbeat(ctx context.Context, arg UpdateWork
 		arg.CiState,
 		arg.CapacitySnapshotJson,
 		arg.WorkerMetadataJson,
+		arg.MetadataPrNumber,
+		arg.MetadataPrHeadSha,
+		arg.MetadataPrBaseSha,
+		arg.MetadataRunMode,
+		arg.OutcomeExcluded,
+		arg.ForgeWaitPresent,
+		arg.ForgeWaitHost,
+		arg.ForgeWaitErrorClass,
+		arg.ForgeWriteCompletedHost,
 		arg.MetricsJson,
+		arg.MetricsTurns,
 		arg.NextAction,
 		arg.ErrorClass,
 		arg.ErrorMessage,
@@ -5712,7 +5983,7 @@ func (q *Queries) UsageReportRows(ctx context.Context, arg UsageReportRowsParams
 }
 
 const workflowPhaseDurationRows = `-- name: WorkflowPhaseDurationRows :many
-SELECT id, project_id, run_id, session_id, issue_id, identifier, issue_url, pr_number, phase_type, phase_name, previous_phase_name, reason, status, started_at, finished_at, duration_seconds, event_day, command_name, exit_code, turns, input_tokens, output_tokens, total_tokens, endpoint_family, metadata_json, cached_input_tokens, reasoning_output_tokens, model_context_window
+SELECT id, project_id, run_id, session_id, issue_id, identifier, issue_url, pr_number, phase_type, phase_name, previous_phase_name, reason, status, started_at, finished_at, duration_seconds, event_day, command_name, exit_code, turns, input_tokens, output_tokens, total_tokens, endpoint_family, metadata_json, cached_input_tokens, reasoning_output_tokens, model_context_window, retry_identity, input_hash, correlation_id, terminal_outcome, projection_ready
 FROM workflow_phase_events INDEXED BY workflow_phase_events_finished_at_idx
 WHERE finished_at IS NOT NULL
   AND phase_type <> 'agent_activity'
@@ -5765,6 +6036,11 @@ func (q *Queries) WorkflowPhaseDurationRows(ctx context.Context, arg WorkflowPha
 			&i.CachedInputTokens,
 			&i.ReasoningOutputTokens,
 			&i.ModelContextWindow,
+			&i.RetryIdentity,
+			&i.InputHash,
+			&i.CorrelationID,
+			&i.TerminalOutcome,
+			&i.ProjectionReady,
 		); err != nil {
 			return nil, err
 		}
@@ -5780,7 +6056,7 @@ func (q *Queries) WorkflowPhaseDurationRows(ctx context.Context, arg WorkflowPha
 }
 
 const workflowPhaseDurationRowsWithinWindow = `-- name: WorkflowPhaseDurationRowsWithinWindow :many
-SELECT id, project_id, run_id, session_id, issue_id, identifier, issue_url, pr_number, phase_type, phase_name, previous_phase_name, reason, status, started_at, finished_at, duration_seconds, event_day, command_name, exit_code, turns, input_tokens, output_tokens, total_tokens, endpoint_family, metadata_json, cached_input_tokens, reasoning_output_tokens, model_context_window
+SELECT id, project_id, run_id, session_id, issue_id, identifier, issue_url, pr_number, phase_type, phase_name, previous_phase_name, reason, status, started_at, finished_at, duration_seconds, event_day, command_name, exit_code, turns, input_tokens, output_tokens, total_tokens, endpoint_family, metadata_json, cached_input_tokens, reasoning_output_tokens, model_context_window, retry_identity, input_hash, correlation_id, terminal_outcome, projection_ready
 FROM workflow_phase_events INDEXED BY workflow_phase_events_finished_at_idx
 WHERE finished_at >= ?1
   AND finished_at < ?2
@@ -5832,6 +6108,11 @@ func (q *Queries) WorkflowPhaseDurationRowsWithinWindow(ctx context.Context, arg
 			&i.CachedInputTokens,
 			&i.ReasoningOutputTokens,
 			&i.ModelContextWindow,
+			&i.RetryIdentity,
+			&i.InputHash,
+			&i.CorrelationID,
+			&i.TerminalOutcome,
+			&i.ProjectionReady,
 		); err != nil {
 			return nil, err
 		}
@@ -5847,7 +6128,7 @@ func (q *Queries) WorkflowPhaseDurationRowsWithinWindow(ctx context.Context, arg
 }
 
 const workflowPhaseFlowRows = `-- name: WorkflowPhaseFlowRows :many
-SELECT event.id, event.project_id, event.run_id, event.session_id, event.issue_id, event.identifier, event.issue_url, event.pr_number, event.phase_type, event.phase_name, event.previous_phase_name, event.reason, event.status, event.started_at, event.finished_at, event.duration_seconds, event.event_day, event.command_name, event.exit_code, event.turns, event.input_tokens, event.output_tokens, event.total_tokens, event.endpoint_family, event.metadata_json, event.cached_input_tokens, event.reasoning_output_tokens, event.model_context_window
+SELECT event.id, event.project_id, event.run_id, event.session_id, event.issue_id, event.identifier, event.issue_url, event.pr_number, event.phase_type, event.phase_name, event.previous_phase_name, event.reason, event.status, event.started_at, event.finished_at, event.duration_seconds, event.event_day, event.command_name, event.exit_code, event.turns, event.input_tokens, event.output_tokens, event.total_tokens, event.endpoint_family, event.metadata_json, event.cached_input_tokens, event.reasoning_output_tokens, event.model_context_window, event.retry_identity, event.input_hash, event.correlation_id, event.terminal_outcome, event.projection_ready
 FROM workflow_phase_events AS event INDEXED BY workflow_phase_events_finished_at_idx
 WHERE event.finished_at IS NOT NULL
   AND event.phase_type IN ('agent_session', 'local_check', 'ci')
@@ -5900,6 +6181,11 @@ func (q *Queries) WorkflowPhaseFlowRows(ctx context.Context, arg WorkflowPhaseFl
 			&i.CachedInputTokens,
 			&i.ReasoningOutputTokens,
 			&i.ModelContextWindow,
+			&i.RetryIdentity,
+			&i.InputHash,
+			&i.CorrelationID,
+			&i.TerminalOutcome,
+			&i.ProjectionReady,
 		); err != nil {
 			return nil, err
 		}
@@ -5915,7 +6201,7 @@ func (q *Queries) WorkflowPhaseFlowRows(ctx context.Context, arg WorkflowPhaseFl
 }
 
 const workflowPhaseFlowRowsFrom = `-- name: WorkflowPhaseFlowRowsFrom :many
-SELECT event.id, event.project_id, event.run_id, event.session_id, event.issue_id, event.identifier, event.issue_url, event.pr_number, event.phase_type, event.phase_name, event.previous_phase_name, event.reason, event.status, event.started_at, event.finished_at, event.duration_seconds, event.event_day, event.command_name, event.exit_code, event.turns, event.input_tokens, event.output_tokens, event.total_tokens, event.endpoint_family, event.metadata_json, event.cached_input_tokens, event.reasoning_output_tokens, event.model_context_window
+SELECT event.id, event.project_id, event.run_id, event.session_id, event.issue_id, event.identifier, event.issue_url, event.pr_number, event.phase_type, event.phase_name, event.previous_phase_name, event.reason, event.status, event.started_at, event.finished_at, event.duration_seconds, event.event_day, event.command_name, event.exit_code, event.turns, event.input_tokens, event.output_tokens, event.total_tokens, event.endpoint_family, event.metadata_json, event.cached_input_tokens, event.reasoning_output_tokens, event.model_context_window, event.retry_identity, event.input_hash, event.correlation_id, event.terminal_outcome, event.projection_ready
 FROM workflow_phase_events AS event INDEXED BY workflow_phase_events_finished_at_idx
 WHERE event.finished_at > ?1
   AND event.phase_type IN ('agent_session', 'local_check', 'ci')
@@ -5967,6 +6253,11 @@ func (q *Queries) WorkflowPhaseFlowRowsFrom(ctx context.Context, arg WorkflowPha
 			&i.CachedInputTokens,
 			&i.ReasoningOutputTokens,
 			&i.ModelContextWindow,
+			&i.RetryIdentity,
+			&i.InputHash,
+			&i.CorrelationID,
+			&i.TerminalOutcome,
+			&i.ProjectionReady,
 		); err != nil {
 			return nil, err
 		}
