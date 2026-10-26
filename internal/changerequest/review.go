@@ -302,9 +302,9 @@ func ReviewState(detail tracker.ChangeDetail, versionID, headSHA string) connect
 		}
 		switch {
 		case review.ImplementationReview != nil:
-			sourceRework = review.ImplementationReview.Verdict == "rework"
+			sourceRework = review.ImplementationReview.Verdict != gate.ValidatorVerdictPass
 		case review.Validator != nil:
-			validatorRework = review.Validator.Verdict == "rework"
+			validatorRework = review.Validator.Verdict != gate.ValidatorVerdictPass
 		case review.SecurityAudit != nil:
 			auditRework = auditRework || review.Decision == "changes_requested"
 		}
