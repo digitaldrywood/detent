@@ -1085,7 +1085,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			t.Fatalf("early publication changed attempt completion: status=%s sequence=%d error=%v", status, sequence, err)
 		}
 		var run tracker.NativeRunData
-		if err := decodeRunDetail(f.service.runDetailContext(t.Context()), recorded, &run); err != nil || run.Finalization != nil {
+		if err := decodeRunDetail(f.service.runDetailContext(t.Context()), f.service.database.reader, recorded, &run); err != nil || run.Finalization != nil {
 			t.Fatalf("early publication finalized the attempt: finalization=%+v error=%v", run.Finalization, err)
 		}
 		diff.Generation.Seq = 8

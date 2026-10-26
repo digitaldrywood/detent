@@ -524,7 +524,7 @@ func TestScaleSoakSeed(t *testing.T) {
 			t.Fatalf("missing detail: %v", err)
 		}
 		var data tracker.NativeRunData
-		if err := decodeRunDetail(ctx, raw, &data); err != nil || len(data.CompletionBody) < config.DetailBytes {
+		if err := decodeRunDetail(ctx, seed.service.database.reader, raw, &data); err != nil || len(data.CompletionBody) < config.DetailBytes {
 			t.Fatalf("unreadable detail: %v", err)
 		}
 		seen[project] = true

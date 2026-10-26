@@ -87,7 +87,7 @@ ORDER BY a.fencing_token DESC`, scope.organization, scope.project, item, scope.o
 		if !raw.Valid {
 			continue
 		}
-		source.Checkpoint, err = decodeRunCheckpoint(ctx, raw.String)
+		source.Checkpoint, err = decodeRunCheckpoint(ctx, q, raw.String)
 		if err != nil {
 			return source, err
 		}

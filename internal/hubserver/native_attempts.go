@@ -320,7 +320,7 @@ func prepareNativeAttempt(ctx context.Context, tx nativeQueryer, scope nativeSco
 		var previous tracker.NativeRunData
 		if prior != nil {
 			previous = prior.data
-		} else if err := decodeRunDetail(ctx, previousJSON, &previous); err != nil {
+		} else if err := decodeRunDetail(ctx, tx, previousJSON, &previous); err != nil {
 			return update, err
 		}
 		if termination {
@@ -498,7 +498,7 @@ func requireNativePRPublication(ctx context.Context, tx nativeQueryer, scope nat
 	if err := tx.QueryRowContext(ctx, "SELECT checkpoint_json FROM native_attempts WHERE id=?", data.AttemptID).Scan(&raw); err != nil {
 		return err
 	}
-	checkpoint, err := decodeRunCheckpoint(ctx, raw)
+	checkpoint, err := decodeRunCheckpoint(ctx, tx, raw)
 	if err != nil {
 		return err
 	}
@@ -597,7 +597,12 @@ func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item stri
 			return tracker.Page[tracker.NativeAttempt]{}, nativePublicInvalid("Attempt cursor is invalid")
 		}
 	}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT `+dataColumn+`, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return tracker.Page[tracker.NativeAttempt]{}, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT `+dataColumn+`, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
 FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
 WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fencing_token > ? ORDER BY a.fencing_token LIMIT ?`, scope.organization, scope.project, item, after, limit+1)
 	if err != nil {
@@ -606,7 +611,7 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fe
 	defer rows.Close()
 	var attempts []tracker.NativeAttempt
 	for rows.Next() {
-		attempt, err := scanNativeAttempt(ctx, rows, s.config.now())
+		attempt, err := scanNativeAttempt(ctx, tx, rows, s.config.now())
 		if err != nil {
 			return tracker.Page[tracker.NativeAttempt]{}, err
 		}
@@ -630,7 +635,7 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fe
 			break
 		}
 		if view != "recorded_blockers" {
-			if err := readAttachmentEvidence(ctx, s.database.reader, scope, item, &attempt.NativeRunData); err != nil {
+			if err := readAttachmentEvidence(ctx, tx, scope, item, &attempt.NativeRunData); err != nil {
 				return tracker.Page[tracker.NativeAttempt]{}, err
 			}
 		}
@@ -684,18 +689,18 @@ func nativeAttemptDisplayIdentity(attempt tracker.NativeAttempt) *tracker.Native
 	return &identity
 }
 
-func scanNativeAttempt(ctx context.Context, rows *sql.Rows, now time.Time) (tracker.NativeAttempt, error) {
+func scanNativeAttempt(ctx context.Context, q nativeQueryer, rows *sql.Rows, now time.Time) (tracker.NativeAttempt, error) {
 	var attempt tracker.NativeAttempt
 	var data, started, updated, artifacts, expires, renewed string
 	var checkpoint, released sql.NullString
 	if err := rows.Scan(&data, &attempt.Status, &started, &updated, &checkpoint, &artifacts, &expires, &released, &renewed, &attempt.WorkItemRevision, &attempt.DispatchGeneration); err != nil {
 		return attempt, err
 	}
-	if err := decodeRunDetail(ctx, data, &attempt.NativeRunData); err != nil {
+	if err := decodeRunDetail(ctx, q, data, &attempt.NativeRunData); err != nil {
 		return attempt, err
 	}
 	if checkpoint.Valid {
-		decoded, err := decodeRunCheckpoint(ctx, checkpoint.String)
+		decoded, err := decodeRunCheckpoint(ctx, q, checkpoint.String)
 		if err != nil {
 			return attempt, err
 		}
@@ -768,7 +773,12 @@ func (s *Service) readNativeAttempt(ctx context.Context, scope nativeScope, item
 	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	return readNativeAttempt(ctx, s.database.reader, scope, item, id, s.config.now())
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return tracker.NativeAttempt{}, err
+	}
+	defer tx.Rollback()
+	return readNativeAttempt(ctx, tx, scope, item, id, s.config.now())
 }
 
 func readNativeAttempt(ctx context.Context, q nativeQueryer, scope nativeScope, item, id string, now time.Time) (tracker.NativeAttempt, error) {
@@ -803,7 +813,7 @@ func readNativeAttemptRecord(ctx context.Context, q nativeQueryer, scope nativeS
 		}
 		return tracker.NativeAttempt{}, nativeNotFound()
 	}
-	return scanNativeAttempt(ctx, rows, now)
+	return scanNativeAttempt(ctx, q, rows, now)
 }
 
 func leaseReleaseFailure(ctx context.Context, tx nativeQueryer, data tracker.NativeRunData, now time.Time) (tracker.NativeTerminalFailure, error) {
@@ -842,7 +852,7 @@ WHERE a.lease_id = ? AND a.fencing_token = ? AND a.organization_id = ? AND a.pro
 		owner.reuse[stored.AttemptID] = stored.Detail
 	}
 	var previous tracker.NativeRunData
-	if err := decodeRunDetail(ctx, raw, &previous); err != nil {
+	if err := decodeRunDetail(ctx, tx, raw, &previous); err != nil {
 		return err
 	}
 	if previous.Identity == nil {

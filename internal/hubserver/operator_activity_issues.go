@@ -296,7 +296,7 @@ func readActivityIssueAttempts(ctx context.Context, q nativeQueryer, organizatio
 		if err := rows.Scan(&raw, &started, &updated, &status, &a.role, &a.runner, &a.session, &renewed, &expires, &released); err != nil {
 			return nil, false, err
 		}
-		if err := decodeRunDetail(ctx, raw, &a.run); err != nil {
+		if err := decodeRunDetail(ctx, q, raw, &a.run); err != nil {
 			return nil, false, err
 		}
 		a.started, err = parseTimeValue(started)

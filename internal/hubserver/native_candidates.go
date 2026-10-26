@@ -322,7 +322,7 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 			return nil, 0, 0, err
 		}
 		if run.Disposition == nil {
-			if err := decodeRunDetail(ctx, runRaw, &run); err != nil {
+			if err := decodeRunDetail(ctx, q, runRaw, &run); err != nil {
 				return nil, 0, 0, err
 			}
 			if signal, reported := workpad.SignalFromComment(run.CompletionBody, "", project); reported && signal != nil && signal.Invalid == nil && (signal.HumanAction != "" || signal.ReasonCode == "permission_wait") {
@@ -372,7 +372,7 @@ func readPublishedReview(ctx context.Context, q nativeQueryer, id tracker.WorkIt
 	}
 	var data tracker.NativeRunData
 	var source tracker.NativeCheckpoint
-	if err := decodeRunDetail(ctx, raw, &data); err != nil {
+	if err := decodeRunDetail(ctx, q, raw, &data); err != nil {
 		return connector.ChangeReview{}, "", err
 	}
 	if err := json.Unmarshal([]byte(checkpoint), &source); err != nil {

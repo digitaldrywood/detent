@@ -201,7 +201,7 @@ func readActivityAttempts(ctx context.Context, q nativeQueryer, organization str
 		}
 		if stored.Detail != nil {
 			var run tracker.NativeRunData
-			if err := decodeRunDetail(ctx, runRaw, &run); err != nil {
+			if err := decodeRunDetail(ctx, q, runRaw, &run); err != nil {
 				return nil, err
 			}
 			if run.Runtime != nil {

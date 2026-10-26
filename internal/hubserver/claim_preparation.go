@@ -265,15 +265,15 @@ WHERE id=? AND organization_id=? AND project_id=? AND work_item_id=?`, attempt, 
 		}
 	}
 	if prepared != nil && !prepared.hydrating {
-		return nil, &claimHydration{run: func(ctx context.Context, _ nativeQueryer) error {
-			checkpoint, err := decodeRunCheckpoint(ctx, raw.String)
+		return nil, &claimHydration{run: func(ctx context.Context, q nativeQueryer) error {
+			checkpoint, err := decodeRunCheckpoint(ctx, q, raw.String)
 			if err == nil {
 				prepared.checkpoints[attempt] = preparedClaimCheckpoint{sequence: sequence, attachment: attachment, checkpoint: checkpoint}
 			}
 			return err
 		}}
 	}
-	checkpoint, err := decodeRunCheckpoint(ctx, raw.String)
+	checkpoint, err := decodeRunCheckpoint(ctx, q, raw.String)
 	if err == nil && prepared != nil {
 		prepared.checkpoints[attempt] = preparedClaimCheckpoint{sequence: sequence, attachment: attachment, checkpoint: checkpoint}
 	}

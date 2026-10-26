@@ -297,8 +297,16 @@ func (s *Service) readRunnerRouting(ctx context.Context, scope nativeScope, runn
 	if !visible {
 		return runnerauth.Runner{}, nativeNotFound()
 	}
-	runner, err := readRunnerWithClock(ctx, s.database.reader, scope.organization, runnerID, s.config.now)
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
+		return runnerauth.Runner{}, err
+	}
+	defer tx.Rollback()
+	runner, err := readRunnerWithClock(ctx, tx, scope.organization, runnerID, s.config.now)
+	if err != nil {
+		return runnerauth.Runner{}, err
+	}
+	if err := tx.Commit(); err != nil {
 		return runnerauth.Runner{}, err
 	}
 	if credential.Hosted != nil && !s.appAllRunnerGrants(ctx, credential, runnerManagementProjects(runner)...) {
@@ -562,13 +570,18 @@ func (s *Service) listRunnerRouting(c echo.Context) error {
 func (s *Service) listRunnerRoutingData(ctx context.Context, organization tracker.OrganizationID, limit, offset int) ([]runnerauth.Runner, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
 	query := "SELECT id FROM runner_identities WHERE organization_id = ? AND removed_at IS NULL ORDER BY display_name, id"
 	args := []any{organization}
 	if limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, limit, offset)
 	}
-	rows, err := s.database.reader.QueryContext(ctx, query, args...)
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -588,7 +601,7 @@ func (s *Service) listRunnerRoutingData(ctx context.Context, organization tracke
 	}
 	result := []runnerauth.Runner{}
 	for _, id := range ids {
-		r, err := readRunnerWithClock(ctx, s.database.reader, organization, id, s.config.now)
+		r, err := readRunnerWithClock(ctx, tx, organization, id, s.config.now)
 		if err != nil {
 			return nil, err
 		}

@@ -183,9 +183,6 @@ func (s *Service) readCommittedRunnerResponse(c echo.Context, response runnerCom
 		return nil, err
 	}
 	ctx = s.freshRunDetailContext(ctx)
-	if owner, ok := ctx.Value(runDetailContextKey{}).(*runDetailContext); ok {
-		owner.query = tx
-	}
 	return response(ctx, tx, now)
 }
 

@@ -22,7 +22,6 @@ type runDetailContextKey struct{}
 
 type runDetailContext struct {
 	mu           sync.Mutex
-	query        nativeQueryer
 	store        attachment.DetailStore
 	organization string
 	reference    *attachment.ArchiveReference
@@ -73,7 +72,7 @@ func (s *Service) runDetailContext(ctx context.Context) context.Context {
 	if s.config.Hosted != nil {
 		organization = s.config.Hosted.OrganizationID
 	}
-	return context.WithValue(ctx, runDetailContextKey{}, &runDetailContext{query: s.database.reader, store: owner, organization: organization, cache: make(map[string]map[string]tracker.NativeRunData), reuse: make(map[string]*runDetailReference)})
+	return context.WithValue(ctx, runDetailContextKey{}, &runDetailContext{store: owner, organization: organization, cache: make(map[string]map[string]tracker.NativeRunData), reuse: make(map[string]*runDetailReference)})
 }
 
 func (s *Service) runDetailMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -83,7 +82,7 @@ func (s *Service) runDetailMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
-func decodeRunDetail(ctx context.Context, raw string, result *tracker.NativeRunData) error {
+func decodeRunDetail(ctx context.Context, q nativeQueryer, raw string, result *tracker.NativeRunData) error {
 	if prepared := claimPrepared(ctx); prepared != nil && !prepared.hydrating {
 		if value, ok := prepared.runs[raw]; ok {
 			*result = value
@@ -92,9 +91,9 @@ func decodeRunDetail(ctx context.Context, raw string, result *tracker.NativeRunD
 		if claimWriting(ctx) {
 			return errClaimHintStale
 		}
-		return &claimHydration{run: func(ctx context.Context, _ nativeQueryer) error {
+		return &claimHydration{run: func(ctx context.Context, q nativeQueryer) error {
 			var value tracker.NativeRunData
-			if err := decodeRunDetail(ctx, raw, &value); err != nil {
+			if err := decodeRunDetail(ctx, q, raw, &value); err != nil {
 				return err
 			}
 			if prepared.runs == nil {
@@ -116,7 +115,7 @@ func decodeRunDetail(ctx context.Context, raw string, result *tracker.NativeRunD
 		}
 		return nil
 	}
-	runs, err := readRunDetailSegment(ctx, stored.Detail)
+	runs, err := readRunDetailSegment(ctx, q, stored.Detail)
 	if err != nil {
 		return err
 	}
@@ -137,7 +136,7 @@ func decodeRunDetail(ctx context.Context, raw string, result *tracker.NativeRunD
 	return nil
 }
 
-func decodeRunHistory(ctx context.Context, raw string, result *tracker.CollaborationData) error {
+func decodeRunHistory(ctx context.Context, q nativeQueryer, raw string, result *tracker.CollaborationData) error {
 	resolved, err := resolveStorageJSON(ctx, []byte(raw))
 	if err != nil {
 		return err
@@ -155,7 +154,7 @@ func decodeRunHistory(ctx context.Context, raw string, result *tracker.Collabora
 	if err := json.Unmarshal([]byte(raw), &envelope); err != nil {
 		return err
 	}
-	return decodeRunDetail(ctx, string(envelope.Run), result.Run)
+	return decodeRunDetail(ctx, q, string(envelope.Run), result.Run)
 }
 
 func compactRun(data tracker.NativeRunData) tracker.NativeRunData {
@@ -267,7 +266,7 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 			return ctx, nil
 		}
 		var run tracker.NativeRunData
-		if err := decodeRunDetail(ctx, previous, &run); err != nil {
+		if err := decodeRunDetail(ctx, s.database.reader, previous, &run); err != nil {
 			return ctx, fmt.Errorf("decode previous run detail: %w", err)
 		}
 	} else if previousErr != sql.ErrNoRows {
@@ -427,7 +426,7 @@ func encodeRunCheckpoint(ctx context.Context, data tracker.NativeRunData) (strin
 	return marshalNative(storedRunCheckpoint{NativeCheckpoint: data.Handoff, Detail: newRunDetailReference(*owner.reference, owner.organization, runDetailEntry(data))})
 }
 
-func decodeRunCheckpoint(ctx context.Context, raw string) (*tracker.NativeCheckpoint, error) {
+func decodeRunCheckpoint(ctx context.Context, q nativeQueryer, raw string) (*tracker.NativeCheckpoint, error) {
 	var stored storedRunCheckpoint
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
 		return nil, err
@@ -435,7 +434,7 @@ func decodeRunCheckpoint(ctx context.Context, raw string) (*tracker.NativeCheckp
 	if stored.Detail == nil || explanationRead(ctx) {
 		return stored.NativeCheckpoint, nil
 	}
-	runs, err := readRunDetailSegment(ctx, stored.Detail)
+	runs, err := readRunDetailSegment(ctx, q, stored.Detail)
 	if err != nil {
 		return nil, err
 	}
@@ -448,7 +447,7 @@ func decodeRunCheckpoint(ctx context.Context, raw string) (*tracker.NativeCheckp
 
 var errRunDetailStoreUnavailable = errors.New("run detail store unavailable in this context")
 
-func readRunDetailSegment(ctx context.Context, detail *runDetailReference) (map[string]tracker.NativeRunData, error) {
+func readRunDetailSegment(ctx context.Context, q nativeQueryer, detail *runDetailReference) (map[string]tracker.NativeRunData, error) {
 	owner, ok := ctx.Value(runDetailContextKey{}).(*runDetailContext)
 	if !ok {
 		return nil, errRunDetailStoreUnavailable
@@ -464,7 +463,7 @@ func readRunDetailSegment(ctx context.Context, detail *runDetailReference) (map[
 	if runs := owner.cache[detail.AttachmentID]; runs != nil {
 		return runs, nil
 	}
-	ref, err := scanAttachmentArchive(owner.query.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class,storage_binding_id,customer_owned FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, detail.AttachmentID, detail.Organization))
+	ref, err := scanAttachmentArchive(q.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class,storage_binding_id,customer_owned FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, detail.AttachmentID, detail.Organization))
 	if err != nil {
 		return nil, fmt.Errorf("read run detail attachment: %w", errors.Join(artifact.ErrIntegrity, err))
 	}

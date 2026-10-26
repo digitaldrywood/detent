@@ -253,7 +253,7 @@ ORDER BY a.fencing_token DESC LIMIT 1`, changeID, version.ID).Scan(&raw)
 		return err
 	}
 	var run tracker.NativeRunData
-	if err := decodeRunDetail(ctx, raw, &run); err != nil {
+	if err := decodeRunDetail(ctx, query, raw, &run); err != nil {
 		return err
 	}
 	if run.Finalization != nil && run.Finalization.Publication != nil && run.Finalization.Publication.Matches(changeID, *version) {
@@ -302,7 +302,7 @@ func resolveVersionPublicationPush(ctx context.Context, query nativeQueryer, sco
 		return tracker.ChangePublicationPush{}, false, err
 	}
 	var run tracker.NativeRunData
-	if err := decodeRunDetail(ctx, raw, &run); err != nil {
+	if err := decodeRunDetail(ctx, query, raw, &run); err != nil {
 		return tracker.ChangePublicationPush{}, false, err
 	}
 	ref := tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
