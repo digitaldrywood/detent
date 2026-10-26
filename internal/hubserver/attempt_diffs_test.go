@@ -768,11 +768,23 @@ func TestAttemptDiffManifest(t *testing.T) {
 	if _, err := legacy.service.database.db.ExecContext(t.Context(), "UPDATE leases SET released_at=? WHERE lease_id=?", formatHubTime(now), f.lease.ID); err != nil {
 		t.Fatal(err)
 	}
+	convertFiles := func() error {
+		ctx := legacy.service.contentContext(t.Context())
+		scope := nativeScope{organization: legacy.project.OrganizationID, project: legacy.project.ID}
+		for _, family := range storageConversionFamilies {
+			if family.name != "diff_files" {
+				continue
+			}
+			if err := legacy.service.discoverStorageFamily(ctx, family, now); err != nil {
+				return err
+			}
+			return legacy.service.convertStorageFamily(ctx, scope, family, now)
+		}
+		return errors.New("diff file conversion family is missing")
+	}
 	for pass, want := range []int{200, 100, 0} {
 		if pass == 0 {
-			query := &convertingDiffQuery{nativeQueryer: legacy.service.database.reader, convert: func() error {
-				return legacy.service.convertLegacyStorage(t.Context(), now)
-			}}
+			query := &convertingDiffQuery{nativeQueryer: legacy.service.database.reader, convert: convertFiles}
 			files, err := readAttemptDiffFiles(legacy.service.contentContext(t.Context()), query, receipt.DiffID)
 			if err != nil {
 				t.Fatal(err)
@@ -783,7 +795,7 @@ func TestAttemptDiffManifest(t *testing.T) {
 			if !reflect.DeepEqual(files, expected) {
 				t.Fatalf("conversion during diff read returned %d files, want %d unchanged files", len(files), len(expected))
 			}
-		} else if err := legacy.service.convertLegacyStorage(t.Context(), now); err != nil {
+		} else if err := convertFiles(); err != nil {
 			t.Fatal(err)
 		}
 		var remaining int

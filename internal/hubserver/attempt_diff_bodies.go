@@ -173,6 +173,13 @@ func (s *Service) attemptDiffBodyDeleted(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+func attemptDiffBodyExistsSQL(key string) string {
+	if key == "" {
+		return `SELECT EXISTS(SELECT 1 FROM attempt_diff_files WHERE patch_object=?)`
+	}
+	return `SELECT EXISTS(SELECT 1 FROM attempt_diff_files WHERE patch_object=? AND patch_object!='')`
+}
+
 func (s *Service) attemptDiffBodyExists(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
@@ -186,7 +193,7 @@ func (s *Service) attemptDiffBodyExists(c echo.Context) error {
 		return s.invalidAPIRequest(c, err)
 	}
 	var exists bool
-	if err := s.database.reader.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM attempt_diff_files WHERE patch_object=?)`, input.Key).Scan(&exists); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, attemptDiffBodyExistsSQL(input.Key), input.Key).Scan(&exists); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if !exists {

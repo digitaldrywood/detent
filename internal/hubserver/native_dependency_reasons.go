@@ -179,7 +179,7 @@ func readNativeDependencyDetailsBatch(ctx context.Context, q nativeQueryer, scop
 	if loaded != len(items) {
 		return sql.ErrNoRows
 	}
-	return readNativeRelatedBatch(ctx, q, scope, items, selection)
+	return readNativeRelatedBatch(ctx, q, scope, items)
 }
 
 func validDependencyReason(text string) bool {
