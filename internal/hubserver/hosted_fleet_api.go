@@ -358,8 +358,11 @@ func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map
 		State: runner.State, OS: runner.OS, Architecture: runner.Architecture, Version: version, HostCapacity: runner.HostCapacity,
 		HostUsed: runner.HostUsed, CapacityLimit: runner.CapacityLimit, ReportedCapacity: runner.ReportedCapacity,
 		ProviderCapacity: runner.ProviderCapacity, LastHeartbeatAt: runner.LastHeartbeatAt, Leases: []hostedFleetLease{},
-		IsolationTier: runner.IsolationTier, BackendIsolation: runner.BackendIsolation, Availability: runner.Availability,
+		IsolationTier: runner.IsolationTier, BackendIsolation: make(map[string][]string, len(runner.BackendIsolation)), Availability: runner.Availability,
 		Problems: runner.Problems, ConnectionHealth: runner.ConnectionHealth,
+	}
+	for backend, tiers := range runner.BackendIsolation {
+		view.BackendIsolation[backend] = append([]string{}, tiers...)
 	}
 	if view.ProviderCapacity == nil {
 		view.ProviderCapacity = []providercapacity.View{}
