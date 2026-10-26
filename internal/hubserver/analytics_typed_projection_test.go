@@ -307,3 +307,82 @@ func TestAnalyticsEventProjectionUnknown(t *testing.T) {
 		}
 	}
 }
+
+func TestAnalyticsCompactionLegacyIdentifiers(t *testing.T) {
+	for _, test := range []struct{ name, id string }{{"number", "9007199254740993"}, {"string", `"9007199254740993"`}} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC)
+			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+			other := newNativeFixture(t, f.service, f.project.OrganizationID, "second")
+			d := f.service.database
+			var badIDs []int64
+			for _, fixture := range []nativeFixture{f, other} {
+				scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
+				insert := func(metric, dimension, raw string, version any) int64 {
+					t.Helper()
+					result, err := d.db.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,projection_version) VALUES(?,?,?,?,?,2,?,?)`, scope.organization, scope.project, now.Unix(), metric, dimension, raw, version)
+					if err != nil {
+						t.Fatal(err)
+					}
+					id, err := result.LastInsertId()
+					if err != nil {
+						t.Fatal(err)
+					}
+					return id
+				}
+				badIDs = append(badIDs, insert("issue", "bad", `{"id":{"title":"private customer content"}}`, nil))
+				insert("issue", "good", fmt.Sprintf(`{"id":%s,"workflow_state_id":%s}`, test.id, test.id), nil)
+				insert("lease", "legacy", fmt.Sprintf(`{"issue_id":%s,"released_at":"2026-10-25T00:00:00Z"}`, test.id), nil)
+				badIDs = append(badIDs, insert("capacity_claim", "bad-sample", `{"At":"private customer content"}`, 1))
+				badIDs = append(badIDs, insert("residence_hour", "bad-residence", `{"At":"private customer content"}`, 1))
+				insert("residence_hour", "good-residence", `{"State":"Done"}`, 1)
+				insert("slots", "good-slot", `{}`, nil)
+			}
+			err := d.compactAnalyticsSamples(t.Context(), now.Add(analyticsSampleRetention+2*time.Hour))
+			if err == nil || strings.Contains(err.Error(), "private customer content") {
+				t.Fatalf("unsafe or missing row error: %v", err)
+			}
+			for _, id := range badIDs {
+				if !strings.Contains(err.Error(), fmt.Sprintf("rowid=%d", id)) {
+					t.Fatalf("missing identity %d: %v", id, err)
+				}
+			}
+			for _, fixture := range []nativeFixture{f, other} {
+				var id, state string
+				if err := d.reader.QueryRowContext(t.Context(), `SELECT issue_id,workflow_state_id FROM analytics_hourly_rollups WHERE project_id=? AND dimension='good'`, fixture.project.ID).Scan(&id, &state); err != nil {
+					t.Fatal(err)
+				}
+				if id != "9007199254740993" || state != id {
+					t.Fatalf("lost identifier precision: %s %s", id, state)
+				}
+				var remaining, count int
+				var total float64
+				if err := d.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_hourly_rollups WHERE project_id=? AND metric IN ('slots','lease')`, fixture.project.ID).Scan(&remaining); err != nil {
+					t.Fatal(err)
+				}
+				if remaining != 0 {
+					t.Fatalf("valid rows did not compact: %d", remaining)
+				}
+				if err := d.reader.QueryRowContext(t.Context(), `SELECT count,total FROM analytics_sample_hours WHERE project_id=? AND metric='slots'`, fixture.project.ID).Scan(&count, &total); err != nil {
+					t.Fatal(err)
+				}
+				if count != 1 || total != 2 {
+					t.Fatalf("compacted totals: %d %g", count, total)
+				}
+				if err := d.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_hourly_rollups WHERE project_id=? AND dimension IN ('bad','bad-sample','bad-residence')`, fixture.project.ID).Scan(&remaining); err != nil {
+					t.Fatal(err)
+				}
+				if remaining != 3 {
+					t.Fatalf("malformed data lost: %d", remaining)
+				}
+				var through int64
+				if err := d.reader.QueryRowContext(t.Context(), `SELECT through_hour FROM analytics_residence_retention WHERE project_id=? AND work_item_id='good-residence'`, fixture.project.ID).Scan(&through); err != nil {
+					t.Fatal(err)
+				}
+				if through != now.Add(2*time.Hour).Unix() {
+					t.Fatalf("valid residence did not progress: %d", through)
+				}
+			}
+		})
+	}
+}

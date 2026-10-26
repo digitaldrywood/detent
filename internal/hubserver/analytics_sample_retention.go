@@ -24,50 +24,69 @@ ON CONFLICT(organization_id,project_id,metric,hour,dimension,bucket) DO UPDATE S
 }
 
 func (d *database) compactAnalyticsSamples(ctx context.Context, now time.Time) error {
-	if err := d.convertAnalyticsProjections(ctx); err != nil {
-		return err
-	}
+	failures := d.convertAnalyticsProjections(ctx)
 	through := now.UTC().Truncate(time.Hour).Add(-analyticsSampleRetention).Unix()
+	after := analyticsSampleCursor{hour: math.MinInt64, residenceHour: math.MinInt64}
 	deadline := time.Now().Add(analyticsBackfillBudget)
 	for range analyticsSampleCompactionBatch {
 		tx, err := d.db.BeginTx(ctx, nil)
 		if err != nil {
-			return err
+			return errors.Join(failures, err)
 		}
-		more, err := compactAnalyticsSample(ctx, tx, through)
+		more, err := compactAnalyticsSample(ctx, tx, through, &after)
 		if err == nil {
 			err = tx.Commit()
 		}
 		rollback := tx.Rollback()
 		if err != nil {
-			return fmt.Errorf("compact analytics sample: %w", err)
+			var decode *analyticsSampleDecodeError
+			if !errors.As(err, &decode) {
+				return errors.Join(failures, fmt.Errorf("compact analytics sample: %w", err))
+			}
+			failures = errors.Join(failures, err)
+			more = true
 		}
 		if rollback != nil && !errors.Is(rollback, sql.ErrTxDone) {
-			return rollback
+			return errors.Join(failures, rollback)
 		}
 		if !more || time.Now().After(deadline) {
-			return nil
+			return failures
 		}
 	}
-	return nil
+	return failures
 }
 
-func compactAnalyticsSample(ctx context.Context, tx *sql.Tx, through int64) (bool, error) {
+type analyticsSampleCursor struct {
+	hour                                                 int64
+	metric, dimension                                    string
+	rowid                                                int64
+	residenceOrganization, residenceProject, residenceID string
+	residenceHour                                        int64
+}
+
+type analyticsSampleDecodeError struct{ rowid int64 }
+
+func (e *analyticsSampleDecodeError) Error() string {
+	return fmt.Sprintf("decode analytics rollup rowid=%d: invalid sample payload", e.rowid)
+}
+
+func compactAnalyticsSample(ctx context.Context, tx *sql.Tx, through int64, after *analyticsSampleCursor) (bool, error) {
 	var scope nativeScope
 	var rowid, hour int64
 	var metric, dimension, raw string
 	var value float64
 	err := tx.QueryRowContext(ctx, `SELECT rowid,organization_id,project_id,hour,metric,dimension,value,data_json FROM analytics_hourly_rollups r
-WHERE projection_version=1 AND hour<? AND (metric IN ('skip_sample','slots','capacity_claim') OR (metric='capacity_wait' AND sample_ns<?*1000000000) OR
+WHERE (hour,metric,dimension,rowid)>(?,?,?,?) AND projection_version=1 AND hour<? AND (metric IN ('skip_sample','slots','capacity_claim') OR (metric='capacity_wait' AND sample_ns<?*1000000000) OR
 (metric='lease' AND unixepoch(coalesce(released_at,expires_at))<?))
-ORDER BY hour,metric,dimension LIMIT 1`, through, through, through).Scan(&rowid, &scope.organization, &scope.project, &hour, &metric, &dimension, &value, &raw)
+ORDER BY hour,metric,dimension,rowid LIMIT 1`, after.hour, after.metric, after.dimension, after.rowid, through, through, through).Scan(&rowid, &scope.organization, &scope.project, &hour, &metric, &dimension, &value, &raw)
 	if err == nil {
+		after.hour, after.metric, after.dimension, after.rowid = hour, metric, dimension, rowid
 		switch metric {
 		case "skip_sample":
 			var exists bool
 			var sample analyticsSkipSample
 			if err := json.Unmarshal([]byte(raw), &sample); err != nil {
-				return false, err
+				return false, &analyticsSampleDecodeError{rowid: rowid}
 			}
 			key := analyticsDimension(sample.Source, sample.Reason)
 			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM analytics_hourly_rollups a WHERE a.organization_id=? AND a.project_id=? AND a.metric='skipped' AND a.hour=? AND a.dimension=?)`, scope.organization, scope.project, hour, key).Scan(&exists); err != nil {
@@ -86,7 +105,7 @@ ORDER BY hour,metric,dimension LIMIT 1`, through, through, through).Scan(&rowid,
 		case "capacity_claim", "capacity_wait":
 			var sample analyticsCapacitySample
 			if err := json.Unmarshal([]byte(raw), &sample); err != nil {
-				return false, err
+				return false, &analyticsSampleDecodeError{rowid: rowid}
 			}
 			if metric == "capacity_wait" {
 				dimension = strconv.FormatInt(sample.At.Truncate(time.Hour).Unix(), 10)
@@ -116,16 +135,20 @@ ON CONFLICT(organization_id,project_id) DO UPDATE SET through_hour=max(through_h
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
-	return compactAnalyticsResidence(ctx, tx, through)
+	return compactAnalyticsResidenceAfter(ctx, tx, through, after)
 }
 
 func compactAnalyticsResidence(ctx context.Context, tx *sql.Tx, through int64) (bool, error) {
+	return compactAnalyticsResidenceAfter(ctx, tx, through, &analyticsSampleCursor{residenceHour: math.MinInt64})
+}
+
+func compactAnalyticsResidenceAfter(ctx context.Context, tx *sql.Tx, through int64, after *analyticsSampleCursor) (bool, error) {
 	var scope nativeScope
 	var id string
 	var hour int64
 	err := tx.QueryRowContext(ctx, `SELECT r.organization_id,r.project_id,r.dimension,coalesce(p.through_hour,min(r.hour)) AS next
 FROM analytics_hourly_rollups r LEFT JOIN analytics_residence_retention p ON p.organization_id=r.organization_id AND p.project_id=r.project_id AND p.work_item_id=r.dimension
-WHERE r.metric='residence_hour' AND r.hour<? GROUP BY r.organization_id,r.project_id,r.dimension HAVING next<? ORDER BY next,r.dimension LIMIT 1`, through, through).Scan(&scope.organization, &scope.project, &id, &hour)
+WHERE r.metric='residence_hour' AND r.hour<? GROUP BY r.organization_id,r.project_id,r.dimension HAVING next<? AND (next,r.dimension,r.organization_id,r.project_id)>(?,?,?,?) ORDER BY next,r.dimension,r.organization_id,r.project_id LIMIT 1`, through, through, after.residenceHour, after.residenceID, after.residenceOrganization, after.residenceProject).Scan(&scope.organization, &scope.project, &id, &hour)
 	if errors.Is(err, sql.ErrNoRows) {
 		return cleanupAnalyticsResidence(ctx, tx, through)
 	}
@@ -140,7 +163,8 @@ WHERE r.metric='residence_hour' AND r.hour<? GROUP BY r.organization_id,r.projec
 	frames := analyticsResidenceFrames{ids: []string{id}, issues: map[string]int{id: 0}, points: map[int64]int{from.UnixNano(): 0, to.UnixNano(): 1}, samples: make([]*analyticsResidenceSample, 2), states: states}
 	for i, at := range []time.Time{from, to} {
 		var raw string
-		err := tx.QueryRowContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour' AND dimension=? AND hour<? ORDER BY hour DESC LIMIT 1`, scope.organization, scope.project, id, at.Unix()).Scan(&raw)
+		var rowid int64
+		err := tx.QueryRowContext(ctx, `SELECT rowid,data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour' AND dimension=? AND hour<? ORDER BY hour DESC LIMIT 1`, scope.organization, scope.project, id, at.Unix()).Scan(&rowid, &raw)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
@@ -149,7 +173,9 @@ WHERE r.metric='residence_hour' AND r.hour<? GROUP BY r.organization_id,r.projec
 		}
 		var sample analyticsResidenceSample
 		if err := json.Unmarshal([]byte(raw), &sample); err != nil {
-			return false, err
+			after.residenceHour = hour
+			after.residenceOrganization, after.residenceProject, after.residenceID = string(scope.organization), string(scope.project), id
+			return false, &analyticsSampleDecodeError{rowid: rowid}
 		}
 		frames.samples[i] = &sample
 	}
