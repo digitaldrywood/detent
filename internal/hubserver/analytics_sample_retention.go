@@ -26,28 +26,40 @@ ON CONFLICT(organization_id,project_id,metric,hour,dimension,bucket) DO UPDATE S
 func (d *database) compactAnalyticsSamples(ctx context.Context, now time.Time) error {
 	failures := d.convertAnalyticsProjections(ctx)
 	through := now.UTC().Truncate(time.Hour).Add(-analyticsSampleRetention).Unix()
-	after := analyticsSampleCursor{hour: math.MinInt64, residenceHour: math.MinInt64}
+	after := analyticsSampleCursor{}
+	if err := d.reader.QueryRowContext(ctx, `SELECT sample_hour,sample_metric,sample_dimension,sample_rowid,samples_done,residence_hour,residence_organization,residence_project,residence_id FROM analytics_maintenance_cursor WHERE id=1`).Scan(&after.hour, &after.metric, &after.dimension, &after.rowid, &after.samplesDone, &after.residenceHour, &after.residenceOrganization, &after.residenceProject, &after.residenceID); err != nil {
+		return errors.Join(failures, err)
+	}
 	deadline := time.Now().Add(analyticsBackfillBudget)
 	for range analyticsSampleCompactionBatch {
 		tx, err := d.db.BeginTx(ctx, nil)
 		if err != nil {
 			return errors.Join(failures, err)
 		}
-		more, err := compactAnalyticsSample(ctx, tx, through, &after)
-		if err == nil {
-			err = tx.Commit()
+		if _, err := tx.ExecContext(ctx, "SAVEPOINT analytics_sample"); err != nil {
+			return errors.Join(failures, err, tx.Rollback())
 		}
-		rollback := tx.Rollback()
+		more, err := compactAnalyticsSample(ctx, tx, through, &after)
 		if err != nil {
 			var decode *analyticsSampleDecodeError
 			if !errors.As(err, &decode) {
-				return errors.Join(failures, fmt.Errorf("compact analytics sample: %w", err))
+				return errors.Join(failures, fmt.Errorf("compact analytics sample: %w", err), tx.Rollback())
 			}
 			failures = errors.Join(failures, err)
+			if _, err := tx.ExecContext(ctx, "ROLLBACK TO analytics_sample"); err != nil {
+				return errors.Join(failures, err, tx.Rollback())
+			}
 			more = true
 		}
-		if rollback != nil && !errors.Is(rollback, sql.ErrTxDone) {
-			return errors.Join(failures, rollback)
+		if !more {
+			after = analyticsSampleCursor{hour: math.MinInt64, residenceHour: math.MinInt64}
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE analytics_maintenance_cursor SET sample_hour=?,sample_metric=?,sample_dimension=?,sample_rowid=?,samples_done=?,residence_hour=?,residence_organization=?,residence_project=?,residence_id=? WHERE id=1`, after.hour, after.metric, after.dimension, after.rowid, after.samplesDone, after.residenceHour, after.residenceOrganization, after.residenceProject, after.residenceID)
+		if err != nil {
+			return errors.Join(failures, err, tx.Rollback())
+		}
+		if err := tx.Commit(); err != nil {
+			return errors.Join(failures, err)
 		}
 		if !more || time.Now().After(deadline) {
 			return failures
@@ -57,6 +69,7 @@ func (d *database) compactAnalyticsSamples(ctx context.Context, now time.Time) e
 }
 
 type analyticsSampleCursor struct {
+	samplesDone                                          bool
 	hour                                                 int64
 	metric, dimension                                    string
 	rowid                                                int64
@@ -71,6 +84,9 @@ func (e *analyticsSampleDecodeError) Error() string {
 }
 
 func compactAnalyticsSample(ctx context.Context, tx *sql.Tx, through int64, after *analyticsSampleCursor) (bool, error) {
+	if after.samplesDone {
+		return compactAnalyticsResidenceAfter(ctx, tx, through, after)
+	}
 	var scope nativeScope
 	var rowid, hour int64
 	var metric, dimension, raw string
@@ -135,6 +151,7 @@ ON CONFLICT(organization_id,project_id) DO UPDATE SET through_hour=max(through_h
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
+	after.samplesDone = true
 	return compactAnalyticsResidenceAfter(ctx, tx, through, after)
 }
 

@@ -145,7 +145,11 @@ func writeAnalyticsSample(ctx context.Context, tx *sql.Tx, organization, project
 }
 
 func (d *database) convertAnalyticsProjections(ctx context.Context) error {
-	rows, err := d.reader.QueryContext(ctx, `SELECT rowid,data_json FROM analytics_hourly_rollups WHERE projection_version IS NULL LIMIT ?`, storageConversionRows)
+	var after int64
+	if err := d.reader.QueryRowContext(ctx, `SELECT projection_rowid FROM analytics_maintenance_cursor WHERE id=1`).Scan(&after); err != nil {
+		return err
+	}
+	rows, err := d.reader.QueryContext(ctx, `SELECT rowid,data_json FROM analytics_hourly_rollups WHERE projection_version IS NULL AND rowid>? ORDER BY rowid LIMIT ?`, after, storageConversionRows)
 	if err != nil {
 		return err
 	}
@@ -167,6 +171,7 @@ func (d *database) convertAnalyticsProjections(ctx context.Context) error {
 	}
 	var failures error
 	for _, row := range batch {
+		after = row.id
 		values, err := analyticsProjection(row.raw)
 		if err != nil {
 			failures = errors.Join(failures, fmt.Errorf("analytics rollup rowid=%d projection: %w", row.id, err))
@@ -177,5 +182,9 @@ func (d *database) convertAnalyticsProjections(ctx context.Context) error {
 			return errors.Join(failures, err)
 		}
 	}
-	return failures
+	if len(batch) < storageConversionRows {
+		after = 0
+	}
+	_, err = d.db.ExecContext(ctx, `UPDATE analytics_maintenance_cursor SET projection_rowid=? WHERE id=1`, after)
+	return errors.Join(failures, err)
 }
