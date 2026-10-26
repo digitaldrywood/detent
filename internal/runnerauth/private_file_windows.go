@@ -1,0 +1,143 @@
+package runnerauth
+
+import (
+	"crypto/rand"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+)
+
+const fileFullControl = 0x1f01ff
+
+func currentUserSecurityDescriptor() (*windows.SECURITY_DESCRIPTOR, error) {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return nil, err
+	}
+	sid := user.User.Sid.String()
+	return windows.SecurityDescriptorFromString("O:" + sid + "D:P(A;;FA;;;" + sid + ")")
+}
+
+func createPrivateFile(path string) (*os.File, error) {
+	sd, err := currentUserSecurityDescriptor()
+	if err != nil {
+		return nil, err
+	}
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	attributes := windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
+	handle, err := windows.CreateFile(name, windows.GENERIC_WRITE, 0, &attributes, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(handle), path), nil
+}
+
+func createPrivateTemp(directory, prefix string) (*os.File, error) {
+	return createPrivateFile(filepath.Join(directory, prefix+rand.Text()))
+}
+
+func openPrivateFile(path string, forUpdate bool) (*os.File, error) {
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	access := uint32(windows.GENERIC_READ | windows.WRITE_DAC)
+	if forUpdate {
+		access |= windows.MAXIMUM_ALLOWED
+	}
+	handle, err := windows.CreateFile(name, access, windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return nil, fmt.Errorf("runner credential file is unavailable: %w", err)
+	}
+	file := os.NewFile(uintptr(handle), path)
+	if err := securePrivateFile(handle, !forUpdate); err != nil {
+		return nil, errors.Join(fmt.Errorf("runner credential file permissions could not be secured: %w", err), file.Close())
+	}
+	if err := validatePrivateDACL(handle); err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
+	return file, nil
+}
+
+func securePrivateFile(handle windows.Handle, legacyOnly bool) error {
+	sd, err := currentUserSecurityDescriptor()
+	if err != nil {
+		return err
+	}
+	owner, _, err := sd.Owner()
+	if err != nil {
+		return err
+	}
+	previous, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return err
+	}
+	previousOwner, _, err := previous.Owner()
+	if err != nil {
+		return err
+	}
+	if legacyOnly {
+		control, _, err := previous.Control()
+		if err != nil {
+			return err
+		}
+		if previousOwner == nil || !previousOwner.Equals(owner) || control&windows.SE_DACL_PROTECTED != 0 {
+			return nil
+		}
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil {
+		return err
+	}
+	information := windows.SECURITY_INFORMATION(windows.DACL_SECURITY_INFORMATION | windows.PROTECTED_DACL_SECURITY_INFORMATION)
+	if previousOwner == nil || !previousOwner.Equals(owner) {
+		information |= windows.OWNER_SECURITY_INFORMATION
+	}
+	return windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT, information, owner, nil, dacl, nil)
+}
+
+func validatePrivateDACL(handle windows.Handle) error {
+	sd, err := windows.GetSecurityInfo(handle, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return fmt.Errorf("runner credential file permissions could not be inspected: %w", err)
+	}
+	return validatePrivateSecurityDescriptor(sd)
+}
+
+func validatePrivateSecurityDescriptor(sd *windows.SECURITY_DESCRIPTOR) error {
+	invalid := errors.New("runner credential file requires ownership by the current user and a protected DACL granting full control only to that user; set the owner, disable inheritance and remove other access entries with icacls before retrying")
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return fmt.Errorf("runner credential file user could not be inspected: %w", err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil || owner == nil || !owner.Equals(user.User.Sid) {
+		return invalid
+	}
+	control, _, err := sd.Control()
+	if err != nil || control&windows.SE_DACL_PROTECTED == 0 {
+		return invalid
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil || dacl.AceCount != 1 {
+		return invalid
+	}
+	var ace *windows.ACCESS_ALLOWED_ACE
+	if err := windows.GetAce(dacl, 0, &ace); err != nil {
+		return invalid
+	}
+	if ace.Header.AceType != windows.ACCESS_ALLOWED_ACE_TYPE || ace.Header.AceFlags != 0 || ace.Mask != fileFullControl {
+		return invalid
+	}
+	if !(*windows.SID)(unsafe.Pointer(&ace.SidStart)).Equals(user.User.Sid) {
+		return invalid
+	}
+	return nil
+}

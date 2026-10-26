@@ -35,6 +35,20 @@ func TestRoutingCacheRoundTrip(t *testing.T) {
 	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("cache permissions = %v, %v", info, err)
 	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(RoutingCachePath(path), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadRoutingCache(path); err == nil {
+			t.Fatal("cache with public permissions could be read")
+		}
+		if err := SaveRoutingCache(path, snapshot); err == nil {
+			t.Fatal("cache with public permissions could be replaced")
+		}
+		if err := os.Chmod(RoutingCachePath(path), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := SaveRoutingCache(path, RoutingSnapshot{RunnerID: NewBinding().RunnerID, Revision: 4, Routing: snapshot.Routing}); err == nil {
 		t.Fatal("cache accepted another runner")
 	}
