@@ -38,10 +38,21 @@ const duplicateCandidateLimit = 100
 type nativeDuplicateSearch struct {
 	latestNumber int
 	matches      []possibleDuplicate
+	skipped      bool
 }
 
 func prepareNativeDuplicates(ctx context.Context, query nativeQueryer, scope nativeScope, request tracker.CreateIssue, now time.Time, machine bool) (*nativeDuplicateSearch, error) {
 	var search nativeDuplicateSearch
+	if !machine {
+		var enabled bool
+		if err := query.QueryRowContext(ctx, "SELECT duplicate_challenge FROM projects WHERE organization_id = ? AND id = ?", scope.organization, scope.project).Scan(&enabled); err != nil {
+			return nil, err
+		}
+		if !enabled || scope.credential.Scope == apiScopeWorker {
+			search.skipped = true
+			return &search, nil
+		}
+	}
 	if err := query.QueryRowContext(ctx, `SELECT COALESCE(MAX(number),0) FROM issues WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&search.latestNumber); err != nil {
 		return nil, err
 	}
@@ -149,18 +160,27 @@ WHERE i.organization_id=? AND i.project_id=?`+window+` ORDER BY ws.terminal,i.nu
 		searchArgs := []any{strings.Join(expressions, " OR ")}
 		searchArgs = append(searchArgs, args...)
 		searchArgs = append(searchArgs, duplicateCandidateLimit)
+		candidateSQL := `SELECT d.issue_id,d.id,native_work_fts.rank AS score
+FROM native_work_fts JOIN native_work_documents d ON d.id=native_work_fts.rowid
+JOIN issues i ON i.id=d.issue_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
+WHERE native_work_fts MATCH ? AND i.organization_id=? AND i.project_id=?` + window + `
+AND native_work_fts.rank MATCH 'bm25(5.0,1.0)' ORDER BY native_work_fts.rank LIMIT ?`
+		candidateCTEs := "partial_hits AS MATERIALIZED (" + candidateSQL + ")"
+		candidateUnion := "SELECT issue_id,id,score FROM partial_hits"
+		if len(expressions) > 1 {
+			candidateCTEs += ",full_hits AS MATERIALIZED (" + candidateSQL + ")"
+			candidateUnion += " UNION SELECT issue_id,id,score FROM full_hits"
+			searchArgs = append(searchArgs, strings.Join(expressions, " AND "))
+			searchArgs = append(searchArgs, args...)
+			searchArgs = append(searchArgs, duplicateCandidateLimit)
+		}
 		for i, expression := range expressions {
 			values[i] = "(?)"
 			searchArgs = append(searchArgs, expression)
 		}
 		searchArgs = append(searchArgs, args...)
 		searchArgs = append(searchArgs, -minimum)
-		rows, err := query.QueryContext(ctx, `WITH hits AS MATERIALIZED (
-SELECT d.issue_id,d.id,native_work_fts.rank AS score
-FROM native_work_fts JOIN native_work_documents d ON d.id=native_work_fts.rowid
-JOIN issues i ON i.id=d.issue_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
-WHERE native_work_fts MATCH ? AND i.organization_id=? AND i.project_id=?`+window+`
-AND native_work_fts.rank MATCH 'bm25(5.0,1.0)' ORDER BY native_work_fts.rank LIMIT ?), terms(expression) AS (VALUES `+strings.Join(values, ",")+`), coverage AS MATERIALIZED (
+		rows, err := query.QueryContext(ctx, `WITH `+candidateCTEs+`, hits AS MATERIALIZED (`+candidateUnion+`), terms(expression) AS (VALUES `+strings.Join(values, ",")+`), coverage AS MATERIALIZED (
 SELECT hits.id,count(*) AS terms,group_concat(terms.expression,', ') AS matched
 FROM hits CROSS JOIN terms CROSS JOIN native_work_fts
 WHERE native_work_fts.rowid=hits.id AND native_work_fts MATCH terms.expression GROUP BY hits.id), ranked AS (
@@ -205,6 +225,9 @@ AND search.score < ? ORDER BY search.score,ws.terminal,i.number DESC LIMIT 5`, s
 func resolveNativeDuplicatesTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, machine bool) ([]possibleDuplicate, error) {
 	if scope.duplicateSearch == nil {
 		return resolveNativeDuplicates(ctx, tx, scope, request, now, machine)
+	}
+	if scope.duplicateSearch.skipped {
+		return nil, nativeConflict(0)
 	}
 	var latest int
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(number),0) FROM issues WHERE organization_id=? AND project_id=?`, scope.organization, scope.project).Scan(&latest); err != nil {

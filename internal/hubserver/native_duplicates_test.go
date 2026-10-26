@@ -68,7 +68,13 @@ func TestNativeDuplicateFiling(t *testing.T) {
 				}
 			}
 			request := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "filing"}, Title: test.title, Body: test.body + issueContractTestSections, State: test.state}
+			searchTrace := installNativeBrowserPathFault(t, f.service)
+			searchTrace.observe.Store(true)
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
+			searchTrace.observe.Store(false)
+			if !test.enabled && (searchTrace.readerSearches.Load() != 0 || searchTrace.writerSearches.Load() != 0) {
+				t.Fatalf("disabled challenge searched: reader=%d writer=%d", searchTrace.readerSearches.Load(), searchTrace.writerSearches.Load())
+			}
 			wantStatus := http.StatusOK
 			if test.challenge {
 				wantStatus = http.StatusConflict
@@ -604,14 +610,18 @@ func TestNativeDuplicateFilingHistoryBound(t *testing.T) {
 	first := f.create(t, "Runner checkout deadlocks")
 	fault := installNativeBrowserPathFault(t, f.service)
 	var baseline int64
-	for _, size := range []int{0, 250} {
-		if size > 0 {
-			issues := seedArchiveIssues(t, f.service, scope, size, "Todo")
+	previousSize := 0
+	for _, size := range []int{250, 500} {
+		if size > previousSize {
+			issues := seedArchiveIssues(t, f.service, scope, size-previousSize, "Todo")
 			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			for _, issue := range issues {
+				if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET title=?,body=? WHERE native_id=?", "Runner checkout", "Unrelated mailbox delivery history", issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
 				for range 4 {
 					if _, err := insertNativeComment(t.Context(), tx, scope, issue, "Unrelated mailbox delivery history", nil, f.service.config.now()); err != nil {
 						t.Fatal(err)
@@ -636,38 +646,45 @@ func TestNativeDuplicateFilingHistoryBound(t *testing.T) {
 		requireNativeStatus(t, response, http.StatusConflict)
 		var challenge duplicateChallenge
 		decodeHubResponse(t, response, &challenge)
-		if len(challenge.PossibleDuplicates) != 1 || challenge.PossibleDuplicates[0].WorkItemID != first.WorkItemID {
+		if len(challenge.PossibleDuplicates) != 5 || challenge.PossibleDuplicates[0].WorkItemID != first.WorkItemID {
 			t.Fatalf("history %d: %s", size, response.Body.String())
 		}
 		count := fault.statements.Load()
-		if size == 0 {
+		if previousSize == 0 {
 			baseline = count
 		}
 		if count != baseline || count == 0 || fault.readerSearches.Load() == 0 || fault.writerSearches.Load() != 0 {
 			t.Fatalf("history %d: statements=%d baseline=%d reader searches=%d writer searches=%d", size, count, baseline, fault.readerSearches.Load(), fault.writerSearches.Load())
 		}
 		t.Logf("history issues=%d comments=%d: writer statements=%d, reader searches=%d, writer searches=%d", size, size*4, count, fault.readerSearches.Load(), fault.writerSearches.Load())
+		previousSize = size
 	}
 }
 
 func TestNativeDuplicateCandidateRecheck(t *testing.T) {
-	for _, change := range []string{"new issue", "edited candidate", "archived candidate"} {
+	for _, change := range []string{"new issue", "edited candidate", "archived candidate", "challenge enabled", "challenge disabled"} {
 		t.Run(change, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			first := f.create(t, "Runner checkout deadlocks")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=? WHERE id=?", change != "challenge enabled", f.project.ID); err != nil {
+				t.Fatal(err)
+			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 			request := tracker.CreateIssue{Title: first.Title, Body: first.Body, State: "Todo"}
 			search, err := prepareNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), false)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(search.matches) != 1 {
+			if change != "challenge enabled" && len(search.matches) != 1 {
 				t.Fatalf("matches=%+v", search.matches)
 			}
 			scope.duplicateSearch = search
 			switch change {
 			case "new issue":
-				f.create(t, "Separate mailbox failure")
+				seedArchiveIssues(t, f.service, scope, 1, "Todo")
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=1 WHERE id=?", f.project.ID); err != nil {
+					t.Fatal(err)
+				}
 			case "edited candidate":
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET title='Separate mailbox failure',revision=revision+1 WHERE native_id=?", first.WorkItemID); err != nil {
 					t.Fatal(err)
@@ -676,16 +693,20 @@ func TestNativeDuplicateCandidateRecheck(t *testing.T) {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET archived=1 WHERE native_id=?", first.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
+			case "challenge enabled", "challenge disabled":
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=? WHERE id=?", change == "challenge enabled", f.project.ID); err != nil {
+					t.Fatal(err)
+				}
 			}
 			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
-			matches, err := resolveNativeDuplicatesTx(t.Context(), tx, scope, request, f.service.config.now(), false)
-			if change == "archived candidate" {
-				if err != nil || len(matches) != 0 {
-					t.Fatalf("archived matches=%+v err=%v", matches, err)
+			challenge, err := challengeNativeIssueTx(t.Context(), tx, scope, request, f.service.config.now())
+			if change == "archived candidate" || change == "challenge disabled" {
+				if err != nil || challenge.ChallengeToken != "" || len(challenge.PossibleDuplicates) != 0 {
+					t.Fatalf("challenge=%+v err=%v", challenge, err)
 				}
 			} else if !isNativeConflict(err) {
 				t.Fatalf("stale candidate err=%v", err)
