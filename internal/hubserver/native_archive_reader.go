@@ -88,6 +88,9 @@ func nativeArchiveJSON(c echo.Context, status int, value any) error {
 }
 
 func archiveQuery(ctx context.Context, query nativeQueryer, item, kind, subject string, sequence int64) (nativeQueryer, error) {
+	if explanationRead(ctx) {
+		return query, nil
+	}
 	state, ok := ctx.Value(nativeArchiveContextKey{}).(*nativeArchiveRead)
 	if !ok || kind == "history" && state.webResponse {
 		return query, nil

@@ -97,6 +97,9 @@ func nativeActorDisplayName(principal, organization string) string {
 }
 
 func readNativeIssue(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (tracker.NativeIssue, tracker.WorkItemID, error) {
+	if explanationRead(ctx) {
+		return readExplanationIssue(ctx, query, scope, id)
+	}
 	issue, internalID, err := readNativeIssueProjection(ctx, query, scope, id, false)
 	if err != nil || scope.credential.Runner.RunnerID == "" || !slices.Contains(scope.credential.Runner.Operations, runnerauth.Claim) {
 		return issue, internalID, err
