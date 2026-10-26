@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +25,37 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
+
+func TestReworkPreparationOutcome(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		status workspace.MergePrepareStatus
+		err    error
+		want   string
+	}{
+		{name: "clean", status: workspace.MergePrepareStatusClean, want: "clean"},
+		{name: "conflict", status: workspace.MergePrepareStatusConflict, want: "conflict"},
+		{name: "dirty", status: workspace.MergePrepareStatusDirty, want: "dirty"},
+		{name: "missing result", want: "rework"},
+		{name: "failed clean result", status: workspace.MergePrepareStatusClean, err: errors.New("fetch failed"), want: "rework"},
+		{name: "failed dirty result", status: workspace.MergePrepareStatusDirty, err: errors.New("lease expired"), want: "rework"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := reworkPreparationOutcome(test.status, test.err)
+			if got != test.want {
+				t.Fatalf("pipeline outcome = %q, want %q", got, test.want)
+			}
+			execution := &readToolTestExecution{}
+			r := Runner{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			at := time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)
+			r.recordPipeline(RunRequest{Execution: execution}, gate.Interval("rebase", at, at, got))
+			if len(execution.pipeline) != 1 || execution.pipeline[0].Outcome != test.want {
+				t.Fatalf("recorded pipeline lost preparation outcome: %+v", execution.pipeline)
+			}
+		})
+	}
+}
 
 type resolvingReworkAgent struct {
 	fakeCodexClient

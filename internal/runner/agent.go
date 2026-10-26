@@ -2177,13 +2177,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if preparer, ok := runWorkspace.(workspace.ReworkPreparer); ok {
 			started := r.now()
 			precheck, err := preparer.PrepareRework(ctx, info, workspaceIssue, workspace.MergePrepareOptions{TargetBranch: workspaceIssue.ProgressBaseRef}, req.Execution.Validate)
-			outcome := "clean"
-			if precheck.Status == workspace.MergePrepareStatusConflict {
-				outcome = "conflict"
-			}
-			if err != nil {
-				outcome = "rework"
-			}
+			outcome := reworkPreparationOutcome(precheck.Status, err)
 			r.recordPipeline(req, gate.Interval("rebase", started, r.now(), outcome))
 			if precheck.Status == workspace.MergePrepareStatusConflict {
 				resolutionStarted := r.now()
