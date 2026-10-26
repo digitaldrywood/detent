@@ -537,10 +537,17 @@ func TestNativeStorageArchiveCommentRevisions(t *testing.T) {
 	}
 	f.commit(t, tx)
 	f.transition(t, string(issue.WorkItemID), "Done", f.now.Add(-73*time.Hour))
+	beforeSchema := storageSchemaVersion(t, f.service.database.reader)
 	for range 8 {
 		if err := f.service.archiveClosedNativeIssues(t.Context(), f.now); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if after := storageSchemaVersion(t, f.service.database.reader); after != beforeSchema {
+		t.Fatalf("archive retirement changed schema: %d -> %d", beforeSchema, after)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM collaboration_versions WHERE record_id=?", comment.ID); err == nil {
+		t.Fatal("ordinary revision deletion allowed after retirement")
 	}
 	var live int
 	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_versions WHERE record_id=?", comment.ID).Scan(&live); err != nil {

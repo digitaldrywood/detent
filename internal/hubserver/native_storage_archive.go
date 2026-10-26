@@ -580,12 +580,6 @@ func (s *Service) retireStorageArchiveSections(ctx context.Context, now time.Tim
 			}
 			continue
 		}
-		if p.kind == "revision" {
-			if _, err := tx.ExecContext(ctx, "DROP TRIGGER collaboration_versions_no_delete"); err != nil {
-				tx.Rollback()
-				return err
-			}
-		}
 		offset, processed, total := 0, 0, 0
 		for _, table := range section.Tables {
 			total += len(table.Rows)
@@ -623,6 +617,10 @@ func (s *Service) retireStorageArchiveSections(ctx context.Context, now time.Tim
 						tx.Rollback()
 						return attachment.ErrInvalid
 					}
+					if _, err := tx.ExecContext(ctx, `UPDATE native_archive_sections SET retirement_rowid=? WHERE organization_id=? AND project_id=? AND work_item_id=? AND section_id=?`, rowid, p.c.scope.organization, p.c.scope.project, p.c.item, p.id); err != nil {
+						tx.Rollback()
+						return err
+					}
 					statement = `DELETE FROM collaboration_versions WHERE rowid=? AND record_id=? AND organization_id=? AND project_id=? AND work_item_id=? AND revision=?`
 					args = append(args, revision)
 				case "collaboration_events", "change_versions", "change_evidence":
@@ -639,13 +637,7 @@ func (s *Service) retireStorageArchiveSections(ctx context.Context, now time.Tim
 				processed++
 			}
 		}
-		if p.kind == "revision" {
-			if _, err := tx.ExecContext(ctx, `CREATE TRIGGER collaboration_versions_no_delete BEFORE DELETE ON collaboration_versions BEGIN SELECT RAISE(ABORT,'collaboration history is append-only'); END`); err != nil {
-				tx.Rollback()
-				return err
-			}
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE native_archive_sections SET retired_rows=?,retirement_complete=? WHERE organization_id=? AND project_id=? AND work_item_id=? AND section_id=?`, p.offset+processed, p.offset+processed >= total, p.c.scope.organization, p.c.scope.project, p.c.item, p.id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE native_archive_sections SET retirement_rowid=0,retired_rows=?,retirement_complete=? WHERE organization_id=? AND project_id=? AND work_item_id=? AND section_id=?`, p.offset+processed, p.offset+processed >= total, p.c.scope.organization, p.c.scope.project, p.c.item, p.id); err != nil {
 			tx.Rollback()
 			return err
 		}

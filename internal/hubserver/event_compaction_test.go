@@ -107,8 +107,12 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 			if before.NextCursor == "" {
 				t.Fatal("missing initial cursor")
 			}
+			beforeSchema := storageSchemaVersion(t, f.service.database.reader)
 			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
 				t.Fatal(err)
+			}
+			if after := storageSchemaVersion(t, f.service.database.reader); after != beforeSchema {
+				t.Fatalf("event maintenance changed schema: %d -> %d", beforeSchema, after)
 			}
 			if test.extraActivity > 0 {
 				for _, want := range []struct{ compacted, remaining int64 }{{0, 501}} {
