@@ -327,6 +327,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"nativeIssueJSON":              "The mutation response reads back the browser path of the issue this request just wrote.",
 	}
 	transactionReasons := map[string]string{
+		"writeConversationQueryMetadata":    "Backfills one source row per transaction, conditional on its unchanged payload, under the existing retention owner.",
 		"populateClaimFact":                 "Populates at most 100 unknown claim projections from their source rows in the existing retention transaction owner.",
 		"convertAttemptHotProjection":       "Converts one attempt projection after checking its source row under the write transaction.",
 		"convertNativeBoardRank":            "Converts one project workflow rank set after checking its source under the write transaction.",

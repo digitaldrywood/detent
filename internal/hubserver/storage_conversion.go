@@ -231,11 +231,15 @@ func (s *Service) convertStorageAggregate(ctx context.Context, scope nativeScope
 				return err
 			}
 		}
+		metadata, err := s.prepareStorageConversionQueryMetadata(ctx, family, c.row, raw, converted)
+		if err != nil {
+			return err
+		}
 		tx, err := s.database.db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
-		applied, err := s.applyStorageConversion(ctx, tx, scope, family, p.Cursor, c.row, c.aggregate, stamp, raw, converted, ref, triggerSQL, now)
+		applied, err := s.applyStorageConversion(ctx, tx, scope, family, p.Cursor, c.row, c.aggregate, stamp, raw, converted, ref, triggerSQL, metadata, now)
 		if err == nil && applied {
 			err = s.database.commit(ctx, tx)
 		}
@@ -387,7 +391,7 @@ func (s *Service) prepareStorageConversion(ctx context.Context, scope nativeScop
 	return compact, ref, nil
 }
 
-func (s *Service) applyStorageConversion(ctx context.Context, tx *sql.Tx, scope nativeScope, family storageConversionFamily, cursor, row int64, aggregate, stamp string, raw, converted []byte, ref attachment.ArchiveReference, triggers []string, now time.Time) (bool, error) {
+func (s *Service) applyStorageConversion(ctx context.Context, tx *sql.Tx, scope nativeScope, family storageConversionFamily, cursor, row int64, aggregate, stamp string, raw, converted []byte, ref attachment.ArchiveReference, triggers []string, metadata conversationQueryMetadata, now time.Time) (bool, error) {
 	var currentCursor int64
 	if err := tx.QueryRowContext(ctx, `SELECT cursor_rowid FROM storage_conversion_progress WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=? AND format_version=?`, scope.organization, scope.project, family.name, aggregate, storageConversionVersion).Scan(&currentCursor); err != nil {
 		return false, err
@@ -444,6 +448,20 @@ func (s *Service) applyStorageConversion(ctx context.Context, tx *sql.Tx, scope 
 			}
 		default:
 			if _, err := tx.ExecContext(ctx, family.update, string(converted), row); err != nil {
+				return false, err
+			}
+		}
+		if len(metadata.columns) > 0 {
+			table := "collaboration_events"
+			where := "rowid=?"
+			if family.name == "messages" {
+				table = "conversation_messages"
+				where += " AND query_metadata_version=0"
+			}
+			if family.name == "conversation_events" {
+				table = "conversation_events"
+			}
+			if err := metadata.write(ctx, tx, table, where, row); err != nil {
 				return false, err
 			}
 		}
