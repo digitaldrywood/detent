@@ -766,10 +766,15 @@ func appendNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScope, wor
 	if data.Decision != nil {
 		decision = *data.Decision
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO collaboration_events (id, organization_id, project_id, work_item_id, sequence, type, schema_version, actor_json, data_json, recorded_at,scheduler_outcome,scheduler_reason,scheduler_source,scheduler_runner_id) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?,?,?,?,?)", id, scope.organization, scope.project, workItemID, sequence, eventType, actor, payload, formatHubTime(now), decision.Outcome, decision.Reason, decision.Source, decision.RunnerID)
+	metadata, err := activityQueryMetadata([]byte(payload))
 	if err != nil {
 		return err
 	}
+	_, err = tx.ExecContext(ctx, "INSERT INTO collaboration_events (id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at,scheduler_outcome,scheduler_reason,scheduler_source,scheduler_runner_id,query_metadata_version,run_attempt_id,activity_spans_present) VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?,?,1,?,?)", id, scope.organization, scope.project, workItemID, sequence, eventType, actor, payload, formatHubTime(now), decision.Outcome, decision.Reason, decision.Source, decision.RunnerID, metadata.values[0], metadata.values[1])
+	if err != nil {
+		return err
+	}
+
 	landed := data.Run != nil && data.Run.Runtime != nil && data.Run.Runtime.Landing != nil && data.Run.Runtime.Landing.Landed
 	return insertHealthEventTime(ctx, tx, id, string(scope.organization), eventType, landed, now)
 }

@@ -517,13 +517,24 @@ func (s *Service) publishCoordinatorDecision(ctx context.Context, action chat.Ac
 	if !ok {
 		return operatortool.ErrAccessDenied
 	}
+	legacyResults, err := s.legacyCoordinatorResults(ctx, action.ConversationID, action.ID)
+	if err != nil {
+		return err
+	}
 	return coordinator.write(ctx, action.ConversationID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
 		if string(record.ProjectID) != action.ProjectID || string(record.OrganizationID) != action.OrganizationID {
 			return operatortool.ErrAccessDenied
 		}
 		var posted bool
-		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation_id=? AND json_extract(data_json, '$.operator_action_result')=?)", record.ID, action.ID).Scan(&posted); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation_id=? AND operator_action_result=?)", record.ID, action.ID).Scan(&posted); err != nil {
 			return err
+		}
+		for _, legacy := range legacyResults {
+			var unchanged bool
+			if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation_id=? AND id=? AND data_json=?)", record.ID, legacy.id, legacy.raw).Scan(&unchanged); err != nil {
+				return err
+			}
+			posted = posted || unchanged
 		}
 		if posted {
 			return nil

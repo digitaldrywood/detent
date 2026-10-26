@@ -335,14 +335,23 @@ func requireConversationErrorCode(t *testing.T, response *httptest.ResponseRecor
 
 func TestConversationWorkerBind(t *testing.T) {
 	t.Parallel()
-	for _, confirmed := range []bool{false, true} {
-		t.Run("ordinary Continue lease loss confirmed="+strconv.FormatBool(confirmed), func(t *testing.T) {
+	for _, test := range []struct{ confirmed, legacy bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+		confirmed := test.confirmed
+		t.Run("ordinary Continue lease loss confirmed="+strconv.FormatBool(confirmed)+" legacy="+strconv.FormatBool(test.legacy), func(t *testing.T) {
 			f := newConversationWorkerFixture(t)
+			bind := func() *httptest.ResponseRecorder {
+				if test.legacy {
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversation_events SET query_metadata_version=0,message_role=NULL,message_kind=NULL,attempt_id=NULL,execution_status=NULL WHERE conversation_id=?`, f.record.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return f.bind(t, nil)
+			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM conversations WHERE id = ?", f.record.ID); err != nil {
 				t.Fatal(err)
 			}
 			var bound workerBindResponse
-			response := f.bind(t, nil)
+			response := bind()
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &bound)
 			f.record.ID = bound.ConversationID
@@ -374,7 +383,7 @@ func TestConversationWorkerBind(t *testing.T) {
 			message := f.messages(t)[receipt.MessageID]
 			requireConversationDelivery(t, f, message, command.Key, conversation.DeliverySaved)
 			f.claim(t)
-			response = f.bind(t, nil)
+			response = bind()
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &bound)
 			if !bound.Continuation || len(bound.Pending) != 1 || bound.Pending[0].MessageID != message.ID {
@@ -399,7 +408,7 @@ func TestConversationWorkerBind(t *testing.T) {
 				t.Fatalf("Continue intent lost prior attempt: %s", got)
 			}
 			f.claim(t)
-			response = f.bind(t, nil)
+			response = bind()
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &bound)
 			if !bound.Continuation || len(bound.Pending) != 0 {
@@ -413,7 +422,7 @@ func TestConversationWorkerBind(t *testing.T) {
 				t.Fatalf("second lease loss settlement = %+v", record.Execution)
 			}
 			f.claim(t)
-			response = f.bind(t, nil)
+			response = bind()
 			requireNativeStatus(t, response, http.StatusOK)
 			decodeHubResponse(t, response, &bound)
 			if !bound.Continuation || len(bound.Pending) != 0 {
@@ -427,7 +436,7 @@ func TestConversationWorkerBind(t *testing.T) {
 			f.release(t)
 			for range 2 {
 				f.claim(t)
-				response = f.bind(t, nil)
+				response = bind()
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &bound)
 				if bound.Continuation || len(bound.Pending) != 0 {

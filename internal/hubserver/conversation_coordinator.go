@@ -431,6 +431,11 @@ ORDER BY seq LIMIT ?`, conversationID, conversation.RoleUser, conversation.Messa
 // record inside the transaction keeps revision checks exact even when the
 // API changed the conversation during the turn.
 func (c *conversationTurnCoordinator) write(ctx context.Context, conversationID string, fn func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error) (resultErr error) {
+	var err error
+	ctx, err = c.service.store.prepareLegacyToolRevisions(ctx, conversationID)
+	if err != nil {
+		return err
+	}
 	now, err := c.service.server.database.currentTime()
 	if err != nil {
 		return err

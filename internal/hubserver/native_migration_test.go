@@ -32,7 +32,11 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	migrations := fstest.MapFS{"00059_native_runtime_evidence.sql": &fstest.MapFile{Data: data}, "20261023234600_scheduler_projections.sql": &fstest.MapFile{Data: projection}}
+	metadata, err := migrationFiles.ReadFile("migrations/20261025233000_conversation_query_columns.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrations := fstest.MapFS{"00059_native_runtime_evidence.sql": &fstest.MapFile{Data: data}, "20261023234600_scheduler_projections.sql": &fstest.MapFile{Data: projection}, "20261025233000_conversation_query_columns.sql": &fstest.MapFile{Data: metadata}}
 	const versionTable = "runtime_migration_test_version"
 	provider, err := goose.NewProvider(goose.DialectSQLite3, f.service.database.db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(versionTable), goose.WithSlog(discardLogger()))
 	if err != nil {
@@ -41,7 +45,7 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if _, _, err := provider.GetVersions(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+versionTable+" (version_id,is_applied) VALUES (59,1),(20261023234600,1)"); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+versionTable+" (version_id,is_applied) VALUES (59,1),(20261023234600,1),(20261025233000,1)"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := provider.DownTo(t.Context(), 58); err != nil {
