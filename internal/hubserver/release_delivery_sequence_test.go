@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -106,9 +107,14 @@ func TestNativeSequentialReleaseDeliveries(t *testing.T) {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/checks", f.token, changeTestResult(version)), http.StatusOK)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "review-" + version.ID}, Decision: "approved"}), http.StatusOK)
 	}
-	audit := func(change string, issue tracker.NativeWorkItemID, version tracker.ChangeVersion, pr int) {
+	audit := func(change string, issue tracker.NativeWorkItemID, version tracker.ChangeVersion, pr int, historical bool) {
 		t.Helper()
 		review := tracker.SecurityAuditReview{SessionID: 42, Verdict: "pass", Run: securityaudit.Run{ID: 42, InvocationID: version.ID, ProjectID: string(f.project.ID), IssueID: string(issue), Repository: repository, PRNumber: pr, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), AuthenticationMode: "api_key", ExitStatus: securityaudit.ExitStatusSuccess, WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: f.now, StartedAt: f.now, CompletedAt: f.now.Add(time.Second), OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}
+		if historical {
+			review.Run.ReviewerVersion = "2"
+			review.Run.ReviewerDigest = "18feae8d1c5b5a50cbcfdd9feb1280302a3c888881b7facf4200d6af3c3ee761"
+			review.Run.Summary = "No findings in the activation diff; referenced helpers were not supplied."
+		}
 		raw, err := marshalNative(tracker.ChangeReview{VersionID: version.ID, Decision: "approved", SecurityAudit: &review})
 		if err != nil {
 			t.Fatal(err)
@@ -138,8 +144,8 @@ func TestNativeSequentialReleaseDeliveries(t *testing.T) {
 		}
 		version := publish(path, fmt.Sprintf("source-%d", i), "", base, sourceHeads[i], hubTestPolicy().ID, false)
 		approve(path, version)
-		audit(sourceChanges[i].ID, sourceIssues[i].WorkItemID, version, 0)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/landing", f.token, land("source-land", version, "develop", sourceHeads[i])), http.StatusOK)
+		audit(sourceChanges[i].ID, sourceIssues[i].WorkItemID, version, 0, true)
 	}
 	descriptor := hubTestPolicy()
 	descriptor.Gates.SecurityAudit = true
@@ -171,7 +177,7 @@ func TestNativeSequentialReleaseDeliveries(t *testing.T) {
 		paths[i] = itemPath + "/changes/" + d.ChangeID
 		versions[i] = publish(paths[i], "release-version", "", frozen, head, descriptor.ID, true)
 		approve(paths[i], versions[i])
-		audit(d.ChangeID, issue.WorkItemID, versions[i], request.PRNumber)
+		audit(d.ChangeID, issue.WorkItemID, versions[i], request.PRNumber, false)
 		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = 'Merging') WHERE native_id = ?", f.project.ID, issue.WorkItemID); err != nil {
 			t.Fatal(err)
 		}
@@ -182,6 +188,12 @@ func TestNativeSequentialReleaseDeliveries(t *testing.T) {
 	git("checkout", "release/v1.2")
 	git("merge", "--ff-only", "pick/first")
 	second := deliveries[1]
+	sourcePath := f.base + "/work-items/" + string(sourceIssues[1].WorkItemID) + "/changes/" + sourceChanges[1].ID
+	sourceBefore := readDetail(sourcePath)
+	sourceAudit := sourceBefore.Reviews[len(sourceBefore.Reviews)-1].SecurityAudit.Run
+	if evaluation := securityaudit.Evaluate(sourceAudit, nil, securityaudit.Key{ProjectID: string(f.project.ID), Repository: repository, BaseSHA: sourceAudit.BaseSHA, HeadSHA: secondSource}, "", []string{"p1", "p2"}); evaluation.Reason != securityaudit.ReasonReviewerMismatch {
+		t.Fatalf("historical audit unexpectedly meets current reviewer policy: %+v", evaluation)
+	}
 	verifier.input = second.request.ReleasePickInput
 	if err := verifier.VerifyReleasePick(t.Context(), second.request.ReleasePickInput); !errors.Is(err, ErrReleasePickMismatch) {
 		t.Fatalf("old release base remained valid: %v", err)
@@ -203,6 +215,9 @@ func TestNativeSequentialReleaseDeliveries(t *testing.T) {
 	second.associate(t, request)
 	second.associate(t, request)
 	current := readDetail(paths[1])
+	if !reflect.DeepEqual(sourceBefore, readDetail(sourcePath)) || !readIssue(sourceIssues[1].WorkItemID).Terminal {
+		t.Fatal("refresh changed the landed source or its historical review evidence")
+	}
 	if current.Change.CurrentVersion != "" || len(current.Versions) != 1 || len(current.Reviews) != len(prior.Reviews) || len(current.Checks) != len(prior.Checks) || current.Versions[0].HeadSHA != secondPick || readIssue(second.delivery.WorkItemID).State != "In Progress" {
 		t.Fatalf("refresh lost immutable evidence or retained approval: %+v", current)
 	}
@@ -213,7 +228,9 @@ func TestNativeSequentialReleaseDeliveries(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, landingPath, f.token, landing), http.StatusConflict)
 	approve(paths[1], version)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, landingPath, f.token, landing), http.StatusConflict)
-	audit(current.Change.ID, second.delivery.WorkItemID, version, 8)
+	audit(current.Change.ID, second.delivery.WorkItemID, version, 8, true)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, landingPath, f.token, landing), http.StatusConflict)
+	audit(current.Change.ID, second.delivery.WorkItemID, version, 8, false)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, landingPath, f.token, landing), http.StatusOK)
 	git("checkout", "release/v1.2")
 	git("merge", "--ff-only", "pick/second")

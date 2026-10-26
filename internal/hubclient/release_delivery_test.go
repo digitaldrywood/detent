@@ -49,7 +49,7 @@ func TestReleaseDeliveryLandingTarget(t *testing.T) {
 			}
 			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: "wi_delivery"}}
 			if name != "ordinary source" {
-				issue.ReleaseDelivery = &tracker.ReleaseDelivery{ReleasePickInput: tracker.ReleasePickInput{SourceMergeSHA: strings.Repeat("d", 40), Repository: version.Repository, PRNumber: 7, HeadRef: "pick/fix", HeadSHA: version.HeadSHA, BaseRef: "release/v1.2", BaseSHA: version.BaseSHA}, ChangeID: change.ID, VersionID: version.ID}
+				issue.ReleaseDelivery = &tracker.ReleaseDelivery{ReleasePickInput: tracker.ReleasePickInput{SourceIssueID: "wi_source", SourceChangeID: "change_source", SourceMergeSHA: strings.Repeat("d", 40), Repository: version.Repository, PRNumber: 7, HeadRef: "pick/fix", HeadSHA: version.HeadSHA, BaseRef: "release/v1.2", BaseSHA: version.BaseSHA}, ChangeID: change.ID, VersionID: version.ID}
 			}
 			if name == "stale association" {
 				issue.ReleaseDelivery.HeadSHA = strings.Repeat("c", 40)
@@ -58,6 +58,13 @@ func TestReleaseDeliveryLandingTarget(t *testing.T) {
 				issue.ReleaseDelivery.BaseSHA = strings.Repeat("c", 40)
 			}
 			converted := issueFromNative(issue)
+			if name == "release delivery" {
+				for _, want := range []string{"wi_source", "change_source", issue.ReleaseDelivery.SourceMergeSHA, "required acceptance scope", "does not establish graph coverage", "unverified required scope requires Rework"} {
+					if !strings.Contains(converted.Description, want) {
+						t.Fatalf("delivery review lost source scope %q: %s", want, converted.Description)
+					}
+				}
+			}
 			if name == "release delivery" && (converted.PullRequest == nil || converted.PullRequest.BaseRef != "release/v1.2" || converted.PullRequest.HeadSHA != version.HeadSHA || converted.BranchName != "pick/fix" || converted.PRRepository != version.Repository) {
 				t.Fatalf("runner issue lost release identity: %+v", converted)
 			}

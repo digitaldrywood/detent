@@ -2641,6 +2641,16 @@ the squash message retains the source `-x` trailer. Ordinary source issues keep
 their normal base. A moved source needing a replacement PR requires a separate
 reviewed delivery; association does not adopt arbitrary new heads.
 
+Refreshing an existing association may retain a landed source's known v2
+security audit identity as historical provenance. This does not approve new
+work or establish coverage beyond the retained review's actual scope. Recovery
+requires the delivery's current security audit and independent scope review
+policy. Delivery review context identifies the source issue, Change and merge
+so the existing reviewer verifies its required criteria, including any missing
+graph or helper review, against the delivery head. Missing context or required
+coverage returns to Rework. Unknown identities, failed evidence and mismatched
+source or PR identities remain invalid; source history is never rewritten.
+
 ## Hosted immutable archives
 
 Cloud's shared entry accepts raw archive bytes at

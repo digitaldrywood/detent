@@ -691,6 +691,7 @@ func issueFromNative(native tracker.NativeIssue) connector.Issue {
 	}
 	issue.DependencySource = connector.BlockedRefSourceNative
 	if d := native.ReleaseDelivery; d != nil && !native.Terminal {
+		issue.Description += fmt.Sprintf("\n\nRelease source review: read source work item %s and Change %s in project %s, landed as %s. Independently verify its required acceptance scope against this delivery's current head before landing, including any required reachable graph or helper review. Retain historical audit evidence with its actual scope; a passing activation diff audit does not establish graph coverage. Missing source context or unverified required scope requires Rework through the existing review owner. The delivery requires its own current-head security audit; historical source evidence does not approve it.", d.SourceIssueID, d.SourceChangeID, native.ProjectID, d.SourceMergeSHA)
 		issue.BranchName = d.HeadRef
 		issue.PRRepository = d.Repository
 		issue.PullRequest = &connector.PullRequest{Number: d.PRNumber, URL: fmt.Sprintf("%s/pull/%d", d.Repository, d.PRNumber), State: "OPEN", BranchName: d.HeadRef, HeadSHA: d.HeadSHA, BaseRef: d.BaseRef, BaseSHA: d.BaseSHA}
