@@ -3,6 +3,7 @@ package hubserver
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -44,6 +45,9 @@ func TestAttemptEvidenceAcrossStorageUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=? WHERE id=?", string(encoded), start.Data.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET dispatch_generation=7 WHERE id=?", start.Data.AttemptID); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
@@ -91,5 +95,34 @@ func TestAttemptEvidenceAcrossStorageUpgrade(t *testing.T) {
 	decodeHubResponse(t, response, &blockers)
 	if len(blockers.Items) != 1 || len(blockers.Items[0].Evidence) != 1 || blockers.Items[0].Evidence[0].AttachmentID != files[0].ID {
 		t.Fatalf("blocker projection carried uploaded evidence: %+v", blockers)
+	}
+	for _, released := range []bool{false, true} {
+		if released {
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+		}
+		response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts/"+start.Data.AttemptID, worker, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var full tracker.NativeAttempt
+		decodeHubResponse(t, response, &full)
+		if len(full.Evidence) != 82 || full.CompletionBody != "Verification response" {
+			t.Fatal("full receipt lost retained completion or evidence")
+		}
+		response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?view=blockers", worker, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		summaries = tracker.Page[tracker.NativeAttempt]{}
+		decodeHubResponse(t, response, &summaries)
+		if len(summaries.Items) != 1 {
+			t.Fatal("oversized evidence dropped the attempt")
+		}
+		got := summaries.Items[0]
+		if got.Current == released || (got.ClaimReleasedAt != nil) != released || got.LeaseID != lease.ID || got.FencingToken != lease.FencingToken || got.DispatchGeneration != 7 {
+			t.Fatalf("projection lost lease authority: current=%t released=%v lease=%s fence=%d", got.Current, got.ClaimReleasedAt, got.LeaseID, got.FencingToken)
+		}
+		full.CompletionBody, full.Evidence = "", nil
+		full.Runtime, full.RuntimeFreshness = nil, "unavailable"
+		full.Unavailable = []string{"completion_body", "evidence"}
+		if !reflect.DeepEqual(got, full) {
+			t.Fatal("evidence projection changed ownership or dispatch fields")
+		}
 	}
 }
