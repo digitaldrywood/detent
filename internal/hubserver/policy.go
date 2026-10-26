@@ -600,7 +600,7 @@ func requireLeaseRouting(ctx context.Context, tx nativeQueryer, lease tracker.Le
 	var runner, machine, tags, state, raw string
 	var access bool
 	err := tx.QueryRowContext(ctx, `SELECT r.id, r.machine_id, r.tags_json, r.state, p.metadata_json,
-EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = r.token_id AND g.organization_id = i.organization_id AND g.project_id = i.project_id)
+`+runnerProjectAccessSQL("i.organization_id", "i.project_id")+`
 FROM lease_runners lr JOIN runner_identities r ON r.id = lr.runner_id JOIN leases l ON l.lease_id = lr.lease_id
 JOIN issues i ON i.id = l.issue_id JOIN lease_policies lp ON lp.lease_id = l.lease_id
 JOIN policy_revisions p ON p.scope = lp.scope AND p.policy_id = lp.policy_id WHERE lr.lease_id = ?`, lease).Scan(&runner, &machine, &tags, &state, &raw, &access)
