@@ -2,6 +2,7 @@ package hubgithub
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,7 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -20,11 +20,15 @@ import (
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 	t.Parallel()
+	databasePath := testenv.DatabaseTemplate(func(ctx context.Context, path string) (io.Closer, error) {
+		return hubserver.Open(ctx, hubserver.Config{DatabasePath: path, GitHubDisabled: true, Logger: slog.New(slog.DiscardHandler)})
+	})
 	const repository = "example-org/example-project"
 	const token = "isolated-scheduled-import-administrator-token"
 	const secret = "isolated-scheduled-import-webhook-secret"
@@ -101,7 +105,7 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 			if test.state == "Todo" {
 				client.steps = append(client.steps, restStep{method: http.MethodGet, path: path + "/jobs?per_page=100", response: map[string]any{"jobs": []map[string]any{{"id": 456, "run_id": 123, "name": "Verify", "head_sha": sha, "status": "completed", "conclusion": "failure", "started_at": "2026-10-01T00:00:00Z", "completed_at": "2026-10-01T00:01:00Z"}}}})
 			}
-			service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(token), GitHubWebhookSecret: []byte(secret), ImportBackend: NewImporter(client), ReconcileBackend: NewReconciler(client), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: databasePath(t), InitialAdminToken: []byte(token), GitHubWebhookSecret: []byte(secret), ImportBackend: NewImporter(client), ReconcileBackend: NewReconciler(client), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 			if err != nil {
 				t.Fatal(err)
 			}
