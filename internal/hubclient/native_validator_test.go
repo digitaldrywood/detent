@@ -155,3 +155,39 @@ func TestNativePrepareReviewAcrossAttempts(t *testing.T) {
 		})
 	}
 }
+
+func TestRecordedValidatorRequiresExactPublication(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(*tracker.ChangeDetail, *gate.ValidatorResult)
+	}{
+		{name: "matching publication"},
+		{name: "current version changed", change: func(d *tracker.ChangeDetail, _ *gate.ValidatorResult) { d.Change.CurrentVersion = "version_new" }},
+		{name: "different machine", change: func(d *tracker.ChangeDetail, _ *gate.ValidatorResult) {
+			d.Reviews[0].SessionMachineID = "machine_other"
+		}},
+		{name: "human comment", change: func(d *tracker.ChangeDetail, _ *gate.ValidatorResult) { d.Reviews[0].Actor.Kind = "human" }},
+		{name: "different decision", change: func(d *tracker.ChangeDetail, _ *gate.ValidatorResult) { d.Reviews[0].Decision = "changes_requested" }},
+		{name: "different body", change: func(d *tracker.ChangeDetail, _ *gate.ValidatorResult) { d.Reviews[0].Body = "Other publication" }},
+		{name: "different session", change: func(_ *tracker.ChangeDetail, r *gate.ValidatorResult) { r.SessionID++ }},
+		{name: "different source", change: func(_ *tracker.ChangeDetail, r *gate.ValidatorResult) { r.HeadSHA = strings.Repeat("d", 40) }},
+		{name: "different evidence", change: func(_ *tracker.ChangeDetail, r *gate.ValidatorResult) {
+			r.Commands = []gate.CommandResult{{Command: "other check"}}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := gate.ValidatorResult{VersionID: "version_current", SessionID: 42, Submitted: true, Verdict: "pass", HeadSHA: strings.Repeat("c", 40)}
+			stored := result
+			detail := tracker.ChangeDetail{
+				Change:  tracker.ChangeRequest{CurrentVersion: result.VersionID},
+				Reviews: []tracker.ChangeReview{{ID: "review_current", VersionID: result.VersionID, SessionMachineID: "machine_current", Actor: tracker.Actor{Kind: "runner"}, Decision: "approved", Body: "Validated", Validator: &stored}},
+			}
+			if test.change != nil {
+				test.change(&detail, &stored)
+			}
+			if got := recordedValidatorMatches(detail, result, "approved", "Validated", "machine_current"); got != (test.change == nil) {
+				t.Fatalf("publication matched = %t, want %t", got, test.change == nil)
+			}
+		})
+	}
+}
