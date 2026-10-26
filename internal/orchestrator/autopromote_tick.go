@@ -1270,6 +1270,9 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 	issues []connector.Issue,
 	now time.Time,
 ) map[string]struct{} {
+	if o.nativeWorkflow() {
+		return nil
+	}
 	transitioned := map[string]struct{}{}
 	for _, issue := range issuesInStates(issues, staleLinkedPullRequestReconciliationStates(o.cfg)) {
 		issueID := strings.TrimSpace(issue.ID)
