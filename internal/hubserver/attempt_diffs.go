@@ -19,11 +19,11 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// Stored attempt diffs (decisions section 18.5). A diff write names its
+// Stored attempt diffs. A diff write names its
 // producer and is fenced by the producer's lease, not by the subject
 // attempt's: while an attempt runs its own lease is the producer, and after it
 // finishes only a workspace lease on that attempt may write. Workspace sessions
-// (section 18.1) are not built, so the attempt-producer path is the only one
+// are not built, so the attempt-producer path is the only one
 // implemented and every other producer is refused with stale_execution rather
 // than guessed at.
 //

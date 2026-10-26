@@ -1,5 +1,5 @@
 -- +goose Up
--- Turn preferences, message references and Settled (decisions section 14).
+-- Turn preferences, message references and Settled.
 --
 -- The conversations table is rebuilt rather than altered: the status check
 -- constraint has to change from ('active', 'archived') to ('active',

@@ -474,7 +474,7 @@ export default defineConfig({
       "/app/updates": { target: hubUrl, changeOrigin: true },
       // The project event stream; `/projects/…` is otherwise an app route.
       "^/projects/[^/]+/events": { target: hubUrl, changeOrigin: true },
-      // `/app/bootstrap` is what the client asks for first (decisions.md §12);
+      // `/app/bootstrap` is what the client asks for first;
       // `/chat/bootstrap` is the alias it falls back to.
       "/app/bootstrap": { target: hubUrl, changeOrigin: true },
       "/chat/bootstrap": { target: hubUrl, changeOrigin: true },

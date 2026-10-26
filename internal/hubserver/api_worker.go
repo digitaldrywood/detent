@@ -69,8 +69,7 @@ type claimCandidateQuery struct {
 	// lane, which asked for workspace items by declaring the workspace
 	// capability. Every other claim, and the provider candidate preview, is
 	// an ordinary issue claim and never sees a workspace item: a workspace
-	// is its own work item kind and not project work (decisions section
-	// 18.1).
+	// is its own work item kind and not project work.
 	WorkspaceLane bool
 	PageSize      int
 }
@@ -581,8 +580,8 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 	if len(ids) == 0 && request.WorkItemID > 0 {
 		return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_claim_eligibility", ErrNoClaimableWork, now)
 	}
-	// Workspace items are gated per candidate rather than per credential
-	// (decisions section 18.1): eligibility depends on the surfaces the
+	// Workspace items are gated per candidate rather than per credential:
+	// eligibility depends on the surfaces the
 	// workspace requires and on whether its attempt's worktree is still
 	// retained on one particular runner, so the answer differs between two
 	// workspaces the same runner is looking at.
@@ -661,7 +660,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			}
 		}
 		// A workspace claim reserves one slot of the runner's capacity and
-		// nothing else (decisions section 18.1): the session serves files
+		// nothing else: the session serves files
 		// over the relay and runs no model, so it never goes through provider
 		// requirement matching and never carries a provider reservation.
 		var reservation providercapacity.Reservation
@@ -824,7 +823,7 @@ const notAlreadyAnsweredClause = `(p.profile <> 'native' OR lower(trim(ws.detent
 // claimWorkspaceExclusionArg binds the candidate query's workspace exclusion.
 // A workspace session's dispatch issue is not project work and never becomes
 // project work: closing the workspace closes the association, it does not hand
-// the issue to the issue lane (decisions section 18.1). Only a claim that
+// the issue to the issue lane. Only a claim that
 // declared the workspace capability is offered one, and the exclusion lives in
 // the candidate query rather than in a skip set so that the provider candidate
 // preview, which shares this query, does not offer one either.

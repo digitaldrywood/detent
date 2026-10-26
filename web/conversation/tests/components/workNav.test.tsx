@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The sidebar's Work destination and Browse group (design inventory A.1, A.6).
+// The sidebar's Work destination and Browse group.
 // They are the one Detent insertion in the copied `components/Sidebar.tsx`,
 // and they live in `app/adapters/sidebarDestinations.tsx`.
 import { cleanup, fireEvent, screen, within } from "@testing-library/react";
@@ -88,7 +88,7 @@ describe("the sidebar's Work navigation", () => {
     );
   });
 
-  // §17.4: Pull requests, Usage and Settings left Browse — the footer icon row
+  // Pull requests, Usage and Settings left Browse — the footer icon row
   // already reaches all three, and one destination in two places in the same
   // sidebar is a duplicate, not a convenience.
   it("keeps the footer's destinations out of Browse", async () => {

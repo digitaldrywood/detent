@@ -245,7 +245,7 @@ export interface WorkHttp {
   ) => Promise<AttemptPage>;
   readonly getExplanation: (projectId: string, itemId: string) => Promise<IssueExplanation>;
   /**
-   * The latest stored diff on one issue (decisions.md §18.5), or `{diff: null}`
+   * The latest stored diff on one issue, or `{diff: null}`
    * where no attempt has posted one. Issue-addressed rather than
    * attempt-addressed so that "this issue has no diff" is an answer rather
    * than a 404 per attempt.
@@ -297,7 +297,7 @@ export interface WorkHttp {
     signal?: AbortSignal,
   ) => Promise<ChangeDetail>;
   /**
-   * One attempt's stored diff (decisions.md §18.5), attempt-addressed. A
+   * One attempt's stored diff, attempt-addressed. A
    * change version names the attempt that published it, so this is how the
    * review page shows the patch behind a round rather than whatever the
    * latest attempt on the issue posted. A 404 means that attempt never
@@ -331,7 +331,7 @@ export interface WorkHttp {
     versionId?: string;
   }) => Promise<ChangeDiscussion>;
   /**
-   * The issue's pull requests (decisions.md §18.6). A bare array like
+   * The issue's pull requests. A bare array like
    * `listChanges`, and served from a 60-second cache, so a caller that wants
    * the connector re-fetched has to ask for it — which this client does not.
    */
@@ -340,7 +340,7 @@ export interface WorkHttp {
     itemId: string,
   ) => Promise<WorkItemPullRequestList>;
   /**
-   * Opens the issue's pull request (decisions.md §18.6).
+   * Opens the issue's pull request.
    *
    * Addressed by the issue rather than by a number, because a pull request
    * that does not exist yet has none. `expectedHeadSha` is what the merge
@@ -355,7 +355,7 @@ export interface WorkHttp {
     expectedHeadSha: string;
   }) => Promise<PullRequestActionAccepted>;
 
-  // --- Workspace sessions (decisions.md §18.1, §18.2) -----------------------
+  // --- Workspace sessions -----------------------
   //
   // These live here rather than in their own client for one reason: minting a
   // relay ticket is a mutation, and `send` is the only place the `X-CSRF-Token`
@@ -378,7 +378,7 @@ export interface WorkHttp {
   }) => Promise<Workspace>;
   readonly closeWorkspace: (projectId: string, workspaceId: string) => Promise<void>;
   /**
-   * One relay ticket. Single use and 30 seconds long (§18.2), so this is
+   * One relay ticket. Single use and 30 seconds long, so this is
    * called immediately before each socket is opened and never cached.
    */
   readonly mintRelayTicket: (input: {
@@ -389,7 +389,7 @@ export interface WorkHttp {
   /** The person-side relay socket, as an absolute same-origin `ws(s):` URL. */
   readonly relayUrl: (projectId: string, workspaceId: string, ticket: string) => string;
 
-  // --- Project actions and their runs (decisions.md §18.12) -----------------
+  // --- Project actions and their runs -----------------
   //
   // Here for the same reason the workspace calls are: every one of the four
   // mutations is a mutation, and `send` is the only place the `X-CSRF-Token`
@@ -408,7 +408,7 @@ export interface WorkHttp {
     runOnWorktreeCreation?: boolean;
   }) => Promise<Action>;
   /**
-   * `expected_revision` is not optional: §18.12 writes it into the contract,
+   * `expected_revision` is not optional: the project actions contract writes it into the contract,
    * and an edit that did not carry it would silently overwrite a colleague's.
    */
   readonly updateAction: (input: {
@@ -438,7 +438,7 @@ export interface WorkHttp {
     runId: string,
   ) => Promise<ActionRun>;
   readonly listActionRuns: (projectId: string, actionId: string) => Promise<ActionRunList>;
-  /** `text/plain`, not JSON: the run's own bytes, capped at 1 MiB (§18.12). */
+  /** `text/plain`, not JSON: the run's own bytes, capped at 1 MiB. */
   readonly readActionRunOutput: (
     projectId: string,
     actionId: string,
@@ -563,8 +563,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   }
 
   /**
-   * The one read whose body is not JSON: a run's output is `text/plain`
-   * (§18.12). The failure path is still `send`'s, because a refusal is a
+   * The one read whose body is not JSON: a run's output is `text/plain`.
+   * The failure path is still `send`'s, because a refusal is a
    * native error body like every other.
    */
   async function sendText(target: string): Promise<string> {
@@ -868,7 +868,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         url(`${actionBase(projectId, actionId)}/runs/${encodeURIComponent(runId)}/output`),
       ),
     // A WebSocket needs an absolute URL with a `ws` scheme, and the ticket is
-    // the CSRF answer for an upgrade a browser cannot put a header on (§18.2).
+    // the CSRF answer for an upgrade a browser cannot put a header on.
     relayUrl: (projectId, workspaceId, ticket) => {
       const path = `${workspaceBase(projectId, workspaceId)}/relay?ticket=${encodeURIComponent(
         ticket,

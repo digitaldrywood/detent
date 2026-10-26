@@ -1,5 +1,5 @@
 -- +goose Up
--- Conversation attachments (decisions section 17, item 1).
+-- Conversation attachments.
 
 -- conversation_attachments is one uploaded file. message_id is NULL while the
 -- upload is unsent: only then may its owner delete it, and only then does it

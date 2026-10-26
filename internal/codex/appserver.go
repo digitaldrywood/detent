@@ -199,7 +199,7 @@ type RunTurnRequest struct {
 	Prompt              string
 	// Attachments are the files the user attached to the message that starts
 	// this turn. Images become image input items; text attachments already
-	// reached Prompt as a data block (decisions section 17.1).
+	// reached Prompt as a data block.
 	Attachments []runner.AgentAttachment
 	// TempDir is where a turn's image copies are written.
 	TempDir                 string

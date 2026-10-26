@@ -1,7 +1,7 @@
 # Native Files / Review
 
 Change detail renders a selected immutable customer-hosted diff bundle directly
-in the browser using the [durable access contract](artifact-access-contract.md).
+in the browser using the [durable artifact contract](hub-api.md#durable-artifacts).
 Hub and the dashboard serve metadata, decisions and authored discussion; neither
 fetches or proxies source. No repository clone, runner, GitHub API, pricing or
 payment service is needed to display a published bundle.
@@ -69,41 +69,52 @@ to remain reachable. There is no hosted fallback.
 
 The surface uses changed files and captured context, not a full repository.
 Repository browsing, inline-thread relocation across rebases, suggested edits and
-conflict editing remain follow-ups. Combined/word diffs, compressed bundles and
+conflict editing are not supported. Combined/word diffs, compressed bundles and
 non-text source bodies are unsupported. The publisher must provide a Git patch;
 capture failures retain the existing explicit artifact availability state.
 
-## Dependency and security review
+## Independent source review and acceptance
 
-Reviewed September 7, 2026. Browser assets are vendored into local static assets;
-the viewer has no CDN/runtime package dependency.
+Native completion records an independent, read-only implementation review of the
+current immutable version before acceptance validation. Each pass runs in a fresh
+session and records its own typed evidence (`implementation_review` and
+`validator`) bound to that version. The Hub rejects an implementation review and
+acceptance validation that share a session, and rejects acceptance validation
+recorded without a passing implementation review before it in the evidence
+sequence; retained acceptance from before the latest source review does not
+satisfy the gate. A required implementation review stays required when acceptance
+validation is disabled. Neither record is a human approval, and validator
+evidence never substitutes for source review.
+
+A `rework` verdict from implementation review, acceptance validation or security
+audit returns the issue to the configured Rework lane on the same source. A source
+review that has not yet produced evidence for complete published source is a
+deferred completion: Detent releases execution capacity, records the
+`automated_review_missing` availability class, and retries completion with
+backoff; it never moves the issue to `Blocked`. The Hub refuses landing while
+required source-review evidence is missing, including for versions published by
+older runners. A runner that records `implementation_review` needs a Hub that
+accepts it, and an SSH worker needs a host that supports the `ReviewVersion` and
+`RecordReview` callbacks.
+
+## Vendored viewer components
+
+Browser assets are vendored into local static assets; the viewer has no
+CDN/runtime package dependency.
 
 | Component | Version | License | Purpose |
 | --- | --- | --- | --- |
-| [diff2html](https://github.com/rtfpessoa/diff2html) | 3.4.56 | MIT | Maintained Git/unified-diff parser and renderer compatible with vanilla JS / Templ / HTMX |
+| [diff2html](https://github.com/rtfpessoa/diff2html) | 3.4.56 | MIT | Git/unified-diff parser and renderer |
 | [highlight.js](https://github.com/highlightjs/highlight.js) | 11.12.0 | BSD-3-Clause | Common-language highlighting without autodetection |
 | diff, bundled by diff2html | 8.0.3 | BSD-3-Clause | Intraline dependency; comparison disabled here |
 | @profoundlogic/hogan, bundled by diff2html | 3.0.4 | Apache-2.0 | Fixed renderer templates; no caller-supplied templates |
 
 License notices are retained under `static/vendor/diff2html` and
-`static/vendor/highlight`. Registry metadata identifies diff2html 3.4.56 as the
-current release, modified January 31, 2026. Bundled dependency versions match its
-[release lockfile](https://github.com/rtfpessoa/diff2html/blob/3.4.56/package-lock.json).
-An isolated `npm audit --omit=optional` reported zero known vulnerabilities. This
-point-in-time advisory check supplements inspection of escaping, fixed templates,
-resource limits, and malformed/XSS browser tests; it is not a security guarantee.
-
-Vendored SHA-256 digests:
+`static/vendor/highlight`. Vendored SHA-256 digests:
 
 ```text
 a2110a09cee157bd5466da77be02107ac81a0baa2bc1f3fe81aac8183314598e  diff2html.min.js
 8ab71eb09c51f501e5e25157d9cff100e46cc29bcbfc744d0b746d451fca7f53  highlight.min.js
 ```
 
-Reproduce with `npm pack diff2html@3.4.56` and
-`npm pack @highlightjs/cdn-assets@11.12.0` in the worker temporary directory;
-inspect upstream licenses/advisories and compare these digests.
 Patch semantics: [Git diff](https://git-scm.com/docs/git-diff).
-
-Validation: stdlib table-driven Go tests, `tests/visual/change-review.spec.js`,
-Chrome DevTools viewport screenshots, `make generate`, and `make check`.

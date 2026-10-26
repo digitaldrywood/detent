@@ -114,7 +114,7 @@ func TestNewDenylistRefusesAnInvalidPattern(t *testing.T) {
 	}
 }
 
-// TestDenylistAgreesWithTheStoredDiffFilter is the guarantee section 18.5
+// TestDenylistAgreesWithTheStoredDiffFilter is the guarantee the Diff contract
 // states in words: "a later reader is not shown what the live reader was not".
 // The live surface and the stored attempt diff must therefore refuse the same
 // fixed set, which they do by asking the same function; this proves it.

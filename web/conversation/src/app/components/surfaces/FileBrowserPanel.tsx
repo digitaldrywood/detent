@@ -102,7 +102,7 @@ function FileSearchField(props: {
 /**
  * What the feed knows: which directories have been listed, and every entry by
  * its tree path so a selection can be answered with the entry itself (the
- * tree carries paths, and §18.4's `denied` flag lives on the entry).
+ * tree carries paths, and the Files contract's `denied` flag lives on the entry).
  */
 interface Feed {
   readonly listed: ReadonlySet<string>;

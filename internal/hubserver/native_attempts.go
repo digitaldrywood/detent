@@ -28,7 +28,7 @@ func nativeExecutionConflict(message string) error {
 	return &nativeError{Code: "run_sequence_conflict", Message: message, status: http.StatusConflict}
 }
 
-// nativeStaleExecution is section 5's stale_execution: the expected owner
+// nativeStaleExecution is the conversation contract's stale_execution: the expected owner
 // generation is no longer the current one. It lives here rather than beside
 // one of its callers because every path that is fenced by an ownership
 // generation has to report the same code for the same reason.

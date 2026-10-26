@@ -16,24 +16,19 @@ This path was validated on July 2, 2026 with:
 - macOS arm64 with 128 GB unified memory
 - `qwen3-coder:30b` through an explicit Codex `model_providers` entry
 
-The validation ran both a direct `codex exec` file-edit smoke and an isolated
-Detent memory-tracker dispatch. Detent created a worktree, dispatched
-`qwen3-coder:30b` through `codex app-server`, completed repeated sessions, and
-the local gate passed after the model appended the expected line to `SMOKE.md`.
-`ollama ps` reported a loaded context of `262144` for the validated run.
+The validation ran a direct `codex exec` file-edit smoke and Detent dispatch
+through `codex app-server`. `ollama ps` reported a loaded context of `262144` for
+the validated run.
 
-Expected caveats:
+Observed caveats:
 
 - Codex warns that model metadata for `qwen3-coder:30b` is not in its catalog.
   Set `model_context_window = 65536` and expect Detent pricing warnings for the
   local model.
 - The local `devstral:latest` available during validation transported through
-  Detent but did not complete the file-edit smoke. Treat Devstral Small 24B as
-  the lighter model to try when qwen3-coder is too large, but validate it
-  against your own workflow before routing important work to it.
+  Detent but did not complete the file-edit smoke.
 - Local `qwen2.5-coder:32b`, `qwen3:32b`, and older agent aliases available on
-  the validation machine produced plain-text or unsupported tool calls. For
-  reliable Detent work, use `qwen3-coder:30b` as the current baseline.
+  the validation machine produced plain-text or unsupported tool calls.
 
 ## Hardware And Model Floor
 
@@ -140,9 +135,8 @@ Do not proceed until the file changed and `ollama ps` shows `CONTEXT` at
 
 ## Detent Route Snippet
 
-Keep the rest of your fleet on the normal Codex backend and pin a low-stakes
-role to the local model first. This example routes only the validator role to
-Ollama; code-agent work keeps using the default backend.
+This example routes only the validator role to Ollama; code-agent work keeps
+using the default Codex backend.
 
 When you add `agents.backends`, define every backend that routes reference.
 If your workflow already has a top-level `codex` block, copy that command and
@@ -150,15 +144,8 @@ options into a standard explicit backend before adding the local one.
 
 ```yaml
 gate:
-  kind: command
-  run: make check
-  require_automated_review: true
-  required_status_checks: []
   validator:
     enabled: true
-    min_score: 0.8
-    block_on:
-      - p1
 
 agents:
   backends:
@@ -192,7 +179,6 @@ agents:
       model: detent-qwen3-coder:30b
     - name: default
       backend: codex-standard
-      model: gpt-5-codex
       default: true
 ```
 
@@ -204,7 +190,12 @@ Leave `gate.validator.model` unset when you want the validator route's `model`
 to control the local pin. If `gate.validator.model` is non-empty, it overrides
 the route model.
 
-Run `detent doctor --port 0` before starting the service. For the first real
-dispatch, use a trivial issue and verify the completed Codex session, worktree
-diff, validation gate, and `ollama ps` context before routing more work to the
-local backend.
+A route without `model` uses the effective model selection the runner receives
+from the Hub. That selection covers the `codex` backend kind by default, and
+while it applies the runner checks a route's explicit `model` against the Codex
+backend's model catalog: a model missing from that catalog fails the attempt with
+`configured model "..." is unavailable or retired in the selected backend catalog`.
+Whether Codex
+lists a custom-provider model in its catalog depends on the Codex release.
+
+`detent doctor` validates the resulting configuration.

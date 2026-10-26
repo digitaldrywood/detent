@@ -207,7 +207,7 @@ describe("Timeline", () => {
   });
 
   // A runner posts its proposal as an `item` turn event, which the hub stores
-  // as `role: system, kind: status` (decisions.md §9.3, §9.4). The card is
+  // as `role: system, kind: status`. The card is
   // chosen by kind and data, so who wrote it never changes what the reader sees.
   it("renders a runner-posted proposal that arrives as a system status message", () => {
     const onCreateIssue = vi.fn();
@@ -395,7 +395,7 @@ describe("Timeline", () => {
         },
       ],
     });
-    // The promise the retry makes is the §10.3 one, in the row and on the chip.
+    // The promise the retry makes is the first-slice corrections one, in the row and on the chip.
     expect(
       screen.getByText("Retry re-queues this message once; nothing is duplicated."),
     ).toBeTruthy();
@@ -426,7 +426,7 @@ describe("Timeline", () => {
     expect(href).toBe("");
   });
 
-  // §10.3: the retry affordance is on hub-persisted messages too, not only on
+  // The retry affordance is on hub-persisted messages too, not only on
   // the client's own outbox.
   it("offers a retry on a persisted message whose delivery was lost", () => {
     const onRetryMessage = vi.fn();
@@ -484,7 +484,7 @@ describe("Timeline", () => {
     expect(screen.getByTestId("reply-announcement").textContent).toBe("Reply finished");
   });
 
-  // §10.4: the hub's transcript-recovery notice is history, and it is a
+  // The hub's transcript-recovery notice is history, and it is a
   // sentence, not a card.
   it("renders a system status message as plain text with no card", () => {
     renderTimeline({

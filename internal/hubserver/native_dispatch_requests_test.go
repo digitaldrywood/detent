@@ -657,7 +657,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 	}
 
 	// A conversation continuation bumps no revision and moves no lane, so it
-	// has to be written down as an explicit request (decisions section 10).
+	// has to be written down as an explicit request.
 	f.continueConversation(t, "continue-1")
 	if !f.candidate(t) {
 		t.Fatal("a continuation must re-offer the item")

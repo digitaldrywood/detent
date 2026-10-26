@@ -20,9 +20,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Relay tickets (decisions section 18.2).
+// Relay tickets.
 //
-// Browsers cannot set headers on a WebSocket upgrade, so section 12's CSRF rule
+// Browsers cannot set headers on a WebSocket upgrade, so the hosted JSON API's CSRF rule
 // cannot be met on the socket itself. The ticket moves the check to a request
 // that can carry it: an ordinary POST with the CSRF header and a checked
 // Origin mints a single-use secret, bound to one workspace and to the session

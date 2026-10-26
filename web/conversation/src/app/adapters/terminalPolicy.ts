@@ -6,11 +6,11 @@ import {
 import { workspaceReasonSentence } from "../lib/workspaceStatus.ts";
 
 export interface TerminalPolicy {
-  /** Null where there is no issue, so no worktree can exist at all (§18.1). */
+  /** Null where there is no issue, so no worktree can exist at all. */
   readonly workItemId: string | null;
   /** The project grant's write flag. */
   readonly canWrite: boolean;
-  /** The project grant's `runners` flag, which §18.3 requires for a terminal. */
+  /** The project grant's `runners` flag, which the terminal contract requires for a terminal. */
   readonly canManageRunners: boolean;
   /** The membership role. A viewer never gets a terminal, whatever the grant says. */
   readonly role: string;
@@ -23,7 +23,7 @@ export interface TerminalPolicy {
    * What the runner reported for this project, or null before anything has.
    *
    * It is the bootstrap's `projects[].capabilities.terminal` until a workspace
-   * exists and the workspace's own afterwards, exactly as §18.10 says: "once a
+   * exists and the workspace's own afterwards, exactly as the keybinding rules say: "once a
    * workspace exists the panel reads the workspace's own capabilities, because
    * only that runner can serve it."
    */
@@ -71,11 +71,11 @@ export function terminalBlockedReason(policy: TerminalPolicy): string | null {
   // 4. The grant's `runners` flag, which is the terminal's own extra authority.
   if (!policy.canManageRunners) return TERMINAL_POLICY_SENTENCES.noRunnerGrant;
   if (!policy.workspacesEnabled) return TERMINAL_POLICY_SENTENCES.serviceDisabled;
-  // 5. A workspace that exists and is over. Unparaphrased, per §18.1.
+  // 5. A workspace that exists and is over. Unparaphrased, per the workspace session contract.
   if (policy.workspaceState !== null && WORKSPACE_UNUSABLE_STATES.has(policy.workspaceState)) {
     return workspaceReasonSentence(policy.workspaceState, policy.workspaceReason ?? null);
   }
-  // 6. A workspace on a running attempt refuses a terminal outright (§18.1).
+  // 6. A workspace on a running attempt refuses a terminal outright.
   if (policy.workspaceReadOnly) return TERMINAL_POLICY_SENTENCES.attemptRunning;
   // 7. The request for a workspace failed outright. Already a sentence, and it
   //    is the hub's own — which is where "terminals are turned off for this

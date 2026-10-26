@@ -258,8 +258,8 @@ func exerciseNativeExecution(t *testing.T, scheduler *Scheduler, native *NativeC
 		t.Fatal("native recovery replayed historical worker discussion")
 	}
 	identity := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
-	// The stored attempt diff rides every checkpoint and the finish
-	// (decisions section 18.5). The source is installed the way the runner
+	// The stored attempt diff rides every checkpoint and the finish.
+	// The source is installed the way the runner
 	// installs it, once the worktree exists.
 	diffs, ok := execution.(runner.DiffExecution)
 	if !ok {

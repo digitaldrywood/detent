@@ -62,8 +62,8 @@ func TestWorkItemChangeSurfaceReportsNoConnector(t *testing.T) {
 // dogfood run's project, and the browser preview fixture's: a native project
 // that does have a GitHub repository bound and enabled, with a pull request
 // projected for a different item. A conversation-driven attempt posts its diff
-// and opens no pull request of its own -- opening one is the explicit action
-// of decisions section 18.6 -- so the surface states a connector, a change at
+// and opens no pull request of its own -- opening one is an explicit action
+// -- so the surface states a connector, a change at
 // the item's current revision, and no pull request at all. That is the answer
 // the promotion rule promotes on now; it used to demand a pull request that
 // nothing was going to open.
@@ -115,8 +115,8 @@ func TestWorkItemChangeSurfaceReportsAConnectorWithNoPullRequest(t *testing.T) {
 
 // TestWorkItemChangeSurfaceFollowsTheAttemptDiff is the fact a native
 // promotion is judged on: an attempt that succeeded and posted its diff
-// (decisions section 18.5) covers the item at the revision it was dispatched
-// for, which is the same revision section 9.2.1's claim brake compares.
+// covers the item at the revision it was dispatched
+// for, which is the same revision the claim-offer rule's claim brake compares.
 func TestWorkItemChangeSurfaceFollowsTheAttemptDiff(t *testing.T) {
 	t.Parallel()
 
@@ -166,7 +166,7 @@ func TestWorkItemChangeSurfaceFollowsTheAttemptDiff(t *testing.T) {
 
 // TestWorkItemChangeSurfaceReportsTheChangeRequest covers the other source of
 // a recorded change: the hub's own change request, reported alone because the
-// project has no connector to mirror it (decisions section 18.6).
+// project has no connector to mirror it.
 func TestWorkItemChangeSurfaceReportsTheChangeRequest(t *testing.T) {
 	t.Parallel()
 

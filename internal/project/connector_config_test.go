@@ -230,7 +230,7 @@ func TestProjectOrchestratorConfigIncludesHostPressure(t *testing.T) {
 		GlobalIO:     globalconfig.IO{PressureFullAvg10Threshold: 5, DegradedMaxConcurrentAgents: 1, PollIntervalMS: 500},
 		GlobalCPU:    globalconfig.CPU{PressureSomeAvg10Threshold: 80, DegradedMaxConcurrentAgents: 2, PollIntervalMS: 750},
 	}
-	got := projectOrchestratorConfig(project, workflowconfig.Default())
+	got := projectOrchestratorConfig(project, workflowconfig.Workflow{Config: workflowconfig.Default()})
 
 	if got.MemoryPressureSomeAvg60Max != 10 || got.MemoryPressurePollInterval != time.Second {
 		t.Fatalf("memory pressure config = %.2f %s", got.MemoryPressureSomeAvg60Max, got.MemoryPressurePollInterval)

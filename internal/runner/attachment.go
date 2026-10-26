@@ -6,12 +6,12 @@ import (
 	"unicode/utf8"
 )
 
-// Attachments on a turn (decisions section 17.1). A user drops files into the
+// Attachments on a turn. A user drops files into the
 // chat; the hub stores them and names them on the control, the runner
 // downloads them, and the provider sees an image as image input and a text
 // file as a delimited data block. The block is data, never instructions:
 // the delimiters inside it are escaped so quoted content cannot close its own
-// fence, the same rule the conversation transcript follows (section 10.6).
+// fence, the same rule the conversation transcript follows.
 
 const (
 	// maxAttachmentBlockBytes bounds the text a single turn's data block

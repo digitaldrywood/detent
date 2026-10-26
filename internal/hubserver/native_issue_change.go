@@ -11,19 +11,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// A work item's change review surface (decisions sections 18.5 and 18.6).
+// A work item's change review surface.
 //
 // A completed item is only ever moved out of its active lane by the
 // orchestrator, and the orchestrator's readiness rule was a pull request and
 // nothing else: every gate kind but artifact required the issue to carry an
 // open pull request. A hub-native item never has one, so a native project's
 // completed item was never judged ready and the promotion was never even
-// attempted -- operations.md section 8, the seventh dogfood run's "What did
-// not happen: the promotion".
+// attempted.
 //
 // This is what a native item is judged on instead. Two facts, and the first
 // has to be stated rather than inferred from a missing pull request: a project
-// with no GitHub connector can never produce one (18.6, "projects without a
+// with no GitHub connector can never produce one (the pull request contract, "projects without a
 // GitHub connector show the change request alone"), while a project that has a
 // connector may simply not have opened the pull request yet. Those are
 // different situations and a promotion decides them differently.
@@ -55,7 +54,7 @@ func readNativeIssueChange(ctx context.Context, query nativeQueryer, scope nativ
 		return change, nil
 	}
 	change.ChangeID = request.ID
-	// The hub's own change request is open until it merges, and 18.6 reports
+	// The hub's own change request is open until it merges, and the pull request contract reports
 	// the change request alone when nothing mirrors it.
 	change.State = "open"
 	version, versionFound, err := readNativeChangeVersion(ctx, query, request)
@@ -144,14 +143,14 @@ func readNativeChangeVersion(ctx context.Context, query nativeQueryer, request t
 
 // readNativeChangeRevision reports the highest work item revision a succeeded
 // attempt recorded a change for: a non-empty stored attempt diff at the
-// attempt's final sequence (section 18.5, posted before the run event that
+// attempt's final sequence (the Diff contract, posted before the run event that
 // references it, so the final diff lands before run.finished) or a change
 // version the attempt published. An empty diff is a clean worktree, and an
 // earlier checkpoint's diff is not what the attempt finished with when the
 // final post failed, so neither is credited.
 //
 // The revision is the attempt's own recorded work_item_revision, which is the
-// number section 9.2.1's claim clause already compares, so the two brakes
+// number the claim-offer rule's claim clause already compares, so the two brakes
 // agree on what "the item as it stands" means. Zero means no attempt has
 // recorded anything for the item.
 func readNativeChangeRevision(ctx context.Context, query nativeQueryer, scope nativeScope, item string) (tracker.Revision, error) {

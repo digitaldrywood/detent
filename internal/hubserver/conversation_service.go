@@ -47,7 +47,7 @@ type ConversationConfig struct {
 	ControlQueueSize int
 	// SettleWindow is how long a conversation whose execution has ended or
 	// never started may sit without activity before it settles. Zero selects
-	// defaultConversationSettleWindow (decisions section 14).
+	// defaultConversationSettleWindow.
 	SettleWindow time.Duration
 }
 
@@ -73,7 +73,7 @@ const (
 	// human answer when the configuration names no timeout.
 	defaultConversationQuestionTimeout = 24 * time.Hour
 	// defaultConversationSettleWindow is the project settle window when the
-	// configuration names none (decisions section 14).
+	// configuration names none.
 	defaultConversationSettleWindow = 24 * time.Hour
 	// conversationSettleBatch bounds one settle sweep, and
 	// conversationReferencePage bounds one "referenced from" listing.
@@ -201,7 +201,7 @@ func (c *conversationService) start(ctx context.Context) error {
 // settleLoop settles conversations that have been finished and idle for the
 // project's settle window. The sweep is periodic rather than scheduled: a
 // conversation that wakes in the meantime is simply not a candidate when the
-// sweep next runs (decisions section 14).
+// sweep next runs.
 func (c *conversationService) settleLoop() {
 	defer close(c.settled)
 	ticker := time.NewTicker(conversationSettleInterval)
@@ -232,7 +232,7 @@ func (c *conversationService) settleLoop() {
 				c.logger.Info("conversation.settle_sweep", "settled", settled)
 			}
 			// Abandoned uploads go with the same tick: nobody sent them and
-			// their bytes are the expensive part (section 17.1).
+			// their bytes are the expensive part.
 			swept, err := c.sweepAttachments(context.Background())
 			if err != nil {
 				c.logger.Warn("conversation.attachment_sweep_failed", "error", err)
@@ -537,7 +537,7 @@ func conversationActorFor(scope nativeScope) conversation.Actor {
 	return conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: scope.credential.ID}
 }
 
-// Public resource projections (contract section 5).
+// Public resource projections (the conversation contract).
 
 type conversationOwnerResource struct {
 	PrincipalID string `json:"principal_id"`
@@ -554,7 +554,7 @@ type conversationExecutionResource struct {
 	ThreadID  *string `json:"thread_id"`
 	TurnID    *string `json:"turn_id"`
 	// Resume reports what the bound runner continued from: its own provider
-	// thread, a transcript, or nothing (decisions section 10.4).
+	// thread, a transcript, or nothing.
 	Resume       string                    `json:"resume"`
 	Capabilities conversation.Capabilities `json:"capabilities"`
 	Error        *string                   `json:"error"`
@@ -584,7 +584,7 @@ type conversationResource struct {
 	Status         conversation.Status     `json:"status"`
 	Archived       bool                    `json:"archived"`
 	// Preferences are the conversation's turn preferences; each field is
-	// "auto" or an explicit value (decisions section 14).
+	// "auto" or an explicit value.
 	Preferences       conversation.Preferences      `json:"preferences"`
 	SubjectWorkItemID *string                       `json:"subject_work_item_id,omitempty"`
 	WorkItemID        *string                       `json:"work_item_id"`
@@ -598,7 +598,7 @@ type conversationResource struct {
 	UpdatedAt         time.Time                     `json:"updated_at"`
 	LastMessageAt     *time.Time                    `json:"last_message_at"`
 	// MessageCount is the whole history, so the share confirmation can say
-	// how much becomes readable (decisions section 10.5).
+	// how much becomes readable.
 	MessageCount int64 `json:"message_count"`
 }
 
@@ -619,10 +619,10 @@ type conversationMessageResource struct {
 	Actor          conversation.Actor       `json:"actor"`
 	CommandKey     *string                  `json:"command_key"`
 	// References are the issues and conversations the text names, resolved
-	// against the project (decisions section 14).
+	// against the project.
 	References []conversationReferenceResource `json:"references"`
 	// Attachments are the uploads the message carries, each with the URL
-	// that streams it (decisions section 17.1).
+	// that streams it.
 	Attachments []conversation.Attachment `json:"attachments"`
 	CreatedAt   time.Time                 `json:"created_at"`
 	UpdatedAt   time.Time                 `json:"updated_at"`
@@ -890,7 +890,7 @@ func (c *conversationService) appendMessage(ctx context.Context, tx *sql.Tx, rec
 		return err
 	}
 	// A new message is activity: a settled conversation wakes before the
-	// message is announced (decisions section 14).
+	// message is announced.
 	if err := c.unsettle(ctx, tx, record, now); err != nil {
 		return err
 	}
@@ -901,7 +901,7 @@ func (c *conversationService) appendMessage(ctx context.Context, tx *sql.Tx, rec
 }
 
 // unsettle returns a settled conversation to active. Any accepted command or
-// new message wakes it; there is no unarchive action (decisions section 14).
+// new message wakes it; there is no unarchive action.
 func (c *conversationService) unsettle(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
 	if record.Status != conversation.StatusSettled {
 		return nil
@@ -1008,8 +1008,8 @@ WHERE i.organization_id = ? AND lower(p.name) = ? AND i.number = ?`
 
 // updateMessage persists a changed message and its message.updated event.
 // A message that reached a terminal delivery has its final text, so its
-// references are extracted then rather than on every streamed delta
-// (decisions section 14). For any other delivery the caller's record must
+// references are extracted then rather than on every streamed delta.
+// For any other delivery the caller's record must
 // already carry its stored references, which every read path fills, because
 // the event it emits replaces the client's copy of the message.
 func (c *conversationService) updateMessage(ctx context.Context, tx *sql.Tx, message conversationMessageRecord, now time.Time) error {

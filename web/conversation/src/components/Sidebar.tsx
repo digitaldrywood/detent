@@ -4536,7 +4536,7 @@ export default function Sidebar() {
       >
         <SidebarGroup className="ps-[calc(var(--sidebar-content-inset)+1px)] pe-[var(--sidebar-content-inset)] pb-1 pt-0">
           {/* Seam (2 of 2): Detent's cross-cutting destinations, above the
-              thread list (decisions.md §17.4). */}
+              thread list. */}
           <SidebarDestinations />
           {isSearchingThreads ? (
             threadSearchResults.length > 0 ? (

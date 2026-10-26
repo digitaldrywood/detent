@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-/** The four windows the range control offers (§17.5). */
+/** The four windows the range control offers. */
 export const UsageRange = Schema.Literals(["24h", "7d", "30d", "90d"]);
 export type UsageRange = typeof UsageRange.Type;
 
@@ -120,7 +120,7 @@ export type UsageRunner = typeof UsageRunner.Type;
 
 /**
  * The whole report. `currency` is optional and defaults to USD on the client,
- * because §17.5 writes cost as a number and the hub's price table is priced in
+ * because the usage report writes cost as a number and the hub's price table is priced in
  * one currency at a time.
  */
 export const UsageReport = Schema.Struct({

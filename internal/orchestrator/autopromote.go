@@ -29,6 +29,7 @@ type AutoPromoteConfig struct {
 	TerminalStates        []string
 	WorkpadStructuredOnly bool
 	Gate                  gate.Config
+	ValidatorWorkflow     string
 }
 
 func (cfg AutoPromoteConfig) humanReviewEnabled() bool {

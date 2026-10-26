@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Per-file diffs (decisions section 18.5). GitDiffFrom answers one patch blob,
+// Per-file diffs. GitDiffFrom answers one patch blob,
 // which is what a prompt wants; the stored attempt diff wants the same change
 // split per file with counts, so the hub can serve a file list without
 // re-parsing a patch on every read.

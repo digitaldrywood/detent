@@ -2,7 +2,7 @@
 //
 // The one screen a Detent staff account reaches before it has any access to
 // the organization it is about to support, so — like `/login` — it renders
-// without the bootstrap payload (decisions.md §12, "Serving"): the hub serves
+// without the bootstrap payload: the hub serves
 // the shell for `/support` to anybody holding a session, and `/app/bootstrap`
 // answers 403 until the support session has actually been started.
 //

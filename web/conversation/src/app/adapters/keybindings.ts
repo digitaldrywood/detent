@@ -211,7 +211,7 @@ export function keybindingCatalogue(platform?: string): readonly KeybindingCatal
 //
 // `DEFAULT_BINDINGS` is a frozen const, and the chords a project's actions
 // carry are not in it: they arrive per project, from the hub, and change while
-// the tab is open (decisions.md §18.12). So they live in a registry beside it,
+// the tab is open. So they live in a registry beside it,
 // and the three functions the copied components call consult that registry
 // after the static table.
 //

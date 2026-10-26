@@ -86,8 +86,8 @@ const (
 // Valid reports whether the visibility is a known value.
 func (v Visibility) Valid() bool { return v == VisibilityPrivate || v == VisibilityShared }
 
-// Status groups a conversation for the sidebar. Settled replaces Archive
-// (decisions section 14): a settled conversation is finished and idle, not
+// Status groups a conversation for the sidebar. Settled replaces Archive:
+// a settled conversation is finished and idle, not
 // read-only, and any accepted command or new message unsettles it.
 type Status string
 
@@ -235,7 +235,7 @@ const (
 	CommandCancel    CommandKind = "cancel"
 	// CommandRetry asks the hub to hand a message that could not be
 	// established to the next worker. Nothing is ever replayed
-	// automatically (decisions section 10.3).
+	// automatically.
 	CommandRetry CommandKind = "retry"
 )
 

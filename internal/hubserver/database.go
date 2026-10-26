@@ -69,7 +69,7 @@ type database struct {
 	// workspaceRetainAfterRun is workspaces.retain_after_run, read by the
 	// claim gate: inside that window an attempt's worktree still exists on
 	// the runner that produced it, and only that runner may serve a
-	// workspace on the attempt (decisions section 18.1).
+	// workspace on the attempt.
 	workspaceRetainAfterRun time.Duration
 	// workspaceTerminalIsolation is workspaces.terminal.isolation, read by the
 	// claim gate so a runner whose terminal is less confined than the

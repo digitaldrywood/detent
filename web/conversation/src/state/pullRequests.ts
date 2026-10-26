@@ -35,7 +35,7 @@ export const pullRequestEnvironment = {
  * leaves both pull-request fields null, because a conversation has no checkout
  * for a branch to belong to — so `useLinkedThreadPullRequest` returns null
  * before either is consulted. They exist so that file keeps its upstream
- * imports (decisions.md §16). A milestone that links a change request to a
+ * imports. A milestone that links a change request to a
  * conversation fills these two in and the copied row lights up unchanged.
  */
 const UNRESOLVED_SUMMARY = Atom.make(

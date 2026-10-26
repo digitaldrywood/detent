@@ -55,7 +55,7 @@ func TestWorkerTranscriptDirectories(t *testing.T) {
 					}
 				}
 				for range 2 {
-					if _, _, err := prepareWorkerCodexHome(source, home, launchd); err != nil {
+					if _, err := prepareWorkerCodexHome(source, home, launchd); err != nil {
 						t.Fatal(err)
 					}
 					for _, dir := range []string{"sessions", "archived_sessions"} {

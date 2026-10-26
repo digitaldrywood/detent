@@ -6,7 +6,7 @@ These are the accessibility rules for the Cloud UI: what the shared components p
 
 Ordinary text meets 4.5:1 against the surface it is painted on, and large text (24px, or 18.66px bold) meets 3:1 ([WCAG 1.4.3](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html)). Icons, focus indicators and control boundaries that carry meaning meet 3:1 ([WCAG 1.4.11](https://www.w3.org/WAI/WCAG22/Understanding/non-text-contrast.html)).
 
-The [color contrast](color-review.md) page measures the token pairs and states [which are safe for text](color-review.md#using-the-pairs). In short: use the role foregrounds on their own surfaces; keep `muted-foreground` at full strength for anything a person must read; use the `update` role for icons and large text only; never put text on a tint of a solid action colour lighter than the button's own hover; and pair every sidebar icon with a visible label.
+[Foundations](foundations.md#contrast) measures the token pairs and states [which are safe for text](foundations.md#using-the-pairs). In short: use the role foregrounds on their own surfaces; keep `muted-foreground` at full strength for anything a person must read; use the `update` role for icons and large text only; never put text on a tint of a solid action colour lighter than the button's own hover; and pair every sidebar icon with a visible label.
 
 Static values do not prove the painted result. Opacity modifiers, glass surfaces, grain and nested translucent fills change it. When a change composites colours, measure the rendered pixels in both themes.
 

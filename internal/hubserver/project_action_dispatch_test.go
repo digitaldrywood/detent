@@ -9,7 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Handing a queued run to the runner (decisions section 18.12).
+// Handing a queued run to the runner.
 //
 // The eighth dogfood run queued a run through the API, got its 202, and watched
 // the row sit queued for three minutes and forty seconds: the process only ever
@@ -69,7 +69,7 @@ func TestWorkspaceHubDispatchesAQueuedRunToTheRunner(t *testing.T) {
 	if handed.Seq != 1 || handed.Stream == "" {
 		t.Fatalf("the run frame = %+v, want its own stream and sequence", handed)
 	}
-	// No actor stamp: section 18.2's stamp says which person asked, and nobody
+	// No actor stamp: the relay protocol's stamp says which person asked, and nobody
 	// did. Inventing one would name the wrong thing in the runner's audit.
 	if handed.Actor != nil {
 		t.Fatalf("the run frame carried actor %+v, want none", handed.Actor)

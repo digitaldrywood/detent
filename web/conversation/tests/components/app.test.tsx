@@ -77,7 +77,7 @@ interface MountOptions {
   readonly bootstrap?: (bootstrap: Bootstrap) => Bootstrap;
   readonly storedProject?: string;
   readonly coordinator?: CoordinatorMode;
-  /** Flipped on the hub after any setup, before the client boots (§10.11). */
+  /** Flipped on the hub after any setup, before the client boots. */
   readonly readOnly?: boolean;
   /** Resolved after `seed`, so a test can open a chat the seed created. */
   readonly path?: string | (() => string);
@@ -462,7 +462,7 @@ describe("the conversation shell", () => {
     fireEvent.click(within(form).getByRole("button", { name: "Create linked issue" }));
 
     // Linking moves the reader to the issue: the issue is the page now and the
-    // conversation is a surface on it (decisions.md §19.4), so `/chat/c/:id`
+    // conversation is a surface on it, so `/chat/c/:id`
     // for a linked chat redirects to `/work/i/:workItem?panel=conversation`
     // and the transcript comes with it, in the right panel.
     await waitFor(
@@ -512,7 +512,7 @@ describe("the conversation shell", () => {
     fireEvent.submit(option.closest("form") as HTMLFormElement);
 
     // The answer lands, the options go, and the transcript keeps the record so
-    // a second reader finds the resolution rather than a second form (§5).
+    // a second reader finds the resolution rather than a second form.
     await waitFor(
       () => expect(screen.getByTestId("stored-answer").textContent).toContain("Half the lease"),
       { timeout: 5_000 },
@@ -572,7 +572,7 @@ describe("the conversation shell", () => {
     const note = await screen.findByTestId("coordinator-note");
     expect(note.textContent).toContain("No runner can answer chats in this project yet.");
     // The one create action is still there, and so is the send: the message
-    // queues and waits rather than being refused (decisions.md §9.1).
+    // queues and waits rather than being refused.
     expect(screen.getAllByRole("button", { name: "New thread" })).toHaveLength(1);
     expect(screen.getByLabelText<HTMLButtonElement>("Send message").disabled).toBe(true);
 
@@ -588,7 +588,7 @@ describe("the conversation shell", () => {
 
   // The shortcuts are wired in the shell, so this is the only place that can
   // see that `/` reaches the real search box and that `Mod+Shift+N` calls the
-  // one new-chat action rather than a second one of its own (B.13, B.14).
+  // one new-chat action rather than a second one of its own.
   it("answers the two keyboard shortcuts from anywhere in the shell", async () => {
     const { router } = await mountApp();
     const composer = await screen.findByLabelText<HTMLElement>("Message", undefined, {
@@ -627,7 +627,7 @@ describe("the conversation shell", () => {
     expect(await screen.findByTestId("hero-headline")).toBeDefined();
   }, 30_000);
 
-  // §10.11: a viewer reads the chat and is offered nothing that would write.
+  // A viewer reads the chat and is offered nothing that would write.
   it("gives a read-only viewer the transcript and none of the controls", async () => {
     let conversationId = "";
     await mountApp({
@@ -668,7 +668,7 @@ describe("the conversation shell", () => {
     expect(screen.queryByTestId("conversation-menu-button")).toBeNull();
   }, 30_000);
 
-  // §13.9: Settled replaced Archive, and the client offers no archive action,
+  // Settled replaced Archive, and the client offers no archive action,
   // no banner and no closed composer — a settled chat is one you can still
   // write in, and writing in it is what unsettles it.
   it("offers no archive action, and a settled chat stays writable", async () => {

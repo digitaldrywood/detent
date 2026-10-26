@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Relay frames (decisions section 18.2). One JSON object per WebSocket
+// Relay frames. One JSON object per WebSocket
 // message, in both directions, on both the person and the runner side. The
 // hub is the only writer of Actor: a client that supplies one has it
 // overwritten, so a runner can trust the stamp.
@@ -21,10 +21,10 @@ const (
 	ChannelFiles    = "files"
 	ChannelDiff     = "diff"
 	ChannelPreview  = "preview"
-	// ChannelExec runs one project action non-interactively (section 18.12).
+	// ChannelExec runs one project action non-interactively.
 	ChannelExec = "exec"
 	// ChannelGit carries the header's git action group: the worktree's status,
-	// a commit and a push (section 18.13). It is the only channel that writes
+	// a commit and a push. It is the only channel that writes
 	// to the repository, which is why its frames need write on the project and
 	// why a read-only workspace refuses two of its three types.
 	ChannelGit = "git"
@@ -92,11 +92,11 @@ const (
 	// lease was lost. The runner drops it; it is never executed.
 	CodeStaleExecution = "stale_execution"
 	// CodeUnknownDelivery reports a person-originated frame whose delivery
-	// could not be established. It is never replayed, the same rule section 5
+	// could not be established. It is never replayed, the same rule the conversation contract
 	// applies to controls.
 	CodeUnknownDelivery = "unknown_delivery"
 	// CodeNotFound, CodeForbidden, CodeTooLarge and CodeDenied are the files
-	// and diff channel failures (section 18.4).
+	// and diff channel failures.
 	CodeNotFound  = "not_found"
 	CodeForbidden = "forbidden"
 	CodeTooLarge  = "too_large"
@@ -113,13 +113,13 @@ const (
 	// CodeWorkspaceClosed reports that the workspace itself ended, so no
 	// stream on this connection can continue.
 	CodeWorkspaceClosed = "workspace_closed"
-	// CodeGitFailed reports a git command that ran and failed (section 18.13).
+	// CodeGitFailed reports a git command that ran and failed.
 	// It is not a refusal: the request was allowed and git answered no. The
 	// payload carries git's own stderr, because a person acting on a failed
 	// push needs what git said rather than a paraphrase of it.
 	CodeGitFailed = "git_failed"
 	// CodeAlreadyRunning answers a run frame for a run another executor has
-	// already taken (section 18.12). A queued run has two possible executors --
+	// already taken. A queued run has two possible executors --
 	// the person who opens the exec channel for it, and the hub handing it to
 	// the runner that holds the workspace -- and exactly one of them may start
 	// the process. The loser is told which refusal this is rather than a plain
@@ -160,7 +160,7 @@ const (
 	// TicketBytes is the ticket's randomness.
 	TicketBytes = 32
 	// HeartbeatInterval and MissedHeartbeats decide unreachability, and
-	// LeaseTTL decides lease_lost (section 18.1).
+	// LeaseTTL decides lease_lost.
 	HeartbeatInterval = 30 * time.Second
 	MissedHeartbeats  = 2
 	LeaseTTL          = 90 * time.Second
@@ -176,8 +176,8 @@ type Actor struct {
 	PrincipalID  string `json:"principal_id"`
 	Subject      string `json:"subject"`
 	ConnectionID string `json:"connection_id"`
-	// Name and Email are who a commit on the git channel is authored as
-	// (section 18.13). The hub stamps them from the hosted principal for the
+	// Name and Email are who a commit on the git channel is authored as.
+	// The hub stamps them from the hosted principal for the
 	// same reason it stamps the rest of the tuple: a client that could name
 	// its own author could attribute a commit to anybody.
 	Name  string `json:"name,omitempty"`
@@ -203,7 +203,7 @@ type ErrorPayload struct {
 	Message string `json:"message,omitempty"`
 	// Seq names the frame the error is about, for unknown_delivery.
 	Seq int64 `json:"seq,omitempty"`
-	// Stderr is git's own output on a CodeGitFailed answer (section 18.13).
+	// Stderr is git's own output on a CodeGitFailed answer.
 	// It rides on the shared error payload rather than on a shape of its own,
 	// so every client keeps one error-handling path.
 	Stderr string `json:"stderr,omitempty"`

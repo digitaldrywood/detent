@@ -51,7 +51,7 @@ func runnerOperationAllowed(c echo.Context, operations []string) bool {
 		// Binding, heartbeating and serving a workspace session is the same
 		// authority as claiming work: the runner is taking and holding a
 		// dispatched item, and the item happens to be a worktree rather than
-		// a turn (decisions section 18.1).
+		// a turn.
 		operation = runnerauth.Claim
 	case path == nativeBase+"/work-items/:item/events", path == nativeBase+"/conversations/:conversation/turn-events" && c.Request().Method == http.MethodPost:
 		operation = runnerauth.Events
@@ -247,7 +247,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 		OS                   string                              `json:"os,omitempty"`
 		Architecture         string                              `json:"architecture,omitempty"`
 		// WorkspaceCapabilities and WorkspaceIsolation are what this runner
-		// can serve for a workspace session (decisions section 18.10). They
+		// can serve for a workspace session. They
 		// ride the heartbeat beside the provider reports because the claim
 		// gate asks one question -- can this runner serve this workspace, and
 		// was it saying so recently -- and freshness means nothing unless the

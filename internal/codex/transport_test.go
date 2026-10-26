@@ -1593,3 +1593,25 @@ func assertChannelClosed(t *testing.T, ch <-chan struct{}, scenario string, name
 		t.Fatalf("%s: %s still running after RunTurn returned", scenario, name)
 	}
 }
+
+func TestLocalTransportPreparationFailureIsStartupFailure(t *testing.T) {
+	t.Parallel()
+	prepareErr := errors.New("parse Codex config: invalid value")
+	started := false
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		started = true
+		return exec.CommandContext(ctx, "true")
+	}, WithLaunchPreparation(func(context.Context) error { return prepareErr }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = factory.NewTransport(t.Context())
+	if !errors.Is(err, prepareErr) || started {
+		t.Fatalf("NewTransport() error = %v, command built = %t; want preparation failure before launch", err, started)
+	}
+	now := time.Now()
+	details, ok := ClassifyCapacityError(startupStageError(fmt.Errorf("start codex app-server transport: %w", err), "process/start", now, now, 0), nil, now)
+	if !ok || details.Kind != backendcapacity.StartupFailureKind {
+		t.Fatalf("classification = %+v, %t; want instance startup failure", details, ok)
+	}
+}

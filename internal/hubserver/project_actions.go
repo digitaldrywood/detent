@@ -16,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Project actions and their runs (decisions section 18.12).
+// Project actions and their runs.
 //
 // An action is a command the project wrote down once: every conversation in
 // the project offers the same actions, and a worktree opened tomorrow runs the
@@ -90,7 +90,7 @@ func actionKeybindingTaken() error {
 
 // actionRunReadOnly refuses a run on a workspace held read-only while its
 // attempt runs. A command writes into the worktree, and the worktree is the
-// one the model is editing (section 18.1's read-only rule, applied to a
+// one the model is editing (the workspace session contract's read-only rule, applied to a
 // command rather than to a terminal).
 func actionRunReadOnly() error {
 	return &nativeError{
@@ -101,7 +101,7 @@ func actionRunReadOnly() error {
 }
 
 // actionRunCapabilityMissing refuses a run on a workspace whose runner does
-// not serve the exec surface. It is phrased the way section 18.1's other
+// not serve the exec surface. It is phrased the way the workspace session contract's other
 // surface refusals are: the workspace is real and readable, and this one
 // surface is not available on it.
 func actionRunCapabilityMissing() error {
@@ -279,15 +279,15 @@ func (s *Service) readActionRunForRequest(c echo.Context) (actionRunRecord, erro
 }
 
 // sweepActionRuns fails every run left queued or running on a workspace that
-// has ended (decisions section 18.12).
+// has ended.
 //
 // The relay covers the runs it started: every path that tears a stream or a
 // connection down writes a terminal row. A run the runner started itself for
 // run_on_worktree_creation has no stream and no room entry, so the relay knows
 // nothing about it, and its whole record is the report the runner sends. A
 // crashed runner, a hub restart, or any refusal the runner does not retry
-// would leave that row running for ever -- which is the one outcome section
-// 18.12 exists to prevent, so it is swept rather than left to a retry the hub
+// would leave that row running for ever -- which is the one outcome the project actions contract
+// exists to prevent, so it is swept rather than left to a retry the hub
 // cannot see.
 //
 // It keys on the workspace's terminal state and never on a run's age. That is
@@ -350,7 +350,7 @@ func actionRunReasonFor(workspaceReason string) string {
 	return workspacesession.RunReasonWorkspaceEnd
 }
 
-// validActionRunReason reports whether value names one of section 18.12's
+// validActionRunReason reports whether value names one of the project actions contract's
 // reasons a run failed without exiting. A run that exited carries no reason:
 // its exit code is the whole story, which is why an empty reason is legal
 // everywhere this is called and is checked by the caller rather than here.
@@ -390,8 +390,7 @@ func forwardRunStatus(from, to string) bool {
 // outcome.
 var errActionRunClaimed = errors.New("the action run is already claimed")
 
-// claimActionRun hands one queued run to exactly one executor (decisions
-// section 18.12).
+// claimActionRun hands one queued run to exactly one executor.
 //
 // A queued run has two of them. A person who opens the exec channel for it is
 // the one the contract prefers, because only their stream carries the output as

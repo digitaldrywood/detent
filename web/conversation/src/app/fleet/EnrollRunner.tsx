@@ -392,7 +392,7 @@ export function EnrollRunnerDialog({
         ))}
       </div>
     </fieldset>
-    {platform === "windows" ? <p className="text-xs text-muted-foreground">For Sandbox, use WSL2 instead. See the <a className="underline" href="https://github.com/digitaldrywood/detent/blob/main/docs/windows-runners.md">Windows runner guide</a>.</p> : null}
+    {platform === "windows" ? <p className="text-xs text-muted-foreground">For Sandbox, use WSL2 instead. See the <a className="underline" href="https://github.com/digitaldrywood/detent/blob/main/docs/cli.md#windows-runners">Windows runner guide</a>.</p> : null}
     <p className="text-xs text-muted-foreground">Installs the latest release for {platform === "macos" ? "macOS" : platform === "windows" ? "Windows (PowerShell)" : "Linux"}, automatically detecting amd64 or arm64.</p>
     <CopyableCommand value={platform === "windows" ? WINDOWS_INSTALL_DETENT_COMMAND : INSTALL_DETENT_COMMAND} label="the install command" />
     {platform === "macos" ? <>

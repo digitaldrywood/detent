@@ -3,7 +3,7 @@
 //
 // The hub addresses a change through its primary work item, so the page reads
 // the issue, the project and the change detail together, and the diff for the
-// selected round from the attempt that published it (§18.5). Approve binds to
+// selected round from the attempt that published it. Approve binds to
 // the current version — the hub refuses a stale approval with a 409 — and
 // Request changes carries the review text the next run reads as its
 // instructions. Neither moves the issue from here: that is the hub's rule for

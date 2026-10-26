@@ -546,15 +546,15 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		"Work on digitaldrywood/detent#22 attempt 2",
 		"## Existing workspace recovery",
 		"unpushed commits: 1",
-		"## Available skills",
-		"## Available skills\n\n- review",
 	} {
 		if !strings.Contains(codexClient.request.Prompt, want) {
 			t.Fatalf("codex prompt missing %q:\n%s", want, codexClient.request.Prompt)
 		}
 	}
-	if strings.Contains(codexClient.request.Prompt, "Issue needs code review.") {
-		t.Fatal("codex prompt includes skill trigger prose")
+	for _, unwanted := range []string{"## Available skills", "- review", "Issue needs code review."} {
+		if strings.Contains(codexClient.request.Prompt, unwanted) {
+			t.Fatalf("codex prompt lists repository skills %q", unwanted)
+		}
 	}
 	if workspaceBackend.recoveryCalls != 2 {
 		t.Fatalf("RecoveryState calls = %d, want initial and final checks", workspaceBackend.recoveryCalls)
@@ -567,9 +567,6 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if sessionStore.finished.FinalState != FinalStateCompleted || sessionStore.finished.TotalTokens != 125 || sessionStore.finished.Turns != 1 || sessionStore.finished.Model != "gpt-5-codex-resolved" {
 		t.Fatalf("SessionFinish = %#v, want completed session with tokens", sessionStore.finished)
-	}
-	if !result.SkillDraftProposed || !sessionStore.finished.SkillDraftProposed {
-		t.Fatalf("skill draft telemetry result/store = %v/%v, want true/true", result.SkillDraftProposed, sessionStore.finished.SkillDraftProposed)
 	}
 	if sessionStore.finished.ProviderThreadID != "thread-1" || sessionStore.finished.ProviderSessionID != "thread-1-turn-1" {
 		t.Fatalf("SessionFinish provider IDs = %#v, want thread-1/thread-1-turn-1", sessionStore.finished)

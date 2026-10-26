@@ -13,17 +13,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspaceterminal"
 )
 
-// The terminal channel on the runner (decisions section 18.3).
+// The terminal channel on the runner.
 //
 // It is the first channel on this session that is neither request/response
 // (files, git) nor one-shot streaming (exec). A PTY outlives the frame that
 // asked for it, outlives the frame that last fed it, and -- for the resume
-// window of section 18.2 -- outlives the socket it was speaking over. Every
+// window of the relay protocol -- outlives the socket it was speaking over. Every
 // piece of bookkeeping here exists because of one of those three.
 
 // terminalStream is one PTY held for one relay stream.
 //
-// A stream is never shared between connections (section 18.2), so one stream is
+// A stream is never shared between connections, so one stream is
 // exactly one PTY and the stream id is the whole key.
 type terminalStream struct {
 	channel  string
@@ -155,7 +155,7 @@ func (s *Session) handleTerminal(ctx context.Context, socket *websocket.Conn, fr
 	}
 	// Read-only is checked before the service is, and the order is the whole
 	// difference between two sentences a reader has to tell apart. A read-only
-	// workspace is one whose attempt is still running (section 18.1), and this
+	// workspace is one whose attempt is still running, and this
 	// session opened no terminal service for exactly that reason -- so a
 	// service-first check would answer "this runner does not serve terminals",
 	// which is false and sends the reader looking at their runner instead of at
@@ -176,7 +176,7 @@ func (s *Session) handleTerminal(ctx context.Context, socket *websocket.Conn, fr
 	}
 	// The lease is validated immediately before every frame is acted on, and
 	// for a terminal that means immediately before every keystroke reaches the
-	// PTY. Section 18.2 requires it and section 18.3 is why it matters: a frame
+	// PTY. The relay protocol requires it and the terminal contract is why it matters: a frame
 	// that arrives after lease loss would be typing into a worktree this
 	// generation no longer owns.
 	if !s.leaseValid() {
@@ -310,7 +310,7 @@ func (s *Session) watchTerminalExit(ctx context.Context, stream string) {
 	// The hub releases a stream's slot on close or closed and never on exit. A
 	// runner that stopped at the exit frame would leak one slot per terminal
 	// until the workspace hit its stream cap and started refusing the next
-	// open, which is exactly the leak section 18.12 writes out for exec.
+	// open, which is exactly the leak the project actions contract writes out for exec.
 	if err := s.push(ctx, workspacesession.Frame{
 		Channel: held.channel, Stream: stream, Type: workspacesession.TypeClosed,
 	}); err != nil {
@@ -393,7 +393,7 @@ func (s *Session) resizeTerminal(ctx context.Context, socket *websocket.Conn, fr
 }
 
 // maxConcurrentTerminals bounds how many PTYs one workspace holds at once. It
-// is the relay's own per-workspace stream cap (section 18.2), so a runner never
+// is the relay's own per-workspace stream cap, so a runner never
 // refuses an open the hub would have allowed, and never holds more shells than
 // there are streams to carry them.
 const maxConcurrentTerminals = workspacesession.MaxStreamsPerWorkspace
@@ -477,7 +477,7 @@ func (s *Session) closeTerminals(reason string) {
 
 // detachTerminals starts the resume window for every PTY this session holds.
 //
-// Section 18.2 gives a dropped connection 60 seconds to come back and says the
+// The relay protocol gives a dropped connection 60 seconds to come back and says the
 // runner keeps a disconnected PTY alive exactly that long. Two different
 // disconnections can reach a terminal, and only one of them arrives as a frame.
 // A person closing their tab leaves this runner's socket untouched: the hub

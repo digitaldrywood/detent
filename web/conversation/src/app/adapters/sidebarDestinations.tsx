@@ -43,7 +43,7 @@ export function SidebarLandmark({
 /**
  * The Browse group, from artifact screen 1's sidebar. `to: null` is a
  * destination this client does not serve yet: it renders disabled with one
- * tooltip saying so rather than as a link into a 404, because A.12's rule is
+ * tooltip saying so rather than as a link into a 404, because the rule is
  * that a control with nothing behind it must not look like a control that
  * works.
  */
@@ -201,7 +201,7 @@ export function SidebarDestinations(): React.ReactElement | null {
 
   return (
     <>
-      {/* The artifact's primary destination (A.1). It sits directly above the
+      {/* The artifact's primary destination. It sits directly above the
           thread list because Work is the other half of the same question. */}
       <SidebarMenu className="gap-px pb-1">
         {needsSetup ? <NavRow
@@ -305,7 +305,7 @@ export function SidebarDestinations(): React.ReactElement | null {
         </section>
       ) : null}
 
-      {/* Browse: the artifact's cross-cutting destinations (A.1, A.6). */}
+      {/* Browse: the artifact's cross-cutting destinations. */}
       <section aria-label="Browse" className="flex flex-col pb-1">
         <SectionHeader
           label="Browse"

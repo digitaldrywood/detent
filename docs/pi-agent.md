@@ -33,8 +33,9 @@ agents:
 The provider field selects Pi's provider; route models and per-turn reasoning
 effort use the existing model/role selection paths. Pi supports `off`, `minimal`,
 `low`, `medium`, `high`, `xhigh` and `max` thinking levels where the selected model
-supports them. Leave Pi out of automatic `agents.model_selection.backend_kinds`
-in this initial version: the backend does not expose a Detent model catalog.
+supports them. The backend does not expose a Detent model catalog, so a
+model-selection policy whose backend kinds include `pi_agent` fails instead of
+selecting a model; routes name an exact model instead.
 
 `options.tools` is an allowlist of the seven built-in tools above. Omitting it or
 setting an empty list enables all seven. Pi's built-in tools are sufficient for
@@ -43,7 +44,7 @@ otherwise Pi uses its native persistent session location. `shell` selects the
 configured command's shell. `stall_timeout_ms` optionally limits time without
 RPC records; zero disables it. The existing turn and session limits still apply.
 
-Keep read-only roles such as validation on another configured backend.
+Read-only roles such as validation therefore need another configured backend.
 
 Pi requires the operator's **native-trusted** runner isolation tier. It has no
 supported OS sandbox contract. Detent refuses sandboxed and read-only requests
@@ -62,14 +63,14 @@ Completion waits for `agent_settled`, including automatic retries following
 cache reads also recorded as cached input. Reported reasoning tokens are already
 included in output.
 
-Initial limitations:
+Limitations:
 
 - Resume returns Detent's existing unsupported-resume error. Session IDs remain
   observability data until persisted session/backend/model context can be
   verified; no session is silently reopened or replaced.
 - Detent dynamic tools, checkpoint/chat bridges, and live conversation control
   are not implemented. A request requiring supplemental tools is refused.
-- Persisted Pi history hydration is staged follow-up work. Live activity is
+- Persisted Pi history hydration is not implemented. Live activity is
   available; the history reader returns history-not-found for Pi instead of
   searching Codex logs.
 - RPC does not report an authentication status or reliable provider capacity
@@ -78,10 +79,8 @@ Initial limitations:
   classification. Launch/transport/protocol failures use the existing
   instance-owned backend-capacity outcome, including for local providers.
 
-Offline fixtures cover RPC dispatch, correlation, strict LF framing (including
-Unicode separators), text and tools, usage, retry completion, errors, callback
-rejection, timeout/cancellation, and descendant cleanup. An opt-in smoke test
-runs in a temporary isolated workspace with session storage inside it:
+An opt-in smoke test runs in a temporary isolated workspace with session storage
+inside it:
 
 ```sh
 DETENT_PI_SMOKE=1 DETENT_PI_PROVIDER=anthropic \

@@ -1,48 +1,18 @@
 # Project onboarding
 
-The shared product journey starts at `https://cloud.detent.build`: sign in, create
-or join an organization, then open a project explicitly shared with you. The
-organization chooser, creation/provisioning state, scoped Work/project navigation
-and billing reuse the existing Templ/HTMX shell. There is no forced tenant-domain
-navigation or persistent global billing banner. Preserve compact/cozy and narrow
-layouts, keyboard access, contextual errors and the tab's current run selection.
+Detent Cloud starts at `https://cloud.detent.build`: sign in, create or join an organization, then open a project shared with you. Organization administrators create projects; collaboration and runner management are separate explicit grants. Retrying project creation with the same name and the creator's write grant resumes that project, and infrastructure errors during setup do not require another organization or host identity.
 
-The organization lifecycle and acceptance trace below are the reviewed-design
-target for #2341/#2342/#2343, not shipped self-service behavior. Today's hosted
-implementation starts with a reserved organization; its project/runner setup
-is reused. Organization administrators create projects; collaboration and runner
-management remain separate explicit grants. Retrying project creation with the
-same name and creator's write grant resumes that project. Return to its scoped
-page to resume setup; infrastructure errors do not require another organization
-or host identity.
+## Default workflow
 
-A new hosted project starts with the workflow `Todo` → `In Progress` →
-`Merging` → `Done`, with `Blocked` and `Human Review` beside it. `Todo`, `In Progress` and
-`Merging` dispatch work; `Blocked` and `Human Review` neither dispatch nor end it. By
-default `review.human` is false, so nobody has to review a run. A run
-that committed a change publishes a version the policy already accepts, and the
-runner's orchestrator moves it straight to `Merging`, where the runner that
-holds the project lands the head on the base branch with plain git and the Hub
-finishes the issue in `Done`. A run that committed nothing moves to `Done`.
+A new hosted project starts with `Triage`, `Backlog`, `Todo`, `In Progress`, `Blocked`, `Human Review`, `Merging`, `Done` and `Cancelled`. `Todo`, `In Progress` and `Merging` dispatch work. `Triage` (linked GitHub intake and reporter filings), `Backlog`, `Blocked` and `Human Review` neither dispatch nor end it; `Done` and `Cancelled` are terminal.
 
-`Human Review` is where a Change Request waits for a person only when the
-project sets `review.human: true`. With the default `false`, an unaccepted
-version or refused landing moves to `Blocked` with its reason. A person approves the
-change in the client, which moves it to `Merging`, or requests changes, which
-sends it back to `In Progress`. `Human Review` is the default
-`auto_promote.source_state`.
+By default `review.human` is false, so nobody has to review a run. A run that committed a change publishes a version, and once the configured review, validation and audit stages accept it the runner's orchestrator moves it to `Merging`, where the runner that holds the project lands the head on the base branch with plain git and the Hub finishes the issue in `Done`. A run that committed nothing moves to `Done`.
 
-Hub migrations 36, 38, 39 and 41 move projects whose workflow is exactly an earlier
-template onto this one. A customized workflow is left unchanged; it needs a
-`Blocked` lane reachable from `In Progress` and `Merging` when `review.human` is
-false, or a review lane matching `auto_promote.source_state` when it is true.
-Accepted changes need a dispatchable `Merging` lane reachable from `In Progress`.
-Hub migration 40 gives every project with an approved repository policy a
-default review policy; approving the policy again now seeds `require_review`
-from `review.human`.
+`Human Review` is where a Change Request waits for a person only when the project sets `review.human: true`; a person approves the change, which moves it to `Merging`, or requests changes, which sends it back to `In Progress`. `Human Review` is the default `auto_promote.source_state`. With the default `false`, an unaccepted version or refused landing returns to a dispatchable lane through the retry owner. `Blocked` holds only work waiting on an explicit human question or permission request (a typed `human_action`) or an operator stop.
 
-The hosted hostname migration is tracked in the [Cloud domain runbook](cloud-domain-migration.md).
-Its provisioning results and pending browser cutover are recorded there.
+Hub migrations 36, 38, 39 and 41 move projects whose workflow is exactly an earlier template onto this one. A customized workflow is left unchanged; it needs a review lane matching `auto_promote.source_state` when `review.human` is true, and a dispatchable `Merging` lane reachable from `In Progress` for accepted changes. Hub migration 40 gives every project with an approved repository policy a default review policy; approving the policy again seeds `require_review` from `review.human`.
+
+The workflow can also be supplied as `states` to `PUT /api/v2/organizations/{organization}/projects/{project}/onboarding/integration` (or `/integration`) with the current `revision` as `expected_revision`, a fresh `idempotency_key`, and the current `intake`, `projection` and `repository_enabled` values; omitting `states` keeps the current workflow. Hosted project creation also accepts optional `states`. A stale revision, or removing a state used by an active or archived item, is refused atomically. The first configured state is the default lane in native issue creation forms.
 
 ## Runner access through Luna
 
@@ -52,8 +22,8 @@ access. Sandbox is the default for a shared machine; `native-trusted` is
 available for a dedicated machine. Sandbox restricts agent access, while full
 access lets agents use the machine's files, credentials and network. Luna
 carries the answer into the enrollment `isolation_tier` field and the
-`detent hub runner register --isolation-tier` command. Obtain enrollment tokens
-through the secure enrollment dialog, never through chat.
+`detent hub runner register --isolation-tier` command. Enrollment tokens come
+from the secure enrollment dialog, never from chat.
 
 Fly Sprites are dedicated VMs and new Sprite runners use Full access
 (`native-trusted`). An owner or admin can approve switching an individual Sprite
@@ -69,70 +39,46 @@ non-admin members cannot make this change. Projects requiring sandbox remain
 ineligible for a `native-trusted` runner. Luna reads the runner again after the
 change to verify the tier and identify any remaining problem.
 
+## Organizations, roles and grants
+
+| Role | Allowed without project grants |
+| --- | --- |
+| Owner | Membership and organization administration, ownership role changes, organization billing |
+| Admin | Membership and organization administration, excluding owner changes |
+| Member | Organization selection and explicitly granted project collaboration |
+| Reporter | Filing issues into `Triage` and reading only the issues they filed |
+| Viewer | Organization selection and explicitly granted project reads |
+
+Project grants are explicit per user and project, with separate collaboration and runner-management flags. A viewer stays read-only even if a stored collaboration flag is true. Organization roles do not by themselves supply project content, code credentials, runner execution or check authority. Native runner-management operations require management grants on every project in the organization, because runner routing and listings can cover several projects; runner execution still requires a runner credential. A project creator receives access through an explicit self-access choice.
+
+Each request validates the identity provider's active session and current membership, then local membership and project grants; provider unavailability fails closed. A provider-side change takes effect within one access-token lifetime. Native mutations recheck authorization inside their database transaction. Removing a member revokes local sessions and removes project and runner grants; re-inviting a removed member does not restore old grants. Removing or demoting the last owner is refused, and ownership transfer is a promotion followed by a demotion. An existing organization is joined only through current membership or a provider-validated exact-recipient invitation, never by matching a name or domain.
+
+Hosted support staff can act inside a customer organization only through a time-limited, audited support session started for that organization, which never grants more than the customer role and grants being viewed and shows the actual and effective identity in the app. Operator metadata reports contain counts, sizes, health and plan fields, never issue bodies, titles, repository paths, prompts, source, diffs, logs or artifact contents. This is application authorization: the hosting operator remains technically able to read hosted data, and no zero-knowledge guarantee is made.
+
 ## Organization provisioning and recovery
 
-Implemented by `detent cloud serve` when its configuration has an `allocation`
-block (see [shared entry](examples/hub/README.md#self-service-provisioning)). Without
-that block the shared entry offers no creation and routes only registered tenants.
-The entry keeps each intent in its registry keyed by the verified subject and a
-per-form creation key, and advances it through the checkpoints below with bounded
-retries (`retry_limit`, exponential backoff up to five minutes). WorkOS creation is
-recovered by the organization's external ID, owner membership is looked up before it
-is created, the tenant database is initialized by the tenant process itself, and
-the tenant accepts the owner only after the provider reports that exact subject as
-an active owner. A restarted entry resumes pending intents and relaunches ready
-tenants. The shared web client screens for these states follow the
-web/conversation client; the entry currently serves minimal pages in the existing
-shell (`/organizations/new`, `/organizations/ORG/provisioning`,
-`/organizations/ORG/delete`) and JSON at `/api/cloud/organizations/ORG/provisioning`.
+`detent cloud serve` provisions organizations when its configuration has an `allocation` block (see [shared entry](examples/hub/README.md#self-service-provisioning)); without it the shared entry offers no creation and routes only registered tenants. The entry serves `/organizations/new`, `/organizations/ORG/provisioning` and `/organizations/ORG/delete`, and JSON at `/api/cloud/organizations/ORG/provisioning`.
 
-A verified signed-in identity submits `POST /organizations` with a session-bound
-CSRF token and stable creation idempotency key. Persist a fingerprint of the
-validated creation input and an opaque organization ID before external effects.
-Same user/key/payload returns the same operation; a changed payload conflicts.
-Separate tabs retrying the same intent cannot acquire duplicate owners or slots.
-An organization display name is never identity or proof of ownership.
+A verified signed-in identity submits `POST /organizations` with a session-bound CSRF token and a stable creation idempotency key. The same user, key and payload return the same operation; a changed payload conflicts, and separate tabs retrying one intent cannot create duplicate owners. An organization display name is never identity or proof of ownership. The entry advances each intent through durable checkpoints with bounded retries (`retry_limit`, exponential backoff up to five minutes), and a restarted entry resumes pending intents:
 
-| Durable checkpoint | Required action and recovery invariant |
+| Checkpoint | Behavior |
 | --- | --- |
-| `requested` | Bind creator to verified provider issuer/subject and creation intent, enforce eligibility and per-identity quotas. Unverified email, client-submitted owner IDs and support impersonation cannot bootstrap ownership |
-| `allocating`: reservation | Atomically reserve bounded process/memory/disk capacity with an allocation generation and fenced worker lease before creating resources |
-| `allocating`: provider | Create/recover the WorkOS organization and owner membership for that exact subject; persist provider IDs and step result. Query/reconcile an uncertain response before another create |
-| `allocating`: tenant | Allocate a private path and service identity from trusted IDs, initialize a fresh tenant database through its sole owner, persist immutable organization/provider/generation binding and that creator's owner membership |
-| `allocating`: free access | Assign the configured versioned free plan idempotently. No Stripe customer, card or paid subscription is required |
-| `ready` | Publish the registry route only after database health, tenant/provider membership, allocation and plan references agree. Link to `/organizations/ORG/work` and existing project/runner setup |
-| `failed` | Preserve intent, reservation/resource inventory, completed checkpoints, bounded error and retry eligibility. Offer Resume for recoverable failures, without generating a new identity. No capacity shows a retryable state; existing tenants stay healthy |
-| `deleting` / `deleted` | Apply the RFC owner-confirmed retirement contract, fence routing/writers and track erasure/retention results. Tombstones prevent reuse and resurrection |
+| `requested` | Binds the creator's verified provider subject to the creation intent and enforces eligibility and per-identity limits |
+| `allocating` | Reserves bounded tenant capacity, creates or recovers the WorkOS organization and owner membership, initializes the tenant database, and assigns the configured free plan without any Stripe customer or card |
+| `ready` | Publishes the route only after database health, membership, allocation and plan references agree |
+| `failed` | Keeps the intent, completed checkpoints and a bounded error; recoverable failures offer Resume without a new identity, and existing tenants stay healthy |
+| `deleting` / `deleted` | Fences routing and writers and tracks erasure; tombstones prevent reuse |
 
-A provider create without a usable idempotency/reconciliation mechanism cannot
-be blindly retried after an uncertain response. Record it as unresolved and
-reconcile through the provider's supported lookup or operator repair of that
-same intent. Likewise reconcile live process ownership before replacement.
-Retry workers have finite attempt/deadline/backoff limits; exhaustion exposes a
-sanitized resumable failure and retains evidence/resources safely. Cleanup uses
-an explicit allocation inventory and ownership checks, never recursive deletion
-of an inferred user path. Do not erase customer data after a failed signup.
-
-The verified subject can recover a pending intent after login or process restart.
-Provider email changes do not transfer ownership. An existing organization must
-be joined through current membership or a provider-validated exact-recipient
-invitation, never claimed by matching its name/domain or replaying a bootstrap
-subject. Membership removal, re-invitation and last-owner protections remain in
-[hosted identity](hosted-identity.md#permissions-and-revocation). Account and
-organization deletion follow the [RFC lifecycle contract](cloud-hub-rfc.md#provisioning-recovery-and-capacity).
+Provider email changes do not transfer ownership. A failed signup does not erase customer data.
 
 ## Repository configuration and policy
 
-Before increasing agent concurrency, use the
-[project delivery guide](project-delivery.md) to choose validation boundaries,
-test ownership, host capacity and release requirements. These are project
-choices; Detent's own repository policy is not a template every project must use.
+Validation commands, review requirements and release policy are project
+choices; see [how Detent delivers a change](project-delivery.md) for the stages
+they control.
 
-Keep the customer checkout and its `detent.yaml` / `WORKFLOW.md` on the customer
-host. Inspect existing files before using `detent onboarding draft-answers`,
-`explain-answers`, or `build-workflow`. The builder's `--help` describes its local
-output options. Review generated files before applying them. Cloud does not write
-repository files. A supplied repository definition owns the native workflow;
+The customer checkout and its `detent.yaml` / `WORKFLOW.md` stay on the customer
+host. Cloud does not write repository files. A supplied repository definition owns the native workflow;
 Cloud Markdown authoring is the fallback when no repository definition exists.
 
 ### Workflow definition authority
@@ -154,14 +100,14 @@ lane-picker contents. An enabled plan contributes its configured stop (normally
 `Plan Review`) as a nondispatchable lane. Empty lanes remain available.
 Native defaults permit moves between configured states; explicit
 `server.kanban.allowed_transitions` entries constrain their source states for
-both authorized issue moves and execution progress. Include completion and
-landing transitions when constraining execution states.
+both authorized issue moves and execution progress, so constrained execution
+states also need their completion and landing transitions.
 
 The runner reports bounded state and transition metadata with the resolved
 repository configuration. Reports from the bound repository's default-branch
 history apply the shared workflow atomically with its source revision. States
-occupied by issues, including archived issues, cannot be removed; move those
-issues through ordinary authorized transitions before removing a state.
+occupied by issues, including archived issues, cannot be removed until those
+issues move through ordinary authorized transitions.
 Configuration changes never remap work items or revoke active leases.
 
 Cloud settings show the repository source and revision and direct definition
@@ -170,23 +116,23 @@ repository authority. Authorized issue moves and other integration settings
 remain available.
 
 With no supplied repository definition, the Workflow settings editor accepts
-Markdown using the same legacy frontmatter schema: `tracker.kind: hub_native`,
-`tracker.active_states`, `tracker.observed_states`, `tracker.terminal_states`,
-and optional `server.kanban.allowed_transitions`. The body contains agent
-instructions. Cloud persists that Markdown and derives its lanes with the
+Markdown whose frontmatter uses the same schema: `tracker.kind: hub_native`,
+an ordered `tracker.lanes` list of `{name, role}` entries, and optional
+`server.kanban.allowed_transitions`. The retired `tracker.active_states`,
+`tracker.observed_states` and `tracker.terminal_states` keys are rejected. The
+body contains agent instructions. Cloud persists that Markdown and derives its lanes with the
 existing parser. Runners load and report the resolved definition. Adding a
 repository definition transfers workflow authority without losing work items.
 Repository-controlled definitions cannot be replaced by Cloud Markdown or
 independent state arrays.
 
-For the shared-site target, use `client.hub_url: https://cloud.detent.build`
-and set `client.organization_id` to the selected immutable organization ID.
-Select the runner's projects through enrollment `project_ids` or update its
-allowed projects through [runner routing](hub-api.md#runner-routing-authority).
-The project's page shows its native ID. Run `detent doctor` against that configuration; resolve
-reported problems locally. Sign in to the selected agent provider on that host.
-Only checkbox acknowledgments of these local checks are saved in Cloud; they are
-explicitly user-reported and do not override runtime validation.
+A Cloud runner uses `client.hub_url: https://cloud.detent.build/organizations/ORG`
+and `client.organization_id` set to the immutable organization ID. Its projects
+come from enrollment `project_ids` or [runner routing](hub-api.md#runner-routing-authority);
+the project's page shows its native ID. `detent doctor` checks that configuration
+locally, and the agent provider sign-in lives on that host. Cloud saves only
+user-reported checkbox acknowledgments of these local checks; they do not
+override runtime validation.
 
 Runners report the configuration resolved from `detent.yaml` and `WORKFLOW.md`.
 
@@ -210,7 +156,7 @@ can continue approving in **Settings > Integrations**.
 See [policy approval without the web app](api-mcp-setup.md#policy-approval-without-the-web-app)
 for the complete API/MCP procedure.
 
-Edit validation, review, auto-promotion and merge settings in the repository;
+Validation, review, auto-promotion and merge settings live in the repository;
 the runner reports the resulting configuration when it reloads. Configuration
 identities remain attached to attempts and published source for provenance.
 A configuration ID change does not revoke an active lease, discard a checkpoint,
@@ -221,7 +167,7 @@ fencing and the project's validation and review requirements still apply.
 Full-machine execution is the operator's chosen trust boundary; a second
 repository-policy approval is not required to use it. The legacy policy-revocation
 operation is retired and returns HTTP 410 without deleting configuration.
-Pause or drain a runner, or remove its project access, to stop execution.
+Pausing or draining a runner, or removing its project access, stops execution.
 
 A native project (`tracker.kind: hub_native`) makes no GitHub REST or GraphQL
 calls by default. The runner does not give the agent the instance GitHub
@@ -230,8 +176,7 @@ it opens the native Change Request from the attempt's commits after a successful
 run, and the local gate is the CI. Git transport (clone, fetch) still works. The
 agent prompt ends with a native completion contract that overrides GitHub steps
 in `WORKFLOW.md`. `detent doctor` warns when the
-repository `WORKFLOW.md` still describes GitHub steps; remove them from a
-native project's workflow. Setting `worker.github_token` explicitly in the
+repository `WORKFLOW.md` still describes GitHub steps. Setting `worker.github_token` explicitly in the
 project is the only way to give its workers GitHub access.
 
 ## Customer host enrollment
@@ -283,10 +228,10 @@ it by default and copies it only into the command you run on the target host.
 The register command generates the host's identity locally, redeems the one-time token,
 writes `~/.config/detent-runner/global.yaml` and `identity.json`, and installs
 the `detent.runner` background service. Clone each project's repository into
-the directory it prints (`~/detent-runner/PROJECT` by default) first, or run the
+the directory it prints (`~/detent-runner/PROJECT` by default)  first, or run the
 `detent start --config ... --yes` command it prints after cloning. Nobody copies
-a runner or machine ID by hand. See `docs/hub-api.md` "Register a runner with
-one command" for what each step writes.
+a runner or machine ID by hand. See [register a runner with one command](hub-api.md#register-a-runner-with-one-command)
+for what each step writes.
 
 Enrolling needs runner management on every organization project. An owner or
 administrator who creates a project receives it automatically; grants for other
@@ -295,12 +240,11 @@ members are set in Organization.
 Retry `register` with the same configuration directory: it reuses the identity
 it generated, never creates a second runner, and never rewrites an existing
 `global.yaml`. Enrolled runners reject unknown configuration keys at startup and
-name their full paths, including nested machine settings. Before upgrading an
-existing runner, remove `projects`, `weight`, `priority`, `scheduling`,
-`fair_share`, `global.agents.model_selection`, `client.native_projects` and other
-local project policy defaults. The warning-and-ignore transition has ended;
-leaving these keys in place prevents startup. Cloud owns project membership and
-model policy. Do not copy an enrolled identity file to another machine. The
+name their full paths, including nested machine settings. `projects`, `weight`,
+`priority`, `scheduling`, `fair_share`, `global.agents.model_selection`,
+`client.native_projects` and other local project policy defaults are rejected,
+so a runner file containing them does not start. Cloud owns project membership
+and model policy. An enrolled identity file belongs to one machine. The
 older `detent hub runner init` and `enroll` commands, and the
 `--host-identity-file` protocol for several runners on one host, remain for
 scripted setups.
@@ -345,7 +289,7 @@ paused runner picks up work only after its next wake.
 Re-running is safe. With empty input the script reuses the registered runner
 and restarts the service. With a pasted command, `register` keeps the existing
 identity and `global.yaml`, so no second runner is created. One runner per
-Sprite is supported; do not copy its identity to another Sprite.
+Sprite is supported, and its identity belongs to that Sprite.
 
 The script creates an installation checkpoint with `sprite-env checkpoints create`
 and prints the ID. This does not verify authentication, registration health,
@@ -363,17 +307,14 @@ Remaining manual steps, which the script never performs:
 - For private clones and pushes, run
   `gh auth login --hostname github.com --git-protocol https --web` and `gh auth setup-git`,
   or set up the project's own git credentials, and set the git author.
-- The runner clones allowed projects into `workspace_root/PROJECT_ID` and runs
-  repository-declared `hooks.runner_setup`. Use the bootstrap’s printed absolute
-  paths and verify the checkout origin before running repository-pinned tools
-  there. Do not prepare a separate manual clone; chain directory changes and
-  dependency commands with `&&`. See [Sprite setup](sprite-runners.md#7-prepare-git-access-and-the-project-checkout).
-- Check the project's reported repository policy in the Hub; approve only if
-  offered. Policy provenance is not a recurring claims or publication gate.
-- Re-run the script with empty input, check
-  `sprite-env services get detent-runner` and the Hub's runner health, then
-  route a Todo issue and confirm it pushes a branch.
-- Take a new checkpoint so the baseline includes the sign-ins and checkouts.
+- The runner clones allowed projects into `workspace_root/PROJECT_ID` itself and
+  runs repository-declared `hooks.runner_setup`; no separate manual clone is
+  needed. See [Sprite setup](sprite-runners.md#7-prepare-git-access-and-the-project-checkout).
+- The project's reported repository policy appears in the Hub; policy provenance
+  is not a recurring claims or publication gate.
+- `sprite-env services get detent-runner` and the Hub's runner health report the
+  service state.
+- A new checkpoint after sign-in captures the sign-ins and checkouts.
 
 ### Runner restart and claim recovery
 
@@ -390,199 +331,51 @@ fencing token and recover from the pushed branch and Change evidence. Revocation
 or removal releases the runner's claims immediately. An explicitly configured
 `client.lease_ttl_seconds` continues to determine the lease window.
 
-## Artifact history and GitHub
+## Artifact history
 
-Preserve the September 7 choices: local-only history, customer-managed durable
-storage, and explicit opt-in hosted storage through the portable S3 adapter
-(DigitalOcean Spaces initially). No setup default silently uploads artifacts.
-Local history keeps artifacts on your own runner without a separate storage
-account or fee; losing that machine loses its artifacts. Customer-managed
-history uses an S3-compatible bucket and artifact gateway that you run and pay
-for. Detent records the binding only and stores neither your artifacts nor your
-storage credentials. For history with execution runners offline, follow
-[artifact deployment](artifacts-deployment.md):
-private S3-compatible bucket, durable catalog, separate TLS gateway, dedicated
-publisher identity, and local storage credentials. Register only the gateway
-origin, service ID and publisher token ID. Never enter the publisher token secret
-or storage credentials in the hosted form. Run `verify-storage`, then test opening
-a retained artifact with execution runners stopped. A registered binding is
-configuration evidence, not a storage-health or offline-availability guarantee.
+Artifact history has three modes, and no setup default silently uploads artifacts. Local history keeps artifacts on the runner without a storage account or fee; losing that machine loses its artifacts. Customer-managed history uses an S3-compatible bucket and an artifact gateway the customer runs and pays for; Detent records only the binding (gateway origin, service ID and publisher token ID) and never stores the customer's artifacts, the publisher token secret or storage credentials. Hosted artifact storage is an explicit opt-in on plans with the `hosted_artifacts` feature (see [hosted allowances](hosted-allowances.md#hosted-artifact-storage-and-relay)). A registered binding is configuration evidence, not a storage-health or offline-availability guarantee. See [self-hosted artifacts](hub-self-hosting.md#optional-durable-artifacts) for the customer-managed gateway.
+
+## GitHub
 
 Native issue creation works with GitHub disabled. To connect GitHub:
 
 1. Associate the repository as `owner/name` in Project setup. An enrolled runner
    clones it using its own Git credentials; setup shows progress until the
-   runner reports the matching checkout. No manual clone is required.
+   runner reports the matching checkout.
 2. [Install the Detent Cloud GitHub App](https://github.com/apps/detent-cloud/installations/new)
-   on the repository or organization. Choose all repositories or only selected
-   repositories, including this project's repository. The App requests Issues
-   and Pull requests read/write, and Contents, Checks, Commit statuses and
-   Metadata read permissions.
-3. Open Project setup to read whether Detent Cloud is installed on `owner/name`.
-   New GitHub issues enter Triage automatically once the App is installed.
+   on the repository or organization, with all repositories or a selection that
+   includes this project's repository. The App requests Issues and Pull requests
+   read/write, and Contents, Checks, Commit statuses and Metadata read permissions.
+3. Project setup then shows whether Detent Cloud is installed on `owner/name`.
+   New GitHub issues enter `Triage` automatically once the App is installed.
 
-If the deployment has GitHub transport, attach a repository before manual imports, summary
-projection or repository/PR integration. Each choice is separate; saving setup
-progress does not activate an integration. Existing profile, repository binding,
-idle-work and revision checks still apply. Import execution and summary publication
-remain separate actions through the existing native API.
+Manual imports, summary projection and repository/PR integration are separate choices; saving setup progress does not activate an integration. See [GitHub-compatible projects and native cutover](hub-local-migration.md#github-compatible-projects-and-native-cutover) for intake, import and profile details.
 
-## Shared protocol and recovery
+## Project setup API
 
-Self-hosted Hub uses the same scoped API with customer-selected authentication,
-without a Detent Cloud account, subscription or Stripe connection. These are
-currently supported project setup endpoints:
+A self-hosted Hub uses the same scoped API with its own authentication, without a Detent Cloud account, subscription or Stripe connection:
 
 - `GET /api/v2/organizations/ORG/projects/PROJECT/onboarding` reads persisted
   progress, current approved policy, eligible runners, bindings and latest run.
 - `PUT` to the same path accepts `idempotency_key` and `progress`, containing
   string `revision`, `repository` (`existing` / `generate`), booleans `doctor`
   and `provider`, and `artifacts` (`local` / `customer`).
-- Writes compare revisions and reuse the native idempotency journal. Restarting
-  the service retains progress. Browser retries retain a command key and payload
-  fingerprint in session storage; no issue body or provider credential is stored
-  there. In the shared-site target, browser retry keys also bind organization,
-  project and user so concurrent tabs cannot replay into another scope.
+- Writes compare revisions and reuse the native idempotency journal. Browser
+  retries keep a command key and payload fingerprint in session storage, bound to
+  organization, project and user; no issue body or provider credential is stored
+  there.
 - The `/onboarding/policy`, `/onboarding/artifact-services/SERVICE`,
   `/onboarding/integration` and `/onboarding/repository` adapters require scoped
   administration and call the existing validated implementations.
 
-A stale revision returns 409 and requires rereading current state. Invalid input
-returns 422, access failures require account/grant correction, and service failures
-require retrying the existing operation. The first native issue uses the ordinary
-idempotent work-item API. Its state determines whether it queues; policy and runner
-checks remain authoritative for execution.
-
-The current `artifacts` progress field accepts only `local`/`customer`; the
-approved opt-in hosted mode is a target storage choice, not a new value accepted
-by this API today. Future setup must save explicit custody consent and use the
-configured portable artifact service rather than overloading local/customer.
-
-## Shared-site acceptance trace
-
-This is a test specification for #2341/#2342/#2343 and the expanded #2199 evidence,
-not a claim that current reserved-tenant fixtures pass it. Use synthetic providers,
-ephemeral services and one test hostname representing `cloud.detent.build`.
-
-Alice and Bob are unrelated verified identities. Alice creates A, Bob creates B,
-and Casey receives separate invitations to both. A has project PA and B has PB.
-Each tenant owns a separate database and process. Every application URL below is
-on **https://cloud.detent.build**; WorkOS/Stripe hosted screens may temporarily leave
-the site only for their authenticated provider flow and return to that same host.
-
-| Step | Action and expected evidence |
-| --- | --- |
-| Signup | Alice and Bob create A/B from `/organizations/new` without operator YAML, bootstrap user, DNS or public port allocation. Crash/retry after every checkpoint returns the original A/B IDs with exactly one verified owner each |
-| Capacity | Concurrent creates at the admitted limit leave a resumable capacity failure; already-ready A/B remain routable, no extra process or unsafe disk allocation appears |
-| Invitations | A/B admins invite Casey through the common `/invite` entry. Exact recipient and provider organization must match; wrong-account, alias, expired/replayed and guessed-organization attempts fail. Casey sees both memberships, never an unrelated organization |
-| Grants | Grant Casey read-only PA and write PB, separately from runner management. Ownership/admin status alone never reveals project content. Bob cannot read PA by guessing its ID; cross-tenant searches/cursors return no A content |
-| Concurrent tabs | Casey opens `/organizations/A/projects/PA/...` in one tab and `/organizations/B/projects/PB/...` in another. Selecting a B run, submitting a B form, reauthenticating B or opening billing leaves A's URL, CSRF context, stream and run/attempt selection intact |
-| Mutations and streams | A write remains denied and B write commits only to B. Swap route/body/header IDs, reuse a CSRF token in the other scope, spoof proxy authority, and bypass the entry service: all fail. Frames/cursors from A never appear in B |
-| Billing | Free signup creates zero Stripe customers. Alice's first paid action creates/reuses A's test customer; Bob's creates/reuses B's. Casey cannot purchase as member. Swapped customer IDs, A return URLs in B and cross-account/mode webhooks cannot grant or expose another organization's plan/invoices |
-| Runners | Enroll named/tagged RA for A/PA and RB for B/PB against the same base URL. Each renews/posts events/claims only its own scope; cookie changes and forged IDs cannot move credentials. Exact-host no-match waits without fallback |
-| Artifacts | Test local-only without uploads, customer-managed durable service, and explicit opt-in hosted Spaces-compatible fixtures. An A grant fails for B, expired/revoked grants fail, and retained uploaded artifacts remain readable with execution runners stopped. Local-only makes no offline-availability promise |
-| Review policy | PA requires human review; PB permits automatic merge after checks. Repo-local policy remains authoritative for both, with external branch protections and independent-check principals preserved |
-| Revocation | Remove Casey from A while both streams are idle: A protected requests/download authorization fail immediately on recheck and its stream closes within 30 seconds. B stays usable. Shared logout/expiry closes both scopes |
-| Restore/deletion | Restore paired registry/tenant fixtures with current tombstones and a new generation; stale authority fails. A owner deletion remains resumable until erasure completes, does not affect B, and is never reversed by old snapshots/webhooks. Casey account deletion removes both memberships without deleting Alice/Bob's work |
-| Free self-hosting | With custom/local auth, block all Detent Cloud, WorkOS and Stripe networking. Create native work, enroll a runner, execute/checkpoint, export and recover with no subscription or hosted entitlement requirement. Repeat using a local WorkOS fixture with Cloud/Stripe blocked: auth selection still performs no billing call |
-
-Record browser evidence for the existing shell in compact/cozy and narrow layouts,
-no-access/expired-session states, provisioning interruption and the two-tab trace.
-Record tenant database IDs and bounded routing/provider call counts without
-content or credentials. #2199's free pilot checks free/complimentary billing UI;
-paid customer/webhook cases are #2343 fixtures and do not block that free pilot.
-The retained single-tenant evidence is a baseline, not shared-site launch evidence.
+A stale revision returns 409, invalid input returns 422, and access failures name the missing account or grant. The first native issue uses the ordinary idempotent work-item API; its state determines whether it queues, and policy and runner checks remain authoritative for execution.
 
 ## Independent Change checks
 
-Known setup limitation: the private non-hosted maintenance recipe below is not
-executable for an already bound hosted database, which rejects local-mode reopen.
-[#2350](https://github.com/digitaldrywood/detent/issues/2350) tracks a supported
-credential-maintenance path and correction of that recipe. Keep the binding
-checks intact. The existing scoped independent-check submission protocol remains
-valid; this RFC does not add token provisioning/rotation/revocation authority.
+A project's approved Change review policy can require `independent` checks submitted by a dedicated CI credential. Hosted admission lets an `operator` bearer submit only `POST /api/v2/organizations/ORG/projects/PROJECT/work-items/ITEM/changes/CHANGE/versions/VERSION/checks`, and only when the credential is active, has an explicit current grant on that project, and is named as `principal_id` by an `independent` required check in the current approved review policy. The exception grants no reads, publication, review decisions, policy changes, imports or token administration. Administrator bearers, execution workers, browser sessions and unapproved operators cannot substitute, and enrolled runners can satisfy only `customer` checks.
 
-Hosted admission permits a dedicated `operator` bearer to submit only
-`POST /api/v2/organizations/ORG/projects/PROJECT/work-items/ITEM/changes/CHANGE/versions/VERSION/checks`.
-The credential must be active, belong to the hosted organization through an
-explicit current project grant, and be named by an `independent` required check
-in that project's current approved Change review policy. An administrator bearer,
-execution worker, hosted user cookie, or unapproved operator cannot substitute.
-This exception grants no reads, publication, review decisions, policy changes,
-imports, or token administration.
+An owner or admin approves the review policy with `PUT /api/v2/organizations/ORG/projects/PROJECT/change-review-policy`, sending `idempotency_key`, the current `expected_review_policy_id` when replacing a policy, and `policy` with the approved repository `policy_id`, `require_review` and `required_checks`. Each check pins `name`, the credential ID as `principal_id`, `workflow_id`, `workflow_sha256`, `source: "independent"` and `max_age_seconds` (60–604800). Results are submitted with a unique idempotency key to the exact version's `/checks` route and are validated against the version's expected principal, head, run, policy, configuration, check-run ID, workflow digest and completion time; changed terminal results conflict.
 
-Enrolled runners retain their existing `collaborate` operation for expected
-`customer` checks. They cannot satisfy an `independent` check or change the
-source pinned by the immutable version.
+Replacing the review policy with a different principal immediately stops the old principal's submissions, including for old versions, which keep their immutable policy and show stale-policy readiness. Removing the project grant also denies submissions. Evidence loses readiness at its freshness bound. Human-review projects also need current-version human approval. Native `reviewed` status does not authorize an external merge or bypass GitHub branch protection.
 
-Provision and maintain credentials for an already initialized hosted tenant during
-an explicitly authorized private maintenance window. Stop the hosted process,
-then start the sole database owner with the **same hosted configuration**, database
-path, organization/provider/bootstrap identity and public URL. Set
-`workos_organization_id` explicitly to the allocated provider organization
-if the original bootstrap configuration omitted it:
-
-```sh
-detent hub serve --database /var/lib/detent/hub.db \
-  --hosted-config /etc/detent/hosted.yaml \
-  --credential-maintenance --listen 127.0.0.1:7778
-```
-
-Keep this listener private, outside all reverse-proxy routes and port forwarding.
-Maintenance rejects non-loopback listeners and `--trusted-proxy`. Each request
-below goes to `http://127.0.0.1:7778` with
-`Authorization: Bearer <existing-instance-administrator-secret>`. Loopback
-alone provides no authority. Use the existing unscoped instance administrator
-credential retained at initial setup; the default `DETENT_HUB_ADMIN_TOKEN`
-environment variable is still required by the serve command, but maintenance
-never creates or resets a bootstrap credential. Browser cookies, staff sessions,
-scoped administrators, CI reporters and runners cannot authorize maintenance.
-
-Only the four token creation, rotation, revocation and project-grant routes are
-served. Requests record the administrator principal in hosted audit history.
-The normal database ownership lock prevents a second writer. Tenant binding
-checks remain enabled; ordinary non-hosted reopen still fails. Shut down
-maintenance before restoring the original hosted command. Public hosted serving
-continues to deny instance token administration.
-
-1. Create a dedicated token with `POST /api/v1/tokens`, using
-   `{"name":"project-independent-ci","scope":"operator"}`. Deliver the returned
-   secret once through the CI secret store; retain its public `id` for policy.
-2. Grant exactly the intended project with `POST /api/v2/tokens/ID/grants`, using
-   `{"organization_id":"ORG","project_id":"PROJECT"}`. This also marks the
-   token native-only. Use a separate principal per project when independent
-   revocation is needed. Restore hosted serving after maintenance.
-3. An organization owner/admin with project write access approves
-   `PUT /api/v2/organizations/ORG/projects/PROJECT/change-review-policy` using
-   their hosted session and CSRF token. Include `idempotency_key`, the current
-   `expected_review_policy_id` when replacing a policy, and `policy` containing
-   the approved repository `policy_id`, `require_review`, and `required_checks`.
-   Each check pins `name`, the credential ID as `principal_id`, `workflow_id`,
-   `workflow_sha256`, `source: "independent"`, and `max_age_seconds` (60–604800).
-   Repository review and check floors still apply.
-4. Publish a version, then deliver its exact check expectation and immutable
-   head, run, policy/configuration and workflow identities to the CI job through
-   the publishing integration. The result bearer cannot fetch them itself.
-   Submit a terminal result and evidence references with a unique idempotency
-   key to the exact version's `/checks` route.
-
-To revoke submission access immediately, the hosted project administrator
-replaces the approved review policy with an eligible replacement CI principal,
-using its current policy identity. The removed principal cannot submit or replay
-results, even for old versions. Publish a new version after policy replacement;
-old versions retain their immutable policy and display stale-policy readiness.
-For permanent credential revocation use `DELETE /api/v1/tokens/ID` through the
-private maintenance administration path. Rotation uses
-`POST /api/v1/tokens/ID/rotate`, invalidates the old secret, and preserves the
-principal ID and grants; distribute the replacement only to the authorized CI.
-A removed project grant also immediately denies submissions.
-
-Credential activity, hash, expiry, scope, project grant and current policy pin
-are rechecked within the mutation transaction before returning cached results.
-Results still validate the version's expected principal, head/run, policy/config,
-check-run ID, workflow digest, independent source and completion timestamp.
-Changed terminal results conflict; retries cannot approve another version.
-Evidence loses readiness at its freshness bound. Human-review repositories also
-need current-version human approval; automatic repositories need passing checks.
-Native `reviewed` status preserves the separate GitHub branch-protection gate and
-does not authorize an external merge.
+Hosted token creation, rotation (`POST /api/v1/tokens/ID/rotate`, which keeps the principal ID and grants), revocation (`DELETE /api/v1/tokens/ID`) and project grants (`POST /api/v2/tokens/ID/grants`) are served only by the private loopback `detent hub serve --credential-maintenance` listener for the bound hosted tenant, authorized by the instance administrator credential; public hosted serving denies instance token administration.

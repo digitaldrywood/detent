@@ -32,7 +32,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
-	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -46,7 +45,8 @@ const (
 	liveDiffStatsInterval          = 2 * time.Second
 	recentActivityLimit            = 5
 	defaultProjectID               = "default"
-	orphanResumePrompt             = "The Detent process restarted while this session was running. Continue from your last state and complete the assigned work.\n\n" + repositoryHandoffContract
+	orphanRestartInstruction       = "The Detent process restarted while this session was running. Continue from your last state and complete the assigned work."
+	orphanResumePrompt             = orphanRestartInstruction + "\n\n" + repositoryHandoffContract
 	implausibleUsageRuntimeSeconds = int64(1800)
 	implausibleUsageOutputTokens   = int64(1000)
 )
@@ -1375,7 +1375,6 @@ func (r *Runner) runAgentTurn(
 	}
 	result.Output = progress.outputText()
 	result.FinalMessage = progress.finalMessage()
-	result.SkillDraftProposed = skillDraftProposed(result.Output)
 	result.PullRequestUpdated = progress.pullRequestUpdated()
 	result.PullRequestHeadPushed = progress.pullRequestHeadPushed()
 	result.CITriggerLabelReapplied = progress.ciTriggerLabelReapplied()
@@ -1893,13 +1892,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 
 	attempt := req.Attempt
-	var availableSkills []skills.Skill
-	if req.Admission == nil {
-		availableSkills, err = r.availableSkills(workflow, info.Path)
-		if err != nil {
-			return RunResult{}, err
-		}
-	}
 	recoveryState := r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "initial")
 	if !nativeLanding && (mode == RunModeImplement || mode == RunModePlan) {
 		req.checkpointRefs = newCheckpointRefs(runWorkspace, req.Execution, info, workspaceIssue, recoveryState)
@@ -1939,7 +1931,6 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		Branch:                    info.Branch,
 		DispatchSourceState:       req.DispatchSourceState,
 		DispatchTargetState:       req.DispatchTargetState,
-		AvailableSkills:           availableSkills,
 		PriorAttempt:              req.PriorAttempt,
 		RecoveryState:             promptRecoveryState,
 	}
@@ -2064,8 +2055,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if evidence, ok := req.Execution.(EvidenceSourceExecution); ok {
 			evidence.SetEvidenceSource(workspaceEvidenceSource(info.Path))
 		}
-		// The stored attempt diff rides every checkpoint and the finish
-		// (decisions section 18.5).
+		// The stored attempt diff rides every checkpoint and the finish.
 		if diffs, ok := req.Execution.(DiffExecution); ok {
 			diffs.SetDiffSource(r.attemptDiffSource(ctx, info, workspaceIssue))
 		}
@@ -2337,12 +2327,16 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	turnPrompt := r.followupPrompt(promptKey, agentResumeFromState(resumeState), prompt)
 	usingOrphanPrompt := req.ForgeRetry == nil && orphanRecovery && !agentResumeStateEmpty(resumeState)
 	if usingOrphanPrompt {
+		native := workflow.Config.Tracker.Kind == config.TrackerHubNative
 		turnPrompt = orphanResumePrompt
+		if native {
+			turnPrompt = orphanRestartInstruction
+		}
 		if req.WorkAttemptID > 0 && req.Generation > 0 {
-			turnPrompt = appendBlockedHandoffBlock(turnPrompt+"\n\nThe current attempt fields below supersede any completion lease values in earlier provider history. Use these values for the completion handshake when this attempt succeeds.", promptOptions)
+			turnPrompt = appendBlockedHandoffBlock(turnPrompt+"\n\nThe current attempt fields below supersede any completion lease values in earlier provider history. Use these values for the completion handshake when this attempt succeeds.", promptOptions, native)
 			turnPrompt = appendNativeIssueInstructions(turnPrompt, req.Issue)
 		}
-		if workflow.Config.Tracker.Kind == config.TrackerHubNative {
+		if native {
 			followups := workflow.Config.Agent.Followups
 			if promptOptions.PlanOnly {
 				followups.Enabled = false
@@ -3221,7 +3215,6 @@ func mergeAgentTurnExecutions(initial agentTurnExecution, recovery agentTurnExec
 	result.Compute = compute.Add(initial.result.Compute, recovery.result.Compute)
 	result.TurnStartRefused = initial.result.TurnStartRefused && recovery.result.TurnStartRefused
 	result.RateLimits = mergeAgentRateLimits(initial.result.RateLimits, recovery.result.RateLimits)
-	result.SkillDraftProposed = initial.result.SkillDraftProposed || recovery.result.SkillDraftProposed
 	result.PullRequestUpdated = initial.result.PullRequestUpdated || recovery.result.PullRequestUpdated
 	result.PullRequestHeadPushed = initial.result.PullRequestHeadPushed || recovery.result.PullRequestHeadPushed
 	result.CITriggerLabelReapplied = initial.result.CITriggerLabelReapplied || recovery.result.CITriggerLabelReapplied
@@ -4313,31 +4306,6 @@ func (r *Runner) runtimeSnapshotWithWorkspace() (config.Workflow, agentRuntime, 
 	return r.workflow, r.agentRuntime, r.budgetChecker, r.dispatchEstimator, r.workspace
 }
 
-func (r *Runner) availableSkills(workflow config.Workflow, workspacePath string) ([]skills.Skill, error) {
-	cfg := workflow.Config.Agent.Skills
-	if !cfg.Enabled {
-		return nil, nil
-	}
-
-	result, err := skills.Load(workspacePath, skills.Options{
-		Path:              cfg.Path,
-		MaxSkillsInPrompt: cfg.MaxSkillsInPrompt,
-		Logger:            r.logger,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("load skills: %w", err)
-	}
-	for _, drop := range result.Dropped {
-		r.logger.Warn(
-			"repo skill dropped",
-			slog.String("path", drop.Path),
-			slog.String("reason", string(drop.Reason)),
-			slog.String("message", drop.Message),
-		)
-	}
-	return result.Skills, nil
-}
-
 func (r *Runner) afterRun(parent context.Context, backend workspace.Backend, info workspace.Info, issue workspace.Issue) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), r.afterRunTimeout)
 	defer cancel()
@@ -4691,7 +4659,6 @@ func (r *Runner) finishSession(
 		ProviderSessionID:     turnResult.SessionID,
 		ResumedFromSessionID:  resumedFromSessionID,
 		RuntimeIdentity:       result.RuntimeIdentity,
-		SkillDraftProposed:    result.SkillDraftProposed,
 	}); err != nil {
 		return fmt.Errorf("finish agent session: %w", err)
 	}
@@ -4703,7 +4670,6 @@ func (r *Runner) finishSession(
 		"final_state", result.FinalState,
 		"turns", turns,
 		"turn_start_refused", result.TurnStartRefused,
-		"skill_draft_proposed", result.SkillDraftProposed,
 	}
 	attrs = append(attrs, runtimeIdentityLogAttrs(result.RuntimeIdentity)...)
 	r.logWorkerEvent(issue, "worker_session_finished", attrs...)

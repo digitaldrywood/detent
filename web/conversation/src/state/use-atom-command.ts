@@ -12,11 +12,11 @@ import type { ThreadCommand } from "./threads.ts";
  *
  * Each stands for something that happens on a machine this client cannot
  * reach: an editor on the reader's desktop, a browser view the desktop app
- * embeds, a file in the runner's checkout (decisions.md §18). Naming them
+ * embeds, a file in the runner's checkout. Naming them
  * keeps the copied `ChatMarkdown.tsx` and `chat/ProposedPlanCard.tsx`
  * byte-identical; refusing them here is what makes their own "that failed"
  * branch — a toast, or a disabled menu item — the thing the reader sees,
- * which is what section 16 asks for.
+ * which is what the frontend's governing rule asks for.
  */
 export type UnavailableCommand = ShellCommand | PreviewCommand | "project.writeFile";
 

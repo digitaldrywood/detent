@@ -1,7 +1,7 @@
 import { ProjectIcon } from "./projectIcon.ts";
 // Wire contracts for the Detent conversation product.
 //
-// These schemas are the client half of `docs/conversation/decisions.md` §5.
+// These schemas are the client half of the Hub conversation API.
 // The fixtures under `src/contracts/fixtures/` are the shared examples: the Go
 // side is expected to marshal/unmarshal the same files, so a change here that
 // is not mirrored there breaks a cross-language test on purpose.
@@ -18,7 +18,7 @@ export const QuestionId = Schema.String;
 export type QuestionId = typeof QuestionId.Type;
 export const WorkItemId = Schema.String;
 export type WorkItemId = typeof WorkItemId.Type;
-/** Client-generated idempotency key, at most 128 bytes (decisions.md §2). */
+/** Client-generated idempotency key, at most 128 bytes. */
 export const COMMAND_KEY_MAX_BYTES = 128;
 
 // --- Enumerations -----------------------------------------------------------
@@ -35,7 +35,7 @@ export function isSettledStatus(status: ConversationStatus): boolean {
 }
 
 /**
- * Turn preferences (decisions.md §13.14, §14). `auto` means the project's
+ * Turn preferences. `auto` means the project's
  * configured defaults resolved on the runner; an explicit value travels with
  * the turn and, for a linked issue, into its `detent-agent` block.
  */
@@ -56,7 +56,7 @@ export const DEFAULT_TURN_PREFERENCES: TurnPreferences = {
 };
 
 /**
- * One choice a picker offers, as the bootstrap lists it (§14).
+ * One choice a picker offers, as the bootstrap lists it.
  *
  * A model choice carries four more fields, every one of them optional and
  * absent unless an enrolled runner's backend catalogue published it: the
@@ -123,14 +123,14 @@ export const MessageKind = Schema.Literals([
 export type MessageKind = typeof MessageKind.Type;
 
 /**
- * Where a bound runner's provider context came from (decisions.md §10.4).
+ * Where a bound runner's provider context came from.
  * `thread` resumed the provider thread, `transcript` was handed the last N
  * messages instead, and `""` is an execution that never bound a runner.
  */
 export const ResumeSource = Schema.Literals(["thread", "transcript", ""]);
 export type ResumeSource = typeof ResumeSource.Type;
 
-/** Delivery ladder from decisions.md §5 ("Delivery ladder for a control"). */
+/** The delivery ladder for a control. */
 export const DeliveryStatus = Schema.Literals([
   "saved",
   "queued",
@@ -197,7 +197,7 @@ export type ClosedReason = typeof ClosedReason.Type;
 // --- Errors -----------------------------------------------------------------
 
 /**
- * Every code in the decisions.md §5 error table. `queue_full` is retryable;
+ * Every conversation API error code. `queue_full` is retryable;
  * `idempotency_conflict` and `stale_execution` are not (the payload or the
  * owner generation has to change first).
  */
@@ -261,7 +261,7 @@ export const Execution = Schema.Struct({
   turn_id: Schema.NullOr(Schema.String),
   capabilities: Capabilities,
   /**
-   * Transcript recovery is visible (decisions.md §10.4): a runner that could
+   * Transcript recovery is visible: a runner that could
    * not resume the provider thread continued from a transcript, and the strip
    * says so rather than letting the reader assume the earlier context was
    * there.
@@ -276,7 +276,7 @@ export type Execution = typeof Execution.Type;
  * The linked issue as the conversation carries it: enough to render and open
  * the issue card without a second request. `runner_bound` says an attempt
  * currently owns the issue, which is what the client shows instead of
- * "waiting for runner" (decisions.md §3 rule 6).
+ * "waiting for runner".
  */
 export const WorkItem = Schema.Struct({
   id: WorkItemId,
@@ -301,7 +301,7 @@ export const Conversation = Schema.Struct({
   work_item_id: Schema.NullOr(WorkItemId),
   linked_at: Schema.NullOr(Schema.String),
   work_item: Schema.NullOr(WorkItem),
-  /** The turn preferences the composer's pickers show (§13.14). */
+  /** The turn preferences the composer's pickers show. */
   preferences: TurnPreferences,
   owner: Owner,
   execution: Execution,
@@ -311,7 +311,7 @@ export const Conversation = Schema.Struct({
    * Every message in the conversation, not only the loaded page. The handoff
    * form states this number: linking makes the whole history readable, so an
    * audience preview that counted the loaded window would understate what is
-   * being shared (decisions.md §10.5).
+   * being shared.
    */
   message_count: Schema.Number,
   created_at: Schema.String,
@@ -321,7 +321,7 @@ export const Conversation = Schema.Struct({
 export type Conversation = typeof Conversation.Type;
 
 /**
- * One resolved cross-reference (§14). `label` is the exact run of text in the
+ * One resolved cross-reference. `label` is the exact run of text in the
  * message — `#123` or `org/project#123` — and `url` is where it points.
  */
 export const ReferenceKind = Schema.Literals(["issue", "conversation"]);
@@ -342,8 +342,8 @@ export const MessageActor = Schema.Struct({
 export type MessageActor = typeof MessageActor.Type;
 
 /**
- * A file staged on a conversation and then sent with a message
- * (decisions.md §17.1). The hub stores the bytes through the artifact service
+ * A file staged on a conversation and then sent with a message.
+ * The hub stores the bytes through the artifact service
  * and serves `url` under the conversation's own audience rule, so a link is
  * only as reachable as the conversation it belongs to.
  */
@@ -367,7 +367,7 @@ export const AttachmentUpload = Schema.Struct({
 });
 export type AttachmentUpload = typeof AttachmentUpload.Type;
 
-/** What the composer accepts (decisions.md §17.1). */
+/** What the composer accepts. */
 export const ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
 export const ATTACHMENT_MAX_PER_MESSAGE = 10;
 
@@ -404,13 +404,13 @@ export const Message = Schema.Struct({
   actor: MessageActor,
   command_key: Schema.NullOr(Schema.String),
   /**
-   * Cross-references the hub extracted from the text on accept (§13.7, §14).
+   * Cross-references the hub extracted from the text on accept.
    * Always an array; the client renders each one as a link at the place its
    * `label` appears and leaves the text alone where there are none.
    */
   references: Schema.Array(MessageReference),
   /**
-   * The files sent with this message (§17.1). Optional on the wire so a
+   * The files sent with this message. Optional on the wire so a
    * message written before attachments existed still decodes.
    */
   attachments: Schema.optional(Schema.Array(MessageAttachment)),
@@ -488,7 +488,7 @@ export const MessageCommand = Schema.Struct({
   ...commandBase,
   kind: Schema.Literal("message"),
   text: Schema.String,
-  /** Attachment ids, already uploaded and still unsent (§17.1). */
+  /** Attachment ids, already uploaded and still unsent. */
   attachments: Schema.optional(Schema.Array(Schema.String)),
 });
 export type MessageCommand = typeof MessageCommand.Type;
@@ -521,8 +521,8 @@ export const CancelCommand = Schema.Struct({
 export type CancelCommand = typeof CancelCommand.Type;
 
 /**
- * Re-queue one message whose delivery could not be established
- * (decisions.md §10.3). It carries a *new* key every time and names the
+ * Re-queue one message whose delivery could not be established.
+ * It carries a *new* key every time and names the
  * message it re-queues: the hub sets that same message back to `queued` (or
  * `saved`), so nothing is duplicated. It is refused with `invalid_request`
  * unless the message's delivery is `unknown`, `failed` or `rejected`.
@@ -587,7 +587,7 @@ export const EVENT_TYPES = [
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
-/** An SSE frame carrying its `id:` cursor. Heartbeats have no id (§5). */
+/** An SSE frame carrying its `id:` cursor. Heartbeats have no id. */
 export interface ConversationFrame {
   readonly seq: number | null;
   readonly event: ConversationEvent;
@@ -629,7 +629,7 @@ export type MessagePageResponse = typeof MessagePageResponse.Type;
 
 /**
  * The first message of a new conversation. Its `key` is the message command
- * key and stays distinct from the create key (decisions.md §10.2).
+ * key and stays distinct from the create key.
  */
 export const FirstMessageInput = Schema.Struct({
   key: Schema.String,
@@ -642,7 +642,7 @@ export type FirstMessageInput = typeof FirstMessageInput.Type;
  * conversation runs through the native idempotent mutation path keyed by actor
  * and key, so a retried create returns the stored response instead of a second
  * conversation, and the same key with a different payload is
- * `idempotency_conflict` (decisions.md §10.2).
+ * `idempotency_conflict`.
  */
 export const CreateConversationRequest = Schema.Struct({
   key: Schema.String,
@@ -666,21 +666,21 @@ export const LinkedIssue = Schema.Struct({
 });
 export type LinkedIssue = typeof LinkedIssue.Type;
 
-/** The issue half of a link request body (decisions.md §5, `POST .../link`). */
+/** The issue half of a `POST .../link` request body. */
 export const LinkIssueInput = Schema.Struct({
   title: Schema.String,
   description: Schema.String,
   state: Schema.optional(Schema.String),
   labels: Schema.optional(Schema.Array(Schema.String)),
-  /** The tracker's own rank, 0-3 (decisions.md §14). */
+  /** The tracker's own rank, 0-3. */
   priority: Schema.optional(Schema.Number),
 });
 export type LinkIssueInput = typeof LinkIssueInput.Type;
 
 /**
  * The whole link request. `share_history` is mandatory and must be `true`:
- * linking makes the entire history readable by every project reader
- * (decisions.md §3 rule 2), and the hub rejects anything else with
+ * linking makes the entire history readable by every project reader,
+ * and the hub rejects anything else with
  * `share_history_required`.
  */
 export const HandoffDispatch = Schema.Literals(["now", "later"]);
@@ -712,7 +712,7 @@ export const LinkRequest = Schema.Struct({
   share_history: Schema.Boolean,
   issue: LinkIssueInput,
   /**
-   * What happens to the issue once it exists (§13.8, §14). The form
+   * What happens to the issue once it exists. The form
    * preselects the project's defaults, so this is always sent.
    */
   next: Schema.optional(HandoffNext),
@@ -726,7 +726,7 @@ export const LinkResponse = Schema.Struct({
     lane: Schema.String,
     runner_bound: Schema.Boolean,
   }),
-  /** What the hub did with the next step it was given (§14). */
+  /** What the hub did with the next step it was given. */
   next: HandoffNextApplied,
 });
 export type LinkResponse = typeof LinkResponse.Type;
@@ -769,7 +769,7 @@ export type AttentionItem = typeof AttentionItem.Type;
 
 export const AttentionList = Schema.Array(AttentionItem);
 
-/** `details` of a `conversation_already_linked` failure (decisions.md §3.4). */
+/** `details` of a `conversation_already_linked` failure. */
 export const AlreadyLinkedDetails = Schema.Struct({
   existing_conversation_id: ConversationId,
 });
@@ -810,7 +810,7 @@ export function readAlreadyLinked(details: unknown): AlreadyLinkedDetails | unde
 
 /**
  * One "referenced from" entry on an issue
- * (`GET {nativeBase}/work-items/:item/references`, §14).
+ * (`GET {nativeBase}/work-items/:item/references`, the conversation contract).
  */
 export const WorkItemReference = Schema.Struct({
   message_id: MessageId,
@@ -834,8 +834,8 @@ export type WorkItemReferencesResponse = typeof WorkItemReferencesResponse.Type;
  *
  * `coordinator` is the per-project answer to the same question the top-level
  * `capabilities.coordinator` answers for the organization: is a runner able to
- * take coordinator turns enrolled here, or does a hub backend exist
- * (decisions.md §1, §9.2). It is optional because the hub does not publish it
+ * take coordinator turns enrolled here, or does a hub backend exist.
+ * It is optional because the hub does not publish it
  * yet; where it is absent the organization-wide capability stands.
  */
 /** A workflow state, as the hub marshals `tracker.NativeState`. */
@@ -852,7 +852,7 @@ export const BootstrapProject = Schema.Struct({
   name: Schema.String,
   can_write: Schema.Boolean,
   /**
-   * The project grant's `runners` flag (§18.3). The hub has always sent it;
+   * The project grant's `runners` flag. The hub has always sent it;
    * it is optional here for the reason `states` is, so one payload decodes
    * through this schema and the account shell's. Absent reads as absent
    * rather than as false, and the Terminal card says the grant is missing —
@@ -889,7 +889,7 @@ export const Bootstrap = Schema.Struct({
   base_path: Schema.optional(Schema.String),
   sign_in_path: Schema.optional(Schema.String),
   /**
-   * The choices the composer's pickers offer (§14). The hub always sends it;
+   * The choices the composer's pickers offer. The hub always sends it;
    * it is optional here because the shared contract fixture cannot carry it
    * yet — the Go half's fixture value leaves `appBootstrapPreferences` unset,
    * and the cross-language test compares what both sides actually produce.
@@ -944,10 +944,10 @@ export function turnPreferences(conversation: {
 
 /**
  * Whether anything can answer a chat in this project: a runner able to take
- * coordinator turns is enrolled, or a hub backend exists (decisions.md §1).
+ * coordinator turns is enrolled, or a hub backend exists.
  * The per-project flag wins where the hub publishes one; otherwise the
  * organization-wide capability is all the client knows. It is never a reason to
- * block a send — a message queues and waits (decisions.md §9.1) — only a reason
+ * block a send — a message queues and waits — only a reason
  * to say so before the reader waits for an answer that cannot come.
  */
 export function projectCoordinatorAvailable(
@@ -959,7 +959,7 @@ export function projectCoordinatorAvailable(
 }
 
 /**
- * Deliveries a `retry` command is allowed on (decisions.md §10.3). Anything
+ * Deliveries a `retry` command is allowed on. Anything
  * else is `invalid_request`, so the affordance is not offered either.
  */
 export const RETRYABLE_DELIVERIES: ReadonlySet<string> = new Set([

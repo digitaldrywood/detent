@@ -58,7 +58,10 @@ the full lifetime of a worker dispatched in `Merging`, starting when Detent
 acquires its slot. It defaults to six hours (`21600000` ms), is not renewed by
 progress, and overrides the disabled general duration defaults for merge work.
 On breach, Detent cancels the owned worker, releases its slot, logs the elapsed
-time and last progress marker at WARN, and parks the issue in `Blocked`.
+time and last progress marker at WARN, records the attempt as timed out, and
+hands the issue to the machine retry owner. The retry returns the issue to a
+dispatchable lane with capped, jittered backoff; a machine failure never moves
+an issue to `Blocked`.
 
 `agent.max_session_tokens` is an absolute configured ceiling for a session.
 `total_tokens` counts input, output, cache-created, and cache-read tokens,
@@ -76,9 +79,8 @@ thread-resume behavior is preserving useful context without repeatedly filling
 the window.
 
 `budget.billing_mode` accepts `metered` or `subscription`. Metered mode
-enforces configured USD caps and the USD progress breaker. Subscription mode
-keeps notional spend telemetry but never refuses dispatch or parks work based
-on USD; Detent instead scales dispatch concurrency with the lowest reported
+enforces configured USD budget caps. Subscription mode keeps notional spend
+telemetry but never refuses dispatch based on USD; Detent instead scales dispatch concurrency with the lowest reported
 primary or secondary provider rate-window percentage. An omitted mode defaults
 to `subscription`, so USD controls are inert unless metered billing is declared
 explicitly.
@@ -93,37 +95,14 @@ timestamp, and buckets older than `stale_after_seconds` fail open to
 the resolved mode, bucket freshness, observed remaining percentage, and
 effective permit ceiling at `dispatch.rate_window_pacing`.
 
-`agent.no_progress_token_limit` defaults to `25000000` tokens and is enforced
-in both billing modes. Detent sums persisted `total_tokens` for the issue across
-attempts after its latest accepted lane or PR advancement. Reaching the limit
-parks the issue even when USD is only notional subscription telemetry. Set the
-value to `0` to disable the token breaker.
-
-`agent.no_progress_spend_limit_usd` defaults to a base limit of `3`, below the
-default per-issue budget backstop, and is enforced only when
-`billing_mode: metered`. The effective limit scales with the session's reasoning
-effort: unknown/low `1x`, medium `1.5x`, high `3x`, xhigh `6x`, and max/ultracode
-`8x`. These multipliers assume one retry at the observed cost profile should fit
-before the breaker fires; `detent doctor` warns when an effort tier's effective
-limit is below its observed p50 per-session cost and recommends a base limit
-with `1.5x` retry-cost headroom.
-
 Duration limits stop a single overlong turn or session regardless of message
-volume. The cross-session progress breakers can stop repeated or expensive work
-even when each individual session stays below its duration cap. The token
-breaker remains blocking on subscription fleets; the USD breaker is
-metered-only.
-
-PR creation, a new head commit, a dirty-to-clean mergeability transition, and a
-failing-to-passing CI transition each reset the shared token and USD window.
-Usage accumulates only while the PR fingerprint remains static. When an
-effective limit trips, Detent parks the issue in `Blocked` and identifies
-whether no PR evidence was produced or a linked PR remained static. The latter
-points operators toward `Merging` capacity and serialization tuning; the
-former recommends narrowing or splitting the task. The next worker must explain
-the missing progress signal in its first Workpad update before using tools.
-`detent doctor` reports both effective brakes for every project and warns when
-neither is active.
+volume. Per-issue progress, token-window, spend-window and lifetime brakes are
+retired: `agent.no_progress_token_limit`, `agent.no_progress_spend_limit_usd`,
+`agent.no_progress_timeout_ms`, the `agent.lifetime_*` keys, and
+`agent.auto_promote.rework_limit` / `no_progress_limit` no longer have any
+effect. Every machine failure, including a session or merge-worker ceiling, is
+retried by one retry owner with growing attempts and capped, jittered backoff
+in a dispatchable lane. Spending limits belong to the budget policy.
 
 `agent.failure_breaker` pauses new project dispatches when the same failure
 class reaches `same_class_limit` attempts inside `window_seconds`. The default
@@ -131,10 +110,11 @@ is five matching failures in one hour, followed by a one-hour cooldown. After
 the cooldown or a workflow reload, Detent permits exactly one canary attempt;
 a success or different failure class closes the breaker, while the same class
 starts a fresh cooldown. The state and health APIs report failed-attempt and
-distinct-item counts, affected item links and parking state, a representative
+distinct-item counts, affected item links and each item's recovery action, a representative
 operator cause, backend/provider identity, any matching capacity outage, the
-absolute resume time, and the current eligible-candidate count. Canary
-eligibility does not make a parked item retryable. The eligible count includes only candidates that dispatched or were
+absolute resume time, and the current eligible-candidate count. The breaker
+pauses new dispatches only; it never moves an issue to `Blocked`. The eligible
+count includes only candidates that dispatched or were
 held solely by the project breaker; dependency, budget, provider-capacity, and
 other dispatch gates remain separate reasons that can leave the count at zero.
 
@@ -266,7 +246,7 @@ loopback direct peer and would receive read access.
 the current tracker issue and model selection, records retry intent in the
 workflow journal, reconciles the matching corrected configuration failure, and
 wakes the scheduler. Duplicate requests reuse that intent; a newer attempt
-supersedes it. The intent survives restart without acknowledging a later park.
+supersedes it. The intent survives restart.
 
 The response distinguishes `queued`, `blocked`, and `running`. `queued` means
 the durable intent awaits scheduler admission. `blockers` lists the current
@@ -274,8 +254,9 @@ holds observed during reconciliation, and `next_action` describes the recheck.
 `current_attempt_id` identifies the running or superseding attempt when known.
 Inspect the receipt again to follow recovery through worker dispatch.
 
-Park acknowledgement records which park sequence the operator reviewed. It
-does not establish eligibility or worker start. Recovery preserves independent
-dependencies, approvals, ownership, budget limits, and service outages. Invalid
-issue configuration is an actionable issue hold, rather than project-outage
+Recovery preserves independent dependencies, approvals, ownership, budget
+limits, and service outages. A `Blocked` issue is returned to a dispatchable
+lane by recovery only when it holds no current human question, permission
+request or operator stop. Invalid issue configuration is reported as an
+`issue_configuration` blocker on the receipt, rather than as project-outage
 evidence.

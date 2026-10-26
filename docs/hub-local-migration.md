@@ -1,40 +1,14 @@
-# Migrate a local board to a local Hub
+# Migrate a local board to a Hub
 
-This runbook moves an existing `projects:` board, its GitHub or local tracker,
-and its Templ dashboard to a self-hosted Hub with enrolled runners. Since
-v0.132.0, a non-`hub_native` board without `client.hub_url` refuses to start.
-Adding a URL alone does not migrate its issues, lanes or credentials.
+The standalone local board is retired. A `global.yaml` that lists projects whose tracker is not `hub_native` and has no `client.hub_url` refuses to start with "Standalone local board projects are no longer supported without client.hub_url", and `detent doctor` reports the same condition as a warning. Adding a URL alone does not migrate issues, lanes or credentials. This page describes the supported migration of an existing `projects:` board (with a `github`, `local_sqlite` or `github_local` tracker) onto a Hub with enrolled runners, either Detent Cloud or a self-hosted Hub, and the cutover of a `github_compatible` Hub project to the native profile.
 
-Use a reviewed release containing the features your migration needs. The
-[local-mode Hub work](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1373)
-tracks the remaining prerequisites:
+The Hub serves its web app without WorkOS, runs headless through the API and MCP, and can share one machine with its runner; see [Hub self-hosting](hub-self-hosting.md) for installation, TLS, the single-machine macOS and Linux service layouts, and backups.
 
-| Existing setup or requirement | Prerequisite before completing cutover |
-| --- | --- |
-| `local_sqlite` or `github_local` lanes/history | [#1377: local store import](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1377) |
-| GitHub ProjectV2 status lanes | [#1378: ProjectV2 lane intake](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1378) |
-| Browser dashboard without WorkOS | [#1374: self-hosted web app](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1374) |
-| Organization model settings on an unhosted Hub | [#1385: organization model selection](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1385) |
-| Cloud and local-Hub runner services on one host | [#1380: separate runner services](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1380) |
+## 1. Preserve the old board
 
-Until the corresponding implementation ships, stop at that step. Do not replace
-local lane state with guessed labels, edit either SQLite schema, or configure
-WorkOS merely to get a local dashboard. The API/MCP Hub works headlessly today;
-its browser dashboard is not the old Templ board. For Linux service installation
-and TLS see [Hub operations](hub-self-hosting.md); the single-machine macOS and
-launchd guide is tracked by
-[#1379](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1379).
+A binary that already refuses to start cannot serve as a rollback target, so the last board-capable binary, its version/checksum and installation files are kept separately. A live database is never downgraded in place.
 
-## 1. Pin and preserve the old board
-
-Before allowing an updater to replace it, retain the last working board binary,
-its version/checksum and installation files. Record the actual service executable
-and configuration path. An already refusing binary cannot serve as your rollback
-binary; retrieve a verified board-capable release compatible with your saved
-configuration and database. Never downgrade a live database in place.
-
-Inventory every configured project and its tracker before changing anything.
-Include paths outside the global configuration directory:
+The migration inventory covers every configured project and its tracker, including paths outside the global configuration directory:
 
 | Preserve | Contents |
 | --- | --- |
@@ -42,27 +16,13 @@ Include paths outside the global configuration directory:
 | Every `tracker.local_sqlite` file | Local issue bodies, lane state and history, including `github_local` stores; resolve paths using the old configuration |
 | Every repository | `detent.yaml`, `WORKFLOW.md`, `detent.local.yaml` if present, current revision and unfinished branches/worktrees |
 | Service configuration | launchd plist or systemd unit/drop-ins, environment file, executable path and enablement state |
-| Credentials | Separate private backup of provider/Git sign-ins and secret configuration; never put secrets in issue exports |
+| Credentials | Separate private backup of provider/Git sign-ins and secret configuration; secrets never belong in issue exports |
 
-Pause scheduling and let active attempts and landing operations finish before
-stopping the old board. If it still runs, use its existing pause control or its
-pinned binary's pause command. If it already refuses, keep its service stopped;
-do not repeatedly restart it or bypass the refusal.
+Copies of SQLite stores are coherent only when taken from a stopped owner, with any WAL/SHM sidecars as one set. Active attempts and landing operations finish before the old board stops; an old board that still runs can pause projects with `detent --config <old-config> pause <project> --reason "Hub migration"`.
 
-With all board/database owners stopped, copy the complete configuration and
-tracker files to restricted, durable backup storage. Retain any SQLite WAL/SHM
-sidecars as a coherent set from that stopped owner; do not copy individual live
-database files. Include the repository and service files above, even when located
-elsewhere. Verify that the copies are readable and keep an untouched backup.
-Resume the pinned old board only if it supports the saved configuration; keep
-the pilot paused. Other projects can remain there during the pilot.
+## 2. Start a Hub and connect MCP
 
-## 2. Start a loopback Hub and connect MCP
-
-Use the new released binary for the Hub, separately from the pinned board
-executable. Choose unused loopback ports and new private durable paths; do not
-point the Hub at the old `detent.db` or any tracker database. The following
-single-machine example uses the same OS user for Hub and runner:
+The Hub uses its own private durable paths; it never opens the old `detent.db` or a tracker database. A single-machine loopback example:
 
 ```sh
 umask 077
@@ -73,239 +33,125 @@ export DETENT_HUB_ADMIN_TOKEN="$(openssl rand -hex 32)"
 detent hub serve --database "$HUB_DIR/hub.db" --listen 127.0.0.1:7777 --github-disabled
 ```
 
-Store the generated token in your secret manager before ending this shell; it
-is the bootstrap administrator credential. Load that same value into subsequent
-shells without printing it or putting it in arguments/history. Startup inserts
-it once; setting a different environment value later does not rotate it. Follow
-[authentication and rotation](hub-self-hosting.md#authentication-projects-and-runners)
-for later changes. Keep the Hub in the foreground initially; stop it with Ctrl-C
-and wait for exit before maintenance.
+`DETENT_HUB_ADMIN_TOKEN` is the bootstrap administrator credential. Startup inserts it once; a different environment value later does not rotate it (see [authentication, projects and runners](hub-self-hosting.md#authentication-projects-and-runners)). The web app is at `$HUB_URL/work`, using `operator` as the HTTP authentication username and the administrator token as the password.
 
-In a second shell, load those variables and check authenticated health. Passing
-the header through standard input keeps the token out of process arguments:
+An authenticated `GET $HUB_URL/health` confirms the Hub is up, and `GET $HUB_URL/api/v2/organizations` returns the local organization ID. A Streamable HTTP MCP client connects to `$HUB_URL/api/v2/organizations/ORG_ID/mcp` with an `Authorization: Bearer` header; see [API & MCP setup](api-mcp-setup.md) and [capability availability](mcp-capabilities.md), since tools backed only by hosted services are unavailable on an unhosted Hub.
 
-```sh
-curl --fail --silent --show-error --config - <<EOF
-url = "$HUB_URL/health"
-header = "Authorization: Bearer $DETENT_HUB_ADMIN_TOKEN"
-EOF
-```
+A running self-hosted Hub writes online snapshots through `POST /api/v2/admin/backup`; the offline `detent hub backup` and `detent hub verify` commands require a stopped Hub. See [backup and export](hub-self-hosting.md#backup-and-export).
 
-Repeat the authenticated request with URL `$HUB_URL/api/v2/organizations` and
-select the returned local organization ID. Configure a local Streamable HTTP
-MCP client with URL
-`http://127.0.0.1:7777/api/v2/organizations/ORG_ID/mcp` (substitute that ID) and an
-`Authorization: Bearer` header supplied from its
-private environment/secret facility. Remote hosted clients cannot reach your
-machine's loopback address. Complete MCP initialization, list available tools,
-then use the advertised discovery tool to select the organization and project
-toolsets. Use [API & MCP setup](api-mcp-setup.md) and
-[capability availability](mcp-capabilities.md): tools backed only by hosted
-application services may be unavailable on an unhosted Hub. Use the documented
-native API for those operations, not invented MCP tool names or Cloud URLs.
-Create a narrower operator/project credential for routine use after bootstrap.
+## 3. Create the native project
 
-Take the first backup before creating projects or enrolling runners. Stop this
-Hub and wait for exit, then run:
-
-```sh
-detent hub backup --database "$HUB_DIR/hub.db" --output "$HUB_DIR/backups/initial.db"
-detent hub verify --database "$HUB_DIR/backups/initial.db"
-```
-
-The destination must not exist. Restart with the same serve command and token.
-Keep completed snapshots in encrypted backup storage with the binary version
-and separate secret backups. These commands require a stopped Hub; online
-snapshots are tracked by
-[#1388](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1388).
-Follow [backup and restore](hub-self-hosting.md#backup-and-export) for later
-snapshots, artifacts and restore isolation.
-
-## 3. Quiesce one pilot and create its native project
-
-Choose one small repository first. On a running, pinned old board, substitute
-its real config path and project ID:
-
-```sh
-detent --config /private/board/global.yaml pause example-project --reason "Hub migration pilot"
-```
-
-This command belongs to the old board installation. Confirm the project is
-paused, has no active workers or landing, and has no ambiguous pending external
-effects. Refresh its stopped-owner backup after the drain. If stopping that
-board pauses other projects, arrange their maintenance window too.
-
-As Hub administrator, list `GET /api/v2/organizations` and select the returned
-local organization ID. Create the pilot with
-`POST /api/v2/organizations/{organization_id}/projects` using the exact request
-contract in [native project setup](hub-api.md#native-organization-and-project-setup).
-Save the returned opaque organization/project IDs; the old board's project name
-is not the new ID. Use a stable `idempotency_key` for retries.
-
-Supply a workflow matching the repository's intended review and landing path,
-including a nonterminal, nondispatchable Backlog for imports. Match actual lane
-names, transitions, dispatchability and terminal flags, not just their labels.
-Keep all imported work there until checks finish. Do not use the API example's
-operator-only Review lane as an automated review lane: the runner's configured
-review source must be reachable and not operator-only. Preserve the project's
-existing independent review/security requirements.
+`POST /api/v2/organizations/{organization_id}/projects` creates the project using the request contract in [native project setup](hub-api.md#native-organization-and-project-setup); the returned opaque organization and project IDs replace the old board's project name. A stable `idempotency_key` makes retries safe. The project's workflow defines lane names, transitions, dispatchability and terminal flags; a nonterminal, nondispatchable `Backlog` keeps imported work out of dispatch until it is reconciled. The runner's review source lane must be reachable and not operator-only.
 
 ## 4. Prepare the repository and enroll a runner
 
-In the pilot's `detent.yaml`, replace the old tracker configuration with:
+The repository's `detent.yaml` selects the native tracker:
 
 ```yaml
 tracker:
   kind: hub_native
 ```
 
-Retain repository execution policy, gate, review requirements and landing target.
-Remove obsolete tracker credentials and local store options from the active
-configuration, preserving their backups. Update `WORKFLOW.md` to the native
-worker handoff rather than GitHub issue/PR/comment instructions. Review private
-`detent.local.yaml` overrides so they cannot restore the old tracker. Publish
-these reviewed repository files on its intended default branch through the
-repository's normal change process before the enrolled runner loads them.
+Repository execution policy, gate, review requirements and landing target carry over. Old tracker credentials and local store options no longer apply, and `detent doctor` warns when `WORKFLOW.md` still describes GitHub-only steps. Native Changes land through git by default; `deliverable.github_pull_request: true` selects GitHub pull request delivery without making GitHub the issue authority. The runner loads the repository files from the bound repository's default branch.
 
-Native Changes land through git by default. If this project intentionally uses
-GitHub pull requests, set this optional top-level policy in `detent.yaml`:
+`GET .../projects/{project_id}/integration` returns the integration revision. `POST .../projects/{project_id}/onboarding/repository` with `idempotency_key`, the returned `expected_revision` as a string, `repository: "example-org/example-project"` and `source: "runner_checkout"` records the checkout binding without a Hub-side GitHub fetch. The integration read's `checkout_verified` reflects a recent matching runner report.
 
-```yaml
-deliverable:
-  github_pull_request: true
-```
-
-This selects a deliverable; it does not make GitHub the issue authority. Preserve
-the project's GitHub credentials, target branch and required protections. See
-[GitHub profiles](github-profiles.md) for repository binding and intake, and
-[#1384](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1384)
-for the self-hosted App/webhook setup work. The Hub may keep `--github-disabled`
-when using runner-backed intake; this does not disable runner Git transport.
-
-Before enrolling, read the project's integration revision with
-`GET /api/v2/organizations/{organization_id}/projects/{project_id}/integration`.
-Bind its repository with `POST .../projects/{project_id}/onboarding/repository`,
-supplying `idempotency_key`, the returned `expected_revision` as a string,
-`repository: "example-org/example-project"` and `source: "runner_checkout"`.
-Substitute the pilot's repository. This records the native checkout binding
-without a Hub-side GitHub fetch; runner readback will establish checkout health.
-
-Create a short-lived, single-use enrollment through
-`POST /api/v2/organizations/{organization_id}/runner-enrollments`, granting only
-the pilot project and `read`, `claim`, `heartbeat`, `events`, `collaborate`.
-For token-first registration omit runner/machine IDs; use the exact
-[enrollment contract](hub-api.md#scoped-runner-onboarding). Deliver the returned
-token privately as `DETENT_RUNNER_ENROLLMENT_TOKEN` to the runner shell.
-
-Use a fresh runner config directory and workspace root, outside the old board's
-paths and any existing Cloud runner installation:
+`POST /api/v2/organizations/{organization_id}/runner-enrollments` creates a short-lived, single-use enrollment granting the project and `read`, `claim`, `heartbeat`, `events`, `collaborate`; see the [enrollment contract](hub-api.md#scoped-runner-onboarding). Registration reads the token from `DETENT_RUNNER_ENROLLMENT_TOKEN`:
 
 ```sh
-detent hub runner register --url "$HUB_URL" --organization org_example --name "Local pilot" --capacity 1 --config "$HOME/.config/detent-local-runner/global.yaml" --workspace-root "$HOME/detent-local-runner"
+detent hub runner register --url "$HUB_URL" --organization org_example --name "Local runner" --capacity 1 --config "$HOME/.config/detent-local-runner/global.yaml" --workspace-root "$HOME/detent-local-runner"
 unset DETENT_RUNNER_ENROLLMENT_TOKEN
 detent --config "$HOME/.config/detent-local-runner/global.yaml" --headless
 ```
 
-Replace `org_example` with the returned organization ID. Registration writes
-the identity and machine-only config; keep both private. Do not copy the old
-`projects:` list, `client.native_projects`, model selection or scheduling defaults
-into this config: enrolled runners reject them. Hub grants supply the projects.
-Keep provider sign-ins and Git authentication on the runner host.
+Registration writes the identity and a machine-only config. Enrolled runners reject the old `projects:` list, `client.native_projects`, model selection and scheduling keys; Hub grants supply the projects. Provider sign-ins and Git authentication stay on the runner host. A separate `service_name` lets a self-hosted Hub runner and a Cloud runner run as separate services on one host. See [register a runner with one command](hub-api.md#register-a-runner-with-one-command).
 
-Confirm the binding, checkout and source revision on readback; the integration
-read's `checkout_verified` reflects a recent matching authorized runner report.
-Follow [runner onboarding](hub-api.md#register-a-runner-with-one-command) and
-the headless enrollment documentation work in
-[#1386](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1386).
-Do not add a local project map to make a missing checkout appear. Start with
-the foreground runner; service coexistence with an existing Cloud runner awaits
-#1380. Installing a service must not replace the old board's rollback unit.
+## 5. Import open work
 
-## 5. Import open work without dispatching it
+Imports keep original source identities and provenance.
 
-Compare against the frozen source inventory, including open issue IDs, bodies,
-comments, dependencies, lane names and blocked/held work. Keep original source
-identities/provenance; do not recreate issues by hand under new identities.
+- **`local_sqlite` or `github_local` stores:** `detent hub issue import-local <sqlite-copy> --project <project_id> --kind local_sqlite|github_local --store-id <stable-name>` imports a copy of the retired store. `--dry-run` reports without writing, `--lane-map Source=Target` maps lanes, and `--terminal-state` names source terminal lanes, which are imported only when needed as prerequisites. Each item is its own transaction and replays safely with the same `--store-id`. The scoped endpoint is `POST /api/v2/organizations/{organization}/projects/{project}/local-board-import`.
+- **GitHub issues with label lanes:** [selective onboarding intake](hub-api.md#selective-onboarding-issue-intake) discovers, previews and applies selected issues with explicit label mappings. Dispatchable destinations require `allow_dispatch: true`.
+- **GitHub ProjectV2 status lanes:** the same intake accepts a `project_v2` source with `status_lanes`; ProjectV2 Status then takes precedence over label routing.
 
-- **GitHub issues with label lanes:** use
-  [selective onboarding intake](hub-api.md#selective-onboarding-issue-intake).
-  Discover/preview first, choose only open issues, map labels explicitly and
-  apply into Backlog. Do not authorize dispatchable destinations during import;
-  label mappings must not accidentally route work into Todo. Follow all pages
-  and inspect failed, skipped and partial results before proceeding. Import
-  dependencies too; preserve holds and unresolved references.
-- **`local_sqlite` or `github_local`:** stop until the importer from #1377 is
-  available in your selected release. GitHub intake alone cannot recover local
-  lanes, local-only issues or local history. Keep the store backup and use that
-  importer's documented preview/apply contract when shipped.
-- **GitHub ProjectV2:** stop if preserving its status-field lanes is required
-  until #1378 ships. Current label intake is not a ProjectV2 status migration.
+An import receipt does not prove inaccessible source history was recovered; results report failed, skipped and partial items and explicit gaps.
 
-Verify retained identities, discussion, dependencies and lane mapping against
-the source inventory, not only total counts. Inspect explicit gaps; an import
-receipt does not prove inaccessible source history was recovered. Keep the old
-pilot paused, and keep new intake from dispatching work until reconciliation.
+## 6. Model selection, policy and first landing
 
-## 6. Select models, approve policy and land one issue
+Model, backend and reasoning choices live in the Hub's organization settings, with optional project overrides, through `/api/v2/organizations/{org}/model-selection` and the project equivalent (see [model selection](hub-self-hosting.md#model-selection)). Model keys in `global.yaml` or repository YAML are not used.
 
-Set model/backend/reasoning choices in the Hub's organization settings and, if
-needed, the pilot project's override. Read back the effective stage selections
-before dispatch. Organization model selection for an unhosted Hub is tracked by
-#1385; if the selected release does not support your required settings, stop
-here. Do not work around it with model keys in global or repository YAML.
+The runner reports the observed repository policy and onboarding status to the Hub. Definitions committed on the bound repository's default-branch history apply automatically; other descriptors are approved through the project policy API/MCP owner described in [approved repository policy](hub-api.md#approved-repository-policy). Approval does not bypass review or the gate.
 
-Read the runner's observed repository policy and onboarding status through the
-Hub. Check source revision, gate command, landing target, review/security policy
-and runner grants. Approve the exact trusted descriptor through the supported
-project policy API/MCP owner described in
-[approved repository policy](hub-api.md#approved-repository-policy).
-The consolidation of self-hosted approval instructions is tracked by
-[#1383](https://cloud.detent.build/drywood-creek-consulting/detent/issues/1383).
-Do not introduce a rejected `client.native_projects` mapping to run an old
-approval example. Approval is not permission to bypass review or the gate.
+Moving one native issue to the dispatchable `Todo` lane exercises the attempt, Change version, review, security audit, gate and landing records end to end. An old in-flight attempt cannot be replayed on the new Hub, and the same issue must not be operated from both the old board and the Hub.
 
-Create one small native issue with checkable acceptance criteria, move only that
-issue to the configured dispatchable Todo lane through the Hub, and watch its
-attempt, Change version, review, security audit, gate and landing records. Require
-a successful landing on the intended target branch and the expected terminal
-state before enabling imported work. Do not replay an old in-flight attempt on
-the new Hub or operate the same issue from both boards.
+## 7. Rollback
 
-## 7. Verify and repeat, or roll back
+A database restore cannot undo pending external effects, commits or GitHub PRs already created. Rolling back stops new dispatch on the Hub through its project controls, lets active work settle, stops the runner, and restores the old board's saved configuration, repository definitions, service file and matching pinned binary. Databases are restored only from their coherent stopped-owner backup into an isolated destination first. A restore of a Hub snapshot revokes copied credentials, so runners re-enroll; see [restore, import and move between Hubs](hub-self-hosting.md#restoreimport-and-move-between-hubs).
 
-Before expanding the pilot, verify:
+## GitHub-compatible projects and native cutover
 
-- Authenticated health and MCP reads survive a normal Hub restart with the same
-  database and token; the pilot and imported identities remain unchanged.
-- Exactly the intended runner has project access, a valid renewed identity,
-  healthy provider/Git setup and the expected checkout/policy/model selections.
-- Imported open work, discussion, dependencies, holds and lanes reconcile with
-  the inventory; no partial imports or missing required lane mappings remain.
-- The pilot Change passed the configured checks and landed once, and the old
-  board has not resumed its pilot or projected conflicting state to GitHub.
-- A fresh stopped-owner Hub backup verifies. Rehearse an isolated restore using
-  [the restore procedure](hub-self-hosting.md#restoreimport-and-move-between-hubs);
-  restore revokes copied credentials, so reenrollment is required.
+Hub projects have exactly one authority profile. Repository aliases created from GitHub-tracked boards are `github_compatible`; newly created projects are `native`. `GET /api/v2/organizations/{organization}/projects/{project}/integration` returns the profile, configuration revision, repository binding and field-authority map.
 
-For rollback, stop new dispatch on the Hub through its existing project controls,
-let active work settle, then stop the pilot runner. Reconcile pending external
-effects and any commits or GitHub PRs already created; a database restore cannot
-undo them. Keep a verified Hub snapshot for diagnosis. Never run both owners for
-the pilot while restoring authority.
+| Field or operation | github_compatible | native |
+| --- | --- | --- |
+| Issue title and body | GitHub | Detent; linked source fields follow GitHub until edited in Cloud |
+| Labels, assignees, discussion | GitHub | Detent; GitHub source comments append with provenance |
+| Workflow and priority | GitHub projection with existing managed writes | Detent |
+| Dependencies | Existing compatibility graph | Detent graph, initially imported at cutover |
+| Original authors and timestamps | Source provenance | Retained source provenance plus authenticated native actors |
+| Scheduling, leases, run progress | Detent | Detent |
+| Repository execution and merge policy | Trusted repository revision | Same approved policy, retained at cutover |
+| GitHub PRs, CI, branch protection and required review | GitHub | GitHub when repository integration is enabled |
+| Native approval | Detent only | Detent only; never a required GitHub review |
 
-Restore the old board's saved configuration, repository definitions and private
-overrides, service file and matching pinned binary. Restore databases only from
-their coherent stopped-owner backup into an isolated destination first; do not
-overwrite a running database. Preserve newly landed commits and explicitly
-reconcile their corresponding old issues before resuming. Keep the Hub pilot
-nondispatchable or its runner stopped, verify the pinned board reads the expected
-projects and lanes, then resume only the intended project. If your saved binary
-is already subject to the startup refusal, it is not a usable rollback target.
+### Integration settings
 
-After a successful pilot, repeat the inventory/import/reconciliation and single
-issue verification for each remaining project. Retire the old board only when
-all projects have migrated: disable its launchd/systemd startup and auto-updater,
-retain the pinned recovery bundle for your retention window, and remove obsolete
-credentials only after checking they are not shared with a runner. Keep the Hub
-and runner services separate and establish regular verified backups. Do not
-delete local tracker stores merely because the new board displays issue titles.
+An administrator updates settings with `PUT /integration` using `idempotency_key`, `expected_revision` (a decimal string), `intake` (`disabled` or `manual`), `projection` (`disabled` or `summary`) and `repository_enabled` (boolean). Bound native projects always report `intake: automatic`; omitting `intake` preserves the stored value. Compatibility projects cannot enable native summary projection. Profile changes happen only through cutover. Disabling repository integration does not authorize bypassing GitHub merge gates.
+
+`detent hub serve --github-disabled` runs a Hub with no GitHub credential; pure native projects need no GitHub repository. `POST /integration/repository` with `repository: "owner/name"`, `idempotency_key` and `expected_revision` attaches a repository to an existing native project, verifying repository metadata without fetching issues. A repository belongs to at most one project and bindings are immutable; a repository already bound to a compatibility project is migrated by importing and cutting over that project.
+
+### Native GitHub intake
+
+A native project with an attached repository and the Detent Cloud GitHub App installed receives new GitHub issues through the App webhook into `Triage`, from any author, with a linked-source snapshot. GitHub authors remain provenance without Cloud membership. `POST /work-items` with `github_issue_url` and `idempotency_key` links an existing GitHub issue the same way; it starts in `Triage` regardless of the requested state. Repeated links and webhook deliveries reuse the source key and native identity.
+
+Later GitHub comments append with provenance, and GitHub title/body updates follow the source until edited in Cloud. GitHub close/reopen events add a Cloud comment without changing state. Cloud discussion stays private. Intake records the link without posting to GitHub; moving an item to `Cancelled` closes the source as `not_planned` with a short link comment, and `Done` closes it only through the landing PR's `Closes owner/repo#N` reference.
+
+The Cloud entry verifies each GitHub webhook signature once at `/api/v1/webhooks/github` and forwards it only to organizations whose native projects bind that repository; a self-hosted Hub verifies signatures on its own origin. App credentials never enter issue or agent context.
+
+### Import and inspect
+
+Historical import uses scoped v2 paths relative to the project URL and requires manual intake on a compatibility project:
+
+1. `POST /imports` with `{"idempotency_key":"import-123","issue_number":123}` returns a durable `import_id`; starting the same source issue returns the existing job.
+2. `POST /imports/{import_id}/advance` with the returned `expected_revision` retrieves one page per call and returns the next revision. `GET /imports/{import_id}` reads the job after a lost reply. Network failures keep the cursor and return `status: partial` with a retry time.
+3. Traversal covers the issue body, comments, timeline, blocked-by dependencies and GraphQL edit histories. `stage: finished` and `status: retrieved` describe API traversal, not complete history; `gaps` lists what was not retrieved.
+4. `GET /imports/{import_id}/records?limit=100` pages through retained source records via `next_cursor`. Missing authors and dates stay unavailable rather than being attributed to the importing actor.
+5. Dependency targets must be in the same repository-backed project; cross-project references prevent cutover.
+
+GitHub does not return deleted comments, inaccessible private activity or redacted edit diffs, and pagination is not an atomic snapshot. Reimport uses a new idempotency key with `restart: true` and the job's `expected_revision`; it adds newly discovered source events without overwriting native edits or reinstating removed native dependencies. Newly imported issues are not claimable until traversal finishes and imported dependencies resolve.
+
+### Cutover
+
+Cutover requires no active leases and no processing GitHub writes. `POST /integration/cutover` first runs as a preview:
+
+```json
+{
+  "idempotency_key": "cutover-preview-1",
+  "dry_run": true,
+  "initial_state": "Todo",
+  "closed_state": "Done",
+  "states": [
+    {"name":"Todo","dispatchable":true,"transitions":["In Progress"]},
+    {"name":"In Progress","dispatchable":true,"transitions":["Todo","Done"]},
+    {"name":"Done","terminal":true,"transitions":["Todo"]}
+  ],
+  "accept_partial": false,
+  "close_source": false
+}
+```
+
+`closed_state` must name a terminal state. The preview returns blockers, incomplete imports, unresolved dependencies, known history limitations and a `checkpoint`, and changes nothing. Applying uses a new idempotency key, the same options, `dry_run: false` and that checkpoint; concurrent source, import or configuration changes invalidate it. `accept_partial: true` acknowledges incomplete retrieval but missing imports and unresolved dependencies still block cutover. `GET /integration/cutover` returns the durable receipt. Approved repository gate/merge descriptors keep their identity under the native scope. `close_source: true` with an absolute `destination_url` enqueues a Detent summary and closes the source issue through the outbox.
+
+After cutover, issue creation, edits, comments, transitions, claims and run events stay in the Hub; issue webhooks and repair cannot overwrite native fields. `detent hub issue get|create|edit|comment|edit-comment|transition|dependency|comments|history` call the scoped native APIs, reading mutations as v2 JSON on stdin. With `projection: summary`, `POST /work-items/{work_item_id}/projection` with `idempotency_key` and `body` publishes an explicit summary comment to GitHub. `GET /api/v2/github/requests` returns process-lifetime GitHub request and error counts for administrators.
+
+There is no automatic reverse authority switch or schema downgrade, and a GitHub mirror cannot represent native IDs, actors, revisions, policy, leases or events. Restoring a pre-cutover Hub backup discards later native work and does not reopen source issues or undo external comments. Issue detail, comments, history, revisions and import records remain exportable through v2. Mixed profiles can coexist on one Hub.

@@ -10,7 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// Per-attempt usage ingestion (decisions section 17.5). A run event carries
+// Per-attempt usage ingestion. A run event carries
 // the attempt's running total; the hub records only the increment over what
 // it already holds for the attempt, filed under the hour the event arrived.
 // A redelivered event therefore adds nothing, spend after midnight lands on

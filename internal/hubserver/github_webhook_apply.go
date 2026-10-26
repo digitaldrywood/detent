@@ -697,7 +697,7 @@ func recordMergedPullRequestPolicyLanding(ctx context.Context, tx *sql.Tx, repos
 // enqueueHydration records a demand for fresh connector data. deliveryID names
 // the webhook delivery that asked, and is empty for a demand that did not come
 // from a delivery at all -- a client's ?refresh=1 on the pull request panel
-// (decisions section 18.6) -- which is stored as NULL rather than as a
+// -- which is stored as NULL rather than as a
 // delivery id the inbox has never seen.
 func enqueueHydration(ctx context.Context, tx *sql.Tx, deliveryID string, target hydrationTarget, now time.Time) error {
 	if target.RepositoryID != nil {

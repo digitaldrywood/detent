@@ -1,5 +1,5 @@
-// The runner-dispatched coordinator (decisions.md §1 "Where model turns
-// execute" and §9).
+// The runner-dispatched coordinator: every model turn, including an unlinked
+// chat's, executes on a customer runner.
 //
 // The client half of that decision is small and easy to get wrong: an unlinked
 // chat is no longer answered in place, so its first message is `queued` rather
@@ -76,7 +76,7 @@ describe("the runner-dispatched coordinator", () => {
     const { h, conversationId, receipt } = await openQueuedChat();
 
     // The hub creates the coordinator work item and waits: the message is
-    // accepted and held, not delivered to anything (decisions.md §9.1).
+    // accepted and held, not delivered to anything.
     expect(receipt?.status).toBe("queued");
     await awaitStatus(h, conversationId, "waiting_for_runner");
     expect(detailOf(h, conversationId).conversation.work_item_id).toBeNull();
@@ -120,7 +120,7 @@ describe("the runner-dispatched coordinator", () => {
     const execution = Option.getOrThrow(running.data).conversation.execution;
 
     // The client-facing kind stays `cancel`; the hub delivers it to the runner
-    // holding the coordinator work item as an interrupt (decisions.md §9.1).
+    // holding the coordinator work item as an interrupt.
     await h.run(
       h.client.effects.sendControl({
         projectId: PROJECT,
@@ -225,7 +225,7 @@ describe("the runner-dispatched coordinator", () => {
     await awaitStatus(h, conversationId, "completed");
 
     // `propose_issue` posts an `item` event with `data.proposal` and creates
-    // nothing (decisions.md §9.4). It arrives as `role: system, kind: status`.
+    // nothing. It arrives as `role: system, kind: status`.
     const proposal = detailOf(h, conversationId).messages.find(
       (message) => "proposal" in message.data,
     );
@@ -240,7 +240,7 @@ describe("the runner-dispatched coordinator", () => {
     expect(projectCoordinatorAvailable(h.client.bootstrap, PROJECT)).toBe(false);
 
     // The send is still accepted: a message queues and waits, so the client has
-    // a note to show, not a block to enforce (decisions.md §9.1).
+    // a note to show, not a block to enforce.
     const created = (await h.run(
       h.client.effects.createConversation({
         projectId: PROJECT,

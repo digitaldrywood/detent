@@ -42,7 +42,7 @@ const conversationClientEntry = "app/conversation/app.js"
 
 // The paths the application shell never answers: the JSON API, the sign-in
 // exchange, webhooks, the static bundle, health and sign-out. Everything else
-// is a client route (decisions section 12).
+// is a client route.
 var (
 	appReservedNamespaces = []string{"/api", "/app", "/auth", "/webhooks", "/static"}
 	appReservedPaths      = []string{"/health", "/invite", "/logout", "/metrics", "/chat/approval"}
@@ -343,7 +343,7 @@ WHERE r.organization_id = ? AND t.revoked_at IS NULL ORDER BY r.display_name, r.
 	return payload, nil
 }
 
-// Bootstrap payload (decisions section 12).
+// Bootstrap payload.
 
 type appBootstrapOrganization struct {
 	Logo      *organizationLogo `json:"logo,omitempty"`
@@ -411,7 +411,7 @@ func (s *Service) appBootstrapFeature() appBootstrapFeature {
 
 // appBootstrapChoice is one option of a turn preference picker. Default
 // marks what "auto" resolves to for the project; when the hub does not know
-// that, "auto" carries the flag itself (decisions section 14).
+// that, "auto" carries the flag itself.
 //
 // A model choice carries four more fields, all optional and all absent unless
 // an enrolled runner's backend catalog published them: the reasoning ladder
@@ -590,7 +590,7 @@ func (s *Service) readAppBootstrap(ctx context.Context, credential apiCredential
 // the organization's enrolled runners report for the projects the actor can
 // read, and the fixed effort and access vocabularies. A hub whose runners
 // report no models still answers with "auto" and, when it knows one, the
-// configured default (decisions section 14).
+// configured default.
 func (s *Service) appBootstrapPreferences(ctx context.Context, organization string, readable []appBootstrapProject) (appBootstrapPreferences, error) {
 	preferences := appBootstrapPreferences{
 		Models:  []appBootstrapChoice{},

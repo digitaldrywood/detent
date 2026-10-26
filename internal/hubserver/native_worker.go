@@ -109,7 +109,7 @@ func (s *Service) claimNativeIssue(c echo.Context) error {
 		DispatchPriorityByState: request.DispatchPriorityByState, DispatchPriorityByLabel: request.DispatchPriorityByLabel, PrioritizeUnblockers: request.PrioritizeUnblockers,
 		NativeScope: &scope, Scope: string(scope.project), WorkflowStates: request.WorkflowStates, Authors: request.Authors, Assignees: request.Assignees, LabelInclude: request.LabelInclude, LabelExclude: request.LabelExclude,
 		// Only a lane that declares the workspace capability is offered
-		// workspace items (decisions section 18.1).
+		// workspace items.
 		WorkspaceLane: slices.Contains(request.Capabilities, tracker.NativeWorkspaceCapability),
 	}, s.config.ReconcileInterval)
 	if err != nil {
@@ -215,7 +215,7 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 		ProviderReports  []providercapacity.Report `json:"provider_reports,omitempty"`
 		// WorkspaceCapabilities and WorkspaceIsolation are what this runner
 		// can serve for a workspace session, reported beside the provider
-		// reports (decisions section 18.10). A runner that never reports them
+		// reports. A runner that never reports them
 		// serves no surface and is never handed a workspace item.
 		WorkspaceCapabilities *workspacesession.Capabilities `json:"workspace_capabilities,omitempty"`
 		WorkspaceIsolation    string                         `json:"workspace_isolation,omitempty"`

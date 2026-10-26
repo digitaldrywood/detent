@@ -2,7 +2,7 @@ import type { IssueIntake, IntakeCommand } from "../src/contracts/githubIntake.t
 // In-memory mock of the conversation hub.
 //
 // Implements the endpoints and the event stream in
-// `docs/conversation/decisions.md` §5 well enough to develop and test the
+// the Hub conversation API well enough to develop and test the
 // client against: idempotent commands, per-conversation event cursors,
 // heartbeats, a scripted coordinator that streams a reply in deltas, issue
 // linking, a scripted runner lifecycle for linked conversations, and
@@ -10,7 +10,7 @@ import type { IssueIntake, IntakeCommand } from "../src/contracts/githubIntake.t
 //
 // It has two coordinator modes. `hub` is the transitional hub-side coordinator
 // of the first slice: an unlinked message is answered in place. `runner` is the
-// runner-dispatched coordinator of decisions.md §1 and §9: the message queues,
+// runner-dispatched coordinator: the message queues,
 // execution reports `waiting_for_runner`, and the same `/__mock/runner/...`
 // hooks that drive a linked attempt drive the coordinator attempt instead.
 //
@@ -54,9 +54,9 @@ const PROJECTS = [
 const CSRF_TOKEN = "csrf_mock_token";
 const API_BASE = `/api/v2/organizations/${ORGANIZATION.id}`;
 
-// --- The hosted account surface (decisions.md §12) --------------------------
+// --- The hosted account surface --------------------------
 //
-// §12 turns everything the hosted Templ pages did through forms into JSON
+// The hosted JSON API turns everything the hosted Templ pages did through forms into JSON
 // under the same `/api/v2/organizations/:organization` base. The seeds below
 // are this double's account fixture: shape for shape they follow
 // `src/contracts/fixtures/account-*.json`, but with this file's own
@@ -569,7 +569,7 @@ const SEED_FLEET = {
 };
 
 /**
- * `GET /usage?range=`. Decisions.md §17.5: one report per window, assembled
+ * `GET /usage?range=`: one report per window, assembled
  * from the per-attempt usage the runners report. The numbers are generated
  * rather than listed so the 90-day window is as realistic as the 7-day one,
  * and the generator is deterministic (a small LCG seeded per bucket) so the
@@ -866,7 +866,7 @@ const SEED_PLAN_REPORT = {
 /**
  * `GET /billing`. `prices` is on the payload because the report alone cannot
  * render the screen: the hosted page read the configured prices from its own
- * config, and §12's "checkout buttons per configured price" needs them here.
+ * config, and the hosted JSON API's "checkout buttons per configured price" needs them here.
  */
 const SEED_BILLING = {
   organization_id: ORGANIZATION.id,
@@ -915,7 +915,7 @@ const SEED_SUPPORT: SupportRow = {
 /** The build the bootstrap's About row names. */
 const HOSTED_VERSION = "v0.0.0-mock";
 
-/** What the mock runner reports for a workspace (§18.1); see `dev/mock-work.ts`. */
+/** What the mock runner reports for a workspace; see `dev/mock-work.ts`. */
 const WORKSPACE_CAPABILITIES = {
   terminal: true,
   files: true,
@@ -938,7 +938,7 @@ interface AccountState {
   support: SupportRow | null;
   /** False once `POST /__mock/fleet {"spend": null}` has run. */
   spend: boolean;
-  /** False once `POST /__mock/usage {"usage": null}` has run: §17.5's empty report. */
+  /** False once `POST /__mock/usage {"usage": null}` has run: the usage report's empty report. */
   usage: boolean;
   integrations: Map<string, IntegrationRow>;
   checkoutReports: Map<string, string>;
@@ -959,7 +959,7 @@ interface AccountState {
   /**
    * Stored non-GET responses, keyed by method, path and idempotency key. A
    * retry replays the stored response; the same key with a different payload
-   * is `idempotency_conflict` (§12).
+   * is `idempotency_conflict`.
    */
   mutations: Map<string, { payload: string; status: number; response: unknown }>;
 }
@@ -1027,8 +1027,8 @@ interface StoredConversation {
   events: StoredEvent[];
   receipts: Map<string, { payload: string; receipt: Receipt }>;
   /**
-   * Attachments uploaded against this conversation and not yet sent
-   * (decisions.md §17.1), keyed by id. A `message` command naming one moves it
+   * Attachments uploaded against this conversation and not yet sent,
+   * keyed by id. A `message` command naming one moves it
    * onto the message; `DELETE` drops it.
    */
   attachments: Map<string, MockAttachment>;
@@ -1039,7 +1039,7 @@ interface StoredConversation {
   subscribers: Set<Subscriber>;
 }
 
-/** The hub's own limits (decisions.md §17.1). */
+/** The hub's own limits. */
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 
@@ -1066,7 +1066,7 @@ interface Subscriber {
  * `none` is a project with neither, so the bootstrap reports no coordinator.
  */
 /**
- * The picker choices the composer offers (decisions.md §14). The hub builds
+ * The picker choices the composer offers. The hub builds
  * these from the enrolled runners' provider reports and policy; the mock
  * publishes a fixed set so the pickers have something to open.
  */
@@ -1094,7 +1094,7 @@ export type CoordinatorMode = "hub" | "runner" | "none";
 /**
  * Whether the signed-in account may write. `read_only` is a viewer with read
  * grants only: every project reports `can_write: false` and every mutation is
- * `403 forbidden` (decisions.md §10.11).
+ * `403 forbidden`.
  */
 export type AccountMode = "write" | "read_only";
 
@@ -1146,8 +1146,7 @@ function idleExecution(): Execution {
     thread_id: null,
     turn_id: null,
     capabilities: { steer: false, interrupt: true, answer: true, continue: true },
-    // No runner has bound, so there is nothing to have resumed from
-    // (decisions.md §10.4).
+    // No runner has bound, so there is nothing to have resumed from.
     resume: "",
     error: null,
     updated_at: now(),
@@ -1177,8 +1176,8 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     options.account ?? readAccountMode(process.env.MOCK_ACCOUNT) ?? "write";
   const store = new Map<string, StoredConversation>();
   const issues = new Map<string, { id: string; identifier: string; title: string; state: string }>();
-  // Creating a conversation is idempotent by actor and key (decisions.md
-  // §10.2). The stored response is returned verbatim; a different payload
+  // Creating a conversation is idempotent by actor and key.
+  // The stored response is returned verbatim; a different payload
   // under the same key is `idempotency_conflict`.
   const creates = new Map<string, { payload: string; status: number; response: unknown }>();
 
@@ -1258,7 +1257,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
   ): Message {
     entry.messageSeq += 1;
     // The hub extracts references on accept and the resource always carries
-    // the array (decisions.md §14); the mock resolves the `#123` and `conv_…`
+    // the array; the mock resolves the `#123` and `conv_…`
     // tokens it can actually see.
     const stored: Message = {
       ...message,
@@ -1267,7 +1266,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     };
     entry.messages.push(stored);
     // The whole history, not the loaded page: the handoff form states this
-    // number before it shares any of it (decisions.md §10.5). The next
+    // number before it shares any of it. The next
     // `touch` publishes it; a count is not on its own worth a revision.
     entry.conversation = { ...entry.conversation, message_count: entry.messages.length };
     emit(entry, { type: "message.accepted", data: stored });
@@ -1275,7 +1274,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
   }
 
   /**
-   * The mock's half of the hub's reference extraction (decisions.md §14):
+   * The mock's half of the hub's reference extraction:
    * `#123`, `project#123`, `org/project#123` and a conversation id, resolved
    * against what this mock actually has.
    */
@@ -1314,7 +1313,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
 
   /**
    * A `role: system`, `kind: status` message is what a runner's `item` turn
-   * event becomes (decisions.md §9.3); the hub-side coordinator writes the same
+   * event becomes; the hub-side coordinator writes the same
    * card as `role: assistant`. Both are history, and the client renders the
    * card off `kind` and `data`, never off the role.
    */
@@ -1371,7 +1370,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       text += chunk;
       // The stored message accumulates too, without an update event: a client
       // that re-snapshots mid-turn gets what has been written so far, and the
-      // deltas after its cursor continue from there (decisions.md §5).
+      // deltas after its cursor continue from there.
       const stored = entry.messages.findIndex((message) => message.id === assistant.id);
       if (stored >= 0) entry.messages[stored] = { ...entry.messages[stored]!, text };
       emit(entry, {
@@ -1388,14 +1387,14 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
   //
   // A linked conversation is driven from the test hooks under
   // `/__mock/runner/<conversation>/...` rather than by a real attempt. The
-  // transitions are the ones decisions.md §5 names, in the order the hub would
+  // transitions are the delivery ladder's, in the order the hub would
   // emit them, so the client can be exercised against every execution status
   // without a runner, a lease or a provider.
 
   /**
    * Streams the runner's reply into one assistant message, left open. On an
    * unlinked chat the runner is holding a coordinator work item, so the turn is
-   * attributed to the coordinator role it is running (decisions.md §9.4).
+   * attributed to the coordinator role it is running.
    */
   async function streamRunnerTurn(entry: StoredConversation): Promise<void> {
     const coordinating = entry.conversation.work_item_id === null;
@@ -1451,8 +1450,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     });
     setExecution(entry, { status: "running" });
     // Transcript recovery is visible: the execution says where the context
-    // came from and the history carries a status message saying it in words
-    // (decisions.md §10.4).
+    // came from and the history carries a status message saying it in words.
     if (resume === "transcript") {
       addStatusMessage(
         entry,
@@ -1462,8 +1460,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       );
     }
     // The messages queued before the attempt bound are what it answers: they
-    // reach it through the controls poll, so they leave `queued` behind
-    // (decisions.md §9.1).
+    // reach it through the controls poll, so they leave `queued` behind.
     for (const message of entry.messages) {
       if (message.role !== "user" || message.delivery !== "queued") continue;
       updateMessage(entry, message.id, { delivery: "sent", attempt_id: attemptId });
@@ -1509,8 +1506,8 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
   /**
    * The worker unbound, lost its lease, or the hub restarted: every control it
    * was handed can no longer be established, so it becomes `unknown` — for
-   * text messages too — and stays there until the user retries
-   * (decisions.md §10.3). A `queued` control that was never handed out stays
+   * text messages too — and stays there until the user retries.
+   * A `queued` control that was never handed out stays
    * `queued`.
    */
   function loseRunner(entry: StoredConversation): void {
@@ -1543,7 +1540,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     }
     setExecution(entry, { status: "completed", turn_id: null });
     // `propose_issue` posts an `item` event carrying `data.proposal` and creates
-    // nothing (decisions.md §9.4). It arrives as a `role: system` status
+    // nothing. It arrives as a `role: system` status
     // message, which is the same card the hub-side coordinator writes.
     if (entry.conversation.work_item_id === null && wantsIssue(entry)) {
       addStatusMessage(
@@ -1678,7 +1675,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
 
     // The owner generation is re-validated at acceptance. A mismatch is
     // `stale_execution`, never a silent redirect to the attempt that replaced
-    // it (decisions.md §2).
+    // it.
     if (
       kind !== "message" &&
       expected.attempt_id != null &&
@@ -1697,7 +1694,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     // `retry` re-queues one message the hub already stored. It never creates a
     // second message: the same id goes back to `queued` (or `saved` on the
     // hub-side coordinator path), `message.updated` says so, and the receipt
-    // for the retry key is `queued` (decisions.md §10.3).
+    // for the retry key is `queued`.
     if (kind === "retry") {
       const messageId = String(body.message_id ?? "");
       const target = entry.messages.find((candidate) => candidate.id === messageId);
@@ -1817,7 +1814,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
 
     if (kind === "continue" && entry.conversation.work_item_id !== null) {
       // `continue` records intent and reports `waiting_for_runner`; the hub
-      // never starts a runner itself (decisions.md §5).
+      // never starts a runner itself.
       setExecution(entry, { status: "waiting_for_runner", turn_id: null });
       const receipt: Receipt = {
         key,
@@ -1837,8 +1834,8 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     const dispatched = !linked && coordinatorMode === "runner";
 
     // `cancel` on an unlinked chat is delivered as an interrupt to the runner
-    // holding the coordinator work item; the client-facing kind stays `cancel`
-    // (decisions.md §9.1). The ladder is the interrupt one: `interrupting`
+    // holding the coordinator work item; the client-facing kind stays `cancel`.
+    // The ladder is the interrupt one: `interrupting`
     // while it is in flight, then `interrupted`.
     if (kind === "cancel" && !linked) {
       setExecution(entry, { status: "interrupting" });
@@ -1869,9 +1866,9 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
 
     // In a linked conversation with a running attempt that supports steering,
     // a message joins the current turn; without one it waits for the next
-    // attempt to read it (decisions.md §5). A runner-dispatched coordinator
+    // attempt to read it. A runner-dispatched coordinator
     // chat is the same shape: the message is `queued` until a runner claims the
-    // coordinator work item and reads it off the controls poll (§9.1).
+    // coordinator work item and reads it off the controls poll.
     const steering =
       linked &&
       entry.conversation.execution.status === "running" &&
@@ -1884,7 +1881,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         ? "queued"
         : "delivered";
 
-    // §17.1: a `message` command names attachments already uploaded against
+    // A `message` command names attachments already uploaded against
     // this conversation. Unknown or already-sent ids are refused rather than
     // dropped, so a client that loses track of them hears about it.
     const named = Array.isArray(body.attachments) ? (body.attachments as string[]) : [];
@@ -1963,8 +1960,8 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     if (dispatched && (kind === "message" || kind === "continue")) {
       // The hub creates or reuses the coordinator work item and waits: it never
       // starts a runner itself. Until one binds, the chat reports
-      // `waiting_for_runner` exactly as a linked issue with no attempt does
-      // (decisions.md §9.1). An attempt that is already bound keeps its state;
+      // `waiting_for_runner` exactly as a linked issue with no attempt does.
+      // An attempt that is already bound keeps its state;
       // the queued message reaches it through the controls poll.
       const bound =
         entry.conversation.execution.attempt_id !== null &&
@@ -2003,7 +2000,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
 
   function listConversations(projectId: string | null, query: URLSearchParams) {
     const search = (query.get("q") ?? "").trim().toLowerCase();
-    // `settled=true|false` filters the shelf (decisions.md §14); absent means
+    // `settled=true|false` filters the shelf; absent means
     // everything, because the sidebar groups them itself.
     const settled = query.get("settled");
     const conversations = [...store.values()]
@@ -2049,7 +2046,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     }
     if (injected.serverErrorOnce || query.get("fail") === "server_error") {
       // One shot: the client backs off, comes back with the cursor it holds,
-      // and this stream then behaves (decisions.md §5, §10 client review).
+      // and this stream then behaves.
       injected.serverErrorOnce = false;
       writeFrame(entry, subscriber, null, { type: "closed", data: { reason: "server_error" } });
       return;
@@ -2102,7 +2099,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
 
   /**
    * The one multipart body this hub parses: `POST .../attachments`
-   * (decisions.md §17.1, fields `file` and `idempotency_key`). Enough of RFC
+   * (fields `file` and `idempotency_key`). Enough of RFC
    * 7578 to read what the browser's `FormData` sends and nothing more.
    */
   async function readUpload(
@@ -2141,7 +2138,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
   }
 
   /**
-   * A read-only viewer's mutation is refused (decisions.md §10.11). The client
+   * A read-only viewer's mutation is refused. The client
    * hides every control that would send one, so reaching this is a defect the
    * tests are entitled to see rather than a path a reader can walk into.
    */
@@ -2169,7 +2166,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     projects: PROJECTS.map((project) => ({ id: project.id, name: project.name })),
   });
 
-  // --- The hosted account surface (decisions.md §12) ------------------------
+  // --- The hosted account surface ------------------------
   //
   // The organization, project, fleet, plan and billing endpoints. They share
   // this hub's read-only switch and its idempotency conventions, and they
@@ -2221,7 +2218,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
   }
 
   /**
-   * Every non-GET in §12 carries an idempotency key of at most 128 bytes. A
+   * Every non-GET in the hosted JSON API carries an idempotency key of at most 128 bytes. A
    * repeat of the same key with the same payload replays the stored response;
    * the same key with a different payload is `idempotency_conflict`, which is
    * why a retry has to reuse its key and a new intent has to mint one. Only a
@@ -2338,7 +2335,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
   }
 
   /**
-   * `GET /app/bootstrap` (§12, "Serving"), and `/chat/bootstrap` as its
+   * `GET /app/bootstrap`, and `/chat/bootstrap` as its
    * documented alias: one payload, because the narrower conversation schema
    * ignores the fields it does not know and the shell then loads it once.
    */
@@ -2354,8 +2351,8 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         ...(reader ? { can_write: false, can_manage_runners: false } : {}),
         states: WORKFLOW_STATES,
         coordinator,
-        // What the project's enrolled runner reports it can serve a workspace
-        // (§18.1). Diff and preview are never relayed, so they stay false.
+        // What the project's enrolled runner reports it can serve a workspace.
+        // Diff and preview are never relayed, so they stay false.
         capabilities: WORKSPACE_CAPABILITIES,
       })),
       support: account.support,
@@ -2421,7 +2418,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
 
     if (tail === "members" && method === "GET") {
       if (accountMode === "read_only") {
-        // §12: a plain member sees only themselves, and pending invitations
+        // A plain member sees only themselves, and pending invitations
         // are an owner's business rather than a directory.
         json(response, 200, {
           roles: membersFixture.roles,
@@ -2733,7 +2730,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
       return true;
     }
     if (segments[0] === "usage" && segments.length === 1 && method === "GET") {
-      // §17.5. Any member reads usage: it is a report, and there is nothing on
+      // Any member reads usage: it is a report, and there is nothing on
       // it a reader who can load the organization may not see. An unknown
       // range is refused rather than silently answered for a different window.
       const range = url.searchParams.get("range") ?? "30d";
@@ -3290,7 +3287,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
 
       // The wizard's first issue. `dev/mock-work.ts` owns the native work API
       // but reads `.../work-items` only, so a `POST` falls through its item
-      // lookup and answers `not_found`; §12's create goes through the native
+      // lookup and answers `not_found`; the hosted JSON API's create goes through the native
       // mutation path with the account surface's idempotency handling, so that
       // one route is claimed before the work mock sees it. Delete this branch
       // the day the work mock grows a create of its own.
@@ -3428,7 +3425,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
           }
           case "/__mock/support":
             // Opens or closes an impersonated support session. The bootstrap
-            // reports it and billing refuses while it is open (§12).
+            // reports it and billing refuses while it is open.
             account.support = body.open === false ? null : clone(SEED_SUPPORT);
             break;
           case "/__mock/fleet":
@@ -3470,7 +3467,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
             }
             break;
           }
-          // The hub settles a conversation itself (decisions.md §14); a test
+          // The hub settles a conversation itself; a test
           // needs a way to make that happen on demand.
           case "/__mock/settle": {
             const target = store.get(String(body["conversation"] ?? ""));
@@ -3511,11 +3508,11 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         const requested = readCoordinatorMode(url.searchParams.get("coordinator"));
         if (requested !== null) coordinatorMode = requested;
         // `?account=read_only` is the same switch for the viewer role: every
-        // project reports `can_write: false` (decisions.md §10.11).
+        // project reports `can_write: false`.
         const requestedAccount = readAccountMode(url.searchParams.get("account"));
         if (requestedAccount !== null) accountMode = requestedAccount;
         // One payload for both paths. `/chat/bootstrap` is the documented
-        // alias of `/app/bootstrap` (decisions.md §12, "Serving"), and the
+        // alias of `/app/bootstrap`, and the
         // narrower conversation schema ignores the account fields, so a client
         // that has not moved yet reads exactly what it always did.
         json(response, 200, accountBootstrap());
@@ -3546,7 +3543,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         return;
       }
 
-      // The hosted account surface (decisions.md §12). It answers first and
+      // The hosted account surface. It answers first and
       // declines anything it does not own, so the conversation routes below
       // still see `${API_BASE}/projects/:project/conversations/...`.
       if (await handleAccountRoute(request, response, url, method)) return;
@@ -3571,7 +3568,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
           if (refuseReadOnly(response)) return;
           // Creating a conversation is idempotent by actor and key: the key is
           // mandatory, at most 128 bytes, and a retry returns the stored
-          // response rather than a second conversation (decisions.md §10.2).
+          // response rather than a second conversation.
           const createKey = typeof body.key === "string" ? body.key : "";
           if (createKey.length === 0 || Buffer.byteLength(createKey, "utf8") > 128) {
             json(response, 422, {
@@ -3650,8 +3647,8 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
 
       if (action === undefined && method === "PATCH") {
         const body = await readBody(request);
-        // `PATCH` carries a title, a preference triple, or both
-        // (decisions.md §14). Anything absent keeps the value it had.
+        // `PATCH` carries a title, a preference triple, or both.
+        // Anything absent keeps the value it had.
         const preferences = body.preferences as Record<string, unknown> | undefined;
         touch(entry, {
           title: String(body.title ?? entry.conversation.title),
@@ -3686,7 +3683,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         return;
       }
 
-      // `POST {nativeBase}/conversations/:id/attachments` (decisions.md §17.1).
+      // `POST {nativeBase}/conversations/:id/attachments`.
       if (action === "attachments" && method === "POST") {
         if (refuseReadOnly(response)) return;
         const upload = await readUpload(request);
@@ -3808,11 +3805,11 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
           priority?: number;
           state?: string;
         };
-        // The next step (decisions.md §13.8, §14): the lane the issue lands
+        // The next step: the lane the issue lands
         // in, and whether it is dispatched now or left to be picked up.
         const nextStep = (body.next ?? {}) as {
           state?: string;
-          /** The native rank, 0-3 (decisions.md §14). */
+          /** The native rank, 0-3. */
           priority?: number;
           dispatch?: string;
         };
@@ -3857,8 +3854,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
           work_item: { ...issue, lane, runner_bound: false },
         });
         // Linking does not schedule: the issue waits for a runner, and
-        // `continue` is the only control a conversation with no attempt has
-        // (decisions.md §3 rule 6).
+        // `continue` is the only control a conversation with no attempt has.
         setExecution(entry, {
           status: "waiting_for_runner",
           capabilities: { steer: false, interrupt: false, answer: false, continue: true },
@@ -3888,7 +3884,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
         return;
       }
 
-      // Settled replaces Archive (decisions.md §13.9): the hub settles a
+      // Settled replaces Archive: the hub settles a
       // conversation on its own, so there is no action here. `__mock/settle`
       // below is a test hook, not a product endpoint.
 
@@ -3899,7 +3895,7 @@ export function startMockHub(options: MockHubOptions = {}): Promise<MockHub> {
     });
   });
 
-  // The workspace relay is the one WebSocket the client opens (§18.2). The
+  // The workspace relay is the one WebSocket the client opens. The
   // work mock owns the workspaces, so it owns the upgrade; any other upgrade
   // is refused rather than left hanging.
   server.on("upgrade", (request, socket, head) => {

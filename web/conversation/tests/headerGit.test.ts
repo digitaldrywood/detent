@@ -252,7 +252,7 @@ function policy(overrides: Partial<GitActionPolicy> = {}): GitActionPolicy {
   };
 }
 
-describe("the §18.6 policy layer", () => {
+describe("the pull request contract policy layer", () => {
   const table: ReadonlyArray<{
     name: string;
     policy: GitActionPolicy;
@@ -270,7 +270,7 @@ describe("the §18.6 policy layer", () => {
       expected: GIT_POLICY_SENTENCES.noWriteGrant,
     },
     {
-      name: "a failed workspace, in §18.1's own words",
+      name: "a failed workspace, in the workspace session contract's own words",
       policy: policy({ workspaceState: "failed", workspaceReason: "checkout_failed" }),
       expected: "The runner could not check the repository out.",
     },
@@ -353,7 +353,7 @@ describe("toVcsStatus", () => {
       pr: null,
       sourceControlProvider: { kind: "github", name: "GitHub", baseUrl: "https://github.com" },
     });
-    // §18.13's status frame carries a count and no file list, deliberately.
+    // The git channel contract's status frame carries a count and no file list, deliberately.
     expect(projected.workingTree).toEqual({ files: [], insertions: 0, deletions: 0 });
   });
 
@@ -369,7 +369,7 @@ describe("toVcsStatus", () => {
     expect(projected.sourceControlProvider).toBeUndefined();
   });
 
-  it("carries the §18.6 pull request through the projection", () => {
+  it("carries the pull request contract pull request through the projection", () => {
     const projected = toVcsStatus({
       status: status(),
       pullRequest: {

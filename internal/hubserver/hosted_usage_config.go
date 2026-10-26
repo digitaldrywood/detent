@@ -2,7 +2,7 @@ package hubserver
 
 import "strings"
 
-// The hub's own price table (decisions section 17.5). Cost on the usage
+// The hub's own price table. Cost on the usage
 // report is an estimate, labelled "API estimate" by the client. A runner
 // that priced its own turn wins; a runner that reported no price is priced
 // here, so a fleet whose runners have no price table still gets a report.
@@ -82,7 +82,7 @@ func (c UsageConfig) estimate(model string, input, cachedInput, output int64) (f
 
 // cacheSaving is what serving cachedInput of input tokens from cache saved
 // against the full input rate. A model the table does not know saved nothing it can
-// prove (decisions section 17.5, totals.cache_savings).
+// prove (totals.cache_savings).
 func (c UsageConfig) cacheSaving(model string, input, cachedInput int64) float64 {
 	price, found := c.price(model)
 	// Cached input beyond the input total is capped exactly as estimate

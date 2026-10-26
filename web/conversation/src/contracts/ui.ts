@@ -263,7 +263,7 @@ export type ServerProviderState =
 
 /**
  * `baseSchemas.ts`: the identifier of one pending request a provider raised.
- * Detent's is the question id the conversation stream carries (§5).
+ * Detent's is the question id the conversation stream carries.
  */
 export type ApprovalRequestId = string & { readonly ApprovalRequestId?: unique symbol };
 export const ApprovalRequestId = { make: (value: string): ApprovalRequestId => value };
@@ -388,7 +388,7 @@ export interface UsageLimitsReport {
   readonly notices: ReadonlyArray<string>;
 }
 
-// `ipc.ts`: the browser-preview picking and annotation payloads (§18.7).
+// `ipc.ts`: the browser-preview picking and annotation payloads.
 // Transcribed field for field so `lib/elementContext.ts`,
 // `lib/previewAnnotation.ts` and `lib/terminalContext.ts` — and through them
 // the byte-identical `chat/composerPromptHistory.ts` — stay unedited. Detent's
@@ -1183,9 +1183,9 @@ export const FILL_PREVIEW_VIEWPORT = { _tag: "fill" } as const satisfies Preview
  * Upstream this crosses the wire to an Electron main process that owns a live
  * Chromium guest. Detent's Browser surface is snapshot-first — the runner
  * renders captures of the app under review and the hub serves them, because
- * nothing connects inbound to a customer machine (decisions.md §1, §18.7) —
+ * nothing connects inbound to a customer machine —
  * so no path in this client ever sends one. The shape is transcribed so the
- * copied `browser/openFileInPreview.ts` stays byte-identical (§16).
+ * copied `browser/openFileInPreview.ts` stays byte-identical.
  */
 export interface PreviewOpenInput {
   readonly threadId: ThreadId;

@@ -59,8 +59,7 @@ export class EnvironmentCacheStore extends Context.Service<
 >()("EnvironmentCacheStore") {}
 
 /**
- * Session-lifetime cache. Cleared on logout or account change (rule 8 in
- * decisions.md §3), which for an in-memory map means the page reload that
+ * Session-lifetime cache. Cleared on logout or account change, which for an in-memory map means the page reload that
  * follows a sign-out already clears it; `clear` covers the same-tab case.
  */
 export function memoryCache(): EnvironmentCacheStore["Service"] {

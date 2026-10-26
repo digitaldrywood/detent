@@ -371,62 +371,6 @@ func TestLocalWorkflowPath(t *testing.T) {
 	}
 }
 
-func TestShippedWorkflowTemplatesEnableBudgetCaps(t *testing.T) {
-	t.Parallel()
-
-	templateDir := filepath.Join("..", "..", "docs", "templates")
-	entries, err := os.ReadDir(templateDir)
-	if err != nil {
-		t.Fatalf("ReadDir(%q) error = %v", templateDir, err)
-	}
-
-	checked := 0
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "WORKFLOW.") || !strings.HasSuffix(entry.Name(), ".md") {
-			continue
-		}
-		checked++
-		t.Run(entry.Name(), func(t *testing.T) {
-			t.Parallel()
-
-			path := filepath.Join(templateDir, entry.Name())
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("ReadFile(%q) error = %v", path, err)
-			}
-			variant := strings.TrimSuffix(strings.TrimPrefix(entry.Name(), "WORKFLOW."), ".md")
-			configPath := filepath.Join(templateDir, "detent."+variant+".yaml")
-			configRaw, err := os.ReadFile(configPath)
-			if err != nil {
-				t.Fatalf("ReadFile(%q) error = %v", configPath, err)
-			}
-			workflow, err := ParseProjectDefinition(ProjectDefinitionSources{
-				WorkflowPath: path,
-				Workflow:     raw,
-				ConfigPath:   configPath,
-				Config:       configRaw,
-				HasConfig:    true,
-			})
-			if err != nil {
-				t.Fatalf("ParseProjectDefinition(%q) error = %v", path, err)
-			}
-			if !workflow.Config.Budget.Enabled {
-				t.Fatalf("%s budget.enabled = false, want true", path)
-			}
-			if workflow.Config.Budget.BillingMode != BillingModeMetered {
-				t.Fatalf("%s budget.billing_mode = %q, want metered", path, workflow.Config.Budget.BillingMode)
-			}
-			normalizedRaw := strings.ReplaceAll(string(configRaw), "\r\n", "\n")
-			if workflow.Config.Deliverable.Kind == DeliverablePullRequest && !strings.Contains(normalizedRaw, "\n  merge_method: squash\n") {
-				t.Fatalf("%s does not declare deliverable.merge_method: squash", path)
-			}
-		})
-	}
-	if checked == 0 {
-		t.Fatal("no shipped WORKFLOW templates found")
-	}
-}
-
 func TestParseWorkflowBudgetCapPresence(t *testing.T) {
 	t.Parallel()
 
@@ -931,9 +875,6 @@ agent:
     enabled: true
     path: ".detent/skills"
     max_skills_in_prompt: 20
-    creation:
-      enabled: true
-      max_drafts_per_run: 3
   followups:
     enabled: false
 codex:
@@ -1163,12 +1104,6 @@ Ticket prompt {{ issue.title }}
 	}
 	if source := cfg.Agent.Knowledge.Sources[0]; source.Name != "Team standards" || source.Path != "../knowledge/team.md" {
 		t.Fatalf("Agent.Knowledge.Sources[0] = %#v, want team standards source", source)
-	}
-	if !cfg.Agent.Skills.Creation.Enabled {
-		t.Fatal("Agent.Skills.Creation.Enabled = false, want true")
-	}
-	if cfg.Agent.Skills.Creation.MaxDraftsPerRun != 3 {
-		t.Fatalf("Agent.Skills.Creation.MaxDraftsPerRun = %d, want 3", cfg.Agent.Skills.Creation.MaxDraftsPerRun)
 	}
 	if cfg.Agent.Followups.Enabled {
 		t.Fatal("Agent.Followups.Enabled = true, want false")
@@ -1652,12 +1587,6 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if len(cfg.Agent.Knowledge.Sources) != 0 {
 		t.Fatalf("Agent.Knowledge.Sources = %#v, want empty default", cfg.Agent.Knowledge.Sources)
-	}
-	if !cfg.Agent.Skills.Creation.Enabled {
-		t.Fatal("Agent.Skills.Creation.Enabled = false, want true default")
-	}
-	if cfg.Agent.Skills.Creation.MaxDraftsPerRun != 1 {
-		t.Fatalf("Agent.Skills.Creation.MaxDraftsPerRun = %d, want 1", cfg.Agent.Skills.Creation.MaxDraftsPerRun)
 	}
 	if !cfg.Agent.Followups.Enabled {
 		t.Fatal("Agent.Followups.Enabled = false, want true default")
@@ -3935,8 +3864,6 @@ agent:
       - path: ""
   skills:
     path: /tmp/skills
-    creation:
-      max_drafts_per_run: 0
 ---
 Prompt
 `,
@@ -3946,7 +3873,6 @@ Prompt
 				"agent.lessons.path must be a relative path inside the workspace",
 				"agent.knowledge.sources[0].path must not be blank",
 				"agent.skills.path must be a relative path inside the workspace",
-				"agent.skills.creation.max_drafts_per_run must be greater than 0",
 			},
 		},
 		{

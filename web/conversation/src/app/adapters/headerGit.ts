@@ -69,7 +69,7 @@ function stepsFor(action: GitStackedAction): {
 /**
  * The sentence a failure gives the reader.
  *
- * A `git_failed` carries the tool's own standard error (§18.13), and that is
+ * A `git_failed` carries the tool's own standard error, and that is
  * the only actionable thing about it — "Git refused the command" tells nobody
  * anything. The *last* non-empty line, because a push writes progress first
  * ("Enumerating objects…", "remote:" banners) and puts the reason last.
@@ -147,7 +147,7 @@ export async function runGitSequence(input: {
 
   if (plan.pullRequest) {
     if (status.head_sha === "") {
-      // Better to refuse than to send an empty `expected_head_sha`: §18.6
+      // Better to refuse than to send an empty `expected_head_sha`: the pull request contract
       // checks the head against it, and an empty one is either rejected or,
       // worse, treated as "any head".
       return fail("create-pr", "The worktree reported no head commit to open against.");
@@ -193,14 +193,14 @@ export function describeRun(result: GitSequenceResult, changeRequestLabel: strin
 
 // --- The hook ---------------------------------------------------------------
 
-/** Both channels the group needs: files for §18.4's denylist, git for §18.13. */
+/** Both channels the group needs: files for the Files contract's denylist, git for the git channel contract. */
 const GIT_REQUIRES: readonly string[] = ["files", "git"];
 
 export interface UseHeaderGitInput {
   readonly projectId: string | null;
   readonly workItemId: string | null;
   readonly canWrite: boolean;
-  /** The project's GitHub connector, from §18.6's rows. Null when it has none. */
+  /** The project's GitHub connector, from the pull request contract's rows. Null when it has none. */
   readonly connector: { readonly baseUrl: string } | null;
   /** The issue's pull request, when it has one. */
   readonly pullRequest: GitStatusPullRequest | null;
@@ -208,7 +208,7 @@ export interface UseHeaderGitInput {
 }
 
 export interface HeaderGit {
-  /** What §18.6's policy layer answers from. */
+  /** What the pull request contract's policy layer answers from. */
   readonly policy: GitActionPolicy;
 
   readonly status: VcsStatusResult | null;
@@ -229,7 +229,7 @@ export function useHeaderGit(input: UseHeaderGitInput): HeaderGit {
   const http = useWorkHttp();
   const { projectId, workItemId, canWrite, connector, pullRequest } = input;
 
-  // §18.1's `enabled`: "False keeps the hook idle, so opening a panel is what
+  // The workspace session contract's `enabled`: "False keeps the hook idle, so opening a panel is what
   // spends a slot." The group's first *interaction* is that moment — a press
   // on the primary or an open of the menu — never a render, because every
   // conversation with a linked issue renders this header.

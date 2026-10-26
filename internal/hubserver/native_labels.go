@@ -16,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// The project's label catalogue (decisions section 19.1).
+// The project's label catalogue.
 //
 // A tracker that lets a reader pick a label has to be able to say which
 // labels exist. The hub models labels as a JSON array on each work item and

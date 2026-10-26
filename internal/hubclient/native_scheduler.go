@@ -1028,7 +1028,7 @@ func (s *Scheduler) NativeClient(project string) (*NativeClient, bool) {
 }
 
 // MachineID is the machine identity this scheduler registers and claims under.
-// The workspace lane claims under the same one: decisions section 18.1 keys a
+// The workspace lane claims under the same one: a
 // workspace's owner tuple on the machine, and a retained worktree may only be
 // served by the machine that produced it.
 func (s *Scheduler) MachineID() tracker.MachineID {

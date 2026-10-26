@@ -3,21 +3,11 @@ package runner
 import (
 	"context"
 	"maps"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 )
-
-func isGoModule(workspacePath string) bool {
-	if strings.TrimSpace(workspacePath) == "" {
-		return false
-	}
-	_, err := os.Stat(filepath.Join(workspacePath, "go.mod"))
-	return err == nil
-}
 
 func (r *Runner) withGoBudget(ctx context.Context, workspacePath string, environment procgroup.Environment) procgroup.Environment {
 	if root := toolcache.ManagedBuildFromContext(ctx); root != "" {

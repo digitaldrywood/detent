@@ -4,8 +4,7 @@
 // `account:project:conversation` so two projects, two conversations, or two
 // accounts on the same browser never see each other's text. The store records
 // which account wrote it: bootstrapping as a different actor clears everything
-// (decisions.md §3 rule 8, "cached client state is cleared on logout or
-// account change").
+// (cached client state is cleared on logout or account change).
 //
 // Only two things are kept: the unsent draft text, and the outbox entry for a
 // command whose outcome is unknown. The outbox is metadata, not a retry queue
@@ -17,7 +16,7 @@ export const ACTOR_STORAGE_KEY = "detent.conversation.actor";
 /**
  * The last project the reader chose. It is private cached state like a draft —
  * it names a project this account can reach — so it is cleared with the rest
- * on an account change (decisions.md §3 rule 8).
+ * on an account change.
  */
 export const LAST_PROJECT_STORAGE_KEY = "detent.conversation.lastProject";
 /**

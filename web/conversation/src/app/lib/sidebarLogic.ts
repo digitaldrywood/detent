@@ -39,12 +39,12 @@ export function conversationActivityMs(conversation: Conversation): number {
 }
 
 /**
- * Which shelf a conversation belongs on (decisions.md §13.9, §14). The status
+ * Which shelf a conversation belongs on. The status
  * is the authority: `settled` — and `archived`, which is the same thing under
  * the name the hub has not dropped yet — is settled, full stop.
  *
  * The recency rule below it is the client's stand-in until the hub settles
- * conversations itself. §14 gives the hub the same rule and the same default
+ * conversations itself. The conversation contract gives the hub the same rule and the same default
  * window, so the shelf reads the same either way, and the moment a hub starts
  * sending `settled` the stand-in simply stops being the thing that decides.
  */

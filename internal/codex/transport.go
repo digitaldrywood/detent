@@ -32,6 +32,15 @@ type CommandFactory func(context.Context) *exec.Cmd
 
 type LocalTransportFactory struct {
 	newCommand CommandFactory
+	prepare    func(context.Context) error
+}
+
+type LocalTransportOption func(*LocalTransportFactory)
+
+func WithLaunchPreparation(prepare func(context.Context) error) LocalTransportOption {
+	return func(factory *LocalTransportFactory) {
+		factory.prepare = prepare
+	}
 }
 
 type localTransport struct {
@@ -100,16 +109,25 @@ type workerTempDirContextKey struct{}
 type workerEnvironmentContextKey struct{}
 type workerWorkspaceContextKey struct{}
 
-func NewLocalTransportFactory(newCommand CommandFactory) (*LocalTransportFactory, error) {
+func NewLocalTransportFactory(newCommand CommandFactory, options ...LocalTransportOption) (*LocalTransportFactory, error) {
 	if newCommand == nil {
 		return nil, errors.New("command factory is nil")
 	}
 
-	return &LocalTransportFactory{newCommand: newCommand}, nil
+	factory := &LocalTransportFactory{newCommand: newCommand}
+	for _, option := range options {
+		option(factory)
+	}
+	return factory, nil
 }
 
 func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, error) {
 	ctx = contextOrBackground(ctx)
+	if f.prepare != nil {
+		if err := f.prepare(ctx); err != nil {
+			return nil, fmt.Errorf("prepare launch: %w", err)
+		}
+	}
 
 	cmd := f.newCommand(ctx)
 	if cmd == nil {

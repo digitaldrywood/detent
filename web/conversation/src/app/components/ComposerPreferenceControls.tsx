@@ -159,7 +159,7 @@ function ModelPicker(props: ComposerPreferenceControlsProps): React.ReactElement
   const { current, legacy } = partitionModels(props.choices);
 
   // Every picker leads with Auto and keeps a value the hub has stopped
-  // publishing (§14); the shelf below it is what the search and the rail act
+  // publishing; the shelf below it is what the search and the rail act
   // on, so Auto is held out of both.
   const auto = preferenceOptions(props.choices?.models, selected).find(
     (option) => option.id === AUTO_PREFERENCE,
@@ -283,7 +283,7 @@ function ModelPicker(props: ComposerPreferenceControlsProps): React.ReactElement
                 <CommandList className="max-h-72">
                   {/* Two different empties: a search that matched nothing,
                       and a hub whose runners have reported no model at all.
-                      The second is the feature's own reason (§16), so it is
+                      The second is the feature's own reason, so it is
                       said, not hidden behind the first's wording. */}
                   {listed.length + shelved.length === 0 ? (
                     <p
@@ -549,7 +549,7 @@ function EffortPicker(props: ComposerPreferenceControlsProps): React.ReactElemen
           </SelectGroup>
           {/* Why the list changed, said once. A reader who picks a model and
               finds a different set of levels — or a level they had chosen gone
-              — is owed the reason (decisions.md §14). */}
+              — is owed the reason. */}
           {scoped ? (
             <p
               data-testid="composer-effort-note"

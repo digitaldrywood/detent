@@ -26,7 +26,7 @@ import (
 )
 
 // attemptDiffFixture is a claimed issue with a running attempt, which is the
-// only producer the hub honours today (decisions section 18.5).
+// only producer the hub honours today.
 type attemptDiffFixture struct {
 	nativeFixture
 	worker   string

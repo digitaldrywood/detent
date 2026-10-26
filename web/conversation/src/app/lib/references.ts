@@ -1,4 +1,4 @@
-// Cross-references in message text (decisions.md §13.7, §14).
+// Cross-references in message text.
 //
 // The hub extracts references on accept and the message resource carries them
 // with the exact label each one appeared as — `#123`, or `org/project#123`.

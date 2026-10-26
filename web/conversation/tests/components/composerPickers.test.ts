@@ -56,7 +56,7 @@ const CHOICES: PreferenceChoices = {
 
 const AUTO = { model: AUTO_PREFERENCE, reasoning_effort: AUTO_PREFERENCE, access: AUTO_PREFERENCE };
 
-// §14 plus Michael's review: a provider's reasoning levels are per model, so
+// The conversation contract plus Michael's review: a provider's reasoning levels are per model, so
 // the effort picker has to be too. What the hub publishes on
 // `preferences.models[]` is a model's own ladder; the fixed vocabulary is what
 // is left when it publishes none.
@@ -310,7 +310,7 @@ describe("favourite models", () => {
   });
 });
 
-// The context strip's chips (decisions.md §18.6). One row is picked, because
+// The context strip's chips. One row is picked, because
 // the strip has room for one pair and the reader is asking where the work is.
 describe("the linked issue's pull request", () => {
   function row(overrides: Partial<WorkItemPullRequest>): WorkItemPullRequest {

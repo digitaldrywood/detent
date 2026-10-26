@@ -97,7 +97,7 @@ type conversationRecord struct {
 	// ProviderThreadID: conversation.ThreadOriginCoordinator or
 	// conversation.ThreadOriginWorker. A thread carries the instructions and
 	// the permission set of the turn that opened it, so only a turn of the
-	// same kind resumes it (decisions section 9.3). It is empty for threads
+	// same kind resumes it. It is empty for threads
 	// recorded before the column existed, which therefore never resume.
 	ProviderThreadOrigin string
 	Execution            conversation.Execution
@@ -106,13 +106,13 @@ type conversationRecord struct {
 	UpdatedAt            time.Time
 	LastMessageAt        *time.Time
 	// SettledAt is when the conversation last became settled, nil while it
-	// is active (decisions section 14).
+	// is active.
 	SettledAt *time.Time
 	// Preferences are the conversation's turn preferences. Every field is
 	// "auto" until the user overrides it.
 	Preferences conversation.Preferences
 	// MessageCount is the conversation's whole history, filled by every
-	// read so the audience preview can report it (decisions section 10.5).
+	// read so the audience preview can report it.
 	MessageCount int64
 }
 
@@ -135,10 +135,10 @@ type conversationMessageRecord struct {
 	Actor          conversation.Actor
 	CommandKey     string
 	// References are the issues and conversations the message names, filled
-	// by every read that projects the message (decisions section 14).
+	// by every read that projects the message.
 	References []conversationMessageReference
 	// Attachments are the uploads bound to the message, filled by the same
-	// reads as References (decisions section 17.1).
+	// reads as References.
 	Attachments []conversationAttachmentRecord
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
@@ -185,7 +185,7 @@ const conversationColumns = `id, organization_id, project_id, owner_principal_id
  subject_work_item_id, work_item_id, linked_at, revision, provider_thread_id, provider_thread_runner_id, provider_thread_origin, execution_json, event_seq, preferences_json, created_at, updated_at, last_message_at, settled_at, archived`
 
 // conversationMessageCount counts the conversation's whole history for the
-// resource's message_count (decisions section 10.5). It is a correlated
+// resource's message_count. It is a correlated
 // subquery rather than a second query because the hub pool holds a single
 // connection and a read must stay one statement.
 const conversationMessageCount = `((SELECT count(*) FROM conversation_messages cm WHERE cm.conversation_id = conversations.id)
@@ -380,7 +380,7 @@ type conversationCursor struct {
 	ID       string `json:"i"`
 	// Settled is the sort group of the page's last row: 0 active, 1 settled.
 	// A listing without a settled filter sorts active first, so the cursor
-	// has to carry the group as well as the activity (decisions section 14).
+	// has to carry the group as well as the activity.
 	Settled int `json:"s"`
 }
 
@@ -439,7 +439,7 @@ type conversationListQuery struct {
 	Cursor       string
 	Limit        int
 	// Settled restricts the listing to settled or to active conversations.
-	// Nil lists both, active first (decisions section 14).
+	// Nil lists both, active first.
 	Settled *bool
 	// Title is a case-insensitive substring the title must contain.
 	Title             string
@@ -1230,7 +1230,7 @@ func (s *conversationStore) normalizeAfterRestart(ctx context.Context, now time.
 	return summary, nil
 }
 
-// Message references (decisions section 14).
+// Message references.
 
 // replaceMessageReferences rewrites the stored references of one message.
 // Re-extraction is idempotent: an assistant message that completes after its

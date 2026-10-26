@@ -25,7 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// The hosted organization API (decisions section 12): the JSON the client's
+// The hosted organization API: the JSON the client's
 // organization, member and fleet screens read and write. requireAPIScope cannot carry these routes:
 // in hosted mode it rejects session credentials outside the native project
 // base, so each handler authenticates the hosted session itself. The shared
@@ -736,7 +736,7 @@ func (s *Service) resendHostedInvitationJSON(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
-// hostedAPIError maps a credential failure onto the section 12 error shape.
+// hostedAPIError maps a credential failure onto the hosted JSON API error shape.
 func (s *Service) hostedAPIError(c echo.Context, err error) error {
 	if errors.Is(err, auth.ErrInvalidSession) {
 		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})

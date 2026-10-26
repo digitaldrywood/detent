@@ -107,7 +107,7 @@ func TestNormalizeExecutionValue(t *testing.T) {
 
 // TestExecutionResumeRoundTrip covers the resume field the hub stores in
 // execution_json and reports on the execution resource: it records where a
-// bound runner continued from (decisions section 10.4).
+// bound runner continued from.
 func TestExecutionResumeRoundTrip(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

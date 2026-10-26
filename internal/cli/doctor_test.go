@@ -1119,7 +1119,7 @@ func TestCheckDoctorProjects(t *testing.T) {
 			},
 			workflow:   workflowconfig.Workflow{Config: disabledBudgetWorkflow},
 			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "no user-level Codex instruction files", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "no user-level Codex instruction files", "budget.enabled=false disables configured caps", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contains no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 		{
 			name: "source repo missing",
@@ -1138,7 +1138,7 @@ func TestCheckDoctorProjects(t *testing.T) {
 			},
 			workflow:   workflowconfig.Workflow{Config: validDoctorWorkflow(sourceRoot)},
 			wantStatus: []doctorStatus{doctorOK, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorWarn, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorOK, doctorWarn, doctorOK},
-			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "no user-level Codex instruction files", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contain no detent-agent guidance", "loaded=0; dropped=0"},
+			wantDetail: []string{"is valid", "WORKFLOW.md", "estimated instruction load", "incomplete evidence", "runtime store unavailable", "runtime store unavailable", "not a GitHub tracker", "advisory:", "no user-level Codex instruction files", "enabled=true provides prompt guidance", "validated 0 pinned Codex route model(s)", "enforced by internal/invariants", "no lane evidence to measure", "no Detent-owned cache roots", "is a git worktree", "contains no detent-agent guidance", "loaded=0; dropped=0"},
 		},
 	}
 
@@ -1463,35 +1463,29 @@ func TestCheckDoctorIssueEffortGuidance(t *testing.T) {
 		wantHint    string
 	}{
 		{
-			name:       "agents guidance passes",
-			files:      map[string]string{"AGENTS.md": "Use a detent-agent block for every issue."},
+			name:       "workflow guidance passes case insensitively",
+			files:      map[string]string{"WORKFLOW.md": "Choose effort with a DETENT-AGENT block."},
 			wantStatus: doctorOK,
-			wantDetail: "AGENTS.md mentions detent-agent effort guidance",
+			wantDetail: "WORKFLOW.md mentions detent-agent effort guidance",
 		},
 		{
-			name:       "claude guidance passes case insensitively",
-			files:      map[string]string{"AGENTS.md": "No overrides documented.", "CLAUDE.md": "Choose effort with a DETENT-AGENT block."},
-			wantStatus: doctorOK,
-			wantDetail: "CLAUDE.md mentions detent-agent effort guidance",
-		},
-		{
-			name:       "docs without guidance warn",
-			files:      map[string]string{"AGENTS.md": "General agent instructions.", "CLAUDE.md": "General Claude instructions."},
+			name:       "agent docs are not workflow guidance",
+			files:      map[string]string{"WORKFLOW.md": "General workflow.", "AGENTS.md": "Use a detent-agent block.", "CLAUDE.md": "Use a detent-agent block."},
 			wantStatus: doctorWarn,
-			wantDetail: "contain no detent-agent guidance",
+			wantDetail: "contains no detent-agent guidance",
 			wantHint:   "docs/admission.md#issue-effort-selection",
 		},
 		{
 			name:       "missing docs warn",
 			wantStatus: doctorWarn,
-			wantDetail: "contain no detent-agent guidance",
+			wantDetail: "contains no detent-agent guidance",
 			wantHint:   "effort-selection rubric",
 		},
 		{
 			name:        "unreadable agent doc skips",
-			directories: []string{"AGENTS.md"},
+			directories: []string{"WORKFLOW.md"},
 			wantStatus:  doctorOK,
-			wantDetail:  "skipped because AGENTS.md could not be read",
+			wantDetail:  "skipped because WORKFLOW.md could not be read",
 		},
 		{
 			name:        "missing source repo skips",
@@ -1614,11 +1608,10 @@ func TestCheckDoctorProjectSkills(t *testing.T) {
 			name: "disabled reports configuration without reading files",
 			configure: func(_ *testing.T, _ string, cfg *workflowconfig.Skills) {
 				cfg.Enabled = false
-				cfg.Creation.Enabled = false
 			},
 			available:  true,
 			wantStatus: doctorOK,
-			wantDetail: []string{"enabled=false", "creation_enabled=false", "max_drafts_per_run=1", "loaded=0", "dropped=0"},
+			wantDetail: []string{"enabled=false", "loaded=0", "dropped=0"},
 		},
 		{
 			name: "healthy directory reports loaded count",

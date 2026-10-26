@@ -59,7 +59,7 @@ var unsafeKeyPattern = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 const autoBranchPrefix = "detent/"
 
 // workspaceSessionBranchPrefix names the auto-branch of a workspace session
-// worktree (decisions 18.1, `worktree: "fresh"`). Such a worktree serves a
+// worktree (`worktree: "fresh"`). Such a worktree serves a
 // read-only checkout of a `head_sha` somebody asked to look at; it produces no
 // commits of its own, so cleanup removes its branch rather than retaining it
 // the way it retains an attempt's branch. Keys never contain "/"
@@ -270,8 +270,8 @@ type Issue struct {
 	PullRequestRepository   string
 	PullRequestNumber       int
 	PullRequestBranch       string
-	// WorkspaceSession marks a workspace session checkout (decisions 18.1
-	// `worktree: "fresh"`): a worktree opened so a person can look at a
+	// WorkspaceSession marks a workspace session checkout
+	// (`worktree: "fresh"`): a worktree opened so a person can look at a
 	// commit, not one an attempt commits into. It takes its own branch
 	// namespace so cleanup can tell the two apart.
 	WorkspaceSession bool

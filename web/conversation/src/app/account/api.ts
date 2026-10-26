@@ -6,7 +6,7 @@ import { IssueIntake, type IntakeCommand } from "../../contracts/githubIntake.ts
 //
 // `runtime/rpc/http.ts` is the conversation client's own transport and stays
 // that way: this is the same shape for the account surface of
-// `docs/conversation/decisions.md` §12 — cookie session, `X-CSRF-Token` on
+// the Hub account API — cookie session, `X-CSRF-Token` on
 // every mutation, an `idempotency_key` in every non-GET body, and the native
 // `{code, message, details?}` error decoded into one typed failure. It returns
 // promises rather than effects because these screens are ordinary React data
@@ -328,7 +328,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     },
     startSupport: (input: { key: string }) =>
       send(SupportResponse, "POST", `${base}/support/start`, { idempotency_key: input.key }),
-    /** `POST /logout` answers 204 for a JSON caller (§12, "Serving"). */
+    /** `POST /logout` answers 204 for a JSON caller. */
     logout: async () => {
       await send(null, "POST", hubPath("/logout"), {});
       clearBoardCache();

@@ -223,8 +223,8 @@ type ArtifactSourceExecution interface {
 	SetArtifactSource(journalRoot string, source func(context.Context, string, string) (artifact.GitCapture, error))
 }
 
-// AttemptDiffSource computes the worktree's diff for the stored attempt diff
-// (decisions section 18.5). It fills the base, the head and the files; the
+// AttemptDiffSource computes the worktree's diff for the stored attempt diff.
+// It fills the base, the head and the files; the
 // execution owns the producer tuple and the generation, because only the
 // execution knows the lease it is fenced by and the event sequence the diff
 // belongs to. It reports false when there is nothing to post.

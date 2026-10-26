@@ -32,7 +32,7 @@ export interface KeybindingActions {
   readonly "rightPanel.close"?: KeybindingAction;
   readonly "rightPanel.toggleMaximized"?: KeybindingAction;
   readonly "diff.toggle"?: KeybindingAction;
-  /** The Terminal surface (decisions.md §18.3). */
+  /** The Terminal surface. */
   readonly "terminal.toggle"?: KeybindingAction;
   readonly "terminal.new"?: KeybindingAction;
   readonly "terminal.close"?: KeybindingAction;
@@ -47,7 +47,7 @@ export interface KeybindingActions {
   readonly "issue.labels"?: KeybindingAction;
   readonly "issue.related"?: KeybindingAction;
   /**
-   * One project action's chord (decisions.md §18.12).
+   * One project action's chord.
    *
    * Not a member of the record above, and deliberately not an index signature
    * on it either. The commands are `script.<id>.run`, one per action the
@@ -110,7 +110,7 @@ export function useKeybindingActions(actions: KeybindingActions): void {
       const command = resolveShortcutCommand(event, detentKeybindings);
       if (command === null) return;
       if (isUnmodifiedChord(command) && isEditableTarget(event.target)) return;
-      // A project action's chord (decisions.md §18.12). The command names the
+      // A project action's chord. The command names the
       // script slug, so the handler is given that rather than asked to parse
       // it back out — see `runProjectAction` for why it is a member of its own
       // rather than an index signature on the record.
@@ -158,8 +158,8 @@ function staticAction(
 export function isBound(
   actions: KeybindingActions,
   // `| string` because a project action's command is not in the closed union
-  // and never can be: it is `script.<slug>.run`, minted per project
-  // (decisions.md §18.12). `shortcutLabelForCommand` is widened for the same
+  // and never can be: it is `script.<slug>.run`, minted per project.
+  // `shortcutLabelForCommand` is widened for the same
   // reason.
   command: KeybindingCommand | string,
 ): boolean {

@@ -1,4 +1,4 @@
-// Cross-references in message text (decisions.md §13.7, §14). The hub resolves
+// Cross-references in message text. The hub resolves
 // them; the client's only job is to link what was resolved and to leave alone
 // what was not.
 import { describe, expect, it } from "vitest";

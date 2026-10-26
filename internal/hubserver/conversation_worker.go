@@ -114,7 +114,7 @@ type conversationBindResponse struct {
 	Continuation   bool   `json:"continuation"`
 	// Preferences are the conversation's turn preferences. The runner
 	// applies the explicit ones to its turn request and leaves "auto" to the
-	// project's configured defaults (decisions section 14).
+	// project's configured defaults.
 	Preferences conversation.Preferences   `json:"preferences"`
 	Resume      conversationResumeResource `json:"resume"`
 	Pending     []conversationControl      `json:"pending"`
@@ -127,8 +127,8 @@ type conversationResumeResource struct {
 	// use belongs to: conversation.ThreadOriginCoordinator or
 	// conversation.ThreadOriginWorker. It is the origin this bind's turn
 	// records, so a runner holding a thread of the other kind in its own
-	// registry can see that the hub did not hand it back (decisions section
-	// 9.3). Empty when the bind resumed nothing and started no turn.
+	// registry can see that the hub did not hand it back.
+	// Empty when the bind resumed nothing and started no turn.
 	ThreadOrigin string `json:"thread_origin,omitempty"`
 	// Transcript carries the recent history when the provider thread cannot
 	// be resumed, so the runner can prepend it as clearly delimited data.
@@ -172,7 +172,7 @@ type conversationControl struct {
 	Answers    map[string][]string `json:"answers,omitempty"`
 	// Attachments are the files the message carries, each with the hub path
 	// that streams it. The worker downloads them with its own token through
-	// the conversation's read rule (decisions section 17.1).
+	// the conversation's read rule.
 	Attachments []conversation.Attachment `json:"attachments,omitempty"`
 	Expected    conversation.Expected     `json:"expected"`
 }
@@ -212,7 +212,7 @@ type conversationTurnEvent struct {
 	Kind           string `json:"kind,omitempty"`
 	Summary        string `json:"summary,omitempty"`
 	// Data carries structured status for an item event, such as a
-	// coordinator proposal (decisions section 9.3).
+	// coordinator proposal.
 	Data      json.RawMessage       `json:"data,omitempty"`
 	RequestID string                `json:"request_id,omitempty"`
 	Prompts   []conversation.Prompt `json:"prompts,omitempty"`
@@ -523,7 +523,7 @@ func (c *conversationService) handOffControls(ctx context.Context, tx *sql.Tx, r
 	owner := record.Execution.Owner
 	// A queued control has not been handed to this owner whatever its seq
 	// is, so a retry that re-queues an older message still reaches a worker
-	// whose cursor is already past it (decisions section 10.3).
+	// whose cursor is already past it.
 	messages, err := c.pendingControlMessages(ctx, tx, record.ID, after)
 	if err != nil {
 		return nil, false, err
@@ -605,7 +605,7 @@ func (c *conversationService) resolveAnswer(ctx context.Context, tx nativeQuerye
 // the ended attempt becomes unknown rather than being replayed, a control
 // that was never handed out stays queued, and pending questions expire.
 // Nothing is retried automatically; the user retries explicitly with a retry
-// command (decisions section 10.3).
+// command.
 func (c *conversationService) finishExecution(ctx context.Context, tx *sql.Tx, record *conversationRecord, status conversation.ExecutionStatus, failure string, settled bool, now time.Time) error {
 	execution := record.Execution
 	responding, err := c.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id = ? AND attempt_id = ? AND delivery = 'responding' ORDER BY seq", record.ID, execution.Owner.AttemptID)
@@ -802,7 +802,7 @@ max(COALESCE((SELECT MAX(seq) FROM conversation_events WHERE conversation_id=? A
 			thread = record.ProviderThreadID
 		} else {
 			// The runner named the thread, so the thread is its own and this
-			// bind's kind of turn is its origin (decisions section 9.3).
+			// bind's kind of turn is its origin.
 			record.ProviderThreadID = thread
 			record.ProviderThreadRunnerID = scope.credential.Runner.RunnerID
 			record.ProviderThreadOrigin = conversation.ThreadOriginWorker
@@ -817,7 +817,7 @@ max(COALESCE((SELECT MAX(seq) FROM conversation_events WHERE conversation_id=? A
 		}
 		// The owner tuple is taken in memory first so the hand-off and the
 		// transcript see the new generation; the execution is persisted once,
-		// with the resume it ends up reporting (decisions section 10.4).
+		// with the resume it ends up reporting.
 		record.Execution = execution
 		pending, _, err := c.handOffControls(ctx, tx, &record, 0, now)
 		if err != nil {
@@ -833,7 +833,7 @@ max(COALESCE((SELECT MAX(seq) FROM conversation_events WHERE conversation_id=? A
 		}
 		if execution.Resume == conversation.ResumeTranscript {
 			// Transcript recovery is visible in the history rather than only
-			// in the runner's prompt (decisions section 10.4).
+			// in the runner's prompt.
 			notice := conversationMessageRecord{
 				Role: conversation.RoleSystem, Kind: conversation.MessageStatus,
 				Text:      conversationTranscriptNotice(len(resume.Transcript)),
@@ -928,7 +928,7 @@ func (r *conversationWorkerRouter) unbind(e echo.Context) error {
 		}
 		// A turn that reported interrupted or failed already made the
 		// execution terminal; the unbind outcome still wins and the
-		// controls still settle (decisions section 10.7).
+		// controls still settle.
 		return c.finishExecution(ctx, tx, &record, status, strings.TrimSpace(request.Error), true, now)
 	})
 	if err != nil {
@@ -1193,7 +1193,7 @@ func (c *conversationService) applyTurnStarted(ctx context.Context, tx *sql.Tx, 
 		turn.execution.Owner.ThreadID = thread
 		turn.record.ProviderThreadID = thread
 		// The thread belongs to the provider login of the runner reporting
-		// it; only that runner may resume it (decisions section 9.3).
+		// it; only that runner may resume it.
 		turn.record.ProviderThreadRunnerID = turn.scope.credential.Runner.RunnerID
 		// It also carries the instructions and permission set of the kind of
 		// turn that opened it, so a later bind of the other kind is handed a
@@ -1460,8 +1460,7 @@ func (c *conversationService) applyTurnCompleted(ctx context.Context, tx *sql.Tx
 	}
 	turn.execution.Owner.TurnID = ""
 	// An interrupted or failed turn stays interrupted or failed: the
-	// execution must not report running until the runner unbinds
-	// (decisions section 10.7).
+	// execution must not report running until the runner unbinds.
 	switch delivery {
 	case conversation.DeliveryInterrupted:
 		turn.execution.Status = conversation.ExecutionInterrupted

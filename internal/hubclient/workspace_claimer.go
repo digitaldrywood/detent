@@ -13,7 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// The workspace lane's claim path (decisions section 18.1).
+// The workspace lane's claim path.
 //
 // A workspace item is claimed like any other work item, with one difference
 // that matters: the claim asks only for detent:workspace items. A runner's
@@ -35,7 +35,7 @@ type WorkspaceLaneConfig struct {
 	// a lane that wants the next workspace.
 	SessionID func() (string, error)
 	// LeaseTTL is how long the claim is held between renewals. The workspace
-	// heartbeat renews it, so it is the same 90 seconds section 18.1 gives a
+	// heartbeat renews it, so it is the same 90 seconds the workspace session contract gives a
 	// workspace before lease_lost.
 	LeaseTTL time.Duration
 }
@@ -105,7 +105,7 @@ func (c *WorkspaceClaimer) ClaimWorkspace(ctx context.Context) (tracker.NativeLe
 		// The workspace capability is the lane's authority to be offered
 		// workspace items at all: the hub's ordinary claim excludes them from
 		// its candidates, so no issue lane can reach one by asking for the
-		// label (decisions section 18.1). The label filter stays as the
+		// label. The label filter stays as the
 		// narrowing preference it always was.
 		Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeWorkspaceCapability},
 		LabelInclude: []string{WorkspaceItemLabel},

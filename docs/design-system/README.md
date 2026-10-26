@@ -6,15 +6,13 @@ Consistent output comes from choosing the same component and composition for the
 
 ## Contents
 
-- [Foundations and token ownership](foundations.md): colour roles, categorical colours, type, icons, spacing and layout, breakpoints, radius, elevation, layers and motion, with token tables generated from the stylesheets.
-- [Color contrast](color-review.md): measured contrast of the colour tokens and which pairs are safe for text.
+- [Foundations and token ownership](foundations.md): colour roles, categorical colours, measured colour contrast, type, icons, spacing and layout, breakpoints, radius, elevation, layers and motion, with token tables generated from the stylesheets.
 - [Brand in product UI](brand.md): the mark, interface voice and the separate sign-in and Templ surfaces.
 - [Component contracts](components.md): import, variants, states, keyboard, use and avoid for every catalogued component, grouped by family. Generated.
 - [Element catalog](element-catalog.md): one table of every entry with its group, kind, status and source. Generated.
 - [Patterns](patterns.md): the page template, screen and composition recipes, control selection, keyboard shortcuts, formatting of values, status indicators, feedback and interaction states.
 - [Accessibility](accessibility.md): contrast, target size, focus and review criteria.
 - [Contributing](contributing.md): how to add or change a component and keep the catalog current.
-- [Workpad](workpad.md): progress and validation record for the design-system build.
 
 The development gallery renders the foundations and every catalogued component with synthetic data at `/design-system` in the Vite dev server: `npm run dev` in `web/conversation` serves it without a hub. A few compositions are shown as the real app route and need the mock hub (`npm run dev:mock`). `npm run build:gallery` writes a static copy to `web/conversation/dist-gallery/` for anyone without a dev setup. The gallery reads the same catalog and token data as the generated docs; [Contributing](contributing.md#run-the-gallery) has the details.
 
@@ -50,10 +48,9 @@ Each specimen renders the real component in separate Light and Dark documents, a
 | Primitives | [`src/components/ui`](../../web/conversation/src/components/ui) |
 | Compositions | `src/components/**` (shared compositions) and `src/app/**` (screens and data adapters) |
 | Component catalog | [`src/design-system/catalog.json`](../../web/conversation/src/design-system/catalog.json) |
-| Screen coverage | [Design inventory](../conversation/design-inventory.md) |
-| Product behaviour | [Product decisions](../conversation/decisions.md) |
+| Product behaviour | The existing implementation and the [Hub API](../hub-api.md) |
 
-When the inventory's historical styling examples differ from this system, use this system for visual rules and the existing implementation for behaviour. The public sign-in surface and the local Templ dashboard keep their own current contracts (see [Brand](brand.md)).
+The public sign-in surface and the local Templ dashboard keep their own current contracts (see [Brand](brand.md)).
 
 ## The catalog
 
@@ -80,7 +77,7 @@ The system uses a Zinc-based neutral palette, Lucide icons, Base UI interaction 
 
 ## Accessibility baseline
 
-Ordinary text meets 4.5:1 contrast and qualifying large text 3:1 against the resolved surface; token values alone do not prove it, especially with opacity, glass or imported themes ([safe pairs](color-review.md#using-the-pairs)). Targets meet WCAG 2.2's 24 by 24 CSS pixel minimum or its spacing exceptions; touch controls aim for 44 by 44 effective pixels without overlapping hit areas. Preserve semantic controls, associated labels, visible focus, keyboard navigation, focus return from overlays, text or icon alternatives to colour, and non-hover access to essential actions. [Accessibility](accessibility.md) holds the full criteria.
+Ordinary text meets 4.5:1 contrast and qualifying large text 3:1 against the resolved surface; token values alone do not prove it, especially with opacity, glass or imported themes ([safe pairs](foundations.md#using-the-pairs)). Targets meet WCAG 2.2's 24 by 24 CSS pixel minimum or its spacing exceptions; touch controls aim for 44 by 44 effective pixels without overlapping hit areas. Preserve semantic controls, associated labels, visible focus, keyboard navigation, focus return from overlays, text or icon alternatives to colour, and non-hover access to essential actions. [Accessibility](accessibility.md) holds the full criteria.
 
 ## Agent instructions
 

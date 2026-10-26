@@ -15,8 +15,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Worker endpoints for workspace sessions (decisions section 18.1). They
-// mirror the conversation worker set of section 5: bind claims the workspace
+// Worker endpoints for workspace sessions. They
+// mirror the conversation worker set of the conversation contract: bind claims the workspace
 // and returns the tuple and the checkout instructions, heartbeat renews the
 // lease and carries the runner's report, and unbind releases it.
 //
@@ -67,7 +67,7 @@ type workspaceCheckout struct {
 	HeartbeatSeconds   int       `json:"heartbeat_seconds"`
 	ExpiresAt          time.Time `json:"expires_at"`
 	// Deny is the project's extra files denylist, so the runner filters with
-	// the same list the hub would (section 18.4).
+	// the same list the hub would.
 	Deny []string `json:"deny,omitempty"`
 }
 
@@ -77,7 +77,7 @@ type workspaceBindResponse struct {
 	Checkout workspaceCheckout        `json:"checkout"`
 	Session  workspacesession.Session `json:"workspace"`
 	// Actions is the project's run-on-worktree-creation set, in authoring
-	// order (decisions section 18.12). The order is the contract: an author
+	// order. The order is the contract: an author
 	// who wants install before build writes install first, and nothing else
 	// in the shape would say so. The runner starts them itself, which is why
 	// they arrive with the checkout rather than being asked for later -- a
@@ -98,8 +98,8 @@ type workspaceHeartbeatRequest struct {
 	Capabilities workspacesession.Capabilities `json:"capabilities"`
 	Isolation    string                        `json:"isolation,omitempty"`
 	Worktree     string                        `json:"worktree,omitempty"`
-	// WorktreePath and MachineHostname are where the worktree actually is
-	// (section 18.13): the absolute path this runner prepared and the host it
+	// WorktreePath and MachineHostname are where the worktree actually is:
+	// the absolute path this runner prepared and the host it
 	// prepared it on. The Open picker compares the hostname against the
 	// reader's own machine and hands the operating system the path only when
 	// the two agree.
@@ -353,7 +353,7 @@ func (s *Service) heartbeatWorkspaceWorker(c echo.Context) error {
 	return c.JSON(http.StatusOK, workspaceHeartbeatResponse{Session: beat.resource()})
 }
 
-// renewWorkspaceLease is the half of the heartbeat that section 18.1 names
+// renewWorkspaceLease is the half of the heartbeat that the workspace session contract names
 // first: "POST .../worker/heartbeat (renews the lease ...)". It runs in the
 // same transaction as the session row, so the two can never disagree about
 // whether this generation is still alive, and the runner needs no second call
@@ -563,8 +563,8 @@ func (s *Service) workspaceForWorkItem(c echo.Context) error {
 	return c.JSON(http.StatusOK, resource)
 }
 
-// workspaceActionRunReport is the body of POST
-// .../workspaces/:workspace/worker/action-runs (decisions section 18.12).
+// workspaceActionRunReport is the body of POST...
+// /workspaces/:workspace/worker/action-runs.
 //
 // It is how a run the runner started itself is recorded: a
 // run-on-worktree-creation action has no person watching and no exec stream to

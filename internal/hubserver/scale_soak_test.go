@@ -570,7 +570,7 @@ func TestScaleSoakFleet(t *testing.T) {
 func TestScaleSoak(t *testing.T) {
 	path := os.Getenv("DETENT_SCALE_SOAK_CONFIG")
 	if path == "" {
-		t.Skip("manual scale soak; see docs/scale-soak.md")
+		t.Skip("manual scale soak; see WORKFLOW.md")
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {

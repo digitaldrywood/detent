@@ -25,7 +25,7 @@ const maxChangeVersionRequestBytes = 28 << 20
 
 // maxAttemptDiffRequestBytes bounds the one endpoint whose body is legitimately
 // larger than every other: a stored attempt diff carries the patches
-// themselves, and decisions section 18.5 bounds those at tracker.MaxDiffBytes.
+// themselves, and the attempt diff contract bounds those at tracker.MaxDiffBytes.
 // The allowance is that bound at the worst case of JSON string escaping plus
 // room for the framing, so a diff the contract accepts is never refused by the
 // transport instead. The factor is six because an encoder writes <, >, & and

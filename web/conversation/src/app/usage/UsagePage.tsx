@@ -614,7 +614,7 @@ function Metric({ label, value }: { readonly label: string; readonly value: stri
 }
 
 /**
- * The Runners tab. §17.5 sends one row per runner for the window; this is the
+ * The Runners tab. The usage report sends one row per runner for the window; this is the
  * Breakdown table with the fleet's own columns, so the two read as the same
  * table rather than two takes on one.
  */

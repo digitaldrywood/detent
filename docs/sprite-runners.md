@@ -40,8 +40,7 @@ billing or bootstrap failure,
 correct the cause and approve Luna's scale-up retry. The existing pool lifecycle
 cleans up the failed member and provisions within the saved bounds. A connected
 runner still needs Git access, configured providers and approved repository
-policy; verify a confirmed Todo issue reaches a real pushed branch before
-considering onboarding complete.
+policy before it can claim work.
 
 ## 1. What you need
 
@@ -177,10 +176,7 @@ command. Closing the dialog clears its displayed command.
 
 ## Repository project setup
 
-Declare project tools once in the project's `detent.yaml`. Detent uses this
-configuration with `scripts/runner-setup.sh` to run `make setup`, install its
-pinned Go tools into `$(go env GOPATH)/bin`, and prepare the root and Cloud app
-Node dependencies from their committed lockfiles with `npm ci`:
+A project declares its tool installation once in its `detent.yaml`, for example:
 
 ```yaml
 hooks:
@@ -189,22 +185,20 @@ hooks:
   timeout_ms: 900000
 ```
 
-Commit the script alongside the configuration. Make it idempotent,
-non-interactive, and free of secrets. For example, check whether a CLI is
-already installed at the required version before installing it into a directory
-on the runner's existing PATH. The script runs from the source checkout with
-the runner's permissions and inherited environment; exports inside it do not
-change later agent environments. Keep installation in this script rather than
-manually installing project tools on individual Sprites.
+The script is committed with the repository. It runs non-interactively from the
+source checkout with the runner's permissions and inherited environment;
+exports inside it do not change later agent environments. Because it can run
+again on any runner, it works best when idempotent (for example, skipping a CLI
+already installed at the required version) and contains no secrets.
 
 Both pool members and manually enrolled Sprites use the same runner owner.
 It runs setup when preparing the project, records a successful content hash in
-that Sprite's local store, and runs again when the script, configured
-shell or checkout path changes, or when the checkout is recreated. Later attempts and runner restarts reuse that hash. Each Sprite
-has its own record, so every member installs the tools automatically. Keep the
-runner store when restoring a checkpoint to preserve successful setup evidence.
-When changing Makefile tool pins or dependency lockfiles, also change the setup
-script so existing runners invalidate their successful setup hash.
+that Sprite's local store, and runs again when the script content, configured
+shell or checkout path changes, or when the checkout is recreated. Later
+attempts and runner restarts reuse that hash. Each Sprite has its own record, so
+every member installs the tools automatically. The hash covers only the script,
+shell and checkout path: changing a file the script reads, such as Makefile tool
+pins or a lockfile, does not by itself rerun setup on existing runners.
 
 Before enrollment, the bootstrap records the Sprite's setup revision in
 `~/.local/lib/detent-sprite-runner/setup-manifest.json`: platform, bootstrap
@@ -212,7 +206,7 @@ release, pinned toolchain, and the allowlisted native caches (`go-build`,
 `go-mod`, `npm`). It never contains provider logins, GitHub credentials, the
 runner identity, or job data. Tools found outside the managed set in
 `~/.local/bin` or the runner's npm prefix are reported as customizations the
-setup cannot reproduce; move them into `hooks.runner_setup`. The manifest is
+setup cannot reproduce. The manifest is
 install output only: the runner never reads it, so jobs do not depend on it.
 Native caches are optional and never copied between Sprites. A missing cache is
 rebuilt by its toolchain on demand. The bootstrap never deletes cache contents:
@@ -336,14 +330,7 @@ checkouts with their caches, so keep **Concurrency** at `1`.
 
 The bootstrap prints the profile in its closing summary. It rewrites the
 launcher on every run, so hand edits to it do not survive an update; change
-the bootstrap instead. Projects whose own build files have concurrency
-settings should derive them from the CPU count in the repository, not from
-per-Sprite edits.
-
-A Sprite is ready for gate-heavy work only after a representative cold
-validation run under this profile passes while the runner's probes stay inside
-their deadlines. If it cannot, report the measured limitation as a readiness
-failure rather than raising timeouts or skipping checks.
+the bootstrap instead.
 
 ### Standard runner toolset
 
@@ -468,9 +455,10 @@ agent routes with an exact model ID from your Pi catalog. Pi requires the
 operator to select **native-trusted isolation**. It cannot run sandboxed or
 read-only roles; keep validation on another configured backend.
 
-**OpenCode is not a Detent backend.** A CLI being available in a Sprite image
-does not make it a supported Detent backend, including the standalone Gemini
-CLI.
+Detent also has an `opencode` backend kind; see
+[OpenCode backend](cli.md#opencode-backend). The bootstrap does not install
+OpenCode. A CLI being available in a Sprite image does not make it a Detent
+backend; the standalone Gemini CLI is not one.
 
 ## 7. Prepare Git access and the project checkout
 
@@ -547,18 +535,16 @@ For a nested module, use its path declared in the repository instead of guessing
 an application directory. Go downloads may be silent; the chained success message
 confirms exit status 0. A failed directory change stops the entire chain.
 
-The runner reads `detent.yaml` and
-`WORKFLOW.md` from the repository's current default branch. Declare build and
-test dependencies in `hooks.runner_setup`
-and configure the agent routes it uses; see
+The runner reads `detent.yaml` and `WORKFLOW.md` from the repository's current
+default branch, including `hooks.runner_setup` and the agent routes; see
 [Cloud onboarding](cloud-onboarding.md#repository-configuration-and-policy).
-Repeat for every enrolled project.
+Each enrolled project has its own checkout and configuration.
 
-When the runner reports a pending repository policy, open Hub **Settings >
-Projects**, select the project, and open its **Settings**. Review the reported
-policy and use **Approve updated policy** if offered. An owner/admin with the
-project's write access handles approval when offered. Configuration reports retain
-policy provenance; they are not a recurring approval gate on claims or publication.
+When the runner reports a pending repository policy, the project's **Settings**
+show the observed and approved policy. An organization owner or admin approves
+the exact observed policy through the `approve_project_policy` MCP tool or
+`detent hub policy approve`. Configuration reports retain policy provenance; they
+are not a recurring approval gate on claims or publication.
 
 ## 8. Restart and take a checkpoint
 
@@ -591,13 +577,11 @@ Resolve any remaining policy or authentication requirements before testing wake.
    or port-forwarding sessions. Leave the Sprite idle until it is **cold**;
    it may first become **warm**. Check status in the Sprites dashboard or,
    from your own machine, with `sprite list -o "$SPRITE_ORG"`.
-2. In your Detent Cloud project, file a small, focused **Todo** issue, such as
-   a requested documentation correction. The lane must be dispatchable in
-   that project's approved workflow.
+2. In your Detent Cloud project, create a small issue in a lane that is
+   dispatchable in that project's approved workflow, such as **Todo**.
 3. Keep the console closed. Confirm in the Hub that the runner reconnects,
-   claims the issue, and publishes a Change Request. Complete any review or
-   check steps required by your project, then confirm the change lands and
-   the issue reaches **Done**.
+   claims the issue, and publishes a Change Request, and that the change lands
+   through the project's workflow.
 4. Reopen the same Sprite console from your own machine with
    `sprite console -o "$SPRITE_ORG" -s "$SPRITE_NAME"`. Inside the Sprite, run
    `sprite-env checkpoints create --comment 'runner verified: task published'`
@@ -648,9 +632,10 @@ unit rates checked for this guide are:
 
 Compute billing stops while paused; persisted storage remains billable. Agent
 provider costs are separate. Plan allowances, concurrency limits, and rates
-can change: check [Fly's current Sprites pricing](https://fly.io/sprites/#pricing)
-and your actual usage before choosing a plan. Keep a spend alert on the Fly
-organization.
+can change; [Fly's current Sprites pricing](https://fly.io/sprites/#pricing) is
+authoritative. Detent does not read Fly invoices or per-Sprite billing; measured
+or estimated Sprite costs can be imported into the Hub's monthly usage ledger,
+as described in [Sprite infrastructure usage](runner-usage.md#sprite-infrastructure-usage).
 
 ### Troubleshooting
 
@@ -666,7 +651,7 @@ probe=$(mktemp .detent-write-probe.XXXXXX) && rm -- "$probe"
 
 If storage is full, reclaim only data you own. If writes still fail or the
 console disconnects, stop dependency installation and use Fly’s infrastructure
-support; do not attribute the failure to an issue. Ample space does not prove
+support. Ample space does not prove
 that an earlier EROFS/EIO cause is resolved. After a successful write check,
 a pnpm install retry with lower parallelism was observed to succeed:
 
@@ -678,9 +663,7 @@ printf 'pnpm retry completed (exit 0)\n'
 ```
 
 This is a recovery option, not a required setting or a diagnosis of the underlying
-storage failure. Verify project setup, Git and provider access, Hub connection,
-policy provenance, Service running state, the authorized task’s publication and
-the final checkpoint separately. Preserve incomplete steps when reporting status.
+storage failure.
 
 | Symptom | What to check |
 | --- | --- |

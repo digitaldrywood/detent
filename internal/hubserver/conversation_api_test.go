@@ -82,7 +82,7 @@ func (f conversationAPIFixture) create(t *testing.T, token string, body map[stri
 }
 
 // conversationCreateBody fills the top-level idempotency key creation
-// requires (decisions section 10.2) unless the test names one itself. Every
+// requires unless the test names one itself. Every
 // call gets a fresh key: the key is scoped to the actor and the route, so a
 // reused one would replay the first conversation.
 func conversationCreateBody(body map[string]any) map[string]any {
@@ -343,7 +343,7 @@ func TestConversationAPIListVisibility(t *testing.T) {
 		}
 	})
 	// Settled replaces Archive: both groups are listed by default, active
-	// first, and the settled filter selects one group (decisions section 14).
+	// first, and the settled filter selects one group.
 	t.Run("settled filter", func(t *testing.T) {
 		f.settle(t, private.ID)
 		if got := ids(list(f.token, f.base+"/conversations")); strings.Join(got, ",") != shared.ID+","+private.ID {
@@ -536,7 +536,7 @@ func TestConversationAPICommands(t *testing.T) {
 		requireNativeError(t, response, http.StatusNotFound, "not_found")
 	})
 	// A settled conversation is not read-only: the command is accepted and
-	// the conversation goes back to active (decisions section 14).
+	// the conversation goes back to active.
 	t.Run("a settled conversation accepts commands and unsettles", func(t *testing.T) {
 		settled := f.create(t, f.token, map[string]any{"title": "Old"}).Conversation
 		f.settle(t, settled.ID)
@@ -866,8 +866,7 @@ func TestConversationAPILinkedWorkItem(t *testing.T) {
 
 // TestConversationMessageCount proves the conversation resource reports the
 // whole history, not the page a read returned: the share confirmation shows
-// that number before a private chat becomes readable by the project
-// (decisions section 10.5).
+// that number before a private chat becomes readable by the project.
 func TestConversationMessageCount(t *testing.T) {
 	t.Parallel()
 	f := newConversationAPIFixture(t, nil)
@@ -902,7 +901,7 @@ func TestConversationMessageCount(t *testing.T) {
 // TestConversationCreateIsIdempotent covers the top-level key creation
 // requires: a retry returns the stored response instead of a second
 // conversation, a different payload under the same key conflicts, and a
-// request without a key is refused (decisions section 10.2).
+// request without a key is refused.
 func TestConversationCreateIsIdempotent(t *testing.T) {
 	t.Parallel()
 	f := newConversationAPIFixture(t, nil)
@@ -945,8 +944,7 @@ func TestConversationCreateIsIdempotent(t *testing.T) {
 
 // TestConversationContinueRequiresExpectedAttempt covers the attempt a
 // continue must name: null is only honest for a conversation that never had
-// an attempt, so a conversation that has or had one refuses it
-// (decisions section 10.8).
+// an attempt, so a conversation that has or had one refuses it.
 func TestConversationContinueRequiresExpectedAttempt(t *testing.T) {
 	t.Parallel()
 	f := newConversationAPIFixture(t, nil)

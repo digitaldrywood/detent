@@ -207,7 +207,7 @@ func TestPullRequestsJoinConnector(t *testing.T) {
 	}
 }
 
-// mergeable is 18.6's three values on the wire: true, false or "unknown".
+// mergeable is the pull request contract's three values on the wire: true, false or "unknown".
 func TestPullRequestMergeableJSON(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -350,7 +350,7 @@ func TestPullRequestViewCache(t *testing.T) {
 	}
 }
 
-// TestPullRequestViewGoldenShape pins the 18.6 shape on the Go side, so the
+// TestPullRequestViewGoldenShape pins the pull request contract shape on the Go side, so the
 // client has a contract to decode against before it draws the panel.
 func TestPullRequestViewGoldenShape(t *testing.T) {
 	t.Parallel()

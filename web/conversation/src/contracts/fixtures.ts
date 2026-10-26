@@ -1,7 +1,7 @@
 // The shared contract fixtures.
 //
 // Every file in `src/contracts/fixtures/` is a realistic wire payload for one
-// resource in `docs/conversation/decisions.md` §5. This table binds each file
+// resource in the Hub conversation API. This table binds each file
 // to the schema that must decode it. The Go implementation is expected to
 // decode the same files, so the directory is a stable cross-language contract
 // surface: add a fixture here and the Go test picks it up by name.

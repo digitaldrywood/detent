@@ -259,8 +259,8 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/leases/:lease/release", s.releaseNativeLease, worker)
 	e.POST(nativeBase+"/machines/register", s.registerNativeMachine, worker)
 	e.POST(nativeBase+"/work-items/:item/events", s.appendNativeRunEvent, worker)
-	// Stored attempt diffs and the pull request panel (decisions section
-	// 18.5 and 18.6). The diff write is a worker endpoint fenced by the
+	// Stored attempt diffs and the pull request panel.
+	// The diff write is a worker endpoint fenced by the
 	// producer's lease; every read follows the issue's read rule.
 	e.POST(nativeBase+"/attempts/:attempt/diff", s.postAttemptDiff, worker)
 	e.POST(nativeBase+"/attempts/:attempt/diff/check", s.checkAttemptDiff, worker)
@@ -269,7 +269,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.GET(nativeBase+"/work-items/:item/pull-requests", s.listWorkItemPullRequests, read)
 	e.POST(nativeBase+"/work-items/:item/release-pick", s.associateReleasePick, write)
 	e.POST(nativeBase+"/work-items/:item/release-pick/publication", s.publishReleasePick, write)
-	// Workspace sessions (decisions section 18.1). The reads follow the
+	// Workspace sessions. The reads follow the
 	// issue's read rule; the writes need write on the project, and a
 	// terminal in requires needs the grant's runners flag on top.
 	e.POST(nativeBase+"/workspaces", s.createWorkspace, write)
@@ -292,7 +292,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/actions/:action/runs", s.createProjectActionRun, write)
 	e.GET(nativeBase+"/actions/:action/runs/:run", s.getProjectActionRun, read)
 	e.GET(nativeBase+"/actions/:action/runs/:run/output", s.getProjectActionRunOutput, read)
-	// Terminal recordings (decisions section 18.3). They are mounted under the
+	// Terminal recordings. They are mounted under the
 	// project's read scope like everything else, and then narrowed again by the
 	// handler: a recording's audience is the person who ran it plus owners and
 	// admins, and a user-isolation recording's is owners alone, which is

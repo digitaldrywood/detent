@@ -2,7 +2,7 @@ import { invalidateArchiveAccess, resolveArchivedResponse } from "../archive.ts"
 // Same-origin HTTP client for the Detent conversation API.
 //
 // Written for this repository. It replaces the POC's WebSocket JSON-RPC
-// transport with the endpoints in `docs/conversation/decisions.md` §5:
+// transport with the Hub conversation endpoints:
 // cookie session for authentication, `X-CSRF-Token` from the bootstrap
 // payload on every mutation, and the native `{code, message, details?}`
 // error shape decoded into a typed failure.
@@ -112,7 +112,7 @@ export interface DetentHttpClient {
     readonly cursor?: string | null;
     readonly limit?: number;
     readonly q?: string;
-    /** `settled=true|false` (decisions.md §14); absent lists both shelves. */
+    /** `settled=true|false`; absent lists both shelves. */
     readonly settled?: boolean;
   }) => Effect.Effect<typeof ConversationListResponse.Type, HttpFailure>;
   readonly listProjectConversations: (input: {
@@ -121,7 +121,7 @@ export interface DetentHttpClient {
     readonly cursor?: string | null;
     readonly limit?: number;
     readonly q?: string;
-    /** `settled=true|false` (decisions.md §14); absent lists both shelves. */
+    /** `settled=true|false`; absent lists both shelves. */
     readonly settled?: boolean;
   }) => Effect.Effect<typeof ConversationListResponse.Type, HttpFailure>;
   readonly getConversation: (input: {
@@ -138,7 +138,7 @@ export interface DetentHttpClient {
     readonly subjectWorkItemId?: string;
     readonly projectId: string;
     /**
-     * The create key. Mandatory (decisions.md §10.2): creating a conversation
+     * The create key. Mandatory: creating a conversation
      * runs through the idempotent mutation path keyed by actor and key, so a
      * retried create returns the stored response rather than a second
      * conversation. It is distinct from `firstMessage.key`, which is the
@@ -160,15 +160,16 @@ export interface DetentHttpClient {
     /**
      * Sent verbatim. It is never defaulted to `true` here: the confirmation
      * belongs to the user, and a client that silently shares a private
-     * history would defeat decisions.md §3 rule 2.
+     * history would defeat the rule that linking needs an explicit share
+     * confirmation.
      */
     readonly shareHistory: boolean;
     readonly issue: LinkIssueInput;
-    /** The next step for the new issue (decisions.md §13.8, §14). */
+    /** The next step for the new issue. */
     readonly next?: HandoffNext;
   }) => Effect.Effect<typeof LinkResponse.Type, HttpFailure>;
   /**
-   * `PATCH /conversations/:id {preferences}` (decisions.md §14). The whole
+   * `PATCH /conversations/:id {preferences}`. The whole
    * triple is sent every time: a picker changes one field, and the resource
    * carries all three, so a partial body would leave the hub guessing which
    * of the other two the reader meant to keep.
@@ -193,7 +194,7 @@ export interface DetentHttpClient {
     readonly conversationId: string;
   }) => Effect.Effect<void, HttpFailure>;
   /**
-   * `POST {nativeBase}/conversations/:id/attachments` (decisions.md §17.1).
+   * `POST {nativeBase}/conversations/:id/attachments`.
    * Multipart with one `file` part and an `idempotency_key` field, exactly as
    * the hub parses it.
    */
@@ -219,7 +220,7 @@ interface MultipartBody {
 /**
  * RFC 7578 for exactly the two parts the hub's attachment endpoint reads:
  * `file` (one per request, with its filename and media type) and
- * `idempotency_key` (decisions.md §17.1).
+ * `idempotency_key`.
  *
  * The body is assembled here rather than handed to `FormData` so the bytes on
  * the wire are this client's, not the runtime's: the same request is made by a

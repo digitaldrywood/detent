@@ -58,8 +58,8 @@ type Config struct {
 	Hosted                         *HostedConfig
 	Conversation                   *ConversationConfig
 	Usage                          *UsageConfig
-	// Workspace enables workspace sessions and the relay (decisions section
-	// 18.1). Nil means the surfaces stay disabled with their reason.
+	// Workspace enables workspace sessions and the relay.
+	// Nil means the surfaces stay disabled with their reason.
 	Workspace                  *WorkspaceConfig
 	GitHubRequestCounts        func() []GitHubRequestCount
 	GitHubAppInstallation      func(context.Context, string) (GitHubAppInstallation, error)

@@ -15,7 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Project actions end to end (decisions section 18.12): the catalogue a
+// Project actions end to end: the catalogue a
 // project authors, the bounds that keep it a menu rather than a table nobody
 // can read, and the write gate that decides who may add a command the whole
 // project runs.

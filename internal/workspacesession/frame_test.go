@@ -122,7 +122,7 @@ func TestErrorFrame(t *testing.T) {
 	}
 }
 
-// TestLimitsMatchTheContract pins the numbers section 18.2 and 18.4 state. They
+// TestLimitsMatchTheContract pins the numbers the relay protocol and the Files contract state. They
 // are constants rather than configuration precisely so a client and a runner
 // cannot disagree about when a stream dies, which makes a drift here a
 // protocol change rather than a tuning change.

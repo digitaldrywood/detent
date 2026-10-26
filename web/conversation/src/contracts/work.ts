@@ -587,7 +587,7 @@ export type NativeAttempt = typeof NativeAttempt.Type;
 export const AttemptPage = Page(NativeAttempt);
 export type AttemptPage = typeof AttemptPage.Type;
 
-// --- Stored attempt diffs (decisions.md §18.5) -------------------------------
+// --- Stored attempt diffs -------------------------------
 
 /**
  * One changed file of a stored attempt diff.
@@ -595,7 +595,7 @@ export type AttemptPage = typeof AttemptPage.Type;
  * `patch` is the file's own `diff --git` section, which is what the runner
  * posts and what `@pierre/diffs`' `parsePatchFiles` reads. It is empty for
  * three distinguishable reasons the counts survive: `binary` content, a
- * `denied` path (the files denylist of §18.4, applied by path string to both
+ * `denied` path (the files denylist of the Files contract, applied by path string to both
  * `path` and `old_path`), or a patch cut at the hub's 1 MB per-file bound and
  * reported `truncated`.
  */
@@ -631,7 +631,7 @@ export const AttemptDiffGeneration = Schema.Struct({
 
 /**
  * One stored generation of one attempt's worktree, from
- * `GET {nativeBase}/attempts/:attempt/diff` (decisions.md §18.5).
+ * `GET {nativeBase}/attempts/:attempt/diff`.
  *
  * This is the diff the Diff surface draws. Unlike a change version — whose
  * code is one opaque artifact with no file names in it — an attempt diff
@@ -853,8 +853,8 @@ export type ChangeDetail = typeof ChangeDetail.Type;
 // --- Pull requests ----------------------------------------------------------
 
 /**
- * One row of `GET {nativeBase}/work-items/:item/pull-requests` (decisions.md
- * §18.6): the hub's own change request joined with the GitHub connector's
+ * One row of `GET {nativeBase}/work-items/:item/pull-requests`:
+ * the hub's own change request joined with the GitHub connector's
  * projection of the pull request it was mirrored to.
  *
  * Only the fields this client reads are named. The connector half is what
@@ -897,7 +897,7 @@ export const WorkItemPullRequestList = Schema.Array(WorkItemPullRequest);
 export type WorkItemPullRequestList = typeof WorkItemPullRequestList.Type;
 
 /**
- * `POST …/work-items/:id/pull-requests/actions` → 202 (§18.6).
+ * `POST …/work-items/:id/pull-requests/actions` → 202.
  *
  * Opening a pull request has no number yet, so the action is addressed by the
  * issue. The answer names the action the merge queue will run and re-states
@@ -914,14 +914,14 @@ export type PullRequestActionAccepted = typeof PullRequestActionAccepted.Type;
 /** 409 on an action: the head moved since `expected_head_sha` was read. */
 export const PULL_REQUEST_HEAD_MOVED = "head_moved";
 
-// --- Workspace sessions (decisions.md §18.1) --------------------------------
+// --- Workspace sessions --------------------------------
 
 /**
  * The eight states a workspace session moves through.
  *
  * A client never infers one: a transition is only ever learned from the
  * project event stream's `workspace.<state>` frame or from a read, because
- * §18.1 makes the subscription the contract — "a client observes readiness by
+ * the workspace session contract makes the subscription the contract — "a client observes readiness by
  * subscription and never by polling".
  */
 export const WorkspaceState = Schema.Literals([
@@ -957,13 +957,13 @@ export const WorkspaceCapabilities = Schema.Struct({
   diff: Schema.Boolean,
   preview: Schema.Boolean,
   /**
-   * Running one project action non-interactively (§18.12). Its own capability
+   * Running one project action non-interactively. Its own capability
    * beside `terminal` rather than a use of it: a runner may serve one and not
    * the other, and the gate, the recording and the lifetime all differ.
    */
   exec: Schema.Boolean,
   /**
-   * The `git` channel of §18.13. The hub emits it on every workspace
+   * The `git` channel. The hub emits it on every workspace
    * response, so it is required rather than optional; a runner that did not
    * report the capability sends `false`, and the header's git group is
    * disabled with that as the reason rather than sending frames that would
@@ -974,7 +974,7 @@ export const WorkspaceCapabilities = Schema.Struct({
 export type WorkspaceCapabilities = typeof WorkspaceCapabilities.Type;
 
 /**
- * One workspace session (§18.1).
+ * One workspace session.
  *
  * `revision` is a plain number here rather than one of the `,string` integers
  * the rest of this API marshals (see the file header). Both are accepted, so a
@@ -993,7 +993,7 @@ export const Workspace = Schema.Struct({
   machine_id: Schema.optional(Schema.NullOr(Schema.String)),
   /**
    * The runner machine's own hostname, and the absolute path of the worktree
-   * on it (§18.13). Both are for the header's Open picker: it compares the
+   * on it. Both are for the header's Open picker: it compares the
    * hostname against the page's host to decide whether handing the operating
    * system a `cursor://file/<path>` URL would reach a path that is actually
    * there, and `worktree_path` is the path it hands over. They are also what
@@ -1036,7 +1036,7 @@ export const WorkspaceList = Schema.Struct({
 export type WorkspaceList = typeof WorkspaceList.Type;
 
 /**
- * `POST …/workspaces/:id/relay-tickets`. `expires_in` is seconds (30 in §18.2)
+ * `POST …/workspaces/:id/relay-tickets`. `expires_in` is seconds (30 in the relay protocol)
  * and the ticket is single use, bound to the workspace and to the session that
  * minted it — so every socket, including every reconnect, mints its own.
  */
@@ -1048,7 +1048,7 @@ export type RelayTicket = typeof RelayTicket.Type;
 
 /**
  * The states a workspace cannot be reused from. `closing` is here with the two
- * genuinely terminal ones because §18.1 has no edge back out of it: a surface
+ * genuinely terminal ones because the workspace session contract has no edge back out of it: a surface
  * that adopted a closing workspace would come up only to be told it closed.
  */
 export const WORKSPACE_UNUSABLE_STATES: ReadonlySet<WorkspaceState> = new Set<WorkspaceState>([
@@ -1062,7 +1062,7 @@ export const WORKSPACE_EXISTS = "workspace_exists";
 /** 422 on create: the organization's or the person's open-workspace cap. */
 export const WORKSPACE_LIMIT = "workspace_limit";
 
-// --- Project actions and their runs (decisions.md §18.12) -------------------
+// --- Project actions and their runs -------------------
 
 /**
  * One project action: a command the project wrote down.
@@ -1086,7 +1086,7 @@ export const Action = Schema.Struct({
   keybinding: Schema.optional(Schema.String),
 
   icon: Schema.String,
-  /** Stored and echoed, never acted on: the Browser surface is deferred (§18.7). */
+  /** Stored and echoed, never acted on: the Browser surface is deferred. */
   preview_url: Schema.optional(Schema.String),
   open_preview: Schema.Boolean,
   run_on_worktree_creation: Schema.Boolean,
@@ -1106,7 +1106,7 @@ export type ActionList = typeof ActionList.Type;
 /**
  * The four states a run reaches. `succeeded` is exit 0 and `failed` is
  * everything else, including a run whose outcome cannot be established —
- * §5's rule for a control with an unknown outcome, applied to a command.
+ * the conversation contract's rule for a control with an unknown outcome, applied to a command.
  */
 export const ActionRunStatus = Schema.Literals(["queued", "running", "succeeded", "failed"]);
 export type ActionRunStatus = typeof ActionRunStatus.Type;
@@ -1153,7 +1153,7 @@ export const ActionRunList = Schema.Struct({
 export type ActionRunList = typeof ActionRunList.Type;
 
 /**
- * The four `action_run.<status>` event names §18.12 puts on the project event
+ * The four `action_run.<status>` event names the project actions contract puts on the project event
  * stream, with the run as `data` — the same stream `workspace.<state>` rides.
  * That is how a client observes a run it did not start (a
  * run-on-worktree-creation run, or one another tab began) by the same

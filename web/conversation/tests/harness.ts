@@ -36,9 +36,9 @@ export interface HarnessOptions {
    * disposed independently (the second-tab tests).
    */
   readonly hub?: MockHub;
-  /** Which coordinator the hub runs. Default `hub`; `runner` is §9's path. */
+  /** Which coordinator the hub runs. Default `hub`; `runner` is the runner-dispatched coordinator's path. */
   readonly coordinator?: CoordinatorMode;
-  /** Whether the signed-in account can write. Default `write` (§10.11). */
+  /** Whether the signed-in account can write. Default `write`. */
   readonly account?: AccountMode;
   /**
    * Replaces the HTTP fetch. The event stream keeps its own, so a test can

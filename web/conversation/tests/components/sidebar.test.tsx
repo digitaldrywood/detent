@@ -221,7 +221,7 @@ describe("the thread sidebar", () => {
     expect(onNewChat).toHaveBeenCalled();
   });
 
-  // §17.2: the brand row is the product, not the tenant.
+  // The brand row is the product, not the tenant.
   it("reads Detent Cloud in the brand row", async () => {
     await renderSidebar();
     const brand = screen.getByLabelText("Go to Detent Cloud");

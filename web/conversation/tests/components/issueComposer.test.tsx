@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The issue page's composer (decisions.md §19.5).
+// The issue page's composer.
 //
 // What is asserted here is the shape Michael asked for: the issue page's
 // composer is a tracker's comment box and nothing else. There is no runner

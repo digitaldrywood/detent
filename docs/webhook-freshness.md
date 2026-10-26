@@ -7,9 +7,7 @@ deliveries at `POST /api/v1/webhooks/github`. Detent Cloud receives them
 through the product GitHub App; a self-hosted `detent hub serve` uses the same
 path on its own origin and verifies the signature itself with the secret named
 by `--github-webhook-secret-env` (default `DETENT_HUB_GITHUB_WEBHOOK_SECRET`).
-Without that secret the endpoint answers `webhook_unavailable`. See
-[GitHub profiles](github-profiles.md) for the App, its event subscriptions, and
-repository binding.
+Without that secret the endpoint answers `webhook_unavailable`.
 
 Detent verifies `X-Hub-Signature-256` with HMAC-SHA256 against the raw request
 body. See GitHub's

@@ -18,7 +18,7 @@ export function Markdown({
   className?: string;
   projectId?: string | undefined;
   /**
-   * Cross-references the hub resolved for this message (decisions.md §14).
+   * Cross-references the hub resolved for this message.
    * Each one's label becomes a link; text with no resolved reference stays
    * exactly as it was written.
    */

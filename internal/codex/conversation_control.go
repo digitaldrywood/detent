@@ -84,7 +84,7 @@ type conversationTransport struct {
 	runContext context.Context //nolint:containedctx // The pump reads under the run context and it replaces the caller deadline while a question is pending.
 	cancel     context.CancelCauseFunc
 	control    *runner.AgentConversationControl
-	// tempDir is where a steer's image copies are written (section 17.1).
+	// tempDir is where a steer's image copies are written.
 	tempDir         string
 	logger          *slog.Logger
 	questionTimeout time.Duration
@@ -478,7 +478,7 @@ func (w *conversationTransport) sendControl(ctx context.Context, c runner.AgentC
 		return w.sendAnswerLocked(ctx, c)
 	case runner.AgentControlMessage:
 		// A steer carries the same input shape as a turn start, so a file
-		// dropped mid-turn reaches the provider the same way (section 17.1):
+		// dropped mid-turn reaches the provider the same way:
 		// images as input items, text files as a data block after the text.
 		// The image copies stay until the provider answers the steer.
 		input, cleanupInput := turnInputItems(steerText(c.Text, c.Attachments), c.Attachments, w.tempDir)

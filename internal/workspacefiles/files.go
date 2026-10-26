@@ -1,5 +1,5 @@
 // Package workspacefiles is the runner's read-only file service for a
-// workspace session's files channel (decisions section 18.4).
+// workspace session's files channel.
 //
 // Everything here exists to make one promise true: what a reader sees through
 // this surface is bounded by what they could already read, and never widens to
@@ -350,8 +350,8 @@ func (s *Service) Read(_ context.Context, request workspacesession.FilesRequest)
 		Path: relative, MIME: mimeFor(relative, buffer), Size: opened.Size(),
 		Offset: offset, Truncated: truncated,
 	}
-	// Binary data is base64 in payload.data with payload.encoding "base64"
-	// (section 18.2). Text is sent as text so a diff or a code view can use it
+	// Binary data is base64 in payload.data with payload.encoding "base64".
+	// Text is sent as text so a diff or a code view can use it
 	// without a decode step.
 	if utf8.Valid(buffer) && !bytes.ContainsRune(buffer, 0) {
 		content.Data = string(buffer)

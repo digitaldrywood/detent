@@ -1192,7 +1192,7 @@ func checkDoctorIssueEffortGuidance(id string, sourceRoot string) doctorCheck {
 	return doctorCheck{
 		Name:   name,
 		Status: doctorWarn,
-		Detail: "AGENTS.md and CLAUDE.md contain no detent-agent guidance",
+		Detail: "WORKFLOW.md contains no detent-agent guidance",
 		Hint:   "Add a project-specific effort-selection rubric; see docs/admission.md#issue-effort-selection.",
 	}
 }
@@ -1319,10 +1319,8 @@ func checkDoctorFilesystemProjectSkills(id string, project globalconfig.Project,
 
 func doctorSkillsConfigDetail(cfg workflowconfig.Skills) string {
 	return fmt.Sprintf(
-		"enabled=%t; creation_enabled=%t; max_drafts_per_run=%d; path=%s; max_skills_in_prompt=%d",
+		"enabled=%t; path=%s; max_skills_in_prompt=%d",
 		cfg.Enabled,
-		cfg.Creation.Enabled,
-		cfg.Creation.MaxDraftsPerRun,
 		cfg.Path,
 		cfg.MaxSkillsInPrompt,
 	)

@@ -91,7 +91,7 @@ func TestHostedRunnerEnrollmentValidation(t *testing.T) {
 	}
 }
 
-// TestHostedMemberManagement covers the section 12 membership endpoints: the
+// TestHostedMemberManagement covers the hosted JSON API membership endpoints: the
 // role and grant changes the organization screen makes, and the last-owner
 // protection the removed forms carried.
 func TestHostedMemberManagement(t *testing.T) {

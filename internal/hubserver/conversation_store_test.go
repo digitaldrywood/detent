@@ -194,7 +194,7 @@ func TestConversationStoreCreateReadAndList(t *testing.T) {
 			t.Fatalf("next cursor = %q, want empty", next)
 		}
 		// Settled sorts after every active conversation, however recent its
-		// own activity is (decisions section 14).
+		// own activity is.
 		wantIDs := []string{shared.ID, newer.ID, older.ID, settled.ID}
 		if len(got) != len(wantIDs) {
 			t.Fatalf("listConversations() returned %d conversations, want %d: %#v", len(got), len(wantIDs), got)

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The workspace lifecycle hook (decisions.md §18.1): reuse an open workspace
+// The workspace lifecycle hook: reuse an open workspace
 // rather than spend another slot, adopt the one a 409 names, and learn every
 // state after that from the project event stream rather than by polling.
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -42,7 +42,7 @@ function workspace(overrides: Partial<Workspace> = {}): Workspace {
     state: "requested",
     requires: ["files"],
     // What the runner that claimed it reported. Present on the builder because
-    // reuse now depends on it (§18.12): a workspace whose capabilities do not
+    // reuse now depends on it: a workspace whose capabilities do not
     // satisfy the caller's `requires` is not reusable, so a fixture with none
     // would be testing the refusal rather than the reuse.
     capabilities: {
@@ -271,7 +271,7 @@ describe("useWorkspace", () => {
     source.emit("workspace.failed", workspace({ state: "failed", reason: "no_runner" }));
     await waitFor(() => expect(screen.getByTestId("reason").textContent).toBe("no_runner"));
 
-    // Not one extra read: §18.1 makes the subscription the contract.
+    // Not one extra read: the workspace session contract makes the subscription the contract.
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -452,7 +452,7 @@ describe("workspace state predicates", () => {
     }
   });
 
-  it("gives every §18.1 reason its own sentence", () => {
+  it("gives every workspace session contract reason its own sentence", () => {
     expect(workspaceReasonSentence("failed", "no_runner")).toContain("No runner reported");
     expect(workspaceReasonSentence("failed", "worktree_missing")).toContain("worktree");
     expect(workspaceReasonSentence("closed", "expired")).toContain("idle timeout");

@@ -19,7 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// The fleet and spend screen (decisions section 12). Every member reads the
+// The fleet and spend screen. Every member reads the
 // fleet; a lease is only described when the member can read the project it
 // runs for, so the runner list never leaks work from another project.
 
@@ -91,7 +91,7 @@ type hostedFleetUsage struct {
 	Allowances   map[string]hostedFleetAllowance `json:"allowances"`
 }
 
-// hostedProjectSpend and hostedSpend carry the section 12 spend shape. The
+// hostedProjectSpend and hostedSpend carry the hosted JSON API spend shape. The
 // hub records allowance consumption per window, not currency per project, so
 // nothing populates them yet and GET /fleet answers spend: null. The types
 // exist so the shape is fixed for the first metering source that does.

@@ -26,7 +26,7 @@ import (
 )
 
 // The relay is tested against real WebSocket connections on an httptest server
-// rather than by calling the handlers: the whole point of section 18.2 is what
+// rather than by calling the handlers: the whole point of the relay protocol is what
 // happens between two sockets -- stream ownership, sequencing, acknowledgement,
 // supersession and resume -- and none of that is visible from a handler call.
 
@@ -47,7 +47,7 @@ type relayFixture struct {
 	// exec turns the exec surface on the same way. It is off by default
 	// because exec is a surface a runner has to offer, exactly as the
 	// terminal is: a workspace whose runner never reported it must refuse the
-	// channel (decisions section 18.12).
+	// channel.
 	exec bool
 	// readOnly binds the workspace read-only, which is what a workspace on a
 	// still-running attempt is. It is the state that refuses exec whatever the
@@ -57,9 +57,9 @@ type relayFixture struct {
 	// leaving workspaces.terminal.enabled off. It is the one shape that
 	// separates "this runner cannot serve a terminal" from "this organization
 	// has not turned terminals on", which are two different refusals a person
-	// has to be able to tell apart (section 18.3).
+	// has to be able to tell apart.
 	terminalDisabled bool
-	// noRecording turns workspaces.terminal.record off, which section 18.3
+	// noRecording turns workspaces.terminal.record off, which the terminal contract
 	// defaults to on.
 	noRecording bool
 	// git turns the git surface on the same way. It is off by default so the
@@ -70,8 +70,8 @@ type relayFixture struct {
 
 // withTerminal is the fixture option that reports and binds the terminal
 // surface as well, and turns workspaces.terminal.enabled on. The terminal is
-// the only channel that opens a stream per request (one PTY per open, section
-// 18.2), so it is the only one that can reach the per-connection limit.
+// the only channel that opens a stream per request (one PTY per open,
+// the relay protocol), so it is the only one that can reach the per-connection limit.
 func withTerminal(fixture *relayFixture) { fixture.terminal = true }
 
 // withTerminalReportedButDisabled reports the terminal capability and leaves
@@ -98,7 +98,7 @@ func withReadOnlyExec(fixture *relayFixture) {
 }
 
 // withGit reports and requires the git capability, so the workspace serves the
-// header's git action group (section 18.13). It goes in `requires` as well as
+// header's git action group. It goes in `requires` as well as
 // in the report, because the claim gate matches `requires` against what the
 // runner reported and a workspace that only reported it would still be
 // dispatchable to a runner that could not serve it.
@@ -149,7 +149,7 @@ func newRelayFixture(t *testing.T, options ...func(*relayFixture)) *relayFixture
 	fixture.bind(t)
 	if fixture.readOnly {
 		// A workspace is held read-only by the attempt it was opened on still
-		// running (section 18.1). The flag is what the relay reads, and
+		// running. The flag is what the relay reads, and
 		// setting it here is the shortest honest way to reach that state
 		// without a second attempt's whole lifecycle in the fixture.
 		if _, err := service.database.db.ExecContext(t.Context(),
@@ -167,7 +167,7 @@ func (f *relayFixture) capabilities() workspacesession.Capabilities {
 	}
 }
 
-// markReadOnly puts the workspace in the state section 18.1 gives a workspace
+// markReadOnly puts the workspace in the state the workspace session contract gives a workspace
 // opened on an attempt that is still running: the person may look at the
 // worktree the model is editing and may not type into it.
 //
@@ -195,7 +195,7 @@ func (f *relayFixture) record(t *testing.T) workspaceRecord {
 }
 
 // reportCapabilities is the runner's heartbeat carrying what it can serve for a
-// workspace, beside the provider report (decisions section 18.10).
+// workspace, beside the provider report.
 func (f *relayFixture) reportCapabilities(t *testing.T, capabilities workspacesession.Capabilities) {
 	t.Helper()
 	report := providercapacity.Report{Provider: "openai", Backend: "codex", AccountAlias: "relay",
@@ -247,8 +247,8 @@ func (f *relayFixture) dispatchItem(t *testing.T) string {
 func (f *relayFixture) claim(t *testing.T) tracker.NativeLease {
 	t.Helper()
 	// Exactly what hubclient.WorkspaceClaimer sends: the workspace capability,
-	// which is what the candidate query offers workspace items against
-	// (decisions section 18.1), and no local model selection, because a
+	// which is what the candidate query offers workspace items against,
+	// and no local model selection, because a
 	// workspace session runs no model.
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.runner.redemption.Credential,
 		tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: tracker.NativeWorkItemID(f.item),
@@ -637,7 +637,7 @@ func TestWorkspaceRelayRefusesAChannelTheWorkspaceDoesNotServe(t *testing.T) {
 	}
 }
 
-// terminalOpenFrame is a person's `open` on the terminal channel. Section 18.2
+// terminalOpenFrame is a person's `open` on the terminal channel. The relay protocol
 // gives every open its own PTY, so each one is a stream of its own.
 func terminalOpenFrame() workspacesession.Frame {
 	payload, err := workspacesession.Encode(map[string]any{"cols": 80, "rows": 24})
@@ -768,7 +768,7 @@ func TestWorkspaceRelayResumesAStreamWithinTheWindow(t *testing.T) {
 	forwarded := runner.receive()
 
 	// The runner answers while the person is away, so the frame is buffered
-	// for the 60 seconds section 18.2 gives them to come back.
+	// for the 60 seconds the relay protocol gives them to come back.
 	_ = person.socket.Close(websocket.StatusNormalClosure, "tab closed")
 	waitFor(t, func() bool { return f.service.workspaces.relay.detachedCount(f.workspace) == 1 })
 	payload, err := workspacesession.Encode(workspacesession.FilesListed{Path: "internal"})
@@ -911,7 +911,7 @@ func closeRelayDial(response *http.Response) {
 	response.Body.Close()
 }
 
-// The exec channel (decisions section 18.12). The hub forwards it like any
+// The exec channel. The hub forwards it like any
 // other channel and it also records it: the run's row is what a person comes
 // back to after the tab is closed, and it is the only record a run nobody
 // watched leaves.
@@ -1317,7 +1317,7 @@ func TestWorkspaceRelayRefusesARunFrameItMayNotStart(t *testing.T) {
 		// already_running rather than forbidden: the run is being executed,
 		// by this connection's own first frame or by the hub's dispatch, and
 		// the answer is to read it back through the row rather than to ask
-		// again (section 18.12).
+		// again.
 		if payload := errorPayload(t, person.receive()); payload.Code != workspacesession.CodeAlreadyRunning {
 			t.Fatalf("a second start answered %+v, want already_running", payload)
 		}
@@ -1330,7 +1330,7 @@ func TestWorkspaceRelayRefusesARunFrameItMayNotStart(t *testing.T) {
 	})
 }
 
-// The git channel (decisions section 18.13). It is the first channel that
+// The git channel. It is the first channel that
 // writes to the repository, so it is the first one whose frames are not all
 // answered by the project read the connection proved on the upgrade.
 
@@ -1558,7 +1558,7 @@ func (f *relayFixture) seedHostedMember(t *testing.T, name, role, grant string) 
 	}
 }
 
-// The `write` half of section 18.2's authority list, which a git commit or push
+// The `write` half of the relay protocol's authority list, which a git commit or push
 // and an exec run need.
 //
 // It is driven through refuseRelayWrite against the fixture's own database rather

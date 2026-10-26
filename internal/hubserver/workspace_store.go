@@ -12,7 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Durable storage for workspace sessions (decisions section 18.1). Everything
+// Durable storage for workspace sessions. Everything
 // here takes a transaction from the caller: a transition, the event it emits
 // and the occupancy row it opens or closes are one commit, because a client
 // that saw the event and then read a different state would have no way to tell
@@ -289,7 +289,7 @@ WHERE organization_id = ? AND project_id = ? AND attempt_id = ? AND state IN `+o
 }
 
 // countOpenWorkspaces reports the organization's open workspaces and how many
-// of them one actor holds, in one read: the two limits of section 18.1 are
+// of them one actor holds, in one read: the two limits of the workspace session contract are
 // checked together so a request cannot pass one and race past the other.
 func countOpenWorkspaces(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, actor string) (total, mine int, err error) {
 	row := tx.QueryRowContext(ctx, `SELECT count(*), coalesce(sum(CASE WHEN created_by = ? THEN 1 ELSE 0 END), 0)
@@ -407,7 +407,7 @@ type workspaceIssue struct {
 // candidate. Closed items are listed too, because a closed workspace item is
 // not ordinary work waiting to be claimed: its issue is a dispatch record for
 // a workspace that has ended, and the workspace lane has nothing left to do
-// with it either (decisions section 18.1).
+// with it either.
 func workspaceIssues(ctx context.Context, tx *sql.Tx) (map[tracker.WorkItemID]workspaceIssue, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT i.id, wi.closed_at IS NULL, `+prefixedWorkspaceColumns+`
 FROM workspace_items wi

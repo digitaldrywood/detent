@@ -2,15 +2,15 @@ import { basePath } from "../runtime/basePath.ts";
 // The account, settings, usage, project-settings and wizard routes.
 //
 // `router.tsx` owns the route tree; this file owns the routes it adds for the
-// screens of decisions.md §12 and §17, so the two can be worked on
+// hosted account and settings screens, so the two can be worked on
 // independently. It exports a builder rather than a tree: TanStack routes are
 // bound to their parent at construction, and the parent is the router's own
 // root.
 //
-// Every path here is what the hub serves the application shell for (§12,
-// "Serving"): `/login`, `/settings/*`, `/usage`, `/projects/*`, and the three
+// Every path here is what the hub serves the application shell for:
+// `/login`, `/settings/*`, `/usage`, `/projects/*`, and the three
 // paths that used to be screens of their own and are now redirects into a
-// settings section (§17.3): `/organization`, `/fleet` and
+// settings section: `/organization`, `/fleet` and
 // `/projects/:project/settings`. They stay as routes rather than being dropped
 // because they are what links, bookmarks and the end-to-end specs already
 // point at.

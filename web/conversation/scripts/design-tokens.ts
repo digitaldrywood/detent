@@ -14,7 +14,7 @@
  * Outputs:
  *   src/design-system/tokens.generated.json
  *   generated tables between `<!-- tokens:NAME:start/end -->` markers in
- *   docs/design-system/foundations.md and docs/design-system/color-review.md
+ *   docs/design-system/foundations.md
  *
  * Run:   npm run design:tokens
  * Check: npm run design:tokens:check   (exit 1 when any output is stale)
@@ -886,7 +886,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const appRoot = resolve(here, "..");
 const repoRoot = resolve(appRoot, "../..");
 export const outputPath = join(appRoot, "src/design-system/tokens.generated.json");
-const docPaths = ["docs/design-system/foundations.md", "docs/design-system/color-review.md"].map((p) => join(repoRoot, p));
+const docPaths = ["docs/design-system/foundations.md"].map((p) => join(repoRoot, p));
 
 // In cascade order: index.css imports sign-in.css before its own rules.
 const OWNERS: ReadonlyArray<{ readonly label: string; readonly path: string }> = [

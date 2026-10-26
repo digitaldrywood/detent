@@ -16,8 +16,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Workspace dispatch (decisions section 18.1). A workspace is its own work item
-// kind, detent:workspace, distinct from the coordinator kind in section 9: it
+// Workspace dispatch. A workspace is its own work item
+// kind, detent:workspace, distinct from the runner-dispatched coordinator kind: it
 // may check out the repository, it does not end when a turn ends, and it stays
 // claimed until the workspace closes.
 //
@@ -140,7 +140,7 @@ func (w *workspaceService) ensureWorkspaceItem(ctx context.Context, tx *sql.Tx, 
 // the claim gate reads, and it alone already keeps the item from being claimed
 // again. Moving the issue is what a person reads: a closed workspace that left
 // its item sitting in Todo, dispatchable, is a row on the board that looks like
-// outstanding work and is not. Section 18.1 asks only that closing never delete
+// outstanding work and is not. The workspace session contract asks only that closing never delete
 // the attempt's artifacts, which this does not touch. A project with no
 // terminal state keeps the issue where it is, exactly as closeCoordinatorItem
 // does; the association closes regardless.
@@ -260,8 +260,7 @@ func gateWorkspaceClaim(ctx context.Context, tx *sql.Tx, scope *nativeScope, wor
 		gate.dispatch[id] = struct{}{}
 		if !workspaceLane {
 			// A workspace item is not project work. The issue lane never runs
-			// one, whether its workspace is still open or long closed
-			// (decisions section 18.1).
+			// one, whether its workspace is still open or long closed.
 			gate.skip[id] = struct{}{}
 		}
 	}
@@ -303,7 +302,7 @@ func gateWorkspaceClaim(ctx context.Context, tx *sql.Tx, scope *nativeScope, wor
 
 // terminalIsolationAllowed reports whether a runner reporting isolation may
 // serve a workspace with these requires under the organization's configured
-// workspaces.terminal.isolation (decisions section 18.3). Only a terminal
+// workspaces.terminal.isolation. Only a terminal
 // depends on it. container is the stricter level and is always acceptable;
 // user runs the shell as the runner's own account and is acceptable only where
 // the organization configured user explicitly. A runner that reports no level
@@ -352,7 +351,7 @@ type workspaceClaimGate struct {
 // provider reservation.
 //
 // A workspace session serves files, a diff, a terminal or a preview over the
-// relay and runs no model: section 18.1 gives its claim one slot of the
+// relay and runs no model: the workspace session contract gives its claim one slot of the
 // runner's capacity and a workspace lease with its own fencing token, and says
 // nothing about a provider reservation. Putting it through provider
 // requirement matching asked the lane for a local model selection it has no
@@ -445,8 +444,8 @@ func firstTerminalState(project tracker.NativeProject) (string, bool) {
 
 // requireUnreservedLabels refuses the workspace label on issue content that did
 // not come from the hub. The label selects the runner's hold-open mode, which
-// checks out the repository and keeps the claim until the workspace closes
-// (decisions section 18.1). A tracker writer who could set it would be able to
+// checks out the repository and keeps the claim until the workspace closes.
+// A tracker writer who could set it would be able to
 // park a runner on any issue indefinitely.
 func requireUnreservedLabels(ctx context.Context, labels []string) error {
 	if workspaceLabelAllowed(ctx) {

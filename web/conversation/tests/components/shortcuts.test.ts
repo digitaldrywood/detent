@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// The shell's keyboard shortcuts (design inventory B.13 rule 4, B.14).
+// The shell's keyboard shortcuts.
 //
 // The rule worth a test is the one that goes wrong silently: a single-key
 // shortcut that fires while the reader is typing eats the keystroke, and the

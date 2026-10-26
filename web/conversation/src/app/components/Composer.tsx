@@ -98,13 +98,12 @@ export interface ComposerProps {
    * True where there is nothing to draft: a viewer who cannot write, or a
    * settled chat. A blocked reason on its own leaves the editor usable,
    * because a lost connection is temporary and the draft is worth keeping; a
-   * reader who may never send is not offered the keystrokes at all
-   * (decisions.md §10.11, §10.12).
+   * reader who may never send is not offered the keystrokes at all.
    */
   readonly disabled?: boolean;
   readonly autoFocus?: boolean;
   readonly label?: string;
-  /** The turn preferences the three footer pickers show (§13.14, §14). */
+  /** The turn preferences the three footer pickers show. */
   readonly preferences: TurnPreferences;
   /** The options the bootstrap publishes for them. */
   readonly preferenceChoices?: PreferenceChoices | undefined;
@@ -521,7 +520,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
                   <ComposerBanner.Attachment>
                     <ComposerBanner.Root data-chat-composer-top-drawer="true" variant="info">
                       {/* Once the question has a winner the options go, because
-                          there is nothing left to choose (decisions.md §5);
+                          there is nothing left to choose;
                           the receipt below stays, because the reader is still
                           owed the answer to "did mine land?". */}
                       {pending.lockedSentence !== null ? null : (

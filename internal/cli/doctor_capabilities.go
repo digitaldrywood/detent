@@ -274,7 +274,7 @@ func findDoctorIssueEffortGuidance(sourceRoot string) (_ string, resultErr error
 		resultErr = errors.Join(resultErr, root.Close())
 	}()
 
-	for _, path := range []string{"AGENTS.md", "CLAUDE.md"} {
+	for _, path := range []string{"WORKFLOW.md"} {
 		content, err := root.ReadFile(path)
 		if errors.Is(err, os.ErrNotExist) {
 			continue

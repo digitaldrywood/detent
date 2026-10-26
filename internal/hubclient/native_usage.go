@@ -13,7 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// Per-attempt usage (decisions section 17.5). The runner reports what one
+// Per-attempt usage. The runner reports what one
 // turn spent; the execution keeps the attempt's running total on its run
 // data, so the next run.checkpointed or run.finished carries it without a
 // second request. Reporting the total rather than a delta is what makes a

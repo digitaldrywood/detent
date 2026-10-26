@@ -6,12 +6,15 @@ import (
 	"io"
 	"log/slog"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 )
@@ -35,8 +38,12 @@ func TestValidatorContextMemoReuse(t *testing.T) {
 		t.Run(verdict, func(t *testing.T) {
 			issue := connector.Issue{ID: "mobile200", Identifier: "digitaldrywood/pyroapex-mobile#200", Description: "Require reproduction", PullRequest: &connector.PullRequest{Number: 207, BaseSHA: "base", HeadSHA: "same-head"}}
 			memo := openValidatorMemoStore(t)
-			o := &Orchestrator{cfg: Config{Project: scheduler.ProjectCandidate{ID: "detent"}}, validatorMemo: memo}
-			identity := validatorStageIdentityForIssue(issue)
+			o := &Orchestrator{cfg: Config{Project: scheduler.ProjectCandidate{ID: "detent"}, AutoPromote: AutoPromoteConfig{ValidatorWorkflow: "## Review rules\n\nRules A."}}, validatorMemo: memo}
+			identity := o.validatorStageIdentity(issue)
+			prompt := runpkg.BuildValidatorPrompt(workflowconfig.Workflow{SharedPrompt: o.cfg.AutoPromote.ValidatorWorkflow}, issue, runpkg.ValidatorPromptOptions{})
+			if !strings.Contains(prompt, "Task context SHA-256: "+identity.ContextDigest+"\n") {
+				t.Fatal("validator prompt and memo identity disagree on the task context")
+			}
 			result := gate.ValidatorResult{Submitted: true, Verdict: verdict, Score: 1, DiffDigest: "diff"}
 			o.recordValidatorVerdict(t.Context(), issue, identity, result, time.Now())
 			// A new orchestrator must load the exact context after a storage reload.
@@ -46,6 +53,14 @@ func TestValidatorContextMemoReuse(t *testing.T) {
 			if _, _, ok := o.validatorStageResult(t.Context(), issue); !ok {
 				t.Fatal("same context did not reuse in memory")
 			}
+			revisedWorkflow := &Orchestrator{cfg: o.cfg, validatorMemo: memo, validatorResults: o.validatorResults}
+			revisedWorkflow.cfg.AutoPromote.ValidatorWorkflow = "## Review rules\n\nRules B."
+			if _, _, ok := revisedWorkflow.validatorStageResult(t.Context(), issue); ok {
+				t.Fatal("old verdict reused in memory after a workflow-only change")
+			}
+			if _, _, ok := (&Orchestrator{cfg: revisedWorkflow.cfg, validatorMemo: memo}).validatorStageResult(t.Context(), issue); ok {
+				t.Fatal("old verdict reused from storage after a workflow-only change")
+			}
 			issue.Description = "Unproven intermittent cause acceptable"
 			if _, _, ok := o.validatorStageResult(t.Context(), issue); ok {
 				t.Fatal("old verdict reused in memory for revised acceptance")
@@ -54,7 +69,7 @@ func TestValidatorContextMemoReuse(t *testing.T) {
 			if _, _, ok := restarted.validatorStageResult(t.Context(), issue); ok {
 				t.Fatal("old verdict reused from storage for revised acceptance")
 			}
-			b := validatorStageIdentityForIssue(issue)
+			b := o.validatorStageIdentity(issue)
 			o.recordValidatorVerdict(t.Context(), issue, b, gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictPass, Score: 1, DiffDigest: "diff"}, time.Now())
 			// Even a late write for A cannot replace a stored B or a different PR.
 			o.recordValidatorVerdict(t.Context(), issue, identity, result, time.Now())

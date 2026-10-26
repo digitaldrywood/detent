@@ -16,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Workspace session worker endpoints (decisions section 18.1). They mirror the
+// Workspace session worker endpoints. They mirror the
 // conversation worker set: bind claims the workspace and returns the tuple and
 // the checkout instructions, heartbeat renews the lease and carries the
 // runner's report, and unbind releases it.
@@ -68,7 +68,7 @@ type WorkspaceBindResponse struct {
 	Checkout WorkspaceCheckout        `json:"checkout"`
 	Session  workspacesession.Session `json:"workspace"`
 	// Actions is the project's run-on-worktree-creation set, in authoring
-	// order (decisions section 18.12). The runner starts them itself once the
+	// order. The runner starts them itself once the
 	// worktree exists, in the order they arrive.
 	Actions []workspacesession.Action `json:"actions,omitempty"`
 }
@@ -82,8 +82,8 @@ type WorkspaceHeartbeatRequest struct {
 	Capabilities workspacesession.Capabilities `json:"capabilities"`
 	Isolation    string                        `json:"isolation,omitempty"`
 	Worktree     string                        `json:"worktree,omitempty"`
-	// WorktreePath and MachineHostname are what the Open picker needs
-	// (section 18.13): the absolute path this runner prepared and the host it
+	// WorktreePath and MachineHostname are what the Open picker needs:
+	// the absolute path this runner prepared and the host it
 	// prepared it on. They are reported on every beat rather than on the bind
 	// alone, so a runner that re-prepared a fresh worktree corrects the
 	// resource instead of leaving a stale path behind.
@@ -136,8 +136,7 @@ func (c *NativeClient) HeartbeatWorkspace(ctx context.Context, workspaceID strin
 	return response.Session, workspaceError(err)
 }
 
-// WorkspaceActionRunReport records one project action run with the hub
-// (decisions section 18.12).
+// WorkspaceActionRunReport records one project action run with the hub.
 //
 // It is how a run the runner started itself becomes visible: a
 // run-on-worktree-creation action has no person watching and no exec stream to

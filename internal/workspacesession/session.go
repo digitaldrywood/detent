@@ -1,6 +1,6 @@
 // Package workspacesession owns the domain vocabulary of workspace sessions
-// and the relay that carries their surfaces (decisions sections 18.1 and
-// 18.2): identifiers, the state machine and its reasons, capabilities,
+// and the relay that carries their surfaces:
+// identifiers, the state machine and its reasons, capabilities,
 // isolation levels and the relay frame shapes. It has no database or HTTP
 // code; the hub owns storage, dispatch, authority and streaming, and the
 // runner owns the worktree and the channels it serves.
@@ -54,7 +54,7 @@ func randomHex() string {
 }
 
 // States of a workspace session. The legal moves between them are the whole
-// contract of section 18.1: every other move is a bug, and Transition is what
+// workspace session contract: every other move is a bug, and Transition is what
 // the hub asks before it writes one.
 const (
 	// StateRequested is a workspace waiting for an eligible runner to claim
@@ -140,7 +140,7 @@ func Bound(state string) bool {
 	return state == StateStarting || state == StateReady || state == StateIdle
 }
 
-// transitions is the whole legal move set of section 18.1, written out rather
+// transitions is the whole legal move set of the workspace session contract, written out rather
 // than derived, so that reading this map is reading the contract.
 var transitions = map[string][]string{
 	StateRequested: {
@@ -192,19 +192,19 @@ func Transition(from, to string) bool {
 }
 
 // Capability names. requires on a request is a subset of these, and the runner
-// reports the same keys in its heartbeat (section 18.10).
+// reports the same keys in its heartbeat.
 const (
 	CapabilityTerminal = "terminal"
 	CapabilityFiles    = "files"
 	CapabilityDiff     = "diff"
 	CapabilityPreview  = "preview"
 	// CapabilityExec is running one project action non-interactively on the
-	// worktree (section 18.12). It is separate from terminal because the two
+	// worktree. It is separate from terminal because the two
 	// are gated differently: a terminal hands a person the runner account's
 	// interactive shell, and an action runs a command the project wrote down
 	// in advance. A runner that offers one need not offer the other.
 	CapabilityExec = "exec"
-	// CapabilityGit is the git channel of section 18.13: status, commit and
+	// CapabilityGit is the git channel: status, commit and
 	// push on the workspace's own worktree. A runner reports it only when it
 	// has a git binary and the worktree is a repository, so the header's git
 	// action group disables from the workspace's capabilities rather than
@@ -288,7 +288,7 @@ func CapabilityNames() []string {
 func ValidCapability(value string) bool { return slices.Contains(CapabilityNames(), value) }
 
 // DefaultRequires is what a request without requires asks for: the two
-// read-only surfaces (section 18.1).
+// read-only surfaces.
 func DefaultRequires() []string { return []string{CapabilityFiles, CapabilityDiff} }
 
 // NormalizeRequires lowercases, trims, de-duplicates and orders a requires
@@ -329,7 +329,7 @@ func (c Capabilities) Satisfies(requires []string) bool {
 	return true
 }
 
-// Isolation levels a runner may offer a terminal (section 18.3). They are
+// Isolation levels a runner may offer a terminal. They are
 // carried on the workspace because only the bound runner's answer matters.
 const (
 	// IsolationUser is a PTY as the runner's own user. It is the runner's
@@ -349,7 +349,7 @@ func ValidIsolation(value string) bool {
 
 // Worktree origins a workspace reports. A workspace on an attempt whose
 // worktree is still retained keeps it; after the retention window the runner
-// checks out head_sha into a fresh worktree instead (section 18.1).
+// checks out head_sha into a fresh worktree instead.
 const (
 	WorktreeRetained = "retained"
 	WorktreeFresh    = "fresh"
@@ -376,7 +376,7 @@ func (o Owner) Zero() bool {
 	return o.WorkspaceID == "" && o.RunnerID == "" && o.MachineID == "" && o.LeaseID == "" && o.FencingToken == 0
 }
 
-// Session is the workspace resource (section 18.1). RelaySessions is served to
+// Session is the workspace resource. RelaySessions is served to
 // owners and admins only; every other reader sees it absent.
 type Session struct {
 	ID             string `json:"id"`
@@ -389,7 +389,7 @@ type Session struct {
 	RunnerID       string `json:"runner_id,omitempty"`
 	MachineID      string `json:"machine_id,omitempty"`
 	// MachineHostname is the host the bound runner reported, and WorktreePath
-	// is the absolute path it prepared (section 18.13). The header's Open
+	// is the absolute path it prepared. The header's Open
 	// picker needs both: a `cursor://file/…` link only reaches a worktree on
 	// the reader's own machine, so the client compares the hostname and
 	// disables every item naming the machine the worktree is actually on.
@@ -415,7 +415,7 @@ type Session struct {
 	UpdatedAt          time.Time      `json:"updated_at"`
 }
 
-// RelaySession is one person connection's audit row (section 18.2).
+// RelaySession is one person connection's audit row.
 type RelaySession struct {
 	ID            string     `json:"id"`
 	WorkspaceID   string     `json:"workspace_id"`
@@ -432,5 +432,5 @@ type RelaySession struct {
 }
 
 // EventType is the project stream event one transition emits: workspace.ready,
-// workspace.failed and so on (section 18.1).
+// workspace.failed and so on.
 func EventType(state string) string { return "workspace." + state }

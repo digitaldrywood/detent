@@ -473,7 +473,7 @@ func NewContext(ctx context.Context, cfg Config, deps Dependencies) (*Project, e
 		}
 	}
 
-	orchConfig := projectOrchestratorConfig(cfg.Project, workflow.Config)
+	orchConfig := projectOrchestratorConfig(cfg.Project, workflow)
 	orchDeps := orchestrator.Dependencies{
 		TrimHostCache:      deps.TrimHostCache,
 		LaneCoordination:   projectScheduleOwner.CoordinationStore(),
@@ -636,7 +636,7 @@ func (p *Project) updateLiveConfig(ctx context.Context, cfg globalconfig.Project
 		p.mu.Unlock()
 		return errors.New("policy_mismatch: host execution overrides changed; approve the effective descriptor and restart Detent before applying them")
 	}
-	runtimeConfig := projectOrchestratorConfig(cfg, workflow.Config)
+	runtimeConfig := projectOrchestratorConfig(cfg, workflow)
 	projectOrchestrator := p.orchestrator
 	running := p.done != nil
 	projectAdmission := p.admission
@@ -917,7 +917,7 @@ func (p *Project) unpause(ctx context.Context, draining bool) error {
 	p.cfg.Paused = false
 	running := p.done != nil
 	if !running {
-		p.orchConfig = projectOrchestratorConfig(p.cfg, p.workflow.Config)
+		p.orchConfig = projectOrchestratorConfig(p.cfg, p.workflow)
 		p.orchestrator = nil
 	}
 	p.mu.Unlock()
@@ -1648,7 +1648,7 @@ func (p *Project) applyWorkflowUpdate(ctx context.Context, update configwatcher.
 	if err != nil {
 		return p.workflowReloadError("prepare agent configuration rejected", update.Path, err)
 	}
-	runtimeConfig := projectOrchestratorConfig(projectConfig, workflow.Config)
+	runtimeConfig := projectOrchestratorConfig(projectConfig, workflow)
 	if projectOrchestrator != nil && projectRunning {
 		if err := projectOrchestrator.UpdateRuntime(ctx, orchestrator.RuntimeUpdate{
 			Config:         runtimeConfig,
@@ -1859,9 +1859,10 @@ func projectSchedulingSource(source orchestrator.SchedulingSource, workflow work
 	return source
 }
 
-func projectOrchestratorConfig(project globalconfig.Project, workflow workflowconfig.Config) orchestrator.Config {
-	workflow = workflowConfigWithProjectIdentity(project, workflow)
+func projectOrchestratorConfig(project globalconfig.Project, definition workflowconfig.Workflow) orchestrator.Config {
+	workflow := workflowConfigWithProjectIdentity(project, definition.Config)
 	cfg := orchestrator.ConfigFromWorkflow(workflow)
+	cfg.AutoPromote.ValidatorWorkflow = definition.SharedPrompt
 	cfg.LocalIntakeDisabled = !project.LocalIntakeOn()
 	cfg.HostCache = project.GlobalCache.Normalized()
 	memory := project.EffectiveMemory()

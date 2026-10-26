@@ -48,3 +48,34 @@ reservations remain occupied and retain their original snapshots. An unmatched
 or unreported account keeps the existing conservative reservation ceiling.
 No request cancels leases, rewrites reviewed heads, changes model selection,
 expands project access, consumes coding allowance, or pauses the instance.
+
+## Workspace retention
+
+The runner's periodic workspace reaper applies fixed limits; there is no
+configuration setting for them.
+
+| Artifact | Retention |
+| --- | --- |
+| Completed worktree | One hour after entering a configured terminal lane or issue closure |
+| Quarantine | Three days; at most the five newest entries per workdir |
+| Hook log file | Fourteen days since its last modification |
+| Attempt scratch directory | A terminal work attempt, or no session registry row and at least one hour old |
+| Cleanup ownership record | Removed when its workspace path is absent |
+
+Active issue ownership and live processes protect workspaces; live processes also
+protect quarantine and scratch directories. Failed tracker or registry reads do
+not authorize removal, and artifact directories cannot redirect cleanup through
+symlinks. Before deleting an expired quarantine tree, retention makes its
+directories writable so read-only module caches can be removed; a tree that still
+cannot be removed is logged once per running process and retried on later sweeps.
+If a worktree's terminal-lane entry time cannot be verified, the sweep leaves it
+for ordinary cleanup or a later sweep.
+
+Work that must survive is published to the Hub before its item reaches a terminal
+state, so an expired completed worktree is deleted without a local copy; completed
+work is recovered from its merged commits or Hub checkpoint, not from the runner.
+
+Each sweep logs removal counts and file bytes per class. The runner's service
+status and telemetry snapshot report the most recent in-memory totals for each
+workdir as `workspace_retention` until restart. These are logical
+file sizes, not filesystem block or APFS clone accounting.

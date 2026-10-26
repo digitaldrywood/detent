@@ -1,5 +1,5 @@
 // Draft and outbox storage: scoping, bounds, and the clear-on-account-change
-// rule from decisions.md §3 rule 8.
+// rule: cached client state is cleared on logout or account change.
 import { describe, expect, it } from "vitest";
 
 import {

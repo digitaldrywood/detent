@@ -13,7 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
-// Attachment input for the app-server protocol (decisions section 17.1). A
+// Attachment input for the app-server protocol. A
 // turn's input is a list of items; the prompt is the text item and each image
 // the user attached is an image item after it. Text attachments are not here:
 // the runner has already folded them into the prompt as a delimited data

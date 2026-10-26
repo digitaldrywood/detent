@@ -8,8 +8,8 @@
 // reach fails the test rather than passing on a class name.
 //
 // The React routes these tests exercise are served by the hub for every
-// non-API path (decisions.md §12, "Serving"), and they read the JSON endpoints
-// of §12. The public login uses the client shell; `/organization` remains
+// non-API path, and they read the JSON endpoints
+// of the hosted JSON API. The public login uses the client shell; `/organization` remains
 // a server-rendered page.
 const { test, expect } = require("@playwright/test");
 const AxeBuilder = require("@axe-core/playwright").default;
@@ -197,7 +197,7 @@ test("the organization page lists the members and gates the controls by role", a
   await page.getByRole("button", { name: "Remove", exact: true }).last().click();
   await expect(unsigned).toHaveCount(0);
 
-  // A viewer sees the same data and none of the controls (decisions.md §10.11).
+  // A viewer sees the same data and none of the controls.
   await openAs(page, "viewer", "/settings/organization/members");
   await expect(page.getByRole("table")).toBeVisible();
   await expect(page.getByRole("button", { name: "Remove" })).toHaveCount(0);
@@ -261,7 +261,7 @@ test("the settings navigation is the sidebar, not a second column", async ({ pag
   // account widgets on General get `503` from `widget-token` and render their
   // unavailable state. That refusal is expected here and nothing else is.
   const errors = watchConsole(page, (message) => /503 \(Service Unavailable\)/.test(message.text()) && /\/widget-token$/.test(message.location().url ?? ""));
-  // `/settings` redirects to the default section (§17.3).
+  // `/settings` redirects to the default section.
   await openAs(page, "owner", "/settings");
 
   await expectOneHeadingOne(page, "Settings");
@@ -273,7 +273,7 @@ test("the settings navigation is the sidebar, not a second column", async ({ pag
   await expect(sidebar.getByRole("button", { name: "Organization", exact: true })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Settings", exact: true })).toHaveCount(0);
 
-  // §17.2: one brand row. It used to be drawn twice on a settings route — once
+  // One brand row. It used to be drawn twice on a settings route — once
   // by the layout's titlebar band and once by the sidebar the stub re-rendered.
   await expect(page.getByLabel("Go to Detent Cloud")).toHaveCount(1);
 
@@ -299,7 +299,7 @@ test("the settings navigation is the sidebar, not a second column", async ({ pag
   expect(errors, "console errors on /settings").toEqual([]);
 
   await openAs(page, "viewer", "/settings");
-  // Plan and billing are owner or admin only (§12, "Plan, billing, support").
+  // Plan and billing are owner or admin only.
   await expect(page.getByRole("button", { name: "Billing" })).toHaveCount(0);
   await expect(page.getByLabel("Go to Detent Cloud")).toHaveCount(1);
   await expectNoSeriousAxeViolations(page, "/settings as viewer");
@@ -603,9 +603,9 @@ test("the fleet page redirects into settings and renders the hosts and providers
   page,
 }) => {
   const errors = watchConsole(page);
-  // §17.3: `/fleet` is the Runners section of settings now. The
+  // `/fleet` is the Runners section of settings now. The
   // spend hero, the chart, the range control and the allowance totals moved to
-  // `/usage` with the numbers they measure (§17.5).
+  // `/usage` with the numbers they measure.
   await openAs(page, "owner", "/fleet");
 
   await expect(page).toHaveURL(/\/settings\/runners$/);
@@ -630,7 +630,7 @@ test("the fleet page redirects into settings and renders the hosts and providers
   await expectNoSeriousAxeViolations(page, "/settings/runners");
   expect(errors, "console errors on /settings/runners").toEqual([]);
 
-  // A viewer reads the fleet: it has no mutations to gate (§12, "Fleet").
+  // A viewer reads the fleet: it has no mutations to gate.
   await openAs(page, "viewer", "/fleet");
   await expectOneHeadingOne(page, "Settings");
   await expectNoSeriousAxeViolations(page, "/settings/runners as viewer");
@@ -818,7 +818,7 @@ test("the usage page draws the window, the tabs and the breakdown", async ({ pag
   await openAs(page, "owner", "/usage");
 
   await expectOneHeadingOne(page, "Usage");
-  // §17.2: the brand row is drawn once here too. `/usage` is not a settings
+  // The brand row is drawn once here too. `/usage` is not a settings
   // route, so it keeps the conversation sidebar — and that sidebar draws the
   // band itself.
   await expect(page.getByLabel("Go to Detent Cloud")).toHaveCount(1);
@@ -857,7 +857,7 @@ test("the usage page draws the window, the tabs and the breakdown", async ({ pag
   expect(errors, "console errors on /usage").toEqual([]);
 
   // Usage is a report: a viewer reads it, because there is nothing on it to
-  // gate (§17.5).
+  // gate.
   await openAs(page, "viewer", "/usage");
   await expectOneHeadingOne(page, "Usage");
   await expectNoSeriousAxeViolations(page, "/usage as viewer");

@@ -389,7 +389,7 @@ type AgentTurnRequest struct {
 	TempDir             string
 	Prompt              string
 	// Attachments are the files the user attached to the message that starts
-	// this turn (decisions section 17.1). Images become provider image input;
+	// this turn. Images become provider image input;
 	// text files are appended to Prompt as a delimited data block.
 	Attachments             []AgentAttachment
 	ToolInstructions        string
@@ -838,7 +838,6 @@ type RunResult struct {
 	ArtifactEvidence           ArtifactProgressEvidence
 	RateLimits                 *telemetry.RateLimits
 	BudgetRefusal              *BudgetRefusal
-	SkillDraftProposed         bool
 	PullRequestUpdated         bool
 	PullRequestHeadPushed      bool
 	CITriggerLabelReapplied    bool

@@ -32,7 +32,7 @@ export interface PullRequestSurfaceData {
 }
 
 /**
- * Where the Diff surface's body comes from (decisions.md §18.5, §19).
+ * Where the Diff surface's body comes from.
  *
  * Two sources, in this order, because only one of them has files in it:
  *
@@ -86,7 +86,7 @@ export interface IssueSurfaces {
   readonly changedFiles: readonly ChangedFile[];
   /**
    * The latest stored attempt diff on this issue, or null when no attempt has
-   * posted one (decisions.md §18.5).
+   * posted one.
    */
   readonly attemptDiff: AttemptDiff | null;
   /** Which of the two sources the surface draws, decided by `diffSource`. */
@@ -129,10 +129,10 @@ function pullRequestState(summary: string | undefined): PullRequestState {
 }
 
 /**
- * The latest stored diff on this issue (decisions.md §18.5), or null when no
+ * The latest stored diff on this issue, or null when no
  * attempt has posted one.
  *
- * One request, issue-addressed. The attempt-addressed read of §18.5 answers a
+ * One request, issue-addressed. The attempt-addressed read of the Diff contract answers a
  * 404 for an attempt that never checkpointed, so asking it per attempt would
  * mean a walk down the attempt list and a browser console error for each miss
  * — on every issue open, not only when the Diff surface is on screen. The hub
@@ -183,7 +183,7 @@ async function read(
     // The hub serves no file list, hunk or patch for a change version, so this
     // is always empty today. The shape is the one a future
     // `GET …/changes/:change/files` would fill; the files a reader actually
-    // sees come from `attemptDiff` instead (§18.5).
+    // sees come from `attemptDiff` instead.
     changedFiles: [],
     attemptDiff,
     source: diffSource({
@@ -233,7 +233,7 @@ const REFRESH_COALESCE_MS = 400;
  * issue, re-read on demand, and re-read again when the project's event stream
  * says something happened.
  *
- * The diff has to follow the run (§18.5): the runner posts its worktree diff
+ * The diff has to follow the run: the runner posts its worktree diff
  * before every `run.checkpointed` and before `run.finished`, and a reader
  * watching a running attempt should see each one land rather than having to
  * press Reload. The hub emits no typed project event for a run event, so the

@@ -112,7 +112,7 @@ describe("the Enroll dialog", () => {
     expect(screen.getByRole("radio", { name: "Full access" }).getAttribute("aria-checked")).toBe("true");
     expect(screen.queryByText(/Homebrew|brew upgrade/)).toBeNull();
     expect(await screen.findByText("detent update --yes --from-release")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Windows runner guide" }).getAttribute("href")).toContain("docs/windows-runners.md");
+    expect(screen.getByRole("link", { name: "Windows runner guide" }).getAttribute("href")).toContain("docs/cli.md#windows-runners");
     expect(screen.getByText(/Uses a logon Scheduled Task/)).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Owner's $host" } });
     await waitFor(() => expect((screen.getByRole("button", { name: "Create command" }) as HTMLButtonElement).disabled).toBe(false));

@@ -17,7 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// Pull requests (decisions section 18.6). The panel joins two halves the hub
+// Pull requests. The panel joins two halves the hub
 // already owns: its own change requests, which carry the native reviews and
 // checks, and the GitHub connector's projection of the pull request, which
 // carries state, draft, head, base and mergeability.
@@ -31,7 +31,7 @@ import (
 
 const (
 	// pullRequestViewTTL is how long an assembled view is served from memory
-	// before the join is run again (section 18.6, "caches the connector view
+	// before the join is run again (the pull request contract, "caches the connector view
 	// for 60 seconds").
 	pullRequestViewTTL = 60 * time.Second
 	// pullRequestRefreshInterval is the minimum spacing between forced
@@ -39,11 +39,11 @@ const (
 	pullRequestRefreshInterval = 10 * time.Second
 )
 
-// pullRequestMergeable is 18.6's three-valued mergeability: true, false, or
+// pullRequestMergeable is the pull request contract's three-valued mergeability: true, false, or
 // the string "unknown" when the connector has not said.
 type pullRequestMergeable = tracker.PullRequestMergeable
 
-// mergeableFromState maps GitHub's mergeable_state onto 18.6's three values.
+// mergeableFromState maps GitHub's mergeable_state onto the pull request contract's three values.
 // An empty or "unknown" state is unknown; "dirty" is the only state that means
 // the branch cannot merge; everything else is mergeable as far as the
 // projection can tell.
@@ -154,7 +154,7 @@ func pullRequestRefreshLimited() error {
 
 // projectConnector reads the project's GitHub connector binding. It answers a
 // nil connector for a project that has no repository bound or has the
-// repository disabled, which is 18.6's "projects without a GitHub connector".
+// repository disabled, which is the pull request contract's "projects without a GitHub connector".
 func projectConnector(ctx context.Context, query nativeQueryer, scope nativeScope) (*pullRequestConnector, int64, error) {
 	connector, repositoryID, enabled, err := projectRepositoryBinding(ctx, query, scope)
 	if err != nil || !enabled || repositoryID == 0 {
@@ -338,7 +338,7 @@ func externalPullRequestNumber(reference tracker.ChangeExternalReference) int {
 	return number
 }
 
-// connectorPullRequestState normalizes GitHub's state onto 18.6's vocabulary.
+// connectorPullRequestState normalizes GitHub's state onto the pull request contract's vocabulary.
 func connectorPullRequestState(state string) string {
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "merged":

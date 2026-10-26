@@ -45,7 +45,7 @@ func TestPrepareTurnPromptScratchFailure(t *testing.T) {
 	}
 }
 
-// Attachment input items (decisions section 17.1). Text attachments already
+// Attachment input items. Text attachments already
 // reached the prompt as a data block before the backend is called; what the
 // app-server protocol needs here is the image input.
 

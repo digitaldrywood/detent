@@ -737,7 +737,7 @@ func TestConversationCoordinatorStop(t *testing.T) {
 // TestConversationCoordinatorIgnoresLinked proves the hub-side coordinator
 // leaves a linked conversation to its runner. Settled is deliberately not a
 // second case: a settled conversation with a pending message is woken by the
-// message itself, so the coordinator still owes it a turn (section 14).
+// message itself, so the coordinator still owes it a turn.
 func TestConversationCoordinatorIgnoresLinked(t *testing.T) {
 	t.Parallel()
 	f := newCoordinatorFixture(t, "ignored")
@@ -1222,7 +1222,7 @@ func TestConversationReconcileLeavesHubCoordinatorTurns(t *testing.T) {
 // TestConversationRetryOnTheHubCoordinatorPath covers the other half of the
 // retry command: with a hub-side coordinator and no linked issue the message
 // goes back to `saved`, which is the delivery that coordinator reads, and the
-// receipt for the retry key says so (decisions section 10.3).
+// receipt for the retry key says so.
 func TestConversationRetryOnTheHubCoordinatorPath(t *testing.T) {
 	t.Parallel()
 	f := newCoordinatorFixture(t, "retry")
@@ -1249,7 +1249,7 @@ func TestConversationRetryOnTheHubCoordinatorPath(t *testing.T) {
 // TestConversationCoordinatorHonoursPreferences proves the transitional
 // hub-side coordinator applies the conversation's explicit turn preferences
 // to its own turn, and that read-only stays true whatever access says: a
-// coordinator turn never changes anything (decisions section 14).
+// coordinator turn never changes anything.
 func TestConversationCoordinatorHonoursPreferences(t *testing.T) {
 	t.Parallel()
 	f := newCoordinatorFixture(t, "preferences")

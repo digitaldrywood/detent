@@ -135,9 +135,6 @@ agent:
   skills:
     enabled: true
     max_skills_in_prompt: 100
-    creation:
-      enabled: true
-      max_drafts_per_run: 1
   followups:
     enabled: true
 gate:

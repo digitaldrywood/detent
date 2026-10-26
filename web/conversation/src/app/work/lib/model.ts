@@ -35,7 +35,7 @@ export interface AttemptView {
   readonly tokens: number | null;
   /**
    * `0`–`1`, or `null` where the attempt reports no progress at all. The bar
-   * is not drawn on a guess: A.1 records that the artifact's own progress rule
+   * is not drawn on a guess: the artifact's own progress rule
    * is dead CSS, so a bar here means the hub actually said something.
    */
   readonly progress: number | null;
@@ -111,7 +111,7 @@ export interface ProjectView {
   readonly assignees: readonly string[];
 }
 
-/** True when the card should wear the live treatment (A.11: never a queue). */
+/** True when the card should wear the live treatment (never a queue). */
 export function isLive(item: WorkItemView, terminal = item.terminal): boolean {
   return !terminal && item.attempt !== null && item.attempt.running;
 }

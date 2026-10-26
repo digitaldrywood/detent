@@ -50,7 +50,7 @@ function watchConsole(page) {
 async function openWork(page, route = "/work") {
   await page.goto(hub.fixture.accounts.owner, { waitUntil: "domcontentloaded" });
   await resetSavedWorkViews(page);
-  // The router's basepath is `/` now (decisions.md §11, §12): Work is served
+  // The router's basepath is `/` now: Work is served
   // at the hub's root, not under the chat prefix.
   await page.goto(new URL(route, hub.fixture.url).toString(), {
     waitUntil: "domcontentloaded",
@@ -429,7 +429,7 @@ test.describe("the work board", () => {
 });
 
 /**
- * The issue page (decisions.md §19): the issue *is* the page and the
+ * The issue page: the issue *is* the page and the
  * conversation is a surface in the right panel, so what used to be a chat
  * under an issue card is now a Linear-shaped page with a properties sidebar,
  * an activity feed and a two-mode composer.
@@ -500,8 +500,7 @@ test.describe("the issue page", () => {
     await expect(properties.getByTestId("issue-attempts")).toBeVisible();
     await expect(properties.getByTestId("issue-pull-request")).toBeVisible();
 
-    // Sub-issues are named and disabled with the reason, rather than missing
-    // (decisions.md §16, §19.6).
+    // Sub-issues are named and disabled with the reason, rather than missing.
     await expect(page.getByTestId("add-sub-issues")).toBeDisabled();
 
     expect(errors).toEqual([]);
@@ -576,7 +575,7 @@ test.describe("the issue page", () => {
     await expect(composer).toHaveCount(1);
 
     // With the panel open the properties sidebar yields its width and its
-    // facts move to the disclosure at the top of the column (§19.3).
+    // facts move to the disclosure at the top of the column.
     await expect(page.getByRole("complementary", { name: "Properties" })).toHaveCount(0);
 
     // The panel's composer is the conversation's own, and it sends.
@@ -616,7 +615,7 @@ test.describe("the issue page", () => {
     expect(errors).toEqual([]);
   });
 
-  // Linear's property pickers (decisions.md §19.1). Everything below is
+  // Linear's property pickers. Everything below is
   // driven the way a reader drives it: the letter that opens the picker, the
   // header that says what it changes, a row, and the fact on the column
   // afterwards. The fixture seeds the issue with no labels, no assignee and

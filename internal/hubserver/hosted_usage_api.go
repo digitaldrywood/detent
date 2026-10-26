@@ -18,7 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// The usage report (decisions section 17.5). Every member of the
+// The usage report. Every member of the
 // organization reads it; the rows are filtered to the projects the member
 // can read, so a member without a grant sees their own organization's shape
 // without another team's spend. Cost is an estimate the client labels "API
@@ -439,7 +439,7 @@ type runnerCapacity struct {
 	Limit       int
 }
 
-// buildUsageReport folds the stored rows into the section 17.5 shape. It is a
+// buildUsageReport folds the stored rows into the usage report shape. It is a
 // pure function of what it is given so the aggregation is testable without a
 // database.
 func buildUsageReport(window usageWindow, rows []usageRow, limits map[string]usageLimit, capacity map[string]runnerCapacity, prices UsageConfig) usageReport {

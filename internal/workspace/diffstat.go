@@ -659,7 +659,7 @@ func gitDiffOutputWithinLimit(ctx context.Context, workspacePath string, env []s
 
 // gitDiffArgsWithinLimit streams one git diff invocation through a byte cap.
 // The arguments are explicit so a caller that needs different diff options --
-// the per-file diff of decisions section 18.5 pins --find-renames -- gets the
+// the per-file attempt diff pins --find-renames -- gets the
 // same bounded read instead of a second copy of it.
 func gitDiffArgsWithinLimit(ctx context.Context, workspacePath string, env []string, maxBytes int, args ...string) (string, bool, error) {
 	gitArgs := append([]string{"git", "-C", workspacePath}, args...)

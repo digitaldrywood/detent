@@ -1,8 +1,8 @@
 # Self-hosted Hub operations
 
-Moving an existing standalone board? Start with the
-[local board to local Hub migration runbook](hub-local-migration.md) for backups,
-pilot cutover, import prerequisites and rollback before replacing its service.
+The standalone local board is retired. To move an existing board's data to a
+Hub, see the [local board to local Hub migration runbook](hub-local-migration.md)
+for backups, cutover, import prerequisites and rollback.
 
 One customer-controlled macOS or Linux host, one Hub process, and local
 durable storage are the supported deployment described here. Use the released
@@ -16,20 +16,19 @@ Self-hosted Detent is free. No WorkOS, Stripe, Detent Cloud account,
 `cloud.detent.build` callback, Detent subscription or purchased infrastructure is
 required. Operators choose authentication, including WorkOS/custom/generic/local
 options; selecting WorkOS must never enable Detent billing. An external auth
-provider may have its own connectivity/account requirements. The currently
-supported Hub bearer deployment below has no such dependency. Shared-site mode
-and self-hosted WorkOS configuration separation are design targets documented in
-[the deployment examples](examples/hub/README.md), not new flags in this runbook.
-The native-only example disables GitHub transport.
+provider may have its own connectivity/account requirements. The Hub bearer
+deployment below has no such dependency. The native-only example disables GitHub
+transport.
 Durable artifacts are optional; local-only artifact availability depends on
 retaining the runner and its workspace.
 
 ## Install one host
 
-Select a reviewed release version and architecture from the existing
-[release distribution](release.md). Verify the archive/package checksum before
-installation and keep that version's binary, checksum and deployment files for
-recovery. Linux packages install `/usr/bin/detent`; archive installations must
+Select a release version and architecture from the
+[GitHub releases](https://github.com/digitaldrywood/detent/releases). Verify the
+archive/package against the signed checksums as described in
+[Verify release binaries](#verify-release-binaries) before installation, and keep
+that version's binary, checksum and deployment files for recovery. Linux packages install `/usr/bin/detent`; archive installations must
 install the executable at that path or adjust the example unit. Do not use an
 unversioned download URL for an upgrade. The release includes this runbook and
 the [Hub unit](examples/hub/detent-hub.service) and
@@ -77,6 +76,47 @@ headers or request/response bodies at the proxy. Keep private keys readable
 only by the TLS owner. The API continues to enforce scoped bearer auth behind
 the proxy; arbitrary identity headers are not an authentication integration.
 
+### Verify release binaries
+
+Each release publishes `detent_<version>_checksums.txt`, its minisign signature
+`detent_<version>_checksums.txt.minisig` and a keyless cosign bundle
+`detent_<version>_checksums.txt.sigstore.json`. The checksums cover the platform
+archives, Linux packages and the prepared source archive
+`detent_<version>_source.tar.gz`. The self-updater verifies the minisign
+signature with its pinned key. To verify a manual download, fetch the checksums,
+bundle and archives from the same release and use cosign v3 with the exact tag
+you intend to trust:
+
+```sh
+tag=v1.2.3
+checksums="detent_${tag#v}_checksums.txt"
+cosign verify-blob \
+  --bundle "$checksums.sigstore.json" \
+  --certificate-identity "https://github.com/digitaldrywood/detent/.github/workflows/release.yml@refs/tags/$tag" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  "$checksums"
+sha256sum --check --ignore-missing "$checksums"
+```
+
+On macOS, compare `shasum -a 256 <archive>` with that archive's entry instead of
+`sha256sum`. Trust the workflow and tag identity above, not an identity copied
+from an unverified certificate.
+
+macOS binaries are signed with a Developer ID Application certificate and
+notarized. Inspect an extracted binary with:
+
+```sh
+codesign -dv --verbose=4 ./detent
+codesign --verify --strict ./detent
+```
+
+Expect `Identifier=build.detent.detent`, a Developer ID Application authority
+for Drywood Creek Consulting, Inc., a secure timestamp and the `runtime` flag.
+Successive signed releases keep that identity, so macOS permission grants
+survive an in-place upgrade; replacing an older ad-hoc signed binary may require
+one new grant. Windows executables are not code-signed and may trigger
+SmartScreen.
+
 ## Single-machine Hub and runner
 
 The Hub and runner can share one macOS or Linux machine. The Hub owns its
@@ -95,7 +135,8 @@ clients. This bearer-authenticated setup does not require a hosted login provide
 
 ### macOS with launchd
 
-Install and verify the selected release as described in [release distribution](release.md).
+Install and verify the selected release as described in
+[Verify release binaries](#verify-release-binaries).
 The [Hub LaunchAgent example](examples/hub/com.digitaldrywood.detent.hub.plist)
 uses `/usr/local/bin/detent`; replace that absolute executable path if your
 installation uses another location, such as `/opt/homebrew/bin/detent`.
@@ -150,9 +191,9 @@ Registration installs the existing `com.digitaldrywood.detent.runner`
 LaunchAgent in the runner account, with its own config, identity, workspace root
 and logs. Keep those paths in the runner account's home; do not copy Hub files
 there or grant that account access to the Hub's private directories. The Hub
-label is `com.digitaldrywood.detent.hub`; the board label remains
-`com.digitaldrywood.detent`. Do not overwrite either existing runner or board
-plist. Start the Hub before enrolling or starting the runner; there is no
+label is `com.digitaldrywood.detent.hub`, separate from the runner's
+`com.digitaldrywood.detent.runner`. Start the Hub before enrolling or starting
+the runner; there is no
 launchd dependency ordering between these jobs. Approve the project's trusted
 repository/workflow policy before dispatching work.
 
@@ -198,8 +239,9 @@ writes only its own `/var/lib/detent-hub/` state. Logs are in
 
 As the regular runner user, use the same onboarding and local organization URL
 as on macOS and register with `--service`. This installs the separate user unit
-`detent.runner.service`; it does not replace `detent-hub.service` or the board's
-`detent.service`. Runner credentials and checkouts stay under that user's
+`detent.runner.service`; it does not replace `detent-hub.service`. A runner
+registered with a non-default `--config` path gets a unit name with a
+path-derived suffix. Runner credentials and checkouts stay under that user's
 runner configuration and workspace root. If the runner must survive logout,
 have an OS administrator enable lingering with
 `sudo loginctl enable-linger USERNAME`.
@@ -269,8 +311,8 @@ Hub and object store (plus any explicitly selected credential provider).
 
 For GitHub integration, choose one of the modes below. Allow GitHub API traffic
 from whichever process owns intake and the separately selected Git transport
-from runners. Follow [GitHub profiles](github-profiles.md) for import, cutover
-and field ownership; Cloud comments remain private.
+from runners. Cloud discussion comments remain private; they are never mirrored
+to GitHub.
 
 ## GitHub modes
 
@@ -292,7 +334,6 @@ import on the project. Read
 `PUT` to the same URL with a fresh `idempotency_key`, `expected_revision` set to
 the returned decimal-string `revision`, and `intake: "manual"`. Include the
 current `projection` and `repository_enabled` values to preserve those settings.
-See [GitHub integration settings](github-profiles.md) for the request contract.
 
 Confirm `manual_import_enabled: true` in the response. A bound native project
 still reports `intake: "automatic"` for webhook intake; that value alone does
@@ -405,10 +446,27 @@ These existing outbound reads need no inbound endpoint. Native projects skip
 issue reconciliation: it does **not** discover new native GitHub issues.
 Without reachable webhooks, [enable manual intake](#enable-manual-intake) before
 periodically requesting the existing selective intake operation linked above
-(using the Hub transport or runner fallback), or use
-explicit [historical import](github-profiles.md#import-and-inspect) with Hub
-credentials. There is no built-in periodic native issue-intake poll; automatic
-new-issue intake requires reachable webhooks.
+(using the Hub transport or runner fallback), or use explicit historical import
+with Hub credentials. There is no built-in periodic native issue-intake poll;
+automatic new-issue intake requires reachable webhooks.
+
+### Historical import
+
+Historical import uses Hub GitHub credentials and the project's scoped v2 URL.
+`POST .../projects/{project}/imports` with an `idempotency_key` and
+`issue_number` returns a durable `import_id`; starting the same source issue
+again returns the existing job. Each
+`POST .../imports/{import_id}/advance` with the returned `expected_revision`
+retrieves one page and persists its records and cursor in one transaction.
+`GET .../imports/{import_id}` recovers state after a lost reply, and
+`GET .../imports/{import_id}/records?limit=100` pages the retained source records.
+Network failures keep the cursor and return `status: partial` with a retry time.
+`stage: finished` describes traversal of the GitHub API surfaces, not complete
+history: inspect `gaps`, because GitHub does not return deleted comments or
+inaccessible activity to every credential. Missing authors and dates stay
+unavailable rather than being attributed to the importing actor. Imported
+issues are not claimable until traversal finishes and imported dependencies
+resolve.
 
 ## Authentication, projects and runners
 
@@ -577,8 +635,9 @@ ignored, and model selection does not belong in repository `detent.yaml`.
 
 ## Optional durable artifacts
 
-Use the existing [artifact deployment](artifacts-deployment.md) and its systemd,
-Caddy and S3-compatible configuration examples. It is an independently available
+The [artifact examples](examples/artifacts/) contain a systemd unit, Caddy
+configuration and S3-compatible `service.json`. The artifact service
+(`detent artifacts --artifact-config PATH serve`) is an independently available
 authorization/download process with a durable catalog/outbox and a private object
 store. Execution runners may be disposable; the artifact process, catalog and
 bucket are not. Keep them outside runner workspaces. No AWS compute, hosted
@@ -591,6 +650,37 @@ versioning behavior; local fixtures are not live provider certification.
 Configure a dedicated scoped publisher credential, project service binding and
 finite retention/capacity policy. Runners receive no bucket credentials. Omitting
 durable configuration remains truthful local-only operation.
+
+Example IDs, hosts, buckets and limits in `service.json` are placeholders, not
+plan allowances. Validation requires `deletion_record_seconds` to exceed
+`backup_seconds` plus `abandoned_upload_seconds`. The publisher token is read
+from the environment variable named by `publish_token_env`
+(`DETENT_ARTIFACT_PUBLISHER_TOKEN` in the example, supplied through the unit's
+private `credentials.env`). Bucket credentials come from the standard AWS SDK
+credential chain of the artifact process, never from Hub or runner configuration.
+
+| Provider | `endpoint` | `region` | Addressing |
+| --- | --- | --- | --- |
+| AWS S3 | Empty (SDK resolves it) | Actual bucket region | `path_style: false` |
+| DigitalOcean Spaces | Regional origin, such as `https://nyc3.digitaloceanspaces.com` | `us-east-1` | `path_style: false` |
+| Tigris | `https://t3.storage.dev` | `auto` | Provider-supported style |
+
+`verify-storage` writes an opaque probe object under `detent-probe/`, checks that
+conditional create rejects replacement, round-trips exact bytes, deletes it and
+confirms absence. It fails closed with `unsupported_capability`,
+`checksum_mismatch` or `storage_unreachable`; `serve` repeats the probe.
+`require_versioning: true` additionally requires real version IDs and
+version-pinned reads and deletes. The service never changes bucket settings.
+
+The catalog is private to its service. `detent artifacts ... usage` (logical
+retained and reserved bytes) and `detent artifacts ... backup --output PATH`
+refuse to open a running catalog, so stop only the artifact service for them;
+downloads are unavailable meanwhile. A catalog backup does not contain bucket
+bytes: back up provider object versions separately, and keep the newest
+`{artifact}/deleted` markers outside rollbackable object backups. The service
+enforces live, abandoned-upload and deletion-record expiry; your backup system
+owns backup expiry. `usage` is not a provider invoice; provider requests, egress
+and storage are billed by the provider.
 
 ## Backup and export
 
@@ -754,19 +844,6 @@ problems first.
 Never manually advance the schema table or run the unrelated runner-store
 `make db-migrate` against a Hub database.
 
-The deployment/release owner must verify a normal production restart after
-integration. Record the finalized Change head, deployed binary version, stop time
-and first authenticated HTTPS-ready time; measure the entire unavailable interval
-and require it to be below one renewal interval. Start a real runner session
-before deployment and retain its work-item, machine, lease, fencing token, session,
-run and attempt identifiers. After deployment, confirm renewal and successful
-`run.finished` under those same identifiers, with one attempt and no replacement
-dispatch. Keep credentials and content out of this evidence. A local reopen test
-does not establish production deploy timing. The restricted staging deploy script
-and production host integration are operator-owned, outside this source checkout;
-their preparation/restart ordering must follow this procedure before claiming
-production acceptance.
-
 Schema 19 repairs the two formerly valid schema-18 branches. Migration 18 remains
 `00018_change_viewed_files.sql`; onboarding moves to
 `00019_project_onboarding.sql`. The forward-only, transactional migration creates
@@ -789,8 +866,7 @@ database for diagnosis. Use the newer compatible binary, or restore the
 pre-upgrade snapshot into a new path with a binary supporting that snapshot.
 Switch the unit's database path only after validation. Never point an older binary
 at the upgraded live file. Pre-upgrade backups retain the old schema because
-offline backup does not migrate it. Recovery commands are available beginning
-with the release that packages this runbook; keep that recovery binary too.
+offline backup does not migrate it. Keep the recovery binary with the snapshot.
 
 Prefer identical release versions across Hub and runners. Rolling overlap is
 supported only where `/api/v2/capabilities` and the runner agree on protocol major
@@ -832,7 +908,8 @@ Webhook raw payloads have the existing configurable retention (default 7 days);
 typed collaboration/projection records are separate retained data. Artifact
 policy enforces live/abandoned-upload/deletion-marker lifetimes; its backup system
 owns object/catalog backup expiration. Deletion-marker retention must outlive
-artifact backups plus abandoned uploads. See [artifact retention](artifacts-deployment.md#retention-and-accounting).
+artifact backups plus abandoned uploads; see
+[Optional durable artifacts](#optional-durable-artifacts).
 
 ## Diagnostics
 
@@ -849,25 +926,12 @@ do not paste bearer headers or content into diagnostic reports.
 | GitHub compatibility/projection failure | `/api/v1/outbox/health`, `/api/v1/repositories/freshness`, `/health` and GitHub profile; distinguish disabled transport, missing permissions, rate budget, stale projection, conflict and dead-letter/operator action before retrying |
 | Startup/schema failure | systemd exit status and private journal, `hub verify` while stopped; check local disk, permissions, ownership and binary/schema versions; do not remove an active lock |
 
-## Reproduce the validation fixture
-
-Build `tmp/detent` with `make build` and run
-`python3 scripts/hub-smoke.py tmp/detent`. The fixture installs a binary into an
-empty private directory, uses ephemeral loopback ports, verifies bootstrap,
-restart, export/verify/import and revoked-source authentication, and cleans up
-only its own child processes/files. No real credentials are used.
-
-For Linux/container validation, cross-build the binary and Hub test executable
-for the container architecture, copy them and the smoke script into a fixture
-directory, then run a Python-capable Linux image with `--network none`, a read-only
-fixture mount and private writable temp storage. Run the smoke script plus the
-Hub recovery/routing/protocol tests there. No production deployment or paid
-resources are needed. The required repository gate remains `make check`.
-
 ## Project Sprites credentials
 
-Owners and admins can set, replace or remove a project's Sprites organization
-token in project settings under Execution. The API is
+Owners and admins set, replace or remove the organization's Sprites token under
+**Settings > Integrations**, and an optional per-project override on the
+project's **Runners** settings tab. The APIs are
+`/api/v2/organizations/{organization}/secrets/fly_sprites_token` and
 `/api/v2/organizations/{organization}/projects/{project}/secrets/fly_sprites_token`:
 GET returns only presence, organization slug and master key version; PUT accepts
 `{"token":"..."}`; DELETE removes Detent's copy. Hosted requests require the
@@ -894,10 +958,16 @@ and public organization metadata. Backups must keep the corresponding master
 keys separately. Losing the keys loses access to stored credentials; possession
 of both a database backup and its keys exposes those credentials.
 
-For routine rotation and compromise response, follow [Key rotation and compromise
-response](key-rotation.md): preflight the proposed keyring, restart with old keys
-retained, verify rewrap/reseal completion, then retire old keys separately from
-replacing exposed credentials at their sources.
+To rotate the master key, add the new version to `DETENT_HUB_SECRET_KEYS` while
+retaining the old versions, set `DETENT_HUB_SECRET_KEY_VERSION` to it, and
+restart the Hub; it rewraps stored secrets under the active key after restart.
+`detent hub secrets status --database PATH` checks stored secrets against the
+environment keyring without writing and reports configured, missing and
+retirable versions. It exits 0 once rotation is complete, 3 while it is
+incomplete and 2 when the proposed keyring fails preflight; retire old versions
+only after exit 0. Rotating master keys does not
+replace a provider credential that may have been exposed: revoke and replace
+that credential at its source.
 
 Setting a token validates `GET https://api.sprites.dev/v1/sprites` with Bearer
 authentication. Redirects are refused and provider errors/bodies are never echoed.

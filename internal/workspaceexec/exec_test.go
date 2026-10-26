@@ -371,8 +371,8 @@ func TestRunBase64EncodesASpanThatIsNotText(t *testing.T) {
 	}
 }
 
-// TestRunScrubsInheritedCredentials is a courtesy and not a boundary (section
-// 18.3): the command runs as the runner account and can still reach whatever
+// TestRunScrubsInheritedCredentials is a courtesy and not a boundary:
+// the command runs as the runner account and can still reach whatever
 // that account can reach. What it must not inherit is a token the runner
 // process merely happened to be started with.
 func TestRunScrubsInheritedCredentials(t *testing.T) {

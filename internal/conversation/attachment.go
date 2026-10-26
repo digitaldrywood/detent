@@ -12,7 +12,7 @@ import (
 	"unicode/utf8"
 )
 
-// Attachments (decisions section 17.1). The domain owns the identifier
+// Attachments. The domain owns the identifier
 // shape, the accepted media types, the content sniff and the per-message
 // limits; the hub owns storage, the endpoints and the audience check.
 

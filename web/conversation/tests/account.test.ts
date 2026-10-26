@@ -27,7 +27,7 @@ let bootstrap: AccountBootstrap;
 async function connect(mode: "write" | "read_only" = "write"): Promise<AccountApi> {
   const payload = await loadBootstrap(hub.url);
   const account = lastAccountBootstrap();
-  expect(account, "the mock hub serves the extended bootstrap of §12").not.toBeNull();
+  expect(account, "the mock hub serves the extended bootstrap of the hosted JSON API").not.toBeNull();
   bootstrap = account!;
   expect(mode === "read_only" ? !account!.actor.can_manage : account!.actor.can_manage).toBe(true);
   return makeAccountApi({
@@ -267,7 +267,7 @@ describe("billing", () => {
 });
 
 describe("a viewer", () => {
-  it("reads the members and is refused every mutation (§10.11)", async () => {
+  it("reads the members and is refused every mutation", async () => {
     await reset("read_only");
     const { members } = await api.members();
     expect(members.length).toBeGreaterThan(0);

@@ -68,7 +68,7 @@ When you change `src/app/global.css` or `src/app/index.css`, run:
 npm run design:tokens
 ```
 
-This rewrites `src/design-system/tokens.generated.json` and the generated tables in [foundations.md](foundations.md) and [color-review.md](color-review.md). If a contrast ratio changes, read the new table and check that the [rules for using the pairs](color-review.md#using-the-pairs) still hold. A new token belongs to a role in [foundations](foundations.md#token-ownership); do not add one for a single feature.
+This rewrites `src/design-system/tokens.generated.json` and the generated tables in [foundations.md](foundations.md), including its contrast tables. If a contrast ratio changes, read the new table and check that the [rules for using the pairs](foundations.md#using-the-pairs) still hold. A new token belongs to a role in [foundations](foundations.md#token-ownership); do not add one for a single feature.
 
 ## 6. Check it in the gallery
 

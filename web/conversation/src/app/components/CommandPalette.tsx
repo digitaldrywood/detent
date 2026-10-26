@@ -343,7 +343,7 @@ function OpenCommandPaletteDialog(props: {
           />
         ),
         // A linked conversation's destination is its issue page with the chat
-        // open in the panel (decisions.md §19.4), the same rule the sidebar's
+        // open in the panel, the same rule the sidebar's
         // rows follow.
         runThread: async (thread) => {
           const conversation = conversations.find(

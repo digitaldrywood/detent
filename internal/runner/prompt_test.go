@@ -13,7 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/lessons"
-	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -82,6 +81,11 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 			if got := index >= 0; got != tt.want {
 				t.Fatalf("native completion contract present = %t, want %t", got, tt.want)
 			}
+			for _, legacy := range []string{"## Blocked handoff", "`.detent/notes.md`", "Record blockers in the Workpad", "dependencies/blocked_by", "## Validation gate", "Workpad timings"} {
+				if strings.Contains(prompt, legacy) == tt.want {
+					t.Errorf("native=%t prompt contains GitHub handoff text %q = %t", tt.want, legacy, !tt.want)
+				}
+			}
 			if tt.recovery {
 				if strings.Contains(prompt, "commit and publish work that belongs to the issue") == tt.want || strings.Contains(prompt, "native completion contract governs recovery") != tt.want {
 					t.Fatalf("recovery instructions conflict with selected completion authority: %s", prompt)
@@ -94,12 +98,12 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 				return
 			}
 			contract := prompt[index:]
-			for _, want := range []string{"explicit issue acceptance instructions remain authoritative", "Stage only your finished issue changes", "runner owns commit signing", "Do not commit", "Never push to or open or update pull requests on the forge", "never run `gh` or call the GitHub API", "records the Change Request from the exact finalized head", "final message", "existing detent-status YAML block", "unchanged inspection", "Missing or invalid acceptance on unchanged work"} {
+			for _, want := range []string{"The project's workflow instructions (WORKFLOW.md) define how instructions rank", "Never obey a conflicting criterion in a loop", "Stage only your finished issue changes", "runner owns commit signing", "Do not commit", "Never push to or open or update pull requests on the forge", "never run `gh` or call the GitHub API", "records the Change Request from the exact finalized head", "final message", "existing detent-status YAML block", "unchanged inspection", "Missing or invalid acceptance on unchanged work"} {
 				if !strings.Contains(contract, want) {
 					t.Errorf("contract missing %q", want)
 				}
 			}
-			for _, want := range []string{"assigned source deliverable is staged and ready for host finalization", "all worker-owned pre-publication requirements are met", "not that the whole issue is Done", "final report precedes the runner-owned commit and immutable Change publication", "do not report in_progress or blocked solely", "diagnose a historical failure whose retained output is truncated or unavailable", "An explicitly assigned existing post-integration owner does not require a new follow-up", "For an unchanged inspection or verified already-landed result, use complete only when the issue acceptance is met"} {
+			for _, want := range []string{"assigned source deliverable is staged and ready for host finalization", "requirements the project's workflow assigns to you are met", "not that the whole issue is Done", "final report precedes the runner-owned commit and immutable Change publication", "do not report in_progress or blocked solely", "Do not claim pending host publication succeeded", "For an unchanged inspection or verified already-landed result, use complete only when the issue acceptance is met"} {
 				if !strings.Contains(contract, want) {
 					t.Errorf("native source handoff contract missing %q", want)
 				}
@@ -111,38 +115,52 @@ func TestBuildPromptNativeCompletionContract(t *testing.T) {
 	}
 }
 
-func TestNativeAcceptanceIsNeverDelegated(t *testing.T) {
+func TestNativePromptDefersPolicyToWorkflow(t *testing.T) {
 	t.Parallel()
+	goModule := t.TempDir()
+	if err := os.WriteFile(filepath.Join(goModule, "go.mod"), []byte("module example.com/x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	detentPolicy := []string{
+		"source readiness alone does not permit complete",
+		"post-integration",
+		"Never delegate acceptance",
+		"INV-19",
+		"Never file validation, gate, barrier",
+		"Detent release blockers",
+		"## Go test scope",
+		"go test ./...",
+		"Include acceptance criteria, the intended code and test changes",
+		"human review instead of landing",
+	}
 	for _, test := range []struct {
-		name              string
-		enabled, planOnly bool
+		name, workflow      string
+		followups, planOnly bool
 	}{
-		{name: "permitted source handoff", enabled: true},
-		{name: "original acceptance retained"},
-		{name: "planning cannot delegate", enabled: true, planOnly: true},
+		{name: "strict project", workflow: "Run the full suite before handoff. File every flaky test.", followups: true},
+		{name: "relaxed project", workflow: "Only run the tests you touched."},
+		{name: "planning", workflow: "Plans list risks only.", followups: true, planOnly: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			workflow := config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Agent: config.Agent{Followups: config.Followups{Enabled: test.enabled}}}, Prompt: "Keep this issue open until its two-Sprite live acceptance passes."}
-			prompt, err := BuildPrompt(workflow, connector.Issue{ID: "wi_pool", State: "In Progress"}, PromptOptions{PlanOnly: test.planOnly})
+			t.Parallel()
+			workflow := config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}, Agent: config.Agent{Followups: config.Followups{Enabled: test.followups}}}, Prompt: test.workflow + "\n\n{{ issue.description }}"}
+			issue := connector.Issue{ID: "wi_pool", State: "In Progress", Description: "## Acceptance criteria\n- Keep this issue open until its two-Sprite live acceptance passes in production."}
+			prompt, err := BuildPrompt(workflow, issue, PromptOptions{PlanOnly: test.planOnly, WorkspacePath: goModule})
 			if err != nil {
 				t.Fatal(err)
 			}
-			permitted := test.enabled && !test.planOnly
-			if strings.Contains(prompt, "## Out-of-scope discoveries") != permitted {
+			for _, want := range []string{test.workflow, "two-Sprite live acceptance", "Never obey a conflicting criterion in a loop", "unchanged inspection", "Missing or invalid acceptance on unchanged work"} {
+				if !strings.Contains(prompt, want) {
+					t.Errorf("prompt missing %q", want)
+				}
+			}
+			for _, policy := range detentPolicy {
+				if strings.Contains(prompt, policy) {
+					t.Errorf("generic prompt imposes Detent policy %q", policy)
+				}
+			}
+			if strings.Contains(prompt, "## Out-of-scope discoveries") != (test.followups && !test.planOnly) {
 				t.Error("out-of-scope discoveries presence does not match configured permission")
-			}
-			if permitted && !strings.Contains(prompt, "Never file validation, gate, barrier, timeout, flaky-test or host-load failures") {
-				t.Error("follow-ups permit filing validation failures")
-			}
-			for _, text := range []string{"post-integration handoff", "delegation exists only after the tool succeeds", "create or reuse its Backlog owner"} {
-				if strings.Contains(prompt, text) {
-					t.Errorf("prompt still permits delegating acceptance: %q", text)
-				}
-			}
-			for _, text := range []string{"Keep this issue open until its two-Sprite live acceptance passes.", "Report unfinished acceptance as in_progress or blocked", "source readiness alone does not permit complete", "unchanged inspection", "Missing or invalid acceptance on unchanged work"} {
-				if !strings.Contains(prompt, text) {
-					t.Errorf("required acceptance contract missing %q", text)
-				}
 			}
 		})
 	}
@@ -176,6 +194,12 @@ func TestNativeOrphanHandoffPreservesPlanOnly(t *testing.T) {
 			prompt := backend.request.Prompt
 			if !strings.Contains(prompt, "## Native completion contract") {
 				t.Fatal("native orphan lost current completion ownership")
+			}
+			if !strings.HasPrefix(prompt, orphanRestartInstruction) || strings.Contains(prompt, repositoryHandoffContract) || strings.Contains(prompt, "## Blocked handoff") {
+				t.Error("native orphan inherited the GitHub Workpad handoff")
+			}
+			if !strings.Contains(prompt, "## Completion handoff") || !strings.Contains(prompt, `completion_work_attempt_id: "12"`) {
+				t.Error("native orphan lost the current attempt completion fields")
 			}
 			if strings.Contains(prompt, "## Out-of-scope discoveries") != !planOnly {
 				t.Error("resumed plan-only permission differs for out-of-scope discoveries")
@@ -291,10 +315,6 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 				Skills: config.Skills{
 					Enabled: true,
 					Path:    ".detent/skills",
-					Creation: config.SkillCreation{
-						Enabled:         true,
-						MaxDraftsPerRun: 1,
-					},
 				},
 			},
 		},
@@ -312,9 +332,6 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		Attempt:       &attempt,
 		WorkspacePath: workspace,
 		AutoBranch:    &autoBranch,
-		AvailableSkills: []skills.Skill{
-			{Name: "migrate", Description: "Add migrations.", WhenToUse: "Issue mentions schema changes.", Aliases: []string{"schema-migration"}, BodyPath: "migrate.md"},
-		},
 	})
 	if err != nil {
 		t.Fatalf("BuildPrompt() error = %v", err)
@@ -338,21 +355,15 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"completion_ancestry: verified", "Missing evidence: blocked Workpad `human_action`.",
 		"## Validation gate",
 		"Run `make check` from the workspace root",
-		"## Available skills",
-		"- migrate (includes: schema-migration)",
-		"## Skill creation loop",
-		"Reusable multi-step methods/conventions only",
-		"Revalidate; PR review approves.",
-		"Skill draft: yes",
-		"Skill draft: no",
-		"Draft at most 1 skill file under `.detent/skills/`",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
 	}
-	if strings.Contains(prompt, "Add migrations.") || strings.Contains(prompt, "Issue mentions schema changes.") {
-		t.Fatalf("prompt included skill description or trigger prose:\n%s", prompt)
+	for _, unwanted := range []string{"## Available skills", "## Skill creation loop", "Skill draft:"} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("prompt contains removed skill section %q:\n%s", unwanted, prompt)
+		}
 	}
 }
 
@@ -383,40 +394,6 @@ func TestBuildRoutinePromptUsesConfiguredCriteriaAndProposalContract(t *testing.
 		if strings.Contains(prompt, unwanted) {
 			t.Fatalf("prompt contains issue-workflow section %q:\n%s", unwanted, prompt)
 		}
-	}
-}
-
-func TestBuildPromptSkillCreationUsesDefaultConfigForPullRequestsOnly(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		planOnly bool
-		want     bool
-	}{
-		{name: "pull request run", want: true},
-		{name: "plan only run", planOnly: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			prompt, err := BuildPrompt(config.Workflow{
-				Config: config.Default(),
-				Prompt: "Base prompt",
-			}, connector.Issue{
-				Identifier: "digitaldrywood/detent#1166",
-				Title:      "Tune skill creation",
-			}, PromptOptions{PlanOnly: tt.planOnly})
-			if err != nil {
-				t.Fatalf("BuildPrompt() error = %v", err)
-			}
-
-			if got := strings.Contains(prompt, "## Skill creation loop"); got != tt.want {
-				t.Fatalf("skill creation block present = %v, want %v:\n%s", got, tt.want, prompt)
-			}
-		})
 	}
 }
 
@@ -460,40 +437,28 @@ func TestBuildPromptIncludesMergeMethod(t *testing.T) {
 	}
 }
 
-func TestSkillDraftProposed(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		output string
-		want   bool
-	}{
-		{name: "yes decision", output: "Tests pass.\n\nSkill draft: yes — `.detent/skills/debug.md` captures the workflow.", want: true},
-		{name: "case and whitespace", output: "  SKILL DRAFT: YES  ", want: true},
-		{name: "no decision", output: "Skill draft: no — routine edit."},
-		{name: "discussion is not a proposal", output: "The prompt should require Skill draft: yes when appropriate."},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			if got := skillDraftProposed(tt.output); got != tt.want {
-				t.Fatalf("skillDraftProposed(%q) = %v, want %v", tt.output, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestBuildPromptDocumentsWorkpadStatusContract(t *testing.T) {
 	t.Parallel()
-	for _, opts := range []PromptOptions{{}, {WorkAttemptID: 5715, Generation: 68}} {
-		t.Run(strconv.FormatInt(opts.WorkAttemptID, 10), func(t *testing.T) {
-			prompt := appendBlockedHandoffBlock("", opts)
-			for _, required := range []string{"current authoritative `## Codex Workpad`", "if permitted, else post anew", "body/final cannot supersede it", "Keep native/local writers", "reuse verified same-head/test-input receipts without handoff-only reruns", "Finish source/pre-merge requirements", "existing post-integration owner", "exact PR/head, pending acceptance", "Pending acceptance remains unverified", "Preserve pre-merge evidence, approvals and gates", "Without a permitted owner, retain original acceptance", "never file a follow-up issue for acceptance"} {
-				if !strings.Contains(prompt, required) {
-					t.Fatalf("handoff lost acceptance ownership: %s", required)
+	githubHandoff := []string{"current authoritative `## Codex Workpad`", "if permitted, else post anew", "body/final cannot supersede it", "Keep native/local writers", "reuse verified same-head/test-input receipts without handoff-only reruns", "Finish source/pre-merge requirements", "existing post-integration owner", "exact PR/head, pending acceptance", "Pending acceptance remains unverified", "Preserve pre-merge evidence, approvals and gates", "Without a permitted owner, retain original acceptance", "never file a follow-up issue for acceptance", "dependencies/blocked_by", "`.detent/notes.md`"}
+	for _, tt := range []struct {
+		opts   PromptOptions
+		native bool
+	}{
+		{},
+		{opts: PromptOptions{WorkAttemptID: 5715, Generation: 68}},
+		{native: true},
+		{opts: PromptOptions{WorkAttemptID: 5715, Generation: 68}, native: true},
+	} {
+		opts := tt.opts
+		t.Run(strconv.FormatInt(opts.WorkAttemptID, 10)+"/native="+strconv.FormatBool(tt.native), func(t *testing.T) {
+			prompt := appendBlockedHandoffBlock("", opts, tt.native)
+			for _, required := range githubHandoff {
+				if strings.Contains(prompt, required) == tt.native {
+					t.Fatalf("native=%t handoff contains %q = %t", tt.native, required, tt.native)
 				}
+			}
+			if tt.native && (strings.Contains(prompt, "Workpad") || !strings.Contains(prompt, "The orchestrator is the only writer of tracker lane state")) {
+				t.Fatalf("native handoff conflicts with the native contract:\n%s", prompt)
 			}
 			blocks := strings.Split(prompt, "```detent-status\n")[1:]
 			if len(blocks) != 2 {
@@ -523,13 +488,8 @@ func TestBuildPromptDocumentsWorkpadStatusContract(t *testing.T) {
 
 func TestPromptWrapperBytes(t *testing.T) {
 	t.Parallel()
-	// Keep the size fixture independent of the repository's changing catalog.
-	available := make([]skills.Skill, skills.DefaultMaxSkillsInPrompt)
-	for i := range available {
-		available[i] = skills.Skill{Name: "repository-skill-" + strconv.Itoa(i)}
-	}
 	workspacePath := t.TempDir()
-	prompt, err := BuildPrompt(config.Workflow{Prompt: "WORKFLOW", Config: config.Default()}, connector.Issue{Identifier: "digitaldrywood/detent#2662"}, PromptOptions{WorkspacePath: workspacePath, Branch: "detent/detent-digitaldrywood_detent_2662-4373c74c714b", AvailableSkills: available, WorkAttemptID: 5715, Generation: 68})
+	prompt, err := BuildPrompt(config.Workflow{Prompt: "WORKFLOW", Config: config.Default()}, connector.Issue{Identifier: "digitaldrywood/detent#2662"}, PromptOptions{WorkspacePath: workspacePath, Branch: "detent/detent-digitaldrywood_detent_2662-4373c74c714b", WorkAttemptID: 5715, Generation: 68})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -538,7 +498,7 @@ func TestPromptWrapperBytes(t *testing.T) {
 	}
 	// The wrapper budget measures authored text, not the worker's temp-root length.
 	size := len(strings.ReplaceAll(prompt, workspacePath, "/workspace")) - len("WORKFLOW")
-	t.Logf("wrapper=%d bytes, handoff=%d bytes, skills=%d bytes", size, len(appendBlockedHandoffBlock("", PromptOptions{})), len(AvailableSkillsBlock(available)))
+	t.Logf("wrapper=%d bytes, handoff=%d bytes", size, len(appendBlockedHandoffBlock("", PromptOptions{}, false)))
 	if size >= 7000 {
 		t.Errorf("wrapper is %d bytes, want under 7000", size)
 	}
@@ -563,104 +523,6 @@ func TestBuildPromptBindsCompletionToCurrentAttempt(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
-	}
-}
-
-func TestBuildPromptSkillCreationInstructionsAreConfigurable(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		workflow  config.Workflow
-		planOnly  bool
-		want      []string
-		forbidden []string
-	}{
-		{
-			name: "enabled pull request workflow",
-			workflow: config.Workflow{Config: config.Config{
-				Agent: config.Agent{Skills: config.Skills{
-					Enabled: true,
-					Path:    ".detent/team-skills",
-					Creation: config.SkillCreation{
-						Enabled:         true,
-						MaxDraftsPerRun: 2,
-					},
-				}},
-			}},
-			want: []string{
-				"## Skill creation loop",
-				"Draft at most 2 skill files under `.detent/team-skills/`",
-			},
-		},
-		{
-			name: "disabled creation",
-			workflow: config.Workflow{Config: config.Config{
-				Agent: config.Agent{Skills: config.Skills{
-					Enabled: true,
-					Creation: config.SkillCreation{
-						Enabled:         false,
-						MaxDraftsPerRun: 1,
-					},
-				}},
-			}},
-			forbidden: []string{"## Skill creation loop"},
-		},
-		{
-			name: "artifact workflow",
-			workflow: config.Workflow{Config: config.Config{
-				Deliverable: config.Deliverable{Kind: config.DeliverableArtifact},
-				Agent: config.Agent{Skills: config.Skills{
-					Enabled: true,
-					Creation: config.SkillCreation{
-						Enabled:         true,
-						MaxDraftsPerRun: 1,
-					},
-				}},
-			}},
-			forbidden: []string{"## Skill creation loop"},
-		},
-		{
-			name:     "plan only workflow",
-			planOnly: true,
-			workflow: config.Workflow{Config: config.Config{
-				Agent: config.Agent{Skills: config.Skills{
-					Enabled: true,
-					Creation: config.SkillCreation{
-						Enabled:         true,
-						MaxDraftsPerRun: 1,
-					},
-				}},
-			}},
-			forbidden: []string{"## Skill creation loop"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			prompt, err := BuildPrompt(tt.workflow, connector.Issue{
-				Identifier: "digitaldrywood/detent#931",
-				Title:      "Skill creation loop",
-			}, PromptOptions{
-				PlanOnly: tt.planOnly,
-			})
-			if err != nil {
-				t.Fatalf("BuildPrompt() error = %v", err)
-			}
-
-			for _, want := range tt.want {
-				if !strings.Contains(prompt, want) {
-					t.Fatalf("prompt missing %q:\n%s", want, prompt)
-				}
-			}
-			for _, forbidden := range tt.forbidden {
-				if strings.Contains(prompt, forbidden) {
-					t.Fatalf("prompt contains %q:\n%s", forbidden, prompt)
-				}
-			}
-		})
 	}
 }
 
@@ -701,7 +563,7 @@ func TestBuildPromptFollowupInstructionsAreConfigurable(t *testing.T) {
 
 			for _, text := range []string{
 				"## Out-of-scope discoveries",
-				"project Backlog",
+				"file_machine_issue",
 				"fenced `detent-agent`",
 				"`effort` per project rubric",
 				"missing state: file stateless and report",
@@ -1102,12 +964,12 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 		{
 			name: "unverified criterion classes",
 			opts: ValidatorPromptOptions{VersionID: "version"},
-			want: []string{`"unverified_class"`, "rework_fixable", "unsatisfiable", "outside system", "production or deployed environment", "a deployment", "human action", "missing tests", "failing checks", "missing screenshots", "unimplemented behavior", "rewrite it as a pre-merge check or remove it", "Blocked on this run"},
+			want: []string{`"unverified_class"`, "rework_fixable", "unsatisfiable", "outside system", "production or deployed environment", "a deployment", "human action", "missing tests", "failing checks", "missing screenshots", "unimplemented behavior", "WORKFLOW.md Issue Contract defines how it is corrected", "Do not request repeated source rework"},
 		},
 		{
 			name:      "non-native criteria retain configured policy",
 			want:      []string{"Any not_verified criterion under rework policy forces rework"},
-			forbidden: []string{`"unverified_class"`, "Blocked on this run", "set unverified_class"},
+			forbidden: []string{`"unverified_class"`, "WORKFLOW.md Issue Contract defines how it is corrected", "set unverified_class"},
 		},
 		{
 			name: "native host command evidence",
@@ -1120,8 +982,8 @@ func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
 				{ReceiptID: "timing_failed", Command: "make check-landing", HeadSHA: "head", TreeSHA: "tree", ExitCode: 2, Output: "[earlier output truncated]", OutputTruncated: true},
 				{ReceiptID: "timing_passed", Command: "make check-landing", HeadSHA: "head", TreeSHA: "tree", ExitCode: 0, Output: "check-landing finished: exit=0"},
 			}},
-			want:      []string{`receipt_id="timing_failed"`, `receipt_id="timing_passed"`, "unless a later receipt of the same command passed on the same head and tree", "a High defect under INV-19", `starts with "INV-19 High flaky test"`, "names both receipt_ids", "exercises source this change adds or modifies, report it at p1; it blocks this change", "report it at p2 without blocking an otherwise passing candidate", "do not demand that Rework diagnose it beyond its retained output"},
-			forbidden: []string{"prevents a passing review, even if omitted from criteria_evidence. Use", "p3 finding"},
+			want:      []string{`receipt_id="timing_failed"`, `receipt_id="timing_passed"`, "unless a later receipt of the same command passed on the same head and tree", "flaky result", "names both receipt_ids", "the project's workflow sets its severity"},
+			forbidden: []string{"prevents a passing review, even if omitted from criteria_evidence. Use", "p3 finding", "INV-19", "report it at p1", "report it at p2"},
 		},
 		{
 			name:      "native omitted patch reads pinned source",
@@ -1359,7 +1221,7 @@ func TestBuildPromptUsesDefaultPromptDescriptionFallback(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"You are working on a Linear issue.",
+		"You are working on an issue.",
 		"Identifier: MT-1",
 		"Title: Missing body",
 		"No description provided.",
@@ -1613,7 +1475,7 @@ func TestPromptDoesNotUseRepositoryNotes(t *testing.T) {
 				if profile == "native" {
 					contract = "Native completion contract"
 				}
-				if !strings.Contains(prompt, contract) || !strings.Contains(prompt, repositoryHandoffContract) {
+				if !strings.Contains(prompt, contract) || strings.Contains(prompt, repositoryHandoffContract) == (profile == "native") {
 					t.Fatalf("current handoff contract missing: %q", contract)
 				}
 				after, err := os.ReadFile(notePath)
@@ -1671,53 +1533,28 @@ func TestMergeFallbackPromptPreservesPublishedHistory(t *testing.T) {
 func TestGateBlockSeparatesHumanApproval(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		kind, heading string
+		kind, heading, tracker string
 	}{
-		{gate.KindHumanReview, "Human approval"},
-		{"human-review", "Human approval"},
-		{gate.KindCommand, "Validation gate"},
+		{kind: gate.KindHumanReview, heading: "Human approval"},
+		{kind: "human-review", heading: "Human approval"},
+		{kind: gate.KindCommand, heading: "Validation gate"},
+		{kind: gate.KindCommand, tracker: config.TrackerHubNative},
+		{kind: gate.KindHumanReview, tracker: config.TrackerHubNative},
+		{kind: gate.KindArtifact, heading: "Validation gate", tracker: config.TrackerHubNative},
 	} {
-		t.Run(tt.kind, func(t *testing.T) {
-			got := appendGateBlock("Issue", config.Config{Gate: gate.Config{Kind: tt.kind, Run: "make check-fast"}})
+		t.Run(tt.kind+"/"+tt.tracker, func(t *testing.T) {
+			got := appendGateBlock("Issue", config.Config{Tracker: config.Tracker{Kind: tt.tracker}, Gate: gate.Config{Kind: tt.kind, Run: "make check-fast"}})
+			if tt.heading == "" {
+				if got != "Issue" {
+					t.Fatalf("native runner-owned gate leaked worker instructions: %s", got)
+				}
+				return
+			}
 			if !strings.Contains(got, "## "+tt.heading+"\n") {
 				t.Fatalf("missing heading %q: %s", tt.heading, got)
 			}
 			if tt.heading == "Human approval" && strings.Contains(strings.ToLower(got), "validation gate") {
 				t.Fatalf("human approval conflates command validation: %s", got)
-			}
-		})
-	}
-}
-
-func TestBuildPromptGoTestScopeFollowsGoModule(t *testing.T) {
-	t.Parallel()
-
-	goModule := t.TempDir()
-	if err := os.WriteFile(filepath.Join(goModule, "go.mod"), []byte("module example.com/x\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	tests := []struct {
-		name      string
-		workspace string
-		want      bool
-	}{
-		{name: "go module", workspace: goModule, want: true},
-		{name: "non-go workspace", workspace: t.TempDir()},
-		{name: "no workspace"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			prompt, err := BuildPrompt(config.Workflow{Prompt: "Base prompt"}, connector.Issue{Identifier: "digitaldrywood/detent#3310"}, PromptOptions{WorkspacePath: tt.workspace})
-			if err != nil {
-				t.Fatalf("BuildPrompt() error = %v", err)
-			}
-			if got := strings.Contains(prompt, "## Go test scope"); got != tt.want {
-				t.Fatalf("Go test scope block present = %v, want %v:\n%s", got, tt.want, prompt)
-			}
-			if tt.want && !strings.Contains(prompt, "instead of `go test ./...` sweeps") {
-				t.Fatalf("Go test scope block missing targeted-package guidance:\n%s", prompt)
 			}
 		})
 	}
@@ -1790,10 +1627,13 @@ func TestReviewConversationRefusalReachesNativeRework(t *testing.T) {
 			if !test.want {
 				return
 			}
-			for _, required := range []string{"detent_read_review_threads", "detent_resolve_review_thread", "stages no change and resolves no conversation", finding} {
+			for _, required := range []string{"detent_read_review_threads", "detent_resolve_review_thread", finding} {
 				if !strings.Contains(prompt[index:], required) {
 					t.Errorf("review conversation handoff missing %q", required)
 				}
+			}
+			if strings.Contains(prompt[index:], "human review") {
+				t.Error("review conversation handoff routes work by Go policy")
 			}
 		})
 	}

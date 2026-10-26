@@ -44,7 +44,7 @@ describe("isWorkMessage", () => {
     expect(isWorkMessage(assistantMessage())).toBe(false);
   });
 
-  // The cards are the answer, not the working out (B.8.6).
+  // The cards are the answer, not the working out.
   it("never folds a card-bearing status message", () => {
     expect(isWorkMessage(proposalMessage())).toBe(false);
   });

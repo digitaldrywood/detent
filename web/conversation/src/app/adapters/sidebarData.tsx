@@ -40,9 +40,9 @@ export interface SidebarShellData {
   readonly attention: ReadonlySet<string>;
   readonly findings?: readonly SidebarFinding[];
   readonly humanActions?: readonly SidebarHumanAction[];
-  /** The picker choices the hover card names the model from (§14). */
+  /** The picker choices the hover card names the model from. */
   readonly preferenceChoices?: PreferenceChoices | undefined;
-  /** Navigation for the Work destination and the Browse group (A.1, A.6). */
+  /** Navigation for the Work destination and the Browse group. */
   readonly navigation?: SidebarNavigation | undefined;
 }
 
@@ -73,8 +73,7 @@ const SIDEBAR_SEARCH_SELECTOR = 'aside.dc-side input[type="search"]';
  * offers no way to observe it, and the shell needs it for one thing: asking
  * the hub for conversations past the first page so the sidebar's own
  * title search can find them. Listening to the input it already renders is
- * how the shell learns the query without the component being edited
- * (decisions.md §16).
+ * how the shell learns the query without the component being edited.
  *
  * The listener must not re-render during the same event dispatch. The search
  * box is a controlled input: a shell re-render triggered from a capture-phase

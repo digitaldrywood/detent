@@ -77,7 +77,7 @@ export function useShell(): ShellState {
 }
 
 /**
- * The transport chip (design inventory B.10). Every degraded state names when
+ * The transport chip. Every degraded state names when
  * the data on screen was current and offers the one action that fixes it, so
  * a reader is never left guessing whether what they see is live (U05).
  */
@@ -308,7 +308,7 @@ function ShellBody(): React.ReactElement {
       }
     },
     // A linked conversation's destination is its issue page with the chat
-    // open beside it; an unlinked one is still a chat (decisions.md §19.4).
+    // open beside it; an unlinked one is still a chat.
     onSelect: (conversation) => {
       setProjectId(conversation.project_id);
       void navigate(conversationDestination(conversation));

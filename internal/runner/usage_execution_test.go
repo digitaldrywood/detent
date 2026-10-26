@@ -12,7 +12,7 @@ import (
 )
 
 // The runner reports what a turn spent to the execution, which accumulates
-// the attempt total (decisions section 17.5).
+// the attempt total.
 
 type recordingUsageExecution struct {
 	stubExecution
@@ -109,7 +109,7 @@ func TestReportTurnUsage(t *testing.T) {
 	reportTurnUsage(t.Context(), nil, result, "gpt-6-astra", "codex", func(string, int64, int64, int64, string) float64 { return 0 }, logger)
 
 	// A hub that refuses the report does not fail the turn, and a runner
-	// with no logger still reports (decisions section 17.5).
+	// with no logger still reports.
 	failing := &recordingUsageExecution{err: errors.New("hub refused")}
 	reportTurnUsage(t.Context(), failing, result, "gpt-6-astra", "codex", nil, logger)
 	reportTurnUsage(t.Context(), failing, result, "gpt-6-astra", "codex", nil, nil)

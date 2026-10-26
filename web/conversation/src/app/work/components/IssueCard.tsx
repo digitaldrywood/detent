@@ -55,7 +55,7 @@ export function statusPill(item: WorkItemView, terminal = item.terminal): { tone
 export interface IssueCardProps {
   readonly item: WorkItemView;
   readonly terminal?: boolean;
-  /** The project dot renders in the all-projects scope only (A.1, A.6). */
+  /** The project dot renders in the all-projects scope only. */
   readonly showProject: boolean;
   readonly now?: number;
   readonly onOpen: (item: WorkItemView) => void;

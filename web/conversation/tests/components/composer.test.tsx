@@ -199,7 +199,7 @@ describe("Composer", () => {
     expect(onChange).toHaveBeenLastCalledWith("one\ntwo\nthree");
   });
 
-  // §10.11: the reader keeps the transcript and loses the keystrokes.
+  // The reader keeps the transcript and loses the keystrokes.
   it("disables the textarea and states why when the viewer cannot write", () => {
     const { onSend, textarea } = setup({
       disabled: true,

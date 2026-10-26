@@ -64,7 +64,7 @@ export interface ChatWorkspaceProps {
   readonly project: BootstrapProject | null;
   readonly projectName: string;
   /**
-   * The reader's membership role, for the Terminal card's reason (§18.3): a
+   * The reader's membership role, for the Terminal card's reason: a
    * viewer never gets a terminal however generous the project grant is. It is
    * `/app/bootstrap`'s `actor.role`, passed through rather than read here
    * because this frame takes its facts from its route.
@@ -92,15 +92,15 @@ export interface ChatWorkspaceProps {
 
   readonly srHeading?: boolean;
   /**
-   * Takes the files dropped anywhere on the chat surface (decisions.md §17.1).
+   * Takes the files dropped anywhere on the chat surface.
    * Absent on a route with no composer to receive them, and the surface is
    * then not a dropzone at all rather than one that swallows a drop.
    */
   readonly onDropFiles?: (files: File[]) => void;
   readonly askPanel?: React.ReactNode;
   /**
-   * The linked conversation, as the right panel's `conversation` surface
-   * (decisions.md §19.3). The route builds the view; the frame only decides
+   * The linked conversation, as the right panel's `conversation` surface.
+   * The route builds the view; the frame only decides
    * where it is drawn.
    */
   readonly conversationPanel?: ConversationPanel | null;
@@ -149,7 +149,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
     projectId,
     projectName: props.projectName,
     workItemId: props.workItemId,
-    // The Terminal card's own gate (§18.3). They come from the same bootstrap
+    // The Terminal card's own gate. They come from the same bootstrap
     // row `canWrite` above comes from, and the actor's role beside it.
     canWrite: props.project?.can_write ?? false,
     canManageRunners: props.project?.can_manage_runners ?? false,
@@ -317,14 +317,14 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
     ],
   );
 
-  // The keybinding table, bound to what this workspace can actually do
-  // (decisions.md §18.10). A command whose surface is not here — the Files
+  // The keybinding table, bound to what this workspace can actually do.
+  // A command whose surface is not here — the Files
   // picker, the Browser — is left out rather than bound to nothing, so the
   // browser keeps the keystroke and the Keybindings settings page can say why
   // it is unbound.
   //
   // The three terminal commands are bound whenever the surface is available
-  // (§18.3) and decline the keystroke otherwise, which is the difference the
+  // and decline the keystroke otherwise, which is the difference the
   // dispatcher's `false` exists for: a chord whose surface is refused for a
   // reason the reader can fix must not be swallowed by a handler that does
   // nothing, and must not disappear from the table between renders either.
@@ -350,8 +350,8 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
       return workspace.closeTerminal();
     },
     "thread.copyReference": copyLink,
-    // One handler for every `script.<id>.run` chord the project registered
-    // (decisions.md §18.12). Declining an unknown slug leaves the keystroke to
+    // One handler for every `script.<id>.run` chord the project registered.
+    // Declining an unknown slug leaves the keystroke to
     // the browser, which is what a chord whose action was just deleted owes
     // the reader.
     runProjectAction: (scriptId: string) => {
@@ -367,14 +367,14 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
 
   });
 
-  // The header's git group and Open picker (decisions.md §18.6, §18.12).
+  // The header's git group and Open picker.
   //
   // Three facts reach them from here and nowhere else: whether the reader may
   // write to this project (`/app/bootstrap`'s project row carries `can_write`),
-  // whether the project has a GitHub connector (§18.6's rows carry a nullable
+  // whether the project has a GitHub connector (the pull request contract's rows carry a nullable
   // one), and the issue's pull request. The workspace itself is the git hook's,
   // because it is the hook's first interaction that asks for one — rendering
-  // this frame must spend no workspace slot (§18.1).
+  // this frame must spend no workspace slot.
   const pullRequestView = useIssuePullRequestView(projectId, props.workItemId);
   const git = useHeaderGit({
     projectId,
@@ -486,7 +486,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
             )}
             {/* `openInCwd` and `gitCwd` are the checkout on the reader's own
                 machine upstream. A Detent worktree is the runner's, and
-                §18.13's workspace resource names its absolute path — which is
+                the git channel contract's workspace resource names its absolute path — which is
                 exactly what those two props mean, so they carry it. */}
             <WorkspacePageHeader data-chat-header className="relative bg-background">
               <ChatHeader

@@ -159,7 +159,7 @@ func TestMigrateTrackerLanes(t *testing.T) {
 
 func TestMigrateTrackerLaneSamples(t *testing.T) {
 	t.Parallel()
-	for _, directory := range []string{"templates", "examples"} {
+	for _, directory := range []string{"examples"} {
 		err := filepath.WalkDir(filepath.Join("..", "..", "docs", directory), func(path string, entry os.DirEntry, err error) error {
 			if err != nil {
 				return err

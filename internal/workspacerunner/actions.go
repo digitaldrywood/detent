@@ -9,7 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Run-on-worktree-creation (decisions section 18.12).
+// Run-on-worktree-creation.
 //
 // The hub hands the runner the project's run-on-worktree-creation set with the
 // bind, and the runner starts them itself. Nobody asked for these runs: they
@@ -21,7 +21,7 @@ import (
 //
 // RunID is empty on a run's first report: the hub creates the row and answers
 // with its id, and every later report of the same run carries it. ExitCode is a
-// pointer for the reason section 18.12 gives for the stored run's own field --
+// pointer for the reason the project actions contract gives for the stored run's own field --
 // "exited 0" and "never exited" are different facts and a zero int cannot hold
 // both.
 type ActionRun struct {
@@ -145,7 +145,7 @@ func (s *Session) runCreationAction(ctx context.Context, action workspacesession
 		report.Status, report.Reason = workspacesession.RunFailed, workspacesession.RunReasonLeaseLost
 	case err != nil && ctx.Err() != nil:
 		// The workspace is going away mid-run. There is no exit code to report
-		// and the reason is what says why, which is section 18.12's rule for a
+		// and the reason is what says why, which is the project actions contract's rule for a
 		// run whose outcome was never established.
 		report.Status, report.Reason = workspacesession.RunFailed, workspacesession.RunReasonWorkspaceEnd
 	case err != nil:

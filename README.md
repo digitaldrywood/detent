@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/brand/detent-mark.svg" width="88" height="88" alt="Detent"></p>
+<p align="center"><img src="static/img/detent-mark.svg" width="88" height="88" alt="Detent"></p>
 
 # Detent
 
@@ -75,9 +75,9 @@ Work then moves through the board:
 1. **You put an issue in `Todo`.** A runner that holds the project claims it, creates an isolated worktree, and starts an agent (Codex or Claude Code) with the issue and `WORKFLOW.md`. The issue moves to `In Progress`.
 2. **The agent works** on its own branch and runs your gate command. When it commits, the runner publishes a Change Request on the Hub with the diff.
 3. **Gates decide.** With `review.human: false` an accepted change goes straight to `Merging`. With `review.human: true` it waits in `Human Review` until a person approves it or sends it back with requested changes.
-4. **Landing is serialized.** In `Merging` the runner that holds the project lands the change on the base branch with plain git, one change at a time, and the Hub moves the issue to `Done`. A change that cannot land goes to `Blocked` with its reason.
+4. **Landing is serialized.** In `Merging` the runner that holds the project lands the change on the base branch with plain git, one change at a time, and the Hub moves the issue to `Done`. A change that cannot land returns to `Rework` with its reason.
 
-Native projects make no GitHub API calls by default; git clone and push still work against any host. GitHub is an optional integration for importing issues and projecting summaries. See [GitHub profiles](docs/github-profiles.md).
+Native projects make no GitHub API calls by default; git clone and push still work against any host. GitHub is an optional integration for importing issues and projecting summaries.
 
 ## Get started on Detent Cloud
 
@@ -96,7 +96,7 @@ Native projects make no GitHub API calls by default; git clone and push still wo
 6. Clone the repository into the directory that `register` printed (`~/detent-runner/PROJECT` by default) and install its dependencies.
 7. Let the runner report the repository configuration, then file an issue in `Todo` and watch it move across the board.
 
-[Cloud onboarding](docs/cloud-onboarding.md) covers each step in detail, including GitHub and artifact storage. For Windows, see [Windows runners](docs/windows-runners.md) for native Full access and WSL2 Sandbox setup. For runners on Fly Sprites, see [Sprite runners](docs/sprite-runners.md).
+[Cloud onboarding](docs/cloud-onboarding.md) covers each step in detail, including GitHub and artifact storage. For runners on Fly Sprites, see [Sprite runners](docs/sprite-runners.md).
 
 ## Self-host the Hub
 
@@ -139,7 +139,7 @@ Linux `.deb` and `.rpm` packages, Windows builds, and checksums are attached to 
 
 Update a release install with `detent update` (add `--yes` for automation). On a runner, `detent update --yes` drains running work before it restarts. Upgrade Homebrew and native package installs through their package manager.
 
-To build from source, download `detent_<version>_source.tar.gz` from a release, verify it against that release's checksums, and run `go build -trimpath -ldflags "$(cat BUILD_LDFLAGS)" -o detent ./cmd/detent` inside it. It needs only Go 1.26. Raw git checkouts need Node 24 and `make build`; see [Development](docs/development.md).
+To build from source, download `detent_<version>_source.tar.gz` from a release, verify it against that release's checksums, and run `go build -trimpath -ldflags "$(cat BUILD_LDFLAGS)" -o detent ./cmd/detent` inside it. It needs only Go 1.26. Raw git checkouts need Node 24 and `make build`; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 
@@ -165,8 +165,7 @@ Operate:
 Reference and contribute:
 
 - [CLI reference](docs/cli.md).
-- [Comparison with other agent tools](docs/comparison.md).
-- [Development](docs/development.md), [branching](docs/branching.md), [release process](docs/release.md), and the [contribution guide](CONTRIBUTING.md).
+- [AGENTS.md](AGENTS.md) (agent rules), [WORKFLOW.md](WORKFLOW.md) (this project's process), and the [contribution guide](CONTRIBUTING.md).
 - [Repository invariants](docs/invariants.md).
 
 ## License

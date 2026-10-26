@@ -1,15 +1,8 @@
 # Detent Hub API
 
-See [monthly budget enforcement](monthly-budgets.md) for organization/project caps,
-full-issue drain, hard-stop recovery and delayed-cost exposure.
-
-See [monthly infrastructure usage](sprite-usage.md) for Sprite observation
-imports, shared UTC aggregation, corrections, scoped API/MCP reads and provider
-metering limits through the existing usage owner.
-
 Detent Hub owns its SQLite database and exposes fleet coordination through an authenticated HTTP API. Clients must never open or copy the live database files.
 
-This page documents implemented behavior, including native collaboration, Changes and scoped runner enrollment through `/api/v2`. See [self-hosted operations](hub-self-hosting.md) for deployment, export/import and recovery, and [artifact deployment](artifacts-deployment.md) for independent durable storage. The [native Hub and Cloud RFC](cloud-hub-rfc.md) defines the broader architecture.
+This page documents implemented behavior, including native collaboration, Changes, durable artifacts and scoped runner enrollment through `/api/v2`. See [self-hosted operations](hub-self-hosting.md) for deployment, export/import and recovery, and [Durable artifacts](#durable-artifacts) below for the independent artifact service. Monthly organization and project budgets constrain detected USD costs before capacity acquisition; organization exhaustion takes precedence over project headroom.
 
 Cloud members get one scoped key for direct API and MCP access from
 **Settings → API & MCP**, at the preserved `/settings/mcp` bookmark. See
@@ -314,9 +307,9 @@ Pool settings accept an organization-scoped `placement` object. Its `mode` is
 `sprites_only` (local execution excluded), or `local_first`. Existing settings
 and projects without a pool resolve to `blended`; omitting `placement` from a
 PUT preserves the saved policy. Changing placement affects new claims only.
-Runner owner allowlists, organization project rank, issue priority and age
-retain their existing scheduling owner; placement never preempts running work
-or modifies grants.
+Runner owner allowlists and the shared-runner claim order (see
+[claim order](#organization-runner-scope-and-claim-order)) keep their existing scheduling
+owner; placement never preempts running work or modifies grants.
 
 `local_first` requires explicit positive `todo_threshold` and `overflow_slots`
 (1–100). There are no implicit numeric defaults and no overflow delay. At the
@@ -488,11 +481,11 @@ for snapshot consistency, offline maintenance and restore instructions.
 
 ## Local board migration
 
-An operator can import a read-only copy of a retired `local_sqlite` or
-`github_local` store into an existing native project using
-`detent hub issue import-local`. See the [migration runbook](local-board-migration.md)
-for dry-run, stable store identity, lane mapping, GitHub onboarding prerequisites,
-and item-level transaction and replay behavior. The scoped command endpoint is
+The local board is retired. An operator can import a read-only copy of a
+retired `local_sqlite` or `github_local` store into an existing native project
+using `detent hub issue import-local` (supports `--dry-run`, a stable
+`--store-id`, and item-level transactions that replay safely). See
+[Hub local migration](hub-local-migration.md). The scoped command endpoint is
 `POST /api/v2/organizations/{organization}/projects/{project}/local-board-import`.
 
 ## Authentication
@@ -558,6 +551,8 @@ signed amount, timestamp, actor and reason. Account sessions record the
 administrator's email; the service token records `entitlement-administrator`.
 Stripe purchases, auto-fund and chat usage retain their existing ledger kinds.
 
+## Organization runner scope and claim order
+
 Organization-scoped runners enroll with `scope: "organization"` and an empty
 `project_ids` list. Routing can switch between `organization` and `projects`;
 omitting scope on existing project enrollments retains explicit project access.
@@ -569,9 +564,12 @@ Luna's `convert_runner_scope` uses the same routing command with explicit admin
 approval. Routing lists additional projects and links to their existing policy
 review in project settings; conversion approves no repository policies.
 Every claim still requires approved repository policy, supported isolation and
-available capacity. Shared runners choose the organization project rank before
-issue priority; `project_ranks` on a runner overrides the organization rank for
-those projects. Each project's checkout and `hooks.runner_setup` remain separate.
+available capacity. A registered runner orders claim candidates by project
+rank, then issue priority, aging boost, landing preference, creation time,
+identifier and ID: project rank always wins over issue priority. `project_ranks`
+on a runner overrides the organization rank for those projects. Non-runner
+candidate reads (for example list views) order by priority, aging boost,
+landing preference, project rank, creation time, identifier and ID. Each project's checkout and `hooks.runner_setup` remain separate.
 
 ## Scoped runner onboarding
 
@@ -660,8 +658,7 @@ detent hub runner register --url https://cloud.detent.build/organizations/org_ex
    `global.agents.model_selection`, `client.native_projects` and other local
    project policy defaults before upgrading. Nested unknown machine keys also
    fail validation; the warning-and-ignore transition has ended.
-4. With `--service`, installs and starts a background service separate from a
-   local board's `detent` service on the same host. The default config path,
+4. With `--service`, installs and starts a background runner service. The default config path,
    `~/.config/detent-runner/global.yaml`, keeps `detent.runner` (launchd
    `com.digitaldrywood.detent.runner`, systemd `detent.runner.service`).
    New enrollments using other config paths append a stable hash of the absolute
@@ -1180,6 +1177,32 @@ List responses contain an opaque `next_cursor`. Pass it back with the same sort 
 
 Omit `work_item_id` from `POST /api/v1/claims` to claim next. Candidate selection and lease creation execute in one SQLite transaction; clients must not list candidates and then attempt a separate specific claim. Renew, release, and event requests must carry the positive `fencing_token` returned by the claim.
 
+## Issue archive
+
+Archive keeps an issue and its comments, attempts, changes, versions and audit
+history. It neither changes workflow state nor deletes data, and it is not a
+lane. Closed and completed issues still count as unarchived until explicitly
+archived.
+
+`POST /api/v2/organizations/{organization}/projects/{project}/work-items/{item}/archive`
+and the corresponding `/restore` take `idempotency_key` and `expected_revision`
+and require project write access and an operator principal. A live lease,
+including an active attempt, refuses archive; attempts whose lease expired or was
+released are already interrupted and do not block it. Archived issues remain
+readable through the normal issue, comment, attempt, change, history and version
+resources. Lists default to unarchived issues; `?archived=true` lists archived
+issues and `?archived=all` includes both. An archived unfinished issue remains an
+unfinished dependency until it is restored or its workflow state changes.
+
+Hosted plans count `unarchived_issues` for native projects across the
+organization; a catalog that omits the allowance uses the open-issue guard of
+10,000. Creation, conversation issue promotion, imports and restore share the
+atomic hosted entitlement check, and a request that exceeds the allowance returns
+HTTP 429 `allowance_exhausted` with resource, consumption and allowance. Retries
+and import refreshes that do not allocate an issue do not count. A downgrade
+removes no history and forces no archives. Local and self-hosted instances have
+no hosted quota.
+
 ## Native organization and project setup
 
 Each database receives a stable `hub_` identity and a local `org_` organization.
@@ -1496,8 +1519,7 @@ Operator-authorized imports supply provider `github`, stable `external_id`,
 `author_id`, optional `author_display_name`, and source `created_at`, `updated_at`
 and `observed_at` timestamps. Local creation/update times remain server times.
 Repeated source IDs return the existing imported record and do not overwrite
-later native edits. [GitHub profiles and import](github-profiles.md) documents
-resumable history retrieval, explicit cutover, optional summaries and limitations;
+later native edits. GitHub history import is resumable and cutover is explicit;
 attaching provenance alone is not a claim that all external history was imported.
 
 Workers can edit their own comments. Operators can edit project comments, with
@@ -2081,7 +2103,7 @@ source custody, remote observations or lease authority.
 
 Customer-store checkpoints require artifact IDs and cannot assert `available`:
 independent durable receipt/integrity/access verification follows the
-[artifact access contract](artifact-access-contract.md). IDs convey neither a
+[durable artifact contract](#durable-artifacts). IDs convey neither a
 download capability nor proof of ownership or availability. Hub never receives
 workspace paths, provider session state, manifest contents, source, diffs, raw
 transcripts, storage credentials, signed URLs or artifact bytes through handoffs.
@@ -2424,14 +2446,18 @@ The Hub never holds git credentials and makes no forge API call to land.
 
 A landing the repository does not allow is refused, never worked around: a
 worktree that moved past the reviewed head, a reviewed head the checkout no
-longer has, a conflict with the base, a base that already contains the head, a
-base branch that moved during the landing, or a base branch the forge protects
-(a pull request requirement, a protected branch, a hook that declines). The
-runner reports the reason, and the orchestrator moves the issue back to the
-review lane with a comment that carries it, such as "allow the runner to push
-to develop, or enable GitHub pull request mode for this project". Only an
-infrastructure failure (the remote unreachable, the Hub refusing the report)
-fails the run and retries it.
+longer has, a conflict with the base, a base that already contains the head, or
+a base branch the forge protects (a pull request requirement, a protected
+branch, a hook that declines). A base branch that moved during the landing, or
+pending CI, is not a refusal: the merge worker waits and retries the landing.
+For a refusal, the runner reports the reason, and the orchestrator moves the
+issue to the configured Rework lane (or another dispatchable, non-`Blocked`
+lane the workflow allows) with a comment that carries the reason, such as
+"allow the runner to push to develop, or enable GitHub pull request mode for
+this project", and schedules the retry with capped backoff. An infrastructure
+failure (the remote unreachable, the Hub refusing the report) fails the run and
+retries it through the same machine retry owner. A landing refusal never moves
+an issue to `Blocked`.
 
 A project may opt in with `deliverable.github_pull_request: true` in its
 approved repository policy. For a github.com origin and an authenticated `gh`
@@ -2453,20 +2479,17 @@ Landing uses `gate.landing_mode: per_landing`; legacy `rolling_barrier`
 configuration is interpreted as per-landing validation. `gate.run` remains a
 scalar command string. Native finalization validates the exact reviewed head,
 and a rebased landing runs the short validation command on its integrated tree.
-The landing barrier endpoints are retired. Detent's project policy uses
-`gate.run: make check-landing` and requires operator re-approval in the Hub.
-Versions pinned to the retired rolling policy are stale and must return through
-Rework for fresh validation. Stop or drain old runners before this Hub upgrade,
-then update both sides and approve the replacement policy before resuming.
+The landing barrier endpoints are retired. Versions pinned to the retired
+rolling policy are stale and return through Rework for fresh validation.
 A stale summary prevents new landing targets; it cannot recall Git credentials
 or a merge already authorized by an old runner.
 Scheduled validation supplies release evidence and never holds ordinary landing.
 
 GitHub's branch protection, required checks, and required reviews decide
 whether the merge succeeds. The runner verifies that the returned merge commit
-is on the base branch before reporting it to the Hub. A refused merge returns
-the issue to review with the GitHub reason; the reviewer can approve it again
-after fixing that condition. This mode uses the runner's `gh` credentials and
+is on the base branch before reporting it to the Hub. A refused merge follows
+the landing refusal path above: the issue returns to a dispatchable Rework lane
+with the GitHub reason. This mode uses the runner's `gh` credentials and
 does not give them to the Hub. The default remains plain git and requires no
 GitHub API access.
 
@@ -2592,25 +2615,9 @@ cannot authorize that version or land the retired version. Terminal issues and
 landed Changes cannot refresh; refresh never reopens them or resets a release ref.
 
 A machine-created delivery remains unconfirmed by default. An approved project
-`WORKFLOW.md` may delegate its bounded contract explicitly:
-
-```markdown
-## Release delivery contract
-Verified release picks of reviewed develop fixes may receive the approved delivery contract.
-
-### Acceptance criteria
-Deliver only the reviewed develop fix identified by the verified association,
-using its associated release PR. Do not add unrelated changes.
-
-### Must not break
-Preserve tests, provenance, human holds, independent review and landing gates.
-Do not reset the release branch, publish tags or deploy production.
-
-### How we know it worked
-The associated release pick passes its required checks and independent review.
-```
-
-Use exactly the project's effective required section names. `work_config` exposes
+`WORKFLOW.md` may delegate a bounded contract under a `## Release delivery
+contract` heading whose subsections use the project's effective required issue
+contract section names. `work_config` exposes
 this approved body and policy identity as `issue_contract.release_delivery`.
 The reporter copies those criteria when it files the Backlog delivery. After
 verification, association confirms only an exact match to the approved criteria;
@@ -2647,6 +2654,209 @@ source fix. The landing workspace and gate use the recorded release branch;
 the squash message retains the source `-x` trailer. Ordinary source issues keep
 their normal base. A moved source needing a replacement PR requires a separate
 reviewed delivery; association does not adopt arbitrary new heads.
+
+## Durable artifacts
+
+Run logs, review diff bundles and media can be published to an independent
+artifact service. Hub stores only metadata and authorizes reads; it never
+fetches, proxies or stores artifact bytes.
+
+| Mode | Content location | Requirements |
+| --- | --- | --- |
+| Local-only (default) | Runner workspace and existing local evidence | No hosted account, storage credentials or storage plan. Unuploaded content does not survive machine loss |
+| Customer-managed | Customer artifact service, catalog, bucket and backups | Customer configures and pays for their infrastructure |
+| Hosted, explicit opt-in | Separate Detent artifact service, catalog, bucket and backups | `mode: hosted` and `hosted_opt_in: true` in both the service configuration and the Hub binding; finite organization allowances |
+
+### Artifact service
+
+`detent artifacts --artifact-config service.json serve` runs the portable
+authorization and download service. It runs independently of execution runners,
+behind a TLS reverse proxy on a configured loopback port, with a private SQLite
+catalog under single-owner instance locking. Never put the catalog on NFS/SMB or
+open it from two processes. Example [service configuration](examples/artifacts/service.json),
+[systemd unit](examples/artifacts/detent-artifacts.service) and
+[Caddy configuration](examples/artifacts/Caddyfile) describe a Linux
+installation using an existing private bucket; their numeric values are finite
+examples, not plan allowances or retention promises.
+
+`internal/artifact.Storage` is the provider boundary. The adapter speaks the S3
+protocol with configurable endpoint, signing region, bucket, path or virtual-host
+addressing and optional `require_versioning`. Storage credentials come from the
+service's AWS SDK credential chain (workload role/profile or `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, optional `AWS_SESSION_TOKEN`); runners, browsers and Hub
+never receive them. The scoped Hub publisher token is read from the environment
+variable named by `publish_token_env` (the example uses
+`DETENT_ARTIFACT_PUBLISHER_TOKEN`).
+
+| Provider | `endpoint` | `region` for signing | Addressing |
+| --- | --- | --- | --- |
+| AWS S3 | Empty (SDK resolves endpoint) | Actual bucket region, e.g. `us-east-1` | `path_style: false` |
+| DigitalOcean Spaces | Regional origin, e.g. `https://nyc3.digitaloceanspaces.com` | `us-east-1`; the endpoint selects the region | `path_style: false` |
+| Tigris | `https://t3.storage.dev` | `auto` | Provider-supported style |
+
+`detent artifacts --artifact-config service.json verify-storage` creates an opaque
+temporary probe object under `detent-probe/`, checks that conditional create
+rejects replacement, round-trips exact bytes, deletes it and confirms absence. It
+fails closed with `unsupported_capability`, `checksum_mismatch` or
+`storage_unreachable`; `serve` repeats the probe. A provider without conditional
+create is unsupported. With `require_versioning: true` the service also requires
+a real version ID and version-pinned read/delete; it never changes bucket settings.
+
+The content API is versioned under `/v1`: reserve with `POST /uploads`, append
+with `PUT /uploads/{artifact}/parts`, finalize with
+`POST /uploads/{artifact}/finalize`, and read
+`GET /artifacts/{artifact}/manifests/{revision}` and
+`.../objects/{object}`. Strict JSON types in `internal/artifact` are the request
+contract and unknown fields are rejected. Read grants cannot upload; uploads
+require a current fenced running attempt. Ranges and multipart uploads are
+unsupported. A ten-second maintenance loop seals abandoned logs, cleans expired
+objects and delivers at most 32 receipts per batch, retrying after storage or Hub
+outages. The service emits closed error codes, never provider error bodies or
+content. CORS permits only configured exact browser origins; responses use
+no-store, no-referrer and nosniff.
+
+### Binding Hub and runners
+
+A project administrator binds a service with
+`PUT /api/v2/organizations/{org}/projects/{project}/artifact-services/{service}`:
+
+```json
+{
+  "service_id": "service_11111111111111111111111111111111",
+  "origin": "https://artifacts.example.com",
+  "mode": "customer",
+  "hosted_opt_in": false,
+  "publisher_token_id": "token_example"
+}
+```
+
+`publisher_token_id` references a dedicated scoped worker credential; the token
+value never appears in the binding. Only that credential can publish receipts
+(`POST .../artifact-services/{service}/receipts`) and introspect read grants for
+the binding. TLS origins cannot include user info, paths or queries; HTTP origins
+are limited to configured loopback fixtures. One catalog may serve several
+projects in the same organization (`--project` restricts it to one). Hosted
+accounting requires one authoritative catalog per organization.
+
+A native runner opts in through its `client` stanza:
+
+```yaml
+client:
+  artifact_service_id: service_11111111111111111111111111111111
+  artifact_bytes: 67108864
+```
+
+`artifact_bytes` is the finite per-artifact reservation for logs and review
+bundles, including manifests: greater than 1 MiB and at most 256 MiB. Omitting
+both fields keeps local-only behavior. There is no fallback provider.
+
+### Authorization and privacy
+
+The portable read identity is a scoped Hub project credential, and Hub is the
+membership authority. Runner uploads additionally need the current lease,
+fencing token, running attempt and matching run/work item.
+
+1. A member requests a grant for an exact artifact and manifest revision with
+   `POST .../work-items/{item}/artifacts/{artifact}/access`. Hub checks the
+   current project grant and stores only a hash of the random grant, its
+   principal, scope, revision and expiry.
+2. The grant lasts at most 60 seconds and never beyond artifact expiry. It is
+   returned with the bound service origin and manifest digest.
+3. The browser sends it in an `Authorization` header directly to the artifact
+   service, which checks current Hub authorization for every manifest or object
+   request. There is no positive authorization cache and no presigned URL.
+4. The service verifies object size and SHA-256 before returning bytes; the
+   browser independently verifies the manifest hash and each object.
+
+All runners may be stopped; Hub, the artifact service, storage and their network
+paths must be reachable. A Hub outage fails authorization closed and a storage
+outage is a distinct error. Downloaded bytes cannot be recalled after revocation.
+Staff, billing and platform administration views contain metadata only and grant
+no content access; the viewer never substitutes the dashboard operator credential
+for a project credential.
+
+| Hub metadata | Artifact custody only |
+| --- | --- |
+| Opaque org/project/work-item/run/attempt/version/service/artifact IDs, kind, immutable manifest reference and hash, aggregate size/count, expiry, state and observation time | Manifest body, source filenames and context, raw diffs/logs, screenshots/video, bucket and object locations/versions, storage credentials, catalog and backups |
+| Bound service origin and publisher credential ID; hashed short-lived read grants | Plain read grants and member credentials are transient and never persisted in logs, exports, analytics, URLs or browser storage |
+
+### Capture, upload and limits
+
+`CaptureGit` resolves explicit base and head commits, computes their merge base,
+disables external diff/text conversion, and captures a patch plus the complete
+text of every changed file at merge base and head (`file_context: changed_files`,
+`working_tree: false`). Unchanged files are absent: a bundle supports a
+changed-file viewer, not repository reconstruction. Binary changes keep Git's
+binary marker without bodies; rename detection uses a 1,000-candidate ceiling.
+Symlinks, submodules, invalid UTF-8 patches, unsafe paths and non-SHA-1
+repositories are reported as unsupported capture.
+
+Native runners journal logs privately, freeze 64 KiB UTF-8 chunk boundaries before
+upload, and replay identical chunks after a lost acknowledgment or restart.
+Finalization flushes the last chunk and captures committed HEAD before workspace
+cleanup; a capture or upload failure prevents cleanup from claiming durable
+completion. The service reserves quota and records the request hash before object
+I/O, assigns opaque object IDs before conditional PUT, verifies with GET, and
+records verified bytes transactionally. Each verified chunk produces a new
+immutable partial manifest; finalization produces a complete or interrupted
+revision. Manifest, accounting and publication outbox commit together, and Hub
+deduplicates identical receipts and rejects changed content under the same
+revision.
+
+| Protocol ceiling | Limit |
+| --- | --- |
+| Manifest | 1 MiB, 1,024 objects |
+| Log object | 1 MiB (native runners send at most 64 KiB) |
+| Text/diff/image object | 16 MiB; images at most 16 million pixels |
+| Video object | 64 MiB, MP4/WebM signature checks |
+| Artifact reservation | 256 MiB including all retained manifests and objects |
+
+PNG, JPEG, WebP, MP4 and WebM are accepted. Signature and dimension checks are not
+malware scanning. Archives and compressed bundles are unsupported.
+
+### Allowances, retention and deletion
+
+`Allowances.Limits(ctx, organizationID)` supplies organization limits and
+`Service.Usage` reports retained and reserved bytes. Admission counts retained
+plus reserved bytes against the organization maximum and separately caps
+outstanding reservations; identical retries and reused chunks are not charged
+twice. A downgrade rejects new reservations above the new limits without deleting
+data or rewriting existing expiry dates.
+
+Policies require finite artifact retention, abandoned-upload deadlines,
+deletion-record retention and backup lifetime; `deletion_record_seconds` must
+exceed `backup_seconds` plus `abandoned_upload_seconds`. Expiry starts at
+reservation and is never extended by reads, retries or revisions. At an
+abandoned-upload deadline verified log chunks are sealed interrupted and
+unverified objects are deleted. At expiry reads fail immediately; maintenance
+writes a content-free deletion marker to storage, removes exact object versions,
+verifies absence and purges catalog rows, keeping a content-free deletion record
+for the configured window. Storage errors retain the deletion-pending state and
+its quota.
+
+`detent artifacts ... usage` and `detent artifacts ... backup --output <path>`
+run only while the service is stopped; the CLI refuses to open a running catalog.
+Catalog backup covers manifests and outbox, not bucket bytes. A restored catalog
+checks storage deletion markers before serving or accepting uploads, and rejects
+unknown or future schemas. Missing exact bytes stay `missing`; regenerated bytes
+need a new artifact and cannot inherit reviews.
+
+| Observation | Meaning |
+| --- | --- |
+| No verified durable reference | Content may be local or queued; no machine-loss survival |
+| Partial / uploading | Only published verified chunks are readable |
+| Interrupted | Only the known uploaded prefix survived |
+| Complete / available | Immutable receipt accepted; each read still verifies authorization and integrity |
+| Expired | Retention deadline reached; physical deletion may be pending |
+| Missing | An authorized expected object or manifest is absent |
+| Denied | Credential or grant invalid or revoked; no cross-scope existence disclosure |
+| Checksum mismatch | Corruption; never shown as an empty successful view |
+| Storage unreachable / authorization unavailable | Distinct temporary failures; no hosted fallback |
+| Quota exceeded | Reservation or upload limit reached; already uploaded evidence is kept |
+
+Run and Change details show bounded artifact references, filtered by attempt or
+by selected immutable version. The [native Files / Review](native-review.md)
+viewer reads review bundles through this contract.
 
 Refreshing an existing association may retain a landed source's known v2
 security audit identity as historical provenance. This does not approve new
@@ -2760,7 +2970,7 @@ rules restricted to attachment prefixes remain permitted. Archive objects use
 without conditional writes, object lock, mandatory versioning or AWS checksum
 extensions; see [Spaces compatibility](https://docs.digitalocean.com/products/spaces/reference/s3-compatibility/).
 
-## Retention, export and deletion design
+## Retention, export and deletion
 
 Collaboration content, content versions, typed events, idempotency responses and
 owner backups all contain retained data. REST mutation receipts expire after 24
@@ -2811,42 +3021,14 @@ maintenance record and marks space reclamation pending. The online diff-body
 owner never invokes VACUUM: a quiet hour does not make VACUUM safe for tenant
 health checks. Reclaim space through offline operator maintenance after the
 first compaction has finished, with the tenant Hub quiesced and the database
-ownership lock held. Schedule that maintenance with the release owner and
-report the recorded before-compaction sizes, sizes before and after VACUUM,
-and retained event counts. Workers do not stop or maintain live tenant services.
-Later compaction frees pages for reuse without requesting another first-pass
+ownership lock held. Later compaction frees pages for reuse without requesting another first-pass
 VACUUM.
-
-A future scoped deletion procedure must use the following contract:
-
-1. Authorize the organization and record the deletion scope outside the affected
-   content. Fence writers and active leases, then take an owner backup when
-   policy permits a temporary recovery copy. Export current issues, every content
-   revision, comments, history and identity mappings when requested; artifact
-   content must come from its separate authorized service.
-2. Run maintenance through the single database owner, with ordinary API writes
-   stopped. In one transaction, temporarily replace the append-only triggers
-   with maintenance-only enforcement, remove or redact affected current content,
-   revisions, event references, idempotency response bodies, legacy workpad/outbox
-   copies, webhook payload copies and affected graph links, and write permitted
-   content-free tombstones. Restore append-only triggers before committing and
-   verify foreign keys. A crash must roll back both the data and trigger changes.
-3. Retain a deletion ledger outside older backups. Do not reuse deleted IDs.
-   Any future content retention gap must invalidate old cursors with an explicit
-   snapshot/resync response rather than silently presenting incomplete history.
-4. Expire every affected backup according to the approved policy. Restore into an
-   isolated owner, replay the deletion ledger and rotate cursor/session authority
-   before exposing restored data or accepting claims. A restore must not resurrect
-   deleted content or accept a formerly valid lease.
-5. Record which artifact stores and external projections require separate deletion
-   and their outcomes. Database deletion does not erase a GitHub projection,
-   independently hosted artifact, exported file or customer backup.
 
 Privileged scoped purge is not a supported operation.
 The supported full-instance restore revokes copied credentials and releases leases;
 it does not implement scoped erasure or automatically replay a customer deletion
-ledger. Operators must retain backups deliberately and must not disable triggers
-on a running Hub as a substitute for supported deletion.
+ledger. Database deletion does not erase a GitHub projection, independently
+hosted artifact, exported file or customer backup.
 
 ## Provider capacity reports
 
@@ -2899,7 +3081,9 @@ accounts through the existing agent routing configuration.
 ]
 ```
 
-`model_details` is optional and advisory: it describes models `models` already advertises and never widens what capacity matches. The collector writes it; the runner does not yet fill it from its backends' model catalogues. Each entry describes one reported model at most once, with at most 16 distinct reasoning efforts in the backend's own order (the Hub does not check the order), a `default_reasoning_effort` that must be in that list when the list is non-empty, a label of at most 128 characters, and `legacy` set when the provider has named a successor. A report carrying detail for a model outside `models` is rejected. When a conversation's preferences change, the Hub checks them against fresh runner reports: an explicit model must be one a fresh report advertises or the Hub's configured `conversation.model`, which is accepted without any runner report, and an effort outside the fixed vocabulary is accepted only when that model's detail publishes it (docs/conversation/decisions.md section 14); `GET /app/bootstrap` does not republish it yet, so `preferences.models[]` stays empty.
+`model_details` is optional and advisory: it describes models `models` already advertises and never widens what capacity matches. The collector writes it; the runner does not yet fill it from its backends' model catalogues. Each entry describes one reported model at most once, with at most 16 distinct reasoning efforts in the backend's own order (the Hub does not check the order), a `default_reasoning_effort` that must be in that list when the list is non-empty, a label of at most 128 characters, and `legacy` set when the provider has named a successor. A report carrying detail for a model outside `models` is rejected. When a conversation's preferences change, the Hub checks them against fresh runner reports: an explicit model must be one a fresh report advertises or the Hub's configured `conversation.model`, which is accepted without any runner report, and an effort outside the fixed vocabulary is accepted only when that model's detail publishes it; `GET /app/bootstrap` does not republish it yet, so `preferences.models[]` stays empty.
+
+Conversation turn preferences are `preferences: {model, reasoning_effort, access}`, set with `PATCH /conversations/{id}`. `model` is `auto` or a model identifier (case preserved); `reasoning_effort` uses the fixed vocabulary `auto`, `low`, `medium`, `high` (case-folded); `access` is `auto`, `read_only` or `full`. Empty values fold to `auto`, which defers to the project's configured defaults on the runner. Explicit values travel to the coordinator turn; coordinator turns are read-only whatever `access` says.
 
 Only these fields, `model_details` and optional `reset_at` are accepted. Files are bounded to
 256 KiB, 32 backends and 128 model identifiers per backend. Aliases are opaque

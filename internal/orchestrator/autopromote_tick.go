@@ -2608,7 +2608,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 
 	// An active run owns this head until it finishes. Avoid hydrating the PR
 	// again on every tick while that run is in progress.
-	if key := validatorStageIdentityForIssue(issue, o.cfg.AutoPromote.Gate).Key; key != "" {
+	if key := o.validatorStageIdentity(issue).Key; key != "" {
 		o.validatorMu.Lock()
 		_, running := o.validatorRuns[key]
 		o.validatorMu.Unlock()
@@ -2623,7 +2623,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 			return
 		}
 	}
-	identity := validatorStageIdentityForIssue(issue, o.cfg.AutoPromote.Gate)
+	identity := o.validatorStageIdentity(issue)
 	if identity.Key == "" {
 		if o.logger != nil {
 			o.logger.Error(
@@ -2863,7 +2863,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 		}
 		if _, canHydrate := o.connector.(connector.PullRequestHydrator); canHydrate {
 			if current, ok := o.hydrateValidatorStagePullRequest(ctx, issue); ok {
-				if validatorStageIdentityForIssue(current, o.cfg.AutoPromote.Gate).Key != identity.Key {
+				if o.validatorStageIdentity(current).Key != identity.Key {
 					// The reviewed diff no longer describes the PR. Let the next
 					// tick validate its current identity instead of storing a verdict.
 					o.validatorMu.Lock()
@@ -2883,7 +2883,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, state *State, is
 			}
 		}
 		currentIssue, currentContext := o.refreshValidatorContext(ctx, issue)
-		if !currentContext || validatorStageIdentityForIssue(currentIssue, o.cfg.AutoPromote.Gate).Key != identity.Key {
+		if !currentContext || o.validatorStageIdentity(currentIssue).Key != identity.Key {
 			o.validatorMu.Lock()
 			o.validatorTokenTotals = addTokenTotals(o.validatorTokenTotals, o.validatorRuns[identity.Key].withProgress().Tokens)
 			delete(o.validatorRuns, identity.Key)
@@ -2912,7 +2912,7 @@ func (o *Orchestrator) validatorStageResult(ctx context.Context, issue connector
 // validatorStageResultForInput consumes the current task snapshot supplied by
 // refreshValidatorContext; routing, dispatch and reporting share this lookup.
 func (o *Orchestrator) validatorStageResultForInput(ctx context.Context, issue connector.Issue) (gate.ValidatorResult, bool, bool) {
-	identity := validatorStageIdentityForIssue(issue, o.cfg.AutoPromote.Gate)
+	identity := o.validatorStageIdentity(issue)
 	if identity.Key == "" {
 		return gate.ValidatorResult{}, false, false
 	}
@@ -2936,7 +2936,7 @@ func (o *Orchestrator) validatorStageResultForInput(ctx context.Context, issue c
 }
 
 func (o *Orchestrator) markValidatorResultCommented(ctx context.Context, issue connector.Issue) {
-	identity := validatorStageIdentityForIssue(issue, o.cfg.AutoPromote.Gate)
+	identity := o.validatorStageIdentity(issue)
 	if identity.Key == "" {
 		return
 	}
@@ -2962,7 +2962,7 @@ func (o *Orchestrator) commentValidatorResult(ctx context.Context, issue connect
 	if repository == "" || number <= 0 {
 		return
 	}
-	if err := commenter.CreatePullRequestComment(ctx, repository, number, validatorResultComment(result, runpkg.ValidationContextDigest(issue, o.cfg.AutoPromote.Gate))); err != nil && o.logger != nil {
+	if err := commenter.CreatePullRequestComment(ctx, repository, number, validatorResultComment(result, o.validatorStageIdentity(issue).ContextDigest)); err != nil && o.logger != nil {
 		o.logger.Warn(
 			"validator result comment failed",
 			"issue_id", strings.TrimSpace(issue.ID),
@@ -3041,12 +3041,20 @@ type validatorStageIdentity struct {
 	PRNumber      int
 }
 
+func (o *Orchestrator) validatorStageIdentity(issue connector.Issue) validatorStageIdentity {
+	return validatorStageIdentityForWorkflow(issue, o.cfg.AutoPromote.Gate, o.cfg.AutoPromote.ValidatorWorkflow)
+}
+
 func validatorStageIdentityForIssue(issue connector.Issue, policies ...gate.Config) validatorStageIdentity {
 	var policy gate.Config
 	if len(policies) > 0 {
 		policy = policies[0]
 	}
-	digest := runpkg.ValidationContextDigest(issue, policy)
+	return validatorStageIdentityForWorkflow(issue, policy, "")
+}
+
+func validatorStageIdentityForWorkflow(issue connector.Issue, policy gate.Config, workflow string) validatorStageIdentity {
+	digest := runpkg.ValidationContextDigest(issue, policy, workflow)
 	issueID := strings.TrimSpace(issue.ID)
 	if issueID == "" {
 		return validatorStageIdentity{}

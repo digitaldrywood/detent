@@ -1,14 +1,13 @@
 // Execution status, in plain language, plus which controls it allows.
 //
-// Written for this repository. Design inventory A.10 ("Execution control
-// strip") and A.11 require that waiting for a runner and a working runner
-// never share a treatment, so every status here carries its own sentence and
+// Written for this repository. The execution control strip requires that
+// waiting for a runner and a working runner never share a treatment, so every status here carries its own sentence and
 // its own tone rather than collapsing into "busy".
 //
 // The affordances are read from `execution.capabilities`, which the hub sets
 // from the backend that is actually bound. A control the backend cannot honour
 // is not rendered, because rendering it would promise something the client
-// cannot deliver (decisions.md §5, `unsupported_control`).
+// cannot deliver (`unsupported_control`).
 import type { Execution, ExecutionStatus } from "../../contracts/index.ts";
 
 export type Tone = "dc-ok" | "dc-warn" | "dc-err" | "dc-info" | "";
@@ -16,8 +15,7 @@ export type Tone = "dc-ok" | "dc-warn" | "dc-err" | "dc-info" | "";
 /**
  * Which surface the copy is written for. A linked conversation is an issue a
  * runner works on; an unlinked chat is a question a runner answers. Every model
- * turn runs on a customer runner either way (decisions.md §1, "Where model
- * turns execute"), so the difference is what the runner is doing, not whether
+ * turn runs on a customer runner either way, so the difference is what the runner is doing, not whether
  * one is involved — and saying "issue" in a chat that has none is a lie the
  * reader has to decode.
  */
@@ -86,7 +84,7 @@ const COPY: Record<ExecutionStatus, ExecutionCopy> = {
 /**
  * The same ladder for an unlinked chat. `waiting_for_runner` names the project,
  * because that is where a runner has to be enrolled for the chat to be answered
- * at all (decisions.md §9.2), and A.11 still holds: waiting for a runner and a
+ * at all, and the same rule still holds: waiting for a runner and a
  * runner that is answering never share a treatment.
  */
 const CHAT_COPY: Record<ExecutionStatus, ExecutionCopy> = {
@@ -177,7 +175,7 @@ export function executionCopy(
  *
  * What stays: waiting for a runner (queued is not idle, and the chat copy
  * names the project), waiting for you (why it stopped), unknown (what to do),
- * and a failure that came with a reason. A.11 still holds — a queued issue and
+ * and a failure that came with a reason. The same rule still holds — a queued issue and
  * a working runner share neither label, tone nor sentence.
  */
 const LABEL_IS_THE_WHOLE_SENTENCE: ReadonlySet<ExecutionStatus> = new Set<ExecutionStatus>([
@@ -236,7 +234,7 @@ export function canInterrupt(execution: Execution): boolean {
 
 /**
  * `continue` records intent and reports `waiting_for_runner`; it never starts
- * a runner from the hub (decisions.md §5). It is offered only once the
+ * a runner from the hub. It is offered only once the
  * previous attempt has ended, or when nothing has started yet.
  */
 export function canContinue(execution: Execution): boolean {
@@ -248,8 +246,8 @@ export function canContinue(execution: Execution): boolean {
 
 /**
  * An unlinked chat's one control is `cancel`, which the hub delivers as an
- * interrupt to the runner holding the coordinator work item (decisions.md
- * §9.1); the client-facing kind stays `cancel`. It needs no attempt id and no
+ * interrupt to the runner holding the coordinator work item;
+ * the client-facing kind stays `cancel`. It needs no attempt id and no
  * `capabilities.interrupt`: the capability set belongs to a bound issue
  * backend, and a chat that is producing output can always be stopped.
  */

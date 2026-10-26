@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Turn preference values (decisions section 14). Every field is either
+// Turn preference values. Every field is either
 // PreferenceAuto, which defers to the project's configured defaults on the
 // runner, or an explicit value that travels to the coordinator turn.
 const (

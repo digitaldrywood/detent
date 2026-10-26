@@ -1,7 +1,6 @@
 -- +goose Up
 -- Workspace sessions, their dispatch association, their occupancy accounting,
--- and the relay's tickets and its audit rows (decisions sections 18.1 and
--- 18.2).
+-- and the relay's tickets and its audit rows.
 
 -- One workspace session.
 --
@@ -33,12 +32,12 @@ CREATE TABLE workspace_sessions (
   requires_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(requires_json)),
   -- capabilities_json is null until the runner reports what it can serve; the
   -- panel reads the workspace's own capabilities once one exists, because only
-  -- that runner can serve it (section 18.10).
+  -- that runner can serve it.
   capabilities_json TEXT CHECK (capabilities_json IS NULL OR json_valid(capabilities_json)),
   isolation TEXT NOT NULL DEFAULT '' CHECK (isolation IN ('', 'user', 'container')),
   worktree TEXT NOT NULL DEFAULT '' CHECK (worktree IN ('', 'retained', 'fresh')),
-  -- machine_hostname and worktree_path are where the worktree actually is
-  -- (decisions section 18.13), reported on the runner's heartbeat so a client
+  -- machine_hostname and worktree_path are where the worktree actually is,
+  -- reported on the runner's heartbeat so a client
   -- can tell whether an editor link on this machine would reach it.
   -- machine_hostname is not machine_id: the id is the hub's own binding
   -- identifier, the hostname is what a person recognises.
@@ -99,7 +98,7 @@ CREATE INDEX workspace_items_open_idx ON workspace_items(organization_id, projec
 -- Runner occupancy, written from the starting transition and ended at the
 -- closing one.
 --
--- The usage report's runner rows (section 17.5) add workspace_sessions and
+-- The usage report's runner rows add workspace_sessions and
 -- workspace_seconds from this table and never from relay traffic, so double
 -- counting is impossible by construction. An unreachable workspace whose lease
 -- expires is ended at lease expiry rather than at the moment the hub noticed,
@@ -117,7 +116,7 @@ CREATE INDEX workspace_occupancy_runner_idx ON workspace_occupancy(organization_
 
 -- Relay tickets.
 --
--- Browsers cannot set headers on a WebSocket upgrade, so section 12's CSRF rule
+-- Browsers cannot set headers on a WebSocket upgrade, so the hosted JSON API's CSRF rule
 -- is met with a ticket instead: minted by a POST that does carry the header and
 -- a checked Origin, single use, 30 seconds, and bound to both the workspace and
 -- the hosted session that minted it. Only the digest is stored, for the same
@@ -135,7 +134,7 @@ CREATE TABLE workspace_relay_tickets (
 );
 CREATE INDEX workspace_relay_tickets_sweep_idx ON workspace_relay_tickets(expires_at);
 
--- One person connection's audit row (section 18.2). Every connection writes
+-- One person connection's audit row. Every connection writes
 -- one, whatever it did and however it ended; a support actor's row carries the
 -- support reason, because a surface never widens an audience silently.
 CREATE TABLE workspace_relay_sessions (
@@ -158,7 +157,7 @@ CREATE INDEX workspace_relay_sessions_workspace_idx ON workspace_relay_sessions(
 CREATE UNIQUE INDEX workspace_relay_sessions_connection_idx ON workspace_relay_sessions(connection_id);
 
 -- What each runner can serve, reported in the heartbeat beside the provider
--- reports (section 18.10).
+-- reports.
 --
 -- It lives on runner_identities rather than in its own table for the same
 -- reason provider_reports_json does: the claim gate asks "can this runner serve

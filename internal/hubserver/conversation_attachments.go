@@ -22,7 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// Attachments (decisions section 17.1). An upload belongs to the actor that
+// Attachments. An upload belongs to the actor that
 // made it and to one conversation. It is unsent until a message command binds
 // it, and only while it is unsent may its owner delete it or the sweep expire
 // it. Reads follow the conversation's own read rule, so an attachment is

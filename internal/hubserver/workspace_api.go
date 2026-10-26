@@ -15,7 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Operator endpoints for workspace sessions (decisions section 18.1). The
+// Operator endpoints for workspace sessions. The
 // actor needs write on the project; terminal in requires also needs the
 // grant's runners flag.
 
@@ -175,7 +175,7 @@ func (w *workspaceService) openWorkspace(ctx context.Context, tx *sql.Tx, scope 
 // authorizeRequires applies the extra authority a requirement needs beyond
 // write on the project. Only the terminal has one today: the grant's runners
 // flag, because a terminal is the runner account's authority handed to a
-// person (section 18.3).
+// person.
 func (w *workspaceService) authorizeRequires(ctx context.Context, tx *sql.Tx, scope nativeScope, requires []string) error {
 	terminal := false
 	for _, name := range requires {
@@ -205,7 +205,7 @@ func (w *workspaceService) authorizeRequires(ctx context.Context, tx *sql.Tx, sc
 			publicMessage: true,
 		}
 	}
-	// The isolation rule (section 18.3). `user` runs the shell as the runner's
+	// The isolation rule. `user` runs the shell as the runner's
 	// own account, with its credential store, its provider logins and its other
 	// checkouts in reach; it is allowed "only when the organization has set
 	// workspaces.terminal.isolation: user explicitly and the person is an owner
@@ -222,7 +222,7 @@ func (w *workspaceService) authorizeRequires(ctx context.Context, tx *sql.Tx, sc
 		}
 	}
 	// A support actor gets a terminal "only with a support reason recorded and
-	// only at container" (section 18.3). The reason is recorded by the session
+	// only at container". The reason is recorded by the session
 	// itself; this is the level.
 	if scope.credential.Hosted.SupportReason != "" &&
 		w.config.Terminal.Isolation != workspacesession.IsolationContainer {
@@ -283,7 +283,7 @@ func (s *Service) deleteWorkspace(c echo.Context) error {
 }
 
 // presentWorkspace projects a record for one reader, attaching the relay
-// session rows only for an owner or an admin (section 18.1). A reader who is
+// session rows only for an owner or an admin. A reader who is
 // neither sees the workspace and not who has been inside it.
 func (w *workspaceService) presentWorkspace(ctx context.Context, scope nativeScope, record workspaceRecord) workspacesession.Session {
 	resource := record.resource()
@@ -302,10 +302,10 @@ func (w *workspaceService) presentWorkspace(ctx context.Context, scope nativeSco
 // workspaceAuditReadable reports whether this actor may see the workspace's
 // relay session rows.
 //
-// Section 18.1 says owners and admins, and that is taken literally rather than
+// The workspace session contract says owners and admins, and that is taken literally rather than
 // widened to the workspace's creator. A row names who has been inside a
 // worktree and what they moved through it, which is a different question from
-// who opened it; §18.3 widens the equivalent audience for a terminal recording
+// who opened it; the terminal contract widens the equivalent audience for a terminal recording
 // to "the person who ran the session" in so many words, and the absence of that
 // clause here is the contract, not an omission. A surface never widens an
 // audience on its own.

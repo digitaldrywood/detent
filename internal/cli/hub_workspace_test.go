@@ -18,7 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// The runner's workspace lane wiring (decisions section 18.1). A workspace is
+// The runner's workspace lane wiring. A workspace is
 // claimed only by a runner that reports the capabilities it requires, so the
 // decision to run a lane at all and the report on the heartbeat answer one
 // question and must agree.

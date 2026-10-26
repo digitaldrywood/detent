@@ -1,9 +1,9 @@
-// Breadcrumb arithmetic for the Files surface (decisions.md §18.4).
+// Breadcrumb arithmetic for the Files surface.
 //
 // Upstream: `components/files/filePath.ts`. `fileBreadcrumbs` and
 // `fileBreadcrumbParent` are theirs with the host-path branch removed: a
 // hosted worktree has no absolute paths, every path the runner serves is
-// worktree-relative (§18.4's containment rule). `fileBreadcrumbChildren` takes
+// worktree-relative (the Files contract's containment rule). `fileBreadcrumbChildren` takes
 // one directory's listing rather than the whole project index, because that
 // is what the runner answers with.
 import type { FileEntry } from "../../adapters/workspaceRelay.ts";

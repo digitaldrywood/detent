@@ -1,5 +1,5 @@
 -- +goose Up
--- Who is executing a run (decisions section 18.12).
+-- Who is executing a run.
 --
 -- A queued run has two possible executors: the person who opens the exec
 -- channel for it, and the hub itself handing it to the runner that already

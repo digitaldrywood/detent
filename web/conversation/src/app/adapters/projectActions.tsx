@@ -99,7 +99,7 @@ function rejectWithoutProject(): Promise<ProjectScriptActionResult> {
  * that changed them.
  *
  * There is no event subscription here yet, and that is a deliberate gap rather
- * than an oversight: §18.12 puts `action_run.<status>` on the project stream
+ * than an oversight: the project actions contract puts `action_run.<status>` on the project stream
  * for *runs*, and says nothing about an action's own create, edit or delete.
  * So a colleague's newly authored action appears on the next load of the
  * route.
@@ -207,7 +207,7 @@ export function useProjectActions(projectId: string | null): ProjectActionsHandl
 /**
  * One create or one edit.
  *
- * The whole record goes on a patch rather than a diff of it. §18.12 requires
+ * The whole record goes on a patch rather than a diff of it. The project actions contract requires
  * `expected_revision`, so the write is already conflict-checked, and sending
  * every field is what makes clearing a chord or a preview URL expressible —
  * an omitted field means "leave alone", which is not what an emptied input
@@ -225,7 +225,7 @@ async function writeAction(
     keybinding: input.keybinding,
     icon: input.icon,
     previewUrl: input.previewUrl,
-    // §18.7: the switch is disabled, so this is always the stored value and
+    // The switch is disabled, so this is always the stored value and
     // never something the reader just turned on. It is still sent, because the
     // hub stores and echoes it and an action authored today should not have to
     // be re-authored when the Browser surface lands.

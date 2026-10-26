@@ -12,7 +12,7 @@ import {
 import { newWorkKey, WorkApiError, type WorkHttp } from "../work/lib/workHttp.ts";
 import { useWorkHttp } from "../work/lib/useWork.ts";
 
-/** The eight `workspace.<state>` event names §18.1 puts on the stream. */
+/** The eight `workspace.<state>` event names the workspace session contract puts on the stream. */
 export const WORKSPACE_EVENT_TYPES: readonly string[] = [
   "workspace.requested",
   "workspace.starting",
@@ -43,7 +43,7 @@ export interface WorkspaceHandle {
   readonly error: string | null;
   readonly loading: boolean;
   readonly retry: () => void;
-  /** Opens a socket for this workspace's relay, ticket and all (§18.2). */
+  /** Opens a socket for this workspace's relay, ticket and all. */
   readonly relayUrl: ((ticket: string) => string) | null;
   readonly mintTicket: (() => Promise<string>) | null;
 }
@@ -62,7 +62,7 @@ const IDLE: WorkspaceHandle = {
 const KEY_STORAGE_PREFIX = "detent:workspace-key:v2";
 
 /**
- * The capabilities the hub relays to a runner (§18.1). The hub drops every
+ * The capabilities the hub relays to a runner. The hub drops every
  * other entry of `requires` when it creates a workspace, because it has no diff
  * or preview channel, so a runner reports neither and reuse must not wait for
  * one.
@@ -77,7 +77,7 @@ export function relayedRequires(requires: readonly string[]): readonly string[] 
 /**
  * The idempotency key for "open a workspace for this issue", persisted.
  *
- * §18.1 answers a second request on the same worktree with 409
+ * The workspace session contract answers a second request on the same worktree with 409
  * `workspace_exists`, and the create is a mutation, so a reload that retried
  * with a fresh key would be a different intent and could race its own earlier
  * attempt. One key per project-and-issue, kept across reloads, makes every
@@ -167,7 +167,7 @@ export function workspaceSatisfies(
 /**
  * Finds an open workspace for this issue, or opens one.
  *
- * Reuse first, because §18.1 caps open workspaces per organization and per
+ * Reuse first, because the workspace session contract caps open workspaces per organization and per
  * person and answers a duplicate with 409: a reader who opens Files, closes
  * the panel and opens it again must land on the workspace they already have,
  * not spend another slot. Reuse is only correct where the workspace can serve
@@ -237,7 +237,7 @@ export interface UseWorkspaceInput {
   readonly projectId: string | null;
   readonly workItemId: string | null;
   readonly attemptId?: string | null;
-  /** What the runner must report to be allowed to claim it (§18.1). */
+  /** What the runner must report to be allowed to claim it. */
   readonly requires: readonly string[];
   /** False keeps the hook idle, so opening a panel is what spends a slot. */
   readonly enabled?: boolean;
@@ -289,7 +289,7 @@ export function useWorkspace(input: UseWorkspaceInput): WorkspaceHandle {
     };
   }, [binding, http, projectId, workItemId, attemptId, requiresKey, enabled, nonce]);
 
-  // Readiness by subscription (§18.1). The stream is the project's, so every
+  // Readiness by subscription. The stream is the project's, so every
   // frame is filtered down to this workspace's id before it is believed.
   const workspaceId = workspace?.id ?? null;
   React.useEffect(() => {
@@ -329,7 +329,7 @@ export function useWorkspace(input: UseWorkspaceInput): WorkspaceHandle {
         ? null
         : async () => {
             // A new key per ticket: each ticket is a separate single-use
-            // intent (§18.2), so replaying one would be wrong, not idempotent.
+            // intent, so replaying one would be wrong, not idempotent.
             const minted = await http.mintRelayTicket({
               projectId,
               workspaceId,

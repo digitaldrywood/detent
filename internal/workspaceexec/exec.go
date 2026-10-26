@@ -1,5 +1,5 @@
 // Package workspaceexec runs one project action in one worktree and streams
-// its output (decisions section 18.12).
+// its output.
 //
 // Everything here exists to keep three promises a reader depends on. The output
 // they see is the output a terminal would have shown, in the order the shell
@@ -11,7 +11,7 @@
 // leaves it behind is a worktree nobody can reuse.
 //
 // The command itself is not validated. An action's command is shell syntax by
-// construction (section 18.12's NormalizeActionCommand says so), and a runner
+// construction (the project actions contract's NormalizeActionCommand says so), and a runner
 // that tried to decide which commands are safe would be pretending to a
 // boundary it does not have. What bounds it is who may write an action and
 // where it runs.
@@ -357,7 +357,7 @@ var credentialPrefixes = []string{"DETENT_", "OPENAI_", "ANTHROPIC_", "CODEX_", 
 // scrubEnvironment removes provider and Detent credentials from the child's
 // environment and points DETENT_WORKSPACE at the worktree.
 //
-// Section 18.3 says exactly what this is worth for a user-isolation surface: it
+// The terminal contract says exactly what this is worth for a user-isolation surface: it
 // is a courtesy, not a boundary. The command runs as the runner account, so
 // every key that account can reach on its own -- a logged-in CLI's token, a
 // credential file, a keychain -- it can still reach. What this removes is the

@@ -76,7 +76,7 @@ export interface WorkTopBarProps {
   /** The leading breadcrumb segment, e.g. `Work` or the project's name. */
   readonly context: string;
  readonly projectId?: string | null;
-  /** The current segment. It is the route's one `h1` (B.14). */
+  /** The current segment. It is the route's one `h1`. */
   readonly title: string;
   readonly titleTooltip?: string;
   readonly meta?: string | null;

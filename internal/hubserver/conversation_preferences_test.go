@@ -25,7 +25,7 @@ const conversationPreferencesModel = "gpt-6-astra"
 
 // reportConversationModels enrolls a runner on the fixture's project and
 // publishes a provider report naming models, which is where the bootstrap's
-// model choices and the PATCH validation come from (decisions section 14).
+// model choices and the PATCH validation come from.
 func reportConversationModels(t *testing.T, f conversationAPIFixture, models ...string) {
 	t.Helper()
 	runner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
@@ -49,7 +49,7 @@ func conversationPatch(t *testing.T, f conversationAPIFixture, token, id string,
 	return updated
 }
 
-// TestConversationPreferences covers the PATCH half of decisions section 14:
+// TestConversationPreferences covers the PATCH half of turn preferences:
 // a fresh conversation is all auto, each field can be set on its own, an
 // unknown value is refused, and "auto" puts a field back.
 func TestConversationPreferences(t *testing.T) {
@@ -108,7 +108,7 @@ func TestConversationPreferences(t *testing.T) {
 
 // TestConversationModelChoicesFallBackToTheDefault proves a hub whose runners
 // have reported no catalog still offers the configured coordinator model
-// beside "auto", and accepts a preference naming it (decisions section 14).
+// beside "auto", and accepts a preference naming it.
 func TestConversationModelChoicesFallBackToTheDefault(t *testing.T) {
 	t.Parallel()
 	f := newConversationAPIFixture(t, &ConversationConfig{Enabled: true, Model: conversationPreferencesModel})
@@ -202,7 +202,7 @@ func TestConversationModelChoicesOfferLunaEfforts(t *testing.T) {
 // TestConversationPreferencesReachTheIssue proves the handoff writes the
 // conversation's explicit effort into the issue's detent-agent block, never
 // its model,
-// and that a later change rewrites that block exactly once (section 14).
+// and that a later change rewrites that block exactly once.
 func TestConversationPreferencesReachTheIssue(t *testing.T) {
 	t.Parallel()
 	f := newConversationAPIFixture(t, nil)
@@ -275,7 +275,7 @@ func readConversationIssue(t *testing.T, f conversationAPIFixture, id string) tr
 
 // TestConversationPreferencesReachTheBind proves the runner is told what the
 // conversation prefers when it binds, so it can apply the model, the effort
-// and the access level to its turn (decisions section 14).
+// and the access level to its turn.
 func TestConversationPreferencesReachTheBind(t *testing.T) {
 	t.Parallel()
 	f := newConversationWorkerFixture(t)
@@ -302,7 +302,7 @@ func TestConversationPreferencesReachTheBind(t *testing.T) {
 // TestConversationSettleSweep proves the sweep settles a conversation whose
 // execution has ended and that has been quiet for the project's settle
 // window, leaves a fresher or still-running one alone, and that a new
-// message unsettles (decisions section 14).
+// message unsettles.
 func TestConversationSettleSweep(t *testing.T) {
 	t.Parallel()
 	window := time.Hour
@@ -389,7 +389,7 @@ func conversationEmitted(t *testing.T, f conversationAPIFixture, id string, want
 }
 
 // TestConversationDefaultSettleWindow proves the configuration default is the
-// 24 hours decisions section 14 names.
+// 24 hours.
 func TestConversationDefaultSettleWindow(t *testing.T) {
 	t.Parallel()
 	if got := (ConversationConfig{Enabled: true}).normalized().SettleWindow; got != 24*time.Hour {
@@ -428,7 +428,7 @@ func TestConversationHandoffNextStep(t *testing.T) {
 		{name: "absent", wantState: "Todo", wantDispatch: conversationDispatchNow},
 		{name: "dispatch-now", next: map[string]any{"dispatch": "now"}, wantState: "Todo", wantDispatch: conversationDispatchNow},
 		// This project has no Backlog, so "later" falls back to the first
-		// dispatchable state (decisions section 14).
+		// dispatchable state.
 		{name: "dispatch-later-without-backlog", next: map[string]any{"dispatch": "later"}, wantState: "Todo", wantDispatch: conversationDispatchLater},
 		{name: "explicit-state", next: map[string]any{"state": "In Progress"}, wantState: "In Progress", wantDispatch: conversationDispatchNow},
 		{name: "priority", next: map[string]any{"priority": 1}, wantState: "Todo", wantDispatch: conversationDispatchNow, wantPriority: conversationRank1()},
@@ -545,7 +545,7 @@ func TestConversationHandoffLaterUsesBacklog(t *testing.T) {
 }
 
 // TestConversationMessageReferences covers extraction, resolution and the
-// "referenced from" listing (decisions section 14).
+// "referenced from" listing.
 func TestConversationMessageReferences(t *testing.T) {
 	t.Parallel()
 	f := newConversationAPIFixture(t, nil)
@@ -593,7 +593,7 @@ func TestConversationMessageReferences(t *testing.T) {
 	})
 
 	// The chat is private, so another reader of the same issue must not be
-	// told what it said (decisions section 14).
+	// told what it said.
 	t.Run("a private chat is invisible to another reader", func(t *testing.T) {
 		page := listConversationReferences(t, f, f.other, string(issue.WorkItemID))
 		if len(page.References) != 0 {
@@ -618,7 +618,7 @@ func TestConversationMessageReferences(t *testing.T) {
 // TestConversationReferencesSurviveMessageUpdates proves a message.updated
 // event keeps the message's references. The event replaces the client's copy,
 // so a projection that dropped them would take the links off the transcript
-// as soon as the delivery moved on (decisions section 14).
+// as soon as the delivery moved on.
 func TestConversationReferencesSurviveMessageUpdates(t *testing.T) {
 	t.Parallel()
 	f := newConversationAPIFixture(t, nil)

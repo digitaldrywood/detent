@@ -51,9 +51,8 @@ import { Textarea } from "./ui/textarea";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 /**
- * §18.7, quoted: the sentence the disabled preview switch carries. It is the
- * exact string decisions.md fixes, so a grep for it finds the rule and not a
- * paraphrase of it.
+ * The sentence the disabled preview switch carries. It is kept as one exact
+ * string, so a grep for it finds the rule and not a paraphrase of it.
  */
 export const PREVIEW_UNAVAILABLE_REASON = "Browser preview is not available on Detent Cloud yet.";
 
@@ -154,7 +153,7 @@ export function ProjectScriptEditorDialog({
   onClose: () => void;
 }) {
   const formId = React.useId();
-  // The §18.7 reason's own id, so the disabled switch can name it (Detent).
+  // The browser preview rule reason's own id, so the disabled switch can name it (Detent).
   const previewReasonId = React.useId();
   const [name, setName] = useState("");
   const [command, setCommand] = useState("");
@@ -362,7 +361,7 @@ export function ProjectScriptEditorDialog({
                   onCheckedChange={(checked) => setRunOnWorktreeCreate(Boolean(checked))}
                 />
               </label>
-              {/* §18.7, §16: upstream disables this switch while the URL is
+              {/* Upstream disables this switch while the URL is
                   empty; Detent disables it always and says why, because there
                   is no live preview for an action to open yet. Their row
                   markup and their own `opacity-60` disabled treatment are

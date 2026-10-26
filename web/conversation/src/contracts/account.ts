@@ -1,14 +1,14 @@
 import { ProjectIcon } from "./projectIcon.ts";
 // Wire contracts for the hosted account surface.
 //
-// These schemas are the client half of `docs/conversation/decisions.md` §12:
+// These schemas are the client half of the Hub account API:
 // the extended `/app/bootstrap` payload and the organization, project,
 // fleet, plan and billing endpoints under
 // `/api/v2/organizations/:organization`. The fixtures under
 // `src/contracts/fixtures/account-*.json` are the shared examples, bound to
 // these schemas by `fixtures.ts`, so the Go side marshals the same files.
 //
-// Where §12 writes a field as `[...]` or names a Go report rather than a JSON
+// Where the hosted JSON API writes a field as `[...]` or names a Go report rather than a JSON
 // shape, the struct below follows the Go type it names — `runnerauth.Runner`
 // for a fleet row, `hubserver.HostedEntitlement` for the plan report,
 // `hubserver.hostedBillingReport` for the billing report — and the deviations
@@ -32,12 +32,12 @@ import { ApiError } from "./conversation.ts";
 /**
  * The hosted organization roles (`auth.ValidOrganizationRole`). `owner` and
  * `admin` manage the organization; `member` writes where a grant says so;
- * `viewer` reads only (decisions.md §10.11).
+ * `viewer` reads only.
  */
 export const OrganizationRole = Schema.String;
 export type OrganizationRole = typeof OrganizationRole.Type;
 
-/** True for the two roles §12 gates the management endpoints behind. */
+/** True for the two roles the hosted JSON API gates the management endpoints behind. */
 export function canManageOrganization(role: string): boolean {
   return role === "owner" || role === "admin";
 }
@@ -134,7 +134,7 @@ export type AccountProject = typeof AccountProject.Type;
 /**
  * An open support session. Its presence is what the organization banner reads:
  * somebody from Detent is acting as this organization, and the reader is
- * entitled to see who, why and until when (§12, "Plan, billing, support").
+ * entitled to see who, why and until when.
  */
 export const SupportSession = Schema.Struct({
   actor: Schema.String,
@@ -194,7 +194,7 @@ export const UpdatesReport = Schema.Struct({
 export type UpdatesReport = typeof UpdatesReport.Type;
 
 /**
- * `GET /app/bootstrap` (§12, "Serving"). It is a superset of the conversation
+ * `GET /app/bootstrap`. It is a superset of the conversation
  * client's `Bootstrap`: the same payload decodes through both, so the shell
  * loads it once.
  */
@@ -459,7 +459,7 @@ export const ARTIFACT_CHOICES = ["", "local", "customer"] as const;
 /**
  * One onboarding step. There are no step ids: `onboarding.Evaluate` names each
  * step and the name is its identity, and only two states exist. The wizard's
- * stepper reads exactly these (§12, "Projects and settings").
+ * stepper reads exactly these.
  */
 export const OnboardingStepState = Schema.Literals(["ready", "action_required"]);
 export type OnboardingStepState = typeof OnboardingStepState.Type;
@@ -963,7 +963,7 @@ export type BillingUsageReport = typeof BillingUsageReport.Type;
 /**
  * `GET /billing`: `hubserver.hostedBillingReport` plus `prices`. The report
  * alone cannot render the screen — the hosted Templ page read the configured
- * prices from `HostedBillingConfig` rather than from the report — so §12's
+ * prices from `HostedBillingConfig` rather than from the report — so the hosted JSON API's
  * "checkout buttons per configured price" needs the list on the payload.
  */
 export const BillingReport = Schema.Struct({
@@ -978,7 +978,7 @@ export const BillingReport = Schema.Struct({
   pending_events: Schema.Number,
   recent_audit: Schema.optional(Schema.NullOr(Schema.Array(BillingAudit))),
   prices: Schema.Array(BillingPrice),
-  /** False while impersonating: §12 refuses billing to a support session. */
+  /** False while impersonating: the hosted JSON API refuses billing to a support session. */
   can_checkout: Schema.optional(Schema.Boolean),
   /** True once the organization has a billing customer the portal can open. */
   can_manage: Schema.optional(Schema.Boolean),

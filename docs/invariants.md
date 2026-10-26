@@ -1,7 +1,7 @@
 # Repository invariants
 
 These rules apply to all repository changes. Follow the
-[validation policy](../AGENTS.md#validation). Only a change to an invariant's
+[validation policy](../WORKFLOW.md#validation). Only a change to an invariant's
 rule or its enforcing check edits this document. Identify affected INV IDs in
 the Change/PR description; put per-change rationale, evidence and verification
 there or in issue comments, as required by INV-16. A passing check does not
@@ -207,7 +207,7 @@ a frozen develop snapshot on a release branch, fixes land on develop first and
 are cherry-picked with `-x` through release-branch PRs, and no develop
 prerelease or source-gate-only deployment path exists. Release API calls belong
 to operators and GitHub Actions, never Detent runners. The release flow is
-specified in [branching](branching.md#release-branches).
+specified in [the release workflow](../WORKFLOW.md#release).
 
 **Enforcement:** checks assert outcomes only: no workflow triggers on
 `pull_request`, `pull_request_target` or `merge_group` except the bounded
@@ -455,8 +455,7 @@ UI to make them observable, including on Diagnostics, behind toggles or debug
 flags. Agents describe proposed UI additions in their outcome or file Backlog
 work for a human to author or rewrite; they do not build them.
 
-**Enforcement:** Review applies [AGENTS.md](../AGENTS.md#implementation),
-[CLAUDE.md](../CLAUDE.md#workflow) and the
+**Enforcement:** Review applies [AGENTS.md](../AGENTS.md#ui) and the
 [PR template](../.github/PULL_REQUEST_TEMPLATE.md). No additional gate,
 configuration, reason code or UI surface enforces this rule.
 
@@ -483,9 +482,8 @@ in the enforcing tests and package documentation, not in an invariant.
 The current completion contract owns tracker publication; this rule grants
 workers no additional write authority.
 
-**Enforcement:** Review applies [AGENTS.md](../AGENTS.md#repository-invariants),
-[CLAUDE.md](../CLAUDE.md#repository-invariants) and the evidence instructions in
-the [PR template](../.github/PULL_REQUEST_TEMPLATE.md). This is a review rule;
+**Enforcement:** Review applies [AGENTS.md](../AGENTS.md#repository-invariants) and the evidence
+instructions in the [PR template](../.github/PULL_REQUEST_TEMPLATE.md). This is a review rule;
 it adds no check, gate, configuration or runtime mechanism.
 
 ## INV-17 — Runners are stateless, like GitHub Actions runners
@@ -513,8 +511,7 @@ critical or incompatible update refusal. A captured artifact remains owned
 until its workers and cleanup finish; only then may an obsolete artifact be
 removed. Execution processes access local session state through the controller's
 bounded typed protocol, never concurrent SQLite migrations or independent store
-writers. The supported protocol and lifecycle are documented in
-[ephemeral execution workers](development.md#ephemeral-execution-workers).
+writers.
 
 A change may not add machine-local state that later jobs depend on, discover
 configuration by scanning the machine, or route work by where earlier work

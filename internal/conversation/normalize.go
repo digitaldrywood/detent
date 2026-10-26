@@ -5,15 +5,15 @@ import (
 	"time"
 )
 
-// Resume values report what a bound runner continued from (decisions
-// section 10.4). The empty value means the runner started fresh.
+// Resume values report what a bound runner continued from.
+// The empty value means the runner started fresh.
 const (
 	ResumeThread     = "thread"
 	ResumeTranscript = "transcript"
 )
 
 // ThreadOrigin values name the kind of turn that produced a conversation's
-// provider thread (decisions section 9.3). A coordinator thread was started
+// provider thread. A coordinator thread was started
 // with the coordinator instructions and its permission set: no checkout, no
 // edits, no issue state. A worker thread was started by an attempt on the
 // linked issue. Only a turn of the same kind may resume a thread, because the
@@ -145,7 +145,7 @@ func NormalizeExecutionValue(execution Execution) Execution {
 // NormalizeDelivery maps deliveries that were in flight to unknown after a
 // hub restart. Queued controls stay queued and are never replayed; a control
 // that had reached the worker cannot be re-established, so it becomes
-// unknown for the user to retry explicitly (decisions section 10.3).
+// unknown for the user to retry explicitly.
 func NormalizeDelivery(delivery Delivery) Delivery {
 	switch delivery {
 	case DeliverySending, DeliverySent, DeliveryResponding:

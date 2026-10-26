@@ -25,7 +25,7 @@ import {
 import { WorkspaceStatusView } from "./WorkspaceStatusView.tsx";
 
 export interface OutputSurfaceProps {
-  /** Newest first, as §18.12 lists an action's runs. */
+  /** Newest first, as the project actions contract lists an action's runs. */
   readonly runs: readonly ActionRunSnapshot[];
   readonly activeRunId: string | null;
   readonly onSelectRun: (runId: string) => void;
@@ -174,7 +174,7 @@ export function OutputSurface({
       );
     }
     // A run that has already been recorded is shown even while the workspace
-    // it ran in is gone: the record outlives the session (§18.12, "a run
+    // it ran in is gone: the record outlives the session (the project actions contract, "a run
     // nobody watched is still visible"), so the workspace's own state only
     // speaks for a surface with nothing else to say.
     if (active === null) {
@@ -187,7 +187,7 @@ export function OutputSurface({
           </EmptyState>
         );
       }
-      // Every state that cannot run a command is words (§18.1); the skeleton
+      // Every state that cannot run a command is words; the skeleton
       // is kept for `starting` alone, which `describeWorkspaceStatus` decides.
       const status = describeWorkspaceStatus({
         state,
@@ -231,7 +231,7 @@ export function OutputSurface({
           </MarkdownCodeBlock>
         </div>
         {active.truncated ? (
-          // §18.12: the runner emits the marker once, as its own span, so a
+          // The runner emits the marker once, as its own span, so a
           // reader can tell a cut log from a finished one. Said again here as
           // the surface's own line, because the span scrolls away with the
           // output and this does not.

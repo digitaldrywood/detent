@@ -1,4 +1,4 @@
-// Reading a recorded run back (decisions.md §18.12).
+// Reading a recorded run back.
 //
 // The eighth dogfood run queued a run through the API, got its 202, and the row
 // sat `queued` for three minutes and forty seconds because nothing but a
@@ -106,7 +106,7 @@ describe("loadRecordedRuns", () => {
   });
 
   it("does not spend a request on a run with nothing to read", async () => {
-    // §18.12 accumulates output in memory and writes it once on completion, so
+    // The project actions contract accumulates output in memory and writes it once on completion, so
     // a run still going has nothing stored; and a command that printed nothing
     // and exited zero has no bytes. Either way the read would be answered with
     // an empty body.

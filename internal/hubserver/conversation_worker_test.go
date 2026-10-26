@@ -1152,7 +1152,7 @@ func TestConversationWorkerUnbind(t *testing.T) {
 			messages := f.messages(t)
 			// A control the worker was handed is never replayed, whatever
 			// its kind; one that was never handed out stays queued for the
-			// next attempt (decisions section 10.3).
+			// next attempt.
 			if messages[text.ID].Delivery != conversation.DeliveryUnknown || messages[stop.ID].Delivery != conversation.DeliveryUnknown {
 				t.Fatalf("text = %s stop = %s", messages[text.ID].Delivery, messages[stop.ID].Delivery)
 			}
@@ -1329,7 +1329,7 @@ func TestConversationReconcileLeaseLoss(t *testing.T) {
 		}
 		messages := f.messages(t)
 		// Everything the worker was handed becomes unknown; only what was
-		// never handed out stays queued (decisions section 10.3).
+		// never handed out stays queued.
 		if messages[text.ID].Delivery != conversation.DeliveryUnknown || messages[stop.ID].Delivery != conversation.DeliveryUnknown {
 			t.Fatalf("text = %s stop = %s", messages[text.ID].Delivery, messages[stop.ID].Delivery)
 		}
@@ -1530,7 +1530,7 @@ func TestConversationWorkerQuestionSnapshot(t *testing.T) {
 // runner that names the thread resumes it and the execution says so, while a
 // runner that cannot reach the thread is handed a transcript, the execution
 // says transcript, and the history records the hand-off with the number of
-// messages the transcript carried (decisions section 10.4).
+// messages the transcript carried.
 func TestConversationBindReportsResume(t *testing.T) {
 	t.Parallel()
 	for _, protected := range []bool{false, true} {
@@ -1606,7 +1606,7 @@ func TestConversationBindReportsResume(t *testing.T) {
 // TestConversationInterruptedTurnStaysInterrupted covers a turn that ended
 // without a provider error: the execution records interrupted or failed
 // rather than reporting running, the turn is cleared, and the unbind outcome
-// still wins afterwards (decisions section 10.7).
+// still wins afterwards.
 func TestConversationInterruptedTurnStaysInterrupted(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

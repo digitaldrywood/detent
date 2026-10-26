@@ -22,13 +22,14 @@ type ValidatorTaskContext struct {
 	MinScore           float64
 	BlockOn            []string
 	UnverifiedCriteria string
+	Workflow           string `json:",omitempty"`
 }
 
 var validatorEvidenceURL = regexp.MustCompile(`https?://[^\s<>\x60]+`)
 
-func ValidationContext(issue connector.Issue, policy gate.Config) ValidatorTaskContext {
+func ValidationContext(issue connector.Issue, policy gate.Config, workflow string) ValidatorTaskContext {
 	cfg := gate.Effective(policy).Validator
-	result := ValidatorTaskContext{Title: strings.TrimSpace(issue.Title), Body: normalizeValidatorText(issue.Description), MinScore: cfg.MinScore, BlockOn: slices.Clone(cfg.BlockOn), UnverifiedCriteria: cfg.UnverifiedCriteria}
+	result := ValidatorTaskContext{Title: strings.TrimSpace(issue.Title), Body: normalizeValidatorText(issue.Description), MinScore: cfg.MinScore, BlockOn: slices.Clone(cfg.BlockOn), UnverifiedCriteria: cfg.UnverifiedCriteria, Workflow: normalizeValidatorText(workflow)}
 	slices.Sort(result.BlockOn)
 	references := result.Body
 	workpad := ""
@@ -61,8 +62,8 @@ func ValidationContext(issue connector.Issue, policy gate.Config) ValidatorTaskC
 	return result
 }
 
-func ValidationContextDigest(issue connector.Issue, policy gate.Config) string {
-	data, err := json.Marshal(ValidationContext(issue, policy))
+func ValidationContextDigest(issue connector.Issue, policy gate.Config, workflow string) string {
+	data, err := json.Marshal(ValidationContext(issue, policy, workflow))
 	if err != nil {
 		return ""
 	}

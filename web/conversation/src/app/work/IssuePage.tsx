@@ -762,7 +762,7 @@ function IssueSurface({
       members={options.members}
       viewer={viewer}
       // The invitation flow is the organization settings section, which only
-      // an owner or an administrator may open (§16: the row is listed either
+      // an owner or an administrator may open (the frontend's governing rule: the row is listed either
       // way, with the reason when it cannot be taken).
       onInvite={
         account?.actor.can_manage === true
@@ -1161,7 +1161,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
           {data.project.profile === "native" ? <SourceRecoveryControls key={data.issue.work_item_id} http={props.http} projectId={data.issue.project_id} itemId={data.issue.work_item_id} revision={data.issue.revision} canManage={props.canWrite && props.canManageRunners} onTransferred={props.onTransferred} /> : null}
 
           {/* With the panel open the sidebar yields its width, so the facts it
-              carries stay reachable here (decisions.md §19.3). */}
+              carries stay reachable here. */}
           {panelOpen ? (
             <Collapsible className="rounded-[var(--radius)] border border-border bg-card">
               <CollapsibleTrigger
@@ -1236,7 +1236,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
 
           {data.issue.report_context === undefined ? null : <ReportContextBlock context={data.issue.report_context} />}
 
-          {/* §19.6: sub-issue creation is not in this slice, and §16 says a
+          {/* Sub-issue creation is not in this slice, and the frontend's governing rule says a
               feature stays present with its reason rather than disappearing. */}
           <Tooltip>
             <TooltipTrigger render={<span className="inline-flex w-fit" tabIndex={0} role="note" />}>
@@ -1271,7 +1271,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
             posting={props.posting}
           />
 
-          {/* Comments only (§19.5, Michael's review of September 12). The
+          {/* Comments only (the issue page rule, Michael's review of September 12). The
               runner is steered from the conversation surface the Activity
               feed's live row opens, not from a second mode on this card. */}
           <IssueComposer

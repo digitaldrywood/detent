@@ -1,6 +1,6 @@
 // Runner controls and questions (U07) against the mock hub's scripted runner.
 //
-// Everything here is the contract in decisions.md §5: one winner per question,
+// Everything here is the runner control contract: one winner per question,
 // controls that name the attempt they were aimed at, `stale_execution` when
 // that attempt is gone, and an unknown outcome that stays unknown until the
 // user retries the same key.

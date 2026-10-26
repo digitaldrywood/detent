@@ -28,7 +28,7 @@ const (
 )
 
 // registerConversationAPIRoutes mounts the operator-facing conversation API
-// (contract section 5). Hosted sessions authenticate as operator credentials.
+// (the conversation contract). Hosted sessions authenticate as operator credentials.
 //
 // The project routes use requireConversationScope rather than
 // requireNativeScope: the native middleware turns a hosted read-only grant
@@ -54,7 +54,7 @@ func (s *Service) registerConversationAPIRoutes(e *echo.Echo) {
 	e.POST(nativeBase+"/conversations/:conversation/attachments", s.uploadConversationAttachment, scope)
 	// The download also answers a worker: the runner fetches the files the
 	// control named with its own token, so the conversation's read rule
-	// governs the bytes the provider sees (decisions section 17.1).
+	// governs the bytes the provider sees.
 	e.GET(nativeBase+"/conversations/:conversation/attachments/:attachment", s.getConversationAttachment, s.requireConversationScope(apiScopeWorker))
 	e.DELETE(nativeBase+"/conversations/:conversation/attachments/:attachment", s.deleteConversationAttachment, scope)
 }
@@ -215,7 +215,7 @@ type conversationFirstMessage struct {
 type conversationCreateRequest struct {
 	// Key makes creation idempotent by actor and key: a retry returns the
 	// stored response and a different payload under the same key is
-	// idempotency_conflict (decisions section 10.2). first_message.key
+	// idempotency_conflict. first_message.key
 	// stays the message command key.
 	Key               string                    `json:"key"`
 	Title             string                    `json:"title"`
@@ -311,7 +311,7 @@ type conversationLinkIssue struct {
 
 // conversationLinkNext is what the user chose to do with the new issue:
 // which state it lands in, what priority it carries and whether it is
-// dispatched now or left for later (decisions section 14).
+// dispatched now or left for later.
 type conversationLinkNext struct {
 	State    string                `json:"state,omitempty"`
 	Priority *conversationPriority `json:"priority,omitempty"`
@@ -378,7 +378,7 @@ func conversationStateDispatchable(project tracker.NativeProject, name string) b
 // resolveConversationNext decides the lane and priority of the issue a
 // handoff creates. An explicit state wins; otherwise "later" parks the issue
 // in Backlog when the project has one and every other case starts it in the
-// first dispatchable state (decisions section 14).
+// first dispatchable state.
 func resolveConversationNext(project tracker.NativeProject, request conversationLinkRequest) (conversationLinkNextApplied, error) {
 	next := conversationLinkNext{}
 	if request.Next != nil {
@@ -514,7 +514,7 @@ func conversationQueryInt(c echo.Context, name string) (int64, error) {
 }
 
 // conversationQueryTristate reads an optional boolean filter: absent lists
-// both groups, true or false restricts to one (decisions section 14).
+// both groups, true or false restricts to one.
 // present is false when the parameter was not given.
 func conversationQueryTristate(c echo.Context, name string) (value, present bool, err error) {
 	switch strings.ToLower(strings.TrimSpace(c.QueryParam(name))) {
@@ -532,7 +532,7 @@ func conversationQueryTristate(c echo.Context, name string) (value, present bool
 // createConversation implements POST /conversations. The mutation is
 // idempotent by the request's top-level key through nativeMutation, which
 // also applies the hosted feature and growth checks that every native
-// mutation runs (decisions sections 10.2 and 10.10).
+// mutation runs.
 func (s *Service) createConversation(c echo.Context) error {
 	var request conversationCreateRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
@@ -719,7 +719,7 @@ func (c *conversationService) acceptCommand(ctx context.Context, tx *sql.Tx, sco
 	}
 	receipt := conversation.Receipt{Key: command.Key, Kind: command.Kind, Status: conversation.DeliverySaved}
 	// An accepted command is activity: a settled conversation wakes before
-	// the command is applied (decisions section 14).
+	// the command is applied.
 	if err := c.unsettle(ctx, tx, record, now); err != nil {
 		return receipt, err
 	}
@@ -892,8 +892,7 @@ func (c *conversationService) acceptCommand(ctx context.Context, tx *sql.Tx, sco
 			return receipt, err
 		}
 		// A retried message goes back on the ladder as queued; with no live
-		// attempt to hand it to, it is the next attempt's to carry
-		// (decisions section 10.3).
+		// attempt to hand it to, it is the next attempt's to carry.
 		if pending && retried.Delivery == conversation.DeliveryQueued {
 			if err := requestNativeDispatch(ctx, tx, scope, record.WorkItemID, now); err != nil {
 				return receipt, err
@@ -909,7 +908,7 @@ func (c *conversationService) acceptCommand(ctx context.Context, tx *sql.Tx, sco
 
 // retryMessage re-queues one user message the hub could not establish.
 // Nothing is duplicated: the same message id goes back on the ladder and
-// the retry key gets its own receipt (decisions section 10.3).
+// the retry key gets its own receipt.
 func (c *conversationService) retryMessage(ctx context.Context, tx *sql.Tx, scope nativeScope, record *conversationRecord, command conversation.Command, now time.Time) (conversationMessageRecord, error) {
 	messages, err := c.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id = ? AND id = ?", record.ID, command.MessageID)
 	if err != nil {
@@ -948,8 +947,7 @@ func (c *conversationService) retryMessage(ctx context.Context, tx *sql.Tx, scop
 
 // requireContinueAttempt enforces that a continue names the attempt it
 // follows. A null attempt is only honest for a conversation that never had
-// one; otherwise the client is continuing a generation it did not observe
-// (decisions section 10.8).
+// one; otherwise the client is continuing a generation it did not observe.
 func (c *conversationService) requireContinueAttempt(ctx context.Context, tx *sql.Tx, record conversationRecord, command conversation.Command) error {
 	if strings.TrimSpace(command.Expected.AttemptID) != "" {
 		return nil
@@ -1292,7 +1290,7 @@ func (s *Service) commandLinkConversation(ctx context.Context, scope nativeScope
 		body += "Conversation: " + record.ID
 		// The conversation's explicit preferences travel with the issue from
 		// the first revision, so the first runner to claim it already reads
-		// them (decisions section 14).
+		// them.
 		body = conversationAgentOverrideBody(body, record.Preferences)
 		issue, err := createNativeIssueTx(ctx, tx, scope, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: request.Key}, Title: strings.TrimSpace(request.Issue.Title), Body: body, State: next.State, Labels: request.Issue.Labels, Priority: next.Priority}, now)
 		if err != nil {
@@ -1505,7 +1503,7 @@ func (s *Service) commandPatchConversation(ctx context.Context, scope nativeScop
 		record.Preferences = preferences
 		// A linked conversation's preferences live in the issue body as
 		// well, so a runner that never sees the conversation still honours
-		// them (decisions section 14).
+		// them.
 		return s.conversations.writeAgentOverride(ctx, tx, scope, *record, now)
 	})
 }

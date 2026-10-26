@@ -3,7 +3,7 @@ import type { ServerProviderSkill } from "../../contracts/ui.ts";
 //
 // Written for this repository. The shape follows the POC's thread state
 // (cached / synchronizing / live plus a page cursor) but the contents are the
-// conversation resources from `docs/conversation/decisions.md` §5.
+// conversation resources from the Hub conversation API.
 //
 // Everything here is a pure function of (state, event). The atoms in
 // `conversations.ts` own the effects; this file owns the merge rules, which
@@ -26,7 +26,7 @@ import type {
 import { isRetryableDelivery } from "../../contracts/index.ts";
 
 /**
- * The delivery ladder as a rank (decisions.md §5). It exists because two
+ * The delivery ladder as a rank. It exists because two
  * writers report on the same command: the stream, which is ordered by seq, and
  * the HTTP response to the command itself, which is not ordered against it. A
  * slow `POST` returning `queued` after the stream already said `sent` must not
@@ -84,7 +84,7 @@ export function deltaText(buffer: DeltaBuffer | undefined): string {
  * A user message the client has sent but the hub has not confirmed. Keyed by
  * the command key, which is also the idempotency key.
  *
- * How it is retried depends on what the hub told us (decisions.md §10.3):
+ * How it is retried depends on what the hub told us:
  * once a receipt named a message, the retry is a `retry` command carrying that
  * `messageId` and a new key, and the same message is re-queued. Until then no
  * message exists to name, so the only safe recovery is to re-send the byte
@@ -97,7 +97,7 @@ export interface PendingMessage {
   readonly key: string;
   readonly text: string;
   /**
-   * The attachment ids this send carried (decisions.md §17.1), kept so a retry
+   * The attachment ids this send carried, kept so a retry
    * resends the same command rather than a text-only version of it. Null for a
    * message with no files.
    */
@@ -178,7 +178,7 @@ export interface ConversationDetail {
   /**
    * True once a control came back `stale_execution`. The client says the
    * runner changed and re-reads the snapshot; it never re-aims the control at
-   * whatever attempt is current now (decisions.md §2).
+   * whatever attempt is current now.
    */
   readonly staleExecution: boolean;
   readonly page: ConversationPageState;
@@ -550,8 +550,8 @@ export function unanchoredQuestions(detail: ConversationDetail): readonly Questi
 }
 
 /**
- * User messages the hub persisted whose delivery the user can still act on
- * (decisions.md §10.3). A `retry` command is refused on anything else, so the
+ * User messages the hub persisted whose delivery the user can still act on.
+ * A `retry` command is refused on anything else, so the
  * affordance is not offered on anything else either.
  */
 export function retryableMessages(detail: ConversationDetail): readonly Message[] {

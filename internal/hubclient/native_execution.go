@@ -53,7 +53,7 @@ type nativeExecution struct {
 	observations      []tracker.NativeRunEvent
 	cancel            context.CancelCauseFunc
 	// diffSource computes the stored attempt diff the execution posts before
-	// every checkpoint and before the finish (decisions section 18.5). It is
+	// every checkpoint and before the finish. It is
 	// nil for a run with no worktree to describe.
 	diffSource runner.AttemptDiffSource
 	// lastDiff is the most recent diff the source produced. It stands in for
@@ -836,7 +836,7 @@ func (e *nativeExecution) NativeChange() *runner.NativeChange {
 }
 
 // SetDiffSource installs the source the execution calls before every run event
-// that references a stored diff (decisions section 18.5).
+// that references a stored diff.
 func (e *nativeExecution) SetDiffSource(source runner.AttemptDiffSource) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

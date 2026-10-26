@@ -1,7 +1,7 @@
 import { dependencyLabel } from "./dependencies.ts";
 // The issue page's activity feed, merged client-side.
 //
-// Decisions §19.2: the feed is the work item's history, its attempts, the
+// The feed is the work item's history, its attempts, the
 // linked conversation's events and the comments, in one time-ordered list.
 // The hub serves no merged projection — history is one endpoint, attempts
 // another, comments a third, and the conversation is a different resource

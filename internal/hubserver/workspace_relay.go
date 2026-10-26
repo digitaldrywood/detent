@@ -12,7 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// The relay (decisions section 18.2).
+// The relay.
 //
 // The hub forwards frames between a person's connection and the runner's
 // connection for one workspace, with its own checks in the middle. There may be
@@ -75,13 +75,13 @@ type relayRoom struct {
 	// resume. They still count against the workspace's stream limit, because
 	// the runner is still holding whatever they opened.
 	detached map[string]*relayStream
-	// execRuns is the stream-to-run mapping of section 18.12, keyed by stream
+	// execRuns is the stream-to-run mapping of the project actions contract, keyed by stream
 	// id. It exists because the hub is not only forwarding an exec stream, it
 	// is recording it: the run frame says which run row a stream belongs to,
 	// and every output and exited frame afterwards names only the stream.
 	execRuns map[string]*execRunState
 	// terminals is the recording of each open terminal stream, keyed by stream
-	// id (section 18.3). It exists for the reason execRuns does: the hub is not
+	// id. It exists for the reason execRuns does: the hub is not
 	// only forwarding a terminal stream, it is recording it, and a recording
 	// assembled anywhere but here would be a recording of something other than
 	// what actually crossed the relay.
@@ -95,7 +95,7 @@ type relayRoom struct {
 // hubStreamOwner is the owner half of a hub-originated stream id.
 //
 // A hub stream is one the hub opened to hand a queued run to the workspace's
-// runner with no person on the other end (section 18.12). The owner is a
+// runner with no person on the other end. The owner is a
 // literal rather than a connection id on purpose: every place that decides
 // whether a person may address, resume or inherit a stream compares the owner
 // against a live connection's id, and no connection can ever be called this, so
@@ -104,7 +104,7 @@ type relayRoom struct {
 const hubStreamOwner = "relayhub"
 
 // execRunState is one in-flight action run, held in memory while its stream
-// runs (decisions section 18.12).
+// runs.
 //
 // The output is accumulated here and written once, on completion, rather than
 // appended to the row per frame: a build writes thousands of output spans and
@@ -139,7 +139,7 @@ func (s *execRunState) append(data []byte) {
 }
 
 // terminalStreamState is one terminal stream being recorded, held in memory
-// while the stream lives (decisions section 18.3).
+// while the stream lives.
 //
 // It mirrors execRunState and for the same reason: a shell writes thousands of
 // spans and a database write per span would make the relay the slowest part of
@@ -225,14 +225,14 @@ type relayConnection struct {
 	actor       workspacesession.Actor
 	principalID string
 	sessionID   string
-	// supportReason is why a support actor is on this connection. Section 18.3
+	// supportReason is why a support actor is on this connection. The terminal contract
 	// lets a support session have a terminal only with a reason recorded and
 	// only at container isolation, so the reason is held here rather than
 	// re-read per frame: the audit row already carries it, a recording carries
 	// it, and the per-frame gate has to consult it on every open.
 	supportReason string
 	// hostedRole is the membership role this connection authenticated with. A
-	// user-isolation terminal is owner-or-admin only (section 18.3), and the
+	// user-isolation terminal is owner-or-admin only, and the
 	// role a socket opened with is the one it keeps: a role change emits
 	// authority.changed, which closes every connection of that principal, so a
 	// stale role cannot outlive the change that made it stale.
@@ -294,7 +294,7 @@ func (r *workspaceRelay) stop(ctx context.Context) {
 	r.service.failExecRuns(ctx, orphaned, workspacesession.RunReasonStreamClosed)
 	// A terminal in flight at shutdown is the same fact: nothing will ever add
 	// another event to its recording, so what was collected is written now
-	// rather than lost with the process (section 18.3).
+	// rather than lost with the process.
 	r.service.finishTerminalRecordings(ctx, recorded)
 	for _, connection := range connections {
 		connection.close("server_shutdown")
@@ -333,7 +333,7 @@ func (r *workspaceRelay) closeWorkspace(ctx context.Context, workspaceID, reason
 		r.mu.Unlock()
 		return
 	}
-	// Section 18.12: a run streaming when the workspace stopped serving it can
+	// The project actions contract: a run streaming when the workspace stopped serving it can
 	// never exit, so it is failed here with what it had produced. The reason
 	// is read outside the lock, below, because it is a database read.
 	orphaned := room.takeExecRuns(nil)
@@ -391,7 +391,7 @@ func (r *workspaceRelay) sweep(ctx context.Context, now time.Time) {
 			orphaned = append(orphaned, room.takeExecRuns(func(streamID string) bool { return streamID == id })...)
 			// The resume window ran out, so the PTY behind this stream is
 			// about to be killed by the close below and its recording is
-			// complete (section 18.3).
+			// complete.
 			recorded = append(recorded, room.takeTerminalRecordings(func(streamID string) bool { return streamID == id })...)
 			expired = append(expired, expiry{room: room, stream: stream})
 		}
@@ -427,7 +427,7 @@ func (r *workspaceRelay) attachPerson(connection *relayConnection) error {
 }
 
 // detachPerson removes a person connection and parks its streams for a resume.
-// The streams are not closed: section 18.2 gives the person 60 seconds to come
+// The streams are not closed: the relay protocol gives the person 60 seconds to come
 // back with a new ticket, and the runner keeps whatever it opened for that long
 // too, so tearing them down here would defeat the whole reconnect path.
 func (r *workspaceRelay) detachPerson(ctx context.Context, connection *relayConnection, now time.Time) {
@@ -459,7 +459,7 @@ func (r *workspaceRelay) detachPerson(ctx context.Context, connection *relayConn
 		room.detached[id] = stream
 	}
 	// An exec run is not parked for a resume the way its stream is. A run is
-	// one process with one reader: section 18.12 gives a person the run row
+	// one process with one reader: the project actions contract gives a person the run row
 	// and the output endpoint to come back to, so there is nothing a resumed
 	// stream could add, and leaving the run running until the window expired
 	// would make a closed tab look like a build still going.
@@ -468,7 +468,7 @@ func (r *workspaceRelay) detachPerson(ctx context.Context, connection *relayConn
 		return err == nil && owner == connection.id
 	})
 	// A terminal recording is not taken here, and the difference from a run is
-	// the whole of section 18.2's resume window. A run is one process with one
+	// the whole of the relay protocol's resume window. A run is one process with one
 	// reader and nothing a resumed stream could add; a PTY survives its
 	// connection dropping for sixty seconds precisely so the person can come
 	// back to the same shell, and writing the recording now would either
@@ -523,7 +523,7 @@ func (r *workspaceRelay) detachRunner(ctx context.Context, connection *relayConn
 		// ended, so no exited frame is ever coming for them.
 		orphaned = room.takeExecRuns(nil)
 		// A terminal's PTY survives the runner's socket dropping for the resume
-		// window (section 18.2), but this hub will never hear from it again on
+		// window, but this hub will never hear from it again on
 		// this connection: a redial arrives as a new one and the runner's own
 		// timer decides the shell's fate. So what was recorded is written now
 		// rather than held for a continuation that cannot reach it.
@@ -581,7 +581,7 @@ func (r *workspaceRelay) openStream(connection *relayConnection, channel string)
 }
 
 // openHubStream allocates a stream the hub owns, for a run it is handing to
-// the workspace's runner itself (decisions section 18.12). It answers a relay
+// the workspace's runner itself. It answers a relay
 // error code when the workspace has nothing to open a stream on.
 //
 // It counts against the workspace's stream budget exactly as a person's stream
@@ -615,7 +615,7 @@ func (r *workspaceRelay) openHubStream(workspaceID, channel string) (*relayStrea
 
 // channelStream returns the stream this connection already has open on a
 // channel, or nil. It is what makes a request channel's stream-less frame a
-// continuation rather than an allocation (section 18.2): files, diff and
+// continuation rather than an allocation: files, diff and
 // preview are request/response, so a client that never names a stream would
 // otherwise spend its whole budget on one directory listing repeated eight
 // times and could never list again.
@@ -726,7 +726,7 @@ func (r *workspaceRelay) closeStream(ctx context.Context, workspaceID, id string
 	// run first, so a finished run is not failed a second time.
 	orphaned := room.takeExecRuns(func(streamID string) bool { return streamID == id })
 	// A closed stream carries no more events either, so its recording is
-	// complete and is written with what it collected (section 18.3).
+	// complete and is written with what it collected.
 	recorded := room.takeTerminalRecordings(func(streamID string) bool { return streamID == id })
 	r.mu.Unlock()
 	r.service.failExecRuns(ctx, orphaned, workspacesession.RunReasonStreamClosed)
@@ -734,7 +734,7 @@ func (r *workspaceRelay) closeStream(ctx context.Context, workspaceID, id string
 }
 
 // resumeStream moves a detached stream onto a new connection. It is the whole
-// of section 18.2's resume rule: inside the window, same principal, same
+// of the relay protocol's resume rule: inside the window, same principal, same
 // session, and a last_seq the hub can still replay from.
 func (r *workspaceRelay) resumeStream(connection *relayConnection, id string, lastSeq int64, now time.Time) (*relayStream, []workspacesession.Frame, string) {
 	r.mu.Lock()
@@ -872,7 +872,7 @@ func (r *workspaceRelay) memoryUsed() int64 {
 	return r.memory
 }
 
-// The exec channel's run bookkeeping (decisions section 18.12).
+// The exec channel's run bookkeeping.
 //
 // Every function here either records a run's progress or ends one. The second
 // half is the one the rule exists for: a run left running for ever is what

@@ -56,7 +56,7 @@ describe("reshaping a report", () => {
     expect(merged.providers).toHaveLength(REPORT.providers.length);
     const codex = merged.providers.find((provider) => provider.provider === "codex");
     expect(codex?.costShare).toBe(REPORT.providers[0]?.share);
-    // The token share is the client's, because §17.5 only sends the cost one.
+    // The token share is the client's, because the usage report only sends the cost one.
     expect(codex?.tokenShare).toBeCloseTo(
       (REPORT.providers[0]?.tokens ?? 0) / REPORT.total.tokens,
       10,

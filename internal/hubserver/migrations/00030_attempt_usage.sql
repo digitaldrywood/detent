@@ -1,5 +1,5 @@
 -- +goose Up
--- Per-attempt usage (decisions section 17, item 5).
+-- Per-attempt usage.
 
 -- attempt_usage is what one attempt spent, split by UTC hour, provider and
 -- model. The runner reports the attempt's running total on run.checkpointed

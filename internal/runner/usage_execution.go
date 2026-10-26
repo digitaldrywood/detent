@@ -9,7 +9,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// Per-turn usage reporting (decisions section 17.5). The runner already
+// Per-turn usage reporting. The runner already
 // prices a whole session for its own store; the hub wants the same numbers
 // per turn so the usage report can group them by day, provider and model.
 // The execution accumulates the attempt total, so the runner only has to

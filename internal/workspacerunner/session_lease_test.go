@@ -22,7 +22,7 @@ import (
 // The September 12 fifth dogfood defect, from the runner's side: nothing on the
 // workspace path renewed the hub lease, so a Files session lived exactly one
 // lease_ttl_seconds from the claim and then reported revoked to the person.
-// Section 18.1 puts the renewal on the heartbeat, which means the session's own
+// The workspace session contract puts the renewal on the heartbeat, which means the session's own
 // heartbeat loop is what keeps the lease alive and no second call is involved.
 //
 // This is tested against a real HTTP hub rather than the scripted one: what has

@@ -51,7 +51,7 @@ const NativeRunnerSetupDeclarationCapability = "runner_setup_declaration"
 // NativeWorkspaceCapability is declared by a runner's workspace lane on its
 // claim. It is what separates the lane that holds a workspace session open
 // from the lane that runs issues: a workspace is its own work item kind and
-// the ordinary claim never sees one (decisions section 18.1). The signal is a
+// the ordinary claim never sees one. The signal is a
 // declared capability rather than a label filter, because a label filter is a
 // preference an operator can set on any lane and this is an authority.
 const NativeWorkspaceCapability = "workspace_sessions"
@@ -153,8 +153,7 @@ type NativePullRequest struct {
 // produce one" are different facts and they decide differently.
 const (
 	// NativeChangeConnectorNone is a project with no GitHub connector, which
-	// is decisions section 18.6's "projects without a GitHub connector show
-	// the change request alone". No pull request can ever mirror its changes.
+	// shows the change request alone. No pull request can ever mirror its changes.
 	NativeChangeConnectorNone = "none"
 	// NativeChangeConnectorGitHub is a project with a GitHub repository bound
 	// and enabled, whose changes a pull request can mirror even when none
@@ -165,7 +164,7 @@ const (
 // NativeIssueChange is a work item's change review surface: what the hub
 // itself holds for the item, and whether a pull request can ever mirror it.
 //
-// Decisions section 18.6 joins the hub's own change request with the GitHub
+// The pull request contract joins the hub's own change request with the GitHub
 // connector's projection of its pull request, and a project without a
 // connector shows the change request alone. A promotion decision needs the
 // same two halves: whether the item's change is reviewed on a pull request at
@@ -190,7 +189,7 @@ type NativeIssueChange struct {
 	HeadSHA string `json:"head_sha,omitempty"`
 	// Revision is the work item revision the recorded change covers: the
 	// revision the succeeded attempt that produced it was dispatched for
-	// (decisions section 9.2.1's native_attempts.work_item_revision). Zero
+	// (native_attempts.work_item_revision). Zero
 	// means no attempt has recorded a change or an attempt diff for the item.
 	Revision Revision `json:"revision,string"`
 }
@@ -618,7 +617,7 @@ type NativeRunData struct {
 	Outcome         string                    `json:"outcome,omitempty"`
 	ArtifactIDs     []string                  `json:"artifact_ids,omitempty"`
 	// Usage is what the attempt has spent so far, one entry per provider and
-	// model (decisions section 17.5). A runner that reports none leaves the
+	// model. A runner that reports none leaves the
 	// field out, so the event is byte-identical to what it was before.
 	Usage []NativeUsage `json:"usage,omitempty"`
 }

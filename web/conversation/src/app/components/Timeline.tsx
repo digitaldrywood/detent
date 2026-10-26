@@ -22,7 +22,7 @@ import { TimelineCardsProvider } from "./TimelineCards.tsx";
 import { PendingRow } from "./PendingRow.tsx";
 import type { ExecutionSurface } from "../lib/execution.ts";
 
-/** The retry promise, in one sentence, wherever a retry is offered (§10.3). */
+/** The retry promise, in one sentence, wherever a retry is offered. */
 export const RETRY_COPY = "Retry re-queues this message once; nothing is duplicated.";
 
 export interface TimelineProps {
@@ -30,7 +30,7 @@ export interface TimelineProps {
   readonly detail: ConversationDetail;
   readonly onLoadOlder: () => void;
   readonly onRetry: (entry: PendingMessage) => void;
-  /** Re-queues a message the hub already stored (decisions.md §10.3). */
+  /** Re-queues a message the hub already stored. */
   readonly onRetryMessage?: (message: Message) => void;
   readonly onDismiss: (entry: PendingMessage) => void;
   /** Opens the handoff form prefilled from a coordinator proposal (U06). */

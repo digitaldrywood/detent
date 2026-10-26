@@ -792,7 +792,7 @@ describe("the Diff surface", () => {
     expect(screen.getByTestId("diff-round").textContent).toContain("a41f0c2");
   });
 
-  // §18.5. With no stored attempt diff the surface falls back to the round the
+  // With no stored attempt diff the surface falls back to the round the
   // change request published, and says which of the two it is showing — the
   // hub does serve per-file diffs now, so the old "no file list" apology would
   // be untrue.
@@ -855,7 +855,7 @@ describe("the Diff surface", () => {
   });
 });
 
-// decisions.md §18.5. Two sources feed one surface, and only one of them has
+// Two sources feed the Diff surface, and only one of them has
 // files in it. These assert the order directly rather than through a mounted
 // panel: which source wins, and what is said when neither is there.
 describe("the Diff surface's source order", () => {

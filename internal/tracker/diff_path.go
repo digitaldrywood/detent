@@ -20,8 +20,8 @@ var diffDeniedSuffixes = []string{".pem", ".key", ".p12"}
 // patterns: ".env*", "id_rsa*".
 var diffDeniedPrefixes = []string{".env", "id_rsa"}
 
-// DiffPathDenied reports whether value matches the files denylist of section
-// 18.4. It works on the path string alone, because a deleted or renamed file
+// DiffPathDenied reports whether value matches the files denylist of the Files contract.
+// It works on the path string alone, because a deleted or renamed file
 // has no current canonical target to resolve against, and it is applied to
 // both a file's path and its old_path.
 //

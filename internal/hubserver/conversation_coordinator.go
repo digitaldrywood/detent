@@ -368,7 +368,7 @@ func (c *conversationTurnCoordinator) pass(conversationID string) (bool, error) 
 // coordinatorHandles reports whether the hub-side coordinator owns the
 // conversation's turns. Status is deliberately not consulted: a settled
 // conversation with a pending message is woken by the message itself, and
-// leaving its turn unanswered would strand the user (decisions section 14).
+// leaving its turn unanswered would strand the user.
 func coordinatorHandles(record conversationRecord) bool {
 	return record.WorkItemID == ""
 }
@@ -409,7 +409,7 @@ ORDER BY seq LIMIT ?`, conversationID, conversation.RoleUser, conversation.Messa
 	// The rows are drained before the follow-up query: the hub pool holds a
 	// single connection. References are resolved here because these records
 	// are updated and re-projected, and a message.updated event that dropped
-	// them would take them off the client's copy (decisions section 14).
+	// them would take them off the client's copy.
 	pointers := make([]*conversationMessageRecord, 0, len(messages))
 	for i := range messages {
 		pointers = append(pointers, &messages[i])
@@ -637,7 +637,7 @@ func (c *conversationTurnCoordinator) runTurn(conversationID string) (bool, erro
 
 	// Files the user attached to the pending messages ride the turn: the
 	// hub-side coordinator reads them straight out of the store, where the
-	// runner-dispatched one downloads them (decisions section 17.1).
+	// runner-dispatched one downloads them.
 	attachments, runErr := c.coordinatorAttachments(turnCtx, state.users)
 	prompt := coordinatorPrompt(transcript, state.users)
 	if runErr == nil {
@@ -939,7 +939,7 @@ func appendCoordinatorData(prompt string, attachments []coordinatorAttachment) s
 
 // coordinatorAttachmentBlock renders the text attachments as one delimited
 // data block. The delimiters inside it are escaped so quoted content cannot
-// close its own fence (decisions sections 10.6 and 17.1).
+// close its own fence.
 func coordinatorAttachmentBlock(attachments []coordinatorAttachment) string {
 	text := make([]coordinatorAttachment, 0, len(attachments))
 	for _, attachment := range attachments {
@@ -1017,8 +1017,7 @@ func coordinatorPrompt(transcript, pending []conversationMessageRecord) string {
 }
 
 // escapeCoordinatorData neutralizes the delimiters that fence data blocks so
-// that quoted content cannot close its own block and read as instructions
-// (decisions section 10.6).
+// that quoted content cannot close its own block and read as instructions.
 func escapeCoordinatorData(value string) string {
 	return coordinatorDataDelimiters.Replace(value)
 }
@@ -1074,7 +1073,7 @@ func (s *coordinatorTurnState) observeThread(ctx context.Context, threadID strin
 		// The hub-side coordinator owns this thread, not a runner.
 		record.ProviderThreadRunnerID = ""
 		// It is still a coordinator thread, so a worker attempt is handed a
-		// transcript even if a runner ever reached it (decisions section 9.3).
+		// transcript even if a runner ever reached it.
 		record.ProviderThreadOrigin = conversation.ThreadOriginCoordinator
 		return s.coordinator.service.saveConversation(ctx, tx, record, now)
 	})
@@ -1278,8 +1277,7 @@ func (s *coordinatorTurnState) finish(ctx context.Context, outcome conversation.
 		for i := range s.users {
 			// setControlDelivery rather than updateMessage: the receipt must
 			// follow the message so the client can offer the retry command
-			// a failed or unknown turn leaves as the only way forward
-			// (decisions section 10.3).
+			// a failed or unknown turn leaves as the only way forward.
 			if err := s.coordinator.service.setControlDelivery(ctx, tx, &s.users[i], userDelivery, failure, now); err != nil {
 				return err
 			}

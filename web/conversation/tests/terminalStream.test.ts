@@ -1,6 +1,6 @@
-// The terminal stream (decisions.md §18.3): one `open` with no stream, the
+// The terminal stream: one `open` with no stream, the
 // output spans it answers with, the input and resize a person sends back, the
-// `exit` that ends it — and §18.2's resume, which is the one thing this client
+// `exit` that ends it — and the relay protocol's resume, which is the one thing this client
 // does that neither of the other two may.
 //
 // Driven through a substituted transport, the way `tests/actionRuns.test.ts`
@@ -28,7 +28,7 @@ import {
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-/** Encodes a span the way §18.3 puts one on the wire: always base64. */
+/** Encodes a span the way the terminal contract puts one on the wire: always base64. */
 function outputPayload(text: string): { data: string; encoding: string } {
   const bytes = new TextEncoder().encode(text);
   let binary = "";
@@ -71,8 +71,8 @@ function harness(options: { reconnectDelayMs?: number } = {}): Harness {
   };
   const stream = createTerminalStream({
     url: (ticket) => `wss://hub.invalid/relay?ticket=${ticket}`,
-    // A new ticket per connection: each is a separate single-use intent
-    // (§18.2), so replaying one would be wrong rather than idempotent.
+    // A new ticket per connection: each is a separate single-use intent,
+    // so replaying one would be wrong rather than idempotent.
     mintTicket: async () => {
       tickets += 1;
       return `ticket-${tickets}`;
@@ -105,7 +105,7 @@ describe("the terminal stream", () => {
     const [open] = h.frames();
     expect(open?.channel).toBe("terminal");
     expect(open?.type).toBe("open");
-    // §18.2: the very first frame carries no `stream`, because the hub is what
+    // The very first frame carries no `stream`, because the hub is what
     // allocates one — and every terminal open allocates, because every open is
     // its own PTY.
     expect(open?.stream).toBeUndefined();
@@ -136,7 +136,7 @@ describe("the terminal stream", () => {
     expect(input?.payload).toEqual({ data: "echo hi\n" });
     const resize = frames.find((frame) => frame.type === "resize");
     expect(resize?.payload).toEqual({ cols: 132, rows: 43 });
-    // A resize to the size it already has is not a frame: §18.3 turns one into
+    // A resize to the size it already has is not a frame: the terminal contract turns one into
     // an ioctl and a SIGWINCH, and a window that did not change must not raise
     // one.
     const before = h.latest().sent.length;
@@ -207,7 +207,7 @@ describe("the terminal stream", () => {
     await flush();
 
     // A second socket, on a ticket of its own, carrying a resume for the same
-    // stream from the last sequence the client saw (§18.2).
+    // stream from the last sequence the client saw.
     expect(h.sockets.length).toBe(2);
     expect(h.latest().url).toContain("ticket-2");
     const resume = h.frames().find((frame) => frame.type === "resume");
@@ -262,7 +262,7 @@ describe("the terminal stream", () => {
       seq: 2,
       payload: { code: "unknown_delivery", seq: 4 },
     });
-    // §18.2: a person-originated frame whose delivery cannot be established is
+    // A person-originated frame whose delivery cannot be established is
     // reported and dropped. The shell may already have run it, so the stream
     // stays open and nothing is re-sent.
     expect(h.stream.snapshot.status).toBe("open");
@@ -319,7 +319,7 @@ describe("output decoding", () => {
   it("does not mistake a chunked terminal span for a file's content", () => {
     // `files.content` and `terminal.output` both carry `data: string`, so the
     // reassembler needs the channel to tell them apart — the same collision
-    // §18.12 had to name for `exec`.
+    // the project actions contract had to name for `exec`.
     expect(inferChunkedType({ data: "x", encoding: "base64" }, "terminal")).toBe("output");
     expect(inferChunkedType({ code: "forbidden" }, "terminal")).toBe("error");
 
@@ -366,7 +366,7 @@ describe("why a terminal is unavailable", () => {
 
   it("names the most structural reason first", () => {
     // Every one of these would also be refused for a later reason; a reader has
-    // to be told the cause rather than a consequence (§18.6, §18.13).
+    // to be told the cause rather than a consequence.
     expect(terminalBlockedReason({ ...base, workItemId: null })).toBe(
       TERMINAL_POLICY_SENTENCES.noIssue,
     );

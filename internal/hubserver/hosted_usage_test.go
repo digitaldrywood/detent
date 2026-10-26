@@ -16,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// The usage report (decisions section 17.5): what runners report is stored
+// The usage report: what runners report is stored
 // per attempt, day, provider and model, and the report folds it into the
 // shape the client reads.
 
@@ -483,8 +483,7 @@ func TestHostedUsageReportAccess(t *testing.T) {
 
 // The endpoint aggregates the rows the store holds: the seeded days fold
 // into the hero total, the provider rows, the daily series and both
-// breakdowns, and the project filter narrows to what a member can read
-// (decisions section 17.5).
+// breakdowns, and the project filter narrows to what a member can read.
 func TestHostedUsageReportAggregatesStoredAttempts(t *testing.T) {
 	t.Parallel()
 	f := newUsageHostedFixture(t)
@@ -637,7 +636,7 @@ func usageFixtureValue(t *testing.T, raw []byte) usageReport {
 	return report
 }
 
-// TestUsageReportGoldenShape pins the section 17.5 shape on the Go side, so
+// TestUsageReportGoldenShape pins the usage report shape on the Go side, so
 // the hub still has a contract when the shared fixtures are absent.
 func TestUsageReportGoldenShape(t *testing.T) {
 	t.Parallel()

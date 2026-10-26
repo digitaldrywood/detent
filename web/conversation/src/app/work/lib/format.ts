@@ -66,7 +66,7 @@ export function dayLabel(at: string | null | undefined): string {
  * The project colour dot. The hub serves no colour, and inventing a random one
  * per render would make the same project a different colour on every tick, so
  * the hue is a stable hash of the project id and the dot is only ever a
- * recognition aid (A.1: it renders in the all-projects scope only).
+ * recognition aid (it renders in the all-projects scope only).
  */
 export function projectHue(projectId: string): number {
   let hash = 0;

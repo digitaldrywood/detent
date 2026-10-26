@@ -764,7 +764,7 @@ func TestBindConversationLogsResumeMode(t *testing.T) {
 
 // A turn started from queued messages carries their files: images as
 // provider image input and text files as one delimited data block after the
-// prompt (decisions section 17.1).
+// prompt.
 func TestConversationRunPrepareTurnCarriesPendingAttachments(t *testing.T) {
 	t.Parallel()
 	image := AgentAttachment{ID: "att_1", Name: "shot.png", MIME: "image/png", Size: 3, Content: []byte("png")}

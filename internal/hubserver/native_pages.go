@@ -774,7 +774,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 	}
 	if !includeWorkspace {
 		// Workspace items hold a worktree open for a person's surfaces, not
-		// project work (decisions section 18.1): the board would otherwise
+		// project work: the board would otherwise
 		// fill with one card per opened Files panel.
 		query += " AND " + notWorkspaceItemClause
 	}

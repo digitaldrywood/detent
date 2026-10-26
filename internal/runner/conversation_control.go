@@ -59,7 +59,7 @@ type AgentControl struct {
 	MessageID string
 	Text      string
 	// Attachments are the files the user attached to this message, already
-	// fetched (decisions section 17.1).
+	// fetched.
 	Attachments []AgentAttachment
 	RequestID   string
 	Answers     map[string][]string
