@@ -121,6 +121,19 @@ reservation and capacity-cleanup changes identify the relevant seed in
 requirement, not a requirement to add a duplicate test or run a timed fuzz job.
 Follow `CLAUDE.md` and `AGENTS.md` for meaningful regression coverage.
 
+For this Detent project, an issue that adds a new screen, panel or flow, or
+reshapes the layout of an existing one, carries an approved design attached to
+the issue before admission; keep it in Backlog until a human attaches one.
+Small fixes, copy changes and adjustments to an existing element in place need
+no design. When an issue has a design attached, whether required or not, its
+Acceptance criteria include: "Browser screenshots of every designed screen and
+state, at the designed viewports and themes, match the attached design in
+layout, content, components and states." The implementer attaches those
+screenshots with attach_evidence. The validator opens both the design and each
+screenshot and names every visible difference. An unexplained difference leaves
+the criterion not verified. Screenshots are never compared by pixels or hashes.
+Other projects retain their own design policies.
+
 Agent-authored criteria do not require human confirmation.
 
 For this Detent project, agents may author and correct the required sections
