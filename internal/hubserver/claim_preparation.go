@@ -25,6 +25,7 @@ type claimPreparation struct {
 	runs          map[string]tracker.NativeRunData
 	selected      tracker.WorkItemID
 	candidateRows int
+	passes        int
 	selection     map[tracker.ProjectID]*runnerSelectionProgress
 }
 
@@ -91,9 +92,9 @@ func claimWriting(ctx context.Context) bool {
 }
 
 func (d *database) claimNativePrepared(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, interval time.Duration) (tracker.Lease, error) {
-	for range 2 {
-		prepared := &claimPreparation{versions: make(map[string]preparedClaimVersion), checkpoints: make(map[string]preparedClaimCheckpoint), details: make(map[string]preparedClaimDetail)}
-		pass := context.WithValue(ctx, claimPreparationKey{}, prepared)
+	prepared := &claimPreparation{versions: make(map[string]preparedClaimVersion), checkpoints: make(map[string]preparedClaimCheckpoint), details: make(map[string]preparedClaimDetail)}
+	pass := context.WithValue(ctx, claimPreparationKey{}, prepared)
+	for prepared.passes < claimPreparationLimit {
 		lease, err := d.prepareClaim(pass, request, query, interval)
 		var selected *claimSelected
 		mode := claimMode{}
@@ -114,6 +115,13 @@ func (d *database) claimNativePrepared(ctx context.Context, request tracker.Clai
 		if !errors.Is(err, errClaimHintStale) {
 			return lease, err
 		}
+		for _, progress := range prepared.selection {
+			if progress.head == prepared.selected {
+				progress.head = 0
+				progress.done = false
+			}
+		}
+		prepared.selected = 0
 	}
 	return tracker.Lease{}, ErrNoClaimableWork
 }
@@ -123,8 +131,9 @@ func (d *database) prepareClaim(ctx context.Context, request tracker.ClaimReques
 	if prepared == nil {
 		return tracker.Lease{}, errClaimHintStale
 	}
-	for range claimPreparationLimit {
-		prepared.candidateRows = 0
+	for prepared.passes < claimPreparationLimit {
+		prepared.passes++
+		candidateRows := prepared.candidateRows
 		lease, err := d.claimPreflight(ctx, request, query, interval)
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil || d.claimReader == nil {
 			lease, err = d.claimNextOn(ctx, d.reader, &sql.TxOptions{ReadOnly: true}, claimMode{preflight: true}, request, query, interval)
@@ -133,6 +142,7 @@ func (d *database) prepareClaim(ctx context.Context, request tracker.ClaimReques
 		if !errors.As(err, &hydration) {
 			return lease, err
 		}
+		prepared.candidateRows = candidateRows
 		prepared.hydrating = true
 		err = hydration.run(ctx, d.reader)
 		prepared.hydrating = false

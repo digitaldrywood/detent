@@ -440,10 +440,11 @@ func TestHeartbeatClaimSkipsUnknownLegacySource(t *testing.T) {
 		t.Fatalf("claimed %s, want %s", lease.WorkItemID, known.WorkItemID)
 	}
 	for tick := range 12 {
-		ctx, cancel := context.WithTimeout(t.Context(), backgroundStorageBudget)
-		err := f.service.database.populateClaimFacts(ctx)
-		cancel()
-		if err != nil {
+		completed := make(chan error, 1)
+		go func() {
+			completed <- f.service.database.populateClaimFacts(t.Context())
+		}()
+		if err := <-completed; err != nil {
 			t.Fatal(err)
 		}
 		var unknownRows int

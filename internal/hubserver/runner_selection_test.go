@@ -1,6 +1,8 @@
 package hubserver
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -433,6 +435,65 @@ func TestRunnerFutureProjectAdmission(t *testing.T) {
 				if lease.WorkItemID != item.WorkItemID {
 					t.Fatalf("claimed %s, want %s", lease.WorkItemID, item.WorkItemID)
 				}
+			}
+		})
+	}
+}
+
+func TestRunnerAllowedCursorCASStaleRetry(t *testing.T) {
+	for _, initialRevision := range []int64{0, 1} {
+		t.Run(fmt.Sprintf("revision-%d", initialRevision), func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			r := placementFixtureRunner(t, f, "cursor-worker", "local", false, 1, "gpt-6.1-sol", "test-model")
+			credential, _, err := f.service.authenticateAPIToken(t.Context(), r.redemption.Credential, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+			db := f.service.database
+			if initialRevision != 0 {
+				if _, err := db.db.ExecContext(t.Context(), `INSERT INTO runner_selection_cursors(runner_id,project_id,issue_id,priority,aging,landing,created,identifier,revision) VALUES(?,?,10,0,0,0,'','',1)`, r.binding.RunnerID, f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project)}
+			prepare := func() (context.Context, *runnerSelectionProgress) {
+				t.Helper()
+				ctx := context.WithValue(t.Context(), claimPreparationKey{}, &claimPreparation{})
+				progress, err := readRunnerSelectionProgress(ctx, db.reader, scope, query)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return ctx, progress
+			}
+			winnerCtx, winner := prepare()
+			loserCtx, loser := prepare()
+			write := func(ctx context.Context, progress *runnerSelectionProgress, id tracker.WorkItemID, session string) {
+				t.Helper()
+				progress.cursor.ID, progress.dirty = id, true
+				request := tracker.ClaimRequest{MachineID: r.binding.MachineID, SessionID: session, TTL: time.Minute}
+				_, err := db.claimNextOn(ctx, db.db, nil, claimMode{hint: &claimSelected{id: 999999, revision: 1}}, request, query, time.Hour)
+				if !errors.Is(err, errClaimHintStale) {
+					t.Fatalf("stale candidate pass: %v", err)
+				}
+			}
+			write(winnerCtx, winner, 40, "winner")
+			write(loserCtx, loser, 20, "loser")
+			write(loserCtx, loser, 25, "loser")
+			var id tracker.WorkItemID
+			var revision int64
+			if err := db.reader.QueryRowContext(t.Context(), `SELECT issue_id,revision FROM runner_selection_cursors WHERE runner_id=? AND project_id=?`, r.binding.RunnerID, f.project.ID).Scan(&id, &revision); err != nil {
+				t.Fatal(err)
+			}
+			if id != 40 || revision != initialRevision+1 {
+				t.Fatalf("CAS loser replaced winner progress: cursor=%d revision=%d", id, revision)
+			}
+			write(winnerCtx, winner, 50, "winner")
+			if err := db.reader.QueryRowContext(t.Context(), `SELECT issue_id,revision FROM runner_selection_cursors WHERE runner_id=? AND project_id=?`, r.binding.RunnerID, f.project.ID).Scan(&id, &revision); err != nil {
+				t.Fatal(err)
+			}
+			if id != 50 || revision != initialRevision+2 {
+				t.Fatalf("winner could not continue: cursor=%d revision=%d", id, revision)
 			}
 		})
 	}

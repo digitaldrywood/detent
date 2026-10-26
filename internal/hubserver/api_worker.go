@@ -377,7 +377,21 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 	}
 	commit := tx.Commit
 	if !mode.preflight {
-		commit = func() error { return d.commit(ctx, tx) }
+		commit = func() error {
+			if err := d.commit(ctx, tx); err != nil {
+				return err
+			}
+			if prepared := claimPrepared(ctx); prepared != nil {
+				for _, progress := range prepared.selection {
+					if progress.written {
+						progress.revision++
+						progress.dirty = false
+						progress.written = false
+					}
+				}
+			}
+			return nil
+		}
 	}
 	defer func() {
 		if resultErr != nil {
