@@ -12,6 +12,8 @@ import { IssueIntake, type IntakeCommand } from "../../contracts/githubIntake.ts
 // promises rather than effects because these screens are ordinary React data
 // loads with no stream behind them.
 import * as Schema from "effect/Schema";
+import type * as SchemaAST from "effect/SchemaAST";
+import type * as SchemaIssue from "effect/SchemaIssue";
 
 import {
   ReleaseNotesPage,
@@ -56,6 +58,54 @@ import { DiagnosticsReport, HealthFindingsRead } from "../../contracts/diagnosti
 import { ActivityReport, type ActivityFilters } from "../../contracts/activity.ts";
 import { OrganizationReports, ReportsFacets, ReportsReport, type ReportsCustomRange, type ReportsFilters, type ReportsRange } from "../../contracts/reports.ts";
 import { clearBoardCache } from "../work/lib/boardStore.ts";
+
+type DecodeDiagnostic = { kind: "schema decode"; path: string; expected: string };
+
+const decodeDiagnostics = new WeakMap<AccountError, DecodeDiagnostic>();
+
+function expectedType(ast: SchemaAST.AST): string {
+  switch (ast._tag) {
+    case "String": return "string";
+    case "Number": return "number";
+    case "Boolean": return "boolean";
+    case "Null": return "null";
+    case "Undefined": return "undefined";
+    case "Objects": return "object";
+    case "Arrays": return "array";
+    case "Union": return [...new Set(ast.types.map(expectedType))].join(" | ");
+    default: return "schema-defined type";
+  }
+}
+
+function decodeDiagnostic(issue: SchemaIssue.Issue, path = "", parent?: SchemaAST.AST): DecodeDiagnostic {
+  switch (issue._tag) {
+    case "Pointer": {
+      const suffix = issue.path.map((key) => {
+        if (parent?._tag === "Arrays" && typeof key === "number" && Number.isSafeInteger(key) && key >= 0) return `[${key}]`;
+        if (parent?._tag === "Objects" && parent.propertySignatures.some((property) => property.name === key)) return `[${JSON.stringify(key)}]`;
+        return "[<key>]";
+      }).join("");
+      return decodeDiagnostic(issue.issue, path + suffix);
+    }
+    case "AnyOf": {
+      const nested = issue.issues.find((child) => child._tag === "Composite" || child._tag === "Pointer");
+      return nested ? decodeDiagnostic(nested, path, issue.ast) : { kind: "schema decode", path, expected: expectedType(issue.ast) };
+    }
+    case "Composite": return decodeDiagnostic(issue.issues[0], path, issue.ast);
+    case "Encoding":
+    case "Filter": return decodeDiagnostic(issue.issue, path, parent);
+    default: return { kind: "schema decode", path, expected: "ast" in issue ? expectedType(issue.ast) : "schema-defined type" };
+  }
+}
+
+export function accountErrorDiagnostic(error: unknown): DecodeDiagnostic | { kind: "http"; status: number } | { kind: "network" } {
+  if (error instanceof AccountError) {
+    const decode = decodeDiagnostics.get(error);
+    if (decode) return decode;
+    if (Number.isInteger(error.status) && error.status >= 100 && error.status <= 599) return { kind: "http", status: error.status };
+  }
+  return { kind: "network" };
+}
 
 /** A decoded failure from the hosted API, or the network under it. */
 export class AccountError extends Error {
@@ -190,13 +240,15 @@ export function makeAccountApi(options: AccountApiOptions) {
     try {
       return Schema.decodeUnknownSync(schema)(parsed ?? {});
     } catch (cause) {
-      throw new AccountError({
+      const error = new AccountError({
         status: response.status,
         code: "invalid",
         message: `The hub returned an unexpected payload: ${
           cause instanceof Error ? cause.message : String(cause)
         }`,
       });
+      if (Schema.isSchemaError(cause)) decodeDiagnostics.set(error, decodeDiagnostic(cause.issue));
+      throw error;
     }
   }
 

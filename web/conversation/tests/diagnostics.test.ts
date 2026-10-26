@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   decodeDiagnostics,
   decodeHealthFindings,
@@ -7,6 +7,8 @@ import {
   orderedFindings,
 } from "../src/contracts/diagnostics.ts";
 import { readDiagnostics } from "../src/app/diagnostics/diagnosticsQuery.ts";
+import fleetProduction from "../../../internal/hubserver/testdata/fleet-production.json";
+import { decodeFleet } from "../src/contracts/account.ts";
 import emptyFleet from "../src/contracts/fixtures/account-fleet-empty.json";
 import updatesFixture from "../src/contracts/fixtures/account-updates.json";
 import fixture from "../src/contracts/fixtures/diagnostics.json";
@@ -14,6 +16,52 @@ import healthFixture from "../src/contracts/fixtures/health-findings.json";
 import { makeAccountApi } from "../src/app/account/api.ts";
 
 describe("diagnostics read", () => {
+  it("decodes the Go fleet projection with production-shaped capacity and updates", async () => {
+    const fleet = decodeFleet(fleetProduction);
+    expect(fleet.runners.map((runner) => runner.os)).toEqual(["linux", "darwin", "linux"]);
+    expect(fleet.runners[0]?.update?.desired?.version).toBe("v0.169.1");
+    expect(fleet.runners[0]?.capacity_configuration?.projects?.project_first?.effective).toBeNull();
+    const api = makeAccountApi({
+      origin: "", apiBase: "/api/v2/organizations/example", csrfToken: "",
+      fetch: async () => new Response(JSON.stringify(fleetProduction), { status: 200, headers: { "Content-Type": "text/plain" } }),
+    });
+    expect(await api.fleet()).toEqual(fleet);
+  });
+
+  it.each(["schema", "http", "network", "record key"])("logs only safe metadata for %s failures while preserving the report", async (kind) => {
+    const secret = "secret-token-person@example.test";
+    const payload = structuredClone(fleetProduction);
+    if (kind === "record key") {
+      payload.runners[0]!.capacity_configuration!.projects = { [secret]: secret } as never;
+    } else {
+      payload.runners[2]!.update!.desired = secret as never;
+    }
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const api = makeAccountApi({
+        origin: "", apiBase: "/api/v2/organizations/example", csrfToken: "",
+        fetch: async (url) => {
+          if (!url.includes("/fleet")) return Response.json(url === "/app/updates" ? updatesFixture : fixture);
+          if (kind === "network") throw new Error(secret);
+          if (kind === "http") return Response.json({ code: secret, message: secret, details: { token: secret } }, { status: 503 });
+          return Response.json(payload);
+        },
+      });
+      const result = await readDiagnostics(api, "24h")();
+      expect(result.runners).toBeNull();
+      expect(result.report).toEqual(decodeDiagnostics(fixture));
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(error.mock.calls)).not.toContain(secret);
+      const metadata = kind === "http" ? { kind: "http", status: 503 }
+        : kind === "network" ? { kind: "network" }
+        : kind === "record key" ? { kind: "schema decode", path: '["runners"][0]["capacity_configuration"]["projects"][<key>]', expected: "object" }
+        : { kind: "schema decode", path: '["runners"][2]["update"]["desired"]', expected: "object | null" };
+      expect(error).toHaveBeenCalledWith("Diagnostics fleet read failed", metadata);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   it.each([200, 404, 503])("keeps Diagnostics available when the updates read returns %i", async (status) => {
     const requests: string[] = [];
     const api = makeAccountApi({
