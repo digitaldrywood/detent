@@ -472,6 +472,9 @@ func TestReviewState(t *testing.T) {
 		{name: "fresh source pass supersedes source rework", edit: func(d *tracker.ChangeDetail) {
 			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "changes_requested", ImplementationReview: &gate.ValidatorResult{Verdict: "rework"}}, tracker.ChangeReview{VersionID: "v1", Decision: "approved", ImplementationReview: &gate.ValidatorResult{Verdict: "pass"}})
 		}, want: connector.ChangeReview{Current: true, Reviewed: true}},
+		{name: "landed version has completed review", edit: func(d *tracker.ChangeDetail) {
+			d.Change.Landed = &tracker.ChangeLanding{VersionID: "v1", HeadSHA: d.Versions[0].HeadSHA}
+		}, want: connector.ChangeReview{Current: true, Reviewed: true}},
 		{name: "changed head", head: strings.Repeat("b", 40)},
 		{name: "changed version", version: "old"},
 		{name: "changed policy", edit: func(d *tracker.ChangeDetail) { d.Versions[0].PolicyID = "other" }},

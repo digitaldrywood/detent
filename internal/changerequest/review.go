@@ -310,6 +310,6 @@ func ReviewState(detail tracker.ChangeDetail, versionID, headSHA string) connect
 		}
 	}
 	result.ChangesRequested = result.ChangesRequested || sourceRework || validatorRework || auditRework
-	result.Reviewed = detail.Summary.Status == "reviewed" && !result.ChangesRequested
+	result.Reviewed = (detail.Summary.Status == "reviewed" || detail.Summary.Status == "landed") && !result.ChangesRequested
 	return result
 }
