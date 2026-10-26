@@ -1259,6 +1259,7 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 }
 
 func (o *Orchestrator) publishedState() State {
+	runtime := o.latestRuntimeState.Load()
 	completion := o.completionState.Load()
 	var state State
 	if completion != nil {
@@ -1267,7 +1268,7 @@ func (o *Orchestrator) publishedState() State {
 		state = o.latestState.Load().clone()
 	}
 	state.LocalIntake.Enabled = o.LocalIntakeEnabled()
-	if runtime := o.latestRuntimeState.Load(); runtime != nil {
+	if runtime != nil {
 		state.Running = cloneRunning(runtime.Running)
 		state.WorkAttempts = cloneTelemetryWorkAttempts(runtime.WorkAttempts)
 		if completion == nil {
