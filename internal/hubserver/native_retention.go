@@ -22,6 +22,7 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 		name string
 		run  func(context.Context) error
 	}{
+		{"populate conversation query metadata", s.convertConversationQueryMetadata},
 		{"populate claim facts", s.database.populateClaimFacts},
 		{"populate time indexes", s.database.populateTimeIndexes},
 		{"expire native records", func(ctx context.Context) error { return s.expireNativeRecords(ctx, now) }},

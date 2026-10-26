@@ -344,7 +344,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	); err != nil {
 		return fmt.Errorf("insert conversation: %w", conversationLinkError(err))
 	}
-	return nil
+	return executionQueryMetadata(record.Execution).write(ctx, tx, "conversations", "id=?", record.ID)
 }
 
 func (s *conversationStore) readConversation(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, project tracker.ProjectID, id string) (conversationRecord, error) {
@@ -573,7 +573,7 @@ WHERE id = ? AND organization_id = ? AND project_id = ? AND revision = ?`,
 	}
 	if affected == 1 {
 		record.Revision = next
-		return nil
+		return executionQueryMetadata(record.Execution).write(ctx, tx, "conversations", "id=?", record.ID)
 	}
 	var current int64
 	err = tx.QueryRowContext(ctx, "SELECT revision FROM conversations WHERE id = ? AND organization_id = ? AND project_id = ?", record.ID, record.OrganizationID, record.ProjectID).Scan(&current)
@@ -662,6 +662,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	); err != nil {
 		return fmt.Errorf("insert message: %w", err)
 	}
+	metadata, err := messageQueryMetadata(message.Data, message.Actor.Kind)
+	if err != nil {
+		return err
+	}
+	if err := metadata.write(ctx, tx, "conversation_messages", "id=?", message.ID); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, "UPDATE conversations SET last_message_at = ? WHERE id = ? AND (last_message_at IS NULL OR last_message_at < ?)", conversationTime(message.CreatedAt), message.ConversationID, conversationTime(message.CreatedAt)); err != nil {
 		return fmt.Errorf("record conversation activity: %w", err)
 	}
@@ -681,9 +688,12 @@ func (s *conversationStore) updateMessage(ctx context.Context, tx *sql.Tx, messa
 		return err
 	}
 	if message.Kind == conversation.MessageTool && message.Actor.Kind == conversation.ActorCoordinator {
+		if err := s.preserveLegacyToolRevision(ctx, tx, message); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_tool_revisions(conversation_id,message_id,revision,text,tool,item_id,status)
-SELECT conversation_id,id,revision,text,COALESCE(json_extract(data_json,'$.tool'),''),COALESCE(json_extract(data_json,'$.item_id'),''),COALESCE(json_extract(data_json,'$.status'),'')
-FROM conversation_messages WHERE conversation_id=? AND id=? AND kind='tool' AND json_extract(actor_json,'$.kind')='coordinator' AND content_attachment_id=''`, message.ConversationID, message.ID); err != nil {
+SELECT conversation_id,id,revision,text,COALESCE(tool_name,''),COALESCE(tool_item_id,''),COALESCE(tool_status,'')
+FROM conversation_messages WHERE conversation_id=? AND id=? AND kind='tool' AND actor_kind='coordinator' AND content_attachment_id=''`, message.ConversationID, message.ID); err != nil {
 			return fmt.Errorf("preserve inline tool revision: %w", err)
 		}
 	}
@@ -701,7 +711,11 @@ WHERE id = ? AND conversation_id = ?`,
 	if affected == 0 {
 		return nativeNotFound()
 	}
-	return nil
+	metadata, err := messageQueryMetadata(message.Data, message.Actor.Kind)
+	if err != nil {
+		return err
+	}
+	return metadata.write(ctx, tx, "conversation_messages", "id=?", message.ID)
 }
 
 // listMessages returns up to limit messages with seq below beforeSeq (or the
@@ -931,8 +945,8 @@ func (s *conversationStore) reserveCommand(ctx context.Context, tx *sql.Tx, conv
 	if err != nil {
 		return nil, false, fmt.Errorf("encode receipt: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO conversation_commands (conversation_id, key, kind, request_hash, receipt_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		conversationID, key, kind, requestHash, initial, conversationTime(now), conversationTime(now)); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO conversation_commands (conversation_id, key, kind, request_hash, receipt_json, receipt_status, query_metadata_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
+		conversationID, key, kind, requestHash, initial, conversation.DeliverySaved, conversationTime(now), conversationTime(now)); err != nil {
 		return nil, false, fmt.Errorf("insert command: %w", err)
 	}
 	return nil, false, nil
@@ -949,7 +963,7 @@ func (s *conversationStore) updateReceipt(ctx context.Context, tx *sql.Tx, conve
 	if err != nil {
 		return fmt.Errorf("encode receipt: %w", err)
 	}
-	result, err := tx.ExecContext(ctx, "UPDATE conversation_commands SET receipt_json = ?, updated_at = ? WHERE conversation_id = ? AND key = ?", encoded, conversationTime(receipt.UpdatedAt), conversationID, key)
+	result, err := tx.ExecContext(ctx, "UPDATE conversation_commands SET receipt_json = ?, receipt_status = ?, query_metadata_version=1, updated_at = ? WHERE conversation_id = ? AND key = ?", encoded, receipt.Status, conversationTime(receipt.UpdatedAt), conversationID, key)
 	if err != nil {
 		return fmt.Errorf("update receipt: %w", err)
 	}
@@ -986,6 +1000,13 @@ func (s *conversationStore) appendEvent(ctx context.Context, tx *sql.Tx, convers
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO conversation_events (conversation_id, seq, type, body_json, created_at) VALUES (?, ?, ?, ?, ?)", conversationID, seq, eventType, encoded, conversationTime(now)); err != nil {
 		return 0, fmt.Errorf("insert event: %w", err)
+	}
+	metadata, err := eventQueryMetadata([]byte(encoded))
+	if err != nil {
+		return 0, err
+	}
+	if err := metadata.write(ctx, tx, "conversation_events", "conversation_id=? AND seq=?", conversationID, seq); err != nil {
+		return 0, err
 	}
 	return seq, nil
 }
@@ -1065,87 +1086,146 @@ type conversationNormalizeSummary struct {
 	Receipts      int64
 }
 
-func (s *conversationStore) normalizeAfterRestart(ctx context.Context, now time.Time) (summary conversationNormalizeSummary, resultErr error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return summary, fmt.Errorf("begin conversation normalization: %w", err)
-	}
-	defer func() {
-		if resultErr != nil {
-			_ = tx.Rollback()
+func (s *conversationStore) normalizeAfterRestart(ctx context.Context, now time.Time) (conversationNormalizeSummary, error) {
+	var summary conversationNormalizeSummary
+	var cursor int64
+	for {
+		type candidate struct {
+			row, revision int64
+			id, raw       string
+			execution     conversation.Execution
 		}
-	}()
-	stamp := conversationTime(now)
-	type inFlight struct {
-		id        string
-		revision  int64
-		execution conversation.Execution
-	}
-	pending, err := func() ([]inFlight, error) {
-		rows, err := tx.QueryContext(ctx, "SELECT id, revision, execution_json FROM conversations WHERE work_item_id IS NULL AND json_extract(execution_json, '$.status') IN ('starting', 'running', 'waiting_input', 'interrupting')")
-		if err != nil {
-			return nil, fmt.Errorf("list in-flight conversations: %w", err)
-		}
-		defer func() { _ = rows.Close() }()
-		var pending []inFlight
-		for rows.Next() {
-			var item inFlight
-			var encoded string
-			if err := rows.Scan(&item.id, &item.revision, &encoded); err != nil {
-				return nil, fmt.Errorf("scan in-flight conversation: %w", err)
+		pending, err := func() ([]candidate, error) {
+			rows, err := s.reader.QueryContext(ctx, `SELECT rowid,id,revision,execution_json FROM conversations WHERE rowid>? AND work_item_id IS NULL AND (execution_status IS NULL OR execution_status IN ('starting','running','waiting_input','interrupting')) ORDER BY rowid LIMIT ?`, cursor, storageConversionRows)
+			if err != nil {
+				return nil, err
 			}
-			if err := json.Unmarshal([]byte(encoded), &item.execution); err != nil {
-				return nil, fmt.Errorf("decode conversation %s execution: %w", item.id, err)
+			defer rows.Close()
+
+			var pending []candidate
+			for rows.Next() {
+				var c candidate
+				if err := rows.Scan(&c.row, &c.id, &c.revision, &c.raw); err != nil {
+					rows.Close()
+					return nil, err
+				}
+				if err := json.Unmarshal([]byte(c.raw), &c.execution); err != nil {
+					rows.Close()
+					return nil, err
+				}
+				pending = append(pending, c)
 			}
-			pending = append(pending, item)
+			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+				return nil, err
+			}
+			return pending, nil
+		}()
+		if err != nil {
+			return summary, err
 		}
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("list in-flight conversations: %w", err)
+		if len(pending) == 0 {
+			break
 		}
-		return pending, nil
-	}()
-	if err != nil {
-		return summary, err
+		for _, c := range pending {
+			cursor = c.row
+			switch c.execution.Status {
+			case conversation.ExecutionStarting, conversation.ExecutionRunning, conversation.ExecutionWaitingInput, conversation.ExecutionInterrupting:
+			default:
+				continue
+			}
+			execution := conversation.NormalizeExecutionValue(c.execution)
+			execution.UpdatedAt = now.UTC()
+			encoded, err := marshalNative(execution)
+			if err != nil {
+				return summary, err
+			}
+			result, err := s.db.ExecContext(ctx, `UPDATE conversations SET execution_json=?,execution_status=?,execution_lease_id=?,execution_settled=?,query_metadata_version=1,revision=revision+1,updated_at=? WHERE id=? AND revision=? AND execution_json=?`, encoded, execution.Status, execution.Owner.LeaseID, execution.Settled, conversationTime(now), c.id, c.revision, c.raw)
+			if err != nil {
+				return summary, err
+			}
+			count, err := result.RowsAffected()
+			if err != nil {
+				return summary, err
+			}
+			summary.Conversations += count
+		}
 	}
-	for _, item := range pending {
-		execution := conversation.NormalizeExecutionValue(item.execution)
-		execution.UpdatedAt = now.UTC()
-		encoded, err := marshalNative(execution)
-		if err != nil {
-			return summary, fmt.Errorf("encode conversation %s execution: %w", item.id, err)
+	cursor = 0
+	for {
+		type candidate struct {
+			row                    int64
+			conversation, key, raw string
 		}
-		result, err := tx.ExecContext(ctx, "UPDATE conversations SET execution_json = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?", encoded, stamp, item.id, item.revision)
+		pending, err := func() ([]candidate, error) {
+			rows, err := s.reader.QueryContext(ctx, `SELECT rowid,conversation_id,key,receipt_json FROM conversation_commands WHERE rowid>? AND conversation_id IN (SELECT id FROM conversations WHERE work_item_id IS NULL) AND (receipt_status IS NULL OR receipt_status IN ('sending','sent','responding')) ORDER BY rowid LIMIT ?`, cursor, storageConversionRows)
+			if err != nil {
+				return nil, err
+			}
+			defer rows.Close()
+
+			var pending []candidate
+			for rows.Next() {
+				var c candidate
+				if err := rows.Scan(&c.row, &c.conversation, &c.key, &c.raw); err != nil {
+					rows.Close()
+					return nil, err
+				}
+				pending = append(pending, c)
+			}
+			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+				return nil, err
+			}
+			return pending, nil
+		}()
 		if err != nil {
-			return summary, fmt.Errorf("normalize conversation %s: %w", item.id, err)
+			return summary, err
 		}
-		changed, err := result.RowsAffected()
-		if err != nil {
-			return summary, fmt.Errorf("count normalized conversation %s: %w", item.id, err)
+		if len(pending) == 0 {
+			break
 		}
-		summary.Conversations += changed
+		for _, c := range pending {
+			cursor = c.row
+			receipt, err := decodeConversationReceipt(c.raw)
+			if err != nil {
+				return summary, err
+			}
+			if receipt.Status != conversation.DeliverySending && receipt.Status != conversation.DeliverySent && receipt.Status != conversation.DeliveryResponding {
+				continue
+			}
+			receipt.Status, receipt.UpdatedAt = conversation.DeliveryUnknown, now.UTC()
+			encoded, err := marshalNative(receipt)
+			if err != nil {
+				return summary, err
+			}
+			result, err := s.db.ExecContext(ctx, `UPDATE conversation_commands SET receipt_json=?,receipt_status=?,query_metadata_version=1,updated_at=? WHERE conversation_id=? AND key=? AND receipt_json=?`, encoded, receipt.Status, conversationTime(now), c.conversation, c.key, c.raw)
+			if err != nil {
+				return summary, err
+			}
+			count, err := result.RowsAffected()
+			if err != nil {
+				return summary, err
+			}
+			summary.Receipts += count
+		}
 	}
 	for _, statement := range []struct {
 		query string
 		args  []any
 		count *int64
 	}{
-		{query: "UPDATE conversation_messages SET delivery = ?, updated_at = ? WHERE delivery IN (?, ?, ?)", args: []any{conversation.DeliveryUnknown, stamp, conversation.DeliverySending, conversation.DeliverySent, conversation.DeliveryResponding}, count: &summary.Messages},
-		{query: "UPDATE conversation_questions SET status = ?, updated_at = ? WHERE status = ?", args: []any{conversation.QuestionExpired, stamp, conversation.QuestionPending}, count: &summary.Questions},
-		{query: "UPDATE conversation_questions SET status = ?, updated_at = ? WHERE status = ?", args: []any{conversation.QuestionUnknown, stamp, conversation.QuestionSending}, count: &summary.Questions},
-		{query: "UPDATE conversation_commands SET receipt_json = json_set(receipt_json, '$.status', ?, '$.updated_at', ?), updated_at = ? WHERE json_extract(receipt_json, '$.status') IN (?, ?, ?)", args: []any{conversation.DeliveryUnknown, formatHubTime(now), stamp, conversation.DeliverySending, conversation.DeliverySent, conversation.DeliveryResponding}, count: &summary.Receipts},
+		{"UPDATE conversation_messages SET delivery=?,updated_at=? WHERE delivery IN (?,?,?)", []any{conversation.DeliveryUnknown, conversationTime(now), conversation.DeliverySending, conversation.DeliverySent, conversation.DeliveryResponding}, &summary.Messages},
+		{"UPDATE conversation_questions SET status=?,updated_at=? WHERE status=?", []any{conversation.QuestionExpired, conversationTime(now), conversation.QuestionPending}, &summary.Questions},
+		{"UPDATE conversation_questions SET status=?,updated_at=? WHERE status=?", []any{conversation.QuestionUnknown, conversationTime(now), conversation.QuestionSending}, &summary.Questions},
 	} {
-		result, err := tx.ExecContext(ctx, statement.query+" AND conversation_id IN (SELECT id FROM conversations WHERE work_item_id IS NULL)", statement.args...)
+		result, err := s.db.ExecContext(ctx, statement.query+" AND conversation_id IN (SELECT id FROM conversations WHERE work_item_id IS NULL)", statement.args...)
 		if err != nil {
-			return summary, fmt.Errorf("normalize conversation state: %w", err)
+			return summary, err
 		}
-		changed, err := result.RowsAffected()
+		count, err := result.RowsAffected()
 		if err != nil {
-			return summary, fmt.Errorf("count normalized conversation state: %w", err)
+			return summary, err
 		}
-		*statement.count += changed
-	}
-	if err := tx.Commit(); err != nil {
-		return summary, fmt.Errorf("commit conversation normalization: %w", err)
+		*statement.count += count
 	}
 	return summary, nil
 }
@@ -1273,7 +1353,7 @@ func (s *conversationStore) listSettleCandidates(ctx context.Context, query nati
 	}
 	rows, err := query.QueryContext(ctx, "SELECT "+conversationReadColumns+` FROM conversations
 WHERE status = 'active' AND COALESCE(last_message_at, updated_at) < ?
- AND json_extract(execution_json, '$.status') IN (?, ?, ?, ?, ?)
+ AND (execution_status IS NULL OR execution_status IN (?, ?, ?, ?, ?))
 ORDER BY COALESCE(last_message_at, updated_at) LIMIT ?`, conversationTime(before),
 		conversation.ExecutionIdle, conversation.ExecutionCompleted, conversation.ExecutionInterrupted,
 		conversation.ExecutionFailed, conversation.ExecutionUnknown, limit)
@@ -1287,7 +1367,9 @@ ORDER BY COALESCE(last_message_at, updated_at) LIMIT ?`, conversationTime(before
 		if err != nil {
 			return nil, fmt.Errorf("list settle candidates: %w", err)
 		}
-		records = append(records, record)
+		if record.Execution.Status == conversation.ExecutionIdle || record.Execution.Status.Terminal() {
+			records = append(records, record)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list settle candidates: %w", err)
