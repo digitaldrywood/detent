@@ -653,9 +653,16 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fe
 		if err != nil {
 			return tracker.Page[tracker.NativeAttempt]{}, err
 		}
+		if len(encoded)+1 > budget && len(page.Items) == 0 && view != "" {
+			candidate.Items[0] = nativeAttemptAuthorityProjection(attempt)
+			encoded, err = json.Marshal(candidate)
+			if err != nil {
+				return tracker.Page[tracker.NativeAttempt]{}, err
+			}
+		}
 		if len(encoded)+1 > budget {
 			if len(page.Items) == 0 {
-				return tracker.Page[tracker.NativeAttempt]{}, &nativeError{Code: "attempt_record_too_large", Message: fmt.Sprintf("Attempt record exceeds the %d-byte page limit", budget), status: http.StatusUnprocessableEntity, publicMessage: true}
+				return tracker.Page[tracker.NativeAttempt]{}, &nativeError{Code: "attempt_record_too_large", Message: fmt.Sprintf("Work item %s attempt %s exceeds the %d-byte page limit", item, attempt.AttemptID, budget), status: http.StatusUnprocessableEntity, publicMessage: true}
 			}
 			hasMore = true
 			break
@@ -670,6 +677,30 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fe
 		}
 	}
 	return page, nil
+}
+
+func nativeAttemptAuthorityProjection(attempt tracker.NativeAttempt) tracker.NativeAttempt {
+	if attempt.CompletionBody != "" {
+		attempt.CompletionBody = ""
+		attempt.Unavailable = append(attempt.Unavailable, "completion_body")
+	}
+	if len(attempt.Evidence) > 0 {
+		attempt.Evidence = nil
+		attempt.Unavailable = append(attempt.Unavailable, "evidence")
+	}
+	if len(attempt.Steps) > 0 {
+		attempt.Steps = nil
+		attempt.Unavailable = append(attempt.Unavailable, "steps")
+	}
+	if attempt.ProcessUsage != nil {
+		attempt.ProcessUsage = nil
+		attempt.Unavailable = append(attempt.Unavailable, "process_usage")
+	}
+	if len(attempt.Usage) > 0 {
+		attempt.Usage = nil
+		attempt.Unavailable = append(attempt.Unavailable, "usage")
+	}
+	return attempt
 }
 
 func nativeAttemptDisplayIdentity(attempt tracker.NativeAttempt) *tracker.NativeExecutionIdentity {

@@ -839,20 +839,85 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.runtime.validation.output', ?) WHERE lease_id = ?`, strings.Repeat("<", 256<<10), first.ID); err != nil {
 		t.Fatal(err)
 	}
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?limit=1", worker, nil), http.StatusUnprocessableEntity)
+	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?limit=1", worker, nil)
+	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+	if !strings.Contains(response.Body.String(), string(issue.WorkItemID)) || !strings.Contains(response.Body.String(), full[0].AttemptID) {
+		t.Fatal("oversized record refusal lost item or attempt identity")
+	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?view=blockers&limit=1", worker, nil), http.StatusOK)
 	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.completion_body', ?) WHERE lease_id = ?`, strings.Repeat("<", 64<<10), first.ID); err != nil {
 		t.Fatal(err)
+	}
+	for _, view := range []string{"blockers", "recorded_blockers"} {
+		t.Run("oversized_pagination/"+view, func(t *testing.T) {
+			params := url.Values{"view": {view}, "limit": {"200"}}
+			seen := 0
+			for {
+				response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?"+params.Encode(), worker, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				if response.Body.Len() > operatortool.WorkHistoryPageBytes {
+					t.Fatalf("page exceeded budget: %d", response.Body.Len())
+				}
+				var page tracker.Page[tracker.NativeAttempt]
+				decodeHubResponse(t, response, &page)
+				if len(page.Items) == 0 || seen == 0 && len(page.Items) < 2 {
+					t.Fatal("oversized attempt prevented neighboring attempts from being returned")
+				}
+				for _, got := range page.Items {
+					if seen >= len(full) {
+						t.Fatal("repeated attempt")
+					}
+					want := full[seen]
+					want.Runtime, want.RuntimeFreshness = nil, "unavailable"
+					if seen == 0 {
+						want.CompletionBody, want.Usage = "", nil
+						want.Unavailable = []string{"completion_body", "usage"}
+					}
+					if !reflect.DeepEqual(got, want) {
+						t.Fatalf("attempt %d lost authority, checkpoint or unaffected detail", seen)
+					}
+					seen++
+				}
+				if page.NextCursor == "" {
+					break
+				}
+				params.Set("cursor", page.NextCursor)
+			}
+			if seen != len(full) {
+				t.Fatalf("returned %d attempts, want %d", seen, len(full))
+			}
+		})
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts/"+full[0].AttemptID, worker, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var retained tracker.NativeAttempt
+	decodeHubResponse(t, response, &retained)
+	if retained.CompletionBody != strings.Repeat("<", 64<<10) || retained.Runtime == nil || retained.Runtime.Validation.Output != strings.Repeat("<", 256<<10) || len(retained.Unavailable) != 0 {
+		t.Fatal("projection changed retained attempt detail")
 	}
 	for _, transport := range []string{"stdio", "http"} {
 		for _, limit := range []int{1, 20, 200} {
 			t.Run(fmt.Sprintf("oversized_summary/%s/%d", transport, limit), func(t *testing.T) {
 				call := hostedContextProtocol(t, f.service, ctx, transport)
 				args := map[string]any{"project_id": string(f.project.ID), "reference": string(issue.WorkItemID), "limit": limit}
-				raw := hostedContextData(t, call("tools/call", operatortool.WorkRuns, args), true)
-				var refusal operatortool.RequestError
-				if json.Unmarshal(raw, &refusal) != nil || refusal.Code != "attempt_record_too_large" || !strings.Contains(refusal.Message, "65536-byte") {
-					t.Fatalf("lost page bound: %s", raw)
+				raw := hostedContextData(t, call("tools/call", operatortool.WorkRuns, args), false)
+				var result operatortool.WorkReadResult[tracker.Page[tracker.NativeAttempt]]
+				if err := json.Unmarshal(raw, &result); err != nil {
+					t.Fatal(err)
+				}
+				if len(raw) > operatortool.MaxResultBytes || len(result.Data.Items) == 0 {
+					t.Fatalf("unbounded or empty summary: bytes=%d", len(raw))
+				}
+				got := result.Data.Items[0]
+				want := full[0]
+				want.Runtime, want.RuntimeFreshness = nil, "unavailable"
+				want.CompletionBody, want.Usage = "", nil
+				if !reflect.DeepEqual(got.Unavailable, []string{"completion_body", "usage"}) {
+					t.Fatal("omitted attempt fields were not marked unavailable")
+				}
+				got.Unavailable = nil
+				if !reflect.DeepEqual(got, want) {
+					t.Fatal("oversized summary changed authority or checkpoint fields")
 				}
 			})
 		}
