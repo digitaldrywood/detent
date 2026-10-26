@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -634,10 +635,17 @@ func TestEventCompactionPassIsBoundedAndYieldsToWrites(t *testing.T) {
 			written.Add(1)
 		}
 	}()
+	stopWriter := sync.OnceFunc(func() {
+		close(stop)
+		if err := <-writes; err != nil {
+			t.Error(err)
+		}
+	})
+	t.Cleanup(stopWriter)
 	var removed []int64
 	previous := int64(0)
 	for range 4 {
-		if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
+		if err := a.service.compactRetainedEvents(t.Context(), a.service.config.now()); err != nil {
 			t.Fatal(err)
 		}
 		summary, err := readEventCompaction(t.Context(), a.service.database.db, a.scope.organization, a.scope.project, "work_item", string(a.issue.WorkItemID))
@@ -647,10 +655,7 @@ func TestEventCompactionPassIsBoundedAndYieldsToWrites(t *testing.T) {
 		removed = append(removed, summary.CompactedActivityEvents-previous)
 		previous = summary.CompactedActivityEvents
 	}
-	close(stop)
-	if err := <-writes; err != nil {
-		t.Fatal(err)
-	}
+	stopWriter()
 	if written.Load() == 0 {
 		t.Fatal("no request write completed while retention passes ran")
 	}
