@@ -76,6 +76,14 @@ function report(overrides: Partial<BillingReport["state"]> = {}, extra: Partial<
 }
 
 describe("billing state text", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-15T00:00:00Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it.each([
     [report(), "Free plan"],
     [report({}, { entitlement: { ...report().entitlement, effective_base: { id: "payment_pending", version: 1 } } }), "Payment pending"],
