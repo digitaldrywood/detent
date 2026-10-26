@@ -96,7 +96,7 @@ Native projects make no GitHub API calls by default; git clone and push still wo
 6. Clone the repository into the directory that `register` printed (`~/detent-runner/PROJECT` by default) and install its dependencies.
 7. Let the runner report the repository configuration, then file an issue in `Todo` and watch it move across the board.
 
-[Cloud onboarding](docs/cloud-onboarding.md) covers each step in detail, including GitHub and artifact storage. For runners on Fly Sprites, see [Sprite runners](docs/sprite-runners.md).
+[Cloud onboarding](docs/cloud-onboarding.md) covers each step in detail, including GitHub and artifact storage. For Windows, see [Windows runners](docs/windows-runners.md) for native Full access and WSL2 Sandbox setup. For runners on Fly Sprites, see [Sprite runners](docs/sprite-runners.md).
 
 ## Self-host the Hub
 

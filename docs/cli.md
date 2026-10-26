@@ -17,7 +17,9 @@ for the full command catalog, including subcommands, flags and examples.
 | Isolated browser fixtures | `dev-runtime` |
 
 Enroll a runner with `detent hub runner register --service` to install and start
-its background service. Run `detent --config /path/to/global.yaml --headless`
+its background service. On Windows this is a per-user logon Scheduled Task;
+see [Windows runners](windows-runners.md) for native and WSL2 setup.
+Run `detent --config /path/to/global.yaml --headless`
 to start an enrolled runner in the foreground. Hub API keys are managed in
 Settings > API & MCP.
 
