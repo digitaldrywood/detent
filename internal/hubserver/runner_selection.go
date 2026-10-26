@@ -35,6 +35,7 @@ func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query
 	probe.NativeScope = &scope
 	probe.Scope = ""
 	probe.ProviderCandidates = nil
+	probe.OnlyIDs = nil
 	probe.WorkItemID = 0
 	probe.LandingCapacity = 0
 	if query.LandingCapacityKnown {
@@ -47,6 +48,9 @@ func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query
 	}
 	var preferredHead tracker.WorkItemID
 	var heads []tracker.WorkItemID
+	headProjects := make(map[tracker.WorkItemID]tracker.ProjectID)
+	incompleteRanks := make([]int, 0, len(projects))
+	preferredIncomplete := false
 	var contractRefusal error
 	quota := max(1, claimPreparationLimit/len(projects))
 projects:
@@ -74,7 +78,7 @@ projects:
 			continue projects
 		}
 		var resolver *runner.BoardIdentityResolver
-		if preferred != "" && project != query.NativeScope.project && len(query.ProviderCandidates) > 0 {
+		if project != query.NativeScope.project && len(query.ProviderCandidates) > 0 {
 			workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, approval.Policy)
 			if err != nil {
 				continue projects
@@ -84,9 +88,6 @@ projects:
 			if err != nil {
 				return 0, false, err
 			}
-		}
-		if resolver == nil && len(query.ProviderCandidates) > 0 {
-			projectQuery.ProviderCandidates = query.ProviderCandidates
 		}
 		progress, err := readRunnerSelectionProgress(ctx, tx, projectScope, projectQuery)
 		if err != nil {
@@ -153,7 +154,7 @@ projects:
 				if id == query.WorkItemID {
 					joining = query.LandingBatchGroup
 				}
-				capacityQuery := query
+				capacityQuery := projectQuery
 				if resolver != nil {
 					var native tracker.NativeWorkItemID
 					if err := tx.QueryRowContext(ctx, `SELECT native_id FROM issues WHERE id=?`, id).Scan(&native); err != nil {
@@ -219,10 +220,17 @@ projects:
 				preferredHead = progress.head
 			}
 			heads = append(heads, progress.head)
+			headProjects[progress.head] = project
+		} else if !progress.done {
+			incompleteRanks = append(incompleteRanks, r.ProjectRanks[project])
+			preferredIncomplete = preferredIncomplete || project == preferred
 		}
 	}
 	if preferredHead != 0 {
 		return preferredHead, true, nil
+	}
+	if preferredIncomplete {
+		return 0, true, nil
 	}
 	var selected tracker.WorkItemID
 	if len(heads) > 0 {
@@ -234,6 +242,13 @@ projects:
 		}
 		if len(ids) > 0 {
 			selected = ids[0]
+		}
+	}
+	if selected != 0 {
+		for _, rank := range incompleteRanks {
+			if rank < r.ProjectRanks[headProjects[selected]] {
+				return 0, true, nil
+			}
 		}
 	}
 	if selected == 0 && contractRefusal != nil {

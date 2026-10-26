@@ -110,6 +110,9 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 				}
 				return
 			}
+			if _, err := preferred.service.database.db.ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=CASE WHEN id=? THEN 1 ELSE 2 END WHERE organization_id=?", preferred.project.ID, preferred.project.OrganizationID); err != nil {
+				t.Fatal(err)
+			}
 			for _, f := range []nativeFixture{preferred, general} {
 				approveHubTestPolicy(t, preferred.service, f.base+"/policy", hubTestPolicy())
 			}
@@ -118,6 +121,12 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 			rejectedIDs := make(map[tracker.NativeWorkItemID]bool)
 			for i := range scenario.unavailable {
 				issue := preferred.create(t, fmt.Sprintf("unavailable candidate %d", i))
+				if scenario.contract == "" {
+					body := issue.Body + "\n```detent-agent\nschema: 1\nmodel: unavailable-model\n```\n"
+					if _, err := preferred.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", body, issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
 				rejectedIDs[issue.WorkItemID] = true
 				if scenario.providerPage {
 					providerCandidates = append(providerCandidates, providerClaim(r, issue, "").ProviderCandidates[0])
@@ -176,7 +185,9 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 				generalIssue = general.create(t, "available model")
 			}
 			if scenario.contract == "" || scenario.providerPage {
-				publishCapacity(t, preferred, r, capacityReport(now))
+				report := capacityReport(now)
+				report.Models = append(report.Models, "gpt-6.1-sol")
+				publishCapacity(t, preferred, r, report)
 			}
 			claim := providerClaim(r, generalIssue, "general-provider")
 			if scenario.ready {
@@ -312,6 +323,8 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 		{"allowlist filters higher priority", 1, 4, 0, 1, -time.Hour, time.Hour, "second", false},
 		{"empty allowlist runs nothing", 1, 4, 0, 1, -time.Hour, time.Hour, "empty", false},
 		{"project rank beats issue priority", 2, 1, 0, 1, -time.Hour, time.Hour, "both", true},
+		{"foreign provider candidate competes", 2, 1, 1, 2, -time.Hour, time.Hour, "provider", true},
+		{"provider claim honors runner rank override", 1, 2, 1, 2, -time.Hour, time.Hour, "provider-override", false},
 		{"project rank breaks priority ties", 2, 2, 0, 1, time.Hour, -time.Hour, "both", true},
 		{"organization runner follows organization rank", 2, 1, 0, 1, -time.Hour, time.Hour, "organization", true},
 		{"runner rank override wins", 1, 2, 0, 1, -time.Hour, time.Hour, "override", false},
@@ -331,16 +344,17 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 				allowed = []tracker.ProjectID{}
 			}
 			routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 2, ProjectIDs: allowed}}
-			if scenario.allowed == "organization" || scenario.allowed == "override" {
+			if scenario.allowed == "organization" || scenario.allowed == "override" || scenario.allowed == "provider-override" {
 				routing.Scope = "organization"
 				routing.ProjectIDs = nil
 			}
-			if scenario.allowed == "override" {
+			if scenario.allowed == "override" || scenario.allowed == "provider-override" {
 				routing.ProjectRanks = map[tracker.ProjectID]int{first.project.ID: 2, second.project.ID: 0}
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
 			descriptor := hubTestPolicy()
 			now := first.service.config.now()
+			issues := make(map[tracker.ProjectID]tracker.NativeIssue)
 			for _, project := range []struct {
 				fixture        nativeFixture
 				priority, rank int
@@ -351,6 +365,7 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 			} {
 				approveHubTestPolicy(t, first.service, project.fixture.base+"/policy", descriptor)
 				issue := project.fixture.create(t, "ready")
+				issues[project.fixture.project.ID] = issue
 				for _, statement := range []struct {
 					sql  string
 					args []any
@@ -369,9 +384,18 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 			if scenario.wantFirst {
 				loser, winner = second, first
 			}
+			if scenario.allowed == "provider" || scenario.allowed == "provider-override" {
+				report := capacityReport(now)
+				report.Models = append(report.Models, "gpt-6.1-sol")
+				publishCapacity(t, first, r, report)
+				claim = providerClaim(r, issues[loser.project.ID], "lower-provider")
+			}
 			response := performHubAPIRequest(t, first.service, http.MethodPost, loser.base+"/claims", r.redemption.Credential, claim)
 			if response.Code == http.StatusOK {
 				t.Fatalf("lower-ranked or unauthorized project acquired work: %s", response.Body.String())
+			}
+			if scenario.allowed == "provider" || scenario.allowed == "provider-override" {
+				claim = providerClaim(r, issues[winner.project.ID], "higher-provider")
 			}
 			response = performHubAPIRequest(t, first.service, http.MethodPost, winner.base+"/claims", r.redemption.Credential, claim)
 			if scenario.allowed == "empty" {
