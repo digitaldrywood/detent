@@ -3523,13 +3523,15 @@ func TestDispatchReadyIssuesRecordsPostSelectionRefusal(t *testing.T) {
 	}{
 		{
 			name: "CPU pressure",
-			configure: func(_ *Config, state *State) {
+			configure: func(cfg *Config, state *State) {
+				cfg.CPUPressureSomeAvg10Max = 80
 				state.CPUPressure = telemetry.CPUPressure{
-					Supported:        true,
-					Some:             telemetry.PressureAverages{Avg10: 84.78},
-					SomeAvg10Max:     80,
-					DispatchHeld:     true,
-					ConstrainedSince: now.Add(-time.Minute),
+					Supported:           true,
+					Some:                telemetry.PressureAverages{Avg10: 84.78},
+					SomeAvg10Max:        80,
+					DispatchHeld:        true,
+					CapacityConstrained: true,
+					ConstrainedSince:    now.Add(-time.Minute),
 				}
 			},
 			want: dispatchIssueFailureCPUPressure,
@@ -3557,6 +3559,7 @@ func TestDispatchReadyIssuesRecordsPostSelectionRefusal(t *testing.T) {
 			tt.configure(&cfg, &state)
 			attempts := &recordingWorkAttemptStore{}
 			orch := Orchestrator{cfg: cfg, workAttempts: attempts, now: func() time.Time { return now }}
+			orch.updateHostPressure(&state, func(shared *State) { shared.CPUPressure = state.CPUPressure })
 			issue := dispatchTestIssue("issue-post-selection-refusal", "Todo")
 
 			orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
@@ -3587,10 +3590,12 @@ func TestDispatchReadyIssuesPreservesConcretePressureRefusal(t *testing.T) {
 
 	now := time.Date(2026, 9, 4, 19, 1, 6, 0, time.UTC)
 	cfg := normalizeConfig(Config{
-		MaxConcurrentAgents: 2,
-		ActiveStates:        []string{"Todo"},
-		TerminalStates:      []string{"Done"},
-		Project:             scheduler.ProjectCandidate{ID: "detent"},
+		MaxConcurrentAgents:          2,
+		CPUPressureSomeAvg10Max:      80,
+		CPUPressureDegradedMaxAgents: 1,
+		ActiveStates:                 []string{"Todo"},
+		TerminalStates:               []string{"Done"},
+		Project:                      scheduler.ProjectCandidate{ID: "detent"},
 	})
 	globalGate := scheduler.NewGlobalDispatchGate(
 		scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}),
@@ -3627,6 +3632,7 @@ func TestDispatchReadyIssuesPreservesConcretePressureRefusal(t *testing.T) {
 		globalDispatchGate: globalGate,
 		now:                func() time.Time { return now },
 	}
+	orch.updateHostPressure(&state, func(shared *State) { shared.CPUPressure = state.CPUPressure })
 	issue := dispatchTestIssue("issue-pressure-capacity", "Todo")
 
 	orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)

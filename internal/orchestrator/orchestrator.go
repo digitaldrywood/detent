@@ -309,6 +309,7 @@ type Orchestrator struct {
 	globalDispatchGate      scheduler.ProjectDispatchGate
 	globalDispatchReady     chan struct{}
 	globalDispatchPending   map[string]pendingGlobalDispatch
+	standaloneHostPressure  scheduler.HostPressure
 	readMemoryPressure      func(context.Context) (hostpressure.Sample, error)
 	readIOPressure          func(context.Context) (hostpressure.Sample, error)
 	readCPUPressure         func(context.Context) (hostpressure.Sample, error)
@@ -1578,7 +1579,9 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	state.RateWindowPacing = cfg.RateWindowPacing
 	state.StrandedActiveThreshold = cfg.StrandedActiveThreshold
 	state.DispatchStallThreshold = cfg.DispatchStallThreshold
-	refreshCachedHostPressure(state, previousCfg, cfg, updatedAt)
+	o.updateHostPressure(state, func(shared *State) {
+		refreshCachedHostPressure(shared, previousCfg, cfg, updatedAt)
+	})
 	state.AutoPromoteQuietDuration = cfg.AutoPromote.QuietDuration
 	state.AutoPromote = cloneAutoPromoteConfig(cfg.AutoPromote)
 	state.ActiveStates = append([]string(nil), cfg.ActiveStates...)

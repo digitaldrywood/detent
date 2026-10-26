@@ -146,7 +146,7 @@ func TestQueuedDispatchRanksIndependentRequests(t *testing.T) {
 		higherAge, lowerAge           time.Duration
 		refresh                       bool
 	}{
-		{"issue priority beats project rank", 4, 1, 1, 2, time.Hour, -time.Hour, false},
+		{"project rank beats issue priority", 1, 2, 2, 1, time.Hour, -time.Hour, false},
 		{"project rank breaks priority ties", 1, 4, 2, 2, time.Hour, -time.Hour, false},
 		{"oldest issue breaks remaining ties", 1, 1, 2, 2, -time.Hour, time.Hour, false},
 		{"local refresh preserves Cloud rank", 1, 4, 2, 2, time.Hour, -time.Hour, true},
@@ -567,6 +567,95 @@ func TestStandingDispatchRequestUpdates(t *testing.T) {
 				}
 			default:
 				t.Fatal("updated request did not win capacity")
+			}
+		})
+	}
+}
+
+func TestQueuedDispatchSharedPressureRecovery(t *testing.T) {
+	for _, higherReady := range []bool{true, false} {
+		t.Run(map[bool]string{true: "higher ready", false: "higher has no eligible work"}[higherReady], func(t *testing.T) {
+			registry, err := NewPoolRegistry([]PoolConfig{{Name: DefaultPoolName, Scheduler: Config{Kind: "strict", Capacity: 1}}}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Unix(100000, 0)
+			running, ok, err := registry.TryAcquire(t.Context(), ProjectCandidate{ID: "running", Rank: 3}, SlotRequest{State: "Todo"}, now)
+			if err != nil || !ok {
+				t.Fatalf("initial grant = %t, %v", ok, err)
+			}
+			registry.HostPressure().Update(func(p *HostPressureSnapshot) { p.IO.CapacityConstrained = true; p.IO.DispatchHeld = true })
+			if release, allowed := registry.ReserveDispatch(); allowed {
+				release()
+				t.Fatal("native claim admitted under shared pressure")
+			}
+			results := map[string]<-chan DispatchResult{}
+			for _, project := range []ProjectCandidate{{ID: "b", Rank: 2}, {ID: "a", Rank: 1}} {
+				if project.ID == "a" && !higherReady {
+					continue
+				}
+				priority := 1
+				if project.ID == "a" {
+					priority = 4
+				}
+				result, cancel, decision := registry.Submit(t.Context(), project, SlotRequest{State: "Todo", Priority: priority}, now, nil)
+				t.Cleanup(cancel)
+				results[project.ID] = result
+				if decision.Reason != DispatchGateReasonPressureCapacityFull {
+					t.Fatalf("pressure decision = %+v", decision)
+				}
+			}
+			if registry.PoolSnapshotFor("running").Used != 1 {
+				t.Fatal("pressure preempted running work")
+			}
+			if err := registry.Release(running); err != nil {
+				t.Fatal(err)
+			}
+			for id, result := range results {
+				select {
+				case grant := <-result:
+					t.Fatalf("%s granted under pressure: %+v", id, grant)
+				default:
+				}
+			}
+			registry.HostPressure().Update(func(p *HostPressureSnapshot) { p.IO.CapacityConstrained = false; p.IO.DispatchHeld = false })
+			release, allowed := registry.ReserveDispatch()
+			if !allowed {
+				t.Fatal("native claim remained held after recovery")
+			}
+			release()
+			registry.Update(results["b"], SlotRequest{State: "Todo", Priority: 1, ProjectRank: 2}, now.Add(time.Second))
+			winner := "b"
+			if higherReady {
+				winner = "a"
+			}
+			select {
+			case grant := <-results[winner]:
+				if grant.Err != nil {
+					t.Fatal(grant.Err)
+				}
+				if higherReady {
+					select {
+					case other := <-results["b"]:
+						t.Fatalf("lower project bypassed rank: %+v", other)
+					default:
+					}
+				}
+				if err := registry.Release(grant.Slot); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				t.Fatalf("%s did not receive freed slot", winner)
+			}
+			if higherReady {
+				select {
+				case grant := <-results["b"]:
+					if err := registry.Release(grant.Slot); err != nil {
+						t.Fatal(err)
+					}
+				default:
+					t.Fatal("lower project did not receive next slot")
+				}
 			}
 		})
 	}
