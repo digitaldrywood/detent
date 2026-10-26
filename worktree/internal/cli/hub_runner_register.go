@@ -1,0 +1,500 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+
+	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
+
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
+	servicepkg "github.com/digitaldrywood/detent/internal/service"
+	"github.com/digitaldrywood/detent/internal/shell"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/update"
+	"github.com/digitaldrywood/detent/internal/workspace"
+)
+
+const runnerServiceName = "detent.runner"
+
+type runnerServiceStarter func(cmd *cobra.Command, configPath string) error
+
+type runnerRegistration struct {
+	Commit     workspace.CommitReport `json:"commit"`
+	RunnerID   string                 `json:"runner_id"`
+	MachineID  tracker.MachineID      `json:"machine_id"`
+	Config     string                 `json:"config"`
+	Identity   string                 `json:"identity_file"`
+	Created    bool                   `json:"config_created"`
+	Service    string                 `json:"service,omitempty"`
+	NextSteps  []string               `json:"next_steps,omitempty"`
+	ServiceRun bool                   `json:"service_started"`
+}
+
+func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, startService runnerServiceStarter) *cobra.Command {
+	return newHubRunnerRegisterCommandWithPrivateLocation(version, lookupEnv, startService, runnerPrivateLocation)
+}
+
+func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error) *cobra.Command {
+	return newHubRunnerRegisterCommandWithReporter(version, runtime.GOOS, lookupEnv, startService, privateLocation, reportRunnerSetup)
+}
+
+func newHubRunnerRegisterCommandWithReporter(version, goos string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error) *cobra.Command {
+	return newHubRunnerRegisterCommandWithGitHubAuth(version, goos, lookupEnv, startService, privateLocation, report, func(ctx context.Context) error {
+		commandCtx, cancel := context.WithTimeout(ctx, runtimeCommandTimeout)
+		defer cancel()
+		_, err := defaultCommandRunner(commandCtx, "gh", "auth", "status")
+		return err
+	})
+}
+
+func newHubRunnerRegisterCommandWithGitHubAuth(version, goos string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error) *cobra.Command {
+	return newHubRunnerRegisterCommandWithServiceName(version, goos, lookupEnv, startService, privateLocation, report, ghAuthStatus, registeredRunnerServiceName)
+}
+
+func newHubRunnerRegisterCommandWithServiceName(version, goos string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error, serviceName func(string) (string, error)) *cobra.Command {
+	return newHubRunnerRegisterCommandWithCommitReport(version, goos, lookupEnv, startService, privateLocation, report, ghAuthStatus, serviceName, workspace.ProbeCommitReport)
+}
+
+func newHubRunnerRegisterCommandWithCommitReport(version, goos string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error, serviceName func(string) (string, error), commitReport func(context.Context, string, workspace.CommitIdentity) (workspace.CommitReport, error)) *cobra.Command {
+	var hubURL, token, organization, name, configPath, workspaceRoot, isolationTier string
+	var capacity int
+	var service bool
+	cmd := &cobra.Command{
+		Use:   "register",
+		Short: "Register this host as a runner with one command from the Enroll dialog",
+		Long: "Generates this host's runner identity locally, redeems the one-time enrollment token, writes the runner configuration, and with --service installs and starts it as a background service. " +
+			"The token is single-use and expires within 15 minutes; the credential the host generates is sent once and stored only as a hash by the Hub.",
+		Example:      `detent hub runner register --url https://cloud.detent.build/organizations/org_example --token det_enroll_example --name "Build host" --service`,
+		Args:         NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if service && startService == nil {
+				return servicepkg.ErrUnsupported
+			}
+			token = strings.TrimSpace(firstNonBlankString(token, lookupEnv("DETENT_RUNNER_ENROLLMENT_TOKEN")))
+			if token == "" {
+				return errors.New("an enrollment token is required: pass --token or set DETENT_RUNNER_ENROLLMENT_TOKEN")
+			}
+			base, org, err := runnerHubTarget(hubURL, organization)
+			if err != nil {
+				return err
+			}
+			if capacity < 1 {
+				return errors.New("--capacity must be at least 1")
+			}
+			if err := isolation.ValidateTier(isolationTier, goos); err != nil {
+				if errors.Is(err, isolation.ErrSandboxUnavailable) {
+					return fmt.Errorf("%w; pass --isolation-tier native-trusted", err)
+				}
+				return fmt.Errorf("--isolation-tier must be sandbox or native-trusted: %w", err)
+			}
+			paths, err := resolveRunnerPaths(configPath, workspaceRoot, privateLocation)
+			if err != nil {
+				return err
+			}
+			hostname, err := os.Hostname()
+			if err != nil {
+				return errors.New("host name is unavailable")
+			}
+			name = strings.TrimSpace(firstNonBlankString(name, hostname))
+			if _, err := os.Lstat(paths.config); err == nil {
+				if err := existingRunnerConfigMatches(paths.config, runnerConfig(base, org, name, capacity, paths)); err != nil {
+					return err
+				}
+			}
+			base, err = prepareRunnerIdentity(paths.identity, base, org)
+			if err != nil {
+				return err
+			}
+			configuration := globalconfig.Config{}
+			if _, err := os.Lstat(paths.config); err == nil {
+				configuration, err = readRunnerSetupConfig(paths.config)
+				if err != nil {
+					return err
+				}
+			}
+			backendReport, _ := probeRunnerIsolation(cmd.Context(), configuration)
+			identity, err := hubclient.EnrollRunner(cmd.Context(), paths.identity, org, token, hubclient.Machine{IsolationTier: isolationTier, Hostname: hostname, DisplayName: name, Capacity: capacity, Version: firstNonBlankString(version, "dev"), BackendIsolation: backendReport})
+			if err != nil {
+				return err
+			}
+			client, err := hubclient.New(hubclient.Config{URL: base, IdentityFile: paths.identity})
+			if err != nil {
+				return err
+			}
+			fleet, err := hubclient.NewFleetClient(client, org, nil)
+			if err != nil {
+				return err
+			}
+			runners, err := fleet.Fleet(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("runner enrolled; read routing configuration: %w", err)
+			}
+			if len(runners.Runners) != 1 {
+				return errors.New("runner enrolled; Hub returned no routing configuration")
+			}
+			routing := runners.Runners[0]
+			if err := runnerauth.SaveRoutingCache(paths.identity, runnerauth.RoutingSnapshot{RunnerID: routing.RunnerID, Revision: routing.Revision, Routing: routing.Routing}); err != nil {
+				return fmt.Errorf("runner enrolled; save routing configuration: %w", err)
+			}
+			result := runnerRegistration{RunnerID: identity.RunnerID, MachineID: identity.MachineID, Config: paths.config, Identity: paths.identity}
+			result.Commit, err = commitReport(cmd.Context(), "", workspace.CommitIdentity{Name: "Detent runner", Email: string(identity.MachineID) + "@runners.detent.invalid"})
+			if err != nil {
+				return err
+			}
+			minimumVersion, err := client.MinimumRunnerVersion(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("runner enrolled; read minimum runner version: %w", err)
+			}
+			if order, err := update.CompareVersions(version, minimumVersion); err == nil && order < 0 {
+				result.NextSteps = append(result.NextSteps, fmt.Sprintf("This Hub requires Detent %s or newer; this binary is %s. Update with detent update --yes --from-release (or brew upgrade digitaldrywood/tap/detent for Homebrew), then retry this register command", minimumVersion, version))
+			}
+			config := runnerConfig(base, org, name, capacity, paths)
+			if _, err := os.Lstat(paths.config); errors.Is(err, os.ErrNotExist) {
+				config.ServiceName, err = serviceName(paths.config)
+				if err != nil {
+					return err
+				}
+			}
+			result.Created, err = writeRunnerConfig(paths.config, config)
+			if err != nil {
+				return err
+			}
+			if !result.Created {
+				if err := existingRunnerConfigMatches(paths.config, config); err != nil {
+					return err
+				}
+			}
+			loaded, err := readRunnerSetupConfig(paths.config)
+			if err == nil {
+				loaded, err = runnerProjectsForIdentity(cmd.Context(), loaded, client, identity, false, false)
+			}
+			if err == nil {
+				err = report(cmd.Context(), loaded, version)
+			}
+			if err != nil {
+				return fmt.Errorf("runner enrolled; report local setup: %w", err)
+			}
+			if githubTokenSentinel(loaded.GitHubToken) && strings.TrimSpace(lookupEnv("GITHUB_TOKEN")) == "" {
+				steps, err := runnerGitHubAuthNextSteps(cmd.Context(), loaded, ghAuthStatus)
+				if err != nil {
+					return err
+				}
+				result.NextSteps = append(result.NextSteps, steps...)
+			}
+			start := runnerStartCommand(paths.config, runtime.GOOS)
+			switch {
+			case service:
+				result.Service = serviceNameForConfig(loaded)
+				if result.Service == servicepkg.DefaultName {
+					return errors.New("runner service name must differ from the board service name")
+				}
+				if err := startService(cmd, paths.config); err != nil {
+					return NewClassifiedError(err, classifyError(err).Slug, "Runner enrollment succeeded; install and start service: "+ErrorDetail(err), "Check the runner service and logs; for foreground diagnostics after stopping the service: "+start, nil)
+				}
+				result.ServiceRun = true
+			default:
+				result.NextSteps = append(result.NextSteps, "Start the runner: "+start)
+			}
+			return writeRunnerRegistration(cmd, result)
+		},
+	}
+	cmd.Flags().StringVar(&hubURL, "url", "", "the organization's Hub URL from the Enroll dialog")
+	cmd.Flags().StringVar(&token, "token", "", "one-time enrollment token (or set DETENT_RUNNER_ENROLLMENT_TOKEN)")
+	cmd.Flags().StringVar(&organization, "organization", "", "organization ID, when the URL does not name one")
+	cmd.Flags().StringVar(&name, "name", "", "display name shown in the Hub (default: host name)")
+	cmd.Flags().IntVar(&capacity, "capacity", 1, "independent work items this host may run concurrently, each with its own workspace and agent")
+	cmd.Flags().StringVar(&isolationTier, "isolation-tier", isolation.Sandbox, "agent access: sandbox (shared machines) or native-trusted (full access on a dedicated machine)")
+	cmd.Flags().StringVar(&configPath, "config", "", "runner configuration path (default: ~/.config/detent-runner/global.yaml)")
+	cmd.Flags().StringVar(&workspaceRoot, "workspace-root", "", "where project checkouts live (default: ~/detent-runner)")
+	cmd.Flags().BoolVar(&service, "service", false, "install and start the runner as a background service")
+	return cmd
+}
+
+func runnerGitHubAuthNextSteps(ctx context.Context, cfg globalconfig.Config, ghAuthStatus func(context.Context) error) ([]string, error) {
+	var projects []string
+	for _, selected := range cfg.Projects {
+		workflow, err := project.LoadWorkflowContext(ctx, selected)
+		if err != nil {
+			continue
+		}
+		if trackerUsesGitHubToken(workflow.Config.Tracker.Kind) || workflow.Config.Deliverable.GitHubPullRequest {
+			projects = append(projects, selected.ID)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(projects) == 0 {
+		return nil, nil
+	}
+	err := ghAuthStatus(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err == nil {
+		return nil, nil
+	}
+	steps := make([]string, 0, len(projects))
+	for _, name := range projects {
+		steps = append(steps, fmt.Sprintf("Project %s needs GitHub authentication: run gh auth login", name))
+	}
+	return steps, nil
+}
+
+// prepareRunnerIdentity creates the host identity, or checks that an existing
+// one belongs to this Hub and organization so a retry never sends the new
+// token to another Hub.
+func prepareRunnerIdentity(path, base string, org tracker.OrganizationID) (string, error) {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		_, err = runnerauth.Initialize(path, base)
+		return base, err
+	}
+	file, err := runnerauth.Load(path)
+	if err != nil {
+		return "", err
+	}
+	if file.Identity.OrganizationID != "" && file.Identity.OrganizationID != org {
+		return "", fmt.Errorf("%s belongs to a runner in %s; pass --config with another directory to register a separate runner", path, file.Identity.OrganizationID)
+	}
+	if !runnerHubMatches(file.HubURL, base, org) {
+		return "", fmt.Errorf("%s belongs to the runner for %s; pass --config with another directory to register a separate runner", path, file.HubURL)
+	}
+	return file.HubURL, nil
+}
+
+func runnerHubMatches(have, want string, org tracker.OrganizationID) bool {
+	haveBase, _, haveErr := runnerHubTarget(have, string(org))
+	wantBase, _, wantErr := runnerHubTarget(want, string(org))
+	suffix := "/organizations/" + string(org)
+	return haveErr == nil && wantErr == nil && strings.TrimSuffix(haveBase, suffix) == strings.TrimSuffix(wantBase, suffix)
+}
+
+func runnerCheckoutReady(ctx context.Context, selected globalconfig.Project) bool {
+	if selected.Workdir == "" {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(selected.Workdir, ".git")); err != nil {
+		return false
+	}
+	if strings.TrimSpace(selected.Workflow) == "" && strings.TrimSpace(selected.WorkflowRef) == "" {
+		selected.Workflow = filepath.Join(selected.Workdir, "WORKFLOW.md")
+	}
+	_, err := project.LoadWorkflowContext(ctx, selected)
+	return err == nil
+}
+
+func existingRunnerConfigMatches(path string, want runnerConfigFile) error {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var have runnerConfigFile
+	if err := yaml.Unmarshal(body, &have); err != nil {
+		return fmt.Errorf("%s exists but cannot be read; move it aside and run register again: %w", path, err)
+	}
+	mismatch := func(what string) error {
+		return fmt.Errorf("%s exists but its %s does not match this runner; move it aside and run register again, or pass --config with another path", path, what)
+	}
+	switch {
+	case have.Client.OrganizationID != want.Client.OrganizationID:
+		return mismatch("client.organization_id")
+	case !runnerHubMatches(have.Client.HubURL, want.Client.HubURL, tracker.OrganizationID(want.Client.OrganizationID)):
+		return mismatch("client.hub_url")
+	case have.Client.IdentityFile != want.Client.IdentityFile:
+		return mismatch("client.identity_file")
+	}
+	return nil
+}
+
+// runnerHubTarget splits the Enroll dialog's URL into the Hub base the runner
+// talks to and the organization it enrolls in.
+func runnerHubTarget(raw, organization string) (string, tracker.OrganizationID, error) {
+	raw = strings.TrimRight(strings.TrimSpace(raw), "/")
+	if raw == "" {
+		return "", "", errors.New("--url is required")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", "", errors.New("--url must be the organization's Hub URL, for example https://cloud.detent.build/organizations/org_example")
+	}
+	org := strings.TrimSpace(organization)
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	for i := 0; i+1 < len(segments); i++ {
+		if segments[i] == "organizations" {
+			if org != "" && org != segments[i+1] {
+				return "", "", fmt.Errorf("--organization %s does not match the URL's organization %s", org, segments[i+1])
+			}
+			org = segments[i+1]
+		}
+	}
+	if !strings.HasPrefix(org, "org_") {
+		return "", "", errors.New("the organization is unknown: use the URL from the Enroll dialog or pass --organization")
+	}
+	return raw, tracker.OrganizationID(org), nil
+}
+
+type runnerPaths struct {
+	config     string
+	identity   string
+	workspaces string
+}
+
+func resolveRunnerPaths(configPath, workspaceRoot string, privateLocation func(string) error) (runnerPaths, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return runnerPaths{}, err
+	}
+	if configPath == "" {
+		configPath = filepath.Join(home, ".config", "detent-runner", "global.yaml")
+	}
+	if workspaceRoot == "" {
+		workspaceRoot = filepath.Join(home, "detent-runner")
+	}
+	if !filepath.IsAbs(configPath) || !filepath.IsAbs(workspaceRoot) {
+		return runnerPaths{}, errors.New("--config and --workspace-root must be absolute paths")
+	}
+	identity := filepath.Join(filepath.Dir(configPath), "identity.json")
+	if err := privateLocation(identity); err != nil {
+		return runnerPaths{}, err
+	}
+	return runnerPaths{config: filepath.Clean(configPath), identity: identity, workspaces: filepath.Clean(workspaceRoot)}, nil
+}
+
+type runnerConfigFile struct {
+	APIVersion    string             `yaml:"apiVersion"`
+	Kind          string             `yaml:"kind"`
+	InstanceName  string             `yaml:"instance_name"`
+	ServiceName   string             `yaml:"service_name"`
+	GitHubToken   string             `yaml:"github_token"`
+	Port          int                `yaml:"port"`
+	Client        runnerConfigClient `yaml:"client"`
+	Global        runnerConfigGlobal `yaml:"global"`
+	WorkspaceRoot string             `yaml:"workspace_root"`
+}
+
+type runnerConfigClient struct {
+	HubURL         string `yaml:"hub_url"`
+	IdentityFile   string `yaml:"identity_file"`
+	OrganizationID string `yaml:"organization_id"`
+	DisplayName    string `yaml:"display_name"`
+	Capacity       int    `yaml:"capacity"`
+}
+
+type runnerConfigGlobal struct {
+	MaxConcurrentAgents int `yaml:"max_concurrent_agents"`
+}
+
+func runnerConfig(base string, org tracker.OrganizationID, name string, capacity int, paths runnerPaths) runnerConfigFile {
+	config := runnerConfigFile{
+		APIVersion:   "detent/v1",
+		Kind:         "GlobalConfig",
+		InstanceName: name,
+		ServiceName:  runnerServiceName,
+		GitHubToken:  "gh",
+		Client: runnerConfigClient{
+			HubURL:         base,
+			IdentityFile:   paths.identity,
+			OrganizationID: string(org),
+			DisplayName:    name,
+			Capacity:       capacity,
+		},
+		Global:        runnerConfigGlobal{MaxConcurrentAgents: capacity},
+		WorkspaceRoot: paths.workspaces,
+	}
+	return config
+}
+
+// writeRunnerConfig creates the runner configuration once. An existing file
+// is the operator's and is never rewritten.
+func writeRunnerConfig(path string, config runnerConfigFile) (created bool, resultErr error) {
+	if !globalconfig.ValidServiceName(config.ServiceName) {
+		return false, errors.New("runner service name is invalid")
+	}
+	body, err := yaml.Marshal(config)
+	if err != nil {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return false, err
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return false, nil
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".global.yaml.*")
+	if err != nil {
+		return false, err
+	}
+	defer func() {
+		if err := os.Remove(temporary.Name()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
+	header := "# Detent runner configuration written by `detent hub runner register`.\n# Machine settings only. The Hub supplies allowed projects; the runner clones their repositories into workspace_root.\n"
+	_, writeErr := temporary.Write(append([]byte(header), body...))
+	if err := errors.Join(writeErr, temporary.Chmod(0o600), temporary.Sync(), temporary.Close()); err != nil {
+		return false, err
+	}
+	// A hard link publishes the complete file or nothing, and fails rather than
+	// replacing a configuration that appeared meanwhile.
+	if err := os.Link(temporary.Name(), path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func writeRunnerRegistration(cmd *cobra.Command, result runnerRegistration) error {
+	output, err := OutputForCommand(cmd)
+	if err != nil {
+		return err
+	}
+	return output.Write(func(w io.Writer) error {
+		lines := []string{
+			fmt.Sprintf("Registered runner %s (machine %s).", result.RunnerID, result.MachineID),
+			fmt.Sprintf("Runner commits: %s <%s>; signing: %s.", result.Commit.Identity.Name, result.Commit.Identity.Email, result.Commit.Signing),
+		}
+		if result.Created {
+			lines = append(lines, "Wrote "+result.Config)
+		} else {
+			lines = append(lines, "Kept the existing "+result.Config)
+		}
+		if result.ServiceRun {
+			lines = append(lines, "Started the "+result.Service+" service.", "Service logs: "+filepath.Join(filepath.Dir(result.Config), "logs", "service.out.log")+" and "+filepath.Join(filepath.Dir(result.Config), "logs", "service.err.log"))
+		}
+		for _, step := range result.NextSteps {
+			lines = append(lines, "Next: "+step)
+		}
+		_, err := fmt.Fprintln(w, strings.Join(lines, "\n"))
+		return err
+	}, result)
+}
+
+func shellQuote(value string) string {
+	if value != "" && !strings.ContainsAny(value, " \t\n'\"\\$`!*?[]{}()<>|&;#~") {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+func runnerStartCommand(configPath, goos string) string {
+	quoted := shellQuote(configPath)
+	if goos == "windows" {
+		quoted = shell.QuotePowerShellArg(configPath)
+	}
+	return fmt.Sprintf("detent --config %s --headless", quoted)
+}
