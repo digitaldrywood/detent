@@ -35,6 +35,38 @@ func TestRoutingCacheRoundTrip(t *testing.T) {
 	if err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("cache permissions = %v, %v", info, err)
 	}
+	for _, test := range []struct {
+		name string
+		path string
+		mode os.FileMode
+	}{
+		{"public file", RoutingCachePath(path), 0o644},
+		{"public directory", filepath.Dir(path), 0o755},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("Unix permissions")
+			}
+			info, err := os.Stat(test.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(test.path, test.mode); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := os.Chmod(test.path, info.Mode().Perm()); err != nil {
+					t.Error(err)
+				}
+			})
+			if _, err := LoadRoutingCache(path); err == nil {
+				t.Fatal("public routing cache accepted on read")
+			}
+			if err := SaveRoutingCache(path, snapshot); err == nil {
+				t.Fatal("public routing cache accepted for update")
+			}
+		})
+	}
 	if err := SaveRoutingCache(path, RoutingSnapshot{RunnerID: NewBinding().RunnerID, Revision: 4, Routing: snapshot.Routing}); err == nil {
 		t.Fatal("cache accepted another runner")
 	}
