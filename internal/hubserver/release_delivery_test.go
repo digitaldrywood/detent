@@ -98,10 +98,70 @@ func (f *releaseDeliveryFixture) associate(t *testing.T, r tracker.AssociateRele
 }
 
 func TestNativeReleaseDeliveryRefresh(t *testing.T) {
-	for _, name := range []string{"refresh", "stale revision", "different source", "different frozen series", "different release branch", "different repository", "different PR", "different branch", "held", "operator stop", "archived", "terminal", "active writer", "provenance", "no source capture transition"} {
+	auditCases := map[string]func(*tracker.ChangeReview){
+		"historical source audit":                 func(*tracker.ChangeReview) {},
+		"historical source with later discussion": func(*tracker.ChangeReview) {},
+		"unknown source reviewer":                 func(r *tracker.ChangeReview) { r.SecurityAudit.Run.ReviewerVersion = "unknown" },
+		"unknown source digest":                   func(r *tracker.ChangeReview) { r.SecurityAudit.Run.ReviewerDigest = strings.Repeat("0", 64) },
+		"failed source audit":                     func(r *tracker.ChangeReview) { r.SecurityAudit.Run.ExitStatus = securityaudit.ExitStatusFailed },
+		"failing source verdict": func(r *tracker.ChangeReview) {
+			r.SecurityAudit.Run.Verdict = securityaudit.VerdictFail
+			r.SecurityAudit.Run.Findings = []securityaudit.Finding{{ID: "hardening", Severity: "p3", Body: "Hardening finding"}}
+		},
+		"rejected source audit": func(r *tracker.ChangeReview) { r.Decision = "changes_requested" },
+		"source audit finding": func(r *tracker.ChangeReview) {
+			r.SecurityAudit.Run.Findings = []securityaudit.Finding{{ID: "auth", Severity: "p1", Body: "Missing authorization"}}
+		},
+		"foreign source issue":                     func(r *tracker.ChangeReview) { r.SecurityAudit.Run.IssueID = "wi_other" },
+		"foreign source project":                   func(r *tracker.ChangeReview) { r.SecurityAudit.Run.ProjectID = "prj_other" },
+		"foreign source repository":                func(r *tracker.ChangeReview) { r.SecurityAudit.Run.Repository = "https://github.com/owner/other" },
+		"wrong source PR":                          func(r *tracker.ChangeReview) { r.SecurityAudit.Run.PRNumber = 99 },
+		"wrong source base":                        func(r *tracker.ChangeReview) { r.SecurityAudit.Run.BaseSHA = strings.Repeat("8", 40) },
+		"wrong source head":                        func(r *tracker.ChangeReview) { r.SecurityAudit.Run.HeadSHA = strings.Repeat("8", 40) },
+		"missing source output":                    func(r *tracker.ChangeReview) { r.SecurityAudit.Run.OutputBytes = 0 },
+		"wrong source session":                     func(r *tracker.ChangeReview) { r.SecurityAudit.SessionID++ },
+		"historical source without delivery audit": func(*tracker.ChangeReview) {},
+		"historical source without scope review":   func(*tracker.ChangeReview) {},
+	}
+	names := []string{"refresh", "stale revision", "different source", "different frozen series", "different release branch", "different repository", "different PR", "different branch", "held", "operator stop", "archived", "terminal", "active writer", "provenance", "no source capture transition", "missing source audit"}
+	for name := range auditCases {
+		names = append(names, name)
+	}
+	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
-			f, _, _ := releasePublicationFixture(t, true)
+			f, _, _ := releasePublicationFixture(t, name != "missing source audit")
 			original := f.associate(t, f.request)
+			if edit, ok := auditCases[name]; ok {
+				var detail tracker.ChangeDetail
+				decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.changeFixture.path, f.token, nil), &detail)
+				review := detail.Reviews[len(detail.Reviews)-1]
+				review.SecurityAudit.Run.ReviewerVersion = "2"
+				review.SecurityAudit.Run.ReviewerDigest = "18feae8d1c5b5a50cbcfdd9feb1280302a3c888881b7facf4200d6af3c3ee761"
+				edit(&review)
+				raw, err := marshalNative(review)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_evidence (change_id, version_id, kind, record_json) VALUES (?, ?, 'review', ?)", f.change.ID, review.VersionID, raw); err != nil {
+					t.Fatal(err)
+				}
+				if name == "historical source with later discussion" {
+					for range 33 {
+						if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_evidence (change_id, version_id, kind, record_json) VALUES (?, ?, 'discussion', '{}')", f.change.ID, review.VersionID); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if name == "historical source without delivery audit" {
+					descriptor := hubTestPolicy()
+					approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+				}
+				if name == "historical source without scope review" {
+					rules := f.rules
+					rules.RequireReview = false
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "no-scope-review"}, ExpectedID: f.rules.ID, Policy: rules}), http.StatusOK)
+				}
+			}
 			var before tracker.NativeIssue
 			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.itemPath, f.token, nil), &before)
 			request := f.request
@@ -110,7 +170,7 @@ func TestNativeReleaseDeliveryRefresh(t *testing.T) {
 			request.BaseSHA, request.HeadSHA = strings.Repeat("1", 40), strings.Repeat("2", 40)
 			want := http.StatusUnprocessableEntity
 			switch name {
-			case "refresh":
+			case "refresh", "historical source audit", "historical source with later discussion":
 				want = http.StatusOK
 			case "stale revision":
 				request.ExpectedRevision--

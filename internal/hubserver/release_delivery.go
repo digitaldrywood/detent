@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -281,19 +282,39 @@ func (s *Service) checkReleasePickDelivery(ctx context.Context, tx *sql.Tx, scop
 	if err != nil {
 		return err
 	}
+	historicalSource := false
 	if publishing {
-		reviews, err := changeRows[tracker.ChangeReview](ctx, tx, "SELECT record_json FROM change_evidence WHERE change_id = ? AND version_id = ? AND kind = 'review' ORDER BY sequence", sourceChange.ID, sourceVersion.ID)
+		reviews, err := changeRows[tracker.ChangeReview](ctx, tx, "SELECT record_json FROM change_evidence WHERE change_id = ? AND version_id = ? AND kind = 'review' ORDER BY sequence DESC LIMIT 32", sourceChange.ID, sourceVersion.ID)
 		if err != nil {
 			return err
 		}
 		audited := false
+		prNumber := 0
+		if sourceVersion.External != nil {
+			prNumber, err = strconv.Atoi(sourceVersion.External.ID)
+			if err != nil || prNumber < 1 {
+				return nativePublicInvalid("Source Change requires an exact PR identity")
+			}
+		}
 		for _, review := range reviews {
+			if review.VersionID != sourceVersion.ID {
+				continue
+			}
+			if review.Decision == "changes_requested" {
+				break
+			}
 			audit := review.SecurityAudit
 			if audit == nil || audit.Landing {
 				continue
 			}
-			evaluation := securityaudit.Evaluate(audit.Run, nil, securityaudit.Key{ProjectID: string(scope.project), Repository: sourceVersion.Repository, PRNumber: audit.Run.PRNumber, BaseSHA: sourceVersion.BaseSHA, HeadSHA: sourceVersion.HeadSHA}, "", []string{"p1", "p2"})
-			audited = review.VersionID == sourceVersion.ID && review.Decision == "approved" && audit.Verdict == "pass" && audit.SessionID == audit.Run.ID && audit.SessionID > 0 && audit.Run.IssueID == string(r.SourceIssueID) && evaluation.Allowed
+			key := securityaudit.Key{ProjectID: string(scope.project), Repository: sourceVersion.Repository, PRNumber: prNumber, BaseSHA: sourceVersion.BaseSHA, HeadSHA: sourceVersion.HeadSHA}
+			evaluation := securityaudit.Evaluate(audit.Run, nil, key, "", []string{"p1", "p2"})
+			if refreshing && evaluation.Reason == securityaudit.ReasonReviewerMismatch {
+				evaluation = securityaudit.EvaluateLandedSource(audit.Run, key)
+				historicalSource = evaluation.Allowed
+			}
+			audited = review.VersionID == sourceVersion.ID && review.Decision == "approved" && audit.Verdict == "pass" && audit.Run.Verdict == securityaudit.VerdictPass && audit.SessionID == audit.Run.ID && audit.SessionID > 0 && audit.Run.IssueID == string(r.SourceIssueID) && evaluation.Allowed
+			break
 		}
 		if !audited {
 			return nativePublicInvalid("Source Change requires a passing immutable security audit")
@@ -339,6 +360,9 @@ func (s *Service) checkReleasePickDelivery(ctx context.Context, tx *sql.Tx, scop
 		return err
 	}
 	independentReview := rules.RequireReview || approved.Policy.Gates.Validator || approved.Policy.Gates.SecurityAudit || approved.Policy.Gates.AutomatedReview == gate.AutomatedReviewRequired
+	if historicalSource && (!approved.Policy.Gates.SecurityAudit || !rules.RequireReview && !approved.Policy.Gates.Validator && approved.Policy.Gates.AutomatedReview != gate.AutomatedReviewRequired) {
+		return nativePublicInvalid("Historical source recovery requires current delivery security audit and independent scope review")
+	}
 	if !independentReview {
 		return nativePublicInvalid("Release delivery requires the project's independent review policy")
 	}

@@ -154,6 +154,17 @@ func OutputDigest(output string) string {
 }
 
 func Evaluate(run Run, dispositions []Disposition, key Key, serviceIdentity string, blockOn []string) Evaluation {
+	return evaluate(run, dispositions, key, serviceIdentity, blockOn, ReviewerVersion, ReviewerDigest())
+}
+
+func EvaluateLandedSource(run Run, key Key) Evaluation {
+	if run.ReviewerVersion == "2" && run.ReviewerDigest == "18feae8d1c5b5a50cbcfdd9feb1280302a3c888881b7facf4200d6af3c3ee761" {
+		return evaluate(run, nil, key, "", []string{"p1", "p2"}, run.ReviewerVersion, run.ReviewerDigest)
+	}
+	return Evaluate(run, nil, key, "", []string{"p1", "p2"})
+}
+
+func evaluate(run Run, dispositions []Disposition, key Key, serviceIdentity string, blockOn []string, reviewerVersion, reviewerDigest string) Evaluation {
 	evaluation := Evaluation{RunID: run.ID}
 	if run.ID <= 0 {
 		evaluation.Reason = ReasonMissing
@@ -165,7 +176,7 @@ func Evaluate(run Run, dispositions []Disposition, key Key, serviceIdentity stri
 		evaluation.Reason = ReasonStale
 		return evaluation
 	}
-	if run.ReviewerVersion != ReviewerVersion || run.ReviewerDigest != ReviewerDigest() {
+	if run.ReviewerVersion != reviewerVersion || run.ReviewerDigest != reviewerDigest {
 		evaluation.Reason = ReasonReviewerMismatch
 		evaluation.Detail = "run.reviewer_version or run.reviewer_digest differs from the trusted reviewer"
 		return evaluation

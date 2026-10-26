@@ -79,6 +79,10 @@ func TestEvaluateRequiresTrustedExactHeadAudit(t *testing.T) {
 		{name: "forged service", mutate: func(run *Run, _ *Key) { run.ServiceIdentity = "implementation-agent" }, wantAllowed: true, wantReason: ReasonReady},
 		{name: "changed reviewer version", mutate: func(run *Run, _ *Key) { run.ReviewerVersion = "old" }, wantReason: ReasonReviewerMismatch, wantDetail: "reviewer_version"},
 		{name: "changed reviewer digest", mutate: func(run *Run, _ *Key) { run.ReviewerDigest = "changed" }, wantReason: ReasonReviewerMismatch, wantDetail: "reviewer_digest"},
+		{name: "known landed source reviewer cannot approve current work", mutate: func(run *Run, _ *Key) {
+			run.ReviewerVersion = "2"
+			run.ReviewerDigest = "18feae8d1c5b5a50cbcfdd9feb1280302a3c888881b7facf4200d6af3c3ee761"
+		}, wantReason: ReasonReviewerMismatch, wantDetail: "reviewer_version"},
 		{
 			name: "unresolved p1 finding",
 			mutate: func(run *Run, _ *Key) {
