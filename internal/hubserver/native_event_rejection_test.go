@@ -94,6 +94,9 @@ func TestNativeRunEventRejectionsLogged(t *testing.T) {
 		name, category, field, reason string
 		edit                          func(*tracker.NativeRunEvent)
 	}{
+		{"oversized step", "event_validation", "data.steps.validator", "Execution step receipt exceeds its bounded payload", func(e *tracker.NativeRunEvent) {
+			e.Data.Steps = []tracker.NativeStepReceipt{{Step: "validator", PolicyID: e.Data.PolicyID, ReviewState: strings.Repeat("a", 64), Source: tracker.NativeCheckpoint{HeadSHA: strings.Repeat("b", 40), WorkspaceDigest: "digest"}, CompletedAt: now, Validator: &gate.ValidatorResult{Summary: strings.Repeat("sentinel-private", 20000)}}}
+		}},
 		{"idempotency", "event_validation", "", "", func(e *tracker.NativeRunEvent) { e.IdempotencyKey = "" }},
 		{"schema", "event_validation", "", "", func(e *tracker.NativeRunEvent) { e.SchemaVersion = 2 }},
 		{"type", "event_validation", "", "", func(e *tracker.NativeRunEvent) { e.Type = "sentinel-private" }},

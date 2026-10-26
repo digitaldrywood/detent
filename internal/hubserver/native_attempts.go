@@ -126,8 +126,23 @@ func validateNativeExecution(data tracker.NativeRunData, eventType string) error
 		}
 		seenSteps[receipt.Step] = true
 		encoded, err := json.Marshal(receipt)
-		if err != nil || len(encoded) > 256<<10 {
-			return nativePublicInvalid("Execution step receipt exceeds its bounded payload")
+		if err != nil || len(encoded) > tracker.NativeStepReceiptBytes {
+			field := "data.steps"
+			largest := 0
+			for _, part := range []struct {
+				name  string
+				value any
+			}{{"validator", receipt.Validator}, {"validation", receipt.Validation}, {"security_audit", receipt.SecurityAudit}, {"completion_body", receipt.CompletionBody}, {"source", receipt.Source}, {"payload_artifact", receipt.PayloadArtifact}, {"payload_attachment", receipt.PayloadAttachment}} {
+				raw, encodeErr := json.Marshal(part.value)
+				if encodeErr != nil {
+					field = "data.steps." + part.name
+					break
+				}
+				if len(raw) > largest {
+					largest, field = len(raw), "data.steps."+part.name
+				}
+			}
+			return nativeRejection(nativePublicInvalid("Execution step receipt exceeds its bounded payload"), "event_validation", field)
 		}
 	}
 	if data.Runtime != nil && data.Runtime.WorkerLaunch != nil && data.Runtime.WorkerLaunch.PolicyID != data.PolicyID {

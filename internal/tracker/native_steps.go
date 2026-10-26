@@ -7,22 +7,36 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/gate"
 )
 
+const NativeStepReceiptBytes = 256 << 10
+
+type NativeStepAttachment struct {
+	ID             string           `json:"id"`
+	OrganizationID OrganizationID   `json:"organization_id"`
+	ProjectID      ProjectID        `json:"project_id"`
+	WorkItemID     NativeWorkItemID `json:"work_item_id"`
+	SHA256         string           `json:"sha256"`
+	Size           int64            `json:"size"`
+}
+
 type NativeStepReceipt struct {
-	Step             string                `json:"step"`
-	PolicyID         string                `json:"policy_id"`
-	ReviewState      string                `json:"review_state"`
-	ReviewEpoch      FencingToken          `json:"review_epoch,string,omitempty"`
-	Source           NativeCheckpoint      `json:"source"`
-	Change           NativeChangeReference `json:"change,omitzero"`
-	CompletedAt      time.Time             `json:"completed_at"`
-	CompletionBody   string                `json:"completion_body,omitempty"`
-	FinalizedBaseSHA string                `json:"finalized_base_sha,omitempty"`
-	Validation       *gate.CommandResult   `json:"validation,omitempty"`
-	Validator        *gate.ValidatorResult `json:"validator,omitempty"`
-	SecurityAudit    *SecurityAuditReview  `json:"security_audit,omitempty"`
+	PayloadAttachment *NativeStepAttachment `json:"payload_attachment,omitempty"`
+	PayloadArtifact   *artifact.Reference   `json:"payload_artifact,omitempty"`
+	Step              string                `json:"step"`
+	PolicyID          string                `json:"policy_id"`
+	ReviewState       string                `json:"review_state"`
+	ReviewEpoch       FencingToken          `json:"review_epoch,string,omitempty"`
+	Source            NativeCheckpoint      `json:"source"`
+	Change            NativeChangeReference `json:"change,omitzero"`
+	CompletedAt       time.Time             `json:"completed_at"`
+	CompletionBody    string                `json:"completion_body,omitempty"`
+	FinalizedBaseSHA  string                `json:"finalized_base_sha,omitempty"`
+	Validation        *gate.CommandResult   `json:"validation,omitempty"`
+	Validator         *gate.ValidatorResult `json:"validator,omitempty"`
+	SecurityAudit     *SecurityAuditReview  `json:"security_audit,omitempty"`
 }
 
 func NativeStepReviewState(recovery NativeRecovery) string {
