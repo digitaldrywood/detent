@@ -1,4 +1,4 @@
-import type { AccountApi } from "../account/api.ts";
+import { accountErrorDiagnostic, type AccountApi } from "../account/api.ts";
 import { prefetchQuery, scopeOf } from "../lib/queryCache.ts";
 
 export type DiagnosticsWindow = "24h" | "7d" | "30d";
@@ -10,6 +10,7 @@ export const diagnosticsKey = (api: AccountApi, range: DiagnosticsWindow) => ["d
 export function readDiagnostics(api: AccountApi, range: DiagnosticsWindow) {
   return async () => {
     const [report, fleet, updates] = await Promise.allSettled([api.diagnostics(range), api.fleet(), api.appUpdates()]);
+    if (fleet.status === "rejected") console.error("Diagnostics fleet read failed", accountErrorDiagnostic(fleet.reason));
     if (report.status === "rejected") throw report.reason;
     return { report: report.value, runners: fleet.status === "fulfilled" ? fleet.value.runners : null, appUpdates: updates.status === "fulfilled" ? updates.value : null };
   };
