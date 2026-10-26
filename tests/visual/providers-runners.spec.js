@@ -73,6 +73,12 @@ for (const width of [1440, 390]) {
         await expect(dialog.getByRole("radio", { name: width === 1440 ? "macOS" : "Linux", exact: true })).toBeChecked();
         await expect(dialog).toContainText("This Hub requires Detent v0.9.1 or newer");
         await expect(dialog.getByRole("button", { name: "Copy the install command", exact: true })).toBeVisible();
+        for (const os of ["macOS", "Linux"]) {
+          await dialog.getByRole("radio", { name: os, exact: true }).check();
+          await expect(dialog).toContainText(`Installs the latest release for ${os}`);
+          await expect(dialog.getByRole("button", { name: "Copy the Homebrew command" })).toHaveCount(os === "macOS" ? 1 : 0);
+        }
+        await dialog.getByRole("radio", { name: width === 1440 ? "macOS" : "Linux", exact: true }).check();
       }
       const name = sprite ? "build-sprite" : "Build machine";
       await dialog.getByLabel("Name", { exact: true }).fill(name);
@@ -104,16 +110,18 @@ for (const width of [1440, 390]) {
       expect(copied.includes("--service")).toBe(!sprite);
       if (!sprite) {
         await expect(dialog).toContainText("curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh");
-        for (const os of ["macOS", "Linux"]) {
-          await dialog.getByRole("radio", { name: os, exact: true }).check();
-          await expect(dialog).toContainText(`Installs the latest release for ${os}`);
-          await expect(dialog.getByRole("button", { name: "Copy the Homebrew command" })).toHaveCount(os === "macOS" ? 1 : 0);
-          await dialog.getByRole("button", { name: "Copy the install and register command", exact: true }).click();
-          const combined = await page.evaluate(() => navigator.clipboard.readText());
-          expect(combined).toBe(`curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh && export PATH="$HOME/.local/bin:/usr/local/bin:$PATH" && ${copied}`);
-          expect(await dialog.innerHTML()).not.toContain("det_enroll_preview");
-          await expect(dialog.getByRole("button", { name: "Copied the install and register command" })).toBeVisible();
+        for (const os of ["macOS", "Linux", "Windows"]) {
+          await expect(dialog.getByRole("radio", { name: os, exact: true })).toBeDisabled();
         }
+        const os = width === 1440 ? "macOS" : "Linux";
+        await expect(dialog.getByRole("radio", { name: os, exact: true })).toBeChecked();
+        await expect(dialog).toContainText(`Installs the latest release for ${os}`);
+        await expect(dialog.getByRole("button", { name: "Copy the Homebrew command" })).toHaveCount(os === "macOS" ? 1 : 0);
+        await dialog.getByRole("button", { name: "Copy the install and register command", exact: true }).click();
+        const combined = await page.evaluate(() => navigator.clipboard.readText());
+        expect(combined).toBe(`curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh && export PATH="$HOME/.local/bin:/usr/local/bin:$PATH" && ${copied}`);
+        expect(await dialog.innerHTML()).not.toContain("det_enroll_preview");
+        await expect(dialog.getByRole("button", { name: "Copied the install and register command" })).toBeVisible();
       }
       expect(await dialog.innerHTML()).not.toContain("det_enroll_preview");
       expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
