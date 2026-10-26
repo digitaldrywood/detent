@@ -89,6 +89,8 @@ type GlobalDispatchGate struct {
 	projects       map[string]ProjectCandidate
 	pausedProjects map[string]struct{}
 	projectCycles  map[string]projectCycleState
+	pressure       HostPressure
+	pressureOwner  *HostPressure
 	dispatchPauses int
 }
 
@@ -379,15 +381,15 @@ func selectDispatchRequest(pending []*dispatchRequest) int {
 	index := 0
 	for i := 1; i < len(pending); i++ {
 		left, right := pending[i], pending[index]
-		leftPriority, rightPriority := dispatchpriority.Priority(&left.request.Priority), dispatchpriority.Priority(&right.request.Priority)
-		if leftPriority != rightPriority {
-			if leftPriority < rightPriority {
+		if left.project.Rank != right.project.Rank {
+			if left.project.Rank < right.project.Rank {
 				index = i
 			}
 			continue
 		}
-		if left.project.Rank != right.project.Rank {
-			if left.project.Rank < right.project.Rank {
+		leftPriority, rightPriority := dispatchpriority.Priority(&left.request.Priority), dispatchpriority.Priority(&right.request.Priority)
+		if leftPriority != rightPriority {
+			if leftPriority < rightPriority {
 				index = i
 			}
 			continue
@@ -505,6 +507,12 @@ func (g *GlobalDispatchGate) acquireLocked(
 	}
 	if req.ProjectHostCapacity > 0 && hostUsed >= req.ProjectHostCapacity {
 		return Slot{}, false, g.decisionLocked(project.ID, req, DecisionReasonWorkerHostUnavailable), nil
+	}
+	if capacity, observed := g.HostPressure().Capacity(); observed {
+		req.PressureCapacity = max(capacity, 0)
+		if capacity == 0 {
+			return Slot{}, false, g.decisionLocked(project.ID, req, DispatchGateReasonPressureCapacityFull), nil
+		}
 	}
 	currentUsed := g.capacitySnapshotLocked("").globalUsed
 	if req.PressureCapacity > 0 && currentUsed+req.Weight > req.PressureCapacity {

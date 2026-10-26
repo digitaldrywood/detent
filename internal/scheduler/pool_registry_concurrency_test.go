@@ -159,7 +159,7 @@ func TestPoolRegistryRanksBorrowersAcrossPools(t *testing.T) {
 		{name: "strict project rank", kind: "strict", higherPriority: 1, lowerPriority: 4},
 		{name: "round robin lane rank", kind: "round_robin", higherLane: 1, lowerLane: 4},
 		{name: "weighted lane rank", kind: "weighted", higherLane: 1, lowerLane: 4},
-		{name: "issue priority wins across legacy modes", kind: "round_robin", lowerKind: "strict", higherPriority: 4, lowerPriority: 1, higherLane: 1, lowerLane: 4},
+		{name: "project rank wins across legacy modes", kind: "round_robin", lowerKind: "strict", higherPriority: 1, lowerPriority: 4, higherLane: 4, lowerLane: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			lowerKind := tc.lowerKind

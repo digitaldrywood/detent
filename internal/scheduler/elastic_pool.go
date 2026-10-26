@@ -19,6 +19,7 @@ func reconfigurePoolRuntime(runtime *poolRuntime, cfg PoolConfig) error {
 }
 
 func (r *PoolRegistry) setCapacityAdmission(runtime *poolRuntime) {
+	runtime.gate.pressureOwner = &r.pressure
 	runtime.gate.admit = &poolCapacityAdmission{
 		allow: func(currentUsed int, projectedUsed int, req SlotRequest) string {
 			return r.allowPoolCapacity(runtime, currentUsed, projectedUsed, req)

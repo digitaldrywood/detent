@@ -603,7 +603,8 @@ or configurations retain only the tiers they can deliver; there is no downgrade.
 Runner owners set allowed projects in Cloud. An empty allowed list runs no work.
 Organization settings hold one ordered project list shared by every runner.
 When capacity opens, ready requests in the runner's allowed projects sort by
-issue priority, then organization project rank, then issue creation time.
+project rank, then issue priority, then issue creation time. Runner `project_ranks`
+overrides organization project rank.
 Priority never reserves capacity or preempts running work. Home preferences,
 spillover timers, weighted rotation and fair-share history are retired.
 
