@@ -15,6 +15,10 @@ import { getQueryData, prefetchQuery, scopeOf, type Read } from "../../lib/query
 import { WorkApiError, type WorkHttp } from "./workHttp.ts";
 
 export interface IssueData {
+  readonly attemptsCursor?: string | null;
+  readonly historyCursor?: string | null;
+  readonly commentsCursor?: string | null;
+  readonly historyCompacted?: boolean;
   readonly attemptsAvailable?: boolean;
   readonly historyAvailable?: boolean;
   readonly issue: NativeIssue;
@@ -48,19 +52,6 @@ export function selectChangeId(
   return changes.at(-1)?.change_id ?? null;
 }
 
-async function allIssueRecords<T>(read: (cursor?: string) => Promise<{ readonly items: readonly T[]; readonly next_cursor?: string | null }>): Promise<readonly T[]> {
-  const result: T[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await read(cursor);
-    result.push(...page.items);
-    const next = page.next_cursor ?? undefined;
-    if (next !== undefined && next === cursor) throw new Error("Issue history cursor did not advance");
-    cursor = next;
-  } while (cursor !== undefined);
-  return result;
-}
-
 /** The cache key for one issue; `["issue", id]` addresses every view of it. */
 export function issueKey(http: WorkHttp, workItemId: string, requestedChange: string | null) {
   return ["issue", workItemId, scopeOf(http), requestedChange] as const;
@@ -87,10 +78,9 @@ interface IssueHead {
 function related(http: WorkHttp, projectId: string, workItemId: string, signal: AbortSignal, project?: NativeProject, issue?: NativeIssue) {
   return Promise.all([
     project?.project_id === projectId ? project : http.getProject(projectId, signal),
-    issue?.archive_summary !== undefined ? Promise.resolve(Schema.decodeUnknownSync(Schema.Array(NativeAttemptSchema))(issue.archive_summary.attempts)) : allIssueRecords((cursor) => http.listAttempts(projectId, workItemId, 100, undefined, cursor)).catch((error: unknown) => { if (error instanceof ArchiveUnavailable) throw error; return null; }),
-    allIssueRecords((cursor) => http.listHistory({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) })).catch(() => null),
-    allIssueRecords((cursor) => http.listComments({ projectId, itemId: workItemId, limit: 100, ...(cursor === undefined ? {} : { cursor }) }))
-      .catch(() => [] as readonly NativeComment[]),
+    issue?.archive_summary !== undefined ? Promise.resolve({ items: Schema.decodeUnknownSync(Schema.Array(NativeAttemptSchema))(issue.archive_summary.attempts), next_cursor: null }) : http.listAttempts(projectId, workItemId, 100, signal, undefined, "newest").catch((error: unknown) => { if (error instanceof ArchiveUnavailable) throw error; return null; }),
+    http.listHistory({ projectId, itemId: workItemId, limit: 100, direction: "newest", view: "timeline", signal }).catch(() => null),
+    http.listComments({ projectId, itemId: workItemId, limit: 100, direction: "newest", signal }).catch(() => ({ items: [] as readonly NativeComment[], next_cursor: null })),
     http.listChanges(projectId, workItemId).catch(() => [] as ChangeRequestList),
   ]);
 }
@@ -114,15 +104,24 @@ export function readIssue(http: WorkHttp, workItemId: string, requestedChange: s
         issue = await http.getWorkItemById(workItemId, signal);
         rest = await related(http, issue.project_id, workItemId, signal, undefined, issue);
       } else {
-        issue = await http.getWorkItemById(workItemId, signal);
-        rest = await related(http, issue.project_id, workItemId, signal, issue.project_id === known ? knownProject : undefined, issue);
+        const [resolved, speculative] = await Promise.all([
+          http.getWorkItemById(workItemId, signal),
+          related(http, known, workItemId, signal, knownProject, cached?.issue ?? head?.issue).then((value) => ({ value }), (error: unknown) => ({ error })),
+        ]);
+        issue = resolved;
+        if (issue.project_id !== known) rest = await related(http, issue.project_id, workItemId, signal, undefined, issue);
+        else if ("error" in speculative) throw speculative.error;
+        else rest = speculative.value;
       }
       const projectId = issue.project_id;
       hintIssueProject(workItemId, projectId);
       const [project, attempts, history, comments, changes] = rest;
       const first: IssueData = {
-        issue, project, attempts: attempts ?? [], history: history ?? [], attemptsAvailable: attempts !== null,
-        historyAvailable: history !== null, comments, change: null, changes: changes.map((record) => ({ record, detail: null, pending: true })),
+        issue, project, attempts: [...(attempts?.items ?? [])].sort((a, b) => Number(BigInt(a.fencing_token) - BigInt(b.fencing_token))),
+        history: [...(history?.items ?? [])].sort((a, b) => Number(BigInt(a.aggregate_sequence) - BigInt(b.aggregate_sequence))),
+        comments: comments.items, attemptsCursor: attempts?.next_cursor, historyCursor: history?.next_cursor, commentsCursor: comments.next_cursor,
+        historyCompacted: (history?.compaction?.removed_events ?? 0) > 0,
+        attemptsAvailable: attempts !== null, historyAvailable: history !== null, change: null, changes: changes.map((record) => ({ record, detail: null, pending: true })),
       };
       if (changes.length === 0 || issue.archive_summary !== undefined && requestedChange === null) return { ...first, changes: first.changes.map((entry) => ({ ...entry, pending: false, deferred: true })) };
       if (cached === undefined || cached === null) partial(first);
@@ -133,7 +132,8 @@ export function readIssue(http: WorkHttp, workItemId: string, requestedChange: s
         })),
       );
       const selected = selectChangeId(changes, requestedChange);
-      return { ...first, change: details.find((entry) => entry.record.change_id === selected)?.detail ?? null, changes: details };
+      const current = getQueryData<IssueData | null>(issueKey(http, workItemId, requestedChange));
+      return { ...(current?.issue === first.issue ? current : first), change: details.find((entry) => entry.record.change_id === selected)?.detail ?? null, changes: details };
     } catch (cause) {
       if (cause instanceof WorkApiError && [401, 403, 404].includes(cause.status)) partial(null);
       throw cause;
@@ -154,4 +154,26 @@ export function prefetchIssue(http: WorkHttp, workItemId: string, projectId?: st
     ]);
     return { issue, project: project?.project_id === issue.project_id ? project : await http.getProject(issue.project_id, read) };
   }, 10_000, signal);
+}
+
+export async function readOlderIssue(http: WorkHttp, data: IssueData): Promise<IssueData> {
+  const projectId = data.issue.project_id;
+  const itemId = data.issue.work_item_id;
+  const [attempts, history, comments] = await Promise.all([
+    data.attemptsCursor ? http.listAttempts(projectId, itemId, 100, undefined, data.attemptsCursor, "newest") : null,
+    data.historyCursor ? http.listHistory({ projectId, itemId, limit: 100, cursor: data.historyCursor, direction: "newest", view: "timeline" }) : null,
+    data.commentsCursor ? http.listComments({ projectId, itemId, limit: 100, cursor: data.commentsCursor, direction: "newest" }) : null,
+  ]);
+  for (const [page, cursor] of [[attempts, data.attemptsCursor], [history, data.historyCursor], [comments, data.commentsCursor]] as const) {
+    if (page?.next_cursor && page.next_cursor === cursor) throw new Error("Issue history cursor did not advance");
+  }
+  return {
+    ...data,
+    attempts: [...(attempts?.items ?? []).filter((entry) => !data.attempts.some((current) => current.attempt_id === entry.attempt_id)), ...data.attempts].sort((a, b) => Number(BigInt(a.fencing_token) - BigInt(b.fencing_token))),
+    history: [...(history?.items ?? []).filter((entry) => !data.history.some((current) => current.event_id === entry.event_id)), ...data.history].sort((a, b) => Number(BigInt(a.aggregate_sequence) - BigInt(b.aggregate_sequence))),
+    comments: [...(comments?.items ?? []).filter((entry) => !data.comments.some((current) => current.comment_id === entry.comment_id)), ...data.comments],
+    attemptsCursor: attempts === null ? data.attemptsCursor : attempts.next_cursor,
+    historyCursor: history === null ? data.historyCursor : history.next_cursor,
+    commentsCursor: comments === null ? data.commentsCursor : comments.next_cursor,
+  };
 }

@@ -211,7 +211,7 @@ export function historySentence(event: CollaborationEvent): HistorySentence {
 }
 
 /** The sentence an attempt's own record carries, once it has ended. */
-function attemptSentence(attempt: NativeAttempt, ordinal: number): HistorySentence | null {
+function attemptSentence(attempt: NativeAttempt, ordinal: number | string): HistorySentence | null {
   switch (attempt.status) {
     case "running":
       // A running attempt is the live row's business, not a history row's.
@@ -239,6 +239,7 @@ export interface ConversationActivity {
 }
 
 export interface ActivityInput {
+  readonly attemptsPartial?: boolean;
   readonly history: readonly CollaborationEvent[];
   readonly attempts: readonly NativeAttempt[];
   readonly comments: readonly NativeComment[];
@@ -283,6 +284,7 @@ export function mergeActivity(input: ActivityInput): readonly ActivityRow[] {
   }
 
   input.attempts.forEach((attempt, index) => {
+    const ordinal = input.attemptsPartial ? `${index + 1} in loaded page` : index + 1;
     const claimed = runnerLabel(attempt, input.runnerNames) ?? "A runner";
     rows.push({
       key: `attempt:${attempt.attempt_id}:claimed`,
@@ -290,14 +292,14 @@ export function mergeActivity(input: ActivityInput): readonly ActivityRow[] {
       icon: "runner",
       at: stamp(attempt.started_at),
       actor: claimed,
-      sentence: `claimed the issue and started attempt ${index + 1}${
+      sentence: `claimed the issue and started attempt ${ordinal}${
         attempt.identity === undefined
           ? ""
           : ` · ${attempt.identity.backend} ${attempt.identity.model}`
       }`,
       lowValue: false,
     });
-    const ended = attemptSentence(attempt, index + 1);
+    const ended = attemptSentence(attempt, ordinal);
     if (ended === null) return;
     rows.push({
       key: `attempt:${attempt.attempt_id}:ended`,

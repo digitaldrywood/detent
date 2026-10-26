@@ -68,7 +68,7 @@ import { useRunnerNames } from "./lib/runnerNames.ts";
 import { useNow, useWorkHttp } from "./lib/useWork.ts";
 import { newWorkKey, WorkApiError, type WorkHttp } from "./lib/workHttp.ts";
 import { invalidateQueries, scopeOf, setQueryData, useQuery } from "../lib/queryCache.ts";
-import { issueKey, readIssue, selectChangeId, type IssueData } from "./lib/issueQuery.ts";
+import { issueKey, readIssue, readOlderIssue, selectChangeId, type IssueData } from "./lib/issueQuery.ts";
 
 export { selectChangeId };
 
@@ -95,6 +95,7 @@ export function useIssue(
   error: string | null;
   loading: boolean;
   reload: () => void;
+  loadOlder: () => void;
   /** Applies an optimistic or answered issue without a round trip. */
   apply: React.Dispatch<React.SetStateAction<IssueData | null>>;
 } {
@@ -111,6 +112,20 @@ export function useIssue(
     setQueryData<IssueData | null>(latestKey.current, (previous) =>
       typeof action === "function" ? action(previous ?? null) : action);
   }, []);
+
+  const paging = React.useRef(false);
+  const loadOlder = React.useCallback(() => {
+    const base = current.current;
+    if (paging.current || base === null || base.issue.work_item_id !== workItemId || !(base.attemptsCursor || base.historyCursor || base.commentsCursor)) return;
+    paging.current = true;
+    const pageKey = latestKey.current;
+    void readOlderIssue(http, base).then((next) => {
+      setQueryData<IssueData | null>(pageKey, (previous) => {
+        if (previous?.issue !== base.issue || previous.history !== base.history || previous.attempts !== base.attempts || previous.comments !== base.comments) return previous ?? null;
+        return { ...previous, attempts: next.attempts, history: next.history, comments: next.comments, attemptsCursor: next.attemptsCursor, historyCursor: next.historyCursor, commentsCursor: next.commentsCursor };
+      });
+    }).catch(() => undefined).finally(() => { paging.current = false; });
+  }, [http, workItemId]);
 
   const projectId = data?.issue.work_item_id === workItemId ? data.issue.project_id : null;
   React.useEffect(() => {
@@ -143,6 +158,7 @@ export function useIssue(
     error,
     loading: query.pending,
     reload,
+    loadOlder,
     apply,
   };
 }
@@ -466,11 +482,12 @@ function IssueSurface({
   const item = React.useMemo<WorkItemView | null>(() => {
     if (data === null) return null;
     const change = data.change === null ? null : toChangeView(data.change.change, data.change);
-    return toWorkItemView(data.issue, data.project.name, {
+    const view = toWorkItemView(data.issue, data.project.name, {
       attempts: data.attempts,
       change,
       conversationId: conversation?.id ?? null,
     });
+    return data.attemptsCursor && view.attempt !== null ? { ...view, attempt: { ...view.attempt, attemptNumber: null } } : view;
   }, [conversation?.id, data]);
   usePageTitle(
     item === null ? "Issue" : `Issue ${issueNumber(item.identifier, item.number)}: ${item.title}`,
@@ -583,6 +600,7 @@ function IssueSurface({
         onClick: () => void navigate({ to: "/work/p/$projectId", params: { projectId } }),
       }}
       attempts={data?.attempts ?? []}
+      attemptsPartial={Boolean(data?.attemptsCursor)}
       history={data?.history ?? []}
       archived={data?.issue.archive_summary !== undefined}
       askPanel={projectId === null ? null : <IssueAskPanel ask={ask} projectId={projectId} identifier={item === null ? workItemId : issueNumber(item.identifier, item.number)} title={item?.title ?? ""} canWrite={canWrite} />}
@@ -610,6 +628,7 @@ function IssueSurface({
 
   return frame(
     <IssueBody
+      onLoadOlder={issueState.loadOlder}
       http={http}
       canManageRunners={project?.can_manage_runners === true}
       onTransferred={reload}
@@ -775,6 +794,7 @@ function IssueSurface({
 }
 
 interface IssueBodyProps {
+  readonly onLoadOlder: () => void;
   readonly http: WorkHttp;
   readonly canManageRunners: boolean;
   readonly onTransferred: () => void;
@@ -861,6 +881,20 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
   const { data, item, conversation } = props;
   const [expanded, setExpanded] = React.useState(false);
   const highlightedId = useActivityCitation(item.id);
+  const scrollRoot = React.useRef<HTMLDivElement>(null);
+  const activityRoot = React.useRef<HTMLElement>(null);
+  const onLoadOlder = props.onLoadOlder;
+  React.useEffect(() => {
+    if (!(data.historyCursor || data.attemptsCursor || data.commentsCursor) || typeof IntersectionObserver === "undefined") return;
+    const list = activityRoot.current?.lastElementChild;
+    const end = list?.tagName === "OL" ? list.lastElementChild : list;
+    if (end == null) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) onLoadOlder();
+    }, { root: scrollRoot.current });
+    observer.observe(end);
+    return () => observer.disconnect();
+  }, [data.history, data.attempts, data.comments, data.historyCursor, data.attemptsCursor, data.commentsCursor, onLoadOlder]);
 
   const runnerNames = useRunnerNames();
   const running = data.attempts.at(-1)?.status === "running" ? data.attempts.at(-1) : undefined;
@@ -873,6 +907,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
     () =>
       mergeActivity({
         history: data.history,
+        attemptsPartial: Boolean(data.attemptsCursor),
         attempts: data.attempts,
         comments: data.comments,
         runnerNames,
@@ -889,6 +924,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
       runnerNames,
       conversation?.detail,
       data.attempts,
+      data.attemptsCursor,
       data.comments,
       data.history,
       props.viewerPrincipalId,
@@ -911,7 +947,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
     running?.identity === undefined
       ? null
       : `${running.identity.backend} ${running.identity.model}`,
-    attemptCount === 0 ? null : `attempt ${attemptCount}`,
+    attemptCount === 0 ? null : data.attemptsCursor ? `${attemptCount} loaded attempts` : `attempt ${attemptCount}`,
   ]
     .filter((part): part is string => part !== null && part !== "")
     .join(" · ");
@@ -1039,7 +1075,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
   const attempts =
     lastAttempt === undefined
       ? "No attempts yet"
-      : `${attemptCount} · attempt ${attemptCount} ${lastAttempt.status}`;
+      : data.attemptsCursor ? `${attemptCount} loaded · latest ${lastAttempt.status}` : `${attemptCount} · attempt ${attemptCount} ${lastAttempt.status}`;
 
   const properties = (
     <IssueProperties
@@ -1076,7 +1112,16 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+      <div ref={scrollRoot} className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto" onScroll={(event) => {
+        const element = event.currentTarget;
+        if (element.scrollTop > 0 && element.scrollHeight - element.clientHeight - element.scrollTop <= 32) props.onLoadOlder();
+      }} onWheel={(event) => {
+        const element = event.currentTarget;
+        if (event.deltaY > 0 && element.scrollHeight - element.clientHeight - element.scrollTop <= 32) props.onLoadOlder();
+      }} onKeyDown={(event) => {
+        const element = event.currentTarget;
+        if ((event.key === "End" || event.key === "PageDown") && element.scrollHeight - element.clientHeight - element.scrollTop <= 32) props.onLoadOlder();
+      }}>
         <div
           className={`mx-auto flex w-full flex-col gap-5 px-5 pt-7 pb-10 sm:px-10 ${
             panelOpen ? "max-w-[640px]" : "max-w-[760px]"
@@ -1208,8 +1253,9 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
 
           <IssueResources rows={resources} />
 
-          <IssueDetailTabs native={data.project.profile === "native"} diagnostics={<IssueDiagnostics issue={data.issue} attempts={data.attempts} history={data.history} now={now} attemptsAvailable={data.attemptsAvailable} historyAvailable={data.historyAvailable} />}>
+          <IssueDetailTabs native={data.project.profile === "native"} diagnostics={<IssueDiagnostics issue={data.issue} attempts={data.attempts} history={data.history} now={now} attemptsAvailable={data.attemptsAvailable} historyAvailable={data.historyAvailable} historyPartial={Boolean(data.historyCursor) || data.historyCompacted === true} attemptsPartial={Boolean(data.attemptsCursor)} />}>
           <ActivityFeed
+            ref={activityRoot}
             projectId={data.project.project_id}
             highlightedId={highlightedId}
             rows={rows}

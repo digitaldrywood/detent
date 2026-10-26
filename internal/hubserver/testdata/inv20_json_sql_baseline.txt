@@ -50,7 +50,7 @@ internal/hubserver/migrations/20261021170000_conversation_content.sql 1
 internal/hubserver/monthly_budget.go 1
 internal/hubserver/native_admission_read.go 2
 internal/hubserver/native_archive_reader.go 2
-internal/hubserver/native_attempts.go 2
+internal/hubserver/native_attempts.go 1
 internal/hubserver/native_blockers.go 1
 internal/hubserver/native_board_page.go 7
 internal/hubserver/native_dependency_reasons.go 2
@@ -59,7 +59,7 @@ internal/hubserver/native_issue_change.go 1
 internal/hubserver/native_issue_pages.go 2
 internal/hubserver/native_issues.go 13
 internal/hubserver/native_landing_capacity.go 13
-internal/hubserver/native_pages.go 13
+internal/hubserver/native_pages.go 4
 internal/hubserver/native_projects.go 4
 internal/hubserver/native_recovery.go 26
 internal/hubserver/native_reporter.go 1

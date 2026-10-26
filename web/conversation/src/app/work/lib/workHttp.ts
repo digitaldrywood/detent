@@ -241,6 +241,7 @@ export interface WorkHttp {
     limit?: number,
     signal?: AbortSignal,
     cursor?: string,
+    direction?: "newest",
   ) => Promise<AttemptPage>;
   readonly getExplanation: (projectId: string, itemId: string) => Promise<IssueExplanation>;
   /**
@@ -255,12 +256,17 @@ export interface WorkHttp {
     itemId: string;
     cursor?: string;
     limit?: number;
+    direction?: "newest";
+    signal?: AbortSignal;
+    view?: "timeline";
   }) => Promise<HistoryPage>;
   readonly listComments: (input: {
     projectId: string;
     itemId: string;
     cursor?: string;
     limit?: number;
+    direction?: "newest";
+    signal?: AbortSignal;
   }) => Promise<CommentPage>;
   /**
    * Posts one work item comment. `POST .../work-items/:item/comments` carries
@@ -691,8 +697,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         related_work_item_id: input.relatedWorkItemId,
         operation: input.operation,
       }),
-    listAttempts: (projectId, itemId, limit, signal, cursor) =>
-      send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit, cursor }), undefined, signal),
+    listAttempts: (projectId, itemId, limit, signal, cursor, direction) =>
+      send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit, cursor, direction }), undefined, signal),
     getExplanation: (projectId, itemId) =>
       send(IssueExplanation, "GET", url(`${itemBase(projectId, itemId)}/explanation`)),
     getSourceRecovery: (projectId, itemId) =>
@@ -706,14 +712,17 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
       send(WorkItemDiff, "GET", url(`${itemBase(projectId, itemId)}/diff`)),
     listHistory: (input) =>
       send(HistoryPage, "GET", url(`${itemBase(input.projectId, input.itemId)}/history`, {
+        view: input.view,
         cursor: input.cursor,
         limit: input.limit,
-      })),
+        direction: input.direction,
+      }), undefined, input.signal),
     listComments: (input) =>
       send(CommentPage, "GET", url(`${itemBase(input.projectId, input.itemId)}/comments`, {
         cursor: input.cursor,
         limit: input.limit,
-      })),
+        direction: input.direction,
+      }), undefined, input.signal),
     createComment: (input) =>
       send(NativeComment, "POST", url(`${itemBase(input.projectId, input.itemId)}/comments`), {
         idempotency_key: input.key,

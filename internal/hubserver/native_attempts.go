@@ -569,7 +569,7 @@ func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item stri
 	defer cancel()
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/attempts"
 
-	if err := validateNativeQuery(params, "view"); err != nil {
+	if err := validateNativeQuery(params, "view", "direction"); err != nil {
 		return tracker.Page[tracker.NativeAttempt]{}, err
 	}
 	view := params.Get("view")
@@ -577,10 +577,8 @@ func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item stri
 		return tracker.Page[tracker.NativeAttempt]{}, nativePublicInvalid("view supports blockers or recorded_blockers")
 	}
 	budget := 1 << 20
-	dataColumn := "a.data_json"
 	if view != "" {
 		budget = operatortool.WorkHistoryPageBytes
-		dataColumn = "json_remove(a.data_json, '$.runtime')"
 	}
 	limit, cursor, key, err := s.readNativePage(ctx, scope, path, params)
 	if err != nil {
@@ -590,21 +588,24 @@ func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item stri
 	if _, _, err := readNativeIssueProjection(ctx, s.database.reader, scope, item, true); err != nil {
 		return tracker.Page[tracker.NativeAttempt]{}, err
 	}
-	var after int64
-	if cursor.After != "" {
-		after, err = strconv.ParseInt(cursor.After, 10, 64)
-		if err != nil {
-			return tracker.Page[tracker.NativeAttempt]{}, nativePublicInvalid("Attempt cursor is invalid")
-		}
+	_, after, err := nativePageOrder(params, "a.fencing_token", cursor.After)
+	if err != nil {
+		return tracker.Page[tracker.NativeAttempt]{}, err
 	}
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return tracker.Page[tracker.NativeAttempt]{}, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT `+dataColumn+`, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
+	query := `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
 FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
-WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fencing_token > ? ORDER BY a.fencing_token LIMIT ?`, scope.organization, scope.project, item, after, limit+1)
+WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fencing_token > CAST(? AS INTEGER) ORDER BY a.fencing_token LIMIT ?`
+	if params.Get("direction") == "newest" {
+		query = `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
+FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
+WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fencing_token < CAST(? AS INTEGER) ORDER BY a.fencing_token DESC LIMIT ?`
+	}
+	rows, err := tx.QueryContext(ctx, query, scope.organization, scope.project, item, after, limit+1)
 	if err != nil {
 		return tracker.Page[tracker.NativeAttempt]{}, err
 	}

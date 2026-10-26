@@ -536,7 +536,10 @@ export const CollaborationEvent = Schema.Struct({
 });
 export type CollaborationEvent = typeof CollaborationEvent.Type;
 
-export const HistoryPage = Page(CollaborationEvent);
+export const HistoryPage = Schema.Struct({
+  ...Page(CollaborationEvent).fields,
+  compaction: Schema.optional(Schema.Struct({ removed_events: Schema.Number })),
+});
 export type HistoryPage = typeof HistoryPage.Type;
 
 // --- Attempts ---------------------------------------------------------------

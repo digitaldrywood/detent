@@ -142,6 +142,20 @@ func validateNativeQuery(params url.Values, fields ...string) error {
 	return nil
 }
 
+func nativePageOrder(params url.Values, column, after string) (string, string, error) {
+	switch params.Get("direction") {
+	case "", "oldest":
+		return column + " > CAST(? AS INTEGER) ORDER BY " + column, after, nil
+	case "newest":
+		if after == "" {
+			after = "9223372036854775807"
+		}
+		return column + " < CAST(? AS INTEGER) ORDER BY " + column + " DESC", after, nil
+	default:
+		return "", "", nativePublicInvalid("direction supports oldest or newest")
+	}
+}
+
 func nativeCreatedBy(scope nativeScope, params url.Values) (string, error) {
 	value := strings.TrimSpace(params.Get("created_by"))
 	if len(value) > 256 {
@@ -420,7 +434,7 @@ func (s *Service) readComments(ctx context.Context, scope nativeScope, item stri
 	defer cancel()
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/comments"
 
-	if err := validateNativeQuery(params); err != nil {
+	if err := validateNativeQuery(params, "direction"); err != nil {
 		return tracker.Page[tracker.NativeComment]{}, err
 	}
 	limit, cursor, key, err := s.readNativePage(ctx, scope, path, params)
@@ -431,7 +445,11 @@ func (s *Service) readComments(ctx context.Context, scope nativeScope, item stri
 	if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
 		return tracker.Page[tracker.NativeComment]{}, err
 	}
-	ids, err := nativePageIDs(ctx, s.database.reader, "SELECT id FROM native_comments WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence > CAST(? AS INTEGER) ORDER BY sequence LIMIT ?", scope.organization, scope.project, item, cursor.After, limit+1)
+	order, after, err := nativePageOrder(params, "sequence", cursor.After)
+	if err != nil {
+		return tracker.Page[tracker.NativeComment]{}, err
+	}
+	ids, err := nativePageIDs(ctx, s.database.reader, "SELECT id FROM native_comments WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND "+order+" LIMIT ?", scope.organization, scope.project, item, after, limit+1)
 	if err != nil {
 		return tracker.Page[tracker.NativeComment]{}, err
 	}
@@ -490,20 +508,19 @@ func (s *Service) readHistory(ctx context.Context, scope nativeScope, item strin
 	defer cancel()
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/history"
 
-	if err := validateNativeQuery(params, "view"); err != nil {
+	if err := validateNativeQuery(params, "view", "direction"); err != nil {
 		return tracker.Page[tracker.CollaborationEvent]{}, err
 	}
 	view := params.Get("view")
-	if view != "" && view != "blockers" {
-		return tracker.Page[tracker.CollaborationEvent]{}, nativePublicInvalid("view supports blockers")
+	if view != "" && view != "blockers" && view != "timeline" {
+		return tracker.Page[tracker.CollaborationEvent]{}, nativePublicInvalid("view supports blockers or timeline")
+	}
+	if params.Get("direction") == "newest" && view == "" {
+		return tracker.Page[tracker.CollaborationEvent]{}, nativePublicInvalid("Newest history requires the timeline or blockers view")
 	}
 	dataColumn := "data_json"
-	if view == "blockers" {
-		dataColumn = `json_object('revision', json_extract(data_json, '$.revision'),
- 'from_state', json_extract(data_json, '$.from_state'), 'to_state', json_extract(data_json, '$.to_state'),
- 'reason', json_extract(data_json, '$.reason'), 'run', CASE WHEN json_type(data_json, '$.run') = 'object'
- THEN json_object('attempt_id', json_extract(data_json, '$.run.attempt_id'),
- 'fencing_token', json_extract(data_json, '$.run.fencing_token')) ELSE NULL END)`
+	if view == "timeline" {
+		dataColumn = "CASE WHEN type IN ('run.started','run.checkpointed','run.finished') THEN '{}' ELSE data_json END"
 	}
 	limit, cursor, key, err := s.readNativePage(ctx, scope, path, params)
 	if err != nil {
@@ -545,8 +562,12 @@ func (s *Service) readHistory(ctx context.Context, scope nativeScope, item strin
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}
 	}
+	order, boundary, err := nativePageOrder(params, "sequence", cursor.After)
+	if err != nil {
+		return tracker.Page[tracker.CollaborationEvent]{}, err
+	}
 	rows, err := query.QueryContext(ctx, `SELECT id, sequence, type, schema_version, actor_json, `+dataColumn+`, recorded_at FROM collaboration_events
-WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence > ? ORDER BY sequence LIMIT ?`, scope.organization, scope.project, item, after, limit+1)
+WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND `+order+` LIMIT ?`, scope.organization, scope.project, item, boundary, limit+1)
 	if err != nil {
 		return tracker.Page[tracker.CollaborationEvent]{}, err
 	}
@@ -561,28 +582,48 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND sequence >
 		if err := json.Unmarshal([]byte(actor), &event.Actor); err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}
-		resolved, err := resolveStorageJSON(ctx, []byte(data))
-		if err != nil {
-			return tracker.Page[tracker.CollaborationEvent]{}, err
-		}
-		data = string(resolved)
-		if err := decodeRunHistory(ctx, tx, data, &event.Data); err != nil {
-			return tracker.Page[tracker.CollaborationEvent]{}, err
-		}
-		if event.Data.Run != nil {
-			var stored struct {
-				Run storedRun `json:"run"`
+		if view == "blockers" {
+			var projection struct {
+				Revision  tracker.Revision `json:"revision,string"`
+				FromState string           `json:"from_state"`
+				ToState   string           `json:"to_state"`
+				Reason    string           `json:"reason"`
+				Run       *struct {
+					AttemptID    string               `json:"attempt_id"`
+					FencingToken tracker.FencingToken `json:"fencing_token,string"`
+				} `json:"run"`
 			}
-			if err := json.Unmarshal([]byte(data), &stored); err != nil {
+			if err := json.Unmarshal([]byte(data), &projection); err != nil {
 				return tracker.Page[tracker.CollaborationEvent]{}, err
 			}
-			if stored.Run.Detail != nil {
-				data, err = marshalNative(event.Data)
-				if err != nil {
+			event.Data = tracker.CollaborationData{Revision: projection.Revision, FromState: projection.FromState, ToState: projection.ToState, Reason: projection.Reason}
+			if projection.Run != nil {
+				event.Data.Run = &tracker.NativeRunData{AttemptID: projection.Run.AttemptID, FencingToken: projection.Run.FencingToken}
+			}
+		} else {
+			resolved, err := resolveStorageJSON(ctx, []byte(data))
+			if err != nil {
+				return tracker.Page[tracker.CollaborationEvent]{}, err
+			}
+			data = string(resolved)
+			if err := decodeRunHistory(ctx, tx, data, &event.Data); err != nil {
+				return tracker.Page[tracker.CollaborationEvent]{}, err
+			}
+			if event.Data.Run != nil {
+				var stored struct {
+					Run storedRun `json:"run"`
+				}
+				if err := json.Unmarshal([]byte(data), &stored); err != nil {
 					return tracker.Page[tracker.CollaborationEvent]{}, err
 				}
+				if stored.Run.Detail != nil {
+					data, err = marshalNative(event.Data)
+					if err != nil {
+						return tracker.Page[tracker.CollaborationEvent]{}, err
+					}
+				}
+				event.Data.Run.Runtime = event.Data.Run.Runtime.WithoutActivitySpans()
 			}
-			event.Data.Run.Runtime = event.Data.Run.Runtime.WithoutActivitySpans()
 		}
 		if event.RecordedAt, err = parseTimeValue(recorded); err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
@@ -636,26 +677,23 @@ OR EXISTS(SELECT 1 FROM native_archive_sections WHERE organization_id=? AND proj
 	}
 	items := page.Items[:min(len(page.Items), limit)]
 	page.Items = []tracker.CollaborationEvent{}
+	size := 8192
 	for _, event := range items {
 		next := cursor
 		next.After = strconv.FormatInt(event.AggregateSequence, 10)
-		candidate := tracker.Page[tracker.CollaborationEvent]{Items: append(page.Items, event)}
-		candidate.NextCursor, err = encodeNativeCursor(next, key)
+		encoded, err := json.Marshal(event)
 		if err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}
-		encoded, err := json.Marshal(candidate)
-		if err != nil {
-			return tracker.Page[tracker.CollaborationEvent]{}, err
-		}
-		if len(encoded) > operatortool.WorkHistoryPageBytes {
+		if size+len(encoded)+1 > operatortool.WorkHistoryPageBytes {
 			if len(page.Items) == 0 {
 				return tracker.Page[tracker.CollaborationEvent]{}, operatortool.ErrReadUnavailable
 			}
 			hasMore = true
 			break
 		}
-		page.Items = candidate.Items
+		size += len(encoded) + 1
+		page.Items = append(page.Items, event)
 		cursor = next
 	}
 	if hasMore {

@@ -997,3 +997,63 @@ func createNativeFixtureIssueTx(ctx context.Context, tx *sql.Tx, scope nativeSco
 	}
 	return createNativeIssueTx(ctx, tx, scope, request, now)
 }
+
+func TestNativeNewestIssuePages(t *testing.T) {
+	t.Parallel()
+	f := newDefaultNativeFixture(t, Config{})
+	for _, name := range []string{"first", "second"} {
+		issue := f.create(t, name)
+		path := f.base + "/work-items/" + string(issue.WorkItemID)
+		for index := range 3 {
+			response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("%s-comment-%d", name, index)}, Body: fmt.Sprintf("comment %d", index)})
+			requireNativeStatus(t, response, http.StatusOK)
+		}
+		for _, list := range []string{"history", "comments"} {
+			t.Run(name+"/"+list, func(t *testing.T) {
+				params := url.Values{"direction": {"newest"}, "limit": {"1"}}
+				if list == "history" {
+					params.Set("view", "timeline")
+				}
+				previous := int64(1<<63 - 1)
+				seen := make(map[int64]bool)
+				for {
+					response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/"+list+"?"+params.Encode(), f.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var page struct {
+						Items []struct {
+							Sequence          int64 `json:"sequence,string"`
+							AggregateSequence int64 `json:"aggregate_sequence,string"`
+						} `json:"items"`
+						NextCursor string `json:"next_cursor"`
+					}
+					decodeHubResponse(t, response, &page)
+					if len(page.Items) != 1 {
+						t.Fatalf("page length = %d", len(page.Items))
+					}
+					sequence := page.Items[0].Sequence
+					if list == "history" {
+						sequence = page.Items[0].AggregateSequence
+					}
+					if sequence >= previous || seen[sequence] {
+						t.Fatalf("non-descending sequence %d after %d", sequence, previous)
+					}
+					seen[sequence], previous = true, sequence
+					if page.NextCursor == "" {
+						break
+					}
+					params.Set("cursor", page.NextCursor)
+					wrong := params.Encode()
+					wrong = strings.Replace(wrong, "direction=newest", "direction=oldest", 1)
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/"+list+"?"+wrong, f.token, nil), http.StatusUnprocessableEntity)
+				}
+				want := 3
+				if list == "history" {
+					want++
+				}
+				if len(seen) != want {
+					t.Fatalf("received %d records, want %d", len(seen), want)
+				}
+			})
+		}
+	}
+}

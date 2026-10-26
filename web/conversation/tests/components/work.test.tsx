@@ -4,6 +4,7 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import changeFixture from "../../src/contracts/fixtures/work-change-detail.json";
+import commentsFixture from "../../src/contracts/fixtures/work-comment-list.json";
 import historyFixture from "../../src/contracts/fixtures/work-history.json";
 import attemptsFixture from "../../src/contracts/fixtures/work-attempt-list.json";
 import itemFixture from "../../src/contracts/fixtures/work-item.json";
@@ -21,7 +22,7 @@ import { BoardLane } from "../../src/app/work/components/BoardLane.tsx";
 import { DependencyPanels } from "../../src/app/work/components/DependencyDetails.tsx";
 import { IssueCard, statusPill } from "../../src/app/work/components/IssueCard.tsx";
 import { DiffSurface } from "../../src/app/components/surfaces/DiffSurface.tsx";
-import { diffSource, readAttemptDiff, type DiffSource } from "../../src/app/adapters/surfaces.ts";
+import { diffSource, readAttemptDiff, useIssueSurfaces, toAttemptActivity, type DiffSource } from "../../src/app/adapters/surfaces.ts";
 import { WorkList } from "../../src/app/work/components/WorkList.tsx";
 import { WorkTopBar } from "../../src/app/work/components/WorkTopBar.tsx";
 import { WorkToolbar } from "../../src/app/work/components/WorkToolbar.tsx";
@@ -988,6 +989,93 @@ async function pagedWork(path = "/work", wrapFetch?: (fetch: ReturnType<typeof w
 async function settledWork() {
   await waitFor(() => expect(screen.getByTestId("stat-completed").closest("[aria-busy]")?.getAttribute("aria-busy")).toBe("false"));
 }
+
+describe("issue timeline pagination", () => {
+  it("reuses the page attempts in workspace surfaces without another request or false ordinals", async () => {
+    const http = {
+      listAttempts: vi.fn(), listChanges: vi.fn(async () => []), getWorkItemDiff: vi.fn(async () => ({ diff: null })),
+    };
+    const spy = vi.spyOn(workHooks, "useWorkHttp").mockReturnValue(http as unknown as ReturnType<typeof workHooks.useWorkHttp>);
+    function Surfaces() {
+      const surfaces = useIssueSurfaces("project", "item", ATTEMPTS, true);
+      return <div data-testid="surface-state">{surfaces.loading ? "loading" : surfaces.source.kind}</div>;
+    }
+    try {
+      render(<Surfaces />);
+      await waitFor(() => expect(http.getWorkItemDiff).toHaveBeenCalledOnce());
+      await waitFor(() => expect(screen.getByTestId("surface-state").textContent).not.toBe("loading"));
+      expect(http.listAttempts).not.toHaveBeenCalled();
+      expect(toAttemptActivity(ATTEMPTS, undefined, true).every((attempt) => attempt.attemptNumber === null)).toBe(true);
+    } finally {
+      cleanup();
+      spy.mockRestore();
+    }
+  });
+
+  it.each(["scroll", "visible end"])("loads older entries through %s, including content without overflow", async (trigger) => {
+    const observers: { callback: IntersectionObserverCallback; target?: Element; disconnected: boolean }[] = [];
+    vi.stubGlobal("IntersectionObserver", class {
+      record: typeof observers[number];
+      constructor(callback: IntersectionObserverCallback) {
+        this.record = { callback, disconnected: false };
+        observers.push(this.record);
+      }
+      observe(target: Element) { this.record.target = target; }
+      disconnect() { this.record.disconnected = true; }
+    });
+    const calls = { history: [] as string[], attempts: [] as string[], comments: [] as string[] };
+    const fixture = await pagedWork("/work/p/proj_alpha?view=list&tab=all&completed_window=all", (fetch) => async (input, init) => {
+      const response = await fetch(input, init);
+      const url = new URL(String(input), "http://localhost");
+      const list = url.pathname.split("/").at(-1);
+      if (list === "history" || list === "attempts" || list === "comments") {
+        calls[list].push(url.searchParams.get("cursor") ?? "first");
+        expect(url.searchParams.get("direction")).toBe("newest");
+        const older = url.searchParams.has("cursor");
+        const body = list === "attempts" ? attemptsFixture : list === "comments" ? { items: older ? [{ ...commentsFixture.items[0]!, body: "An older comment loaded on demand" }] : [] } : await response.json();
+        return Response.json({ ...body, ...(older ? trigger === "visible end" && url.searchParams.get("cursor") === `older-${list}` ? { next_cursor: `oldest-${list}` } : {} : { next_cursor: `older-${list}` }) });
+      }
+      return response;
+    });
+    await settledWork();
+    const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?limit=200&completed_window=all");
+    const page = await response.json() as { items: NativeIssue[] };
+    await act(() => fixture.router.navigate({ to: "/work/i/$workItemId", params: { workItemId: page.items[0]!.work_item_id } }));
+    const activity = await screen.findByTestId("issue-activity");
+    expect(screen.queryByText("An older comment loaded on demand")).toBeNull();
+    for (const list of Object.values(calls)) expect(list).toEqual(["first"]);
+    let scroller = activity.parentElement!;
+    while (!scroller.classList.contains("overflow-y-auto")) scroller = scroller.parentElement!;
+    Object.defineProperties(scroller, { scrollTop: { value: trigger === "scroll" ? 500 : 0, configurable: true }, scrollHeight: { value: trigger === "scroll" ? 800 : 300, configurable: true }, clientHeight: { value: 300, configurable: true } });
+    if (trigger === "scroll") {
+      fireEvent.scroll(scroller);
+    } else {
+      const observer = observers.filter((entry) => !entry.disconnected).at(-1)!;
+      expect(activity.contains(observer.target!)).toBe(true);
+      await act(async () => observer.callback([{ isIntersecting: false, target: observer.target } as IntersectionObserverEntry], {} as IntersectionObserver));
+      for (const list of Object.values(calls)) expect(list).toEqual(["first"]);
+      await act(async () => observer.callback([{ isIntersecting: true, target: observer.target } as IntersectionObserverEntry], {} as IntersectionObserver));
+      expect(scroller.scrollTop).toBe(0);
+    }
+    await waitFor(() => {
+      expect(calls.history).toEqual(["first", "older-history"]);
+      expect(calls.attempts).toEqual(["first", "older-attempts"]);
+      expect(calls.comments).toEqual(["first", "older-comments"]);
+    });
+    expect(await screen.findByText("An older comment loaded on demand")).toBeTruthy();
+    if (trigger === "visible end") {
+      await waitFor(() => expect(observers.some((observer) => !observer.disconnected)).toBe(true));
+      const observer = observers.filter((entry) => !entry.disconnected).at(-1)!;
+      await act(async () => observer.callback([{ isIntersecting: true, target: observer.target } as IntersectionObserverEntry], {} as IntersectionObserver));
+      await waitFor(() => {
+        for (const [name, list] of Object.entries(calls)) expect(list).toEqual(["first", `older-${name}`, `oldest-${name}`]);
+      });
+    }
+    fireEvent.scroll(scroller);
+    expect(calls.comments).toHaveLength(trigger === "scroll" ? 2 : 3);
+    expect(observers.every((observer) => observer.disconnected)).toBe(true);
+  });
+});
 
 describe("the issue effort property", () => {
   it.each([

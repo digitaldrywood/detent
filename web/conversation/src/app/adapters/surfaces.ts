@@ -102,6 +102,7 @@ const NO_ATTEMPTS: readonly NativeAttempt[] = [];
 export function toAttemptActivity(
   attempts: readonly NativeAttempt[],
   runnerNames?: RunnerNames,
+  partial = false,
 ): readonly AttemptActivity[] {
   return attempts.map((attempt, index) => ({
     id: attempt.attempt_id,
@@ -115,7 +116,7 @@ export function toAttemptActivity(
     startedAt: attempt.started_at,
     completedAt: attempt.status === "running" ? null : attempt.updated_at,
     tokens: null,
-    attemptNumber: index + 1,
+    attemptNumber: partial ? null : index + 1,
     progress: attempt.outcome ?? null,
     error: attempt.status === "failed" ? (attempt.outcome ?? null) : null,
   }));
@@ -152,9 +153,10 @@ async function read(
   projectId: string,
   workItemId: string,
   runnerNames: RunnerNames,
+  suppliedAttempts: boolean,
 ): Promise<Omit<IssueSurfaces, "loading" | "error" | "reload">> {
   const [attempts, changes] = await Promise.all([
-    http
+    suppliedAttempts ? Promise.resolve(NO_ATTEMPTS) : http
       .listAttempts(projectId, workItemId, 20)
       .then((page) => page.items)
       .catch(() => NO_ATTEMPTS),
@@ -243,9 +245,12 @@ const REFRESH_COALESCE_MS = 400;
 export function useIssueSurfaces(
   projectId: string | null,
   workItemId: string | null,
+  attempts?: readonly NativeAttempt[],
+  attemptsPartial = false,
 ): IssueSurfaces {
   const http = useWorkHttp();
   const runnerNames = useRunnerNames();
+  const suppliedAttempts = attempts !== undefined;
   const [state, setState] = React.useState(EMPTY);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -281,7 +286,7 @@ export function useIssueSurfaces(
     }
     let cancelled = false;
     setLoading(true);
-    void read(http, projectId, workItemId, runnerNames)
+    void read(http, projectId, workItemId, runnerNames, suppliedAttempts)
       .then((next) => {
         if (cancelled) return;
         setState(next);
@@ -297,10 +302,10 @@ export function useIssueSurfaces(
     return () => {
       cancelled = true;
     };
-  }, [http, projectId, workItemId, nonce, runnerNames]);
+  }, [http, projectId, workItemId, nonce, runnerNames, suppliedAttempts]);
 
   return React.useMemo(
-    () => ({ ...state, loading, error, reload: () => setNonce((value) => value + 1) }),
-    [state, loading, error],
+    () => ({ ...state, ...(attempts === undefined ? {} : { agents: agentPanelModelFromAttempts(toAttemptActivity(attempts, runnerNames, attemptsPartial)) }), loading, error, reload: () => setNonce((value) => value + 1) }),
+    [state, loading, error, attempts, attemptsPartial, runnerNames],
   );
 }
