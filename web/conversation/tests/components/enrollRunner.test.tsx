@@ -53,7 +53,7 @@ async function mountDialog(projectIds?: readonly string[], settings = false, ini
     if (String(input).endsWith("/capacity")) return new Response(JSON.stringify({ error: { code: "not_found", message: "Not found" } }), { status: 404 });
     fleetReads();
     if (fleetReads.mock.calls.length === 1 && initialFleetRead !== undefined) return initialFleetRead;
-    return new Response(JSON.stringify({ current: version, runners, usage: { window_ends_at: "", allowances: {} }, spend: null }), { status: 200 });
+    return new Response(JSON.stringify({ current: version, minimum_runner_version: "1.2.3", runners, usage: { window_ends_at: "", allowances: {} }, spend: null }), { status: 200 });
   }));
   client = {
     account: {
@@ -97,6 +97,35 @@ async function mountDialog(projectIds?: readonly string[], settings = false, ini
 }
 
 describe("the Enroll dialog", () => {
+  it.each([false, true])("enrolls Windows with Full access and PowerShell (auto-detected: %s)", async (detected) => {
+    userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+    if (detected) {
+      vi.spyOn(navigator, "platform", "get").mockReturnValue("Win32");
+      vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+    }
+    await mountDialog(undefined, false, [], undefined, false, "v1.2.3", !detected);
+    if (!detected) fireEvent.click(screen.getByRole("radio", { name: "Windows" }));
+    expect((screen.getByRole("radio", { name: "Windows" }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByRole("radio", { name: "Sandbox" }).getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByText("Sandbox is unavailable on native Windows. Use WSL2 for Sandbox.")).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Full access" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByText(/Homebrew|brew upgrade/)).toBeNull();
+    expect(await screen.findByText("detent update --yes --from-release")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Windows runner guide" }).getAttribute("href")).toContain("docs/windows-runners.md");
+    expect(screen.getByText(/Uses a logon Scheduled Task/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Owner's $host" } });
+    await waitFor(() => expect((screen.getByRole("button", { name: "Create command" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Create command" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Copy the install and register command" }));
+    expect(writeText.mock.calls[0]![0]).toContain("install.ps1 | iex;");
+    expect(writeText.mock.calls[0]![0]).toContain("--name 'Owner''s $host' --isolation-tier native-trusted --service");
+    expect(writeText.mock.calls[0]![0]).toContain("--token 'det_enroll_secret'");
+    expect(document.body.textContent).not.toContain("det_enroll_secret");
+    expect(document.body.textContent).toContain("--token 'detent_••••••••'");
+    expect(screen.getByRole("radio", { name: "Windows" }).matches(":disabled")).toBe(true);
+  });
+
   it.each([false, true])("warns when a connected runner reports no providers (providers: %s)", async (hasProviders) => {
     const { setRunners } = await mountDialog();
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Build host" } });

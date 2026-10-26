@@ -93,6 +93,7 @@ export interface RegisterCommandInput {
   readonly capacity: number;
   readonly service: boolean;
   readonly isolationTier: RunnerAccessTier;
+  readonly platform?: RunnerInstallPlatform;
 }
 
 /**
@@ -102,28 +103,41 @@ export interface RegisterCommandInput {
  * short-lived, so carrying it in the command is as safe as the token itself.
  */
 export function registerCommand(input: RegisterCommandInput): string {
-  const parts = ["detent hub runner register", "--url", shellArgument(input.hubUrl)];
+  const argument = input.platform === "windows" ? powerShellArgument : shellArgument;
+  const parts = ["detent hub runner register", "--url", argument(input.hubUrl)];
   if (!hubUrlNamesOrganization(input.hubUrl, input.organizationId)) {
-    parts.push("--organization", shellArgument(input.organizationId));
+    parts.push("--organization", argument(input.organizationId));
   }
-  parts.push("--token", shellArgument(input.token));
-  if (input.name.trim() !== "") parts.push("--name", shellArgument(input.name.trim()));
+  parts.push("--token", argument(input.token));
+  if (input.name.trim() !== "") parts.push("--name", argument(input.name.trim()));
   if (input.capacity !== 1) parts.push("--capacity", String(input.capacity));
   parts.push("--isolation-tier", input.isolationTier);
   if (input.service) parts.push("--service");
   return parts.join(" ");
 }
 
+function powerShellArgument(value: string): string {
+  return `'${value.replace(/['\u2018\u2019]/g, "$&$&")}'`;
+}
+
+export type RunnerInstallPlatform = "macos" | "linux" | "windows";
+
 export const MAX_RUNNER_CAPACITY = 16;
 
 export const INSTALL_DETENT_COMMAND = "curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh";
+export const WINDOWS_INSTALL_DETENT_COMMAND = "irm https://raw.githubusercontent.com/digitaldrywood/detent/main/install.ps1 | iex";
 export const BREW_INSTALL_DETENT_COMMAND = "brew install digitaldrywood/tap/detent";
 
-export function runnerInstallPlatform(): "macos" | "linux" {
-  return /linux/i.test(`${globalThis.navigator?.platform ?? ""} ${globalThis.navigator?.userAgent ?? ""}`) ? "linux" : "macos";
+export function runnerInstallPlatform(): RunnerInstallPlatform {
+  const browserPlatform = `${globalThis.navigator?.platform ?? ""} ${globalThis.navigator?.userAgent ?? ""}`;
+  if (/windows|win32|win64/i.test(browserPlatform)) return "windows";
+  return /linux/i.test(browserPlatform) ? "linux" : "macos";
 }
 
-export function installAndRegisterCommand(command: string): string {
+export function installAndRegisterCommand(command: string, platform: RunnerInstallPlatform = "macos"): string {
+  if (platform === "windows") {
+    return `$ErrorActionPreference = 'Stop'; ${WINDOWS_INSTALL_DETENT_COMMAND}; $detentInstallDir = if ($env:DETENT_INSTALL_DIR) { $env:DETENT_INSTALL_DIR } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'detent\\bin' } else { Join-Path $HOME '.detent\\bin' }; $env:Path = "$detentInstallDir;$env:Path"; ${command}`;
+  }
   return `${INSTALL_DETENT_COMMAND} && export PATH="$HOME/.local/bin:/usr/local/bin:$PATH" && ${command}`;
 }
 
@@ -232,7 +246,10 @@ export function EnrollRunnerDialog({
   const [platform, setPlatform] = React.useState(runnerInstallPlatform);
   const [capacityText, setCapacityText] = React.useState("1");
   const [machineIsolationTier, setMachineIsolationTier] = React.useState<RunnerAccessTier | null>(null);
-  const isolationTier = location === "sprite" ? "native-trusted" : machineIsolationTier;
+  const sandboxUnavailableReason = location === "sprite"
+    ? spriteSandboxUnavailableReason
+    : platform === "windows" ? "Sandbox is unavailable on native Windows. Use WSL2 for Sandbox." : null;
+  const isolationTier = sandboxUnavailableReason !== null ? "native-trusted" : machineIsolationTier;
   const capacity = parseCapacity(capacityText);
   // A response for a dialog the reader already closed must not come back as
   // the next opening's command.
@@ -345,7 +362,7 @@ export function EnrollRunnerDialog({
     };
     if (generation.current === mine) {
       setStep(1);
-      const input = { hubUrl, organizationId, token: created.token, name: entry.name, capacity: capacity ?? 1, isolationTier, service: location === "machine" && service };
+      const input = { hubUrl, organizationId, platform: location === "sprite" ? "linux" as const : platform, token: created.token, name: entry.name, capacity: capacity ?? 1, isolationTier, service: location === "machine" && service };
       setEnrollment({
         ...entry,
         command: registerCommand(input),
@@ -364,10 +381,10 @@ export function EnrollRunnerDialog({
   const minimumVersion = fleet.value?.minimum_runner_version ?? "";
   const installInstructions = <div className="flex flex-col gap-2">
     <h3 className="text-[13px] font-medium">Install Detent</h3>
-    <fieldset className="flex flex-col gap-2 text-[13px]">
+    <fieldset disabled={enrollment !== null} className="flex flex-col gap-2 text-[13px]">
       <legend className="pb-1 font-medium">Operating system</legend>
       <div className="flex gap-4">
-        {([["macos", "macOS"], ["linux", "Linux"]] as const).map(([value, label]) => (
+        {([["macos", "macOS"], ["linux", "Linux"], ["windows", "Windows"]] as const).map(([value, label]) => (
           <label key={value} className="flex items-center gap-2">
             <input type="radio" name="runner-platform" value={value} checked={platform === value} onChange={() => setPlatform(value)} />
             {label}
@@ -375,8 +392,9 @@ export function EnrollRunnerDialog({
         ))}
       </div>
     </fieldset>
-    <p className="text-xs text-muted-foreground">Installs the latest release for {platform === "macos" ? "macOS" : "Linux"}, automatically detecting amd64 or arm64.</p>
-    <CopyableCommand value={INSTALL_DETENT_COMMAND} label="the install command" />
+    {platform === "windows" ? <p className="text-xs text-muted-foreground">For Sandbox, use WSL2 instead. See the <a className="underline" href="https://github.com/digitaldrywood/detent/blob/main/docs/windows-runners.md">Windows runner guide</a>.</p> : null}
+    <p className="text-xs text-muted-foreground">Installs the latest release for {platform === "macos" ? "macOS" : platform === "windows" ? "Windows (PowerShell)" : "Linux"}, automatically detecting amd64 or arm64.</p>
+    <CopyableCommand value={platform === "windows" ? WINDOWS_INSTALL_DETENT_COMMAND : INSTALL_DETENT_COMMAND} label="the install command" />
     {platform === "macos" ? <>
       <p className="text-xs text-muted-foreground">Or install with Homebrew:</p>
       <CopyableCommand value={BREW_INSTALL_DETENT_COMMAND} label="the Homebrew command" />
@@ -426,8 +444,8 @@ export function EnrollRunnerDialog({
                 <RadioGroup aria-labelledby="enroll-agent-access" value={isolationTier} onValueChange={(value) => setMachineIsolationTier(value as RunnerAccessTier)}>
                   {runnerAccessOptions.map(({ tier, label, hint }) => (
                     <label key={tier} className="flex cursor-pointer items-start gap-2">
-                      <Radio value={tier} disabled={location === "sprite" && tier === "sandbox"} aria-labelledby={`enroll-access-${tier}`} aria-describedby={`enroll-access-${tier}-hint`} className="mt-1" />
-                      <span><span id={`enroll-access-${tier}`} className="block font-medium">{label}</span><span id={`enroll-access-${tier}-hint`} className="block text-xs text-muted-foreground">{location === "sprite" && tier === "sandbox" ? spriteSandboxUnavailableReason : hint}</span></span>
+                      <Radio value={tier} disabled={sandboxUnavailableReason !== null && tier === "sandbox"} aria-labelledby={`enroll-access-${tier}`} aria-describedby={`enroll-access-${tier}-hint`} className="mt-1" />
+                      <span><span id={`enroll-access-${tier}`} className="block font-medium">{label}</span><span id={`enroll-access-${tier}-hint`} className="block text-xs text-muted-foreground">{tier === "sandbox" && sandboxUnavailableReason !== null ? sandboxUnavailableReason : hint}</span></span>
                     </label>
                   ))}
                 </RadioGroup>
@@ -559,7 +577,7 @@ export function EnrollRunnerDialog({
                 <span>
                   Install it as a background service
                   <span className="block text-muted-foreground">
-                    Starts at login and keeps running, separate from any local Detent board on the
+                    {platform === "windows" ? "Uses a logon Scheduled Task. " : ""}Starts at login and keeps running, separate from any local Detent board on the
                     same machine. It starts once each project's repository is cloned there; until
                     then the command prints what to clone and how to start it.
                   </span>
@@ -603,8 +621,8 @@ export function EnrollRunnerDialog({
               </h3>
               <p className="text-xs text-muted-foreground">Fresh machine? Install and register with one paste:</p>
               <CopyableCommand
-                value={installAndRegisterCommand(enrollment.command)}
-                displayValue={installAndRegisterCommand(showToken ? enrollment.command : enrollment.maskedCommand)}
+                value={installAndRegisterCommand(enrollment.command, platform)}
+                displayValue={installAndRegisterCommand(showToken ? enrollment.command : enrollment.maskedCommand, platform)}
                 label="the install and register command"
               />
               <p className="text-xs text-muted-foreground">Already installed? Register only:</p>

@@ -40,7 +40,7 @@ import {
   SupportBanner,
 } from "../../src/app/account/Organization.tsx";
 import { firstUnreadyStep, orderedSteps, Stepper } from "../../src/app/account/Setup.tsx";
-import { hubUrlNamesOrganization, parseCapacity, runnerNameFits, registerCommand, runnerHubUrl, shellArgument } from "../../src/app/fleet/EnrollRunner.tsx";
+import { installAndRegisterCommand, runnerInstallPlatform, WINDOWS_INSTALL_DETENT_COMMAND, hubUrlNamesOrganization, parseCapacity, runnerNameFits, registerCommand, runnerHubUrl, shellArgument } from "../../src/app/fleet/EnrollRunner.tsx";
 import { EntrySignIn } from "../../src/app/entry/EntryScreens.tsx";
 import { AccountError } from "../../src/app/account/api.ts";
 import { applyHubPaths, resetHubPaths } from "../../src/runtime/basePath.ts";
@@ -939,6 +939,33 @@ describe("the runner hub URL", () => {
   });
 });
 
+describe("runner installation", () => {
+  it.each([
+    ["Win32", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "windows"],
+    ["", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "windows"],
+    ["MacIntel", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", "macos"],
+    ["", "Mozilla/5.0 (darwin)", "macos"],
+    ["Linux x86_64", "Mozilla/5.0 (X11; Linux x86_64)", "linux"],
+  ])("detects %s / %s", (platform, userAgent, expected) => {
+    vi.stubGlobal("navigator", { platform, userAgent });
+    expect(runnerInstallPlatform()).toBe(expected);
+    vi.unstubAllGlobals();
+  });
+
+  it("installs in PowerShell and refreshes the installer directory before registering", () => {
+    expect(WINDOWS_INSTALL_DETENT_COMMAND).toBe("irm https://raw.githubusercontent.com/digitaldrywood/detent/main/install.ps1 | iex");
+    expect(installAndRegisterCommand("detent hub runner register", "windows")).toBe(
+      `$ErrorActionPreference = 'Stop'; irm https://raw.githubusercontent.com/digitaldrywood/detent/main/install.ps1 | iex; $detentInstallDir = if ($env:DETENT_INSTALL_DIR) { $env:DETENT_INSTALL_DIR } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'detent\\bin' } else { Join-Path $HOME '.detent\\bin' }; $env:Path = "$detentInstallDir;$env:Path"; detent hub runner register`,
+    );
+  });
+
+  it.each(["macos", "linux"] as const)("preserves the %s one-paste command", (platform) => {
+    expect(installAndRegisterCommand("detent hub runner register", platform)).toBe(
+      'curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh && export PATH="$HOME/.local/bin:/usr/local/bin:$PATH" && detent hub runner register',
+    );
+  });
+});
+
 describe("the register command", () => {
   const input = {
     hubUrl: "https://cloud.example.com/organizations/org_1",
@@ -958,6 +985,16 @@ describe("the register command", () => {
     { name: "a URL naming a longer organization ID", change: { hubUrl: "https://cloud.example.com/organizations/org_1-extra" }, want: "detent hub runner register --url https://cloud.example.com/organizations/org_1-extra --organization org_1 --token det_enroll_abc --isolation-tier sandbox" },
   ])("builds it for $name", ({ change, want }) => {
     expect(registerCommand({ ...input, ...change })).toBe(want);
+  });
+
+  it.each([
+    [` Owner's "Windows" $host `, `Owner''s "Windows" $host`],
+    ["Owner’s ‘Windows’ $host", "Owner’’s ‘‘Windows’’ $host"],
+  ])("quotes every Windows register argument as a PowerShell literal: %s", (name, quotedName) => {
+    expect(registerCommand({
+      ...input, platform: "windows", hubUrl: "https://hub.example.test/$hub", organizationId: "org's $id",
+      token: "token'$secret", name, isolationTier: "native-trusted", capacity: 2, service: true,
+    })).toBe(`detent hub runner register --url 'https://hub.example.test/$hub' --organization 'org''s $id' --token 'token''$secret' --name '${quotedName}' --capacity 2 --isolation-tier native-trusted --service`);
   });
 
   it.each([
