@@ -1,0 +1,389 @@
+package configdoc
+
+import (
+	"bytes"
+	"errors"
+	"go/scanner"
+	"go/token"
+	"os"
+	"path/filepath"
+	"reflect"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/digitaldrywood/detent/internal/config"
+)
+
+func TestPolicyApprovalDocumentation(t *testing.T) {
+	const begin = "<!-- BEGIN POLICY APPROVAL RULE -->"
+	const end = "<!-- END POLICY APPROVAL RULE -->"
+	readDocument := func(t *testing.T, path string) string {
+		t.Helper()
+		content, err := os.ReadFile(filepath.Join("..", "..", "..", path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(content)
+	}
+	readRule := func(t *testing.T, path string) string {
+		t.Helper()
+		text := readDocument(t, path)
+		if strings.Contains(strings.Join(strings.Fields(text), " "), "approving the repository policy the runner reports") {
+			t.Errorf("%s still requires approval of runner-reported repository configuration", path)
+		}
+		if strings.Count(text, begin) != 1 || strings.Count(text, end) != 1 {
+			t.Fatalf("%s must contain exactly one policy approval rule", path)
+		}
+		_, rule, _ := strings.Cut(text, begin)
+		rule, _, found := strings.Cut(rule, end)
+		if !found || strings.TrimSpace(rule) == "" {
+			t.Fatalf("%s has an empty or unterminated policy approval rule", path)
+		}
+		return strings.Join(strings.Fields(rule), " ")
+	}
+	canonical := readRule(t, "docs/api-mcp-setup.md")
+	for _, path := range []string{"README.md", "docs/cloud-onboarding.md"} {
+		t.Run(path, func(t *testing.T) {
+			if got := readRule(t, path); got != canonical {
+				t.Errorf("%s policy approval rule differs from docs/api-mcp-setup.md", path)
+			}
+		})
+	}
+	t.Run("README setup prompt", func(t *testing.T) {
+		_, prompt, found := strings.Cut(readDocument(t, "README.md"), "```text\n")
+		if !found {
+			t.Fatal("README setup prompt is missing")
+		}
+		prompt, _, found = strings.Cut(prompt, "```")
+		if !found {
+			t.Fatal("README setup prompt is unterminated")
+		}
+		prompt = strings.Join(strings.Fields(prompt), " ")
+		for _, guidance := range []string{
+			"Repository configuration reports do not require approval before dispatch.",
+			"Explicit approval is required for administrative configuration adoption",
+			"docs/api-mcp-setup.md",
+			"get_project_policy",
+			"get_onboarding",
+			"approve_project_policy",
+		} {
+			if !strings.Contains(prompt, guidance) {
+				t.Errorf("README setup prompt omits policy approval guidance: %s", guidance)
+			}
+		}
+	})
+}
+
+func TestHubGitHubDocumentation(t *testing.T) {
+	root := filepath.Join("..", "..", "..")
+	doc, err := os.ReadFile(filepath.Join(root, "docs", "hub-self-hosting.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, found := strings.Cut(string(doc), "\n## GitHub modes\n")
+	if !found {
+		t.Fatal("self-hosting documentation is missing GitHub modes")
+	}
+	section, _, _ = strings.Cut(section, "\n## ")
+	fileSet := token.NewFileSet()
+	literals := make(map[string]bool)
+	for _, name := range []string{"hub.go", "cloud.go"} {
+		source, err := os.ReadFile(filepath.Join(root, "internal", "cli", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		file := fileSet.AddFile(name, -1, len(source))
+		var lexer scanner.Scanner
+		lexer.Init(file, source, func(position token.Position, message string) {
+			t.Errorf("%s: %s", position, message)
+		}, 0)
+		for {
+			_, kind, literal := lexer.Scan()
+			if kind == token.EOF {
+				break
+			}
+			if kind == token.STRING {
+				value, err := strconv.Unquote(literal)
+				if err != nil {
+					t.Fatal(err)
+				}
+				literals[value] = true
+			}
+		}
+	}
+	names := regexp.MustCompile(`\bDETENT_HUB_[A-Z_]+\b|--[a-z][a-z-]*`).FindAllString(section, -1)
+	if len(names) == 0 {
+		t.Fatal("GitHub modes contains no environment variables or flags to check")
+	}
+	for _, name := range names {
+		if !literals[strings.TrimPrefix(name, "--")] {
+			t.Errorf("documented option %s does not exist in internal/cli/hub.go or internal/cli/cloud.go", name)
+		}
+	}
+}
+
+func TestConfigDocumentation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("repository configuration generation and type checking")
+	}
+
+	fields, nodes, err := build()
+	if err != nil {
+		t.Fatalf("build() error = %v", err)
+	}
+
+	t.Run("covers config package YAML keys", func(t *testing.T) {
+		sourceKeys := configSourceYAMLKeys()
+		generatedKeys := make(map[string]struct{}, len(fields))
+		for _, field := range fields {
+			path := strings.TrimSuffix(field.Path, "[]")
+			key := path[strings.LastIndex(path, ".")+1:]
+			generatedKeys[key] = struct{}{}
+		}
+
+		var missing []string
+		for key := range sourceKeys {
+			if _, ok := generatedKeys[key]; !ok {
+				missing = append(missing, key)
+			}
+		}
+		sort.Strings(missing)
+		if len(missing) > 0 {
+			t.Fatalf("generated fields omit YAML keys: %s", strings.Join(missing, ", "))
+		}
+	})
+
+	t.Run("includes discoverable backlog admission", func(t *testing.T) {
+		markdown := renderMarkdown(fields)
+		reference := string(renderReferenceYAML(fields, nodes))
+		for name, content := range map[string]string{
+			"Markdown": markdown,
+			"YAML":     reference,
+		} {
+			if !strings.Contains(content, "backlog_admission.schedule") {
+				t.Errorf("%s does not include backlog_admission.schedule", name)
+			}
+			if !strings.Contains(content, "active_hours.timezone") || !strings.Contains(content, "active_hours.windows") {
+				t.Errorf("%s does not include active-hours child fields", name)
+			}
+			if !strings.Contains(content, "valid five-field cron expression") {
+				t.Errorf("%s does not include backlog admission cron validation", name)
+			}
+		}
+	})
+
+	t.Run("uses validator constraints and conditional requiredness", func(t *testing.T) {
+		byPath := make(map[string]fieldDetails, len(fields))
+		for _, field := range fields {
+			byPath[field.Path] = field
+		}
+		tests := []struct {
+			path       string
+			required   string
+			ruleDetail string
+		}{
+			{path: "tracker.kind", required: "Yes", ruleDetail: "must be one of"},
+			{path: "identity.name", required: "Conditional", ruleDetail: "must not be blank"},
+			{path: "agents.backends[].provider", required: "No", ruleDetail: "sanitized label"},
+			{path: "agents.backends[].protocol", required: "No", ruleDetail: "must be app-server"},
+			{path: "agents.backends[].options.deliverable_elicitation_allowlist", required: "Conditional", ruleDetail: "values.server is required"},
+			{path: "agents.backends[].options.deliverable_elicitation_allowlist", required: "Conditional", ruleDetail: "values.tool is required"},
+			{path: "agents.backends[].options.deliverable_elicitation_allowlist", required: "Conditional", ruleDetail: "values.repository must be owner/name"},
+			{path: "tracker.authorization.priority_in", required: "No", ruleDetail: "integers 1 through 4"},
+			{path: "agents.routes[].selector.priority_in", required: "No", ruleDetail: "integers 1 through 4"},
+			{path: "tracker.github_app_id", required: "Conditional", ruleDetail: "required for github app"},
+			{path: "backlog_admission.target_state", required: "Conditional", ruleDetail: "configured workflow state"},
+		}
+		for _, test := range tests {
+			test := test
+			t.Run(test.path, func(t *testing.T) {
+				field, ok := byPath[test.path]
+				if !ok {
+					t.Fatalf("field %q is missing", test.path)
+				}
+				if field.Required != test.required {
+					t.Errorf("Required = %q, want %q", field.Required, test.required)
+				}
+				if !strings.Contains(strings.Join(field.Validation, "; "), test.ruleDetail) {
+					t.Errorf("Validation = %q, want containing %q", field.Validation, test.ruleDetail)
+				}
+			})
+		}
+		if shell := byPath["agents.backends[].options.shell"]; shell.literal != "null" {
+			t.Errorf("backend shell literal = %q, want symbolic null", shell.literal)
+		}
+		endpoint := byPath["tracker.endpoint"]
+		for _, expected := range []string{"https://api.github.com/graphql"} {
+			if !strings.Contains(endpoint.Default, expected) {
+				t.Errorf("tracker endpoint default = %q, want containing %q", endpoint.Default, expected)
+			}
+		}
+		if endpoint.literal != "null" {
+			t.Errorf("tracker endpoint literal = %q, want symbolic null", endpoint.literal)
+		}
+		for _, path := range []string{
+			"tracker.issues[].id",
+			"tracker.issues[].title",
+			"tracker.issues[].state",
+			"tracker.issues[].labels",
+			"tracker.issues[].fields",
+		} {
+			if _, ok := byPath[path]; !ok {
+				t.Errorf("connector issue field %q is missing", path)
+			}
+		}
+	})
+
+	t.Run("normalizes generated documentation line endings", func(t *testing.T) {
+		content := []byte("before\r\n" + beginMarker + "\r\nold\r\n" + endMarker + "\r\n")
+		rendered, err := renderDocs(normalizeLineEndings(content), "new")
+		if err != nil {
+			t.Fatalf("renderDocs() error = %v", err)
+		}
+		if strings.Contains(string(rendered), "\r") {
+			t.Fatalf("renderDocs() retained carriage returns: %q", rendered)
+		}
+	})
+
+	t.Run("generation replaces complete artifacts", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.Mkdir(filepath.Join(root, "docs"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		template := []byte("prose\n" + beginMarker + "\n" + endMarker + "\n")
+		templatePath := filepath.Join(root, "docs", "config.md.in")
+		if err := os.WriteFile(templatePath, template, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		tests := []struct {
+			name string
+			path string
+			old  string
+			info os.FileInfo
+		}{
+			{name: "Markdown", path: filepath.Join(root, "docs", "config.md"), old: "prose\n" + beginMarker + "\nstale\n" + endMarker + "\n"},
+			{name: "YAML", path: filepath.Join(root, "config.reference.yaml"), old: "stale\n"},
+		}
+		for index := range tests {
+			test := &tests[index]
+			if err := os.WriteFile(test.path, []byte(test.old), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			file, err := os.Open(test.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, statErr := file.Stat()
+			if err := errors.Join(statErr, file.Close()); err != nil {
+				t.Fatal(err)
+			}
+			test.info = info
+		}
+		if err := generateArtifacts(root, false, fields, nodes); err != nil {
+			t.Fatal(err)
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				info, err := os.Stat(test.path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if os.SameFile(test.info, info) {
+					t.Error("generation rewrote the existing file instead of replacing it")
+				}
+				content, err := os.ReadFile(test.path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(content) == test.old || len(content) == 0 {
+					t.Error("generation did not publish the new content")
+				}
+			})
+		}
+		if err := generateArtifacts(root, true, fields, nodes); err != nil {
+			t.Fatal(err)
+		}
+		for _, test := range tests {
+			if err := os.Remove(test.path); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := generateArtifacts(root, false, fields, nodes); err != nil {
+			t.Fatalf("generate from authored inputs alone: %v", err)
+		}
+		content, err := os.ReadFile(templatePath)
+		if err != nil || !bytes.Equal(content, template) {
+			t.Fatalf("authored input changed: %v", err)
+		}
+	})
+}
+
+func TestWriteGeneratedFileFailure(t *testing.T) {
+	for _, name := range []string{"missing parent", "directory destination"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "missing", "target")
+			wantEntries := 0
+			if name == "directory destination" {
+				path = filepath.Join(root, "target")
+				if err := os.Mkdir(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				wantEntries = 1
+			}
+			if err := writeGeneratedFile(path, []byte("generated")); err == nil {
+				t.Fatal("writeGeneratedFile succeeded for an invalid destination")
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != wantEntries {
+				t.Fatalf("directory entries = %v, want %d entries without staging files", entries, wantEntries)
+			}
+			if wantEntries == 1 && (!entries[0].IsDir() || entries[0].Name() != "target") {
+				t.Fatal("failed replacement changed the existing destination")
+			}
+		})
+	}
+}
+
+func configSourceYAMLKeys() map[string]struct{} {
+	configType := reflect.TypeFor[config.Config]()
+	keys := map[string]struct{}{}
+	visited := map[reflect.Type]bool{}
+	var visit func(reflect.Type)
+	visit = func(typ reflect.Type) {
+		for typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Slice || typ.Kind() == reflect.Array || typ.Kind() == reflect.Map {
+			typ = typ.Elem()
+		}
+		if typ.Kind() != reflect.Struct || typ.PkgPath() != configType.PkgPath() || visited[typ] {
+			return
+		}
+		visited[typ] = true
+		for index := range typ.NumField() {
+			field := typ.Field(index)
+			if !field.IsExported() {
+				continue
+			}
+			key, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
+			if key == "" || key == "-" {
+				continue
+			}
+			keys[key] = struct{}{}
+			visit(field.Type)
+		}
+	}
+	for _, typ := range []reflect.Type{
+		configType,
+		reflect.TypeFor[config.CodexOptions](),
+		reflect.TypeFor[config.ClaudeCodeOptions](),
+		reflect.TypeFor[config.PiAgentOptions](),
+	} {
+		visit(typ)
+	}
+	return keys
+}

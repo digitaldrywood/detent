@@ -1,0 +1,268 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"slices"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
+)
+
+type workerProcessStore interface {
+	ListActiveWorkerProcesses(context.Context) ([]store.WorkerProcess, error)
+	MarkSessionWorkerProcessReaped(context.Context, int64, store.WorkerProcessReap) error
+}
+
+type releasedExecutionProcessStore interface {
+	workerProcessStore
+	WorkAttempt(context.Context, int64) (store.WorkAttempt, error)
+}
+
+func releasedExecutionWorkersStopped(ctx context.Context, processes releasedExecutionProcessStore, item tracker.NativeWorkItemID, attempt tracker.NativeAttempt) (bool, error) {
+	if processes == nil || attempt.Runtime == nil || attempt.Runtime.LocalAttemptID <= 0 {
+		return false, nil
+	}
+	local, err := processes.WorkAttempt(ctx, attempt.Runtime.LocalAttemptID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if local.IssueID != string(item) || local.Status != store.WorkAttemptStatusTerminal || local.StartedAt.After(attempt.StartedAt) {
+		return false, nil
+	}
+	active, err := processes.ListActiveWorkerProcesses(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, process := range active {
+		if process.IssueID == string(item) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+type workerProcessReapFunc func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error)
+
+func reapWorkerProcesses(
+	ctx context.Context,
+	processStore workerProcessStore,
+	logger *slog.Logger,
+	reason string,
+	grace time.Duration,
+	now func() time.Time,
+	reap workerProcessReapFunc,
+) error {
+	return reapWorkerProcessesWithCleanup(ctx, processStore, logger, reason, grace, now, reap, func(process store.WorkerProcess) error {
+		if process.Role == store.WorkerProcessRoleHostValidation {
+			if _, err := workspace.ReapWorkerArtifactPathProcesses(ctx, process.CleanupRoot, process.CleanupPath, grace); err != nil {
+				return &workerProcessTerminationError{err: fmt.Errorf("reap host validation processes: %w", err)}
+			}
+			return cleanupWorkerProcessArtifacts(process)
+		}
+		if _, err := workspace.ReapWorkerArtifactProcesses(ctx, process.CleanupRoot, process.CleanupPath, grace); err != nil {
+			return &workerProcessTerminationError{err: fmt.Errorf("reap worker artifact processes: %w", err)}
+		}
+		return cleanupWorkerProcessArtifacts(process)
+	})
+}
+
+func reapWorkerProcessesWithCleanup(
+	ctx context.Context,
+	processStore workerProcessStore,
+	logger *slog.Logger,
+	reason string,
+	grace time.Duration,
+	now func() time.Time,
+	reap workerProcessReapFunc,
+	cleanup func(store.WorkerProcess) error,
+) error {
+	if processStore == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if now == nil {
+		now = time.Now
+	}
+	if reap == nil {
+		reap = procgroup.Terminate
+	}
+	processes, err := processStore.ListActiveWorkerProcesses(ctx)
+	if err != nil {
+		return err
+	}
+	var liveForeign []int64
+	if generations, ok := processStore.(store.LiveForeignGenerationReader); ok {
+		liveForeign, err = generations.LiveForeignWorkerGenerations(ctx)
+		var unknown *store.WorkerGenerationLivenessError
+		if errors.As(err, &unknown) {
+			unknown.Log(logger)
+		} else if err != nil {
+			return fmt.Errorf("list live worker generations: %w", err)
+		}
+	}
+	processes = slices.DeleteFunc(processes, func(process store.WorkerProcess) bool {
+		return slices.Contains(liveForeign, process.OwnerGeneration)
+	})
+	attemptStore, hasAttempts := processStore.(interface {
+		ListActiveWorkAttempts(context.Context, store.WorkAttemptQuery) ([]store.WorkAttempt, error)
+		TimeoutExpiredWorkAttempts(context.Context, store.WorkAttemptTimeout) ([]store.WorkAttempt, error)
+	})
+	var attempts []store.WorkAttempt
+	if hasAttempts && strings.TrimSpace(reason) == "startup" {
+		attempts, err = attemptStore.ListActiveWorkAttempts(ctx, store.WorkAttemptQuery{ExcludeLiveForeignGenerations: true})
+		if err != nil {
+			return err
+		}
+	}
+	var result error
+	terminationFailed := false
+	for _, process := range processes {
+		identity := procgroup.Identity{
+			PID:       process.PID,
+			GroupID:   process.GroupID,
+			StartedAt: process.StartedAt,
+		}
+		outcome, reapErr := reap(ctx, identity, grace)
+		attrs := []any{
+			"operation", "worker_process_reap",
+			"reason", strings.TrimSpace(reason),
+			"decision", string(outcome),
+			"detent_session_id", process.SessionID,
+			"issue_id", strings.TrimSpace(process.IssueID),
+			"issue_identifier", strings.TrimSpace(process.Identifier),
+			"pid", process.PID,
+			"pgid", process.GroupID,
+			"cleanup_path", process.CleanupPath,
+		}
+		if reapErr != nil {
+			attrs = append(attrs, "error", reapErr)
+			logger.Info("worker process lifecycle decision", attrs...)
+			result = errors.Join(result, reapErr)
+			terminationFailed = true
+			continue
+		}
+		if outcome == procgroup.TerminationOutcomeStaleIdentity {
+			if _, err := workspace.ReapWorkerArtifactPathProcesses(ctx, process.CleanupRoot, process.CleanupPath, grace); err != nil {
+				result = errors.Join(result, &workerProcessTerminationError{err: err})
+				terminationFailed = true
+				continue
+			}
+		} else {
+			if cleanupErr := retryWorkerProcessArtifactCleanup(ctx, process, logger.With(attrs...), cleanup); cleanupErr != nil {
+				attrs = append(attrs, "error", cleanupErr)
+				logger.Info("worker process lifecycle decision", attrs...)
+				result = errors.Join(result, cleanupErr)
+				var termination *workerProcessTerminationError
+				if errors.As(cleanupErr, &termination) {
+					terminationFailed = true
+				}
+				continue
+			}
+		}
+		logger.Info("worker process lifecycle decision", attrs...)
+		if err := processStore.MarkSessionWorkerProcessReaped(ctx, process.SessionID, store.WorkerProcessReap{
+			ReapedAt: now().UTC(),
+			Outcome:  string(outcome),
+			Reason:   strings.TrimSpace(reason),
+		}); err != nil {
+			result = errors.Join(result, err)
+			terminationFailed = true
+		}
+	}
+	// The store belongs to this instance; worker hosts are scheduling pool labels.
+	// Feed the existing expiry path attempts whose processes startup confirmed gone,
+	// including attempts with no process record.
+	if strings.TrimSpace(reason) == "startup" && !terminationFailed && hasAttempts {
+		gone := make([]int64, 0, len(attempts))
+		for _, attempt := range attempts {
+			if !strings.EqualFold(strings.TrimSpace(attempt.Phase), "completion_deferred") {
+				gone = append(gone, attempt.ID)
+			}
+		}
+		if _, err := attemptStore.TimeoutExpiredWorkAttempts(ctx, store.WorkAttemptTimeout{
+			Now: now().UTC(), ConfirmedGoneAttemptIDs: gone,
+			TerminalState: store.WorkAttemptTerminalAbandoned, ErrorClass: "service_restart",
+			ErrorMessage: "active work attempt reclaimed after service restart",
+		}); err != nil {
+			return errors.Join(result, err)
+		}
+	}
+	if result != nil && !terminationFailed {
+		return &workerArtifactCleanupError{err: result}
+	}
+	return result
+}
+
+type workerProcessTerminationError struct{ err error }
+
+func (e *workerProcessTerminationError) Error() string { return e.err.Error() }
+func (e *workerProcessTerminationError) Unwrap() error { return e.err }
+
+// workerArtifactCleanupError reports that every prior worker was confirmed
+// terminated but at least one workspace artifact cleanup failed; the session
+// rows stay unreaped so cleanup is retried on the next start.
+type workerArtifactCleanupError struct {
+	err error
+}
+
+func (e *workerArtifactCleanupError) Error() string { return e.err.Error() }
+
+func (e *workerArtifactCleanupError) Unwrap() error { return e.err }
+
+func retryWorkerProcessArtifactCleanup(ctx context.Context, process store.WorkerProcess, logger *slog.Logger, cleanup func(store.WorkerProcess) error) error {
+	const maxAttempts = 5
+	var cleanupErr error
+	for attempt := 1; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(cleanupErr, err)
+		}
+		cleanupErr = cleanup(process)
+		if cleanupErr == nil {
+			return nil
+		}
+		if !errors.Is(cleanupErr, syscall.ENOTEMPTY) {
+			return cleanupErr
+		}
+		if attempt == maxAttempts {
+			return fmt.Errorf("clean worker process artifacts after %d attempts: %w", attempt, cleanupErr)
+		}
+		delay := 250 * time.Millisecond << (attempt - 1)
+		logger.Warn("worker artifact cleanup retry",
+			"cleanup_path", process.CleanupPath,
+			"cleanup_attempt", attempt,
+			"cleanup_max_attempts", maxAttempts,
+			"retry_delay", delay,
+			"error", cleanupErr,
+		)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return errors.Join(cleanupErr, ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func cleanupWorkerProcessArtifacts(process store.WorkerProcess) error {
+	if err := workspace.CleanupOwnedPath(process.CleanupRoot, process.CleanupPath); err != nil {
+		return fmt.Errorf("clean worker process artifacts: %w", err)
+	}
+	return nil
+}
