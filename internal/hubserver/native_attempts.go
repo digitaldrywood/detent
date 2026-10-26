@@ -764,6 +764,9 @@ func readNativeAttempt(ctx context.Context, q nativeQueryer, scope nativeScope, 
 	if err != nil {
 		return attempt, err
 	}
+	if explanationRead(ctx) {
+		return attempt, nil
+	}
 	err = readAttachmentEvidence(ctx, q, scope, item, &attempt.NativeRunData)
 	return attempt, err
 }

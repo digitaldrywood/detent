@@ -175,7 +175,7 @@ func hydrateChangeRecord(ctx context.Context, query nativeQueryer, value any) er
 	default:
 		return nil
 	}
-	if len(commands) == 0 || claimPrepared(ctx) != nil {
+	if len(commands) == 0 || claimPrepared(ctx) != nil || explanationRead(ctx) {
 		return nil
 	}
 	rows, err := query.QueryContext(ctx, `SELECT role,position,organization_id,object_key,object_sha256,object_bytes,content_bytes FROM change_command_outputs WHERE version_id=? AND review_id=? ORDER BY role,position`, version, review)

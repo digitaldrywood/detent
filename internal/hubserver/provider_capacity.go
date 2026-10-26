@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -125,6 +126,7 @@ func sharedProviderAccount(a, b scopedProviderAccount) bool {
 }
 
 type providerCapacitySnapshot struct {
+	truncated    bool
 	groups       map[string][]scopedProviderAccount
 	reports      []scopedProviderAccount
 	reservations []scopedProviderReservation
@@ -132,13 +134,23 @@ type providerCapacitySnapshot struct {
 
 func readProviderCapacitySnapshot(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, now time.Time) (providerCapacitySnapshot, error) {
 	var snapshot providerCapacitySnapshot
+	runnerBound := ""
+	if explanationRead(ctx) {
+		runnerBound = " ORDER BY r.id LIMIT 65"
+	}
 	rows, err := query.QueryContext(ctx, `SELECT r.id, r.provider_reports_json, t.created_at, t.expires_at, t.revoked_at
-FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organization_id = ?`, organization)
+FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organization_id = ?`+runnerBound, organization)
 	if err != nil {
 		return snapshot, err
 	}
 	defer rows.Close()
+	runnerCount := 0
 	for rows.Next() {
+		runnerCount++
+		if explanationRead(ctx) && runnerCount > 64 {
+			snapshot.truncated = true
+			break
+		}
 		var runnerID, raw, created string
 		var expires, revoked sql.NullString
 		var reports []providercapacity.Report
@@ -161,18 +173,45 @@ FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organiza
 	if err := rows.Close(); err != nil {
 		return snapshot, err
 	}
-	rows, err = query.QueryContext(ctx, `SELECT p.reservation_json, l.expires_at, l.session_id, l.machine_id, COALESCE(lr.runner_id, ''), `+nativeLandingCapacityProject+` FROM provider_reservations p JOIN leases l ON l.lease_id=p.lease_id JOIN issues i ON i.id=l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id `+nativeLandingCapacityJoins+` WHERE p.organization_id = ? AND l.released_at IS NULL`, organization)
+	statement := `SELECT p.reservation_json, l.expires_at, l.session_id, l.machine_id, COALESCE(lr.runner_id, ''), ` + nativeLandingCapacityProject + ` FROM provider_reservations p JOIN leases l ON l.lease_id=p.lease_id JOIN issues i ON i.id=l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id ` + nativeLandingCapacityJoins + ` WHERE p.organization_id = ? AND l.released_at IS NULL`
+	args := []any{organization}
+	if explanationRead(ctx) {
+		statement = `WITH candidates AS MATERIALIZED (
+SELECT l.lease_id,l.expires_at,l.session_id,l.machine_id
+FROM leases l INDEXED BY health_active_host
+WHERE l.machine_id IN (SELECT machine_id FROM runner_identities WHERE organization_id=? ORDER BY id LIMIT 65)
+AND l.released_at IS NULL AND l.expires_at>? ORDER BY l.machine_id,l.expires_at,l.lease_id LIMIT 1025
+)
+SELECT p.reservation_json,l.expires_at,l.session_id,l.machine_id,COALESCE(lr.runner_id,''),''
+FROM candidates l LEFT JOIN provider_reservations p ON p.lease_id=l.lease_id AND p.organization_id=?
+LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id`
+		args = []any{organization, formatHubTime(now), organization}
+	}
+	rows, err = query.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return snapshot, err
 	}
 	defer rows.Close()
 	snapshot.groups = map[string][]scopedProviderAccount{}
+	leaseCount := 0
 	for rows.Next() {
-		var raw, expiry, session, runnerID, project string
+		leaseCount++
+		if explanationRead(ctx) && leaseCount > 1024 {
+			snapshot.truncated = true
+			break
+		}
+		var raw sql.NullString
+		var expiry, session, runnerID, project string
 		var machine tracker.MachineID
 		var reservation providercapacity.Reservation
 		if err := rows.Scan(&raw, &expiry, &session, &machine, &runnerID, &project); err != nil {
 			return snapshot, err
+		}
+		if !raw.Valid {
+			continue
+		}
+		if explanationRead(ctx) && strings.HasPrefix(session, "landing/") {
+			snapshot.truncated = true
 		}
 		end, err := parseTimeValue(expiry)
 		if err != nil {
@@ -181,7 +220,7 @@ FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organiza
 		if !end.After(now) {
 			continue
 		}
-		if err := json.Unmarshal([]byte(raw), &reservation); err != nil {
+		if err := json.Unmarshal([]byte(raw.String), &reservation); err != nil {
 			return snapshot, err
 		}
 		if reservation.Backend == "git" && reservation.Role == "merge" {

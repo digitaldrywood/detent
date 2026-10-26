@@ -27,6 +27,9 @@ type storageJSONPayload struct {
 }
 
 func resolveStorageJSON(ctx context.Context, raw []byte) ([]byte, error) {
+	if explanationRead(ctx) {
+		return raw, nil
+	}
 	return resolveStorageJSONWith(ctx, raw, readChangeContent)
 }
 
