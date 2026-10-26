@@ -2,17 +2,23 @@ package hubserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"modernc.org/sqlite"
 
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -500,6 +506,90 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 	for _, r := range runners {
 		if r.RunnerID == first.binding.RunnerID || r.HostUsed != 1 || r.Used != 0 || r.ProviderCapacity[0].Used != 1 {
 			t.Fatalf("occupancy outside the granted runner page was lost: %#v", r)
+		}
+	}
+}
+
+type capacityCandidateQuery struct {
+	nativeQueryer
+	probe string
+}
+
+func (q capacityCandidateQuery) QueryContext(ctx context.Context, statement string, args ...any) (*sql.Rows, error) {
+	statement = strings.ReplaceAll(statement, "l.expires_at>?", "l.expires_at>? AND "+q.probe+"(l.lease_id)")
+	return q.nativeQueryer.QueryContext(ctx, statement, args...)
+}
+
+func TestExplanationProviderCapacityCandidateWindow(t *testing.T) {
+	var examined atomic.Int64
+	probe := fmt.Sprintf("capacity_probe_%x", sha256.Sum256([]byte(t.TempDir())))
+	if err := sqlite.RegisterScalarFunction(probe, 1, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+		examined.Add(1)
+		return int64(1), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 2, 6, 0, 0, 0, time.UTC)
+	f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}), "", "capacity-window")
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	first := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+	first.enroll(t)
+	publishCapacity(t, f, first, capacityReport(now))
+	issue := f.create(t, "reserved")
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", first.redemption.Credential, providerClaim(first, issue, "reserved"))
+	requireNativeStatus(t, response, http.StatusOK)
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	ctx := context.WithValue(t.Context(), explanationReadKey{}, true)
+	previous := 1
+	for _, total := range []int{1024, 2048} {
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		for i := previous; i < total; i++ {
+			id := "candidate-" + strconv.Itoa(i)
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO issues(workflow_state_id,native_id,organization_id,project_id,number,title,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,native_created_at,native_updated_at)
+SELECT workflow_state_id,?,organization_id,project_id,?,?,'','open',source_version,source_updated_at,synchronized_at,created_at,updated_at,native_created_at,native_updated_at FROM issues WHERE native_id=?`, id, i+1, id, issue.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT ?,id,?,?,?,?,?,?,? FROM issues WHERE native_id=?`, id, first.binding.MachineID, id, formatHubTime(now.Add(2*time.Minute)), formatHubTime(now), formatHubTime(now), formatHubTime(now), formatHubTime(now), id); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		previous = total
+		for _, absent := range []bool{false, true} {
+			t.Run(fmt.Sprintf("leases=%d/absent=%v", total, absent), func(t *testing.T) {
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				if absent {
+					if _, err := tx.ExecContext(t.Context(), "DELETE FROM provider_reservations WHERE organization_id=?", scope.organization); err != nil {
+						t.Fatal(err)
+					}
+				}
+				examined.Store(0)
+				snapshot, err := readProviderCapacitySnapshot(ctx, capacityCandidateQuery{nativeQueryer: tx, probe: probe}, scope.organization, now)
+				if got := examined.Load(); got != int64(min(total, 1025)) {
+					t.Errorf("examined %d live lease candidates from %d; want %d", got, total, min(total, 1025))
+				}
+				wantReservations := 1
+				if absent {
+					wantReservations = 0
+				}
+				if err != nil || snapshot.truncated != (total > 1024) || len(snapshot.reservations) != wantReservations {
+					t.Fatalf("reservations=%d partial=%v error=%v", len(snapshot.reservations), snapshot.truncated, err)
+				}
+				evidence, err := readNativeRuntime(ctx, tx, scope, string(issue.WorkItemID), "", now)
+				if err != nil || slices.Contains(evidence.Unavailable, "capacity_projection_truncated") != (total > 1024) {
+					t.Fatalf("unavailable=%v error=%v", evidence.Unavailable, err)
+				}
+			})
 		}
 	}
 }

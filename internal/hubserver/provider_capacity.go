@@ -176,10 +176,15 @@ FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE r.organiza
 	statement := `SELECT p.reservation_json, l.expires_at, l.session_id, l.machine_id, COALESCE(lr.runner_id, ''), ` + nativeLandingCapacityProject + ` FROM provider_reservations p JOIN leases l ON l.lease_id=p.lease_id JOIN issues i ON i.id=l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id ` + nativeLandingCapacityJoins + ` WHERE p.organization_id = ? AND l.released_at IS NULL`
 	args := []any{organization}
 	if explanationRead(ctx) {
-		statement = `SELECT p.reservation_json,l.expires_at,l.session_id,l.machine_id,COALESCE(lr.runner_id,''),''
-FROM leases l INDEXED BY health_active_host JOIN provider_reservations p ON p.lease_id=l.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id
+		statement = `WITH candidates AS MATERIALIZED (
+SELECT l.lease_id,l.expires_at,l.session_id,l.machine_id
+FROM leases l INDEXED BY health_active_host
 WHERE l.machine_id IN (SELECT machine_id FROM runner_identities WHERE organization_id=? ORDER BY id LIMIT 65)
-AND l.released_at IS NULL AND l.expires_at>? AND p.organization_id=? ORDER BY l.machine_id,l.expires_at,l.lease_id LIMIT 1025`
+AND l.released_at IS NULL AND l.expires_at>? ORDER BY l.machine_id,l.expires_at,l.lease_id LIMIT 1025
+)
+SELECT p.reservation_json,l.expires_at,l.session_id,l.machine_id,COALESCE(lr.runner_id,''),''
+FROM candidates l LEFT JOIN provider_reservations p ON p.lease_id=l.lease_id AND p.organization_id=?
+LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id`
 		args = []any{organization, formatHubTime(now), organization}
 	}
 	rows, err = query.QueryContext(ctx, statement, args...)
@@ -195,11 +200,15 @@ AND l.released_at IS NULL AND l.expires_at>? AND p.organization_id=? ORDER BY l.
 			snapshot.truncated = true
 			break
 		}
-		var raw, expiry, session, runnerID, project string
+		var raw sql.NullString
+		var expiry, session, runnerID, project string
 		var machine tracker.MachineID
 		var reservation providercapacity.Reservation
 		if err := rows.Scan(&raw, &expiry, &session, &machine, &runnerID, &project); err != nil {
 			return snapshot, err
+		}
+		if !raw.Valid {
+			continue
 		}
 		if explanationRead(ctx) && strings.HasPrefix(session, "landing/") {
 			snapshot.truncated = true
@@ -211,7 +220,7 @@ AND l.released_at IS NULL AND l.expires_at>? AND p.organization_id=? ORDER BY l.
 		if !end.After(now) {
 			continue
 		}
-		if err := json.Unmarshal([]byte(raw), &reservation); err != nil {
+		if err := json.Unmarshal([]byte(raw.String), &reservation); err != nil {
 			return snapshot, err
 		}
 		if reservation.Backend == "git" && reservation.Role == "merge" {
