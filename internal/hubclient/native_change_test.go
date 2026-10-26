@@ -232,26 +232,24 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		t.Fatal(err)
 	}
 	h := &nativeChangeHub{review: review, organization: organizations.Items[0].ID, descriptor: clientTestPolicy()}
-	reopens := 0
 	h.reopen = func(seed func(string) error) {
 		t.Helper()
 		requests.Lock()
 		defer requests.Unlock()
+		path := filepath.Join(t.TempDir(), "reopened.db")
+		if err := service.Backup(t.Context(), path); err != nil {
+			t.Fatalf("snapshot hub before seeding: %v", err)
+		}
 		if err := service.Close(); err != nil {
-			t.Fatalf("close fixture before seed: %v", err)
+			t.Fatalf("close hub before seeding: %v", err)
 		}
-		reopens++
-		seedPath := filepath.Join(filepath.Dir(config.DatabasePath), fmt.Sprintf("seed-%d.db", reopens))
-		if err := hubserver.BackupDatabase(t.Context(), config.DatabasePath, seedPath); err != nil {
-			t.Fatalf("snapshot stopped fixture: %v", err)
+		config.DatabasePath = path
+		if err := seed(config.DatabasePath); err != nil {
+			t.Fatalf("seed closed hub: %v", err)
 		}
-		if err := seed(seedPath); err != nil {
-			t.Fatalf("seed stopped fixture: %v", err)
-		}
-		config.DatabasePath = seedPath
 		service, err = hubserver.Open(t.Context(), config)
 		if err != nil {
-			t.Fatalf("reopen seeded fixture: %v", err)
+			t.Fatalf("reopen seeded hub: %v", err)
 		}
 	}
 	var project tracker.NativeProject
