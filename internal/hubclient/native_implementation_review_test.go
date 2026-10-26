@@ -21,16 +21,19 @@ import (
 func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name            string
-		validator       bool
-		verdict         string
-		decision        string
-		technicalResume bool
-		unsatisfiable   bool
-		summaryFailure  bool
-		feedback        string
+		name              string
+		validator         bool
+		verdict           string
+		decision          string
+		technicalResume   bool
+		unsatisfiable     bool
+		summaryFailure    bool
+		feedback          string
+		acceptanceFailure string
 	}{
 		{name: "source pass leaves separate acceptance required", validator: true, verdict: "pass", decision: "approved"},
+		{name: "lost acceptance response preserves committed review", validator: true, verdict: "pass", decision: "approved", acceptanceFailure: "committed"},
+		{name: "uncommitted acceptance timeout remains failed", validator: true, verdict: "pass", decision: "approved", acceptanceFailure: "uncommitted"},
 		{name: "unsatisfiable acceptance remains commented for completion", validator: true, verdict: "pass", decision: "approved", unsatisfiable: true},
 		{name: "source pass without acceptance validator", verdict: "pass", decision: "approved"},
 		{name: "source wait preserves typed pending evidence", validator: true, verdict: "wait", decision: "commented"},
@@ -321,8 +324,36 @@ func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 					result.SessionID++
 					result.Verdict = gate.ValidatorVerdictPass
 					result.Commands = []gate.CommandResult{receipt}
-					if err := validator.RecordValidator(ctx, result); err != nil {
-						t.Fatalf("independent acceptance retry was refused: %v", err)
+					publicationCalls := 0
+					if test.acceptanceFailure != "" {
+						transport := h.native.client.httpClient.Transport
+						h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+							if request.Method != http.MethodPost || !strings.HasSuffix(request.URL.Path, "/reviews") {
+								return transport.RoundTrip(request)
+							}
+							publicationCalls++
+							if test.acceptanceFailure == "committed" {
+								response, err := transport.RoundTrip(request)
+								if err != nil {
+									return response, err
+								}
+								response.Body.Close()
+							}
+							return nil, io.ErrUnexpectedEOF
+						})
+					}
+					publicationErr := validator.RecordValidator(ctx, result)
+					if test.acceptanceFailure != "" && publicationCalls != 1 {
+						t.Fatalf("acceptance mutation was replayed: %d calls", publicationCalls)
+					}
+					if test.acceptanceFailure == "uncommitted" {
+						if !errors.Is(publicationErr, ErrUnavailable) || execution.(runner.ChangeExecution).NativeChange().Reviewed {
+							t.Fatalf("uncommitted acceptance became reviewed: %v", publicationErr)
+						}
+						return
+					}
+					if publicationErr != nil {
+						t.Fatalf("independent acceptance retry was refused: %v", publicationErr)
 					}
 					if test.technicalResume {
 						detail, err := h.admin.runtimeChange(ctx, tracker.NativeWorkItemID(issue.ID), change.ChangeID)
