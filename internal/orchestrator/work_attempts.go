@@ -348,7 +348,10 @@ func (o *Orchestrator) reconcileOrphanedSessionRetries(ctx context.Context, stat
 	sessions := make([]store.OrphanedAgentSession, 0, dispatchCandidateLookahead)
 	for range min(dispatchCandidateLookahead, state.orphanRetryQueue.Len()) {
 		entry := state.orphanRetryQueue.Front()
-		id := entry.Value.(string)
+		id, valid := entry.Value.(string)
+		if !valid {
+			panic("invalid orphan retry queue entry")
+		}
 		retry, ok := state.Retry[id]
 		if !ok || !retry.TrackerUnavailable || !retry.ResumeState.Orphaned {
 			state.orphanRetryQueue.Remove(entry)
