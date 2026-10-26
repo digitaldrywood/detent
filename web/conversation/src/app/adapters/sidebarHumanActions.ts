@@ -8,6 +8,7 @@ import { subscribeProjectEvents } from "../work/lib/projectEvents.ts";
 import { useWorkHttp } from "../work/lib/useWork.ts";
 
 const refreshInterval = 30_000;
+const relevantRefreshInterval = 5000;
 const workflowStaleTime = 120_000;
 const relevantDelay = 2000;
 const holdingLanes = new Set(["blocked", "human review", "plan review"]);
@@ -62,12 +63,14 @@ export function useSidebarHumanActions(projects: readonly BootstrapProject[]): r
       pending.add(project.id);
       if (prompt && !notBefore.has(project.id)) notBefore.set(project.id, Date.now() + relevantDelay);
       if (!canRead(project) || running.has(project.id)) return;
-      const delay = Math.max(0, (lastRefresh.get(project.id) ?? -Infinity) + refreshInterval - Date.now(),
+      const interval = notBefore.has(project.id) ? relevantRefreshInterval : refreshInterval;
+      const delay = Math.max(0, (lastRefresh.get(project.id) ?? -Infinity) + interval - Date.now(),
         (notBefore.get(project.id) ?? -Infinity) - Date.now());
       if (delay === 0) {
         clearTimer(project.id);
         void refresh(project);
-      } else if (!timers.has(project.id)) {
+      } else {
+        clearTimer(project.id);
         timers.set(project.id, setTimeout(() => {
           timers.delete(project.id);
           schedule(project);
@@ -127,9 +130,9 @@ export function useSidebarHumanActions(projects: readonly BootstrapProject[]): r
       }
       setState({ scope, items: [...byProject.values()].flat().sort((a, b) => Date.parse(a.opened_at) - Date.parse(b.opened_at) || a.id.localeCompare(b.id)) });
     };
-    const invalidateWorkflow = (project: BootstrapProject) => {
+    const invalidateWorkflow = (project: BootstrapProject, prompt = false) => {
       invalidateQueries(["sidebar-workflow", scopeOf(http), project.id]);
-      schedule(project);
+      schedule(project, prompt);
     };
     const onActivity = (project: BootstrapProject, event: Event) => {
       let frame: NativeBoardFrame;
@@ -141,7 +144,7 @@ export function useSidebarHumanActions(projects: readonly BootstrapProject[]): r
         }
         frame = Schema.decodeUnknownSync(NativeBoardFrame)(data);
       } catch {
-        invalidateWorkflow(project);
+        invalidateWorkflow(project, true);
         return;
       }
       const relevant = frame.deltas.some(({ previous, current }) => {
@@ -152,7 +155,7 @@ export function useSidebarHumanActions(projects: readonly BootstrapProject[]): r
         return transition || (byProject.get(project.id) ?? []).some((action) =>
           action.id === before?.work_item_id || action.id === after?.work_item_id);
       });
-      if (frame.gap) invalidateWorkflow(project);
+      if (frame.gap) invalidateWorkflow(project, relevant);
       else if (relevant) schedule(project, true);
       else if (Date.now() - getQuerySnapshot(["sidebar-workflow", scopeOf(http), project.id]).updatedAt >= workflowStaleTime) schedule(project);
     };

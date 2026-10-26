@@ -627,12 +627,35 @@ describe("human action refresh scheduling", () => {
         emit(source, { sequence, gap: false, deltas: [{ sequence, previous: card("Blocked"), current: card("Blocked") }] });
         await vi.advanceTimersByTimeAsync(1000);
       });
-      expect(mocks.listWorkItems).toHaveBeenCalledTimes(sequence < 2 ? 1 : sequence < 32 ? 2 : 3);
+      expect(mocks.listWorkItems).toHaveBeenCalledTimes(sequence < 2 ? 1 : 2 + Math.floor((sequence - 2) / 5));
     }
     mocks.listWorkItems.mockResolvedValue({ items: [] });
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-    expect(mocks.listWorkItems).toHaveBeenCalledTimes(4);
+    expect(mocks.listWorkItems).toHaveBeenCalledTimes(14);
     expect(result.current).toEqual([]);
+  });
+
+  it.each([false, true])("clears an answered action promptly after initial load (slow refresh queued: %s)", async (queued) => {
+    const issue = { ...itemFixture, state: "Blocked", terminal: false, archived: false };
+    mocks.listWorkItems.mockResolvedValue({ items: [issue] });
+    mocks.getExplanation.mockResolvedValue({ current_lane: { name: "Blocked" }, required_gate: { human_action: "Choose an option" } });
+    const { result } = renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
+    await act(async () => {});
+    expect(result.current.map((action) => action.id)).toEqual([issue.work_item_id]);
+    mocks.listWorkItems.mockResolvedValue({ items: [{ ...issue, revision: "answered" }] });
+    mocks.getExplanation.mockResolvedValue({ current_lane: { name: "Blocked" }, required_gate: {} });
+    await act(async () => {
+      if (queued) emit(Source.instances[0]!, 1);
+      Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "human-action-answered" }));
+      await vi.advanceTimersByTimeAsync(4999);
+    });
+    expect(result.current).toHaveLength(1);
+    expect(mocks.listWorkItems).toHaveBeenCalledOnce();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(result.current).toEqual([]);
+    expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
   });
 
   it("cancels a pending relevant refresh on unmount", async () => {
