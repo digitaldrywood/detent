@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 
@@ -20,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
 type memoryRunDetails struct {
@@ -556,7 +560,7 @@ func TestNativeBoardRefreshReadsRunDetailReferences(t *testing.T) {
 
 func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 	t.Parallel()
-	for _, history := range []int{1, 8, 64} {
+	for _, history := range []int{1, 8, 64, 512} {
 		for _, preserves := range []bool{false, true} {
 			t.Run(strconv.Itoa(history)+"/preserves="+strconv.FormatBool(preserves), func(t *testing.T) {
 				store := &memoryRunDetails{}
@@ -584,7 +588,7 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 					if preserves && i == 0 {
 						checkpoint.WorktreeState = "dirty"
 					}
-					data := tracker.NativeRunData{Sequence: 1, Handoff: checkpoint, Outcome: "failed"}
+					data := tracker.NativeRunData{Sequence: 1, Handoff: checkpoint, Outcome: "failed", TerminalFailure: &tracker.NativeTerminalFailure{Error: "example failure"}, Runtime: &tracker.NativeRuntimeObservation{Phase: "completed", LocalAttemptID: int64(i + 1), Activity: &workflowmetrics.ActivityProfile{SessionID: 17, ProviderThreadRef: "thread-example"}}}
 					latest = seedHealthRateAttempt(t, tx, scope, issue, string(registered.binding.MachineID), "failed", data, f.service.config.now(), -1)
 					if i == 0 {
 						first = latest
@@ -616,6 +620,9 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 					if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=?,checkpoint_json=?,checkpoint_preserves_source=? WHERE id=?", encoded, checkpointJSON, data.Handoff.PreservesSource(), latest); err != nil {
 						t.Fatal(err)
 					}
+					if err := updateAttemptHotProjection(ctx, tx, latest, "failed", data); err != nil {
+						t.Fatal(err)
+					}
 					if err := recordRunDetailReference(ctx, tx, scope, issue.WorkItemID, data, formatHubTime(f.service.config.now())); err != nil {
 						t.Fatal(err)
 					}
@@ -623,6 +630,18 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 				if err := tx.Commit(); err != nil {
 					t.Fatal(err)
 				}
+				var writer *writerTiming
+				f.service.echo.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
+					return func(c echo.Context) error {
+						err := next(c)
+						if strings.HasSuffix(c.Path(), "/explanation") {
+							f.service.recordHostedRequest(c, time.Now())
+							writer = writerTimingFrom(c.Request().Context())
+						}
+						return err
+					}
+				})
+				counter := installReadQueryCounter(t, f.service.database)
 				wantReads := 1
 				if preserves && history > 1 {
 					wantReads = 2
@@ -631,12 +650,37 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 					store.mu.Lock()
 					store.reads = 0
 					store.mu.Unlock()
+					beforeQueries := counter.queries.Load()
+					started := time.Now()
 					response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/"+endpoint, f.token, nil)
 					requireNativeStatus(t, response, http.StatusOK)
 					store.mu.Lock()
 					reads := store.reads
 					store.mu.Unlock()
 					t.Logf("%s history=%d preserves=%v reads=%d modeled_serial_latency=%s", endpoint, history, preserves, reads, time.Duration(reads)*250*time.Millisecond)
+					if endpoint == "explanation" {
+						var result explain.IssueExplanation
+						decodeHubResponse(t, response, &result)
+						if result.Attempt == nil || result.Attempt.NativeID != latest || !result.Found || result.Identity.IssueID != string(issue.WorkItemID) {
+							t.Fatal("explanation identity or latest attempt lost")
+						}
+						if result.Sessions.Detent == nil || result.Sessions.Detent.ID != "17" || result.Sessions.Provider == nil || result.Sessions.Provider.ID != "thread-example" {
+							t.Fatalf("session identities lost: %+v", result.Sessions)
+						}
+						failures, partial, err := readExplanationFailures(context.WithValue(t.Context(), explanationReadKey{}, true), f.service.database.reader, scope, string(issue.WorkItemID))
+						signature := latestNativeFailureSignature(failures, partial)
+						if err != nil || signature == nil || signature.Signature != "example failure" || signature.Count != min(history, 64) || signature.Partial != (history > 64) {
+							t.Fatalf("bounded failure signature: %+v error=%v", signature, err)
+						}
+						if writer == nil || writer.txs.Load() != 0 {
+							t.Fatalf("explanation acquired writer: timing=%+v", writer)
+						}
+						queries := counter.queries.Load() - beforeQueries
+						if queries > 180 || response.Body.Len() > 64*1024 {
+							t.Fatalf("unbounded explanation: queries=%d bytes=%d", queries, response.Body.Len())
+						}
+						t.Logf("explanation history=%d queries=%d bytes=%d elapsed=%s writer_txs=%d", history, queries, response.Body.Len(), time.Since(started), writer.txs.Load())
+					}
 					if endpoint == "runtime" {
 						var evidence tracker.NativeRuntimeEvidence
 						decodeHubResponse(t, response, &evidence)
@@ -650,7 +694,11 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 							t.Fatal("clean checkpoint became preserved source")
 						}
 					}
-					if reads != wantReads {
+					expectedReads := wantReads
+					if endpoint == "explanation" {
+						expectedReads = 0
+					}
+					if reads != expectedReads {
 						t.Errorf("object reads grew with checkpoint history: %d", reads)
 					}
 				}
@@ -693,7 +741,11 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 					reads := store.reads
 					store.mu.Unlock()
 					t.Logf("%s converted history=%d detail_reads=%d content_reads=%d", endpoint, history, reads, contentReads)
-					if reads != wantReads || contentReads != 1 {
+					expectedReads, expectedContent := wantReads, 1
+					if endpoint == "explanation" {
+						expectedReads, expectedContent = 0, 0
+					}
+					if reads != expectedReads || contentReads != expectedContent {
 						t.Errorf("converted runtime read cost: details=%d content=%d", reads, contentReads)
 					}
 				}

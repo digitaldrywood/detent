@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"container/list"
 	"context"
 	"maps"
 	"sort"
@@ -102,6 +103,8 @@ type State struct {
 	Blocked                  map[string]Blocked
 	Completed                map[string]Completed
 	Retry                    map[string]Retry
+	orphanRetryQueue         list.List
+	orphanRetryEntries       map[string]*list.Element
 	MergeTimings             map[string]MergeTiming
 	mergeReservations        map[string]mergeReservation
 	mergeRecoveryChecked     map[string]bool

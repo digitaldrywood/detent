@@ -454,6 +454,13 @@ func (s *Service) getChange(c echo.Context) error {
 }
 
 func readChangeDetail(ctx context.Context, query nativeQueryer, scope nativeScope, item, id string, now time.Time) (tracker.ChangeDetail, error) {
+	if explanationRead(ctx) {
+		change, err := readChange(ctx, query, scope, item, id)
+		if err != nil {
+			return tracker.ChangeDetail{}, err
+		}
+		return readRuntimeChangeDetail(ctx, query, scope, change, now)
+	}
 	return readChangeDetailView(ctx, query, scope, item, id, now, false)
 }
 

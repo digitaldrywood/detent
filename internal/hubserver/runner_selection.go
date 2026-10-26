@@ -256,6 +256,7 @@ type runnerSelectionProgress struct {
 	visits               int
 	head                 tracker.WorkItemID
 	done, dirty, durable bool
+	written              bool
 }
 
 func readRunnerSelectionProgress(ctx context.Context, q nativeQueryer, scope nativeScope, query claimCandidateQuery) (*runnerSelectionProgress, error) {
@@ -283,15 +284,21 @@ func readRunnerSelectionProgress(ctx context.Context, q nativeQueryer, scope nat
 
 func writeRunnerSelectionProgress(ctx context.Context, tx *sql.Tx, selection map[tracker.ProjectID]*runnerSelectionProgress) error {
 	for _, progress := range selection {
+		progress.written = false
 		if !progress.durable || !progress.dirty {
 			continue
 		}
 		cursor := progress.cursor
-		_, err := tx.ExecContext(ctx, `INSERT INTO runner_selection_cursors(runner_id,project_id,issue_id,priority,aging,landing,created,identifier,revision)
+		result, err := tx.ExecContext(ctx, `INSERT INTO runner_selection_cursors(runner_id,project_id,issue_id,priority,aging,landing,created,identifier,revision)
 VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(runner_id,project_id) DO UPDATE SET issue_id=excluded.issue_id,priority=excluded.priority,aging=excluded.aging,landing=excluded.landing,created=excluded.created,identifier=excluded.identifier,revision=excluded.revision WHERE runner_selection_cursors.revision=?`, progress.runner, progress.project, cursor.ID, cursor.Priority, cursor.Aging, cursor.Landing, cursor.Created, cursor.Identifier, progress.revision+1, progress.revision)
 		if err != nil {
 			return err
 		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		progress.written = rows > 0
 	}
 	return nil
 }

@@ -9,6 +9,9 @@ import (
 )
 
 func (s *Service) recordHostedRequest(c echo.Context, started time.Time) {
+	if explanationRead(c.Request().Context()) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request().Context()), 2*time.Second)
 	defer cancel()
 	tx, err := s.database.db.BeginTx(ctx, nil)

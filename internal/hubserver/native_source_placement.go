@@ -19,6 +19,9 @@ type nativeSourceCheckpoint struct {
 }
 
 func readNativeSourceCheckpoint(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (nativeSourceCheckpoint, error) {
+	if explanationRead(ctx) {
+		return readExplanationCheckpoint(ctx, q, scope, item)
+	}
 	var before int64 = 1<<63 - 1
 	for range claimPreparationLimit {
 		var source nativeSourceCheckpoint
@@ -109,6 +112,11 @@ WHERE a.id=? AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, v
 func nativeChangeSourceStored(ctx context.Context, q nativeQueryer, version tracker.ChangeVersion) (bool, error) {
 	if version.Source == nil {
 		return false, nil
+	}
+	if explanationRead(ctx) {
+		var stored bool
+		err := q.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM change_sources WHERE version_id=?)", version.ID).Scan(&stored)
+		return stored, err
 	}
 	bundle, err := readChangeSourceBundle(ctx, q, version)
 	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, artifact.ErrIntegrity) {
