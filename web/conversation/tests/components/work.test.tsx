@@ -1012,7 +1012,7 @@ describe("issue timeline pagination", () => {
     }
   });
 
-  it.each(["scroll", "visible end"])("loads older entries through %s, including content without overflow", async (trigger) => {
+  it.each(["scroll", "wheel", "key", "touch", "pointer"])("loads one older page per %s intent, never on visibility", async (trigger) => {
     const observers: { callback: IntersectionObserverCallback; target?: Element; disconnected: boolean }[] = [];
     vi.stubGlobal("IntersectionObserver", class {
       record: typeof observers[number];
@@ -1033,7 +1033,7 @@ describe("issue timeline pagination", () => {
         expect(url.searchParams.get("direction")).toBe("newest");
         const older = url.searchParams.has("cursor");
         const body = list === "attempts" ? attemptsFixture : list === "comments" ? { items: older ? [{ ...commentsFixture.items[0]!, body: "An older comment loaded on demand" }] : [] } : await response.json();
-        return Response.json({ ...body, ...(older ? trigger === "visible end" && url.searchParams.get("cursor") === `older-${list}` ? { next_cursor: `oldest-${list}` } : {} : { next_cursor: `older-${list}` }) });
+        return Response.json({ ...body, ...(older ? url.searchParams.get("cursor") === `older-${list}` ? { next_cursor: `oldest-${list}` } : {} : { next_cursor: `older-${list}` }) });
       }
       return response;
     });
@@ -1047,33 +1047,47 @@ describe("issue timeline pagination", () => {
     let scroller = activity.parentElement!;
     while (!scroller.classList.contains("overflow-y-auto")) scroller = scroller.parentElement!;
     Object.defineProperties(scroller, { scrollTop: { value: trigger === "scroll" ? 500 : 0, configurable: true }, scrollHeight: { value: trigger === "scroll" ? 800 : 300, configurable: true }, clientHeight: { value: 300, configurable: true } });
-    if (trigger === "scroll") {
-      fireEvent.scroll(scroller);
-    } else {
-      const observer = observers.filter((entry) => !entry.disconnected).at(-1)!;
-      expect(activity.contains(observer.target!)).toBe(true);
-      await act(async () => observer.callback([{ isIntersecting: false, target: observer.target } as IntersectionObserverEntry], {} as IntersectionObserver));
-      for (const list of Object.values(calls)) expect(list).toEqual(["first"]);
-      await act(async () => observer.callback([{ isIntersecting: true, target: observer.target } as IntersectionObserverEntry], {} as IntersectionObserver));
-      expect(scroller.scrollTop).toBe(0);
-    }
+    const observeVisibleEnd = async () => {
+      await act(async () => {
+        for (const observer of observers.filter((entry) => !entry.disconnected)) {
+          observer.callback([{ isIntersecting: true, target: observer.target } as IntersectionObserverEntry], {} as IntersectionObserver);
+        }
+      });
+    };
+    await observeVisibleEnd();
+    for (const list of Object.values(calls)) expect(list).toEqual(["first"]);
+    const demand = () => {
+      if (trigger === "scroll") {
+        Object.defineProperty(scroller, "scrollTop", { value: 0, configurable: true });
+        fireEvent.scroll(scroller);
+        Object.defineProperty(scroller, "scrollTop", { value: 500, configurable: true });
+        fireEvent.scroll(scroller);
+      } else if (trigger === "wheel") fireEvent.wheel(scroller, { deltaY: 100 });
+      else if (trigger === "key") fireEvent.keyDown(scroller, { key: "PageDown" });
+      else if (trigger === "pointer") fireEvent.pointerDown(scroller, { pointerType: "mouse" });
+      else {
+        fireEvent.touchStart(scroller);
+        fireEvent.touchMove(scroller);
+      }
+    };
+    demand();
     await waitFor(() => {
       expect(calls.history).toEqual(["first", "older-history"]);
       expect(calls.attempts).toEqual(["first", "older-attempts"]);
       expect(calls.comments).toEqual(["first", "older-comments"]);
     });
     expect(await screen.findByText("An older comment loaded on demand")).toBeTruthy();
-    if (trigger === "visible end") {
-      await waitFor(() => expect(observers.some((observer) => !observer.disconnected)).toBe(true));
-      const observer = observers.filter((entry) => !entry.disconnected).at(-1)!;
-      await act(async () => observer.callback([{ isIntersecting: true, target: observer.target } as IntersectionObserverEntry], {} as IntersectionObserver));
-      await waitFor(() => {
-        for (const [name, list] of Object.entries(calls)) expect(list).toEqual(["first", `older-${name}`, `oldest-${name}`]);
-      });
-    }
-    fireEvent.scroll(scroller);
-    expect(calls.comments).toHaveLength(trigger === "scroll" ? 2 : 3);
-    expect(observers.every((observer) => observer.disconnected)).toBe(true);
+    await observeVisibleEnd();
+    await act(async () => {
+      fireEvent.scroll(scroller);
+      if (trigger === "touch") fireEvent.touchMove(scroller);
+      if (trigger === "key") fireEvent.keyDown(scroller, { key: "PageDown", repeat: true });
+    });
+    for (const [name, list] of Object.entries(calls)) expect(list).toEqual(["first", `older-${name}`]);
+    demand();
+    await waitFor(() => {
+      for (const [name, list] of Object.entries(calls)) expect(list).toEqual(["first", `older-${name}`, `oldest-${name}`]);
+    });
   });
 });
 

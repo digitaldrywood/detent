@@ -881,20 +881,13 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
   const { data, item, conversation } = props;
   const [expanded, setExpanded] = React.useState(false);
   const highlightedId = useActivityCitation(item.id);
-  const scrollRoot = React.useRef<HTMLDivElement>(null);
-  const activityRoot = React.useRef<HTMLElement>(null);
-  const onLoadOlder = props.onLoadOlder;
-  React.useEffect(() => {
-    if (!(data.historyCursor || data.attemptsCursor || data.commentsCursor) || typeof IntersectionObserver === "undefined") return;
-    const list = activityRoot.current?.lastElementChild;
-    const end = list?.tagName === "OL" ? list.lastElementChild : list;
-    if (end == null) return;
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) onLoadOlder();
-    }, { root: scrollRoot.current });
-    observer.observe(end);
-    return () => observer.disconnect();
-  }, [data.history, data.attempts, data.comments, data.historyCursor, data.attemptsCursor, data.commentsCursor, onLoadOlder]);
+  const lastScrollTop = React.useRef(0);
+  const intentConsumed = React.useRef(false);
+  const loadOlderAtEnd = (element: HTMLDivElement) => {
+    if (intentConsumed.current || element.scrollHeight - element.clientHeight - element.scrollTop > 32) return;
+    intentConsumed.current = true;
+    props.onLoadOlder();
+  };
 
   const runnerNames = useRunnerNames();
   const running = data.attempts.at(-1)?.status === "running" ? data.attempts.at(-1) : undefined;
@@ -1112,15 +1105,28 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
-      <div ref={scrollRoot} className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto" onScroll={(event) => {
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto" onScroll={(event) => {
         const element = event.currentTarget;
-        if (element.scrollTop > 0 && element.scrollHeight - element.clientHeight - element.scrollTop <= 32) props.onLoadOlder();
+        const downward = element.scrollTop > lastScrollTop.current;
+        if (element.scrollTop < lastScrollTop.current) intentConsumed.current = false;
+        lastScrollTop.current = element.scrollTop;
+        if (downward) loadOlderAtEnd(element);
       }} onWheel={(event) => {
-        const element = event.currentTarget;
-        if (event.deltaY > 0 && element.scrollHeight - element.clientHeight - element.scrollTop <= 32) props.onLoadOlder();
+        if (event.deltaY <= 0) return;
+        intentConsumed.current = false;
+        loadOlderAtEnd(event.currentTarget);
       }} onKeyDown={(event) => {
-        const element = event.currentTarget;
-        if ((event.key === "End" || event.key === "PageDown") && element.scrollHeight - element.clientHeight - element.scrollTop <= 32) props.onLoadOlder();
+        if (event.repeat || !["End", "PageDown", "ArrowDown", " "].includes(event.key)) return;
+        if (event.target instanceof HTMLElement && (event.target.isContentEditable || event.target.closest("input, textarea, button, select, [role='textbox']"))) return;
+        intentConsumed.current = false;
+        loadOlderAtEnd(event.currentTarget);
+      }} onTouchStart={() => {
+        intentConsumed.current = false;
+      }} onTouchMove={(event) => {
+        loadOlderAtEnd(event.currentTarget);
+      }} onPointerDown={(event) => {
+        intentConsumed.current = false;
+        if (event.pointerType !== "touch") loadOlderAtEnd(event.currentTarget);
       }}>
         <div
           className={`mx-auto flex w-full flex-col gap-5 px-5 pt-7 pb-10 sm:px-10 ${
@@ -1255,7 +1261,6 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
 
           <IssueDetailTabs native={data.project.profile === "native"} diagnostics={<IssueDiagnostics issue={data.issue} attempts={data.attempts} history={data.history} now={now} attemptsAvailable={data.attemptsAvailable} historyAvailable={data.historyAvailable} historyPartial={Boolean(data.historyCursor) || data.historyCompacted === true} attemptsPartial={Boolean(data.attemptsCursor)} />}>
           <ActivityFeed
-            ref={activityRoot}
             projectId={data.project.project_id}
             highlightedId={highlightedId}
             rows={rows}
