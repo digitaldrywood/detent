@@ -477,3 +477,48 @@ func TestLocalGitChangeSourceRefusesUnverifiedRecovery(t *testing.T) {
 	}
 
 }
+
+// A release pick may exist only in the retained bundle on a fresh runner.
+func TestLocalGitReleaseDeliveryImportsRetainedHeadBeforeReview(t *testing.T) {
+	source := initSourceRepo(t)
+	remote := initBareRemote(t)
+	repository := "https://github.com/example/source"
+	runGit(t, source, "remote", "add", "origin", repository)
+	runGit(t, source, "config", "url."+remote+".insteadOf", repository)
+	runGit(t, source, "push", "origin", "HEAD:refs/heads/release/v1.2", "HEAD:refs/heads/main")
+	base := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+	checkpointWrite(t, source, "repair.txt", "reviewed repair\n")
+	runGit(t, source, "add", "repair.txt")
+	runGit(t, source, "commit", "-m", "release repair")
+	head := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+	capture, err := CaptureChangeSource(t.Context(), source, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiver := filepath.Join(t.TempDir(), "receiver")
+	runGit(t, source, "clone", "--no-local", "--branch", "release/v1.2", remote, receiver)
+	runGit(t, receiver, "remote", "set-url", "origin", repository)
+	runGit(t, receiver, "config", "url."+remote+".insteadOf", repository+".git")
+	runGit(t, receiver, "config", "--add", "url."+remote+".insteadOf", repository)
+	if _, err := runGitAt(t.Context(), receiver, "cat-file", "-e", head+"^{commit}"); err == nil {
+		t.Fatal("fixture already has retained head")
+	}
+	backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: receiver, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue := Issue{Identifier: "native#42", Source: &ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: base, HeadSHA: head, Repository: repository, Source: &capture.Source}}, Bundle: capture.Bundle}, ReleaseDelivery: &tracker.ReleaseDelivery{ReleasePickInput: tracker.ReleasePickInput{Repository: repository, PRNumber: 42, BaseRef: "release/v1.2", HeadRef: "release-pick/repair", BaseSHA: base, HeadSHA: head}}}
+	info, err := backend.Create(t.Context(), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")); got != head {
+		t.Fatalf("head = %s, want %s", got, head)
+	}
+	if got := readFile(t, filepath.Join(info.Path, "repair.txt")); got != "reviewed repair\n" {
+		t.Fatalf("repair = %q", got)
+	}
+	if got := strings.TrimSpace(runGit(t, remote, "rev-parse", "refs/heads/release/v1.2")); got != base {
+		t.Fatalf("release branch moved to %s", got)
+	}
+}
