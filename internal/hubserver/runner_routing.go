@@ -604,28 +604,40 @@ func runnerExcluded(exclusions []runnerauth.Exclusion) error {
 	return &nativeError{Code: exclusions[0].Code, Message: exclusions[0].Message, status: http.StatusConflict}
 }
 
+const runnerAuthoritySelect = `SELECT t.token_hash,t.created_at,t.expires_at,t.revoked_at,r.state,
+ r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.project_id=?)
+ FROM runner_identities r JOIN api_tokens t ON t.id=r.token_id
+ WHERE r.organization_id=? AND r.id=? AND r.token_id=?`
+
 func requireRunnerAuthority(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
-	if err := requireCredentialAuthority(ctx, tx, scope.credential, now); err != nil {
+	if scope.credential.Runner.RunnerID == "" {
+		return requireCredentialAuthority(ctx, tx, scope.credential, now)
+	}
+	if err := readRunnerAuthority(ctx, tx, scope, now); err != nil {
 		return err
 	}
-	if scope.credential.Runner.RunnerID == "" {
-		return nil
+	return authorizeNativeProject(ctx, tx, scope)
+}
+
+func readRunnerAuthority(ctx context.Context, query nativeQueryer, scope nativeScope, now time.Time) error {
+	if scope.credential.EntryKey != nil {
+		return runnerUnauthorized()
 	}
-	r, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
+	var hash, created, state string
+	var expires, revoked sql.NullString
+	var allowed bool
+	err := query.QueryRowContext(ctx, runnerAuthoritySelect, scope.project, scope.organization, scope.credential.Runner.RunnerID, scope.credential.ID).Scan(&hash, &created, &expires, &revoked, &state, &allowed)
 	if err != nil {
 		return err
 	}
-	if !r.AllowsProject(scope.project) {
+	if hash != scope.credential.Hash || revoked.Valid || !expires.Valid || !runnerTimeValid(now, created, expires.String) {
+		return runnerUnauthorized()
+	}
+	if scope.project == "" || !allowed {
 		return nativeNotFound()
 	}
-	if err := authorizeNativeProject(ctx, tx, scope); err != nil {
-		return err
-	}
-	if r.State == "disabled" {
+	if state == "disabled" {
 		return runnerExcluded([]runnerauth.Exclusion{{Code: "runner_disabled", Message: "Runner is disabled"}})
-	}
-	if r.Health == "revoked" || r.Health == "expired" {
-		return runnerUnauthorized()
 	}
 	return nil
 }
