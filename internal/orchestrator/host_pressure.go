@@ -414,10 +414,5 @@ func (o *Orchestrator) observePressure(
 }
 
 func pressureAverages(pressure hostpressure.Pressure) telemetry.PressureAverages {
-	return telemetry.PressureAverages{
-		Avg10:  pressure.Avg10,
-		Avg60:  pressure.Avg60,
-		Avg300: pressure.Avg300,
-		Total:  pressure.Total,
-	}
+	return telemetry.PressureAverages(pressure)
 }
