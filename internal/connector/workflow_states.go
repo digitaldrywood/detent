@@ -36,6 +36,10 @@ type ChangeReview struct {
 	ChangesRequested bool
 }
 
+func (r ChangeReview) AwaitingEvidence() bool {
+	return r.Current && !r.Reviewed && !r.ChangesRequested
+}
+
 // CompletionLane is the lane a successful run moves an item to, chosen only
 // from the moves the workflow allows out of its current lane and never an
 // operator-only lane. The workflow states no review kind, so the review lane

@@ -13,9 +13,11 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -143,32 +145,35 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 	definitionReport := "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:tool\n    reason: approved portable project configuration and workflow prose unavailable\nhuman_action: null\n```"
 	completeReport := "Source ready for finalization.\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
 	for _, test := range []struct {
-		name             string
-		disposition      *tracker.NativeDisposition
-		finalMessage     string
-		worktreeState    string
-		manualHold       bool
-		edited           bool
-		continued        bool
-		commented        bool
-		wantCandidate    bool
-		claimUnavailable bool
-		accepted         bool
-		legacy           bool
-		retainedSource   bool
-		checkpointEdit   func(*tracker.NativeCheckpoint)
-		otherVersion     bool
-		newerChange      bool
-		expiredLease     bool
-		reviewOutcome    string
-		publication      string
-		terminal         bool
-		readAdmission    bool
-		moveRefusal      bool
-		moveGuidance     bool
-		exclusion        string
-		fullHost         bool
-		aged             bool
+		name                 string
+		disposition          *tracker.NativeDisposition
+		finalMessage         string
+		worktreeState        string
+		manualHold           bool
+		edited               bool
+		continued            bool
+		commented            bool
+		wantCandidate        bool
+		claimUnavailable     bool
+		accepted             bool
+		legacy               bool
+		retainedSource       bool
+		checkpointEdit       func(*tracker.NativeCheckpoint)
+		otherVersion         bool
+		newerChange          bool
+		expiredLease         bool
+		reviewOutcome        string
+		machineVerdict       string
+		implementationReview bool
+		historicalReview     bool
+		publication          string
+		terminal             bool
+		readAdmission        bool
+		moveRefusal          bool
+		moveGuidance         bool
+		exclusion            string
+		fullHost             bool
+		aged                 bool
 	}{
 		{name: "continued instance cooldown exposes full host", finalMessage: instanceReport, continued: true, wantCandidate: true, readAdmission: true, fullHost: true},
 		{name: "expired cooldown exposes full host", aged: true, wantCandidate: true, readAdmission: true, fullHost: true},
@@ -230,12 +235,17 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			c.ExternalEffect, c.EffectState, c.EffectID = "pr_create", "ambiguous", newNativeID("effect")
 		}},
 		{name: "typed complete published current version waits for review", reviewOutcome: "approved", finalMessage: completeReport, retainedSource: true, publication: "owned", readAdmission: true, exclusion: "automated_review_missing"},
+		{name: "published audit pass validator wait retries same source", finalMessage: completeReport, retainedSource: true, publication: "owned", machineVerdict: "wait", wantCandidate: true, readAdmission: true},
+		{name: "published validator rework retries same source", finalMessage: completeReport, retainedSource: true, publication: "owned", machineVerdict: "rework", wantCandidate: true},
+		{name: "published implementation wait retries same source", finalMessage: completeReport, retainedSource: true, publication: "owned", machineVerdict: "wait", implementationReview: true, wantCandidate: true},
+		{name: "historical validator wait cannot release pending current review", finalMessage: completeReport, retainedSource: true, publication: "owned", machineVerdict: "wait", historicalReview: true, readAdmission: true, exclusion: "automated_review_missing"},
+		{name: "published validator wait preserves human question", finalMessage: strings.Replace(completeReport, "human_action: null", "human_action: Approve the exception", 1), retainedSource: true, publication: "owned", machineVerdict: "wait", readAdmission: true, exclusion: "human_action"},
 		{name: "same head cannot borrow an unrelated version", otherVersion: true, finalMessage: completeReport, retainedSource: true, publication: "owned", wantCandidate: true},
 		{name: "newer unrelated draft does not hide published review wait", newerChange: true, reviewOutcome: "approved", finalMessage: completeReport, retainedSource: true, publication: "owned", readAdmission: true, exclusion: "automated_review_missing"},
 		{name: "expired review wait leaves promotion to orchestrator", expiredLease: true, reviewOutcome: "approved", finalMessage: completeReport, retainedSource: true, publication: "owned", exclusion: "automated_review_missing"},
 		{name: "published version resumes implementation for actionable findings", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "changes_requested"},
 		{name: "published version retries implementation after failed validation", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "failed_check", wantCandidate: true},
-		{name: "published version review preserves active claim owner", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "active"},
+		{name: "published version review preserves active claim owner", finalMessage: completeReport, retainedSource: true, publication: "owned", reviewOutcome: "active", wantCandidate: true},
 		{name: "aged published current version still waits for review", finalMessage: completeReport, retainedSource: true, publication: "owned", aged: true, readAdmission: true, exclusion: "automated_review_missing"},
 		{name: "legacy complete with genuine publication stays answered", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "owned"},
 		{name: "legacy complete with published retained head remains eligible", finalMessage: completeReport, legacy: true, retainedSource: true, publication: "head", wantCandidate: true},
@@ -313,6 +323,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				}
 			}
 			var published tracker.ChangeVersion
+			var historicalVersion string
 			var changePath string
 			if test.reviewOutcome != "" {
 				states := append(append([]tracker.NativeState(nil), f.project.States...), tracker.NativeState{Name: "Fixing", Dispatchable: true, Transitions: []string{"Merging", "Blocked"}}, tracker.NativeState{Name: "Merging", Dispatchable: true, Transitions: []string{"Done"}})
@@ -343,6 +354,9 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				var change tracker.ChangeRequest
 				decodeHubResponse(t, response, &change)
 				input := changeTestInput()
+				if test.machineVerdict != "" {
+					input.Validation = &gate.CommandResult{Command: "make check-landing", HeadSHA: input.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 1}
+				}
 				if test.publication == "owned" || test.publication == "earlier" {
 					input.RunID, input.AttemptID = f.run, f.attempt
 				}
@@ -352,6 +366,12 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/"+change.ID+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "version", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, ChangeVersionInput: input})
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &published)
+				if test.historicalReview {
+					historicalVersion = published.ID
+					response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/"+change.ID+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "current-version", LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, ExpectedVersionID: published.ID, ChangeVersionInput: input})
+					requireNativeStatus(t, response, http.StatusOK)
+					decodeHubResponse(t, response, &published)
+				}
 				changePath = path + "/" + change.ID + "/versions/" + published.ID
 				if test.publication == "owned" || test.publication == "earlier" {
 					finalization := tracker.NativeFinalization{Settled: true, Changed: true, ChangeID: change.ID, VersionID: published.ID, HeadSHA: published.HeadSHA}
@@ -363,6 +383,30 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 						t.Fatal(err)
 					}
 					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json, '$.finalization', json(?)) WHERE id=?", string(raw), f.attempt); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.machineVerdict != "" {
+					audit := tracker.ChangeReview{ID: newNativeID("review"), VersionID: published.ID, Decision: "approved", CreatedAt: f.now, SecurityAudit: &tracker.SecurityAuditReview{Verdict: "pass", Run: securityaudit.Run{ID: 42, InvocationID: "audit-invocation", ProjectID: string(f.project.ID), Repository: published.Repository, BaseSHA: published.BaseSHA, HeadSHA: published.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), AuthenticationMode: "api_key", ExitStatus: securityaudit.ExitStatusSuccess, WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: f.now, StartedAt: f.now.Add(-time.Second), CompletedAt: f.now, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}}
+					result := &gate.ValidatorResult{VersionID: published.ID, Submitted: true, Verdict: test.machineVerdict, Repository: published.Repository, BaseSHA: published.BaseSHA, HeadSHA: published.HeadSHA, NotVerified: []string{"Acceptance criterion requires production"}}
+					review := tracker.ChangeReview{ID: newNativeID("review"), VersionID: published.ID, Decision: "commented", CreatedAt: f.now, Validator: result}
+					if test.implementationReview {
+						review.ImplementationReview, review.Validator = result, nil
+					}
+					if test.historicalReview {
+						review.VersionID, result.VersionID = historicalVersion, historicalVersion
+					}
+					tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tx.Rollback()
+					for _, evidence := range []tracker.ChangeReview{audit, review} {
+						if err := storeChangeReview(t.Context(), tx, string(f.project.OrganizationID), change.ID, evidence); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := tx.Commit(); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -591,7 +635,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 				if current := f.reload(t); current.State != want {
 					t.Fatalf("review result lane=%s want=%s", current.State, want)
 				}
-				if got := f.candidate(t); got != (decision == "changes_requested" || test.reviewOutcome == "failed_check") {
+				if got := f.candidate(t); !got {
 					t.Fatalf("review result candidate=%t lane=%s", got, want)
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, changePath+"/reviews", f.token, request), http.StatusOK)

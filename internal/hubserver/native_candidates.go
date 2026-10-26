@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -58,12 +59,12 @@ WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, query.WorkItemID
 		snapshot.AnsweredExclusion = &tracker.NativeAnsweredExclusion{Kind: kind, AttemptID: attemptID}
 	}
 	if snapshot.AnsweredExclusion == nil {
-		waiting, err := readPublishedReviewWait(ctx, q, query.WorkItemID, time.Now().UTC())
+		review, attempt, err := readPublishedReview(ctx, q, query.WorkItemID, time.Now().UTC())
 		if err != nil {
 			return snapshot, err
 		}
-		if waiting.Kind != "" {
-			snapshot.AnsweredExclusion = &waiting
+		if review.AwaitingEvidence() {
+			snapshot.AnsweredExclusion = &tracker.NativeAnsweredExclusion{Kind: string(gate.ReasonAutomatedReviewMissing), AttemptID: attempt}
 		}
 	}
 	if !dependenciesSatisfied {
@@ -338,11 +339,11 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 	}
 	runnable := ids[:0]
 	for _, id := range ids {
-		waiting, err := readPublishedReviewWait(ctx, q, id, time.Now().UTC())
+		review, _, err := readPublishedReview(ctx, q, id, time.Now().UTC())
 		if err != nil {
 			return nil, last, scanned, err
 		}
-		if waiting.Kind == "" {
+		if !review.AwaitingEvidence() {
 			runnable = append(runnable, id)
 		}
 	}
@@ -352,7 +353,7 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 	return runnable, last, scanned, nil
 }
 
-func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.WorkItemID, now time.Time) (tracker.NativeAnsweredExclusion, error) {
+func readPublishedReview(ctx context.Context, q nativeQueryer, id tracker.WorkItemID, now time.Time) (connector.ChangeReview, string, error) {
 	var scope nativeScope
 	var item, attempt, raw, checkpoint string
 	err := q.QueryRowContext(ctx, `SELECT i.organization_id, i.project_id, i.native_id, a.id, a.data_json, COALESCE(a.checkpoint_json, 'null')
@@ -364,65 +365,56 @@ func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.Wo
  AND a.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest WHERE latest.organization_id = i.organization_id AND latest.project_id = i.project_id AND latest.work_item_id = i.native_id)
  LIMIT 1`, id).Scan(&scope.organization, &scope.project, &item, &attempt, &raw, &checkpoint)
 	if errors.Is(err, sql.ErrNoRows) {
-		return tracker.NativeAnsweredExclusion{}, nil
+		return connector.ChangeReview{}, "", nil
 	}
 	if err != nil {
-		return tracker.NativeAnsweredExclusion{}, err
+		return connector.ChangeReview{}, "", err
 	}
 	var data tracker.NativeRunData
 	var source tracker.NativeCheckpoint
 	if err := decodeRunDetail(ctx, raw, &data); err != nil {
-		return tracker.NativeAnsweredExclusion{}, err
+		return connector.ChangeReview{}, "", err
 	}
 	if err := json.Unmarshal([]byte(checkpoint), &source); err != nil {
-		return tracker.NativeAnsweredExclusion{}, err
+		return connector.ChangeReview{}, "", err
 	}
 	disposition := data.Disposition
 	if disposition == nil {
 		signal, reported := workpad.SignalFromComment(data.CompletionBody, "", string(scope.project))
 		if !reported || signal == nil || signal.Invalid != nil || signal.Fields["completion_kind"] == "operational" {
-			return tracker.NativeAnsweredExclusion{}, nil
+			return connector.ChangeReview{}, "", nil
 		}
 		disposition = &tracker.NativeDisposition{Status: signal.Status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != "", ReasonCode: signal.ReasonCode}
 	}
 	if disposition.Status != workpad.StatusComplete || disposition.Blockers || disposition.HumanAction || disposition.ReasonCode != "" || len(disposition.BlockerEvidence) != 0 {
-		return tracker.NativeAnsweredExclusion{}, nil
+		return connector.ChangeReview{}, "", nil
 	}
 	if source.WorktreeState != "clean" && source.WorktreeState != "unpushed" || !validCommitID(source.HeadSHA) {
-		return tracker.NativeAnsweredExclusion{}, nil
+		return connector.ChangeReview{}, "", nil
 	}
 	if source.EffectState == "pending" || source.EffectState == "ambiguous" {
-		return tracker.NativeAnsweredExclusion{}, nil
+		return connector.ChangeReview{}, "", nil
 	}
 	finalization := data.Finalization
 	if finalization == nil || !finalization.Changed || finalization.ChangeID == "" || finalization.VersionID == "" || finalization.HeadSHA != source.HeadSHA || finalization.VersionError != "" {
-		return tracker.NativeAnsweredExclusion{}, nil
+		return connector.ChangeReview{}, "", nil
 	}
-	var detail tracker.ChangeDetail
-	if claimPrepared(ctx) != nil {
-		change, readErr := readChange(ctx, q, scope, item, finalization.ChangeID)
-		if readErr != nil {
-			return tracker.NativeAnsweredExclusion{}, readErr
-		}
-		if change.CurrentVersion != finalization.VersionID {
-			return tracker.NativeAnsweredExclusion{}, nil
-		}
-		version, readErr := readClaimVersion(ctx, q, change.ID, change.CurrentVersion)
-		if readErr != nil {
-			return tracker.NativeAnsweredExclusion{}, readErr
-		}
-		detail, err = readClaimLandingDetail(ctx, q, scope, change, version, now)
-	} else {
-		detail, err = readChangeDetail(ctx, q, scope, item, finalization.ChangeID, now)
-	}
+	change, err := readChange(ctx, q, scope, item, finalization.ChangeID)
 	if err != nil {
-		return tracker.NativeAnsweredExclusion{}, err
+		return connector.ChangeReview{}, "", err
 	}
-	review := changerequest.ReviewState(detail, finalization.VersionID, source.HeadSHA)
-	if !review.Current || review.ChangesRequested || detail.Change.CurrentLanding() != nil {
-		return tracker.NativeAnsweredExclusion{}, nil
+	if change.CurrentVersion != finalization.VersionID {
+		return connector.ChangeReview{}, "", nil
 	}
-	return tracker.NativeAnsweredExclusion{Kind: string(gate.ReasonAutomatedReviewMissing), AttemptID: attempt}, nil
+	version, err := readClaimVersion(ctx, q, change.ID, change.CurrentVersion)
+	if err != nil {
+		return connector.ChangeReview{}, "", err
+	}
+	detail, err := readClaimLandingDetail(ctx, q, scope, change, version, now)
+	if err != nil {
+		return connector.ChangeReview{}, "", err
+	}
+	return changerequest.ReviewState(detail, finalization.VersionID, source.HeadSHA), attempt, nil
 }
 
 func nativeCandidateProjectRanks(ctx context.Context, q nativeQueryer, token string) (map[tracker.ProjectID]int, error) {
