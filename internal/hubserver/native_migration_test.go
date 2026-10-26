@@ -40,7 +40,12 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	maintenance, err := migrationFiles.ReadFile("migrations/20261026041522_maintenance_without_ddl.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
 	migrations := fstest.MapFS{
+		"20261026041522_maintenance_without_ddl.sql":    &fstest.MapFile{Data: maintenance},
 		"00059_native_runtime_evidence.sql":             &fstest.MapFile{Data: data},
 		"20261023234600_scheduler_projections.sql":      &fstest.MapFile{Data: projection},
 		"20261025230900_analytics_event_columns.sql":    &fstest.MapFile{Data: analytics},
@@ -54,7 +59,7 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if _, _, err := provider.GetVersions(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+versionTable+" (version_id,is_applied) VALUES (59,1),(20261023234600,1),(20261025230900,1),(20261025233000,1)"); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+versionTable+" (version_id,is_applied) VALUES (59,1),(20261023234600,1),(20261025230900,1),(20261025233000,1),(20261026041522,1)"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := provider.DownTo(t.Context(), 58); err != nil {

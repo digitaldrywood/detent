@@ -1,5 +1,33 @@
 -- +goose Up
 
+ALTER TABLE collaboration_events ADD COLUMN conversion_state INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX storage_discovery_runs ON collaboration_events(conversion_state) WHERE conversion_state=0;
+CREATE INDEX storage_queued_runs ON collaboration_events(organization_id,project_id,work_item_id) WHERE conversion_state=1;
+ALTER TABLE native_attempts ADD COLUMN conversion_state INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX storage_discovery_attempts ON native_attempts(conversion_state) WHERE conversion_state=0;
+CREATE INDEX storage_queued_attempts ON native_attempts(organization_id,project_id,work_item_id) WHERE conversion_state=1;
+ALTER TABLE analytics_hourly_rollups ADD COLUMN conversion_state INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX storage_discovery_analytics ON analytics_hourly_rollups(conversion_state) WHERE conversion_state=0;
+CREATE INDEX storage_queued_analytics ON analytics_hourly_rollups(organization_id,project_id) WHERE conversion_state=1;
+ALTER TABLE conversation_events ADD COLUMN conversion_state INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX storage_discovery_conversation_events ON conversation_events(conversion_state) WHERE conversion_state=0;
+CREATE INDEX storage_queued_conversation_events ON conversation_events(conversation_id) WHERE conversion_state=1;
+ALTER TABLE conversation_messages ADD COLUMN conversion_state INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX storage_discovery_messages ON conversation_messages(conversion_state) WHERE conversion_state=0;
+CREATE INDEX storage_queued_messages ON conversation_messages(conversation_id) WHERE conversion_state=1;
+ALTER TABLE change_versions ADD COLUMN conversion_state INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX storage_discovery_versions ON change_versions(conversion_state) WHERE conversion_state=0;
+CREATE INDEX storage_queued_versions ON change_versions(change_id) WHERE conversion_state=1;
+ALTER TABLE change_evidence ADD COLUMN conversion_state INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX storage_discovery_evidence ON change_evidence(conversion_state) WHERE conversion_state=0;
+CREATE INDEX storage_queued_evidence ON change_evidence(change_id) WHERE conversion_state=1;
+ALTER TABLE change_sources ADD COLUMN conversion_state INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX storage_discovery_sources ON change_sources(conversion_state) WHERE conversion_state=0;
+CREATE INDEX storage_queued_sources ON change_sources(version_id) WHERE conversion_state=1;
+ALTER TABLE attempt_diff_files ADD COLUMN conversion_state INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX storage_discovery_diff_files ON attempt_diff_files(conversion_state) WHERE conversion_state=0;
+CREATE INDEX storage_queued_diff_files ON attempt_diff_files(diff_id) WHERE conversion_state=1;
+
 ALTER TABLE storage_conversion_progress ADD COLUMN conversion_rowid INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE storage_conversion_progress ADD COLUMN conversion_before_sha256 TEXT NOT NULL DEFAULT '';
 ALTER TABLE storage_conversion_progress ADD COLUMN conversion_after_sha256 TEXT NOT NULL DEFAULT '';
@@ -112,15 +140,6 @@ WHEN (NEW.object_key IS NOT OLD.object_key OR NEW.object_sha256 IS NOT OLD.objec
 BEGIN SELECT RAISE(ABORT, 'change source reference is immutable'); END;
 -- +goose StatementEnd
 
-INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,updated_at)
-SELECT r.organization_id,r.project_id,'runs',r.work_item_id,1,max(r.rowid),'' FROM collaboration_events r
-WHERE (r.type IN ('run.started','run.checkpointed','run.observed','run.finished')) GROUP BY r.organization_id,r.project_id,r.work_item_id
-ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
- through_rowid=max(through_rowid,excluded.through_rowid),
- cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
- format_version=1;
-
 -- +goose StatementBegin
 CREATE TRIGGER storage_conversion_enqueue_runs AFTER INSERT ON collaboration_events
 BEGIN
@@ -130,19 +149,11 @@ WHERE (r.type IN ('run.started','run.checkpointed','run.observed','run.finished'
 ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
  through_rowid=max(through_rowid,excluded.through_rowid),
  cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
+ complete=0,
  format_version=1;
+UPDATE collaboration_events SET conversion_state=CASE WHEN changes()=0 THEN 2 ELSE 1 END WHERE rowid=NEW.rowid;
 END;
 -- +goose StatementEnd
-
-INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,updated_at)
-SELECT r.organization_id,r.project_id,'attempts',r.work_item_id,1,max(r.rowid),'' FROM native_attempts r
-WHERE (1) GROUP BY r.organization_id,r.project_id,r.work_item_id
-ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
- through_rowid=max(through_rowid,excluded.through_rowid),
- cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
- format_version=1;
 
 -- +goose StatementBegin
 CREATE TRIGGER storage_conversion_enqueue_attempts AFTER INSERT ON native_attempts
@@ -153,19 +164,11 @@ WHERE (1) AND r.rowid=NEW.rowid
 ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
  through_rowid=max(through_rowid,excluded.through_rowid),
  cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
+ complete=0,
  format_version=1;
+UPDATE native_attempts SET conversion_state=CASE WHEN changes()=0 THEN 2 ELSE 1 END WHERE rowid=NEW.rowid;
 END;
 -- +goose StatementEnd
-
-INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,updated_at)
-SELECT r.organization_id,r.project_id,'analytics','',1,max(r.rowid),'' FROM analytics_hourly_rollups r
-WHERE (r.metric='attempt') GROUP BY r.organization_id,r.project_id,''
-ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
- through_rowid=max(through_rowid,excluded.through_rowid),
- cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
- format_version=1;
 
 -- +goose StatementBegin
 CREATE TRIGGER storage_conversion_enqueue_analytics AFTER INSERT ON analytics_hourly_rollups
@@ -176,19 +179,11 @@ WHERE (r.metric='attempt') AND r.rowid=NEW.rowid
 ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
  through_rowid=max(through_rowid,excluded.through_rowid),
  cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
+ complete=0,
  format_version=1;
+UPDATE analytics_hourly_rollups SET conversion_state=CASE WHEN changes()=0 THEN 2 ELSE 1 END WHERE rowid=NEW.rowid;
 END;
 -- +goose StatementEnd
-
-INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,updated_at)
-SELECT c.organization_id,c.project_id,'conversation_events',r.conversation_id,1,max(r.rowid),'' FROM conversation_events r JOIN conversations c ON c.id=r.conversation_id
-WHERE (r.type IN ('message.accepted','message.updated')) GROUP BY c.organization_id,c.project_id,r.conversation_id
-ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
- through_rowid=max(through_rowid,excluded.through_rowid),
- cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
- format_version=1;
 
 -- +goose StatementBegin
 CREATE TRIGGER storage_conversion_enqueue_conversation_events AFTER INSERT ON conversation_events
@@ -199,19 +194,11 @@ WHERE (r.type IN ('message.accepted','message.updated')) AND r.rowid=NEW.rowid
 ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
  through_rowid=max(through_rowid,excluded.through_rowid),
  cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
+ complete=0,
  format_version=1;
+UPDATE conversation_events SET conversion_state=CASE WHEN changes()=0 THEN 2 ELSE 1 END WHERE rowid=NEW.rowid;
 END;
 -- +goose StatementEnd
-
-INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,updated_at)
-SELECT c.organization_id,c.project_id,'messages',r.conversation_id,1,max(r.rowid),'' FROM conversation_messages r JOIN conversations c ON c.id=r.conversation_id
-WHERE (r.content_attachment_id='') GROUP BY c.organization_id,c.project_id,r.conversation_id
-ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
- through_rowid=max(through_rowid,excluded.through_rowid),
- cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
- format_version=1;
 
 -- +goose StatementBegin
 CREATE TRIGGER storage_conversion_enqueue_messages AFTER INSERT ON conversation_messages
@@ -222,19 +209,11 @@ WHERE (r.content_attachment_id='') AND r.rowid=NEW.rowid
 ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
  through_rowid=max(through_rowid,excluded.through_rowid),
  cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
+ complete=0,
  format_version=1;
+UPDATE conversation_messages SET conversion_state=CASE WHEN changes()=0 THEN 2 ELSE 1 END WHERE rowid=NEW.rowid;
 END;
 -- +goose StatementEnd
-
-INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,updated_at)
-SELECT c.organization_id,c.project_id,'versions',c.work_item_id,1,max(r.rowid),'' FROM change_versions r JOIN change_requests c ON c.id=r.change_id
-WHERE (1) GROUP BY c.organization_id,c.project_id,c.work_item_id
-ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
- through_rowid=max(through_rowid,excluded.through_rowid),
- cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
- format_version=1;
 
 -- +goose StatementBegin
 CREATE TRIGGER storage_conversion_enqueue_versions AFTER INSERT ON change_versions
@@ -245,19 +224,11 @@ WHERE (1) AND r.rowid=NEW.rowid
 ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
  through_rowid=max(through_rowid,excluded.through_rowid),
  cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
+ complete=0,
  format_version=1;
+UPDATE change_versions SET conversion_state=CASE WHEN changes()=0 THEN 2 ELSE 1 END WHERE rowid=NEW.rowid;
 END;
 -- +goose StatementEnd
-
-INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,updated_at)
-SELECT c.organization_id,c.project_id,'evidence',c.work_item_id,1,max(r.rowid),'' FROM change_evidence r JOIN change_requests c ON c.id=r.change_id
-WHERE (1) GROUP BY c.organization_id,c.project_id,c.work_item_id
-ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
- through_rowid=max(through_rowid,excluded.through_rowid),
- cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
- format_version=1;
 
 -- +goose StatementBegin
 CREATE TRIGGER storage_conversion_enqueue_evidence AFTER INSERT ON change_evidence
@@ -268,19 +239,11 @@ WHERE (1) AND r.rowid=NEW.rowid
 ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
  through_rowid=max(through_rowid,excluded.through_rowid),
  cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
+ complete=0,
  format_version=1;
+UPDATE change_evidence SET conversion_state=CASE WHEN changes()=0 THEN 2 ELSE 1 END WHERE rowid=NEW.rowid;
 END;
 -- +goose StatementEnd
-
-INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,updated_at)
-SELECT c.organization_id,c.project_id,'sources',c.work_item_id,1,max(r.rowid),'' FROM change_sources r JOIN change_versions v ON v.id=r.version_id JOIN change_requests c ON c.id=v.change_id
-WHERE (r.object_key='') GROUP BY c.organization_id,c.project_id,c.work_item_id
-ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
- through_rowid=max(through_rowid,excluded.through_rowid),
- cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
- format_version=1;
 
 -- +goose StatementBegin
 CREATE TRIGGER storage_conversion_enqueue_sources AFTER INSERT ON change_sources
@@ -291,19 +254,11 @@ WHERE (r.object_key='') AND r.rowid=NEW.rowid
 ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
  through_rowid=max(through_rowid,excluded.through_rowid),
  cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
+ complete=0,
  format_version=1;
+UPDATE change_sources SET conversion_state=CASE WHEN changes()=0 THEN 2 ELSE 1 END WHERE rowid=NEW.rowid;
 END;
 -- +goose StatementEnd
-
-INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,updated_at)
-SELECT c.organization_id,c.project_id,'diff_files',c.work_item_id,1,max(r.rowid),'' FROM attempt_diff_files r JOIN attempt_diffs c ON c.id=r.diff_id
-WHERE (c.object_key='') GROUP BY c.organization_id,c.project_id,c.work_item_id
-ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
- through_rowid=max(through_rowid,excluded.through_rowid),
- cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
- format_version=1;
 
 -- +goose StatementBegin
 CREATE TRIGGER storage_conversion_enqueue_diff_files AFTER INSERT ON attempt_diff_files
@@ -314,8 +269,9 @@ WHERE (c.object_key='') AND r.rowid=NEW.rowid
 ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
  through_rowid=max(through_rowid,excluded.through_rowid),
  cursor_rowid=CASE WHEN format_version<>1 THEN 0 ELSE cursor_rowid END,
- complete=CASE WHEN format_version<>1 OR excluded.through_rowid>cursor_rowid THEN 0 ELSE complete END,
+ complete=0,
  format_version=1;
+UPDATE attempt_diff_files SET conversion_state=CASE WHEN changes()=0 THEN 2 ELSE 1 END WHERE rowid=NEW.rowid;
 END;
 -- +goose StatementEnd
 
@@ -338,6 +294,35 @@ DROP TRIGGER storage_conversion_enqueue_evidence;
 DROP TRIGGER storage_conversion_enqueue_sources;
 
 DROP TRIGGER storage_conversion_enqueue_diff_files;
+
+DROP INDEX storage_discovery_runs;
+DROP INDEX storage_queued_runs;
+ALTER TABLE collaboration_events DROP COLUMN conversion_state;
+DROP INDEX storage_discovery_attempts;
+DROP INDEX storage_queued_attempts;
+ALTER TABLE native_attempts DROP COLUMN conversion_state;
+DROP INDEX storage_discovery_analytics;
+DROP INDEX storage_queued_analytics;
+ALTER TABLE analytics_hourly_rollups DROP COLUMN conversion_state;
+DROP INDEX storage_discovery_conversation_events;
+DROP INDEX storage_queued_conversation_events;
+ALTER TABLE conversation_events DROP COLUMN conversion_state;
+DROP INDEX storage_discovery_messages;
+DROP INDEX storage_queued_messages;
+ALTER TABLE conversation_messages DROP COLUMN conversion_state;
+DROP INDEX storage_discovery_versions;
+DROP INDEX storage_queued_versions;
+ALTER TABLE change_versions DROP COLUMN conversion_state;
+DROP INDEX storage_discovery_evidence;
+DROP INDEX storage_queued_evidence;
+ALTER TABLE change_evidence DROP COLUMN conversion_state;
+DROP INDEX storage_discovery_sources;
+DROP INDEX storage_queued_sources;
+ALTER TABLE change_sources DROP COLUMN conversion_state;
+DROP INDEX storage_discovery_diff_files;
+DROP INDEX storage_queued_diff_files;
+ALTER TABLE attempt_diff_files DROP COLUMN conversion_state;
+
 
 DROP TRIGGER change_evidence_immutable;
 -- +goose StatementBegin

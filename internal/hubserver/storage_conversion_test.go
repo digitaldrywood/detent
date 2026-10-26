@@ -427,7 +427,7 @@ func TestStorageConversionImmutability(t *testing.T) {
 				if err := rows.Scan(&cid, &name, &kind, &notnull, &def, &pk); err != nil {
 					t.Fatal(err)
 				}
-				if !table.allowed[name] {
+				if name != "conversion_state" && !table.allowed[name] {
 					columns = append(columns, name)
 				}
 			}
@@ -630,5 +630,140 @@ SELECT ?,?,'runs','completed-'||n,1,n,n,1,'' FROM history`, scope.organization, 
 		if err := db.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM storage_conversion_progress WHERE family='runs' AND complete=0`).Scan(&pending); err != nil || pending != want {
 			t.Fatalf("pending=%d want=%d: %v", pending, want, err)
 		}
+	}
+}
+
+func TestStorageConversionDiscoveryInitialization(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	other := newNativeFixture(t, f.service, f.project.OrganizationID, "second")
+	db := f.service.database
+	ctx := t.Context()
+	migration, err := migrationFiles.ReadFile("migrations/20261026041522_maintenance_without_ddl.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, down, ok := strings.Cut(string(migration), "-- +goose Down")
+	if !ok {
+		t.Fatal("missing migration rollback")
+	}
+	if _, err := db.db.ExecContext(ctx, down); err != nil {
+		t.Fatal(err)
+	}
+	for _, fixture := range []nativeFixture{f, other} {
+		if _, err := db.db.ExecContext(ctx, `WITH RECURSIVE history(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM history WHERE n<205)
+INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json)
+SELECT ?,?,n,'attempt','legacy-'||n,1,'{"obsolete":"payload"}' FROM history`, fixture.project.OrganizationID, fixture.project.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.db.ExecContext(ctx, up); err != nil {
+		t.Fatal(err)
+	}
+	var progress int
+	if err := db.reader.QueryRowContext(ctx, "SELECT count(*) FROM storage_conversion_progress WHERE family='analytics'").Scan(&progress); err != nil || progress != 0 {
+		t.Fatalf("startup seeded progress=%d: %v", progress, err)
+	}
+	family := storageConversionFamilies[2]
+	if _, err := db.db.ExecContext(ctx, `CREATE TRIGGER interrupt_discovery BEFORE UPDATE OF conversion_state ON analytics_hourly_rollups WHEN NEW.conversion_state=1 BEGIN SELECT RAISE(ABORT,'interrupted discovery'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.discoverStorageFamily(ctx, family, time.Now()); err == nil {
+		t.Fatal("discovery did not propagate interruption")
+	}
+	if err := db.reader.QueryRowContext(ctx, "SELECT count(*) FROM storage_conversion_progress WHERE family='analytics'").Scan(&progress); err != nil || progress != 0 {
+		t.Fatalf("interruption committed progress=%d: %v", progress, err)
+	}
+	if _, err := db.db.ExecContext(ctx, "DROP TRIGGER interrupt_discovery"); err != nil {
+		t.Fatal(err)
+	}
+	beforeSchema := storageSchemaVersion(t, db.reader)
+	for pass, want := range []int{310, 210, 110, 10, 0} {
+		if err := f.service.discoverStorageFamily(ctx, family, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		var remaining int
+		if err := db.reader.QueryRowContext(ctx, "SELECT count(*) FROM analytics_hourly_rollups WHERE conversion_state=0").Scan(&remaining); err != nil || remaining != want {
+			t.Fatalf("pass=%d undiscovered=%d want=%d: %v", pass, remaining, want, err)
+		}
+		for _, fixture := range []nativeFixture{f, other} {
+			scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
+			if err := f.service.convertStorageFamily(ctx, scope, family, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if want > 0 {
+			var completed int
+			if err := db.reader.QueryRowContext(ctx, "SELECT count(*) FROM storage_conversion_progress WHERE family='analytics' AND complete=1").Scan(&completed); err != nil || completed != 0 {
+				t.Fatalf("discovery completed prematurely=%d: %v", completed, err)
+			}
+		}
+		if pass == 0 {
+			config := f.service.config
+			if err := f.service.Close(); err != nil {
+				t.Fatal(err)
+			}
+			f.service = openTestService(t, config)
+			db = f.service.database
+		}
+	}
+	for _, fixture := range []nativeFixture{f, other} {
+		scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
+		progress, err := readStorageConversionProgress(ctx, db.reader, scope)
+		if err != nil || len(progress) != 1 || !progress[0].Complete || progress[0].Rows != 205 {
+			t.Fatalf("initialized scope progress=%+v: %v", progress, err)
+		}
+	}
+	if after := storageSchemaVersion(t, db.reader); after != beforeSchema {
+		t.Fatalf("background discovery changed schema: %d -> %d", beforeSchema, after)
+	}
+}
+
+func TestStorageConversionReusedRowIDs(t *testing.T) {
+	for _, explicitLower := range []bool{false, true} {
+		t.Run(fmt.Sprintf("explicit-lower=%v", explicitLower), func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			other := newNativeFixture(t, f.service, f.project.OrganizationID, "second")
+			db := f.service.database
+			ctx := t.Context()
+			family := storageConversionFamilies[2]
+			for _, fixture := range []nativeFixture{f, other} {
+				scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
+				var prior int64
+				for pass := range 2 {
+					query := `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,1,'attempt','legacy',1,'{"obsolete":"payload"}') RETURNING rowid`
+					if explicitLower {
+						row := int64(100)
+						if pass == 1 {
+							row = 1
+						}
+						query = strings.Replace(query, "(organization_id", "(rowid,organization_id", 1)
+						query = strings.Replace(query, "VALUES(", fmt.Sprintf("VALUES(%d,", row), 1)
+					}
+					var row int64
+					if err := db.db.QueryRowContext(ctx, query, scope.organization, scope.project).Scan(&row); err != nil {
+						t.Fatal(err)
+					}
+					if pass == 1 && (row > prior || explicitLower && row == prior) {
+						t.Fatalf("fixture did not reuse a lower identity: %d -> %d", prior, row)
+					}
+					if err := f.service.convertStorageFamily(ctx, scope, family, time.Now()); err != nil {
+						t.Fatal(err)
+					}
+					var raw string
+					var state int
+					if err := db.reader.QueryRowContext(ctx, "SELECT data_json,conversion_state FROM analytics_hourly_rollups WHERE rowid=?", row).Scan(&raw, &state); err != nil || strings.Contains(raw, "obsolete") || state != 2 {
+						t.Fatalf("pass=%d unconverted reused row: state=%d data=%s: %v", pass, state, raw, err)
+					}
+					progress, err := readStorageConversionProgress(ctx, db.reader, scope)
+					if err != nil || len(progress) != 1 || !progress[0].Complete || progress[0].Rows != int64(pass+1) {
+						t.Fatalf("pass=%d progress=%+v: %v", pass, progress, err)
+					}
+					if _, err := db.db.ExecContext(ctx, "DELETE FROM analytics_hourly_rollups WHERE rowid=?", row); err != nil {
+						t.Fatal(err)
+					}
+					prior = row
+				}
+			}
+		})
 	}
 }
