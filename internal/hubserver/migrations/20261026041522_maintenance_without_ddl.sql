@@ -94,11 +94,7 @@ DROP TRIGGER change_sources_no_update;
 CREATE TRIGGER change_sources_no_update BEFORE UPDATE ON change_sources
 WHEN NEW.rowid IS NOT OLD.rowid
  OR NEW.version_id IS NOT OLD.version_id
- OR ((substr(OLD.bundle,1,4) = x'00444353'
-  OR NOT (
-    (substr(NEW.bundle,1,6) = x'004443530101' AND length(NEW.bundle) < length(OLD.bundle))
-    OR (substr(NEW.bundle,1,6) = x'004443530100' AND substr(NEW.bundle,7) = OLD.bundle)
-  )) AND NOT EXISTS (SELECT 1 FROM storage_conversion_progress
+ OR (NEW.bundle IS NOT OLD.bundle AND NOT EXISTS (SELECT 1 FROM storage_conversion_progress
  WHERE family='sources' AND conversion_rowid=OLD.rowid AND conversion_rowid<>0
  AND conversion_before_sha256=storage_conversion_digest(OLD.bundle,OLD.object_key,OLD.object_sha256,OLD.object_bytes,OLD.content_bytes)
  AND conversion_after_sha256=storage_conversion_digest(NEW.bundle,NEW.object_key,NEW.object_sha256,NEW.object_bytes,NEW.content_bytes)))

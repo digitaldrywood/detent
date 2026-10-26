@@ -52,13 +52,10 @@ func TestChangeSourceBackfillPreservesReadersAndUsage(t *testing.T) {
 		}
 		sources[index].version, sources[index].bundle, expected = version, bundle, version.ID
 	}
-	migration, err := migrationFiles.ReadFile("migrations/20261020102500_change_source_encoding.sql")
-	if err != nil {
+	var trigger string
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='change_sources_no_update'").Scan(&trigger); err != nil {
 		t.Fatal(err)
 	}
-	up, _, _ := strings.Cut(string(migration), "-- +goose Down")
-	up = strings.Replace(up, "DROP TRIGGER change_sources_no_update;", "", 1)
-	up, _, _ = strings.Cut(up, "CREATE INDEX")
 	restoreLegacy := func() {
 		t.Helper()
 		if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER change_sources_no_update"); err != nil {
@@ -69,7 +66,7 @@ func TestChangeSourceBackfillPreservesReadersAndUsage(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), up); err != nil {
+		if _, err := f.service.database.db.ExecContext(t.Context(), trigger); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -131,6 +128,10 @@ func TestChangeSourceBackfillPreservesReadersAndUsage(t *testing.T) {
 			t.Fatalf("usage=%d want=%d after compression", got, want)
 		}
 		checkReaders()
+		var authorized int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM storage_conversion_progress WHERE conversion_rowid<>0 OR conversion_before_sha256<>'' OR conversion_after_sha256<>''").Scan(&authorized); err != nil || authorized != 0 {
+			t.Fatalf("encoding permissions=%d: %v", authorized, err)
+		}
 		if processed == 1 {
 			ctx, cancel := context.WithCancel(t.Context())
 			cancel()

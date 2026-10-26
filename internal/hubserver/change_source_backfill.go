@@ -65,8 +65,19 @@ JOIN change_versions v ON v.id=s.version_id WHERE s.object_key='' AND substr(s.b
 		return false, err
 	}
 	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,updated_at,conversion_rowid,conversion_before_sha256,conversion_after_sha256)
+SELECT c.organization_id,c.project_id,'sources',c.work_item_id,1,s.rowid,'',s.rowid,?,?
+FROM change_sources s JOIN change_versions v ON v.id=s.version_id JOIN change_requests c ON c.id=v.change_id
+WHERE s.version_id=? AND s.bundle=? AND s.object_key=''
+ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
+conversion_rowid=excluded.conversion_rowid,conversion_before_sha256=excluded.conversion_before_sha256,conversion_after_sha256=excluded.conversion_after_sha256`, storageConversionDigest(bundle, "", "", int64(0), int64(0)), storageConversionDigest(stored, "", "", int64(0), int64(0)), versionID, bundle); err != nil {
+		return false, fmt.Errorf("authorize compressed change source: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, "UPDATE change_sources SET bundle=? WHERE version_id=? AND bundle=?", stored, versionID, bundle); err != nil {
 		return false, fmt.Errorf("store compressed change source: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE storage_conversion_progress SET conversion_rowid=0,conversion_before_sha256='',conversion_after_sha256='' WHERE family='sources' AND conversion_rowid=(SELECT rowid FROM change_sources WHERE version_id=?)`, versionID); err != nil {
+		return false, err
 	}
 	if err := d.commit(ctx, tx); err != nil {
 		return false, err

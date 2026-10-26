@@ -387,6 +387,17 @@ func TestStorageConversionImmutability(t *testing.T) {
 		}
 		f.commit(t, tx)
 	}
+	substitution, err := encodeChangeSource(bytes.Repeat([]byte("b"), 8192))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := decodeChangeSource(substitution, 8192)
+	if err != nil || !bytes.Equal(decoded, bytes.Repeat([]byte("b"), 8192)) || len(substitution) >= 8192 || len(substitution) < 6 || substitution[5] != 1 {
+		t.Fatalf("invalid substitution fixture: %v", err)
+	}
+	if _, err := db.db.ExecContext(t.Context(), "UPDATE change_sources SET bundle=? WHERE version_id='conversion-version-0'", substitution); err == nil || !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("unauthorized compressed substitution: %v", err)
+	}
 	assertImmutable := func() {
 		t.Helper()
 		for _, table := range []struct {
