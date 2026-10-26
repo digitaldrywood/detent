@@ -407,6 +407,7 @@ func TestStorageConversionImmutability(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			defer rows.Close()
 			columns := []string{"rowid"}
 			for rows.Next() {
 				var cid, notnull, pk int
@@ -506,6 +507,7 @@ func TestStorageConversionImmutability(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer rows.Close()
 		count := 0
 		for rows.Next() {
 			var stored string
@@ -532,6 +534,7 @@ func TestStorageConversionImmutability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer rows.Close()
 	sources := 0
 	for rows.Next() {
 		var inline int
@@ -592,6 +595,7 @@ SELECT ?,?,'runs','completed-'||n,1,n,n,1,'' FROM history`, scope.organization, 
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer rows.Close()
 	var plan strings.Builder
 	for rows.Next() {
 		var id, parent, unused int
