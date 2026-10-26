@@ -2,6 +2,8 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -312,10 +314,14 @@ type orphanRecoveryAttemptStore struct {
 	marked    []int64
 	listCalls int
 	metadata  string
+	readErr   error
+	markErr   error
+	readCalls int
 }
 
 func (s *orphanRecoveryAttemptStore) WorkAttempt(context.Context, int64) (store.WorkAttempt, error) {
-	return store.WorkAttempt{WorkerMetadataJSON: s.metadata}, nil
+	s.readCalls++
+	return store.WorkAttempt{WorkerMetadataJSON: s.metadata}, s.readErr
 }
 
 func (s *orphanRecoveryAttemptStore) ListOrphanedAgentSessions(context.Context, string) ([]store.OrphanedAgentSession, error) {
@@ -324,6 +330,191 @@ func (s *orphanRecoveryAttemptStore) ListOrphanedAgentSessions(context.Context, 
 }
 
 func (s *orphanRecoveryAttemptStore) MarkAgentSessionOrphaned(_ context.Context, sessionID int64, _ time.Time) error {
+	if s.markErr != nil {
+		return s.markErr
+	}
 	s.marked = append(s.marked, sessionID)
 	return nil
+}
+
+func TestOrphanRecoveryRetriesReadFailure(t *testing.T) {
+	for _, mode := range []string{"owned", "foreign owner", "expired lease", "inactive", "missing", "repeated failure", "attempt read failure", "policy missing", "mark failure"} {
+		t.Run(mode, func(t *testing.T) {
+			now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+			issue := orphanRecoveryIssue()
+			issue.Identifier = "example-org/example-project#1155"
+			issue.URL = "https://github.com/example-org/example-project/issues/1155"
+			issue.Assignees = []string{"detent-bot"}
+			issue.Fields["Detent Lease"] = formatClaimTime(now)
+			session := orphanRecoverySession(now)
+			session.Identifier, session.IssueURL = issue.Identifier, issue.URL
+			tracker := &orphanReadConnector{hydratingDispatchConnector: hydratingDispatchConnector{issue: issue}, fail: true}
+			attempts := &orphanRecoveryAttemptStore{metadata: runningWorkAttemptMetadataJSON(Running{Policy: orchestratorTestPolicy()}, nil), orphans: []store.OrphanedAgentSession{session}}
+			orch, err := New(Config{Project: scheduler.ProjectCandidate{ID: "example"}, ActiveStates: []string{"In Progress"}, ResumeOrphanedSessions: true,
+				FailureRetryBaseDelay: time.Minute, MaxRetryBackoff: time.Minute,
+				Claiming: ClaimingConfig{Enabled: true, AssigneeLogin: "detent-bot", LeaseField: "Detent Lease", LeaseTTL: 10 * time.Minute},
+			}, Dependencies{Connector: tracker, WorkAttempts: attempts})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := newState(orch.cfg)
+			orch.recoverOrphanedAgentSessions(t.Context(), &state, attempts.orphans, now)
+			retry, ok := state.Retry[issue.ID]
+			if !ok || !retry.TrackerUnavailable || retry.ResumeState.DetentSessionID != session.ResumeState.DetentSessionID || retry.RecoveryAttemptID != session.WorkAttemptID || !retry.DueAt.After(now) || len(state.Blocked) != 0 || len(attempts.marked) != 0 {
+				t.Fatalf("failed read lost pending recovery: %+v marked=%v", retry, attempts.marked)
+			}
+			if got := orch.prepareDispatchCandidates(t.Context(), &state, []connector.Issue{issue}, now); len(got) != 0 || tracker.calls != 1 {
+				t.Fatalf("retried before backoff: candidates=%d calls=%d", len(got), tracker.calls)
+			}
+			releaseTrackerUnavailableRetries(&state, now)
+			if !state.Retry[issue.ID].TrackerUnavailable {
+				t.Fatal("unrelated tracker recovery bypassed orphan reconciliation")
+			}
+			tracker.fail = mode == "repeated failure"
+			switch mode {
+			case "attempt read failure":
+				attempts.readErr = errors.New("attempt read failed")
+			case "policy missing":
+				attempts.metadata = ""
+			case "mark failure":
+				attempts.markErr = errors.New("mark failed")
+			case "foreign owner":
+				tracker.issue.Assignees = []string{"another-runner"}
+			case "expired lease":
+				tracker.issue.Fields["Detent Lease"] = formatClaimTime(now.Add(-time.Hour))
+			case "inactive":
+				tracker.issue.State = "Blocked"
+			case "missing":
+				tracker.missing = true
+			}
+			got := orch.prepareDispatchCandidates(t.Context(), &state, nil, retry.DueAt)
+			next, queued := state.Retry[issue.ID]
+			if tracker.calls != 2 || len(state.Blocked) != 0 {
+				t.Fatalf("calls=%d blocked=%v", tracker.calls, state.Blocked)
+			}
+			switch mode {
+			case "owned":
+				if !queued || next.TrackerUnavailable || len(got) != 1 || len(attempts.marked) != 1 || next.ResumeState.ProviderThreadID != session.ResumeState.ProviderThreadID || next.Policy.ID != retry.Policy.ID {
+					t.Fatalf("resume not recovered: %+v candidates=%d marked=%v", next, len(got), attempts.marked)
+				}
+			case "repeated failure", "attempt read failure", "policy missing", "mark failure":
+				if !queued || !next.TrackerUnavailable || next.Attempt <= retry.Attempt || !next.DueAt.After(retry.DueAt) || len(got) != 0 || len(attempts.marked) != 0 {
+					t.Fatalf("failure did not retain backoff: %+v", next)
+				}
+				delay := next.DueAt.Sub(retry.DueAt)
+				if delay < 52500*time.Millisecond || delay > time.Minute {
+					t.Fatalf("retry delay %s outside capped jitter bounds", delay)
+				}
+				if next.ResumeState != retry.ResumeState || next.RecoveryAttemptID != retry.RecoveryAttemptID || next.WorkerHost != retry.WorkerHost || next.Policy.ID != retry.Policy.ID {
+					t.Fatal("reconciliation failure changed custody or identity")
+				}
+			default:
+				if queued || len(got) != 0 || len(attempts.marked) != 0 {
+					t.Fatalf("fencing bypass: queued=%t candidates=%d marked=%v", queued, len(got), attempts.marked)
+				}
+			}
+		})
+	}
+}
+
+type orphanReadConnector struct {
+	hydratingDispatchConnector
+	fail, missing bool
+	calls         int
+	issues        map[string]connector.Issue
+}
+
+func (c *orphanReadConnector) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]connector.Issue, error) {
+	c.calls++
+	if c.fail {
+		return nil, errors.New("transient read failure")
+	}
+	if c.missing {
+		return nil, nil
+	}
+	if c.issues != nil {
+		issues := make([]connector.Issue, 0, len(ids))
+		for _, id := range ids {
+			if issue, ok := c.issues[id]; ok {
+				issues = append(issues, issue)
+			}
+		}
+		return issues, nil
+	}
+	return c.hydratingDispatchConnector.FetchIssueStatesByIDs(ctx, ids)
+}
+
+func TestOrphanRecoveryBoundedRetrySelection(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
+	tracker := &orphanReadConnector{fail: true}
+	attempts := &orphanRecoveryAttemptStore{metadata: runningWorkAttemptMetadataJSON(Running{Policy: orchestratorTestPolicy()}, nil)}
+	orch, err := New(Config{Project: scheduler.ProjectCandidate{ID: "example"}, ActiveStates: []string{"In Progress"}, ResumeOrphanedSessions: true},
+		Dependencies{Connector: tracker, WorkAttempts: attempts})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := newState(orch.cfg)
+	sessions := make([]store.OrphanedAgentSession, 10000)
+	for i := range sessions {
+		session := orphanRecoverySession(now)
+		session.IssueID = fmt.Sprintf("issue-%d", i)
+		session.Identifier = fmt.Sprintf("example-org/example-project#%d", i)
+		session.IssueURL = ""
+		session.WorkAttemptID = int64(i + 1)
+		session.ResumeState.DetentSessionID = int64(i + 1)
+		sessions[i] = session
+	}
+	orch.recoverOrphanedAgentSessions(t.Context(), &state, sessions, now)
+	for id, retry := range state.Retry {
+		retry.DueAt = now
+		state.Retry[id] = retry
+	}
+	attempts.readCalls = 0
+	attempts.readErr = errors.New("attempt unavailable")
+	orch.reconcileOrphanedSessionRetries(t.Context(), &state, nil, now)
+	if attempts.readCalls != dispatchCandidateLookahead {
+		t.Fatalf("read %d attempts, want batch %d", attempts.readCalls, dispatchCandidateLookahead)
+	}
+	for _, session := range sessions[:dispatchCandidateLookahead] {
+		retry := state.Retry[session.IssueID]
+		if retry.Attempt != session.AttemptNumber+2 || !retry.DueAt.After(now) || retry.RecoveryAttemptID != session.WorkAttemptID {
+			t.Fatalf("failed retry did not back off with custody: %+v", retry)
+		}
+	}
+	attempts.readErr = nil
+	tracker.fail = false
+	tracker.issues = make(map[string]connector.Issue)
+	for _, session := range sessions {
+		issue := connector.NewIssue()
+		issue.ID, issue.Identifier, issue.State = session.IssueID, session.Identifier, session.Lane
+		issue.Title = "Resume pending session"
+		tracker.issues[issue.ID] = issue
+	}
+	got := orch.reconcileOrphanedSessionRetries(t.Context(), &state, nil, now)
+	if len(got) != dispatchCandidateLookahead || attempts.readCalls != 2*dispatchCandidateLookahead {
+		t.Fatalf("later batch did not reconcile: candidates=%d reads=%d", len(got), attempts.readCalls)
+	}
+	for _, session := range sessions[dispatchCandidateLookahead : 2*dispatchCandidateLookahead] {
+		if state.Retry[session.IssueID].TrackerUnavailable {
+			t.Fatalf("later retry %s starved", session.IssueID)
+		}
+	}
+	for id, retry := range state.Retry {
+		retry.DueAt = now.Add(time.Hour)
+		state.Retry[id] = retry
+	}
+	ready := sessions[3*dispatchCandidateLookahead]
+	retry := state.Retry[ready.IssueID]
+	retry.DueAt = now
+	state.Retry[ready.IssueID] = retry
+	reads := attempts.readCalls
+	orch.reconcileOrphanedSessionRetries(t.Context(), &state, nil, now)
+	if attempts.readCalls != reads {
+		t.Fatal("selection scanned beyond a batch of not-yet-due entries")
+	}
+	got = orch.reconcileOrphanedSessionRetries(t.Context(), &state, nil, now)
+	if len(got) != 1 || got[0].ID != ready.IssueID || attempts.readCalls != reads+1 {
+		t.Fatal("selection did not resume after not-yet-due entries")
+	}
 }
