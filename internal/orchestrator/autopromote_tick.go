@@ -1270,6 +1270,12 @@ func (o *Orchestrator) reconcileStaleLinkedPullRequestIssues(
 	issues []connector.Issue,
 	now time.Time,
 ) map[string]struct{} {
+	// Native release deliveries expose PR metadata for transport and provenance.
+	// Their Change validation and landing own lane transitions, not this tracker
+	// recovery path, even when external CI is missing or the PR is merged.
+	if o.nativeWorkflow() {
+		return nil
+	}
 	transitioned := map[string]struct{}{}
 	for _, issue := range issuesInStates(issues, staleLinkedPullRequestReconciliationStates(o.cfg)) {
 		issueID := strings.TrimSpace(issue.ID)
