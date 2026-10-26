@@ -748,9 +748,13 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 			ctx = prepared
 		}
 	}
+	legacyContinuation, err := c.prepareLegacyContinuation(ctx, scope, item)
+	if err != nil {
+		return s.nativeAPIError(e, err)
+	}
 	var record conversationRecord
 	var response conversationBindResponse
-	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+	err = c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
 		}
@@ -769,6 +773,9 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 			}
 			return err
 		}
+		if legacyContinuation.id != "" && (record.ID != legacyContinuation.id || record.EventSeq != legacyContinuation.head) {
+			return conversationStale("The conversation changed before the turn was bound")
+		}
 		previous := record.Execution
 		operation := nativeOperation(scope, "POST", "/conversations/"+record.ID+"/link")
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
@@ -776,15 +783,10 @@ SELECT 1 FROM native_commands WHERE organization_id = ? AND (operation = ? OR su
 ) OR EXISTS (
 SELECT 1 FROM conversation_messages WHERE conversation_id = ? AND role = 'user' AND kind = 'continue'
 AND delivery IN ('saved', 'queued', 'sending')
-) OR EXISTS (
-SELECT 1 FROM conversation_events WHERE conversation_id = ? AND type = 'message.updated'
-AND json_extract(body_json, '$.role') = 'user' AND json_extract(body_json, '$.kind') = 'continue'
-AND COALESCE(json_extract(body_json, '$.attempt_id'), '') <> ''
-AND seq > COALESCE((
-SELECT MAX(seq) FROM conversation_events WHERE conversation_id = ? AND type = 'execution.updated'
-AND json_extract(body_json, '$.status') = 'completed'
-), 0)
-)`, scope.organization, operation, operation, operation, record.ID, record.ID, record.ID).Scan(&response.Continuation); err != nil {
+) OR (
+max(COALESCE((SELECT MAX(seq) FROM conversation_events WHERE conversation_id=? AND type='message.updated' AND message_role='user' AND message_kind='continue' AND attempt_id<>''),0),?)
+>max(COALESCE((SELECT MAX(seq) FROM conversation_events WHERE conversation_id=? AND type='execution.updated' AND execution_status='completed'),0),?)
+)`, scope.organization, operation, operation, operation, record.ID, record.ID, legacyContinuation.continued, record.ID, legacyContinuation.completed).Scan(&response.Continuation); err != nil {
 			return err
 		}
 		if !previous.Status.Terminal() && previous.Owner.AttemptID != "" && previous.Owner.AttemptID != request.AttemptID {
@@ -1479,7 +1481,7 @@ func (c *conversationService) applyTurnCompleted(ctx context.Context, tx *sql.Tx
 // lease's release committed. Failures are logged: the release itself has
 // already succeeded and the reconcile loop retries.
 func (c *conversationService) leaseReleased(ctx context.Context, leaseID tracker.LeaseID) {
-	candidates, err := c.inFlightExecutions(ctx, conversationInFlightQuery+"AND json_extract(execution_json, '$.lease_id') = ?", leaseID)
+	candidates, err := c.inFlightExecutions(ctx, conversationInFlightQuery+"AND (query_metadata_version=0 OR execution_lease_id = ?)", leaseID)
 	if err != nil {
 		c.logger.Warn("conversation lease release lookup failed", "lease", leaseID, "error", err)
 		return
@@ -1514,8 +1516,7 @@ type conversationExecutionRef struct {
 // inFlightExecutions lists conversations whose execution is live, or ended by
 // a turn report but never settled by an unbind. It runs outside any
 // transaction; settlement re-reads the state under one.
-const conversationInFlightQuery = `SELECT id, organization_id, project_id FROM conversations WHERE (json_extract(execution_json, '$.status') IN ('starting', 'running', 'waiting_input', 'interrupting')
- OR (json_extract(execution_json, '$.status') IN ('completed', 'interrupted', 'failed', 'unknown') AND COALESCE(json_extract(execution_json, '$.settled'), 0) = 0 AND COALESCE(json_extract(execution_json, '$.lease_id'), '') <> '')) `
+const conversationInFlightQuery = `SELECT id,organization_id,project_id,execution_status,execution_lease_id,execution_settled,CASE WHEN query_metadata_version=0 THEN execution_json ELSE '' END FROM conversations WHERE (query_metadata_version=0 OR execution_status IN ('starting','running','waiting_input','interrupting') OR (execution_status IN ('completed','interrupted','failed','unknown') AND execution_settled=0 AND execution_lease_id<>'')) `
 
 func (c *conversationService) inFlightExecutions(ctx context.Context, query string, args ...any) ([]conversationExecutionRef, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
@@ -1528,8 +1529,24 @@ func (c *conversationService) inFlightExecutions(ctx context.Context, query stri
 	var refs []conversationExecutionRef
 	for rows.Next() {
 		var ref conversationExecutionRef
-		if err := rows.Scan(&ref.id, &ref.organization, &ref.project); err != nil {
+		var raw string
+		var status, lease sql.NullString
+		var settled sql.NullBool
+		if err := rows.Scan(&ref.id, &ref.organization, &ref.project, &status, &lease, &settled, &raw); err != nil {
 			return nil, fmt.Errorf("scan in-flight conversation: %w", err)
+		}
+		execution := conversation.Execution{Status: conversation.ExecutionStatus(status.String), Settled: settled.Bool, Owner: conversation.Owner{LeaseID: lease.String}}
+		if raw != "" {
+			if err := json.Unmarshal([]byte(raw), &execution); err != nil {
+				return nil, err
+			}
+		}
+		live := execution.Status == conversation.ExecutionStarting || execution.Status == conversation.ExecutionRunning || execution.Status == conversation.ExecutionWaitingInput || execution.Status == conversation.ExecutionInterrupting
+		if !live && (!execution.Status.Terminal() || execution.Settled || execution.Owner.LeaseID == "") {
+			continue
+		}
+		if len(args) > 0 && execution.Owner.LeaseID != fmt.Sprint(args[0]) {
+			continue
 		}
 		refs = append(refs, ref)
 	}

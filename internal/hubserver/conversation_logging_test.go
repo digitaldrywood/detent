@@ -258,9 +258,9 @@ func TestConversationLoggingRestartNormalization(t *testing.T) {
 			t.Fatalf("seed %q: %v", query, err)
 		}
 	}
-	exec("UPDATE conversations SET execution_json = json_set(execution_json, '$.status', 'running') WHERE id = ?", unlinked.ID)
+	exec("UPDATE conversations SET execution_json = json_set(execution_json, '$.status', 'running'),execution_status=NULL,query_metadata_version=0 WHERE id = ?", unlinked.ID)
 	exec("UPDATE conversation_messages SET delivery = ? WHERE conversation_id = ? AND command_key = ?", conversation.DeliverySending, unlinked.ID, "u2")
-	exec("UPDATE conversation_commands SET receipt_json = json_set(receipt_json, '$.status', ?) WHERE conversation_id = ? AND key = ?", conversation.DeliverySending, unlinked.ID, "u2")
+	exec("UPDATE conversation_commands SET receipt_json = json_set(receipt_json, '$.status', ?),receipt_status=NULL,query_metadata_version=0 WHERE conversation_id = ? AND key = ?", conversation.DeliverySending, unlinked.ID, "u2")
 	exec("UPDATE conversation_messages SET delivery = ? WHERE conversation_id = ? AND command_key = ?", conversation.DeliverySaved, unlinked.ID, "u1")
 	var messageID string
 	if err := db.QueryRowContext(ctx, "SELECT id FROM conversation_messages WHERE conversation_id = ? AND command_key = ?", unlinked.ID, "u2").Scan(&messageID); err != nil {

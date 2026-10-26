@@ -14,15 +14,10 @@ internal/hubserver/change_quality.go 3
 internal/hubserver/changes.go 20
 internal/hubserver/chat_usage.go 2
 internal/hubserver/conversation_attachments.go 1
-internal/hubserver/conversation_coordinator_actions.go 1
-internal/hubserver/conversation_coordinator_agent.go 2
 internal/hubserver/conversation_coordinator_tools.go 5
 internal/hubserver/conversation_preferences.go 1
 internal/hubserver/conversation_service.go 1
-internal/hubserver/conversation_store.go 10
-internal/hubserver/conversation_stream.go 1
-internal/hubserver/conversation_worker.go 9
-internal/hubserver/event_compaction.go 25
+internal/hubserver/conversation_store.go 2
 internal/hubserver/github_batch_worker.go 2
 internal/hubserver/github_cutover.go 2
 internal/hubserver/github_import.go 4
