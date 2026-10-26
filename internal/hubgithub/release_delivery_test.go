@@ -20,6 +20,44 @@ type releasePickTransportFixture struct {
 	existing     *releasePickPull
 	lostResponse bool
 	beforeRead   func()
+	priorBase    string
+	comparison   string
+}
+
+func TestVerifyReleasePickRefresh(t *testing.T) {
+	for _, name := range []string{"advanced", "reset", "diverged", "same base", "different source", "different series", "different PR", "wrong patch", "branch moved"} {
+		t.Run(name, func(t *testing.T) {
+			next := tracker.ReleasePickInput{SourceIssueID: "wi_source", SourceChangeID: "change_source", Repository: "https://github.com/example-org/example-project", SourceMergeSHA: strings.Repeat("a", 40), PRNumber: 7, HeadRef: "pick/fix", HeadSHA: strings.Repeat("b", 40), BaseRef: "release/v1.2", BaseSHA: strings.Repeat("c", 40), FrozenSHA: strings.Repeat("d", 40)}
+			prior := next
+			prior.BaseSHA, prior.HeadSHA = strings.Repeat("e", 40), strings.Repeat("f", 40)
+			f := &releasePickTransportFixture{input: next, priorBase: prior.BaseSHA, comparison: "ahead", alter: name}
+			switch name {
+			case "reset":
+				f.comparison = "behind"
+			case "diverged":
+				f.comparison = "diverged"
+			case "same base":
+				next.BaseSHA = prior.BaseSHA
+			case "different source":
+				next.SourceMergeSHA = strings.Repeat("0", 40)
+			case "different series":
+				next.BaseRef = "release/v2.0"
+			case "different PR":
+				next.PRNumber++
+			}
+			err := NewReconciler(f).VerifyReleasePickRefresh(t.Context(), prior, next)
+			if name == "advanced" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if !errors.Is(err, hubserver.ErrReleasePickMismatch) {
+				t.Fatalf("unsafe refresh accepted: %v", err)
+			}
+			if f.creates != 0 {
+				t.Fatal("verification created a PR")
+			}
+		})
+	}
 }
 
 func (f *releasePickTransportFixture) REST(_ context.Context, method, path string, request any, out any) error {
@@ -115,6 +153,8 @@ func (f *releasePickTransportFixture) REST(_ context.Context, method, path strin
 				sha = strings.Repeat("0", 40)
 			}
 			response = map[string]any{"merge_base_commit": map[string]string{"sha": sha}}
+		case root + "/compare/" + f.priorBase + "..." + i.BaseSHA:
+			response = map[string]string{"status": f.comparison}
 		case root + "/pulls/7/commits?per_page=2":
 			commit := map[string]any{"sha": i.HeadSHA, "parents": []map[string]string{{"sha": i.BaseSHA}}, "commit": map[string]string{"message": "Repair\n\n(cherry picked from commit " + i.SourceMergeSHA + ")"}}
 			switch f.alter {

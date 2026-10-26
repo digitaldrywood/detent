@@ -10,9 +10,12 @@ import (
 )
 
 func TestPublishReleasePick(t *testing.T) {
-	for _, name := range []string{"publish", "lost response", "wrong patch", "unmerged source", "frozen identity", "head moved", "branch moved", "truncated patch", "prepared missing trailer", "prepared wrong trailer", "prepared wrong parent", "head moves before create", "hold during verification", "different existing PR", "ambiguous", "closed PR", "different native owner"} {
+	for _, name := range []string{"publish", "refresh", "refresh hold", "lost response", "wrong patch", "unmerged source", "frozen identity", "head moved", "branch moved", "truncated patch", "prepared missing trailer", "prepared wrong trailer", "prepared wrong parent", "head moves before create", "hold during verification", "different existing PR", "ambiguous", "closed PR", "different native owner"} {
 		t.Run(name, func(t *testing.T) {
 			input := tracker.ReleasePickInput{SourceIssueID: "wi_source", SourceChangeID: "change_source", Repository: "https://github.com/example-org/example-project", SourceMergeSHA: strings.Repeat("a", 40), HeadRef: "pick/fix", HeadSHA: strings.Repeat("b", 40), BaseRef: "release/v1.2", BaseSHA: strings.Repeat("c", 40), FrozenSHA: strings.Repeat("d", 40)}
+			if strings.HasPrefix(name, "refresh") {
+				input.PRNumber = 7
+			}
 			fixtureInput := input
 			fixtureInput.PRNumber = 7
 			f := &releasePickTransportFixture{input: fixtureInput}
@@ -38,7 +41,7 @@ func TestPublishReleasePick(t *testing.T) {
 				f.beforeRead = func() { f.alter = "head moved" }
 			}
 
-			if name == "hold during verification" {
+			if name == "hold during verification" || name == "refresh hold" {
 				authorize = func(context.Context) error { return errors.New("human hold") }
 			}
 			f.lostResponse = name == "lost response"
@@ -49,14 +52,18 @@ func TestPublishReleasePick(t *testing.T) {
 				}
 				result, err = r.PublishReleasePick(t.Context(), item, input, authorize)
 			}
-			if name == "publish" || name == "lost response" {
+			if name == "publish" || name == "lost response" || name == "refresh" {
 				if err != nil || result.PRNumber != 7 || result.HeadSHA != input.HeadSHA || result.WorkItemID != item || result.URL != "https://github.com/example-org/example-project/pull/7" {
 					t.Fatalf("result=%+v err=%v", result, err)
 				}
 				if _, err := r.PublishReleasePick(t.Context(), item, input, authorize); err != nil {
 					t.Fatal(err)
 				}
-				if f.creates != 1 {
+				wantCreates := 1
+				if name == "refresh" {
+					wantCreates = 0
+				}
+				if f.creates != wantCreates {
 					t.Fatalf("created %d PRs", f.creates)
 				}
 			} else {

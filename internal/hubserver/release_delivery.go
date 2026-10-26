@@ -21,6 +21,7 @@ var ErrReleasePickMismatch = errors.New("release pick provenance mismatch")
 
 type ReleasePickVerifier interface {
 	VerifyReleasePick(context.Context, tracker.ReleasePickInput) error
+	VerifyReleasePickRefresh(context.Context, tracker.ReleasePickInput, tracker.ReleasePickInput) error
 }
 
 var releaseBranchPattern = regexp.MustCompile(`^release/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
@@ -71,6 +72,11 @@ func validReleaseHeadRef(ref string) bool {
 	return ref != "" && len(ref) <= 256 && !strings.HasPrefix(ref, "-") && !strings.HasSuffix(ref, "/") && !strings.HasSuffix(ref, ".lock") && !strings.Contains(ref, "..") && !strings.Contains(ref, "@{") && !strings.ContainsAny(ref, " ~^:?*[\\\t\r\n")
 }
 
+func sameReleasePickDelivery(prior, next tracker.ReleasePickInput) bool {
+	next.BaseSHA, next.HeadSHA = prior.BaseSHA, prior.HeadSHA
+	return prior == next
+}
+
 func (s *Service) prepareReleasePick(ctx context.Context, scope nativeScope, item string, r tracker.AssociateReleasePick) error {
 	if scope.credential.Scope != apiScopeOperator && scope.credential.Scope != apiScopeAdmin || scope.credential.Runner.RunnerID != "" {
 		return nativeNotFound()
@@ -96,7 +102,13 @@ func (s *Service) prepareReleasePick(ctx context.Context, scope nativeScope, ite
 	if !ok {
 		return errors.New("repository transport does not support release provenance verification")
 	}
-	if err := verifier.VerifyReleasePick(ctx, r.ReleasePickInput); err != nil {
+	verify := func() error { return verifier.VerifyReleasePick(ctx, r.ReleasePickInput) }
+	if found {
+		verify = func() error {
+			return verifier.VerifyReleasePickRefresh(ctx, existing.ReleasePickInput, r.ReleasePickInput)
+		}
+	}
+	if err := verify(); err != nil {
 		if errors.Is(err, ErrReleasePickMismatch) {
 			return nativePublicInvalid("Release PR provenance verification failed")
 		}
@@ -133,10 +145,35 @@ func (s *Service) associateReleasePickCommand(ctx context.Context, tx *sql.Tx, s
 		if existing.ReleasePickInput == r.ReleasePickInput {
 			return existing, nil
 		}
-		return nil, nativeConflict(issue.Revision)
 	}
-	if err := s.checkReleasePickDelivery(ctx, tx, scope, item, r, now, false); err != nil {
+	if err := s.checkReleasePickDelivery(ctx, tx, scope, item, r, now, found); err != nil {
 		return nil, err
+	}
+	if found {
+		change, err := readChange(ctx, tx, scope, item, existing.ChangeID)
+		if err != nil {
+			return nil, err
+		}
+		d := tracker.ReleaseDelivery{ReleasePickInput: r.ReleasePickInput, ChangeID: change.ID, Actor: scope.actor(), AssociatedAt: now}
+		if _, err := tx.ExecContext(ctx, `UPDATE release_deliveries SET head_sha = ?, base_sha = ?, version_id = NULL, principal_id = ?, actor_kind = ?, via_key = ?, associated_at = ? WHERE work_item_id = ?`, d.HeadSHA, d.BaseSHA, d.Actor.PrincipalID, d.Actor.Kind, d.Actor.ViaKey, formatHubTime(now), item); err != nil {
+			return nil, err
+		}
+		if _, err := persistNativeIssue(ctx, tx, scope, issue, "issue.edited", tracker.CollaborationData{Change: &tracker.NativeChangeReference{ChangeID: d.ChangeID, HeadSHA: d.HeadSHA}}, now); err != nil {
+			return nil, err
+		}
+		if err := routeChangeForRework(ctx, tx, scope, issue, now); err != nil {
+			return nil, err
+		}
+		change.CurrentVersion, change.UpdatedAt = "", now
+		change.Revision++
+		raw, err := marshalNative(change)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE change_requests SET record_json = ?, claim_version_id = '', claim_head_sha = '' WHERE id = ?`, raw, change.ID); err != nil {
+			return nil, err
+		}
+		return d, nil
 	}
 	_, repositoryID, _, err := projectRepositoryBinding(ctx, tx, scope)
 	if err != nil {
@@ -177,15 +214,30 @@ func (s *Service) checkReleasePickDelivery(ctx context.Context, tx *sql.Tx, scop
 	if err := requireNativeEdit(issue, r.ExpectedRevision); err != nil {
 		return err
 	}
+	existing, refreshing, err := readReleaseDelivery(ctx, tx, scope, item)
+	if err != nil {
+		return err
+	}
+	if publishing && r.PRNumber > 0 && !refreshing {
+		return nativeInvalid("Existing PR publication requires an associated delivery")
+	}
+	if refreshing && (!sameReleasePickDelivery(existing.ReleasePickInput, r.ReleasePickInput) || existing.ReleasePickInput != r.ReleasePickInput && (existing.BaseSHA == r.BaseSHA || existing.HeadSHA == r.HeadSHA)) {
+		return nativePublicInvalid("Refresh must retain the release delivery identity and replace its exact base and head")
+	}
 	if issue.Terminal || issue.Archived || issue.IgnoreDependencies || !slices.Contains(issue.Dependencies, r.SourceIssueID) {
 		return nativePublicInvalid("Delivery must be an unfinished dependent issue with dependency admission enabled")
 	}
-	if publishing && (issue.IssueContract != nil && issue.IssueContract.HumanAction != "" || strings.EqualFold(issue.State, "Blocked") || !issue.DependencyReady) {
+	if publishing && (issue.IssueContract != nil && issue.IssueContract.HumanAction != "" || strings.EqualFold(issue.State, "Blocked") || !issue.DependencyReady || strings.Contains(strings.ToLower(issue.Body), "detent:no-dispatch")) {
 		return nativePublicInvalid("Held delivery cannot publish a release PR")
 	}
 	project, err := readNativeProject(ctx, tx, scope)
 	if err != nil {
 		return err
+	}
+	if refreshing && strings.EqualFold(issue.State, landingLane) {
+		if target := reworkTarget(project, issue.State); target == "" || target == issue.State {
+			return nativePublicInvalid("Release refresh requires a workflow transition back to source capture")
+		}
 	}
 	if publishing {
 		var answered bool
@@ -258,12 +310,12 @@ func (s *Service) checkReleasePickDelivery(ctx context.Context, tx *sql.Tx, scop
 	if err != nil {
 		return err
 	}
-	if found && prior.ID != "" {
+	if found && prior.ID != "" && (!refreshing || prior.ID != existing.ChangeID || prior.Landed != nil) {
 		return nativeConflict(issue.Revision)
 	}
 	if r.PRNumber > 0 {
 		var conflict bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM release_deliveries WHERE repository_id = ? AND pr_number = ?)`, repositoryID, r.PRNumber).Scan(&conflict); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM release_deliveries WHERE repository_id = ? AND pr_number = ? AND work_item_id <> ?)`, repositoryID, r.PRNumber, item).Scan(&conflict); err != nil {
 			return err
 		}
 		if conflict {

@@ -20,8 +20,20 @@ func (r *Reconciler) PublishReleasePick(ctx context.Context, item tracker.Native
 	ctx = scopedRequests(ctx, "native", "reconcile")
 	repository := strings.TrimPrefix(input.Repository, "https://github.com/")
 	parts := strings.Split(repository, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || input.PRNumber != 0 {
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || input.PRNumber < 0 {
 		return result, fmt.Errorf("%w: invalid publication identity", hubserver.ErrReleasePickMismatch)
+	}
+	if input.PRNumber > 0 {
+		if err := r.VerifyReleasePick(ctx, input); err != nil {
+			return result, err
+		}
+		if err := authorize(ctx); err != nil {
+			return result, err
+		}
+		if err := r.VerifyReleasePick(ctx, input); err != nil {
+			return result, err
+		}
+		return tracker.ReleasePickPublication{ReleasePickInput: input, WorkItemID: item, URL: fmt.Sprintf("https://github.com/%s/pull/%d", repository, input.PRNumber)}, nil
 	}
 	path := repositoryRESTPath(parts[0], parts[1])
 	checkRefs := func() error {

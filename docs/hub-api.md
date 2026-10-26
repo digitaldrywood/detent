@@ -2498,12 +2498,14 @@ refused. No new token or organization setting is required.
 
 The API accepts `idempotency_key`, string `expected_revision`, and the exact
 source, repository, head, base and frozen identities in the association table
-below, excluding `pr_number`. MCP uses `project_id`, `work_item_id`, `request_id`,
+below, excluding `pr_number` for initial publication. A refresh supplies the
+existing association's `pr_number`. MCP uses `project_id`, `work_item_id`, `request_id`,
 integer `expected_revision`, and these identities inside `release_pick`.
 The source must be a terminal required dependency with a recorded current
 `develop` landing and a passing security audit for its immutable source version.
 The delivery must be unfinished, unarchived, unheld, without an active lease or
-existing Change, and require normal independent review. Explicit release delivery
+existing Change for initial publication, and require normal independent review. A
+refresh retains the existing delivery and Change identities. Explicit release delivery
 retains its scoped PR landing authority without enabling global GitHub PR landing.
 Current grants, revision and holds are rechecked before publication.
 
@@ -2521,6 +2523,18 @@ or tag a release. Call `associate_release_pick` with the returned identities and
 current delivery revision; normal native source capture, audit and landing
 remain separate mandatory steps.
 
+After a delivery refuses `base_moved`, the release coordinator waits for its
+execution to settle and reads its current revision and association. It prepares
+the same single `-x` pick on the current head of the same release branch, retaining
+the landed develop source, repository, PR number, head branch and frozen SHA.
+It calls `publish_release_pick` with the existing PR number and refreshed exact
+head/base, then `associate_release_pick` with the returned identities. Existing
+PR publication verifies that exact open PR without creating or replacing a PR.
+The coordinator must invoke this sequence instead of retrying landing on the old
+immutable tuple. An interruption resumes by reading the current association:
+an already-associated tuple proceeds to normal source capture; otherwise the
+same publication and association requests may be replayed.
+
 ### Existing release-pick delivery
 
 `POST /work-items/{delivery}/release-pick` and operator MCP
@@ -2529,7 +2543,9 @@ needs current operator/admin authority and a write grant for the selected
 project. Runner and worker credentials cannot associate PRs. The project's
 approved policy must use GitHub PR landing and independent review (native
 review policy, validator, automated review, or security audit). This command
-never changes project policy, issue state, holds, assignees, or deployments.
+never changes project policy, holds, assignees, or deployments. Initial
+association preserves issue state; refresh returns a landing or review delivery
+to source capture through the existing workflow owner.
 
 The API accepts `idempotency_key`, string `expected_revision`, and these fields:
 
@@ -2552,8 +2568,21 @@ landing recorded. Active delivery leases, existing Changes, conflicting PR
 associations, stale revisions, and repository or provenance mismatches are
 refused without partial writes. A held delivery may be associated; its existing
 hold and admission predicates remain authoritative. Identical associations are
-idempotent and return the original owner receipt; conflicting replacements are
-refused. Current grants are checked even on replay.
+idempotent and return the original owner receipt. A settled, unheld delivery may
+refresh only its exact base/head, using its current issue revision. The base must
+advance from the previous recorded base; the source issue, Change and merge,
+repository, PR number, head and release branch, and frozen SHA cannot change.
+Refresh repeats the publication hold and audited-source checks and the repository
+provenance verification. Other replacements are refused. Current grants are
+checked even on replay.
+
+Refresh updates the association and retires the Change's current-version binding
+in one transaction, retaining all prior immutable versions, reviews and checks.
+The existing workflow owner returns the delivery to source capture. The runner
+publishes a new immutable version from the refreshed association with fresh
+validation, review and security audit under the approved policy. Prior evidence
+cannot authorize that version or land the retired version. Terminal issues and
+landed Changes cannot refresh; refresh never reopens them or resets a release ref.
 
 A machine-created delivery remains unconfirmed by default. An approved project
 `WORKFLOW.md` may delegate its bounded contract explicitly:

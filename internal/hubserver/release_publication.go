@@ -21,8 +21,8 @@ func (s *Service) prepareReleasePublication(ctx context.Context, scope nativeSco
 	if scope.credential.Scope != apiScopeOperator && scope.credential.Scope != apiScopeAdmin || scope.credential.Runner.RunnerID != "" {
 		return result, nativeNotFound()
 	}
-	if r.PRNumber != 0 {
-		return result, nativeInvalid("Publication cannot name an existing PR number")
+	if r.PRNumber < 0 {
+		return result, nativeInvalid("Publication requires a valid PR identity")
 	}
 	association := tracker.AssociateReleasePick{ReleasePickInput: r.ReleasePickInput, ExpectedRevision: r.ExpectedRevision}
 	if err := validatePreparedReleasePick(r.ReleasePickInput, r.ExpectedRevision); err != nil {

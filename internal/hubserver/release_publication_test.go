@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -29,6 +30,12 @@ func (p *releasePublisherFixture) PublishReleasePick(ctx context.Context, item t
 	}
 	if err := authorize(ctx); err != nil {
 		return tracker.ReleasePickPublication{}, err
+	}
+	if input.PRNumber > 0 {
+		if err := p.VerifyReleasePick(ctx, input); err != nil {
+			return tracker.ReleasePickPublication{}, err
+		}
+		return tracker.ReleasePickPublication{ReleasePickInput: input, WorkItemID: item, URL: fmt.Sprintf("%s/pull/%d", input.Repository, input.PRNumber)}, nil
 	}
 	expected := p.input
 	expected.PRNumber = 0

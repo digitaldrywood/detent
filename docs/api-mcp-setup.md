@@ -809,7 +809,10 @@ The project-scoped `publish_release_pick` operator tool uses the
 [native publication contract](hub-api.md#publish-a-prepared-release-pick-pr).
 Supply the dependent `work_item_id`, current `expected_revision`, stable
 `request_id`, and `release_pick` source/repository/head/base/frozen identities
-without a PR number. The prepared branch must already contain exactly one `-x`
+without a PR number for initial publication. For a settled delivery that refused
+`base_moved`, supply its existing `pr_number` and the refreshed exact base/head,
+retaining its source, repository, branches and frozen SHA. The prepared branch
+must already contain exactly one `-x`
 pick of the audited, landed source fix on the frozen release base.
 
 The tool uses the existing GitHub transport and returns the exact PR identity.
@@ -830,6 +833,16 @@ native Change, and preserves all holds. The existing runner captures the exact
 source, reviews, gates, and lands on the recorded frozen release branch.
 The tool does not merge or deploy. Worker completion contracts do not grant
 permission to call this operator mutation.
+
+The release coordinator handles `base_moved` by preparing the same pick on the
+current head of the same frozen release branch, verifying the existing PR through
+`publish_release_pick`, then refreshing through `associate_release_pick`. It uses
+the current delivery revision and waits for active execution to settle. Refresh
+retires the current version binding while retaining prior immutable evidence and
+returns the existing Change to source capture and fresh validation, review and
+audit. On interruption, read the association first; replay unchanged request
+identities when needed. Never retry the old tuple indefinitely or reset a release
+branch. Terminal deliveries cannot be refreshed or reopened by this path.
 
 ## Native validation evidence
 

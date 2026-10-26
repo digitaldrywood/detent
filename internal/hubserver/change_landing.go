@@ -149,6 +149,10 @@ func returnChangeForRework(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 	if err := appendReviewInstructions(ctx, tx, scope, issue, change, review, now); err != nil {
 		return err
 	}
+	return routeChangeForRework(ctx, tx, scope, issue, now)
+}
+
+func routeChangeForRework(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, now time.Time) error {
 	reviewSource, err := nativeChangeReviewSource(ctx, tx, scope, issue.State)
 	if err != nil {
 		return err

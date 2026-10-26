@@ -21,6 +21,7 @@ type releaseVerifierFixture struct {
 	input  tracker.ReleasePickInput
 	calls  int
 	refuse bool
+	verify func(tracker.ReleasePickInput) error
 }
 
 func (v *releaseVerifierFixture) Reconcile(context.Context, ReconcileRequest) (ReconcileSnapshot, error) {
@@ -31,7 +32,14 @@ func (v *releaseVerifierFixture) VerifyReleasePick(_ context.Context, input trac
 	if v.refuse || input != v.input {
 		return ErrReleasePickMismatch
 	}
+	if v.verify != nil {
+		return v.verify(input)
+	}
 	return nil
+}
+
+func (v *releaseVerifierFixture) VerifyReleasePickRefresh(ctx context.Context, _, input tracker.ReleasePickInput) error {
+	return v.VerifyReleasePick(ctx, input)
 }
 
 type releaseDeliveryFixture struct {
@@ -87,6 +95,111 @@ func (f *releaseDeliveryFixture) associate(t *testing.T, r tracker.AssociateRele
 	var d tracker.ReleaseDelivery
 	decodeHubResponse(t, response, &d)
 	return &d
+}
+
+func TestNativeReleaseDeliveryRefresh(t *testing.T) {
+	for _, name := range []string{"refresh", "stale revision", "different source", "different frozen series", "different release branch", "different repository", "different PR", "different branch", "held", "operator stop", "archived", "terminal", "active writer", "provenance", "no source capture transition"} {
+		t.Run(name, func(t *testing.T) {
+			f, _, _ := releasePublicationFixture(t, true)
+			original := f.associate(t, f.request)
+			var before tracker.NativeIssue
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.itemPath, f.token, nil), &before)
+			request := f.request
+			request.IdempotencyKey = "refresh"
+			request.ExpectedRevision = before.Revision
+			request.BaseSHA, request.HeadSHA = strings.Repeat("1", 40), strings.Repeat("2", 40)
+			want := http.StatusUnprocessableEntity
+			switch name {
+			case "refresh":
+				want = http.StatusOK
+			case "stale revision":
+				request.ExpectedRevision--
+				want = http.StatusConflict
+			case "different source":
+				request.SourceMergeSHA = strings.Repeat("3", 40)
+			case "different frozen series":
+				request.FrozenSHA = strings.Repeat("3", 40)
+			case "different release branch":
+				request.BaseRef = "release/v2.0"
+			case "different repository":
+				request.Repository = "https://github.com/owner/other"
+			case "different PR":
+				request.PRNumber++
+			case "different branch":
+				request.HeadRef = "pick/other"
+			case "held":
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET issue_contract_json = '{"human_action":"Keep this delivery held"}' WHERE native_id = ?`, f.delivery.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			case "operator stop":
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET body = body || '<!-- detent:no-dispatch -->' WHERE native_id = ?`, f.delivery.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			case "archived":
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET archived = 1 WHERE native_id = ?`, f.delivery.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			case "terminal":
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND terminal = 1 LIMIT 1) WHERE native_id = ?`, f.project.ID, f.delivery.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			case "active writer":
+				worker := f.worker(t, "refresh-worker")
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "refresh-machine", "hostname": "runner", "version": "v0.117.50", "capacity": 1}), http.StatusOK)
+				at := formatHubTime(f.now)
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases (lease_id, issue_id, machine_id, session_id, expires_at, acquired_at, renewed_at, created_at, updated_at) VALUES ('refresh-lease', (SELECT id FROM issues WHERE native_id = ?), 'refresh-machine', 'refresh-session', ?, ?, ?, ?, ?)`, f.delivery.WorkItemID, formatHubTime(f.now.Add(time.Minute)), at, at, at, at); err != nil {
+					t.Fatal(err)
+				}
+				want = http.StatusConflict
+			case "provenance":
+				f.verifier.refuse = true
+			case "no source capture transition":
+				states, err := marshalNative(append(nativeFixtureStates(), tracker.NativeState{Name: "Merging", Dispatchable: true}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json = ? WHERE id = ?", states, f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states (project_id, source_name, detent_state, dispatchable, created_at, updated_at) VALUES (?, 'Merging', 'Merging', 1, ?, ?)", f.project.ID, formatHubTime(f.now), formatHubTime(f.now)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id = (SELECT id FROM workflow_states WHERE project_id = ? AND detent_state = 'Merging') WHERE native_id = ?", f.project.ID, f.delivery.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.verifier.input = request.ReleasePickInput
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.itemPath+"/release-pick", f.token, request)
+			requireNativeStatus(t, response, want)
+			var after tracker.NativeIssue
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.itemPath, f.token, nil), &after)
+			if want != http.StatusOK {
+				if after.ReleaseDelivery == nil || *after.ReleaseDelivery != *original || after.Revision != before.Revision {
+					t.Fatalf("refusal mutated association: %+v", after)
+				}
+				return
+			}
+			if after.ReleaseDelivery == nil || after.ReleaseDelivery.ReleasePickInput != request.ReleasePickInput || after.ReleaseDelivery.ChangeID != original.ChangeID || after.ReleaseDelivery.VersionID != "" || after.Revision <= before.Revision {
+				t.Fatalf("refresh did not retain delivery owner: %+v", after)
+			}
+			f.associate(t, request)
+			stale := request
+			stale.IdempotencyKey = "concurrent-refresh"
+			stale.BaseSHA, stale.HeadSHA = strings.Repeat("4", 40), strings.Repeat("5", 40)
+			f.verifier.input = stale.ReleasePickInput
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.itemPath+"/release-pick", f.token, stale), http.StatusConflict)
+			var retained tracker.NativeIssue
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.itemPath, f.token, nil), &retained)
+			if retained.Revision != after.Revision || *retained.ReleaseDelivery != *after.ReleaseDelivery {
+				t.Fatal("stale concurrent refresh partially mutated delivery")
+			}
+			stale.ExpectedRevision = retained.Revision
+			stale.IdempotencyKey = "next-refresh"
+			if next := f.associate(t, stale); next.ReleasePickInput != stale.ReleasePickInput || next.ChangeID != original.ChangeID {
+				t.Fatalf("later recovery cycle did not reuse delivery: %+v", next)
+			}
+		})
+	}
 }
 
 func TestNativeReleaseDeliveryAssociation(t *testing.T) {

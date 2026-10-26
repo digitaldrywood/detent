@@ -50,6 +50,28 @@ type releasePickFile struct {
 	SHA              string `json:"sha"`
 }
 
+func (r *Reconciler) VerifyReleasePickRefresh(ctx context.Context, prior, next tracker.ReleasePickInput) error {
+	var comparison struct {
+		Status string `json:"status"`
+	}
+	if r == nil || r.client == nil {
+		return errors.New("release repository transport is unavailable")
+	}
+	identity := next
+	identity.BaseSHA, identity.HeadSHA = prior.BaseSHA, prior.HeadSHA
+	if identity != prior || prior.BaseSHA == next.BaseSHA || prior.HeadSHA == next.HeadSHA {
+		return fmt.Errorf("%w: refresh changes the release delivery identity", hubserver.ErrReleasePickMismatch)
+	}
+	repository := strings.TrimPrefix(next.Repository, "https://github.com/")
+	if err := r.client.REST(scopedRequests(ctx, "native", "reconcile"), http.MethodGet, "/repos/"+repository+"/compare/"+prior.BaseSHA+"..."+next.BaseSHA, nil, &comparison); err != nil {
+		return fmt.Errorf("verify release base advancement: %w", err)
+	}
+	if comparison.Status != "ahead" {
+		return fmt.Errorf("%w: release base must advance its prior recorded head", hubserver.ErrReleasePickMismatch)
+	}
+	return r.VerifyReleasePick(ctx, next)
+}
+
 func (r *Reconciler) VerifyReleasePick(ctx context.Context, input tracker.ReleasePickInput) error {
 	if r == nil || r.client == nil {
 		return errors.New("release repository transport is unavailable")
