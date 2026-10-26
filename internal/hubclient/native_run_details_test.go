@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +18,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -250,6 +254,136 @@ func TestNativeObservationDetailBatches(t *testing.T) {
 			}
 			if len(execution.observations) != 0 || execution.pending != nil {
 				t.Fatal("accepted boundary retained a pending batch")
+			}
+		})
+	}
+}
+
+func TestNativeOversizedStepReceipt(t *testing.T) {
+	for _, size := range []int{100, 400000, 500000} {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
+			h := newNativeChangeHub(t)
+			store, publisher := changeEvidenceArtifactService(t, h)
+			var attachmentBody []byte
+			if size == 500000 {
+				h.scheduler.client.artifactServiceID = ""
+				transport := h.native.client.httpClient.Transport
+				h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					path := h.native.base() + "/attachments"
+					evidence := strings.HasPrefix(request.URL.Path, h.native.base()+"/attempts/") && strings.HasSuffix(request.URL.Path, "/evidence")
+					if !strings.HasPrefix(request.URL.Path, path) && !evidence {
+						return transport.RoundTrip(request)
+					}
+					var body []byte
+					if request.Method == http.MethodPost && evidence {
+						var err error
+						attachmentBody, err = io.ReadAll(request.Body)
+						if err != nil {
+							return nil, err
+						}
+						if request.Header.Get("Idempotency-Key") == "" {
+							t.Error("attachment upload lacks retry identity")
+						}
+						encoded, err := base64.RawURLEncoding.DecodeString(request.Header.Get("X-Detent-Evidence"))
+						var evidenceRequest attachment.EvidenceRequest
+						if err != nil || json.Unmarshal(encoded, &evidenceRequest) != nil || evidenceRequest.LeaseID == "" || evidenceRequest.FencingToken <= 0 || evidenceRequest.IdempotencyKey != request.Header.Get("Idempotency-Key") || !strings.HasPrefix(evidenceRequest.IdempotencyKey, evidenceRequest.AttemptID+":step:") || !strings.Contains(request.URL.Path, evidenceRequest.AttemptID) {
+							t.Fatal("step attachment lacks fenced attempt evidence authority")
+						}
+						metadata := attachment.Metadata{ID: "att_" + strings.Repeat("c", 32), ProjectID: string(h.project), Name: "execution-step.json", ContentType: "application/json", Size: int64(len(attachmentBody)), SHA256: artifact.Digest(attachmentBody)}
+						metadata.Reference = metadata.Markdown(string(h.organization))
+						body, err = json.Marshal(metadata)
+						if err != nil {
+							return nil, err
+						}
+					} else if request.Method == http.MethodGet {
+						body = attachmentBody
+					} else if request.Method != http.MethodPost || !strings.HasSuffix(request.URL.Path, "/reference") {
+						t.Errorf("unexpected attachment request: %s", request.Method)
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body)), Request: request}, nil
+				})
+			}
+			issue := h.createInProgress(t, "Retain validator evidence")
+			h.claim(t, issue.ID)
+			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			if err := e.PrepareArtifacts(t.Context(), nativeChangeSourceRepo(t)); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			receipt := tracker.NativeStepReceipt{Step: "validator", CompletedAt: time.Now().UTC(), Source: tracker.NativeCheckpoint{HeadSHA: strings.Repeat("a", 40), WorkspaceDigest: strings.Repeat("b", 64)}, Validator: &gate.ValidatorResult{Submitted: true, Verdict: "pass", Score: 1, Summary: "Checks passed", Commands: []gate.CommandResult{{Command: "go test ./...", Output: strings.Repeat("ok example/package\n", size/19)}}}}
+			if err := e.Checkpoint(t.Context(), tracker.NativeCheckpoint{Resume: "fresh_checkout", Availability: "available", Storage: "local_only", WorktreeState: "clean", ExternalEffect: "none", EffectState: "none"}); err != nil {
+				t.Fatal(err)
+			}
+			if size > 100 {
+				receipt.Validator.Commands = nil
+				for range 8 {
+					receipt.Validator.Commands = append(receipt.Validator.Commands, gate.CommandResult{Command: "go test ./...", HeadSHA: receipt.Source.HeadSHA, ExitCode: 0, Output: strings.Repeat("ok example/package\n", 3000)})
+				}
+				receipt.PolicyID, receipt.ReviewState = e.data.PolicyID, e.stepReviewState()
+				e.pending = &tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":legacy-step"}, Type: "run.checkpointed", SchemaVersion: 1, Data: e.data}
+				e.pending.Data.Sequence++
+				e.pending.Data.Steps = []tracker.NativeStepReceipt{receipt}
+				err := h.native.AppendEvent(t.Context(), tracker.NativeWorkItemID(issue.ID), *e.pending)
+				var refusal *APIError
+				if !errors.As(err, &refusal) || refusal.Rejection == nil || refusal.Rejection.Field != "data.steps.validator" {
+					t.Fatalf("unbounded wire receipt was not rejected with field detail: %v", err)
+				}
+				if err := e.flush(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := e.RecordStep(t.Context(), receipt); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(e.data.Steps[0])
+			if err != nil || len(raw) > 256<<10 {
+				t.Fatalf("wire receipt bytes=%d error=%v", len(raw), err)
+			}
+			recovery, err := h.native.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.PublishPending(t.Context(), publisher); err != nil {
+				t.Fatal(err)
+			}
+			if ref := e.data.Steps[0].PayloadAttachment; ref != nil {
+				altered := e.data.Steps[0]
+				changed := *ref
+				changed.WorkItemID = tracker.NativeWorkItemID("wi_" + strings.Repeat("f", 32))
+				altered.PayloadAttachment = &changed
+				if _, err := e.restoreStep(t.Context(), altered); !errors.Is(err, artifact.ErrIntegrity) {
+					t.Fatalf("cross-item attachment accepted: %v", err)
+				}
+				saved := attachmentBody
+				attachmentBody = bytes.Repeat([]byte("x"), len(saved))
+				if _, err := e.restoreStep(t.Context(), e.data.Steps[0]); !errors.Is(err, artifact.ErrIntegrity) {
+					t.Fatalf("corrupt attachment accepted: %v", err)
+				}
+				attachmentBody = saved
+			}
+			if ref := e.data.Steps[0].PayloadArtifact; ref != nil {
+				altered := e.data.Steps[0]
+				changed := *ref
+				changed.WorkItemID = "wi_" + strings.Repeat("f", 32)
+				altered.PayloadArtifact = &changed
+				if _, err := e.restoreStep(t.Context(), altered); !errors.Is(err, artifact.ErrIntegrity) {
+					t.Fatalf("cross-item payload accepted: %v", err)
+				}
+				altered = e.data.Steps[0]
+				altered.Source.HeadSHA = strings.Repeat("f", 40)
+				if _, err := e.restoreStep(t.Context(), altered); !errors.Is(err, artifact.ErrIntegrity) {
+					t.Fatalf("changed binding accepted: %v", err)
+				}
+			}
+			e.data.Steps = nil
+			e.claim.recovery = recovery
+			restored, err := e.Step(t.Context(), receipt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(restored.Validator, receipt.Validator) {
+				t.Fatal("retry lost validator evidence")
 			}
 		})
 	}

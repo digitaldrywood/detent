@@ -971,6 +971,18 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 			e.pending.Data.Runtime.LocalAttemptID, e.pending.Data.Runtime.Generation, e.pending.Data.Runtime.WorkerLaunch = r.LocalAttemptID, r.Generation, r.WorkerLaunch
 		}
 	}
+	events := append([]tracker.NativeRunEvent{*e.pending}, e.pending.PriorEvents...)
+	for i := range events {
+		for j, receipt := range events[i].Data.Steps {
+			bounded, err := e.retainStep(ctx, receipt)
+			if err != nil {
+				return err
+			}
+			events[i].Data.Steps[j] = bounded
+		}
+	}
+	e.pending.Data.Steps = events[0].Data.Steps
+	e.pending.PriorEvents = events[1:]
 	if err := e.claim.source.client.AppendEvent(ctx, e.claim.lease.WorkItemID, *e.pending); err != nil {
 		var refusal *APIError
 		if e.pending.Type == "run.finished" && errors.As(err, &refusal) && refusal.permanentInvalidRequest() {

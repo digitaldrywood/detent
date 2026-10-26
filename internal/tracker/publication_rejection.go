@@ -17,7 +17,7 @@ func (r PublicationRejection) Valid() bool {
 	case "security_audit":
 		return slices.Contains([]string{"review", "body", "decision", "verdict", "policy.security_audit", "version_id", "session_id", "repository", "base_sha", "head_sha", "diff_digest", "source.identity", "execution_session", "separate_session", "run", "run.id", "run.issue_id", "run.project_id", "run.repository", "run.pr_number", "run.base_sha", "run.head_sha", "run.reviewer_version", "run.reviewer_digest", "run.exit_status", "run.diff_bytes", "run.output_bytes", "run.output_digest", "run.invocation_id", "run.worker_pid", "run.worker_pgid", "run.worker_started_at", "run.started_at", "run.completed_at", "run.summary", "run.verdict", "key.base_sha", "key.head_sha"}, r.Field)
 	case "event_validation":
-		return slices.Contains([]string{"", "schema_version", "type", "data", "data.runtime", "data.outcome", "data.artifact_ids"}, r.Field)
+		return slices.Contains([]string{"", "schema_version", "type", "data", "data.runtime", "data.outcome", "data.artifact_ids", "data.steps", "data.steps.validator", "data.steps.validation", "data.steps.security_audit", "data.steps.completion_body", "data.steps.source", "data.steps.payload_artifact", "data.steps.payload_attachment"}, r.Field)
 	case "runtime_validation":
 		return slices.Contains([]string{"data.runtime", "data.runtime.worker_launch", "data.runtime.pipeline", "data.runtime.validation", "data.runtime.completion", "data.runtime.phases", "data.runtime.identity", "data.runtime.activity", "data.runtime.landing", "data.runtime.rest", "data.runtime.github"}, r.Field)
 	case "execution_validation":
