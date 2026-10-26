@@ -703,6 +703,17 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 	if err != nil {
 		return Info{}, err
 	}
+	if issue.Source != nil {
+		release, err := l.acquireSourceOperation(ctx)
+		if err != nil {
+			return Info{}, err
+		}
+		err = l.importChangeSource(ctx, issue.Source)
+		release()
+		if err != nil {
+			return Info{}, err
+		}
+	}
 	deliveryHead := ""
 	if issue.ReleaseDelivery != nil && issue.Landing == nil {
 		release, err := l.acquireSourceOperation(ctx)
@@ -710,17 +721,6 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 			return Info{}, err
 		}
 		deliveryHead, err = l.prepareReleaseDelivery(ctx, issue)
-		release()
-		if err != nil {
-			return Info{}, err
-		}
-	}
-	if issue.Source != nil {
-		release, err := l.acquireSourceOperation(ctx)
-		if err != nil {
-			return Info{}, err
-		}
-		err = l.importChangeSource(ctx, issue.Source)
 		release()
 		if err != nil {
 			return Info{}, err
