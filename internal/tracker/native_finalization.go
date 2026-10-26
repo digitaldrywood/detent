@@ -71,6 +71,10 @@ func PublicGateResult(result gate.CommandResult) gate.CommandResult {
 }
 
 func publicGateOutput(value string) (string, bool) {
+	return runtimeoutput.Diagnostic(RedactGateOutput(value), NativeFinalizationTextLimit)
+}
+
+func RedactGateOutput(value string) string {
 	value = ansi.Strip(strings.ToValidUTF8(value, "�"))
 	value = strings.Map(func(r rune) rune {
 		if r < ' ' && r != '\n' && r != '\r' && r != '\t' {
@@ -82,7 +86,7 @@ func publicGateOutput(value string) (string, bool) {
 	value = nativeGateBearer.ReplaceAllString(value, "Bearer [redacted]")
 	value = nativeGateToken.ReplaceAllString(value, "[redacted]")
 	value = nativeGatePrivateText.ReplaceAllString(value, `${1}[redacted]`)
-	return runtimeoutput.Diagnostic(value, NativeFinalizationTextLimit)
+	return value
 }
 
 func (f NativeFinalization) Public() NativeFinalization {

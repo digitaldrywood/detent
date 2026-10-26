@@ -549,7 +549,7 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	err = cmd.Wait()
 	result.FinishedAt = time.Now().UTC()
 	result.DurationNS = time.Since(started).Nanoseconds()
-	result.Output = output.String()
+	result.Output = tracker.RedactGateOutput(output.String())
 	if paged {
 		if err == nil {
 			result.Output, result.OutputTruncated = source.result()
