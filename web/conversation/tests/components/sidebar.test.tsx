@@ -488,20 +488,231 @@ it("reads current human holds without promoting dependency waits or stale health
   ]) {
     expect(within(screen.getByTestId(`attention-issue-${id}`)).getByText(label!).getAttribute("datetime")).toBe(start);
   }
+  vi.spyOn(Date, "now").mockRestore();
+  vi.useFakeTimers();
   items = [issue("wi_old", "Todo"), issue("wi_dependency")];
-  await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "1" })));
-  await waitFor(() => expect(result.current).toEqual([]));
+  await act(async () => {
+    Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "1" }));
+    await vi.advanceTimersByTimeAsync(30_000);
+  });
+  expect(result.current).toEqual([]);
   items = [issue("wi_recent")];
-  await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "2" })));
-  await waitFor(() => expect(result.current.map((action) => action.id)).toEqual(["wi_recent"]));
+  await act(async () => {
+    Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "2" }));
+    await vi.advanceTimersByTimeAsync(30_000);
+  });
+  expect(result.current.map((action) => action.id)).toEqual(["wi_recent"]);
   const explained = mocks.getExplanation.mock.calls.length;
-  await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "2b" })));
-  await waitFor(() => expect(mocks.listWorkItems.mock.calls.length).toBeGreaterThan(3));
+  await act(async () => {
+    Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "2b" }));
+    await vi.advanceTimersByTimeAsync(30_000);
+  });
+  expect(mocks.listWorkItems.mock.calls.length).toBeGreaterThan(3);
   expect(mocks.getExplanation.mock.calls.length).toBe(explained);
   answered = true;
   items = [{ ...issue("wi_recent"), revision: "answered" }];
-  await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "3" })));
-  await waitFor(() => expect(result.current).toEqual([]));
+  await act(async () => {
+    Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "3" }));
+    await vi.advanceTimersByTimeAsync(30_000);
+  });
+  expect(result.current).toEqual([]);
+});
+
+describe("human action refresh scheduling", () => {
+  const projects = ["p1", "p2"].map((id) => ({ id, name: id, can_write: true }));
+  const emit = (source: Source, data: unknown) => source.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify(data) }));
+  const card = (state: string) => ({ issue: { ...itemFixture, state, terminal: false }, attempt: null, change: null });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("EventSource", Source);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    mocks.getProject.mockResolvedValue({ states: [
+      { name: "Blocked", terminal: false, dispatchable: false },
+      { name: "Human Review", terminal: false, dispatchable: false },
+      { name: "Plan Review", terminal: false, dispatchable: false },
+    ] });
+    mocks.listWorkItems.mockResolvedValue({ items: [] });
+  });
+
+  it("bounds 100 events per project and retains the last event without polling", async () => {
+    renderHook(() => useSidebarHumanActions(projects));
+    await act(async () => {});
+    for (let sequence = 1; sequence <= 100; sequence++) {
+      await act(async () => { for (const source of Source.instances) emit(source, sequence); });
+    }
+    expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    for (const project of projects) {
+      expect(mocks.listWorkItems.mock.calls.filter(([input]) => input.projectId === project.id)).toHaveLength(2);
+    }
+    expect(mocks.getProject).toHaveBeenCalledTimes(4);
+    await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+    expect(mocks.listWorkItems).toHaveBeenCalledTimes(4);
+  });
+
+  it.each(["Blocked", "Human Review", "Plan Review"])("bounds refreshes on a %s transition and ignores unrelated deltas", async (lane) => {
+    renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
+    await act(async () => {});
+    const source = Source.instances[0]!;
+    await act(async () => { emit(source, { sequence: 1, gap: false, deltas: [{ sequence: 1, previous: card("Todo"), current: card("Running") }] }); });
+    expect(mocks.listWorkItems).toHaveBeenCalledTimes(1);
+    await act(async () => { emit(source, { sequence: 2, gap: false, deltas: [{ sequence: 2, previous: card("Running"), current: card(lane) }] }); });
+    expect(mocks.listWorkItems).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
+    await act(async () => { emit(source, { sequence: 3, gap: false, deltas: [{ sequence: 3, previous: card(lane), current: card("Todo") }] }); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(mocks.listWorkItems).toHaveBeenCalledTimes(3);
+    expect(mocks.getProject).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes changes to a listed hold even without a lane transition", async () => {
+    const issue = { ...itemFixture, state: "Blocked", terminal: false, archived: false,
+      issue_contract: { human_action: "Choose an option" } };
+    mocks.listWorkItems.mockResolvedValue({ items: [issue] });
+    mocks.getExplanation.mockResolvedValue({ current_lane: { name: "Blocked" }, required_gate: {} });
+    const { result } = renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
+    await act(async () => {});
+    expect(result.current.map((action) => action.id)).toEqual([issue.work_item_id]);
+    mocks.listWorkItems.mockResolvedValue({ items: [] });
+    await act(async () => {
+      emit(Source.instances[0]!, { sequence: 1, gap: false, deltas: [{ sequence: 1,
+        previous: card("Blocked"), current: card("Blocked") }] });
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(result.current).toEqual([]);
+    expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["numeric", "workflow", "policy", "reconnect", "expiry"])("discovers a newly added holding lane after %s", async (trigger) => {
+    mocks.getProject.mockResolvedValue({ states: [{ name: "Blocked", terminal: false, dispatchable: false }] });
+    const issue = { ...itemFixture, state: "Plan Review", terminal: false, archived: false,
+      issue_contract: { human_action: "Approve the plan" } };
+    mocks.listWorkItems.mockImplementation(async ({ state }) => ({ items: state.includes("Plan Review") ? [issue] : [] }));
+    mocks.getExplanation.mockResolvedValue({ current_lane: { name: "Plan Review" }, required_gate: {} });
+    const { result } = renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
+    await act(async () => {});
+    expect(result.current).toEqual([]);
+    mocks.getProject.mockResolvedValue({ states: [
+      { name: "Blocked", terminal: false, dispatchable: false },
+      { name: "Plan Review", terminal: false, dispatchable: false },
+    ] });
+    await act(async () => {
+      const source = Source.instances[0]!;
+      if (trigger === "expiry") {
+        await vi.advanceTimersByTimeAsync(120_000);
+        emit(source, { sequence: 1, gap: false, deltas: [{ sequence: 1, previous: card("Todo"), current: card("Running") }] });
+      } else if (trigger === "reconnect") {
+        source.dispatchEvent(new Event("open"));
+      } else {
+        emit(source, trigger === "numeric" ? 1 : { type: `${trigger}.changed` });
+      }
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(mocks.getProject).toHaveBeenCalledTimes(2);
+    expect(result.current.map((action) => action.id)).toEqual([issue.work_item_id]);
+  });
+
+  it("bounds sustained listed-hold deltas with a leading delay and retains the final update", async () => {
+    const issue = { ...itemFixture, state: "Blocked", terminal: false, archived: false,
+      issue_contract: { human_action: "Choose an option" } };
+    mocks.listWorkItems.mockResolvedValue({ items: [issue] });
+    mocks.getExplanation.mockResolvedValue({ current_lane: { name: "Blocked" }, required_gate: {} });
+    const { result } = renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    const source = Source.instances[0]!;
+    for (let sequence = 1; sequence <= 60; sequence++) {
+      await act(async () => {
+        emit(source, { sequence, gap: false, deltas: [{ sequence, previous: card("Blocked"), current: card("Blocked") }] });
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(mocks.listWorkItems).toHaveBeenCalledTimes(sequence < 2 ? 1 : sequence < 32 ? 2 : 3);
+    }
+    mocks.listWorkItems.mockResolvedValue({ items: [] });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(mocks.listWorkItems).toHaveBeenCalledTimes(4);
+    expect(result.current).toEqual([]);
+  });
+
+  it("cancels a pending relevant refresh on unmount", async () => {
+    const hook = renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
+    await act(async () => {});
+    await act(async () => {
+      emit(Source.instances[0]!, { sequence: 1, gap: false, deltas: [{ sequence: 1, previous: card("Todo"), current: card("Blocked") }] });
+    });
+    expect(vi.getTimerCount()).toBe(1);
+    hook.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(mocks.listWorkItems).toHaveBeenCalledOnce();
+    expect(Source.instances[0]!.close).toHaveBeenCalledOnce();
+  });
+
+  it("coalesces events during an in-flight read and stops pagination when hidden", async () => {
+    let finish!: (page: unknown) => void;
+    mocks.listWorkItems.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    const hook = renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
+    try {
+      await act(async () => {});
+      await act(async () => {
+        for (let sequence = 1; sequence <= 100; sequence++) emit(Source.instances[0]!, sequence);
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(mocks.listWorkItems).toHaveBeenCalledOnce();
+      visibility.mockReturnValue("hidden");
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      await act(async () => finish({ items: [itemFixture], next_cursor: "next-page" }));
+      expect(mocks.listWorkItems).toHaveBeenCalledOnce();
+      expect(mocks.getExplanation).not.toHaveBeenCalled();
+      visibility.mockReturnValue("visible");
+      await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+      expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
+      hook.unmount();
+      await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+      expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
+    } finally {
+      hook.unmount();
+      await act(async () => finish?.({ items: [] }));
+    }
+  });
+
+  it.each([true, false])("defers hidden requests and catches up once on visible (initially hidden: %s)", async (initiallyHidden) => {
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue(initiallyHidden ? "hidden" : "visible");
+    renderHook(() => useSidebarHumanActions(projects));
+    await act(async () => {});
+    const initial = initiallyHidden ? 0 : 2;
+    visibility.mockReturnValue("hidden");
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    await act(async () => {
+      for (let sequence = 1; sequence <= 100; sequence++) for (const source of Source.instances) emit(source, sequence);
+      await vi.advanceTimersByTimeAsync(90_000);
+    });
+    expect(mocks.listWorkItems).toHaveBeenCalledTimes(initial);
+    expect(mocks.getProject).toHaveBeenCalledTimes(initial);
+    visibility.mockReturnValue("visible");
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+    expect(mocks.listWorkItems).toHaveBeenCalledTimes(initial + 2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+    expect(mocks.listWorkItems).toHaveBeenCalledTimes(initial + 2);
+  });
+
+  it("shares workflow reads across hook remounts and does not replay activity into another read", async () => {
+    const retained = subscribeProjectEvents(mocks, "p1", { activity: () => {} });
+    try {
+      emit(Source.instances[0]!, 1);
+      const hook = renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
+      await act(async () => {});
+      hook.unmount();
+      renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
+      await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+      expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
+      expect(mocks.getProject).toHaveBeenCalledOnce();
+    } finally {
+      retained();
+    }
+  });
 });
 
 it("keeps health findings and failed or waiting conversations out of Needs you without a current human action", async () => {
