@@ -1,6 +1,7 @@
 package hubclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -282,17 +283,63 @@ func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.Valid
 		Mutation:          tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":validator:" + strconv.FormatInt(result.SessionID, 10), LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
 		ExpectedVersionID: result.VersionID, Decision: decision, Body: body.String(), Validator: &result,
 	})
-	if err != nil {
-		return err
+	publicationErr := err
+	if publicationErr != nil {
+		var refusal *APIError
+		if !errors.Is(publicationErr, ErrUnavailable) || ctx.Err() != nil || errors.As(publicationErr, &refusal) && refusal.Status >= 400 && refusal.Status < 500 {
+			return publicationErr
+		}
 	}
 	detail, err := client.runtimeChange(ctx, item, e.change.ChangeID)
 	if err != nil {
-		return err
+		return errors.Join(publicationErr, err)
+	}
+	if publicationErr != nil && !recordedValidatorMatches(detail, result, decision, body.String(), e.claim.lease.MachineID) {
+		return publicationErr
 	}
 	e.change.Validator = &result
 	e.change.Reviewed = detail.Change.CurrentVersion == result.VersionID && detail.Summary.Status == "reviewed"
 	e.stepReviews = &detail
 	return nil
+}
+
+func recordedValidatorMatches(detail tracker.ChangeDetail, result gate.ValidatorResult, decision, body string, machine tracker.MachineID) bool {
+	if detail.Change.CurrentVersion != result.VersionID {
+		return false
+	}
+	expected, err := json.Marshal(result)
+	if err != nil {
+		return false
+	}
+	for _, review := range detail.Reviews {
+		if review.ID == "" || review.VersionID != result.VersionID || review.Actor.Kind != "runner" || review.SessionMachineID != machine || review.Decision != decision || review.Body != body || review.Validator == nil {
+			continue
+		}
+		var normalized gate.ValidatorResult
+		if err := json.Unmarshal(expected, &normalized); err != nil {
+			return false
+		}
+		criteria := make([]string, 0, len(review.Validator.CriteriaEvidence))
+		for _, evidence := range review.Validator.CriteriaEvidence {
+			criteria = append(criteria, evidence.Criterion)
+		}
+		tree := ""
+		for _, version := range detail.Versions {
+			if version.ID == result.VersionID && version.Validation != nil {
+				tree = version.Validation.TreeSHA
+			}
+		}
+		gate.NormalizeCriterionEvidence(&normalized, criteria, tree)
+		canonical, err := json.Marshal(normalized)
+		if err != nil {
+			return false
+		}
+		actual, err := json.Marshal(review.Validator)
+		if err == nil && bytes.Equal(canonical, actual) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *nativeExecution) SecurityAuditVersion(ctx context.Context) (runner.NativeValidation, error) {
