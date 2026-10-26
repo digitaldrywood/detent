@@ -450,12 +450,15 @@ func TestReviewState(t *testing.T) {
 			d.Versions[0].Checks = append(d.Versions[0].Checks, d.Versions[0].Checks[0])
 			d.Versions[0].Checks[1].CheckRunID = "missing-run"
 		}, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
-		{name: "source review wait is evidence pending", edit: func(d *tracker.ChangeDetail) {
+		{name: "source review wait needs implementation", edit: func(d *tracker.ChangeDetail) {
 			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "commented", ImplementationReview: &gate.ValidatorResult{Verdict: "wait"}})
 			d.Versions[0].Policy.Gates.AutomatedReview = gate.AutomatedReviewRequired
-		}, want: connector.ChangeReview{Current: true}},
+		}, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
 		{name: "source findings need implementation", edit: func(d *tracker.ChangeDetail) {
 			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "changes_requested", ImplementationReview: &gate.ValidatorResult{Verdict: "rework"}})
+		}, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
+		{name: "acceptance wait needs implementation", edit: func(d *tracker.ChangeDetail) {
+			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "commented", Validator: &gate.ValidatorResult{Verdict: "wait"}})
 		}, want: connector.ChangeReview{Current: true, ChangesRequested: true}},
 		{name: "acceptance findings need implementation", edit: func(d *tracker.ChangeDetail) {
 			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "changes_requested", Validator: &gate.ValidatorResult{Verdict: "rework"}})
@@ -468,6 +471,9 @@ func TestReviewState(t *testing.T) {
 		}, want: connector.ChangeReview{Current: true, Reviewed: true}},
 		{name: "fresh source pass supersedes source rework", edit: func(d *tracker.ChangeDetail) {
 			d.Reviews = append(d.Reviews, tracker.ChangeReview{VersionID: "v1", Decision: "changes_requested", ImplementationReview: &gate.ValidatorResult{Verdict: "rework"}}, tracker.ChangeReview{VersionID: "v1", Decision: "approved", ImplementationReview: &gate.ValidatorResult{Verdict: "pass"}})
+		}, want: connector.ChangeReview{Current: true, Reviewed: true}},
+		{name: "landed version has completed review", edit: func(d *tracker.ChangeDetail) {
+			d.Change.Landed = &tracker.ChangeLanding{VersionID: "v1", HeadSHA: d.Versions[0].HeadSHA}
 		}, want: connector.ChangeReview{Current: true, Reviewed: true}},
 		{name: "changed head", head: strings.Repeat("b", 40)},
 		{name: "changed version", version: "old"},
