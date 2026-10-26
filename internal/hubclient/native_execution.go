@@ -966,6 +966,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 			return e.unavailable(runner.ErrExecutionAuthorityUnavailable)
 		}
 		e.pending.Data.Identity = attempt.Identity
+		e.pending.Data.Steps = slices.Clone(attempt.Steps)
 		e.pending.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: e.scheduler.now().UTC()}
 		if r := attempt.Runtime; r != nil {
 			e.pending.Data.Runtime.LocalAttemptID, e.pending.Data.Runtime.Generation, e.pending.Data.Runtime.WorkerLaunch = r.LocalAttemptID, r.Generation, r.WorkerLaunch
@@ -985,7 +986,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	e.pending.PriorEvents = events[1:]
 	if err := e.claim.source.client.AppendEvent(ctx, e.claim.lease.WorkItemID, *e.pending); err != nil {
 		var refusal *APIError
-		if e.pending.Type == "run.finished" && errors.As(err, &refusal) && refusal.permanentInvalidRequest() {
+		if (e.pending.Type == "run.finished" || e.pending.Type == "run.checkpointed") && errors.As(err, &refusal) && refusal.permanentInvalidRequest() {
 			if len(e.pending.PriorEvents) > 0 {
 				e.data.Sequence = e.pending.PriorEvents[0].Data.Sequence - 1
 				e.observations = nil

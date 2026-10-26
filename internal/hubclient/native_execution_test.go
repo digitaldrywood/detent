@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -1595,6 +1597,193 @@ func TestNativeRejectedCompletionReleasesClaim(t *testing.T) {
 			}
 			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || len(events) != wantEvents {
 				t.Fatalf("refused event retried: %v, %d", err, len(events))
+			}
+		})
+	}
+}
+
+func TestNativeRejectedReviewCheckpointReleasesClaim(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		field     string
+		outage    bool
+		batched   bool
+		done      bool
+		transient bool
+	}{
+		{name: "validator payload refusal", field: "data.steps.validator"},
+		{name: "review refusal without field"},
+		{name: "terminal publication outage", field: "data.steps.validator", outage: true},
+		{name: "batched observations", field: "data.steps.validator", batched: true},
+		{name: "external merge", field: "data.steps.validator", outage: true, done: true},
+		{name: "transient checkpoint publication", transient: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
+				{Name: "Done", Terminal: true},
+			}, true)
+			issue := h.createInProgress(t, "Review checkpoint")
+			item := tracker.NativeWorkItemID(issue.ID)
+			change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: issue.Title})
+			if err != nil {
+				t.Fatal(err)
+			}
+			version := h.publish(t, item, change.ID, nativeChangeFixtureHead("b"))
+			if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, version.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "changes_requested", Body: "Required repair"}); err != nil {
+				t.Fatal(err)
+			}
+			h.claim(t, issue.ID)
+			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			source := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "clean", HeadSHA: version.HeadSHA, WorkspaceDigest: strings.Repeat("b", 64), ExternalEffect: "none", EffectState: "none"}
+			if err := e.Checkpoint(t.Context(), source); err != nil {
+				t.Fatal(err)
+			}
+			for _, step := range []tracker.NativeStepReceipt{
+				{Step: "validation", Validation: &gate.CommandResult{Command: "make check-fast", HeadSHA: version.HeadSHA, ExitCode: 0}},
+				{Step: "security_audit", SecurityAudit: &tracker.SecurityAuditReview{Verdict: "pass", VersionID: version.ID}},
+			} {
+				step.CompletedAt, step.Source = time.Now().UTC(), source
+				step.Change = tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}
+				if err := e.RecordStep(t.Context(), step); err != nil {
+					t.Fatal(err)
+				}
+			}
+			accepted, err := h.admin.Recovery(t.Context(), item)
+			if err != nil {
+				t.Fatal(err)
+			}
+			closed := false
+			if err := e.KeepWorker(func(context.Context) error { closed = true; return nil }, nil); err != nil {
+				t.Fatal(err)
+			}
+			if test.batched {
+				e.claim.lease.RunDetailBatching = true
+				e.data.Runtime = &tracker.NativeRuntimeObservation{Phase: "validation", HeartbeatAt: e.scheduler.now().UTC()}
+				e.runtimePublishedAt = e.data.Runtime.HeartbeatAt
+				if err := e.append(t.Context(), "run.observed", "", e.data.Handoff); err != nil || len(e.observations) != 1 {
+					t.Fatalf("batch observation: %v", err)
+				}
+			}
+			client := e.claim.source.client.client
+			next := client.httpClient.Transport
+			want := tracker.PublicationRejection{Category: "event_validation", Field: test.field}
+			var events []tracker.NativeRunEvent
+			outage := test.outage
+			client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(request.URL.Path, "/events") {
+					body, err := io.ReadAll(request.Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					request.Body = io.NopCloser(strings.NewReader(string(body)))
+					var event tracker.NativeRunEvent
+					if err := json.Unmarshal(body, &event); err != nil {
+						t.Fatal(err)
+					}
+					events = append(events, event)
+					if event.Type != "run.finished" && test.transient {
+						if len(events) == 1 {
+							return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"unavailable"}`)), Request: request}, nil
+						}
+					} else if event.Type != "run.finished" {
+						payload, err := json.Marshal(map[string]any{"code": "invalid_request", "message": "private refusal text", "details": map[string]any{"rejection": want}})
+						if err != nil {
+							t.Fatal(err)
+						}
+						return &http.Response{StatusCode: http.StatusUnprocessableEntity, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(payload))), Request: request}, nil
+					}
+					if outage {
+						outage = false
+						return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"unavailable"}`)), Request: request}, nil
+					}
+				}
+				return next.RoundTrip(request)
+			})
+			receipt := tracker.NativeStepReceipt{Step: "validator", CompletedAt: time.Now().UTC(), Source: source, Validator: &gate.ValidatorResult{Submitted: true, Verdict: "pass", Summary: "Review output"}}
+			err = e.RecordStep(t.Context(), receipt)
+			if err == nil {
+				t.Fatal("checkpoint refusal was ignored")
+			}
+			if test.transient {
+				if err := e.flush(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				recovery, err := h.admin.Recovery(t.Context(), item)
+				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "running" || recovery.Attempts[0].TerminalFailure != nil || len(recovery.Attempts[0].Steps) != 3 {
+					t.Fatalf("transient publication did not resume: %+v, %v", recovery, err)
+				}
+				if len(events) != 2 || events[0].IdempotencyKey != events[1].IdempotencyKey {
+					t.Fatal("transient retry changed event identity")
+				}
+				restored, err := e.Step(t.Context(), receipt)
+				if err != nil || !reflect.DeepEqual(restored.Validator, receipt.Validator) {
+					t.Fatalf("resumed review output changed: %+v, %v", restored.Validator, err)
+				}
+				if err := e.PrepareFinish(t.Context(), "failed", "", nil); err != nil {
+					t.Fatal(err)
+				}
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if test.done {
+				current, err := h.admin.Issue(t.Context(), item)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Done", Reason: "user_requested"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := e.PrepareFinish(t.Context(), "failed", "", nil); err != nil {
+				t.Fatal(err)
+			}
+			err = h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed")
+			var rejected *nativeCompletionRejection
+			if !errors.As(err, &rejected) || rejected.failure.Rejection == nil || *rejected.failure.Rejection != want {
+				t.Fatalf("terminal publication: %v", err)
+			}
+			if !closed || e.hasWorkers() {
+				t.Fatal("terminal attempt retained its worker")
+			}
+			if _, exists := h.scheduler.claims[issue.ID]; exists {
+				t.Fatal("terminal attempt retained its claim")
+			}
+			recovery, err := h.admin.Recovery(t.Context(), item)
+			if err != nil || len(recovery.Attempts) != 1 {
+				t.Fatalf("recovery: %+v, %v", recovery, err)
+			}
+			attempt := recovery.Attempts[0]
+			if attempt.Status != "failed" || attempt.ClaimReleasedAt == nil || attempt.TerminalFailure == nil || attempt.TerminalFailure.Rejection == nil || *attempt.TerminalFailure.Rejection != want {
+				t.Fatalf("unsettled attempt: %+v", attempt)
+			}
+			if attempt.TerminalFailure.Stage != "event_publication" || attempt.TerminalFailure.Attribution != "instance" || attempt.TerminalFailure.Error != want.DiagnosticError() || e.data.Outcome != "failed" || e.pending != nil {
+				t.Fatalf("local and Hub failure evidence differ: %+v", attempt.TerminalFailure)
+			}
+			if !reflect.DeepEqual(attempt.Steps, accepted.Attempts[0].Steps) || !reflect.DeepEqual(attempt.Checkpoint, accepted.Attempts[0].Checkpoint) {
+				t.Fatal("terminal refusal lost accepted source or receipts")
+			}
+			detail, err := h.admin.Change(t.Context(), item, change.ID)
+			if err != nil || detail.Change.CurrentVersion != version.ID || len(detail.Reviews) != 1 || detail.Reviews[0].Decision != "changes_requested" {
+				t.Fatalf("retained Change was altered: %+v, %v", detail, err)
+			}
+			if test.done && h.state(t, issue.ID) != "Done" {
+				t.Fatal("terminal settlement reopened merged item")
+			}
+			wantEvents := 2
+			if test.outage {
+				wantEvents++
+			}
+			if len(events) != wantEvents || events[0].Type != "run.checkpointed" || events[len(events)-1].Type != "run.finished" || events[len(events)-1].Data.Sequence != accepted.Attempts[0].Sequence+1 {
+				t.Fatalf("refusal sequence: %+v", events)
+			}
+			if events[0].IdempotencyKey == events[1].IdempotencyKey || test.outage && events[1].IdempotencyKey != events[2].IdempotencyKey {
+				t.Fatal("terminal replacement or retry changed event identity")
 			}
 		})
 	}
