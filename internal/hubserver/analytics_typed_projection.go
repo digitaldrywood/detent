@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -71,7 +72,7 @@ const analyticsProjectionBackfill = `UPDATE analytics_hourly_rollups SET work_it
 func analyticsProjection(raw string) ([]any, error) {
 	var data map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &data); err != nil {
-		return nil, fmt.Errorf("decode analytics projection: %w", err)
+		return nil, errors.New("decode analytics projection: invalid JSON object")
 	}
 	values := make([]any, 0, len(analyticsProjectionFields)+4)
 	for _, field := range analyticsProjectionFields {
@@ -90,13 +91,19 @@ func analyticsProjection(raw string) ([]any, error) {
 			if strings.HasSuffix(field.column, "_ns") || field.column == "sequence" || field.column == "input" || field.column == "cached_input" || field.column == "output" {
 				var n int64
 				if err := json.Unmarshal(encoded, &n); err != nil {
-					return nil, err
+					return nil, fmt.Errorf("decode analytics field %s: invalid type", field.key)
 				}
 				value = n
+			} else if (field.column == "issue_id" || field.column == "workflow_state_id") && encoded[0] != '"' {
+				var n int64
+				if err := json.Unmarshal(encoded, &n); err != nil {
+					return nil, fmt.Errorf("decode analytics field %s: expected integer or string", field.key)
+				}
+				value = strconv.FormatInt(n, 10)
 			} else {
 				var s string
 				if err := json.Unmarshal(encoded, &s); err != nil {
-					return nil, err
+					return nil, fmt.Errorf("decode analytics field %s: invalid type", field.key)
 				}
 				value = s
 			}
@@ -108,7 +115,7 @@ func analyticsProjection(raw string) ([]any, error) {
 		Runtime  struct{ Identity struct{ Role *string } }
 	}
 	if err := json.Unmarshal([]byte(raw), &identity); err != nil {
-		return nil, err
+		return nil, errors.New("decode analytics projection: invalid identity or timestamp")
 	}
 	role := identity.Runtime.Identity.Role
 	if role == nil {
@@ -119,7 +126,7 @@ func analyticsProjection(raw string) ([]any, error) {
 		var rawTime *string
 		if len(data[field.key]) > 0 && string(data[field.key]) != "null" {
 			if err := json.Unmarshal(data[field.key], &rawTime); err != nil {
-				return nil, err
+				return nil, errors.New("decode analytics projection: invalid identity or timestamp")
 			}
 		}
 		values = append(values, rawTime)
@@ -138,24 +145,46 @@ func writeAnalyticsSample(ctx context.Context, tx *sql.Tx, organization, project
 }
 
 func (d *database) convertAnalyticsProjections(ctx context.Context) error {
-	for range storageConversionRows {
-		var rowid int64
-		var raw string
-		err := d.reader.QueryRowContext(ctx, `SELECT rowid,data_json FROM analytics_hourly_rollups WHERE projection_version IS NULL LIMIT 1`).Scan(&rowid, &raw)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
+	var after int64
+	if err := d.reader.QueryRowContext(ctx, `SELECT projection_rowid FROM analytics_maintenance_cursor WHERE id=1`).Scan(&after); err != nil {
+		return err
+	}
+	rows, err := d.reader.QueryContext(ctx, `SELECT rowid,data_json FROM analytics_hourly_rollups WHERE projection_version IS NULL AND rowid>? ORDER BY rowid LIMIT ?`, after, storageConversionRows)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type projectionRow struct {
+		id  int64
+		raw string
+	}
+	var batch []projectionRow
+	for rows.Next() {
+		var row projectionRow
+		if err := rows.Scan(&row.id, &row.raw); err != nil {
 			return err
 		}
-		values, err := analyticsProjection(raw)
+		batch = append(batch, row)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	var failures error
+	for _, row := range batch {
+		after = row.id
+		values, err := analyticsProjection(row.raw)
 		if err != nil {
-			return err
+			failures = errors.Join(failures, fmt.Errorf("analytics rollup rowid=%d projection: %w", row.id, err))
+			continue
 		}
-		values = append(values, rowid, raw)
+		values = append(values, row.id, row.raw)
 		if _, err := d.db.ExecContext(ctx, analyticsProjectionBackfill, values...); err != nil {
-			return err
+			return errors.Join(failures, err)
 		}
 	}
-	return nil
+	if len(batch) < storageConversionRows {
+		after = 0
+	}
+	_, err = d.db.ExecContext(ctx, `UPDATE analytics_maintenance_cursor SET projection_rowid=? WHERE id=1`, after)
+	return errors.Join(failures, err)
 }
