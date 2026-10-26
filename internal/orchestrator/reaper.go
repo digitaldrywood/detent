@@ -26,6 +26,38 @@ func (o *Orchestrator) reapWorkspacesIfDue(ctx context.Context, state *State, no
 		return
 	}
 	due := state.LastWorkspaceCleanupAt.IsZero() || !now.Before(state.LastWorkspaceCleanupAt.Add(o.cfg.WorkspaceCleanupSweepInterval))
+	if inventory, ok := o.reaper.(interface {
+		WorkspaceCleanupIssues(context.Context, string, int) ([]connector.Issue, string, error)
+	}); ok {
+		issues, cursor, err := inventory.WorkspaceCleanupIssues(ctx, state.workspaceCleanupInventoryCursor, workspaceCleanupCandidateLimit)
+		if !errors.Is(err, errors.ErrUnsupported) {
+			o.workspaceCleanupLocal = true
+			if err != nil {
+				o.logger.Warn("read workspace cleanup inventory failed", "error", err)
+				return
+			}
+			ids := make([]string, 0, len(issues))
+			seen := make(map[string]bool)
+			for _, issue := range issues {
+				ref := issue.ID
+				if ref == "" {
+					ref = issue.Identifier
+				}
+				if ref != "" && !seen[ref] {
+					ids = append(ids, ref)
+					seen[ref] = true
+					delete(state.ReapedWorkspaces, issue.ID)
+				}
+			}
+			if len(ids) > 0 {
+				if ok, _ := o.reapWorkspaceIssueIDs(ctx, state, ids, now); !ok {
+					return
+				}
+			}
+			state.workspaceCleanupInventoryCursor = cursor
+			return
+		}
+	}
 
 	if ids := workspaceCleanupIssueIDs(state); len(ids) > 0 {
 		ok, cleaned := o.reapWorkspaceIssueIDs(ctx, state, ids, now)
@@ -50,6 +82,9 @@ func (o *Orchestrator) reapDueWorkspacesAfterRefresh(ctx context.Context, state 
 		return
 	}
 	if !state.LastWorkspaceCleanupAt.IsZero() && now.Before(state.LastWorkspaceCleanupAt.Add(o.cfg.WorkspaceCleanupSweepInterval)) {
+		if o.workspaceCleanupLocal {
+			o.reconcileResidualWorkspaces(ctx, state, now)
+		}
 		return
 	}
 	if o.trimHostCache != nil {
@@ -59,7 +94,7 @@ func (o *Orchestrator) reapDueWorkspacesAfterRefresh(ctx context.Context, state 
 	}
 	o.sweepRetention(ctx, state, now)
 	states := cleanupFetchStates(o.cfg)
-	swept := len(states) == 0 || o.reapWorkspaceStates(ctx, state, states, now)
+	swept := o.workspaceCleanupLocal || len(states) == 0 || o.reapWorkspaceStates(ctx, state, states, now)
 	reconciled := o.reconcileResidualWorkspaces(ctx, state, now)
 	if swept && reconciled {
 		state.LastWorkspaceCleanupAt = now
@@ -136,18 +171,23 @@ func activeWorkspaceIssues(state *State, terminalStates []string) []connector.Is
 			return
 		}
 		seen[key] = struct{}{}
+		if running {
+			issue = cloneIssue(issue)
+			if issue.Metadata == nil {
+				issue.Metadata = make(map[string]string)
+			}
+			issue.Metadata["workspace_cleanup_running"] = "true"
+		}
 		active = append(active, issue)
+	}
+	for _, running := range state.Running {
+		appendIssue(running.Issue, true)
 	}
 	for _, issue := range state.BoardIssues {
 		appendIssue(issue, false)
 	}
 	for _, issue := range state.Pipeline {
 		appendIssue(issue, false)
-	}
-	for _, running := range state.Running {
-		// Terminal lane updates can arrive before the worker finishes validation
-		// and checkpointing. Running ownership ends at its completion event.
-		appendIssue(running.Issue, true)
 	}
 	for _, retry := range state.Retry {
 		appendIssue(retry.Issue, false)
@@ -159,6 +199,26 @@ func activeWorkspaceIssues(state *State, terminalStates []string) []connector.Is
 }
 
 func (o *Orchestrator) fetchWorkspaceCleanupIssueStatesByIDs(ctx context.Context, issueIDs []string) ([]connector.Issue, error) {
+	var ids, identifiers []string
+	for _, id := range issueIDs {
+		if strings.Contains(id, "#") {
+			identifiers = append(identifiers, id)
+		} else {
+			ids = append(ids, id)
+		}
+	}
+	if len(identifiers) > 0 {
+		resolver, ok := o.connector.(connector.IssueReferenceResolver)
+		if !ok {
+			return nil, errors.New("workspace cleanup requires issue reference resolution")
+		}
+		issues, err := resolver.FetchIssueStatesByIdentifiers(ctx, identifiers)
+		if err != nil || len(ids) == 0 {
+			return issues, err
+		}
+		byID, err := o.fetchWorkspaceCleanupIssueStatesByIDs(ctx, ids)
+		return append(issues, byID...), err
+	}
 	if prober, ok := o.connector.(connector.IssueStateIDProber); ok {
 		return prober.FetchIssueStateProbeByIDs(ctx, issueIDs)
 	}
@@ -184,6 +244,12 @@ func (o *Orchestrator) reapWorkspaceIssueIDs(ctx context.Context, state *State, 
 	timing.step("reap_cleanup_issue_ids")
 	cleaned := false
 	for _, issue := range cleanupIssueOrder(issues, state.workspaceCleanupCursor) {
+		for _, ref := range issueIDs {
+			if ref == issue.Identifier {
+				delete(state.ReapedWorkspaces, issue.ID)
+				break
+			}
+		}
 		if !o.shouldReapWorkspaceIssue(issue, now) {
 			continue
 		}

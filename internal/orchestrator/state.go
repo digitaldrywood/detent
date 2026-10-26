@@ -146,6 +146,8 @@ type State struct {
 	tickTransitions          *issueStateSnapshotTransitions
 
 	workspaceCleanupCursor string
+
+	workspaceCleanupInventoryCursor string
 }
 
 type StalenessWarning struct {
@@ -517,10 +519,13 @@ func (s State) clone() State {
 
 		CandidatesMissingVsTracker: cloneIntPointer(s.CandidatesMissingVsTracker),
 
-		ManualRefresh:            cloneRefreshAttempt(s.ManualRefresh),
-		LastRunningReconcileAt:   s.LastRunningReconcileAt,
-		LastWorkspaceCleanupAt:   s.LastWorkspaceCleanupAt,
-		workspaceCleanupCursor:   s.workspaceCleanupCursor,
+		ManualRefresh:          cloneRefreshAttempt(s.ManualRefresh),
+		LastRunningReconcileAt: s.LastRunningReconcileAt,
+		LastWorkspaceCleanupAt: s.LastWorkspaceCleanupAt,
+		workspaceCleanupCursor: s.workspaceCleanupCursor,
+
+		workspaceCleanupInventoryCursor: s.workspaceCleanupInventoryCursor,
+
 		WorkspaceRetention:       append([]workspace.RetentionTotals(nil), s.WorkspaceRetention...),
 		CleanupFailures:          maps.Clone(s.CleanupFailures),
 		CleanupFailureAt:         s.CleanupFailureAt,

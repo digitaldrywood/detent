@@ -722,6 +722,16 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 		return []connector.Issue{}, nil
 	}
 	if o.scheduling != nil {
+		if storage, ok := o.scheduling.(interface{ WorkspaceStorageConstraint(context.Context) string }); ok && storage.WorkspaceStorageConstraint(ctx) != "" {
+			now := time.Now()
+			if o.now != nil {
+				now = o.now()
+			}
+			o.reclaimWorkspaceStorage(ctx, state, now)
+			if constraint := storage.WorkspaceStorageConstraint(ctx); constraint != "" {
+				o.logger.Warn("runner host storage limits capacity", "reason", constraint)
+			}
+		}
 		request := SchedulingRequest{
 			BeginDiscovery:          o.beginDispatchDiscovery,
 			LandingCapacity:         o.cfg.NativeLandingCapacity,

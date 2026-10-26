@@ -19,6 +19,10 @@ type workspaceCleanupResult struct {
 // The event loop owns state; the existing reaper works only on a private copy.
 // There is at most one sweep, including retention and cache trimming, in flight.
 func (o *Orchestrator) startWorkspaceCleanup(ctx context.Context, state *State, now time.Time) {
+	o.startWorkspaceCleanupPass(ctx, state, now, false)
+}
+
+func (o *Orchestrator) startWorkspaceCleanupPass(ctx context.Context, state *State, now time.Time, force bool) {
 	if o.reaper == nil || o.workspaceCleanupCancel != nil {
 		return
 	}
@@ -27,6 +31,9 @@ func (o *Orchestrator) startWorkspaceCleanup(ctx context.Context, state *State, 
 	}
 	before := state.clone()
 	after := before.clone()
+	if force {
+		after.LastWorkspaceCleanupAt = time.Time{}
+	}
 	after.RecentEvents = nil
 	if o.quarantineWarnings == nil {
 		o.quarantineWarnings = make(map[string]struct{})
@@ -51,12 +58,27 @@ func (o *Orchestrator) startWorkspaceCleanup(ctx context.Context, state *State, 
 	}()
 }
 
+func (o *Orchestrator) reclaimWorkspaceStorage(ctx context.Context, state *State, now time.Time) {
+	if o.workspaceCleanupCancel == nil {
+		o.startWorkspaceCleanupPass(ctx, state, now, true)
+	}
+	if o.workspaceCleanupCancel == nil {
+		return
+	}
+	select {
+	case result := <-o.workspaceCleanupResults:
+		o.finishWorkspaceCleanup(state, result)
+	case <-ctx.Done():
+	}
+}
+
 func (o *Orchestrator) finishWorkspaceCleanup(state *State, result workspaceCleanupResult) {
 	o.workspaceCleanupCancel()
 	o.workspaceCleanupCancel = nil
 	before, after := result.before, result.after
 	state.LastWorkspaceCleanupAt = after.LastWorkspaceCleanupAt
 	state.workspaceCleanupCursor = after.workspaceCleanupCursor
+	state.workspaceCleanupInventoryCursor = after.workspaceCleanupInventoryCursor
 	state.WorkspaceRetention = after.WorkspaceRetention
 	for id, at := range after.ReapedWorkspaces {
 		if _, existed := before.ReapedWorkspaces[id]; existed {

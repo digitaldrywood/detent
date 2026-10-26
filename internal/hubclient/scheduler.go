@@ -29,8 +29,11 @@ import (
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
-	ReleasedStopped       func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error)
-	AvailableCapacity     func(context.Context, int) int
+	ReleasedStopped   func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error)
+	AvailableCapacity func(context.Context, int) int
+
+	StorageConstraint func(context.Context) string
+
 	RefreshProjects       func(context.Context, *Scheduler) error
 	Skills                func(project string) []skills.ProviderSkill
 	PrepareProject        func(context.Context, string) error
@@ -58,8 +61,11 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
-	releasedStopped       func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error)
-	availableCapacity     func(context.Context, int) int
+	releasedStopped   func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error)
+	availableCapacity func(context.Context, int) int
+
+	storageConstraint func(context.Context) string
+
 	hostMetrics           *hostmetrics.Collector
 	hostMetricsMu         sync.Mutex
 	refreshProjects       func(context.Context, *Scheduler) error
@@ -125,8 +131,11 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{
-		releasedStopped:       config.ReleasedStopped,
-		availableCapacity:     config.AvailableCapacity,
+		releasedStopped:   config.ReleasedStopped,
+		availableCapacity: config.AvailableCapacity,
+
+		storageConstraint: config.StorageConstraint,
+
 		refreshProjects:       config.RefreshProjects,
 		prepareProject:        config.PrepareProject,
 		runnerSetupDeclared:   config.RunnerSetupDeclared,
@@ -169,6 +178,13 @@ func (s *Scheduler) HeartbeatInterval() time.Duration {
 		return 0
 	}
 	return s.heartbeatInterval
+}
+
+func (s *Scheduler) WorkspaceStorageConstraint(ctx context.Context) string {
+	if s.storageConstraint == nil {
+		return ""
+	}
+	return s.storageConstraint(ctx)
 }
 
 func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrator.SchedulingRequest) ([]connector.Issue, error) {

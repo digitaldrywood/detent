@@ -7864,7 +7864,7 @@ func TestRunnerReconcileWorkspacesUsesResidualReconciler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
-	active := []connector.Issue{{ID: "issue-2140", Identifier: "digitaldrywood/detent#2140"}}
+	active := []connector.Issue{{ID: "issue-2140", Identifier: "digitaldrywood/detent#2140", Metadata: map[string]string{"workspace_cleanup_running": "true"}}}
 
 	result, err := runner.ReconcileWorkspaces(t.Context(), active)
 	if err != nil {
@@ -7877,7 +7877,7 @@ func TestRunnerReconcileWorkspacesUsesResidualReconciler(t *testing.T) {
 	if result.Removed != 1 || result.ActiveSkipped != 2 || len(result.CompletedPaths) != 1 || result.CompletedPaths[0] != "/workspaces/removed" || len(result.Failures) != 1 {
 		t.Fatalf("ReconcileWorkspaces() = %+v", result)
 	}
-	if len(workspaceBackend.active) != 1 || workspaceBackend.active[0].ProjectID != "default" || workspaceBackend.active[0].Identifier != active[0].Identifier {
+	if len(workspaceBackend.active) != 1 || !workspaceBackend.active[0].CleanupInUse || workspaceBackend.active[0].ProjectID != "default" || workspaceBackend.active[0].Identifier != active[0].Identifier {
 		t.Fatalf("ReconcileResiduals() active issues = %+v", workspaceBackend.active)
 	}
 }

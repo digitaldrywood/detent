@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -11,7 +12,145 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestLocalGitReviewWorkspaceCleanup(t *testing.T) {
+	t.Parallel()
+
+	for _, recorded := range []bool{false, true} {
+		for _, mode := range []string{"closed", "current review", "published review", "edited published review", "live worker", "live lease", "checkpoint", "main checkpoint", "unpushed"} {
+			t.Run(fmt.Sprintf("%s/recorded=%v", mode, recorded), func(t *testing.T) {
+				source := initSourceRepo(t)
+				publishCleanupSource(t, source)
+				backend, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) { return nil, nil }
+				published := mode == "published review" || mode == "edited published review"
+				issue := Issue{ProjectID: "prj_example", ID: "wi_example", Identifier: "prj_example#1", Terminal: mode != "current review" && !published}
+				cleanupCtx := t.Context()
+				var infos []Info
+				for _, version := range []string{"", "version_old", "version_current"} {
+					candidate := issue
+					candidate.ReviewVersionID = version
+					if published && version == "version_old" {
+						remote := strings.TrimSpace(runGit(t, source, "config", "--get", "remote.origin.url"))
+						repository := "https://github.com/example-org/example-project"
+						runGit(t, source, "config", "url."+remote+".insteadOf", repository)
+						runGit(t, source, "remote", "set-url", "origin", repository)
+						base := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+						writeFileDiffFile(t, source, "README.md", "published immutable review source\n")
+						runGit(t, source, "add", "README.md")
+						runGit(t, source, "commit", "-m", "retained version")
+						head := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+						capture, err := CaptureChangeSource(t.Context(), source, base, head)
+						if err != nil {
+							t.Fatal(err)
+						}
+						candidate.Source = &ChangeSource{Version: tracker.ChangeVersion{ID: version, ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: base, HeadSHA: head, Repository: RepositoryURL(t.Context(), source), Source: &capture.Source}}, Bundle: capture.Bundle}
+					}
+					info, err := backend.Create(t.Context(), candidate)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !recorded {
+						if err := backend.removeOwnershipRecord(info.Path); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if mode == "edited published review" && version == "version_old" {
+						writeFileDiffFile(t, info.Path, "README.md", "additional unpublished review work\n")
+						runGit(t, info.Path, "add", "README.md")
+						runGit(t, info.Path, "commit", "-m", "unpublished review work")
+					}
+					infos = append(infos, info)
+					if version == "" && mode == "main checkpoint" {
+						runGit(t, source, "push", "origin", "HEAD:"+CheckpointRefName(issue))
+						writeFileDiffFile(t, info.Path, "README.md", "unpublished checkpoint\n")
+					}
+					if version == "version_current" {
+						switch mode {
+						case "current review", "published review", "edited published review", "live worker":
+							release, err := backend.Use(t.Context(), candidate)
+							if err != nil {
+								t.Fatal(err)
+							}
+							t.Cleanup(release)
+						case "checkpoint", "unpushed":
+							writeFileDiffFile(t, info.Path, "README.md", "unpublished work\n")
+							if mode == "unpushed" {
+								runGit(t, info.Path, "add", "README.md")
+								runGit(t, info.Path, "commit", "-m", "unpublished source")
+							} else {
+								plan, err := backend.PrepareCheckpoint(t.Context(), info, candidate)
+								if err != nil {
+									t.Fatal(err)
+								}
+								if err := WriteCheckpointRecord(plan, CheckpointRecord{Status: "local_only", Published: false}); err != nil {
+									t.Fatal(err)
+								}
+							}
+						}
+					}
+				}
+				if mode == "closed" {
+					seen := make(map[string]bool)
+					cursor := ""
+					for len(seen) < len(infos) {
+						page, next, err := backend.CleanupIssues(t.Context(), cursor, 1)
+						if err != nil || len(page) > 1 || next == "" {
+							t.Fatalf("inventory page=%v cursor=%q error=%v", page, cursor, err)
+						}
+						for _, candidate := range page {
+							if candidate.Identifier != issue.Identifier || seen[candidate.ReviewVersionID] {
+								t.Fatalf("invalid inventory entry: %+v", candidate)
+							}
+							seen[candidate.ReviewVersionID] = true
+						}
+						cursor = next
+					}
+					cleanupCtx = WithCleanupBatch(t.Context(), 10)
+					if page, _, err := backend.CleanupIssues(cleanupCtx, "", 100); err != nil || len(page) != len(infos) {
+						t.Fatalf("cleanup inventory = %v, %v", page, err)
+					}
+				}
+				if published {
+					if count, err := retainedGitCommitCount(t.Context(), infos[1].Path, "HEAD"); err != nil || count == 0 {
+						t.Fatalf("fixture review must be absent from Git remotes: count=%d error=%v", count, err)
+					}
+				}
+				if mode == "current review" || published || mode == "live lease" {
+					issue.CleanupInUse = mode == "live lease"
+					if _, err := backend.ReconcileResiduals(t.Context(), []Issue{issue}); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					_, err := backend.CleanupIssue(cleanupCtx, issue)
+					if mode == "closed" && err != nil || mode != "closed" && !errors.Is(err, ErrWorkspacePreserved) {
+						t.Fatalf("cleanup error = %v", err)
+					}
+				}
+				listed := runGit(t, source, "worktree", "list", "--porcelain")
+				if mode == "main checkpoint" && strings.TrimSpace(runGit(t, source, "ls-remote", "origin", CheckpointRefName(issue))) == "" {
+					t.Fatal("review cleanup deleted the retained main workspace's checkpoint ref")
+				}
+				for i, info := range infos {
+					keep := mode == "live lease" || (mode == "current review" || published) && i == 0 || mode != "closed" && i == 2 || published && (!recorded || mode == "edited published review") && i == 1
+					if mode == "main checkpoint" {
+						keep = i == 0
+					}
+					_, err := os.Stat(info.Path)
+					if (err == nil) != keep || strings.Contains(listed, "worktree "+filepath.ToSlash(info.Path)+"\n") != keep {
+						t.Errorf("workspace %s kept=%v, stat=%v, registered=%v", info.Key, keep, err, strings.Contains(listed, info.Path))
+					}
+				}
+			})
+		}
+	}
+}
 
 func TestLocalGitCleanupRemovesHookArtifacts(t *testing.T) {
 	if testing.Short() {

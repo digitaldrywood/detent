@@ -250,6 +250,9 @@ type ResidualReconciler interface {
 }
 
 type Issue struct {
+	CleanupInUse               bool
+	cleanupPublishedReviewHead string
+
 	ReviewVersionID         string
 	ReleaseDelivery         *tracker.ReleaseDelivery
 	Source                  *ChangeSource
@@ -306,6 +309,8 @@ type LocalGitOptions struct {
 }
 
 type LocalGit struct {
+	cleanupInventory *cleanupInventoryScanner
+
 	commits            commitPolicy
 	uses               *workspaceUses
 	root               string
@@ -506,6 +511,9 @@ func ReconfigureBackendContext(ctx context.Context, current Backend, kind string
 		uses = previous.uses
 		if next, ok := backend.(*LocalGit); ok {
 			next.createMu = previous.createMu
+			if next.root == previous.root && next.sourceRoot == previous.sourceRoot {
+				next.cleanupInventory = previous.cleanupInventory
+			}
 		}
 	case *Filesystem:
 		uses = previous.uses
@@ -566,6 +574,7 @@ func newLocalGitContext(ctx context.Context, opts LocalGitOptions, policy *commi
 	logger.Info("runner commit policy", "identity", commits.report.Identity, "signing", commits.report.Signing)
 	return &LocalGit{
 		uses:               &workspaceUses{},
+		cleanupInventory:   &cleanupInventoryScanner{},
 		createMu:           &sync.Mutex{},
 		commits:            commits,
 		root:               root,
@@ -833,10 +842,8 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (result Info, return
 		created = created || restored
 		info.Created = created
 	}
-	if issue.Landing != nil {
-		if err := l.recordCleanupOwnership(ctx, info, issue, true); err != nil {
-			return Info{}, err
-		}
+	if err := l.recordCleanupOwnership(ctx, info, issue, true); err != nil {
+		return Info{}, err
 	}
 
 	if created {
@@ -898,7 +905,29 @@ func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult
 		return CleanupResult{}, err
 	}
 
-	return l.cleanupWorkspace(ctx, info, issue)
+	result, cleanupErr := l.cleanupWorkspace(ctx, info, issue)
+	if issue.ReviewVersionID != "" {
+		return result, cleanupErr
+	}
+	inventory, err := l.cleanupRecords(ctx)
+	if err != nil {
+		return result, errors.Join(cleanupErr, err)
+	}
+	for _, record := range inventory.records {
+		review := record.issue()
+		if review.ReviewVersionID == "" || review.ID != "" && review.ID != issue.ID || review.Identifier != issue.Identifier || nativeProjectID(issue) == "" && review.ProjectID != issue.ProjectID {
+			continue
+		}
+		review.Terminal = issue.Terminal
+		review.LandedHeadSHA = issue.LandedHeadSHA
+		review.CleanupDeliveredHeadSHA = issue.CleanupDeliveredHeadSHA
+		cleaned, err := l.cleanupWorkspace(ctx, Info{Path: record.Path, Key: record.Key, Branch: record.Branch}, review)
+		result.Worktrees += cleaned.Worktrees
+		result.Branches += cleaned.Branches
+		result.Processes += cleaned.Processes
+		cleanupErr = errors.Join(cleanupErr, err)
+	}
+	return result, cleanupErr
 }
 
 func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue) (CleanupResult, error) {
@@ -910,6 +939,13 @@ func (l *LocalGit) cleanupWorkspace(ctx context.Context, info Info, issue Issue)
 	defer release()
 	if sessionHeld(info.Path) {
 		return result, fmt.Errorf("%w: an open workspace session holds %s", ErrWorkspacePreserved, info.Path)
+	}
+	issue.cleanupPublishedReviewHead = ""
+	if issue.ReviewVersionID != "" {
+		relative := cleanupOwnershipRecordRelativePath(info.Path)
+		if record, err := l.readOwnershipRecord(relative); err == nil && l.validOwnershipRecord(ctx, relative, record) {
+			issue.cleanupPublishedReviewHead = record.ReviewHeadSHA
+		}
 	}
 	if err := l.checkWorkspaceCleanup(ctx, info, issue); err != nil {
 		return result, err

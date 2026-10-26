@@ -159,7 +159,7 @@ func (l *LocalGit) PushCheckpointRef(ctx context.Context, info Info, issue Issue
 // deleteCheckpointRef retires a terminal item's checkpoint ref as part of the
 // existing terminal workspace cleanup. A failure leaves only a stale ref.
 func (l *LocalGit) deleteCheckpointRef(ctx context.Context, issue Issue) {
-	if !issue.Terminal || strings.TrimSpace(issue.ID) == "" && strings.TrimSpace(issue.Identifier) == "" {
+	if issue.ReviewVersionID != "" || !issue.Terminal || strings.TrimSpace(issue.ID) == "" && strings.TrimSpace(issue.Identifier) == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)

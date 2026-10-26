@@ -5006,6 +5006,7 @@ func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 		progressBaseRef = strings.TrimSpace(issue.PullRequest.BaseRef)
 	}
 	return workspace.Issue{
+		CleanupInUse:            issue.Metadata["workspace_cleanup_running"] == "true",
 		ProjectID:               projectID,
 		ID:                      issue.ID,
 		Identifier:              issue.Identifier,

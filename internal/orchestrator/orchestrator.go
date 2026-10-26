@@ -400,6 +400,7 @@ type Orchestrator struct {
 	workspaceCleanupCancel    context.CancelFunc
 	workspaceCleanupWG        sync.WaitGroup
 	workspaceCleanupRemaining *int
+	workspaceCleanupLocal     bool
 }
 
 type runtimeState struct {

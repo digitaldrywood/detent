@@ -1,17 +1,142 @@
 package orchestrator
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
+
+type inventoryCleanupReaper struct {
+	cleanupSweepReaper
+	inventory  []connector.Issue
+	cursors    []string
+	reconciles int
+}
+
+func (r *inventoryCleanupReaper) ReconcileWorkspaces(context.Context, []connector.Issue) (WorkspaceReconcileResult, error) {
+	r.reconciles++
+	return WorkspaceReconcileResult{}, nil
+}
+
+func (r *inventoryCleanupReaper) WorkspaceCleanupIssues(_ context.Context, cursor string, _ int) ([]connector.Issue, string, error) {
+	r.cursors = append(r.cursors, cursor)
+	return r.inventory, "next", nil
+}
+
+func TestWorkspaceCleanupRetriesLocalInventory(t *testing.T) {
+	cfg := normalizeConfig(Config{TerminalStates: []string{"Done"}, WorkspaceCleanupSweepInterval: time.Hour})
+	issue := connector.Issue{ID: "wi_closed", Identifier: "prj_example#1", State: "Done", Closed: true}
+	tracker := &runningStateConnector{issues: []connector.Issue{issue}, err: errors.New("Hub request failed with status 502")}
+	reaper := &inventoryCleanupReaper{inventory: []connector.Issue{issue, issue}}
+	o := &Orchestrator{cfg: cfg, connector: tracker, reaper: reaper, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	state := newState(cfg)
+	now := time.Now()
+	state.LastWorkspaceCleanupAt = now
+	state.ReapedWorkspaces[issue.ID] = now.Add(-time.Hour)
+	o.startWorkspaceCleanup(t.Context(), &state, now)
+	finishTestWorkspaceCleanup(t, o, &state)
+	if len(reaper.issues) != 0 || state.workspaceCleanupInventoryCursor != "" {
+		t.Fatalf("failed fetch advanced cleanup: issues=%v cursor=%q", reaper.issues, state.workspaceCleanupInventoryCursor)
+	}
+	tracker.err = nil
+	o.startWorkspaceCleanup(t.Context(), &state, now.Add(time.Second))
+	finishTestWorkspaceCleanup(t, o, &state)
+	if len(reaper.issues) != 1 || reaper.issues[0].ID != issue.ID || !slices.Equal(tracker.requestedIDs, []string{issue.ID}) {
+		t.Fatalf("later tick did not clean the local backlog: reaped=%v requested=%v", reaper.issues, tracker.requestedIDs)
+	}
+	if !slices.Equal(reaper.cursors, []string{"", ""}) || state.workspaceCleanupInventoryCursor != "next" {
+		t.Fatalf("inventory did not retry the same page: cursors=%v next=%q", reaper.cursors, state.workspaceCleanupInventoryCursor)
+	}
+	if reaper.reconciles != 2 {
+		t.Fatalf("local inventory reconciliation skipped a tick: %d", reaper.reconciles)
+	}
+}
+
+type storageCleanupScheduling struct {
+	*hubSchedulingSource
+	check      func()
+	constraint func() string
+}
+
+func (s *storageCleanupScheduling) WorkspaceStorageConstraint(context.Context) string {
+	return s.constraint()
+}
+
+func (s *storageCleanupScheduling) FetchCandidateIssues(context.Context, SchedulingRequest) ([]connector.Issue, error) {
+	s.check()
+	return nil, nil
+}
+
+func TestStoragePressureReclaimsBeforeClaim(t *testing.T) {
+	for _, inFlight := range []bool{false, true} {
+		for _, freed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("in_flight=%v/freed=%v", inFlight, freed), func(t *testing.T) {
+				cfg := normalizeConfig(Config{ActiveStates: []string{"Todo"}, TerminalStates: []string{"Done"}, WorkspaceCleanupSweepInterval: time.Hour})
+				issue := connector.Issue{ID: "closed", Identifier: "owner/repository#1", State: "Done", Closed: true}
+				tracker := &runningStateConnector{issuesByState: []connector.Issue{issue}}
+				reaper := &cleanupSweepReaper{}
+				var logs bytes.Buffer
+				o := &Orchestrator{cfg: cfg, connector: tracker, reaper: reaper, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+				state := newState(cfg)
+				now := time.Now()
+				state.LastWorkspaceCleanupAt = now
+				if inFlight {
+					o.startWorkspaceCleanupPass(t.Context(), &state, now, true)
+				}
+				checked := false
+				observations := 0
+				o.scheduling = &storageCleanupScheduling{constraint: func() string {
+					observations++
+					if observations > 1 && freed {
+						return ""
+					}
+					return "below reserve"
+				}, check: func() {
+					checked = true
+					if len(reaper.issues) != 1 || reaper.issues[0].ID != issue.ID || o.workspaceCleanupCancel != nil {
+						t.Fatalf("claim checked capacity before reclamation: reaped=%v active=%v", reaper.issues, o.workspaceCleanupCancel != nil)
+					}
+					if strings.Contains(logs.String(), "runner host storage limits capacity") == freed {
+						t.Fatalf("capacity log did not use storage after cleanup: %s", logs.String())
+					}
+				}}
+				if _, err := o.fetchCandidateIssuesForTick(t.Context(), &state); err != nil {
+					t.Fatal(err)
+				}
+				o.stopWorkspaceCleanup()
+				if !checked {
+					t.Fatal("claim path was not reached")
+				}
+			})
+		}
+	}
+}
+
+func TestActiveWorkspaceIssuesRetainsRunningOwnership(t *testing.T) {
+	cfg := normalizeConfig(Config{TerminalStates: []string{"Done"}})
+	state := newState(cfg)
+	issue := connector.Issue{ID: "wi_running", Identifier: "prj_example#1", State: "Done", Closed: true}
+	state.BoardIssues = []connector.Issue{issue}
+	state.Running[issue.ID] = Running{Issue: issue}
+	active := activeWorkspaceIssues(&state, cfg.TerminalStates)
+	if len(active) != 1 || active[0].Metadata["workspace_cleanup_running"] != "true" {
+		t.Fatalf("running lease not preserved for workspace cleanup: %+v", active)
+	}
+	if state.Running[issue.ID].Issue.Metadata["workspace_cleanup_running"] != "" {
+		t.Fatal("cleanup mutated the running issue")
+	}
+}
 
 func TestCleanupIssueOrder(t *testing.T) {
 	t.Parallel()
