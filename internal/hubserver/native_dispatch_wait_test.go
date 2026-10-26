@@ -15,8 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"modernc.org/sqlite"
-
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -122,7 +120,7 @@ func measureDispatchQueries(t *testing.T, s *Service) *dispatchQueryProbe {
 	}
 	probe := &dispatchQueryProbe{}
 	name := newNativeID("dispatch_probe")
-	sql.Register(name, dispatchProbeDriver{&sqlite.Driver{}, probe})
+	sql.Register(name, dispatchProbeDriver{s.database.db.Driver(), probe})
 	db, err := sql.Open(name, sqliteDSN(s.database.path, s.config.BusyTimeout))
 	if err != nil {
 		t.Fatal(err)

@@ -149,13 +149,6 @@ func projectClaimReview(ctx context.Context, tx *sql.Tx, sequence int64, change,
 		}
 		current = previous < sequence
 	}
-	var trigger string
-	if err := tx.QueryRowContext(ctx, `SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='change_evidence_immutable'`).Scan(&trigger); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DROP TRIGGER change_evidence_immutable`); err != nil {
-		return err
-	}
 	if current && previous != 0 {
 		if _, err := tx.ExecContext(ctx, `UPDATE change_evidence SET claim_review_current=0 WHERE sequence=?`, previous); err != nil {
 			return err
@@ -164,6 +157,5 @@ func projectClaimReview(ctx context.Context, tx *sql.Tx, sequence int64, change,
 	if _, err := tx.ExecContext(ctx, `UPDATE change_evidence SET claim_review_kind=?,claim_review_actor=?,claim_review_decision=?,claim_review_current=? WHERE sequence=?`, kind, actor, decision, current, sequence); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, trigger)
-	return err
+	return nil
 }

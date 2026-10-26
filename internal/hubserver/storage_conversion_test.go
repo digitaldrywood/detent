@@ -3,6 +3,7 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -321,7 +322,7 @@ func TestStorageConversionByteBudgetAndVersion(t *testing.T) {
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT max(rowid) FROM collaboration_events WHERE work_item_id=?", issue.WorkItemID).Scan(&through); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,cursor_rowid,complete,updated_at) VALUES(?,?,?,?,?,?,?,?,?)`, scope.organization, scope.project, "runs", issue.WorkItemID, 0, through, through, 1, formatHubTime(f.now)); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,cursor_rowid,complete,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET format_version=0,cursor_rowid=excluded.cursor_rowid,complete=1`, scope.organization, scope.project, "runs", issue.WorkItemID, 0, through, through, 1, formatHubTime(f.now)); err != nil {
 				t.Fatal(err)
 			}
 			for _, want := range test.progress {
@@ -342,6 +343,425 @@ func TestStorageConversionByteBudgetAndVersion(t *testing.T) {
 				progress, err := readStorageConversionProgress(t.Context(), f.service.database.reader, scope)
 				if err != nil || len(progress) != 1 || progress[0].Version != storageConversionVersion || progress[0].Rows != want || progress[0].Complete != (want == int64(test.rows)) {
 					t.Fatalf("progress=%+v err=%v", progress, err)
+				}
+			}
+		})
+	}
+}
+
+func storageSchemaVersion(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var version int
+	if err := db.QueryRowContext(t.Context(), "PRAGMA schema_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	return version
+}
+
+func TestStorageConversionImmutability(t *testing.T) {
+	f := newStorageArchiveFixture(t)
+	db := f.service.database
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	ctx := f.service.contentContext(t.Context())
+	raw := `{"actor":{"principal_id":"reviewer"},"decision":"approved","source":{"bytes":8192},"output":"` + strings.Repeat("x", 8192) + `"}`
+	for i := range 2 {
+		issue := f.nativeFixture.create(t, fmt.Sprintf("immutable history %d", i))
+		change, version := fmt.Sprintf("conversion-change-%d", i), fmt.Sprintf("conversion-version-%d", i)
+		tx := f.tx(t)
+		for _, insert := range []struct {
+			query string
+			args  []any
+		}{
+			{`INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?, '{}')`, []any{change, scope.organization, scope.project, issue.WorkItemID}},
+			{`INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,1,?)`, []any{version, change, raw}},
+			{`INSERT INTO change_evidence(change_id,version_id,kind,source_key,record_json) VALUES(?,?,'review',NULL,?)`, []any{change, version, raw}},
+			{`INSERT INTO change_evidence(change_id,kind,source_key,record_json) VALUES(?,'discussion','source','{}')`, []any{change}},
+			{`INSERT INTO change_sources(version_id,bundle) VALUES(?,?)`, []any{version, bytes.Repeat([]byte("x"), 8192)}},
+		} {
+			if _, err := tx.ExecContext(t.Context(), insert.query, insert.args...); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("output", 2048)}}, f.now); err != nil {
+			t.Fatal(err)
+		}
+		f.commit(t, tx)
+	}
+	substitution, err := encodeChangeSource(bytes.Repeat([]byte("b"), 8192))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := decodeChangeSource(substitution, 8192)
+	if err != nil || !bytes.Equal(decoded, bytes.Repeat([]byte("b"), 8192)) || len(substitution) >= 8192 || len(substitution) < 6 || substitution[5] != 1 {
+		t.Fatalf("invalid substitution fixture: %v", err)
+	}
+	if _, err := db.db.ExecContext(t.Context(), "UPDATE change_sources SET bundle=? WHERE version_id='conversion-version-0'", substitution); err == nil || !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("unauthorized compressed substitution: %v", err)
+	}
+	assertImmutable := func() {
+		t.Helper()
+		for _, table := range []struct {
+			name    string
+			allowed map[string]bool
+		}{
+			{"change_versions", nil},
+			{"change_evidence", map[string]bool{"claim_review_kind": true, "claim_review_actor": true, "claim_review_decision": true, "claim_review_current": true}},
+			{"change_sources", nil},
+			{"collaboration_events", map[string]bool{
+				"scheduler_outcome": true, "scheduler_reason": true, "scheduler_source": true, "scheduler_runner_id": true,
+				"analytics_recorded_ns": true, "analytics_from_state": true, "analytics_to_state": true,
+				"analytics_attempt_id": true, "analytics_skip_key": true, "analytics_projection_version": true,
+				"query_metadata_version": true, "run_attempt_id": true, "activity_spans_present": true,
+			}},
+		} {
+			rows, err := db.reader.QueryContext(t.Context(), "PRAGMA table_info("+table.name+")")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			columns := []string{"rowid"}
+			for rows.Next() {
+				var cid, notnull, pk int
+				var name, kind string
+				var def sql.NullString
+				if err := rows.Scan(&cid, &name, &kind, &notnull, &def, &pk); err != nil {
+					t.Fatal(err)
+				}
+				if name != "conversion_state" && !table.allowed[name] {
+					columns = append(columns, name)
+				}
+			}
+			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+				t.Fatal(err)
+			}
+			for _, column := range columns {
+				value := "'tampered'"
+				if column == "rowid" || column == "sequence" || column == "number" || column == "schema_version" || column == "object_bytes" || column == "content_bytes" {
+					value = column + "+100000"
+				}
+				if column == "bundle" {
+					value = "x'01'"
+				}
+				if column == "record_json" || column == "data_json" || column == "actor_json" {
+					value = `'{"tampered":true}'`
+				}
+				_, err := db.db.ExecContext(t.Context(), "UPDATE "+table.name+" SET "+column+"="+value)
+				if err == nil || !strings.Contains(err.Error(), "immutable") {
+					t.Fatalf("%s.%s update: %v", table.name, column, err)
+				}
+			}
+			if _, err := db.db.ExecContext(t.Context(), "DELETE FROM "+table.name); err == nil || !strings.Contains(err.Error(), "immutable") {
+				t.Fatalf("%s delete: %v", table.name, err)
+			}
+		}
+		for _, assignment := range []string{"version_id=NULL", "source_key=NULL", "record_json='{}',claim_review_current=0"} {
+			if _, err := db.db.ExecContext(t.Context(), "UPDATE change_evidence SET "+assignment+" WHERE kind='review' AND source_key IS NULL OR kind='discussion'"); err == nil || !strings.Contains(err.Error(), "immutable") {
+				t.Fatalf("evidence %s: %v", assignment, err)
+			}
+		}
+	}
+	for _, mismatch := range []bool{false, true} {
+		var row int64
+		var aggregate string
+		if err := db.reader.QueryRowContext(t.Context(), `SELECT v.rowid,c.work_item_id FROM change_versions v JOIN change_requests c ON c.id=v.change_id WHERE v.id='conversion-version-0'`).Scan(&row, &aggregate); err != nil {
+			t.Fatal(err)
+		}
+		family := storageConversionFamilies[5]
+		converted, ref, err := f.service.prepareStorageConversion(ctx, scope, family, row, []byte(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx := f.tx(t)
+		prior := raw
+		if mismatch {
+			prior = "wrong prior content"
+		}
+		if err := authorizeStorageConversion(t.Context(), tx, scope, family, aggregate, row, []byte(prior), converted, ref); err != nil {
+			t.Fatal(err)
+		}
+		for _, update := range []struct {
+			query string
+			value string
+		}{
+			{`UPDATE change_versions SET record_json=? WHERE id='conversion-version-0'`, `{"tampered":true}`},
+			{`UPDATE change_versions SET record_json=? WHERE id='conversion-version-1'`, string(converted)},
+			{`UPDATE change_versions SET record_json=?,policy_revision_id='tampered' WHERE id='conversion-version-0'`, string(converted)},
+		} {
+			if _, err := tx.ExecContext(t.Context(), update.query, update.value); err == nil || !strings.Contains(err.Error(), "immutable") {
+				t.Fatalf("conversion exception allowed a different mutation: %v", err)
+			}
+		}
+		_, err = tx.ExecContext(t.Context(), `UPDATE change_versions SET record_json=? WHERE id='conversion-version-0'`, string(converted))
+		if (err != nil) != mismatch {
+			t.Fatalf("prior content mismatch=%v: %v", mismatch, err)
+		}
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertImmutable()
+	before := storageSchemaVersion(t, db.reader)
+	if err := db.populateClaimFacts(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range storageConversionFamilies {
+		if err := f.service.convertStorageFamily(ctx, scope, family, f.now); err != nil {
+			t.Fatalf("%s: %v", family.name, err)
+		}
+	}
+	if after := storageSchemaVersion(t, db.reader); after != before {
+		t.Fatalf("maintenance changed schema: %d -> %d", before, after)
+	}
+	assertImmutable()
+	for _, table := range []string{"change_versions", "change_evidence"} {
+		rows, err := db.reader.QueryContext(t.Context(), "SELECT record_json FROM "+table+" WHERE record_json<>'{}'")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		count := 0
+		for rows.Next() {
+			var stored string
+			if err := rows.Scan(&stored); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(stored, "_storage_archive") {
+				t.Fatalf("%s was not converted", table)
+			}
+			resolved, err := resolveStorageJSON(ctx, []byte(stored))
+			if err != nil || string(resolved) != raw {
+				t.Fatalf("%s content changed: %v", table, err)
+			}
+			count++
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			t.Fatal(err)
+		}
+		if count != 2 {
+			t.Fatalf("%s converted rows=%d", table, count)
+		}
+	}
+	rows, err := db.reader.QueryContext(t.Context(), `SELECT length(bundle),object_key,object_sha256,object_bytes,content_bytes FROM change_sources`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	sources := 0
+	for rows.Next() {
+		var inline int
+		ref := contentReference()
+		if err := rows.Scan(&inline, &ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize); err != nil {
+			t.Fatal(err)
+		}
+		if inline != 0 || ref.Key == "" {
+			t.Fatal("source was not converted")
+		}
+		content, err := readChangeContent(ctx, string(scope.organization), ref)
+		if err != nil || !bytes.Equal(content, bytes.Repeat([]byte("x"), 8192)) {
+			t.Fatalf("converted source changed: %v", err)
+		}
+		sources++
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if sources != 2 {
+		t.Fatalf("converted sources=%d", sources)
+	}
+	var authorized int
+	if err := db.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM storage_conversion_progress WHERE conversion_rowid<>0 OR conversion_before_sha256<>'' OR conversion_after_sha256<>''").Scan(&authorized); err != nil || authorized != 0 {
+		t.Fatalf("conversion authority leaked: %d %v", authorized, err)
+	}
+}
+
+func TestStorageConversionDiscoveryBounded(t *testing.T) {
+	f := newStorageArchiveFixture(t)
+	db := f.service.database
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	for i := range 2 {
+		issue := f.nativeFixture.create(t, fmt.Sprintf("converted history %d", i))
+		if _, err := db.db.ExecContext(t.Context(), `WITH RECURSIVE history(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM history WHERE n<6000)
+INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at)
+SELECT ?||n,?,?,?,n+100,'run.finished',1,'{}','{}',? FROM history`, fmt.Sprintf("converted-%d-", i), scope.organization, scope.project, issue.WorkItemID, formatHubTime(f.now)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.db.ExecContext(t.Context(), `UPDATE storage_conversion_progress SET cursor_rowid=through_rowid,complete=1 WHERE family='runs'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.ExecContext(t.Context(), `WITH RECURSIVE history(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM history WHERE n<12000)
+INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,cursor_rowid,complete,updated_at)
+SELECT ?,?,'runs','completed-'||n,1,n,n,1,'' FROM history`, scope.organization, scope.project); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 6 {
+		issue := f.nativeFixture.create(t, fmt.Sprintf("pending history %d", i))
+		tx := f.tx(t)
+		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("pending", 1024)}}, f.now); err != nil {
+			t.Fatal(err)
+		}
+		f.commit(t, tx)
+	}
+	rows, err := db.reader.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+storageConversionDiscovery, scope.organization, scope.project, "runs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan.WriteString(detail)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan.String(), "USING INDEX storage_conversion_pending") || strings.Contains(plan.String(), "SCAN") || strings.Contains(plan.String(), "TEMP B-TREE") {
+		t.Fatalf("unbounded discovery plan: %s", plan.String())
+	}
+	for pass, want := range []int{2, 0} {
+		if err := f.service.convertStorageFamily(f.service.contentContext(t.Context()), scope, storageConversionFamilies[0], f.now.Add(time.Duration(pass)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		var pending int
+		if err := db.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM storage_conversion_progress WHERE family='runs' AND complete=0`).Scan(&pending); err != nil || pending != want {
+			t.Fatalf("pending=%d want=%d: %v", pending, want, err)
+		}
+	}
+}
+
+func TestStorageConversionDiscoveryInitialization(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	other := newNativeFixture(t, f.service, f.project.OrganizationID, "second")
+	db := f.service.database
+	ctx := t.Context()
+	migration, err := migrationFiles.ReadFile("migrations/20261026041522_maintenance_without_ddl.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, down, ok := strings.Cut(string(migration), "-- +goose Down")
+	if !ok {
+		t.Fatal("missing migration rollback")
+	}
+	if _, err := db.db.ExecContext(ctx, down); err != nil {
+		t.Fatal(err)
+	}
+	for _, fixture := range []nativeFixture{f, other} {
+		if _, err := db.db.ExecContext(ctx, `WITH RECURSIVE history(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM history WHERE n<205)
+INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json)
+SELECT ?,?,n,'attempt','legacy-'||n,1,'{"obsolete":"payload"}' FROM history`, fixture.project.OrganizationID, fixture.project.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.db.ExecContext(ctx, up); err != nil {
+		t.Fatal(err)
+	}
+	var progress int
+	if err := db.reader.QueryRowContext(ctx, "SELECT count(*) FROM storage_conversion_progress WHERE family='analytics'").Scan(&progress); err != nil || progress != 0 {
+		t.Fatalf("startup seeded progress=%d: %v", progress, err)
+	}
+	family := storageConversionFamilies[2]
+	if _, err := db.db.ExecContext(ctx, `CREATE TRIGGER interrupt_discovery BEFORE UPDATE OF conversion_state ON analytics_hourly_rollups WHEN NEW.conversion_state=1 BEGIN SELECT RAISE(ABORT,'interrupted discovery'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.discoverStorageFamily(ctx, family, time.Now()); err == nil {
+		t.Fatal("discovery did not propagate interruption")
+	}
+	if err := db.reader.QueryRowContext(ctx, "SELECT count(*) FROM storage_conversion_progress WHERE family='analytics'").Scan(&progress); err != nil || progress != 0 {
+		t.Fatalf("interruption committed progress=%d: %v", progress, err)
+	}
+	if _, err := db.db.ExecContext(ctx, "DROP TRIGGER interrupt_discovery"); err != nil {
+		t.Fatal(err)
+	}
+	beforeSchema := storageSchemaVersion(t, db.reader)
+	for pass, want := range []int{310, 210, 110, 10, 0} {
+		if err := f.service.discoverStorageFamily(ctx, family, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		var remaining int
+		if err := db.reader.QueryRowContext(ctx, "SELECT count(*) FROM analytics_hourly_rollups WHERE conversion_state=0").Scan(&remaining); err != nil || remaining != want {
+			t.Fatalf("pass=%d undiscovered=%d want=%d: %v", pass, remaining, want, err)
+		}
+		for _, fixture := range []nativeFixture{f, other} {
+			scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
+			if err := f.service.convertStorageFamily(ctx, scope, family, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if want > 0 {
+			var completed int
+			if err := db.reader.QueryRowContext(ctx, "SELECT count(*) FROM storage_conversion_progress WHERE family='analytics' AND complete=1").Scan(&completed); err != nil || completed != 0 {
+				t.Fatalf("discovery completed prematurely=%d: %v", completed, err)
+			}
+		}
+		if pass == 0 {
+			config := f.service.config
+			if err := f.service.Close(); err != nil {
+				t.Fatal(err)
+			}
+			f.service = openTestService(t, config)
+			db = f.service.database
+		}
+	}
+	for _, fixture := range []nativeFixture{f, other} {
+		scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
+		progress, err := readStorageConversionProgress(ctx, db.reader, scope)
+		if err != nil || len(progress) != 1 || !progress[0].Complete || progress[0].Rows != 205 {
+			t.Fatalf("initialized scope progress=%+v: %v", progress, err)
+		}
+	}
+	if after := storageSchemaVersion(t, db.reader); after != beforeSchema {
+		t.Fatalf("background discovery changed schema: %d -> %d", beforeSchema, after)
+	}
+}
+
+func TestStorageConversionReusedRowIDs(t *testing.T) {
+	for _, explicitLower := range []bool{false, true} {
+		t.Run(fmt.Sprintf("explicit-lower=%v", explicitLower), func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			other := newNativeFixture(t, f.service, f.project.OrganizationID, "second")
+			db := f.service.database
+			ctx := t.Context()
+			family := storageConversionFamilies[2]
+			for _, fixture := range []nativeFixture{f, other} {
+				scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
+				var prior int64
+				for pass := range 2 {
+					query := `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,1,'attempt','legacy',1,'{"obsolete":"payload"}') RETURNING rowid`
+					if explicitLower {
+						row := int64(100)
+						if pass == 1 {
+							row = 1
+						}
+						query = strings.Replace(query, "(organization_id", "(rowid,organization_id", 1)
+						query = strings.Replace(query, "VALUES(", fmt.Sprintf("VALUES(%d,", row), 1)
+					}
+					var row int64
+					if err := db.db.QueryRowContext(ctx, query, scope.organization, scope.project).Scan(&row); err != nil {
+						t.Fatal(err)
+					}
+					if pass == 1 && (row > prior || explicitLower && row == prior) {
+						t.Fatalf("fixture did not reuse a lower identity: %d -> %d", prior, row)
+					}
+					if err := f.service.convertStorageFamily(ctx, scope, family, time.Now()); err != nil {
+						t.Fatal(err)
+					}
+					var raw string
+					var state int
+					if err := db.reader.QueryRowContext(ctx, "SELECT data_json,conversion_state FROM analytics_hourly_rollups WHERE rowid=?", row).Scan(&raw, &state); err != nil || strings.Contains(raw, "obsolete") || state != 2 {
+						t.Fatalf("pass=%d unconverted reused row: state=%d data=%s: %v", pass, state, raw, err)
+					}
+					progress, err := readStorageConversionProgress(ctx, db.reader, scope)
+					if err != nil || len(progress) != 1 || !progress[0].Complete || progress[0].Rows != int64(pass+1) {
+						t.Fatalf("pass=%d progress=%+v: %v", pass, progress, err)
+					}
+					if _, err := db.db.ExecContext(ctx, "DELETE FROM analytics_hourly_rollups WHERE rowid=?", row); err != nil {
+						t.Fatal(err)
+					}
+					prior = row
 				}
 			}
 		})

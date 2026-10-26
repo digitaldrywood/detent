@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -23,18 +24,17 @@ const storageConversionBytes = 1 << 20
 
 type storageConversionFamily struct {
 	name, column, from, where, aggregate, update string
-	triggers                                     []string
 }
 
 var storageConversionFamilies = []storageConversionFamily{
-	{name: "runs", update: "UPDATE collaboration_events SET data_json=? WHERE rowid=?", column: "data_json", from: "collaboration_events r", where: "r.type IN ('run.started','run.checkpointed','run.observed','run.finished')", aggregate: "r.work_item_id", triggers: []string{"collaboration_events_no_update"}},
+	{name: "runs", update: "UPDATE collaboration_events SET data_json=? WHERE rowid=?", column: "data_json", from: "collaboration_events r", where: "r.type IN ('run.started','run.checkpointed','run.observed','run.finished')", aggregate: "r.work_item_id"},
 	{name: "attempts", update: "UPDATE native_attempts SET data_json=? WHERE rowid=?", column: "data_json", from: "native_attempts r", where: "1", aggregate: "r.work_item_id"},
 	{name: "analytics", update: "UPDATE analytics_hourly_rollups SET data_json=? WHERE rowid=?", column: "data_json", from: "analytics_hourly_rollups r", where: "r.metric='attempt'", aggregate: "''"},
 	{name: "conversation_events", update: "UPDATE conversation_events SET body_json=? WHERE rowid=?", column: "body_json", from: "conversation_events r JOIN conversations c ON c.id=r.conversation_id", where: "r.type IN ('message.accepted','message.updated')", aggregate: "r.conversation_id"},
 	{name: "messages", column: "", from: "conversation_messages r JOIN conversations c ON c.id=r.conversation_id", where: "r.content_attachment_id=''", aggregate: "r.conversation_id"},
-	{name: "versions", update: "UPDATE change_versions SET record_json=? WHERE rowid=?", column: "record_json", from: "change_versions r JOIN change_requests c ON c.id=r.change_id", where: "1", aggregate: "c.work_item_id", triggers: []string{"change_versions_immutable"}},
-	{name: "evidence", update: "UPDATE change_evidence SET record_json=? WHERE rowid=?", column: "record_json", from: "change_evidence r JOIN change_requests c ON c.id=r.change_id", where: "1", aggregate: "c.work_item_id", triggers: []string{"change_evidence_immutable"}},
-	{name: "sources", column: "bundle", from: "change_sources r JOIN change_versions v ON v.id=r.version_id JOIN change_requests c ON c.id=v.change_id", where: "r.object_key=''", aggregate: "c.work_item_id", triggers: []string{"change_sources_no_update", "change_sources_immutable_reference"}},
+	{name: "versions", update: "UPDATE change_versions SET record_json=? WHERE rowid=?", column: "record_json", from: "change_versions r JOIN change_requests c ON c.id=r.change_id", where: "1", aggregate: "c.work_item_id"},
+	{name: "evidence", update: "UPDATE change_evidence SET record_json=? WHERE rowid=?", column: "record_json", from: "change_evidence r JOIN change_requests c ON c.id=r.change_id", where: "1", aggregate: "c.work_item_id"},
+	{name: "sources", column: "bundle", from: "change_sources r JOIN change_versions v ON v.id=r.version_id JOIN change_requests c ON c.id=v.change_id", where: "r.object_key=''", aggregate: "c.work_item_id"},
 	{name: "diff_files", from: "attempt_diff_files r JOIN attempt_diffs c ON c.id=r.diff_id", where: "c.object_key=''", aggregate: "c.work_item_id"},
 }
 
@@ -61,8 +61,12 @@ func (f storageConversionFamily) filter() string {
 }
 
 func (f storageConversionFamily) positions() string {
-	return "SELECT r.rowid AS conversion_rowid," + f.aggregate + " AS aggregate_id" + f.filter()
+	return "SELECT r.rowid AS conversion_rowid," + f.aggregate + " AS aggregate_id" + f.filter() + " AND r.conversion_state=1"
 }
+
+const storageConversionDiscovery = `SELECT aggregate_id,through_rowid FROM storage_conversion_progress
+WHERE organization_id=? AND project_id=? AND family=? AND (complete=0 OR format_version<>1)
+ORDER BY updated_at,aggregate_id LIMIT 4`
 
 type storageConversionProgress struct {
 	Family    string `json:"family"`
@@ -94,6 +98,11 @@ func (s *Service) convertLegacyStorage(ctx context.Context, now time.Time) error
 		return nil
 	}
 	ctx = s.contentContext(ctx)
+	for _, family := range storageConversionFamilies {
+		if err := s.discoverStorageFamily(ctx, family, now); err != nil {
+			return err
+		}
+	}
 	rows, err := s.database.reader.QueryContext(ctx, "SELECT organization_id,id FROM projects WHERE profile='native' AND deleted_at IS NULL ORDER BY organization_id,id")
 	if err != nil {
 		return err
@@ -124,16 +133,81 @@ func (s *Service) convertLegacyStorage(ctx context.Context, now time.Time) error
 	return failures
 }
 
+func (f storageConversionFamily) table() string {
+	table, _, _ := strings.Cut(f.from, " ")
+	return table
+}
+
+func (f storageConversionFamily) discoverySelection() string {
+	return "SELECT rowid FROM " + f.table() + " WHERE conversion_state=0 ORDER BY rowid LIMIT ?"
+}
+
+func (f storageConversionFamily) discoveryUpsert() string {
+	return `INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,updated_at)
+SELECT ` + f.scope() + ".organization_id," + f.scope() + ".project_id,?," + f.aggregate + ",?,r.rowid,? FROM " + f.from + " WHERE r.rowid=? AND r.conversion_state=0 AND (" + f.where + `)
+ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
+format_version=excluded.format_version,through_rowid=max(through_rowid,excluded.through_rowid),complete=0,updated_at=excluded.updated_at`
+}
+
+func (f storageConversionFamily) stateUpdate() string {
+	return "UPDATE " + f.table() + " SET conversion_state=? WHERE rowid=? AND conversion_state=?"
+}
+
+func (f storageConversionFamily) completionUpdate() string {
+	return `UPDATE storage_conversion_progress SET complete=1,updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=? AND format_version=? AND NOT EXISTS (SELECT 1 FROM ` + f.table() + ` WHERE conversion_state=0 LIMIT 1) AND NOT EXISTS (` + f.positions() + " AND " + f.aggregate + "=? LIMIT 1)"
+}
+
+func (s *Service) discoverStorageFamily(ctx context.Context, family storageConversionFamily, now time.Time) error {
+	rows, err := s.database.reader.QueryContext(ctx, family.discoverySelection(), storageConversionRows)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var candidates []int64
+	for rows.Next() {
+		var row int64
+		if err := rows.Scan(&row); err != nil {
+			return err
+		}
+		candidates = append(candidates, row)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	for _, row := range candidates {
+		if err := s.discoverStorageRow(ctx, family, row, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) discoverStorageRow(ctx context.Context, family storageConversionFamily, row int64, now time.Time) error {
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, family.discoveryUpsert(), family.name, storageConversionVersion, formatHubTime(now), row)
+	if err != nil {
+		return err
+	}
+	queued, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	state := 2
+	if queued > 0 {
+		state = 1
+	}
+	if _, err := tx.ExecContext(ctx, family.stateUpdate(), state, row, 0); err != nil {
+		return err
+	}
+	return s.database.commit(ctx, tx)
+}
+
 func (s *Service) convertStorageFamily(ctx context.Context, scope nativeScope, family storageConversionFamily, now time.Time) error {
-	rows, err := s.database.reader.QueryContext(ctx, `WITH candidates AS (`+family.positions()+`), aggregates AS (
- SELECT aggregate_id,max(conversion_rowid) AS latest FROM candidates GROUP BY aggregate_id
- UNION ALL SELECT aggregate_id,through_rowid FROM storage_conversion_progress p
- WHERE p.organization_id=? AND p.project_id=? AND p.family=? AND p.complete=0
- AND NOT EXISTS(SELECT 1 FROM candidates c WHERE c.aggregate_id=p.aggregate_id))
-SELECT a.aggregate_id,a.latest FROM aggregates a LEFT JOIN storage_conversion_progress p
-ON p.organization_id=? AND p.project_id=? AND p.family=? AND p.aggregate_id=a.aggregate_id
-WHERE coalesce(p.format_version,0)<>? OR coalesce(p.complete,0)=0 OR a.latest>p.cursor_rowid
-ORDER BY coalesce(p.updated_at,''),a.aggregate_id LIMIT 4`, scope.organization, scope.project, scope.organization, scope.project, family.name, scope.organization, scope.project, family.name, storageConversionVersion)
+	rows, err := s.database.reader.QueryContext(ctx, storageConversionDiscovery, scope.organization, scope.project, family.name)
 	if err != nil {
 		return err
 	}
@@ -184,7 +258,7 @@ func (s *Service) convertStorageAggregate(ctx context.Context, scope nativeScope
 	if err != nil {
 		return err
 	}
-	rows, err := s.database.reader.QueryContext(ctx, family.positions()+" AND "+family.aggregate+"=? AND r.rowid>? AND r.rowid<=? ORDER BY r.rowid LIMIT ?", scope.organization, scope.project, aggregate, p.Cursor, p.Through, storageConversionRows)
+	rows, err := s.database.reader.QueryContext(ctx, family.positions()+" AND "+family.aggregate+"=? ORDER BY r.rowid LIMIT ?", scope.organization, scope.project, aggregate, storageConversionRows)
 	if err != nil {
 		return err
 	}
@@ -225,12 +299,6 @@ func (s *Service) convertStorageAggregate(ctx context.Context, scope nativeScope
 		if written > 0 && written+writeBytes > storageConversionBytes {
 			return nil
 		}
-		triggerSQL := make([]string, len(family.triggers))
-		for i, name := range family.triggers {
-			if err := s.database.reader.QueryRowContext(ctx, "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", name).Scan(&triggerSQL[i]); err != nil {
-				return err
-			}
-		}
 		metadata, err := s.prepareStorageConversionQueryMetadata(ctx, family, c.row, raw, converted)
 		if err != nil {
 			return err
@@ -239,7 +307,7 @@ func (s *Service) convertStorageAggregate(ctx context.Context, scope nativeScope
 		if err != nil {
 			return err
 		}
-		applied, err := s.applyStorageConversion(ctx, tx, scope, family, p.Cursor, c.row, c.aggregate, stamp, raw, converted, ref, triggerSQL, metadata, now)
+		applied, err := s.applyStorageConversion(ctx, tx, scope, family, p.Cursor, c.row, c.aggregate, stamp, raw, converted, ref, metadata, now)
 		if err == nil && applied {
 			err = s.database.commit(ctx, tx)
 		}
@@ -256,9 +324,7 @@ func (s *Service) convertStorageAggregate(ctx context.Context, scope nativeScope
 		written += writeBytes
 		p.Cursor = c.row
 	}
-	if len(candidates) < storageConversionRows || p.Cursor >= p.Through {
-		_, err = s.database.db.ExecContext(ctx, `UPDATE storage_conversion_progress SET complete=1,updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=? AND format_version=? AND cursor_rowid=?`, formatHubTime(now), scope.organization, scope.project, family.name, aggregate, p.Version, p.Cursor)
-	}
+	_, err = s.database.db.ExecContext(ctx, family.completionUpdate(), formatHubTime(now), scope.organization, scope.project, family.name, aggregate, p.Version, scope.organization, scope.project, aggregate)
 	return err
 }
 
@@ -391,7 +457,7 @@ func (s *Service) prepareStorageConversion(ctx context.Context, scope nativeScop
 	return compact, ref, nil
 }
 
-func (s *Service) applyStorageConversion(ctx context.Context, tx *sql.Tx, scope nativeScope, family storageConversionFamily, cursor, row int64, aggregate, stamp string, raw, converted []byte, ref attachment.ArchiveReference, triggers []string, metadata conversationQueryMetadata, now time.Time) (bool, error) {
+func (s *Service) applyStorageConversion(ctx context.Context, tx *sql.Tx, scope nativeScope, family storageConversionFamily, cursor, row int64, aggregate, stamp string, raw, converted []byte, ref attachment.ArchiveReference, metadata conversationQueryMetadata, now time.Time) (bool, error) {
 	var currentCursor int64
 	if err := tx.QueryRowContext(ctx, `SELECT cursor_rowid FROM storage_conversion_progress WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=? AND format_version=?`, scope.organization, scope.project, family.name, aggregate, storageConversionVersion).Scan(&currentCursor); err != nil {
 		return false, err
@@ -404,7 +470,7 @@ func (s *Service) applyStorageConversion(ctx context.Context, tx *sql.Tx, scope 
 		return false, err
 	}
 	var unchanged bool
-	if err := tx.QueryRowContext(ctx, "SELECT aggregate_id=? AND CAST(conversion_payload AS BLOB)=? FROM ("+family.selection()+") WHERE conversion_rowid=?", aggregate, raw, scope.organization, scope.project, row).Scan(&unchanged); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT aggregate_id=? AND CAST(conversion_payload AS BLOB)=? FROM ("+family.selection()+" AND r.conversion_state=1) WHERE conversion_rowid=?", aggregate, raw, scope.organization, scope.project, row).Scan(&unchanged); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
 		}
@@ -415,10 +481,8 @@ func (s *Service) applyStorageConversion(ctx context.Context, tx *sql.Tx, scope 
 	}
 	var count, reclaimed int64
 	if converted != nil {
-		for _, name := range family.triggers {
-			if _, err := tx.ExecContext(ctx, "DROP TRIGGER "+name); err != nil {
-				return false, err
-			}
+		if err := authorizeStorageConversion(ctx, tx, scope, family, aggregate, row, raw, converted, ref); err != nil {
+			return false, err
 		}
 		switch family.name {
 		case "messages":
@@ -465,17 +529,15 @@ func (s *Service) applyStorageConversion(ctx context.Context, tx *sql.Tx, scope 
 				return false, err
 			}
 		}
-		for _, statement := range triggers {
-			if _, err := tx.ExecContext(ctx, statement); err != nil {
-				return false, err
-			}
-		}
 		count, reclaimed = 1, max(0, int64(len(raw)-len(converted)))
 		if _, err := tx.ExecContext(ctx, "UPDATE attempt_diff_body_migration SET vacuum_pending=1 WHERE singleton=1"); err != nil {
 			return false, err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE storage_conversion_progress SET cursor_rowid=?,converted_rows=converted_rows+?,reclaimed_bytes=reclaimed_bytes+?,updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=? AND format_version=?`, row, count, reclaimed, formatHubTime(now), scope.organization, scope.project, family.name, aggregate, storageConversionVersion)
+	if _, err := tx.ExecContext(ctx, family.stateUpdate(), 2, row, 1); err != nil {
+		return false, err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE storage_conversion_progress SET conversion_rowid=0,conversion_before_sha256='',conversion_after_sha256='',cursor_rowid=?,converted_rows=converted_rows+?,reclaimed_bytes=reclaimed_bytes+?,updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=? AND format_version=?`, row, count, reclaimed, formatHubTime(now), scope.organization, scope.project, family.name, aggregate, storageConversionVersion)
 	return err == nil, err
 }
 

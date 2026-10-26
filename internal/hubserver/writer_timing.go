@@ -91,6 +91,9 @@ func openTimedReader(dsn string) (*sql.DB, error) {
 }
 
 func openTimedDB(dsn string, writer bool) (*sql.DB, error) {
+	if err := registerStorageConversionDigest(); err != nil {
+		return nil, err
+	}
 	probe, err := sql.Open("sqlite", "")
 	if err != nil {
 		return nil, err

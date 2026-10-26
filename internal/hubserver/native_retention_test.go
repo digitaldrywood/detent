@@ -64,6 +64,7 @@ func TestNativeRetention(t *testing.T) {
 		if _, err := readClaimReviews(t.Context(), db.reader, f.change.ID, first.ID); !errors.Is(err, errClaimHintStale) {
 			t.Fatalf("unknown evidence authorized truncated history: %v", err)
 		}
+		beforeSchema := storageSchemaVersion(t, db.reader)
 		for range (claimEvidenceLimit+1)/storageConversionRows + 2 {
 			if err := db.populateClaimFacts(t.Context()); err != nil {
 				t.Fatal(err)
@@ -112,6 +113,9 @@ func TestNativeRetention(t *testing.T) {
 		}
 		if decisions["reviewer-one"] != "changes_requested" || decisions["reviewer-two"] != "approved" {
 			t.Fatalf("new review authority was hidden: %+v", reviews)
+		}
+		if after := storageSchemaVersion(t, db.reader); after != beforeSchema {
+			t.Fatalf("claim projection changed schema: %d -> %d", beforeSchema, after)
 		}
 		if _, err := db.db.ExecContext(t.Context(), `UPDATE change_evidence SET record_json='{}' WHERE change_id=?`, f.change.ID); err == nil {
 			t.Fatal("evidence immutability trigger was not restored")

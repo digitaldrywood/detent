@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -138,15 +137,6 @@ func applyEventCompaction(ctx context.Context, tx *sql.Tx, plans []eventCompacti
 			return nil, 0, err
 		}
 	}
-	rewrites := slices.ContainsFunc(plans, func(plan eventCompactionPlan) bool { return len(plan.obsolete) > 0 || len(plan.spans) > 0 })
-	if rewrites {
-		if _, err := tx.ExecContext(ctx, `DROP TRIGGER collaboration_events_no_delete`); err != nil {
-			return nil, 0, err
-		}
-		if _, err := tx.ExecContext(ctx, `DROP TRIGGER collaboration_events_no_update`); err != nil {
-			return nil, 0, err
-		}
-	}
 	var conversations []string
 	var removed int64
 	budget := int64(eventCompactionBatch)
@@ -162,14 +152,6 @@ func applyEventCompaction(ctx context.Context, tx *sql.Tx, plans []eventCompacti
 		removed += count
 		if count > 0 && plan.kind == "conversation" {
 			conversations = append(conversations, plan.id)
-		}
-	}
-	if rewrites {
-		if _, err := tx.ExecContext(ctx, `CREATE TRIGGER collaboration_events_no_delete BEFORE DELETE ON collaboration_events BEGIN SELECT RAISE(ABORT, 'collaboration events are immutable'); END`); err != nil {
-			return nil, 0, err
-		}
-		if _, err := tx.ExecContext(ctx, `CREATE TRIGGER collaboration_events_no_update BEFORE UPDATE OF id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at ON collaboration_events BEGIN SELECT RAISE(ABORT, 'collaboration events are immutable'); END`); err != nil {
-			return nil, 0, err
 		}
 	}
 	if removed > 0 {
@@ -212,12 +194,26 @@ func compactEventAggregate(ctx context.Context, tx *sql.Tx, plan eventCompaction
 	if summary.RemovedByType == nil {
 		summary.RemovedByType = map[string]int64{}
 	}
+	if plan.kind == "work_item" && (len(events) > 0 || len(plan.spans) > 0) {
+		raw, err := marshalNative(summary)
+		if err != nil {
+			return 0, 0, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO event_compactions(organization_id,project_id,aggregate_kind,aggregate_id,summary_json) VALUES(?,?,'work_item',?,?) ON CONFLICT DO NOTHING`, plan.organization, plan.project, plan.id, raw); err != nil {
+			return 0, 0, err
+		}
+	}
 	var deleted int64
 	for _, event := range events {
 		statement := `DELETE FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence=?`
 		args := []any{plan.organization, plan.project, plan.id, event.sequence}
 		if plan.kind == "conversation" {
 			statement, args = `DELETE FROM conversation_events WHERE conversation_id=? AND seq=? AND body_json=?`, []any{plan.id, event.sequence, event.original}
+		}
+		if plan.kind == "work_item" {
+			if _, err := tx.ExecContext(ctx, `UPDATE event_compactions SET mutation_sequence=?,mutation_delete=1 WHERE organization_id=? AND project_id=? AND aggregate_kind='work_item' AND aggregate_id=?`, event.sequence, plan.organization, plan.project, plan.id); err != nil {
+				return 0, 0, err
+			}
 		}
 		result, err := tx.ExecContext(ctx, statement, args...)
 		if err != nil {
@@ -238,6 +234,9 @@ func compactEventAggregate(ctx context.Context, tx *sql.Tx, plan eventCompaction
 	}
 	processed := int64(len(events))
 	for _, span := range plan.spans[:min(int64(len(plan.spans)), max(budget-processed, 0))] {
+		if _, err := tx.ExecContext(ctx, `UPDATE event_compactions SET mutation_sequence=?,mutation_delete=0,mutation_before_sha256=?,mutation_after_sha256=? WHERE organization_id=? AND project_id=? AND aggregate_kind='work_item' AND aggregate_id=?`, span.sequence, storageConversionDigest(span.original), storageConversionDigest(span.replacement), plan.organization, plan.project, plan.id); err != nil {
+			return 0, 0, err
+		}
 		result, err := tx.ExecContext(ctx, `UPDATE collaboration_events SET data_json=?,activity_spans_present=0,query_metadata_version=1 WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence=? AND data_json=?`, span.replacement, plan.organization, plan.project, plan.id, span.sequence, span.original)
 		if err != nil {
 			return 0, 0, fmt.Errorf("compact activity spans: %w", err)
@@ -276,7 +275,7 @@ func compactEventAggregate(ctx context.Context, tx *sql.Tx, plan eventCompaction
 		return 0, 0, err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO event_compactions(organization_id,project_id,aggregate_kind,aggregate_id,scanned_sequence,summary_json,through_sequence,query_metadata_version) VALUES(?,?,?,?,?,?,?,1)
-ON CONFLICT(organization_id,project_id,aggregate_kind,aggregate_id) DO UPDATE SET scanned_sequence=excluded.scanned_sequence,summary_json=excluded.summary_json,through_sequence=excluded.through_sequence,query_metadata_version=1`, plan.organization, plan.project, plan.kind, plan.id, scanned, raw, summary.ThroughSequence)
+ON CONFLICT(organization_id,project_id,aggregate_kind,aggregate_id) DO UPDATE SET mutation_sequence=0,mutation_delete=0,mutation_before_sha256='',mutation_after_sha256='',scanned_sequence=excluded.scanned_sequence,summary_json=excluded.summary_json,through_sequence=excluded.through_sequence,query_metadata_version=1`, plan.organization, plan.project, plan.kind, plan.id, scanned, raw, summary.ThroughSequence)
 	if err != nil {
 		return 0, 0, fmt.Errorf("record event compaction: %w", err)
 	}
