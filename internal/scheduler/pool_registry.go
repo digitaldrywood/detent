@@ -54,6 +54,7 @@ type poolPause struct {
 }
 
 type PoolRegistry struct {
+	pressure      HostPressure
 	reconfigureMu sync.Mutex
 	requestMu     sync.Mutex
 	pending       []*dispatchRequest
@@ -175,7 +176,8 @@ func (r *PoolRegistry) ReserveDispatch() (func(), bool) {
 		return func() {}, true
 	}
 	r.mu.RLock()
-	if len(r.pauses) > 0 {
+	capacity, observed := r.pressure.Capacity()
+	if len(r.pauses) > 0 || (observed && capacity == 0) {
 		r.mu.RUnlock()
 		return nil, false
 	}
