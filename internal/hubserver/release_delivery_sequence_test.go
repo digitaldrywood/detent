@@ -162,6 +162,7 @@ func TestNativeSequentialReleaseDeliveries(t *testing.T) {
 	}}
 	publisher := &releasePublisherFixture{releaseVerifierFixture: verifier}
 	f.service.config.ReconcileBackend = publisher
+	(&releaseDeliveryFixture{pullRequestFixture: f, request: tracker.AssociateReleasePick{ReleasePickInput: tracker.ReleasePickInput{Repository: repository}}}).checkoutOnly(t)
 	deliveries := make([]*releaseDeliveryFixture, 2)
 	versions := make([]tracker.ChangeVersion, 2)
 	paths := make([]string, 2)

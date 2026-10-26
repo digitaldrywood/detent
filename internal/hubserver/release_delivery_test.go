@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -95,6 +96,23 @@ func (f *releaseDeliveryFixture) associate(t *testing.T, r tracker.AssociateRele
 	var d tracker.ReleaseDelivery
 	decodeHubResponse(t, response, &d)
 	return &d
+}
+
+func (f *releaseDeliveryFixture) checkoutOnly(t *testing.T) {
+	t.Helper()
+	f.now = time.Now().UTC()
+	repository := strings.TrimPrefix(f.request.Repository, "https://github.com/")
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET repository_id = NULL, github_repository_enabled = 0, checkout_repository = ? WHERE id = ?", repository, f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	runner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Heartbeat)
+	runner.enroll(t)
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(runner.binding.MachineID)+"/heartbeat", runner.redemption.Credential, map[string]any{"version": "test", "capacity": 1, "checkout_repository": repository})
+	requireNativeStatus(t, response, http.StatusOK)
+	integration, err := f.service.projectIntegration(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+	if err != nil || !integration.CheckoutVerified || integration.RepositoryID != 0 || integration.RepositoryEnabled {
+		t.Fatalf("checkout binding: %+v, %v", integration, err)
+	}
 }
 
 func TestNativeReleaseDeliveryRefresh(t *testing.T) {
@@ -264,12 +282,36 @@ func TestNativeReleaseDeliveryRefresh(t *testing.T) {
 
 func TestNativeReleaseDeliveryAssociation(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		edit   func(*testing.T, *releaseDeliveryFixture)
-		status int
-		github bool
+		name     string
+		edit     func(*testing.T, *releaseDeliveryFixture)
+		status   int
+		github   bool
+		checkout bool
 	}{
 		{name: "native audited source", status: http.StatusOK},
+		{name: "verified checkout only", status: http.StatusOK, checkout: true},
+		{name: "checkout missing verification", status: http.StatusUnprocessableEntity, checkout: true, edit: func(t *testing.T, f *releaseDeliveryFixture) {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM runner_checkout_repositories WHERE project_id = ?", f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "checkout wrong repository", status: http.StatusUnprocessableEntity, checkout: true, edit: func(_ *testing.T, f *releaseDeliveryFixture) { f.request.Repository = "https://github.com/owner/other" }},
+		{name: "checkout wrong source", status: http.StatusUnprocessableEntity, checkout: true, edit: func(_ *testing.T, f *releaseDeliveryFixture) {
+			f.request.SourceMergeSHA = strings.Repeat("2", 40)
+			f.verifier.input = f.request.ReleasePickInput
+		}},
+		{name: "checkout wrong PR", status: http.StatusUnprocessableEntity, checkout: true, edit: func(_ *testing.T, f *releaseDeliveryFixture) { f.request.PRNumber = 8 }},
+		{name: "checkout PR belongs to another issue", status: http.StatusConflict, checkout: true, edit: func(_ *testing.T, f *releaseDeliveryFixture) {
+			f.request.PRNumber = 1
+			f.verifier.input = f.request.ReleasePickInput
+		}},
+		{name: "checkout projected repository case", status: http.StatusConflict, checkout: true, edit: func(t *testing.T, f *releaseDeliveryFixture) {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE repositories SET github_owner = upper(github_owner), github_name = upper(github_name) WHERE id = ?", f.repositoryID); err != nil {
+				t.Fatal(err)
+			}
+			f.request.PRNumber = 1
+			f.verifier.input = f.request.ReleasePickInput
+		}},
 		{name: "native repository without GitHub tracking", status: http.StatusOK, edit: func(t *testing.T, f *releaseDeliveryFixture) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET github_repository_enabled = 0 WHERE id = ?", f.project.ID); err != nil {
 				t.Fatal(err)
@@ -346,6 +388,9 @@ func TestNativeReleaseDeliveryAssociation(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newReleaseDeliveryFixture(t, test.github)
+			if test.checkout {
+				f.checkoutOnly(t)
+			}
 			if test.edit != nil {
 				test.edit(t, f)
 			}
@@ -420,12 +465,16 @@ func TestNativeReleaseDeliveryAssociation(t *testing.T) {
 
 func TestNativeReleaseDeliveryReviewAndLanding(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		github bool
-	}{{name: "native audited source"}, {name: "GitHub source", github: true}} {
+		name     string
+		github   bool
+		checkout bool
+	}{{name: "native audited source"}, {name: "GitHub source", github: true}, {name: "verified checkout only", checkout: true}} {
 		t.Run(test.name, func(t *testing.T) {
 			github := test.github
 			f := newReleaseDeliveryFixture(t, github)
+			if test.checkout {
+				f.checkoutOnly(t)
+			}
 			input := changeTestInput()
 			bundle := changeTestSource(t, &input)
 			f.request.BaseSHA, f.request.HeadSHA = input.BaseSHA, input.HeadSHA
@@ -536,13 +585,39 @@ func TestNativeReleaseDeliveryMCPAuthorityAndDistinctRows(t *testing.T) {
 	if other.ChangeID == first.ChangeID {
 		t.Fatal("two deliveries share a Change")
 	}
+	migration, err := migrationFiles.ReadFile("migrations/20261026191000_release_checkout_binding.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, down, found := strings.Cut(string(migration), "-- +goose Down")
+	if !found {
+		t.Fatal("release checkout migration has no downgrade")
+	}
+	for _, statement := range []string{down, up} {
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), statement); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, item := range []tracker.NativeWorkItemID{f.delivery.WorkItemID, second.WorkItemID} {
 		var d tracker.NativeIssue
 		decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(item), f.token, nil), &d)
-		if d.ReleaseDelivery == nil || d.ReleaseDelivery.ChangeID == "" {
+		want := first
+		if item == second.WorkItemID {
+			want = other
+		}
+		if d.ReleaseDelivery == nil || *d.ReleaseDelivery != want {
 			t.Fatalf("unusable delivery %s", item)
 		}
 	}
+	f.checkoutOnly(t)
 	f.request.IdempotencyKey = "duplicate-pr-other-issue"
 	f.request.PRNumber = 7
 	f.verifier.input = f.request.ReleasePickInput
@@ -552,6 +627,10 @@ func TestNativeReleaseDeliveryMCPAuthorityAndDistinctRows(t *testing.T) {
 	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, thirdPath, f.token, nil), &third)
 	f.request.ExpectedRevision = third.Revision
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, thirdPath+"/release-pick", f.token, f.request), http.StatusConflict)
+	f.request.IdempotencyKey = "checkout-distinct-pr"
+	f.request.PRNumber = 9
+	f.verifier.input = f.request.ReleasePickInput
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, thirdPath+"/release-pick", f.token, f.request), http.StatusOK)
 	worker := f.worker(t, "association-worker")
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, thirdPath+"/release-pick", worker, f.request), http.StatusNotFound)
 	args.ProjectID = "prj_other"

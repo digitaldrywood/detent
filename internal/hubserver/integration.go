@@ -122,18 +122,10 @@ func (s *Service) projectIntegration(ctx context.Context, query nativeQueryer, s
 		return result, err
 	}
 	if result.CheckoutRepository != "" {
-		var reported int
-		now := time.Now().UTC()
-		err := query.QueryRowContext(ctx, `SELECT count(*) FROM runner_checkout_repositories cr
-JOIN runner_identities r ON r.id=cr.runner_id AND r.organization_id=?
-JOIN api_tokens t ON t.id=r.token_id AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR julianday(t.expires_at)>julianday(?))
-JOIN token_grants g ON g.token_id=t.id AND g.organization_id=? AND g.project_id=cr.project_id
-WHERE cr.project_id=? AND lower(cr.repository)=lower(?) AND r.state='active' AND julianday(cr.reported_at)>julianday(?)`,
-			scope.organization, formatHubTime(now), scope.organization, scope.project, result.CheckoutRepository, formatHubTime(now.Add(-5*time.Minute))).Scan(&reported)
+		result.CheckoutVerified, err = verifiedProjectCheckout(ctx, query, scope, result.CheckoutRepository, time.Now().UTC())
 		if err != nil {
 			return result, err
 		}
-		result.CheckoutVerified = reported > 0
 	}
 	available := !s.config.GitHubDisabled && s.config.ReconcileBackend != nil
 	result.GitHubTransportAvailable = &available

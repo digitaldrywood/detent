@@ -31,6 +31,17 @@ func validCheckoutRepository(repository string) bool {
 	return true
 }
 
+func verifiedProjectCheckout(ctx context.Context, query nativeQueryer, scope nativeScope, repository string, now time.Time) (bool, error) {
+	var verified bool
+	err := query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM runner_checkout_repositories cr
+JOIN runner_identities r ON r.id=cr.runner_id AND r.organization_id=?
+JOIN api_tokens t ON t.id=r.token_id AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR julianday(t.expires_at)>julianday(?))
+JOIN token_grants g ON g.token_id=t.id AND g.organization_id=? AND g.project_id=cr.project_id
+WHERE cr.project_id=? AND cr.repository=? COLLATE NOCASE AND r.state='active' AND julianday(cr.reported_at)>julianday(?))`,
+		scope.organization, formatHubTime(now), scope.organization, scope.project, repository, formatHubTime(now.Add(-5*time.Minute))).Scan(&verified)
+	return verified, err
+}
+
 func updateRunnerCheckoutReport(ctx context.Context, tx *sql.Tx, scope nativeScope, report *string, now time.Time) error {
 	if report == nil {
 		return nil // older runners do not modify the last report

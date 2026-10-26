@@ -157,7 +157,7 @@ func pullRequestRefreshLimited() error {
 // repository disabled, which is 18.6's "projects without a GitHub connector".
 func projectConnector(ctx context.Context, query nativeQueryer, scope nativeScope) (*pullRequestConnector, int64, error) {
 	connector, repositoryID, enabled, err := projectRepositoryBinding(ctx, query, scope)
-	if err != nil || !enabled {
+	if err != nil || !enabled || repositoryID == 0 {
 		return nil, 0, err
 	}
 	return connector, repositoryID, nil
@@ -170,13 +170,23 @@ func projectRepositoryBinding(ctx context.Context, query nativeQueryer, scope na
 	var enabled bool
 	var repositoryID sql.NullInt64
 	var owner, name sql.NullString
-	err := query.QueryRowContext(ctx, `SELECT p.github_repository_enabled, p.repository_id, r.github_owner, r.github_name
+	var profile, checkout string
+	err := query.QueryRowContext(ctx, `SELECT p.github_repository_enabled, p.repository_id, r.github_owner, r.github_name, p.profile, p.checkout_repository
 FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id
-WHERE p.organization_id = ? AND p.id = ?`, scope.organization, scope.project).Scan(&enabled, &repositoryID, &owner, &name)
+WHERE p.organization_id = ? AND p.id = ?`, scope.organization, scope.project).Scan(&enabled, &repositoryID, &owner, &name, &profile, &checkout)
 	if err != nil {
 		return nil, 0, false, err
 	}
 	if !repositoryID.Valid || !owner.Valid || !name.Valid {
+		if profile == "native" && validCheckoutRepository(checkout) {
+			verified, err := verifiedProjectCheckout(ctx, query, scope, checkout, time.Now().UTC())
+			if err != nil {
+				return nil, 0, false, err
+			}
+			if verified {
+				return &pullRequestConnector{Provider: "github", Repository: checkout}, 0, enabled, nil
+			}
+		}
 		return nil, 0, enabled, nil
 	}
 	return &pullRequestConnector{Provider: "github", Repository: owner.String + "/" + name.String}, repositoryID.Int64, enabled, nil

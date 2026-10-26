@@ -198,7 +198,7 @@ func (s *Service) associateReleasePickCommand(ctx context.Context, tx *sql.Tx, s
 	d := tracker.ReleaseDelivery{ReleasePickInput: r.ReleasePickInput, ChangeID: change.ID, Actor: scope.actor(), AssociatedAt: now}
 	_, err = tx.ExecContext(ctx, `INSERT INTO release_deliveries (work_item_id, organization_id, project_id, source_issue_id, source_change_id, source_merge_sha,
 repository_id, repository, pr_number, head_ref, head_sha, base_ref, base_sha, frozen_sha, change_id, version_id, principal_id, actor_kind, via_key, associated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item, scope.organization, scope.project, d.SourceIssueID, d.SourceChangeID, d.SourceMergeSHA, repositoryID,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, item, scope.organization, scope.project, d.SourceIssueID, d.SourceChangeID, d.SourceMergeSHA, sql.NullInt64{Int64: repositoryID, Valid: repositoryID != 0},
 		d.Repository, d.PRNumber, d.HeadRef, d.HeadSHA, d.BaseRef, d.BaseSHA, d.FrozenSHA, d.ChangeID, nil, d.Actor.PrincipalID, d.Actor.Kind, d.Actor.ViaKey, formatHubTime(now))
 	if err != nil {
 		return nil, err
@@ -336,11 +336,17 @@ func (s *Service) checkReleasePickDelivery(ctx context.Context, tx *sql.Tx, scop
 	}
 	if r.PRNumber > 0 {
 		var conflict bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM release_deliveries WHERE repository_id = ? AND pr_number = ? AND work_item_id <> ?)`, repositoryID, r.PRNumber, item).Scan(&conflict); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM release_deliveries WHERE repository = ? AND pr_number = ? AND work_item_id <> ?)`, r.Repository, r.PRNumber, item).Scan(&conflict); err != nil {
 			return err
 		}
 		if conflict {
 			return nativeConflict(issue.Revision)
+		}
+		if repositoryID == 0 {
+			repositoryID, _, err = resolveWebhookRepositoryID(ctx, tx, connector.Repository)
+			if err != nil {
+				return err
+			}
 		}
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pull_requests WHERE repository_id = ? AND github_number = ? AND issue_id IS NOT NULL AND issue_id <> (SELECT id FROM issues WHERE native_id = ?))`, repositoryID, r.PRNumber, item).Scan(&conflict); err != nil {
 			return err
