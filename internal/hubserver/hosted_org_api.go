@@ -439,7 +439,7 @@ func (s *Service) claimHostedOperation(ctx context.Context, command hostedComman
 	if err != nil {
 		return false, nil, err
 	}
-	result, err := s.database.db.ExecContext(ctx, `INSERT INTO native_commands (organization_id,actor_id,operation,command_key,request_hash,response_json,created_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key, hash, hostedPendingCommand, formatHubTime(s.config.now()))
+	result, err := s.database.db.ExecContext(ctx, `INSERT INTO native_commands (organization_id,actor_id,operation,command_key,request_hash,response_json,created_at,response_pending,response_request_id) VALUES(?,?,?,?,?,?,?,1,'') ON CONFLICT DO NOTHING`, s.commandOrganization(ctx, command), command.actor, command.operation, command.key, hash, hostedPendingCommand, formatHubTime(s.config.now()))
 	if err != nil {
 		return false, nil, err
 	}
@@ -489,7 +489,11 @@ func (s *Service) completeHostedOperation(ctx context.Context, command hostedCom
 	}
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	result, err := s.database.db.ExecContext(persistCtx, `UPDATE native_commands SET response_json=? WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=? AND response_json=?`, response, s.commandOrganization(ctx, command), command.actor, command.operation, command.key, hostedPendingCommand)
+	pending, request, err := commandResponseFacts(response)
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.database.db.ExecContext(persistCtx, `UPDATE native_commands SET response_json=?,response_pending=?,response_request_id=? WHERE organization_id=? AND actor_id=? AND operation=? AND command_key=? AND response_json=?`, response, pending, request, s.commandOrganization(ctx, command), command.actor, command.operation, command.key, hostedPendingCommand)
 	if err != nil {
 		return nil, err
 	}

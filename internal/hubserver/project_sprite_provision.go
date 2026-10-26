@@ -404,8 +404,18 @@ func (s *Service) bootstrapPoolSprite(ctx context.Context, scope nativeScope, me
 	var runner string
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
-	if err := s.database.reader.QueryRowContext(readCtx, `SELECT r.id FROM runner_identities r JOIN machines m ON m.id=r.machine_id JOIN api_tokens t ON t.id=r.token_id AND t.revoked_at IS NULL WHERE r.enrollment_id=? AND r.organization_id=? AND m.hostname=? AND json_extract(m.capabilities_json,'$.sprite_name')=?`, member.EnrollmentID, scope.organization, member.Name, member.Name).Scan(&runner); err != nil {
+	var facts machineSpriteFacts
+	var legacy sql.NullString
+	if err := s.database.reader.QueryRowContext(readCtx, `SELECT r.id,m.sprite_name,CASE WHEN m.machine_facts_ready IS NULL THEN m.capabilities_json END FROM runner_identities r JOIN machines m ON m.id=r.machine_id JOIN api_tokens t ON t.id=r.token_id AND t.revoked_at IS NULL WHERE r.enrollment_id=? AND r.organization_id=? AND m.hostname=? AND (m.sprite_name=? OR m.machine_facts_ready IS NULL)`, member.EnrollmentID, scope.organization, member.Name, member.Name).Scan(&runner, &facts.Name, &legacy); err != nil {
 		return err
+	}
+
+	facts, err = resolveMachineSpriteFacts(facts, legacy)
+	if err != nil {
+		return err
+	}
+	if facts.Name == nil || *facts.Name != member.Name {
+		return sql.ErrNoRows
 	}
 	if err := s.requireSpriteMemberWanted(ctx, scope, member.Name); err != nil {
 		return err

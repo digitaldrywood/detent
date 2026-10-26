@@ -554,3 +554,37 @@ func TestCostLedgerScopeIsolation(t *testing.T) {
 		})
 	}
 }
+
+func TestSpriteCostInventory(t *testing.T) {
+	t.Parallel()
+	for _, typed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("typed=%t", typed), func(t *testing.T) {
+			t.Parallel()
+			f, scope, runners := newSpriteWakeFixture(t, nil, true, time.Minute, "cost-sprite", "cost-local")
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE machines SET capabilities_json='{}',machine_facts_ready=NULL WHERE id=?`, runners[1].binding.MachineID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE runner_identities SET scope='organization' WHERE id=?`, runners[0].binding.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			storeOrganizationSpritesSecret(t, f, spritesSecretSentinel)
+			setSpriteFactsFixtureMode(t, f, typed)
+			for _, test := range []struct {
+				name     string
+				projects []string
+				want     []costResource
+			}{
+				{"organization", nil, []costResource{{Provider: "fly_sprites", ProviderAccount: "detent-test", ResourceName: "cost-sprite"}, {ProjectID: string(scope.project), Provider: "fly_sprites", ProviderAccount: "detent-test", ResourceName: "cost-sprite"}}},
+				{"selected project", []string{string(scope.project)}, []costResource{{ProjectID: string(scope.project), Provider: "fly_sprites", ProviderAccount: "detent-test", ResourceName: "cost-sprite"}}},
+				{"ungranted project", []string{"prj_other"}, []costResource{}},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					got, err := readSpriteCostResources(t.Context(), f.service.database.reader, string(scope.organization), test.projects)
+					if err != nil || !reflect.DeepEqual(got, test.want) {
+						t.Fatalf("resources=%+v err=%v, want %+v", got, err, test.want)
+					}
+				})
+			}
+		})
+	}
+}

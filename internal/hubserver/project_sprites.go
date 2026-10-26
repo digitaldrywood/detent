@@ -278,13 +278,10 @@ func (s *Service) wakeSpriteRunners(ctx context.Context, scope nativeScope, stat
 		if !started {
 			failedAt = formatHubTime(s.config.now())
 		}
-		if _, err := s.database.db.ExecContext(ctx, `UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_wake_failed_at',?) WHERE id=(SELECT machine_id FROM runner_identities WHERE id=? AND organization_id=?)`, failedAt, candidate.runnerID, scope.organization); err != nil {
+		if err := s.recordSpriteWakeFacts(ctx, scope, candidate, failedAt, started); err != nil {
 			return woken, err
 		}
 		if started {
-			if _, err := s.database.db.ExecContext(ctx, `UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_woken_at',?) WHERE organization_id=? AND hostname=? AND json_extract(capabilities_json,'$.sprite_name')=hostname`, formatHubTime(s.config.now()), scope.organization, candidate.name); err != nil {
-				return woken, err
-			}
 			woken++
 		}
 	}
@@ -316,7 +313,7 @@ func (s *Service) nextSpriteWakeCandidate(ctx context.Context, scope nativeScope
 		cutoff := formatHubTime(s.config.now().Add(-spriteRunnerIdle))
 		err = s.database.reader.QueryRowContext(ctx, `SELECT r.id,m.hostname FROM runner_identities r
 JOIN machines m ON m.id=r.machine_id JOIN api_tokens t ON t.id=r.token_id AND t.revoked_at IS NULL
-WHERE r.organization_id=? AND r.state='active' AND r.removed_at IS NULL AND r.last_heartbeat_at<? AND COALESCE(json_extract(m.capabilities_json,'$.sprite_woken_at'),'')<? AND m.hostname>? AND json_extract(m.capabilities_json,'$.sprite_name')=m.hostname AND
+WHERE r.organization_id=? AND r.state='active' AND r.removed_at IS NULL AND r.last_heartbeat_at<? AND (m.sprite_woken_at<? OR m.machine_facts_ready IS NULL OR m.sprite_woken_at IS NULL) AND m.hostname>? AND (m.sprite_name=m.hostname OR m.machine_facts_ready IS NULL) AND
 (r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?))
 ORDER BY m.hostname LIMIT 1`, scope.organization, cutoff, formatHubTime(s.config.now().Add(-time.Minute)), *last, scope.project).Scan(&candidate.runnerID, &candidate.name)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -325,7 +322,18 @@ ORDER BY m.hostname LIMIT 1`, scope.organization, cutoff, formatHubTime(s.config
 		if err != nil {
 			return spriteWakeCandidate{}, false, err
 		}
+		var machine tracker.MachineID
+		if err := s.database.reader.QueryRowContext(ctx, `SELECT machine_id FROM runner_identities WHERE id=? AND organization_id=?`, candidate.runnerID, scope.organization).Scan(&machine); err != nil {
+			return spriteWakeCandidate{}, false, err
+		}
+		facts, err := readMachineSpriteFacts(ctx, s.database.reader, scope.organization, machine)
+		if err != nil {
+			return spriteWakeCandidate{}, false, err
+		}
 		*last = candidate.name
+		if facts.Name == nil || *facts.Name != candidate.name || spriteFactValue(facts.WokenAt) >= formatHubTime(s.config.now().Add(-time.Minute)) {
+			continue
+		}
 		if !validSpritesSlug(candidate.name) {
 			continue
 		}
@@ -438,4 +446,31 @@ func (s *Service) wakeOrganizationSpriteRunners(ctx context.Context, scope nativ
 		total += count
 	}
 	return total, nil
+}
+
+func (s *Service) recordSpriteWakeFacts(ctx context.Context, scope nativeScope, candidate spriteWakeCandidate, failedAt string, started bool) error {
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var machine tracker.MachineID
+	if err := tx.QueryRowContext(ctx, `SELECT machine_id FROM runner_identities WHERE id=? AND organization_id=?`, candidate.runnerID, scope.organization).Scan(&machine); err != nil {
+		return err
+	}
+	if err := updateMachineSpriteFact(ctx, tx, machine, "sprite_wake_failed_at", failedAt); err != nil {
+		return err
+	}
+	if started {
+		facts, err := readMachineSpriteFacts(ctx, tx, scope.organization, machine)
+		if err != nil {
+			return err
+		}
+		if facts.Name != nil && *facts.Name == candidate.name {
+			if err := updateMachineSpriteFact(ctx, tx, machine, "sprite_woken_at", formatHubTime(s.config.now())); err != nil {
+				return err
+			}
+		}
+	}
+	return s.database.commit(ctx, tx)
 }

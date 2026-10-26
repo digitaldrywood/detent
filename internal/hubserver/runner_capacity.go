@@ -113,6 +113,9 @@ func (s *Service) updateRunnerCapacityCommand(ctx context.Context, scope nativeS
 	if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET capacity_limit = ?, routing_settings_json = ?, revision = revision + 1 WHERE organization_id = ? AND id = ?", request.Capacity, settings, scope.organization, resource); err != nil {
 		return nil, err
 	}
+	if err := storeRunnerRoutingFacts(ctx, tx, resource, settings); err != nil {
+		return nil, err
+	}
 	r, err = readRunner(ctx, tx, scope.organization, resource, now)
 	if err != nil {
 		return nil, err
@@ -125,7 +128,7 @@ func (s *Service) updateRunnerCapacityCommand(ctx context.Context, scope nativeS
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", scope.organization, scope.credential.ID, operation, request.IdempotencyKey, hash, raw, formatHubTime(now)); err != nil {
+	if _, err := insertNativeCommandReceipt(ctx, tx, scope.organization, scope.credential.ID, operation, request.IdempotencyKey, hash, raw, formatHubTime(now)); err != nil {
 		return nil, err
 	}
 	if err := s.database.checkHostedGrowth(ctx, tx, before, now, false); err != nil {

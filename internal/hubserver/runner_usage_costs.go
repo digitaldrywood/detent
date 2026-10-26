@@ -61,12 +61,30 @@ func recordRunnerUsageCosts(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		return nil
 	}
 	var organization, project, item, started, ended, runnerID, machineID, placement string
-	err := tx.QueryRowContext(ctx, `SELECT a.organization_id,a.project_id,a.work_item_id,a.started_at,a.updated_at,coalesce(lr.runner_id,''),coalesce(json_extract(a.data_json,'$.machine_id'),''),CASE WHEN json_extract(m.capabilities_json,'$.sprite_name') IS NOT NULL THEN 'sprite' WHEN m.id IS NOT NULL THEN 'local' ELSE 'unknown' END FROM native_attempts a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id LEFT JOIN machines m ON m.id=json_extract(a.data_json,'$.machine_id') AND m.organization_id=a.organization_id WHERE a.id=?`, request.Data.AttemptID).Scan(&organization, &project, &item, &started, &ended, &runnerID, &machineID, &placement)
+	var legacy sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT a.organization_id,a.project_id,a.work_item_id,a.started_at,a.updated_at,coalesce(lr.runner_id,''),coalesce(a.machine_id,''),CASE WHEN a.usage_facts_ready IS NULL THEN a.data_json END FROM native_attempts a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.id=?`, request.Data.AttemptID).Scan(&organization, &project, &item, &started, &ended, &runnerID, &machineID, &legacy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("read usage attribution: %w", err)
+	}
+	if legacy.Valid {
+		var data tracker.NativeRunData
+		if err := decodeRunDetail(ctx, tx, legacy.String, &data); err != nil {
+			return err
+		}
+		machineID = string(data.MachineID)
+	}
+	facts, factErr := readMachineSpriteFacts(ctx, tx, tracker.OrganizationID(organization), tracker.MachineID(machineID))
+	placement = "unknown"
+	if factErr == nil {
+		placement = "local"
+		if facts.Name != nil {
+			placement = "sprite"
+		}
+	} else if !errors.Is(factErr, sql.ErrNoRows) {
+		return factErr
 	}
 	if organization != string(scope.organization) || project != string(scope.project) {
 		return nativePublicInvalid("Usage preserves the attempt's original organization and project")

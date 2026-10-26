@@ -43,77 +43,99 @@ func TestWakeSpriteRunners(t *testing.T) {
 		{name: "project without a Sprites token", heartbeatAgo: time.Minute, dispatchable: true, spriteStatus: http.StatusOK},
 		{name: "host is not a Sprite in this organization", heartbeatAgo: time.Minute, dispatchable: true, storeToken: true, spriteStatus: http.StatusNotFound, wantWakeCalls: 1},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			var mu sync.Mutex
-			var calls []*http.Request
-			client := &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
-				mu.Lock()
-				calls = append(calls, request.Clone(request.Context()))
-				mu.Unlock()
-				return spritesTestResponse(`{"type":"complete"}`, tt.spriteStatus), nil
-			})}
-			f, scope, runners := newSpriteWakeFixture(t, client, tt.storeToken, tt.heartbeatAgo, "customer-host")
-			if tt.organizationScope {
-				_, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET scope='organization' WHERE id=?", runners[0].binding.RunnerID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				_, err = f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id=?", runners[0].binding.RunnerID)
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			if tt.organizationToken {
-				token := spritesSecretSentinel
-				if tt.wrongOrganizationToken && tt.storeToken {
-					token = "detent-test/other/token/value"
-				}
-				storeOrganizationSpritesSecret(t, f, token)
-				if tt.wrongOrganizationToken && !tt.storeToken {
-					_, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM organization_secrets WHERE organization_id=?", f.project.OrganizationID)
+		for _, typed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/typed=%t", tt.name, typed), func(t *testing.T) {
+				t.Parallel()
+				var mu sync.Mutex
+				var calls []*http.Request
+				client := &http.Client{Transport: spritesTestTransport(func(request *http.Request) (*http.Response, error) {
+					mu.Lock()
+					calls = append(calls, request.Clone(request.Context()))
+					mu.Unlock()
+					return spritesTestResponse(`{"type":"complete"}`, tt.spriteStatus), nil
+				})}
+				f, scope, runners := newSpriteWakeFixture(t, client, tt.storeToken, tt.heartbeatAgo, "customer-host")
+				if tt.organizationScope {
+					_, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET scope='organization' WHERE id=?", runners[0].binding.RunnerID)
 					if err != nil {
 						t.Fatal(err)
 					}
-					response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations", testHubAdminToken, map[string]any{"name": "Other Sprite organization"})
-					requireNativeStatus(t, response, http.StatusCreated)
-					var organization nativeOrganization
-					decodeHubResponse(t, response, &organization)
-					foreign := newNativeFixture(t, f.service, organization.ID, "other")
-					storeOrganizationSpritesSecret(t, foreign, token)
+					_, err = f.service.database.db.ExecContext(t.Context(), "DELETE FROM token_grants WHERE token_id=?", runners[0].binding.RunnerID)
+					if err != nil {
+						t.Fatal(err)
+					}
 				}
-			}
-			state := ""
-			for _, candidate := range f.project.States {
-				if (candidate.Dispatchable && !candidate.Terminal) == tt.dispatchable {
-					state = candidate.Name
-					break
+				if tt.organizationToken {
+					token := spritesSecretSentinel
+					if tt.wrongOrganizationToken && tt.storeToken {
+						token = "detent-test/other/token/value"
+					}
+					storeOrganizationSpritesSecret(t, f, token)
+					if tt.wrongOrganizationToken && !tt.storeToken {
+						_, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM organization_secrets WHERE organization_id=?", f.project.OrganizationID)
+						if err != nil {
+							t.Fatal(err)
+						}
+						response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations", testHubAdminToken, map[string]any{"name": "Other Sprite organization"})
+						requireNativeStatus(t, response, http.StatusCreated)
+						var organization nativeOrganization
+						decodeHubResponse(t, response, &organization)
+						foreign := newNativeFixture(t, f.service, organization.ID, "other")
+						storeOrganizationSpritesSecret(t, foreign, token)
+					}
 				}
-			}
-			if state == "" {
-				t.Fatalf("fixture project has no state with dispatchable=%t", tt.dispatchable)
-			}
-			woken, err := f.service.wakeSpriteRunners(t.Context(), scope, state)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if woken != tt.wantWoken {
-				t.Fatalf("woken = %d, want %d", woken, tt.wantWoken)
-			}
-			mu.Lock()
-			defer mu.Unlock()
-			if len(calls) != tt.wantWakeCalls {
-				t.Fatalf("wake calls = %d, want %d", len(calls), tt.wantWakeCalls)
-			}
-			for _, call := range calls {
-				if call.Method != http.MethodPost || call.URL.String() != "https://api.sprites.dev/v1/sprites/customer-host/services/detent-runner/start?duration=30s" {
-					t.Fatalf("wake request = %s %s", call.Method, call.URL)
+				state := ""
+				for _, candidate := range f.project.States {
+					if (candidate.Dispatchable && !candidate.Terminal) == tt.dispatchable {
+						state = candidate.Name
+						break
+					}
 				}
-				if call.Header.Get("Authorization") != "Bearer "+spritesSecretSentinel {
-					t.Fatal("wake request did not carry the project's Sprites token")
+				if state == "" {
+					t.Fatalf("fixture project has no state with dispatchable=%t", tt.dispatchable)
 				}
-			}
-		})
+				setSpriteFactsFixtureMode(t, f, typed)
+				beforeWake := f.service.config.now()
+				woken, err := f.service.wakeSpriteRunners(t.Context(), scope, state)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				afterWake := f.service.config.now()
+				wakeTimeInRange := func(value *string) bool {
+					at, err := parseTimeValue(spriteFactValue(value))
+					return err == nil && !at.Before(beforeWake) && !at.After(afterWake)
+				}
+				if tt.wantWakeCalls > 0 {
+					facts, err := readMachineSpriteFacts(t.Context(), f.service.database.reader, scope.organization, runners[0].binding.MachineID)
+					if err != nil || spriteFactValue(facts.Name) != "customer-host" {
+						t.Fatalf("wake lost Sprite identity: %+v, %v", facts, err)
+					}
+					if tt.wantWoken > 0 && (!wakeTimeInRange(facts.WokenAt) || spriteFactValue(facts.WakeFailedAt) != "") {
+						t.Fatalf("successful wake facts=%+v", facts)
+					}
+					if tt.wantWoken == 0 && !wakeTimeInRange(facts.WakeFailedAt) {
+						t.Fatalf("failed wake facts=%+v", facts)
+					}
+				}
+				if woken != tt.wantWoken {
+					t.Fatalf("woken = %d, want %d", woken, tt.wantWoken)
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if len(calls) != tt.wantWakeCalls {
+					t.Fatalf("wake calls = %d, want %d", len(calls), tt.wantWakeCalls)
+				}
+				for _, call := range calls {
+					if call.Method != http.MethodPost || call.URL.String() != "https://api.sprites.dev/v1/sprites/customer-host/services/detent-runner/start?duration=30s" {
+						t.Fatalf("wake request = %s %s", call.Method, call.URL)
+					}
+					if call.Header.Get("Authorization") != "Bearer "+spritesSecretSentinel {
+						t.Fatal("wake request did not carry the project's Sprites token")
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -309,7 +331,7 @@ func TestWakeSpriteRunnersAfterBurst(t *testing.T) {
 			if active != 0 || calls.Load() != wantCalls {
 				t.Fatalf("completed burst: active passes=%d provider calls=%d", active, calls.Load())
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE machines SET capabilities_json=json_remove(capabilities_json,'$.sprite_woken_at') WHERE organization_id=?`, scope.organization); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE machines SET machine_facts_ready=NULL,capabilities_json=json_remove(capabilities_json,'$.sprite_woken_at') WHERE organization_id=?`, scope.organization); err != nil {
 				t.Fatal(err)
 			}
 			f.create(t, "later-mutation")

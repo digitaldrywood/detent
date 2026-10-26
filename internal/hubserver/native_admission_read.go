@@ -59,22 +59,22 @@ func storeEncodedRunnerAdmission(ctx context.Context, tx *sql.Tx, scope nativeSc
 	if raw == "" {
 		return nil
 	}
-	result, err := tx.ExecContext(ctx, "UPDATE machines SET capabilities_json=json_set(capabilities_json, ?, json(?)) WHERE id=? AND organization_id=?", admissionObservationPath(scope.credential.Runner.RunnerID, scope.project), raw, scope.credential.Runner.MachineID, scope.organization)
-	return requireRunnerUpdate(result, err)
+	var observed tracker.NativeAdmissionObservation
+	if err := json.Unmarshal([]byte(raw), &observed); err != nil {
+		return err
+	}
+	if err := storeAdmissionFacts(ctx, tx, scope.credential.Runner.RunnerID, scope.project, observed); err != nil {
+		return err
+	}
+	return storeLegacyAdmission(ctx, tx, scope, raw)
 }
 
 func readRunnerAdmissionObservation(ctx context.Context, q nativeQueryer, scope nativeScope, runner runnerauth.Runner, policyID string, now time.Time) (*tracker.NativeAdmissionContext, error) {
-	var raw string
-	if err := q.QueryRowContext(ctx, "SELECT COALESCE(json_extract(capabilities_json, ?), '') FROM machines WHERE id=? AND organization_id=?", admissionObservationPath(runner.RunnerID, scope.project), runner.MachineID, scope.organization).Scan(&raw); err != nil {
+	observed, err := readAdmissionFacts(ctx, q, runner.RunnerID, scope.project, runner.MachineID, scope.organization)
+	if err != nil {
 		return nil, err
 	}
-	if raw == "" || len(raw) > 8192 {
-		return nil, nil //nolint:nilnil // Missing or unusable heartbeat evidence is a valid optional result.
-	}
-	var observed tracker.NativeAdmissionObservation
-	if err := json.Unmarshal([]byte(raw), &observed); err != nil {
-		return nil, nil //nolint:nilnil // Missing or unusable heartbeat evidence is a valid optional result.
-	}
+
 	if validateNativeAdmissionContext(observed.Context) != nil || observed.RunnerRevision != runner.Revision || observed.ReceivedAt.IsZero() || now.Before(observed.ReceivedAt) || !now.Before(observed.ReceivedAt.Add(runnerauth.HeartbeatTimeout)) || now.Before(observed.Context.ObservedAt) || !now.Before(observed.Context.ObservedAt.Add(runnerauth.HeartbeatTimeout)) {
 		return nil, nil //nolint:nilnil // Missing or unusable heartbeat evidence is a valid optional result.
 	}

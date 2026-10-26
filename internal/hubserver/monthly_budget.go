@@ -101,7 +101,13 @@ func monthlyBudgetRefusal(decision budget.MonthlyDecision) string {
 
 func monthlyClaimExposure(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, workspace bool) (budget.CostExposure, error) {
 	var exposure budget.CostExposure
-	err := q.QueryRowContext(ctx, `SELECT COALESCE(json_extract(capabilities_json,'$.sprite_name')=hostname AND length(hostname)>0,0) FROM machines WHERE id=? AND organization_id=?`, machine, scope.organization).Scan(&exposure.SpriteInfrastructure)
+	facts, err := readMachineSpriteFacts(ctx, q, scope.organization, machine)
+	if err != nil {
+		return exposure, err
+	}
+	var hostname string
+	err = q.QueryRowContext(ctx, `SELECT hostname FROM machines WHERE id=? AND organization_id=?`, machine, scope.organization).Scan(&hostname)
+	exposure.SpriteInfrastructure = facts.Name != nil && *facts.Name == hostname && hostname != ""
 	if err != nil {
 		return exposure, err
 	}

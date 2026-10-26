@@ -46,34 +46,28 @@ func readRuntimeRunners(ctx context.Context, query nativeQueryer, scope nativeSc
 		args = append(args, scope.credential.Runner.RunnerID)
 	}
 
-	rows, err := query.QueryContext(ctx, statement, args...)
+	items, err := readRunnerIdentityBatch(ctx, query, statement, args, now, false)
 	if err != nil {
 		return nil, false, err
 	}
-	defer rows.Close()
+	truncated = truncated || len(items) > limit
+	if len(items) > limit {
+		items = items[:limit]
+	}
 	runners := []runnerauth.Runner{}
 	reports := make(map[string][]providercapacity.Report)
 	hosts := make(map[tracker.MachineID]int)
 	var machines []any
-	for rows.Next() {
-		if len(runners) == limit {
-			truncated = true
-			break
-		}
-		r, providerReports, _, err := scanRunnerIdentity(rows, func() time.Time { return now })
-		if err != nil {
-			return nil, false, err
-		}
+	for _, item := range items {
+		r := item.runner
 		runners = append(runners, r)
-		reports[r.RunnerID] = providerReports
+		reports[r.RunnerID] = item.reports
 		if _, found := hosts[r.MachineID]; !found {
 			hosts[r.MachineID] = 0
 			machines = append(machines, r.MachineID)
 		}
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, false, err
-	}
+
 	if len(runners) == 0 {
 		return runners, truncated, nil
 	}
@@ -87,7 +81,7 @@ FROM leases l INDEXED BY health_active_host JOIN issues i ON i.id=l.issue_id LEF
 WHERE l.machine_id IN (` + placeholders(len(machines)) + `) AND l.released_at IS NULL AND l.expires_at>? ORDER BY l.machine_id,l.expires_at,l.lease_id LIMIT 1025`
 		leaseArgs = append(append([]any(nil), machines...), formatHubTime(now))
 	}
-	rows, err = query.QueryContext(ctx, leaseStatement, leaseArgs...)
+	rows, err := query.QueryContext(ctx, leaseStatement, leaseArgs...)
 	if err != nil {
 		return nil, false, err
 	}

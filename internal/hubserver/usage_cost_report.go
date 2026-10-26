@@ -260,26 +260,41 @@ func readSpriteCostResources(ctx context.Context, query nativeQueryer, organizat
 	if err != nil {
 		return nil, err
 	}
-	rows, err := query.QueryContext(ctx, `SELECT DISTINCT project_id,provider_account,name FROM (
-SELECT token_project_id AS project_id,provider_organization AS provider_account,name FROM organization_sprite_members WHERE organization_id=? AND state<>'deleted'
+	rows, err := query.QueryContext(ctx, `SELECT DISTINCT project_id,provider_account,name,legacy FROM (
+SELECT token_project_id AS project_id,provider_organization AS provider_account,name,NULL AS legacy FROM organization_sprite_members WHERE organization_id=? AND state<>'deleted'
 UNION
-SELECT g.project_id,ps.organization_slug,m.hostname FROM machines m JOIN runner_identities r ON r.machine_id=m.id AND r.removed_at IS NULL
+SELECT g.project_id,ps.organization_slug,m.hostname,CASE WHEN m.machine_facts_ready IS NULL THEN m.capabilities_json END FROM machines m JOIN runner_identities r ON r.machine_id=m.id AND r.removed_at IS NULL
 JOIN token_grants g ON g.token_id=r.token_id AND g.organization_id=r.organization_id
 JOIN project_secrets ps ON ps.organization_id=g.organization_id AND ps.project_id=g.project_id AND ps.kind='fly_sprites_token'
-WHERE m.organization_id=? AND json_extract(m.capabilities_json,'$.sprite_name')=m.hostname
-UNION SELECT '',os.organization_slug,m.hostname FROM machines m JOIN runner_identities r ON r.machine_id=m.id AND r.removed_at IS NULL AND r.scope='organization' JOIN organization_secrets os ON os.organization_id=r.organization_id AND os.kind='fly_sprites_token' WHERE m.organization_id=? AND json_extract(m.capabilities_json,'$.sprite_name')=m.hostname)
+WHERE m.organization_id=? AND (m.sprite_name=m.hostname OR m.machine_facts_ready IS NULL)
+UNION SELECT '',os.organization_slug,m.hostname,CASE WHEN m.machine_facts_ready IS NULL THEN m.capabilities_json END FROM machines m JOIN runner_identities r ON r.machine_id=m.id AND r.removed_at IS NULL AND r.scope='organization' JOIN organization_secrets os ON os.organization_id=r.organization_id AND os.kind='fly_sprites_token' WHERE m.organization_id=? AND (m.sprite_name=m.hostname OR m.machine_facts_ready IS NULL))
 WHERE (? OR project_id IN (SELECT value FROM json_each(?))) ORDER BY project_id,provider_account,name`, organization, organization, organization, projects == nil, string(encoded))
 	if err != nil {
 		return nil, fmt.Errorf("read Sprite cost inventory: %w", err)
 	}
 	defer rows.Close()
 	resources := []costResource{}
+	seen := map[[3]string]bool{}
 	for rows.Next() {
+		var legacy sql.NullString
 		resource := costResource{Provider: "fly_sprites"}
-		if err := rows.Scan(&resource.ProjectID, &resource.ProviderAccount, &resource.ResourceName); err != nil {
+		if err := rows.Scan(&resource.ProjectID, &resource.ProviderAccount, &resource.ResourceName, &legacy); err != nil {
 			return nil, err
 		}
-		resources = append(resources, resource)
+		if legacy.Valid {
+			facts, err := resolveMachineSpriteFacts(machineSpriteFacts{}, legacy)
+			if err != nil {
+				return nil, err
+			}
+			if facts.Name == nil || *facts.Name != resource.ResourceName {
+				continue
+			}
+		}
+		key := [3]string{resource.ProjectID, resource.ProviderAccount, resource.ResourceName}
+		if !seen[key] {
+			resources = append(resources, resource)
+			seen[key] = true
+		}
 	}
 	return resources, rows.Err()
 }

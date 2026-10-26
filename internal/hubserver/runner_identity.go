@@ -369,7 +369,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 				if !validSpritesSlug(request.SpriteName) {
 					return nil, nativePublicInvalid("Sprite name is invalid")
 				}
-				result, err := tx.ExecContext(ctx, "UPDATE machines SET capabilities_json=json_set(capabilities_json, '$.sprite_name', ?) WHERE id=? AND organization_id=? AND hostname=?", request.SpriteName, scope.credential.Runner.MachineID, scope.organization, request.SpriteName)
+				result, err := tx.ExecContext(ctx, "UPDATE machines SET sprite_name=? WHERE id=? AND organization_id=? AND hostname=?", request.SpriteName, scope.credential.Runner.MachineID, scope.organization, request.SpriteName)
 				if err != nil {
 					return nil, err
 				}
@@ -379,6 +379,9 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 				}
 				if count != 1 {
 					return nil, nativePublicInvalid("Sprite name must match the runner hostname")
+				}
+				if err := updateMachineSpriteFact(ctx, tx, scope.credential.Runner.MachineID, "sprite_name", request.SpriteName); err != nil {
+					return nil, err
 				}
 			}
 			step("admission")
@@ -421,7 +424,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			}
 			step("local_checks")
 			if checksRaw != "" {
-				_, err := tx.ExecContext(ctx, "UPDATE runner_identities SET local_checks_json = json_set(local_checks_json, ?, json(?)) WHERE id = ? AND organization_id = ?", "$."+string(scope.project), checksRaw, scope.credential.Runner.RunnerID, scope.organization)
+				err := storeEncodedLocalChecks(ctx, tx, scope, checksRaw)
 				if err != nil {
 					return nil, err
 				}

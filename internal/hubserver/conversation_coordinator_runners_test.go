@@ -164,7 +164,7 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 				}
 				switch test.name {
 				case "sprite detected after preview":
-					operatorSQL(t, f, "UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_name',hostname) WHERE id=?", r.binding.MachineID)
+					operatorSQL(t, f, "UPDATE machines SET machine_facts_ready=NULL,capabilities_json=json_set(capabilities_json,'$.sprite_name',hostname) WHERE id=?", r.binding.MachineID)
 				case "stale preview":
 					operatorSQL(t, f, "UPDATE runner_identities SET revision=revision+1 WHERE id=?", r.binding.RunnerID)
 				case "role revoked after preview":

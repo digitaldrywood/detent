@@ -425,13 +425,13 @@ VALUES (?, ?, ?, ?, 'worker', ?, ?, 1, ?)`, binding.RunnerID, binding.RunnerID, 
 			return nil, runnerCollision()
 		}
 		if !shared {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO machines (id, hostname, display_name, capacity, version, last_heartbeat_at, registered_at, updated_at, organization_id, token_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, binding.MachineID, request.Hostname, request.DisplayName, request.Capacity, request.Version, formatHubTime(now), formatHubTime(now), formatHubTime(now), identity.OrganizationID, binding.RunnerID); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO machines (id, hostname, display_name, capacity, version, last_heartbeat_at, registered_at, updated_at, organization_id, token_id,machine_facts_ready)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,1)`, binding.MachineID, request.Hostname, request.DisplayName, request.Capacity, request.Version, formatHubTime(now), formatHubTime(now), formatHubTime(now), identity.OrganizationID, binding.RunnerID); err != nil {
 				return nil, err
 			}
 		}
 		if request.SpriteName != "" && !shared {
-			if _, err := tx.ExecContext(ctx, "UPDATE machines SET capabilities_json=json_set(capabilities_json, '$.sprite_name', ?) WHERE id=?", request.SpriteName, binding.MachineID); err != nil {
+			if err := updateMachineSpriteFact(ctx, tx, binding.MachineID, "sprite_name", request.SpriteName); err != nil {
 				return nil, err
 			}
 		}
@@ -448,6 +448,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, binding.MachineID, request.Hostname, req
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET routing_settings_json = ? WHERE id = ?", settings, binding.RunnerID); err != nil {
+			return nil, err
+		}
+		if err := storeRunnerRoutingFacts(ctx, tx, binding.RunnerID, settings); err != nil {
 			return nil, err
 		}
 		if err := updateRunnerIsolationReport(ctx, tx, nativeScope{organization: identity.OrganizationID, credential: apiCredential{ID: binding.RunnerID, Runner: identity}}, request.BackendIsolation); err != nil {

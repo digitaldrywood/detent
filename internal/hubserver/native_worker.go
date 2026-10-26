@@ -276,8 +276,8 @@ func (s *Service) registerNativeMachine(c echo.Context) error {
 	if request.CheckoutRepository != nil && *request.CheckoutRepository != "" {
 		return s.nativeAPIError(c, nativePublicInvalid("Checkout reports require an enrolled runner"))
 	}
-	result, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO machines (id, hostname, display_name, capacity, version, last_heartbeat_at, registered_at, updated_at, organization_id, token_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	result, err := s.database.db.ExecContext(c.Request().Context(), `INSERT INTO machines (id, hostname, display_name, capacity, version, last_heartbeat_at, registered_at, updated_at, organization_id, token_id,machine_facts_ready)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,1)
 ON CONFLICT(id) DO UPDATE SET hostname = excluded.hostname, display_name = excluded.display_name, capacity = excluded.capacity, version = excluded.version, last_heartbeat_at = excluded.last_heartbeat_at, updated_at = excluded.updated_at
 WHERE machines.organization_id = excluded.organization_id AND machines.token_id = excluded.token_id`, request.ID, request.Hostname, request.DisplayName, request.Capacity, request.Version, now, now, now, scope.organization, scope.credential.ID)
 	if err != nil {

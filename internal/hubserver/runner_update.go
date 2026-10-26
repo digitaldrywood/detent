@@ -133,13 +133,16 @@ func (s *Service) applyRunnerUpdateCommand(ctx context.Context, scope nativeScop
 	if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET routing_settings_json = ?, revision = revision + 1 WHERE organization_id = ? AND id = ?", settings, scope.organization, resource); err != nil {
 		return nil, err
 	}
+	if err := storeRunnerRoutingFacts(ctx, tx, resource, settings); err != nil {
+		return nil, err
+	}
 	runner.Revision++
 	view := runner.UpdateView(now)
 	raw, err = marshalNative(view)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", scope.organization, scope.credential.ID, operation, request.IdempotencyKey, hash, raw, formatHubTime(now)); err != nil {
+	if _, err := insertNativeCommandReceipt(ctx, tx, scope.organization, scope.credential.ID, operation, request.IdempotencyKey, hash, raw, formatHubTime(now)); err != nil {
 		return nil, err
 	}
 	if err := s.database.checkHostedGrowth(ctx, tx, before, now, false); err != nil {
@@ -232,7 +235,10 @@ func (s *Service) followHubRunnerUpdate(ctx context.Context, tx *sql.Tx, scope n
 		return err
 	}
 	_, err = tx.ExecContext(ctx, "UPDATE runner_identities SET routing_settings_json = ?, revision = revision + 1 WHERE organization_id = ? AND id = ?", raw, scope.organization, scope.credential.Runner.RunnerID)
-	return err
+	if err != nil {
+		return err
+	}
+	return storeRunnerRoutingFacts(ctx, tx, scope.credential.Runner.RunnerID, raw)
 }
 
 func (s *Service) getRunnerUpdate(c echo.Context) error {

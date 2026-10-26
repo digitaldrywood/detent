@@ -24,6 +24,9 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 	}{
 		{"populate conversation query metadata", s.convertConversationQueryMetadata},
 		{"populate claim facts", s.database.populateClaimFacts},
+		{"populate runner facts", func(ctx context.Context) error {
+			return s.database.populateRunnerFacts(s.runDetailContext(s.contentContext(ctx)))
+		}},
 		{"populate time indexes", s.database.populateTimeIndexes},
 		{"expire native records", func(ctx context.Context) error { return s.expireNativeRecords(ctx, now) }},
 		{"archive closed issues", func(ctx context.Context) error { return s.archiveClosedNativeIssues(ctx, now) }},

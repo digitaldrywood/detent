@@ -67,10 +67,10 @@ func readPlacementPolicy(ctx context.Context, q nativeQueryer, scope nativeScope
 }
 
 func readPlacementSpriteUsage(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, joining ...string) (int, error) {
-	rows, err := q.QueryContext(ctx, `SELECT l.machine_id,l.session_id,l.lease_id,COALESCE(lr.runner_id,''),`+nativeLandingCapacityProject+`
+	rows, err := q.QueryContext(ctx, `SELECT l.machine_id,l.session_id,l.lease_id,COALESCE(lr.runner_id,''),`+nativeLandingCapacityProject+`,m.sprite_name,m.hostname,CASE WHEN m.machine_facts_ready IS NULL THEN m.capabilities_json END
  FROM leases l JOIN issues i ON i.id=l.issue_id JOIN machines m ON m.id=l.machine_id
  LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id `+nativeLandingCapacityJoins+`
- WHERE i.organization_id=? AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?) AND json_extract(m.capabilities_json,'$.sprite_name')=m.hostname`, scope.organization, formatHubTime(now))
+ WHERE i.organization_id=? AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?) AND (m.sprite_name=m.hostname OR m.machine_facts_ready IS NULL)`, scope.organization, formatHubTime(now))
 	if err != nil {
 		return 0, err
 	}
@@ -79,10 +79,19 @@ func readPlacementSpriteUsage(ctx context.Context, q nativeQueryer, scope native
 	for rows.Next() {
 		var machine tracker.MachineID
 		var session, lease, runner, project string
-		if err := rows.Scan(&machine, &session, &lease, &runner, &project); err != nil {
+		var name *string
+		var hostname string
+		var legacy sql.NullString
+		if err := rows.Scan(&machine, &session, &lease, &runner, &project, &name, &hostname, &legacy); err != nil {
 			return 0, err
 		}
-		groups[landingLeaseCapacityKey(machine, project, session, runner, lease)] = true
+		facts, err := resolveMachineSpriteFacts(machineSpriteFacts{Name: name}, legacy)
+		if err != nil {
+			return 0, err
+		}
+		if facts.Name != nil && *facts.Name == hostname {
+			groups[landingLeaseCapacityKey(machine, project, session, runner, lease)] = true
+		}
 	}
 	if len(joining) > 0 && joining[0] != "" {
 		delete(groups, joining[0]+"/"+scope.credential.Runner.RunnerID)
@@ -91,7 +100,7 @@ func readPlacementSpriteUsage(ctx context.Context, q nativeQueryer, scope native
 }
 
 func readPlacementRunners(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) ([]placementRunner, error) {
-	rows, err := q.QueryContext(ctx, `SELECT r.id, r.enrollment_id, COALESCE(json_extract(m.capabilities_json,'$.sprite_name'),''), COALESCE(json_extract(m.capabilities_json,'$.sprite_woken_at'),'') FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.organization_id=? AND r.removed_at IS NULL AND (?='' OR r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=? AND g.project_id=?)) ORDER BY r.id`, scope.organization, scope.project, scope.organization, scope.project)
+	rows, err := q.QueryContext(ctx, `SELECT r.id, r.enrollment_id, m.sprite_name,m.sprite_woken_at,CASE WHEN m.machine_facts_ready IS NULL THEN m.capabilities_json END FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.organization_id=? AND r.removed_at IS NULL AND (?='' OR r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=? AND g.project_id=?)) ORDER BY r.id`, scope.organization, scope.project, scope.organization, scope.project)
 	if err != nil {
 		return nil, err
 	}
@@ -100,9 +109,16 @@ func readPlacementRunners(ctx context.Context, q nativeQueryer, scope nativeScop
 	var identities []identity
 	for rows.Next() {
 		var id identity
-		if err := rows.Scan(&id.id, &id.enrollment, &id.name, &id.woke); err != nil {
+		var facts machineSpriteFacts
+		var legacy sql.NullString
+		if err := rows.Scan(&id.id, &id.enrollment, &facts.Name, &facts.WokenAt, &legacy); err != nil {
 			return nil, err
 		}
+		facts, err = resolveMachineSpriteFacts(facts, legacy)
+		if err != nil {
+			return nil, err
+		}
+		id.name, id.woke = spriteFactValue(facts.Name), spriteFactValue(facts.WokenAt)
 		identities = append(identities, id)
 	}
 	if err := rows.Err(); err != nil {
@@ -496,8 +512,13 @@ func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeSco
 	if err != nil {
 		return false, "", err
 	}
-	var name, hostname string
-	if err := q.QueryRowContext(ctx, `SELECT COALESCE(json_extract(capabilities_json,'$.sprite_name'),''),hostname FROM machines WHERE id=? AND organization_id=?`, machine, scope.organization).Scan(&name, &hostname); err != nil {
+	facts, err := readMachineSpriteFacts(ctx, q, scope.organization, machine)
+	if err != nil {
+		return false, "", err
+	}
+	name := spriteFactValue(facts.Name)
+	var hostname string
+	if err := q.QueryRowContext(ctx, `SELECT hostname FROM machines WHERE id=? AND organization_id=?`, machine, scope.organization).Scan(&hostname); err != nil {
 		return false, "", err
 	}
 	sprite := name == hostname && validSpritesSlug(name)

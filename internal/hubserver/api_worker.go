@@ -1029,20 +1029,25 @@ func (s *Service) registerMachine(c echo.Context) error {
 	if err != nil {
 		return s.internalAPIError(c, "machine_register_failed", "Machine could not be registered", err)
 	}
+	var facts machineSpriteFacts
+	if err := json.Unmarshal(capabilities, &facts); err != nil {
+		return s.internalAPIError(c, "machine_register_failed", "Machine could not be registered", err)
+	}
 	result, err := s.database.db.ExecContext(c.Request().Context(), `
-INSERT INTO machines (id, hostname, display_name, capabilities_json, capacity, version, last_heartbeat_at, registered_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO machines (id, hostname, display_name, capabilities_json, capacity, version, last_heartbeat_at, registered_at, updated_at,sprite_name,sprite_woken_at,sprite_wake_failed_at,machine_facts_ready)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,?,?,?,1)
 ON CONFLICT(id) DO UPDATE SET
   hostname = excluded.hostname,
   display_name = excluded.display_name,
   capabilities_json = excluded.capabilities_json,
+ sprite_name=excluded.sprite_name,sprite_woken_at=excluded.sprite_woken_at,sprite_wake_failed_at=excluded.sprite_wake_failed_at,machine_facts_ready=1,
   capacity = excluded.capacity,
   version = excluded.version,
   last_heartbeat_at = excluded.last_heartbeat_at,
   updated_at = excluded.updated_at
 WHERE machines.organization_id IS NULL`,
 		request.ID, request.Hostname, request.DisplayName, string(capabilities), request.Capacity, request.Version,
-		formatHubTime(now), formatHubTime(now), formatHubTime(now),
+		formatHubTime(now), formatHubTime(now), formatHubTime(now), facts.Name, facts.WokenAt, facts.WakeFailedAt,
 	)
 	if err != nil {
 		return s.internalAPIError(c, "machine_register_failed", "Machine could not be registered", err)
@@ -1099,10 +1104,14 @@ func (s *Service) heartbeatMachine(c echo.Context) error {
 	if err != nil {
 		return s.internalAPIError(c, "machine_heartbeat_failed", "Machine heartbeat could not be recorded", err)
 	}
+	var facts machineSpriteFacts
+	if err := json.Unmarshal(capabilities, &facts); err != nil {
+		return s.internalAPIError(c, "machine_heartbeat_failed", "Machine heartbeat could not be recorded", err)
+	}
 	result, err := s.database.db.ExecContext(c.Request().Context(), `
 UPDATE machines
-SET display_name = ?, capabilities_json = ?, capacity = ?, version = ?, last_heartbeat_at = ?, updated_at = ?
-WHERE id = ?`, current.DisplayName, string(capabilities), current.Capacity, current.Version, formatHubTime(now), formatHubTime(now), id)
+SET display_name = ?, capabilities_json = ?, capacity = ?, version = ?, last_heartbeat_at = ?, updated_at = ?,sprite_name=?,sprite_woken_at=?,sprite_wake_failed_at=?,machine_facts_ready=1
+WHERE id = ?`, current.DisplayName, string(capabilities), current.Capacity, current.Version, formatHubTime(now), formatHubTime(now), facts.Name, facts.WokenAt, facts.WakeFailedAt, id)
 	if err != nil {
 		return s.internalAPIError(c, "machine_heartbeat_failed", "Machine heartbeat could not be recorded", err)
 	}

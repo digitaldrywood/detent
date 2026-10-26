@@ -90,7 +90,7 @@ func runnerUpdateReceiptMatches(ctx context.Context, tx *sql.Tx, scope nativeSco
 	if !request.Urgent {
 		return false, nil
 	}
-	err := tx.QueryRowContext(ctx, "SELECT response_json FROM native_commands WHERE organization_id = ? AND operation = 'urgent_runner_update' AND json_extract(response_json, '$.request.id') = ? LIMIT 1", scope.organization, request.ID).Scan(&raw)
+	raw, err := readUrgentCommandReceipt(ctx, tx, scope.organization, request.ID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -190,7 +190,7 @@ func (s *Service) markUrgentRunnerUpdateCommand(ctx context.Context, scope nativ
 		if _, err := tx.ExecContext(ctx, "UPDATE organizations SET urgent_runner_update_json = ? WHERE id = ?", raw, scope.organization); err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", scope.organization, scope.credential.ID, operation, request.IdempotencyKey, hash, raw, formatHubTime(now)); err != nil {
+		if _, err := insertNativeCommandReceipt(ctx, tx, scope.organization, scope.credential.ID, operation, request.IdempotencyKey, hash, raw, formatHubTime(now)); err != nil {
 			return nil, err
 		}
 		return value, nil

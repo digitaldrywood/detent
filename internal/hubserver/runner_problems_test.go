@@ -37,7 +37,7 @@ func TestRunnerProblemsHeartbeat(t *testing.T) {
 			r.redemption.IsolationTier = test.tier
 			r.enroll(t)
 			if test.sprite {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_name',hostname) WHERE id=?", r.binding.MachineID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET machine_facts_ready=NULL,capabilities_json=json_set(capabilities_json,'$.sprite_name',hostname) WHERE id=?", r.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -296,7 +296,7 @@ func TestRunnerConfigurationChangesDoNotRequireApproval(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capabilities_json = json_set(capabilities_json, ?, json(?)) WHERE id = ?", "$.native_admission."+r.binding.RunnerID+"."+view.ProjectID, string(raw), r.binding.MachineID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET machine_facts_ready=NULL,capabilities_json= json_set(capabilities_json, ?, json(?)) WHERE id = ?", "$.native_admission."+r.binding.RunnerID+"."+view.ProjectID, string(raw), r.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -200,7 +200,7 @@ func TestRunnerProjectDiagnosticOwner(t *testing.T) {
 		view.Paused = true
 		advanced := false
 		timing := &requestTiming{trace: func(query string, _ []driver.NamedValue) {
-			if strings.HasPrefix(query, "SELECT json_extract(routing_settings_json, '$.project_configuration_request')") {
+			if strings.HasPrefix(query, "SELECT r.routing_facts_ready,CASE WHEN r.routing_facts_ready IS NULL OR c.runner_id IS NOT NULL THEN r.routing_settings_json END") {
 				received = now.Add(3 * time.Second)
 				advanced = true
 			}

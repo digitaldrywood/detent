@@ -308,92 +308,104 @@ func TestPlacementDemandAndCapacity(t *testing.T) {
 		{name: "organization local capacity is counted once", organization: true, locals: 1, providerMax: 8, wantDemand: 6, wantLocal: 2},
 		{name: "organization pending member is counted once", organization: true, pending: true, wantDemand: 6, wantPending: 1},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			f := newDefaultNativeFixture(t, Config{})
-			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-			setPlacementFixture(t, f, policy.Placement{Mode: "local_first", TodoThreshold: 3, OverflowSlots: 2}, 5)
-			sprite := placementFixtureRunner(t, f, "sprite-runner", "sprite", true, 1, "gpt-6.1-sol", "gpt-6-astra", "test-model")
-			for i := range test.locals {
-				account := fmt.Sprintf("local%d", i)
-				if test.shared {
-					account = "local"
+		for _, typed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/typed=%t", test.name, typed), func(t *testing.T) {
+				t.Parallel()
+				f := newDefaultNativeFixture(t, Config{})
+				approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+				setPlacementFixture(t, f, policy.Placement{Mode: "local_first", TodoThreshold: 3, OverflowSlots: 2}, 5)
+				sprite := placementFixtureRunner(t, f, "sprite-runner", "sprite", true, 1, "gpt-6.1-sol", "gpt-6-astra", "test-model")
+				for i := range test.locals {
+					account := fmt.Sprintf("local%d", i)
+					if test.shared {
+						account = "local"
+					}
+					r := placementFixtureRunner(t, f, account, account, false, 2, "gpt-6.1-sol", "test-model")
+					report := capacityReport(f.service.config.now())
+					report.Models, report.SharedAccountAlias, report.MaxConcurrent = []string{"gpt-6.1-sol", "test-model"}, account, test.providerMax
+					if test.local {
+						report.SharedAccountAlias = ""
+					}
+					publishCapacity(t, f, r, report)
 				}
-				r := placementFixtureRunner(t, f, account, account, false, 2, "gpt-6.1-sol", "test-model")
-				report := capacityReport(f.service.config.now())
-				report.Models, report.SharedAccountAlias, report.MaxConcurrent = []string{"gpt-6.1-sol", "test-model"}, account, test.providerMax
-				if test.local {
-					report.SharedAccountAlias = ""
+				first := f.create(t, "first")
+				f.create(t, "second")
+				third := f.create(t, "third")
+				db := f.service.database.db
+				switch test.excluded {
+				case "in_progress":
+					if _, err := db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id=?`, f.project.ID, third.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				case "backlog":
+					if _, err := db.ExecContext(t.Context(), `INSERT INTO workflow_states(project_id,source_name,detent_state,dispatchable,terminal,created_at,updated_at) SELECT project_id,'Backlog','Backlog',1,0,created_at,updated_at FROM workflow_states WHERE project_id=? AND detent_state='Todo'`, f.project.ID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Backlog') WHERE native_id=?`, f.project.ID, third.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				case "dependency":
+					if _, err := db.ExecContext(t.Context(), `INSERT INTO issue_dependencies(dependent_issue_id,blocker_issue_id,provenance,created_at,updated_at) SELECT d.id,b.id,'native',d.created_at,d.updated_at FROM issues d,issues b WHERE d.native_id=? AND b.native_id=?`, third.WorkItemID, first.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				case "leased":
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", sprite.redemption.Credential, providerClaim(sprite, third, "leased")), http.StatusOK)
 				}
-				publishCapacity(t, f, r, report)
-			}
-			first := f.create(t, "first")
-			f.create(t, "second")
-			third := f.create(t, "third")
-			db := f.service.database.db
-			switch test.excluded {
-			case "in_progress":
-				if _, err := db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id=?`, f.project.ID, third.WorkItemID); err != nil {
-					t.Fatal(err)
+				if test.model != "" {
+					if _, err := db.ExecContext(t.Context(), `UPDATE issues SET body=? WHERE native_id=?`, "```detent-agent\nschema: 1\nmodel: "+test.model+"\n```", third.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
 				}
-			case "backlog":
-				if _, err := db.ExecContext(t.Context(), `INSERT INTO workflow_states(project_id,source_name,detent_state,dispatchable,terminal,created_at,updated_at) SELECT project_id,'Backlog','Backlog',1,0,created_at,updated_at FROM workflow_states WHERE project_id=? AND detent_state='Todo'`, f.project.ID); err != nil {
-					t.Fatal(err)
+				if test.pending {
+					if _, err := db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,'test',?,'bootstrapping',?,?)`, f.project.OrganizationID, sprite.redemption.Hostname, sprite.enrollment.ID, formatHubTime(f.service.config.now()), formatHubTime(f.service.config.now())); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := db.ExecContext(t.Context(), `UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?`, formatHubTime(f.service.config.now().Add(-time.Minute)), sprite.binding.RunnerID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := db.ExecContext(t.Context(), `UPDATE machines SET machine_facts_ready=NULL,capabilities_json=json_set(capabilities_json,'$.sprite_woken_at',?) WHERE id=?`, formatHubTime(f.service.config.now()), sprite.binding.MachineID); err != nil {
+						t.Fatal(err)
+					}
 				}
-				if _, err := db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Backlog') WHERE native_id=?`, f.project.ID, third.WorkItemID); err != nil {
-					t.Fatal(err)
+				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+				if test.organization {
+					later := newNativeFixture(t, f.service, f.project.OrganizationID, "later")
+					approveHubTestPolicy(t, f.service, later.base+"/policy", hubTestPolicy())
+					for i := range 3 {
+						later.create(t, fmt.Sprintf("later %d", i))
+					}
+					if _, err := db.ExecContext(t.Context(), "UPDATE runner_identities SET scope='organization' WHERE organization_id=?", scope.organization); err != nil {
+						t.Fatal(err)
+					}
 				}
-			case "dependency":
-				if _, err := db.ExecContext(t.Context(), `INSERT INTO issue_dependencies(dependent_issue_id,blocker_issue_id,provenance,created_at,updated_at) SELECT d.id,b.id,'native',d.created_at,d.updated_at FROM issues d,issues b WHERE d.native_id=? AND b.native_id=?`, third.WorkItemID, first.WorkItemID); err != nil {
-					t.Fatal(err)
+				setSpriteFactsFixtureMode(t, f, typed)
+				usage, err := readPlacementSpriteUsage(t.Context(), f.service.database.reader, scope, f.service.config.now())
+				wantUsage := 0
+				if test.excluded == "leased" {
+					wantUsage = 1
 				}
-			case "leased":
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", sprite.redemption.Credential, providerClaim(sprite, third, "leased")), http.StatusOK)
-			}
-			if test.model != "" {
-				if _, err := db.ExecContext(t.Context(), `UPDATE issues SET body=? WHERE native_id=?`, "```detent-agent\nschema: 1\nmodel: "+test.model+"\n```", third.WorkItemID); err != nil {
-					t.Fatal(err)
+				if err != nil || usage != wantUsage {
+					t.Fatalf("Sprite usage=%d err=%v, want %d", usage, err, wantUsage)
 				}
-			}
-			if test.pending {
-				if _, err := db.ExecContext(t.Context(), `INSERT INTO organization_sprite_members(organization_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,?,'test',?,'bootstrapping',?,?)`, f.project.OrganizationID, sprite.redemption.Hostname, sprite.enrollment.ID, formatHubTime(f.service.config.now()), formatHubTime(f.service.config.now())); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := db.ExecContext(t.Context(), `UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?`, formatHubTime(f.service.config.now().Add(-time.Minute)), sprite.binding.RunnerID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := db.ExecContext(t.Context(), `UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_woken_at',?) WHERE id=?`, formatHubTime(f.service.config.now()), sprite.binding.MachineID); err != nil {
-					t.Fatal(err)
-				}
-			}
-			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			if test.organization {
-				later := newNativeFixture(t, f.service, f.project.OrganizationID, "later")
-				approveHubTestPolicy(t, f.service, later.base+"/policy", hubTestPolicy())
-				for i := range 3 {
-					later.create(t, fmt.Sprintf("later %d", i))
-				}
-				if _, err := db.ExecContext(t.Context(), "UPDATE runner_identities SET scope='organization' WHERE organization_id=?", scope.organization); err != nil {
-					t.Fatal(err)
-				}
-			}
-			decision, err := readPlacementSnapshot(t.Context(), db, scope, f.service.config.now(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if test.organization {
-				decision, err = readOrganizationPlacementSnapshot(t.Context(), db, scope, f.service.config.now())
+
+				decision, err := readPlacementSnapshot(t.Context(), db, scope, f.service.config.now(), nil)
 				if err != nil {
 					t.Fatal(err)
 				}
-			}
-			if decision.ReadyTodo != test.wantDemand || decision.LocalFree != test.wantLocal || decision.Pending != test.wantPending {
-				t.Fatalf("decision=%+v; want demand=%d local=%d pending=%d", decision.placementDecision, test.wantDemand, test.wantLocal, test.wantPending)
-			}
-			if test.model == "gpt-6-astra" && (decision.SpriteTarget != 1 || decision.SpriteFree != 1) {
-				t.Fatalf("heterogeneous demand decision=%+v; want one Sprite slot", decision.placementDecision)
-			}
-		})
+				if test.organization {
+					decision, err = readOrganizationPlacementSnapshot(t.Context(), db, scope, f.service.config.now())
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if decision.ReadyTodo != test.wantDemand || decision.LocalFree != test.wantLocal || decision.Pending != test.wantPending {
+					t.Fatalf("decision=%+v; want demand=%d local=%d pending=%d", decision.placementDecision, test.wantDemand, test.wantLocal, test.wantPending)
+				}
+				if test.model == "gpt-6-astra" && (decision.SpriteTarget != 1 || decision.SpriteFree != 1) {
+					t.Fatalf("heterogeneous demand decision=%+v; want one Sprite slot", decision.placementDecision)
+				}
+			})
+		}
 	}
 }
 

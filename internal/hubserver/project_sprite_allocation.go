@@ -144,8 +144,13 @@ func spriteAllocationRunnerAllowed(ctx context.Context, q nativeQueryer, scope n
 		if allocation.Valid {
 			return false, nil
 		}
-		var name, hostname string
-		if err := q.QueryRowContext(ctx, `SELECT COALESCE(json_extract(capabilities_json,'$.sprite_name'),''),hostname FROM machines WHERE id=? AND organization_id=?`, machine, scope.organization).Scan(&name, &hostname); err != nil {
+		facts, err := readMachineSpriteFacts(ctx, q, scope.organization, machine)
+		if err != nil {
+			return false, err
+		}
+		name := spriteFactValue(facts.Name)
+		var hostname string
+		if err := q.QueryRowContext(ctx, `SELECT hostname FROM machines WHERE id=? AND organization_id=?`, machine, scope.organization).Scan(&hostname); err != nil {
 			return false, err
 		}
 		if name == hostname && validSpritesSlug(name) {
@@ -159,13 +164,13 @@ func spriteAllocationRunnerAllowed(ctx context.Context, q nativeQueryer, scope n
 	}
 	var owner tracker.ProjectID
 	var ready, sharing, granted bool
-	var raw sql.NullString
+	var runner string
 	err := q.QueryRowContext(ctx, `SELECT m.allocation_project_id,m.state='enrolled' AND r.state='active' AND COALESCE(a.desired_count,0)>0,p.share_idle_capacity,
- r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?),json_extract(r.local_checks_json,?)
+ r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=r.organization_id AND g.project_id=?),r.id
  FROM organization_sprite_members m JOIN runner_identities r ON r.enrollment_id=m.enrollment_id AND r.organization_id=m.organization_id
  LEFT JOIN project_sprite_allocations a ON a.organization_id=m.organization_id AND a.project_id=m.allocation_project_id
  JOIN organization_sprite_pools p ON p.organization_id=m.organization_id
- WHERE m.organization_id=? AND m.allocation_project_id<>'' AND r.machine_id=?`, scope.project, "$."+jsonPathKey(string(scope.project)), scope.organization, machine).Scan(&owner, &ready, &sharing, &granted, &raw)
+ WHERE m.organization_id=? AND m.allocation_project_id<>'' AND r.machine_id=?`, scope.project, scope.organization, machine).Scan(&owner, &ready, &sharing, &granted, &runner)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -174,6 +179,10 @@ func spriteAllocationRunnerAllowed(ctx context.Context, q nativeQueryer, scope n
 	}
 	if !ready || !granted || owner != scope.project && !sharing {
 		return false, nil
+	}
+	raw, err := readLocalCheckFacts(ctx, q, runner, scope.project)
+	if err != nil {
+		return false, err
 	}
 	checks, observed, err := decodeSpriteMemberChecks(raw)
 	return observed && checks.WorkReady(), err

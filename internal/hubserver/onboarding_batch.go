@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/onboarding"
@@ -120,17 +119,12 @@ func (s *Service) projectOnboardingBatch(ctx context.Context, organization track
 	}
 	query := strings.Replace(runnerIdentitySelect, "\nFROM runner_identities", `, r.local_checks_json
  FROM runner_identities`, 1)
-	rows, err = tx.QueryContext(ctx, query+" WHERE r.organization_id=? AND r.removed_at IS NULL ORDER BY r.display_name,r.id", organization)
+	identities, err := readRunnerIdentityBatch(ctx, tx, query+" WHERE r.organization_id=? AND r.removed_at IS NULL ORDER BY r.display_name,r.id", []any{organization}, now, true)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var checksRaw string
-		runner, reports, _, err := scanRunnerIdentity(rows, func() time.Time { return now }, &checksRaw)
-		if err != nil {
-			return nil, errors.Join(err, rows.Close())
-		}
+	for _, item := range identities {
+		runner, reports, checksRaw := item.runner, item.reports, item.checks
 		runner.HostUsed = machineUsed[runner.MachineID]
 		runner.Used = runnerUsed[runner.RunnerID]
 		for _, report := range reports {
@@ -147,9 +141,6 @@ func (s *Service) projectOnboardingBatch(ctx context.Context, organization track
 			value.Runners = append(value.Runners, runnerauth.Eligibility{Runner: runner, Exclusions: runner.Exclusions(id, approvals[id].Policy.Requirements, false), LocalChecks: checks[id]})
 			result[id] = value
 		}
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err

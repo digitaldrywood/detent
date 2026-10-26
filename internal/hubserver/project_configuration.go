@@ -115,7 +115,8 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 	if name == operatortool.LocalProjectConfiguration && selected.RunnerID != "" {
 		var raw, operation string
 		suffix := " " + selected.RunnerID + " " + args.ProjectID
-		err := tx.QueryRowContext(ctx, "SELECT response_json, operation FROM native_commands WHERE organization_id = ? AND operation IN (?, ?, ?, ?) AND coalesce(json_extract(response_json, '$.pending'), 0) = 0 ORDER BY created_at DESC, rowid DESC LIMIT 1", scope.organization, "apply_local_project_policy"+suffix, "drain_local_project"+suffix, "detach_local_project"+suffix, "resume_local_project"+suffix).Scan(&raw, &operation)
+		var err error
+		raw, operation, err = readCompletedConfigurationReceipt(ctx, tx, scope.organization, []string{"apply_local_project_policy" + suffix, "drain_local_project" + suffix, "detach_local_project" + suffix, "resume_local_project" + suffix})
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return operatortool.Result{}, err
 		}
@@ -197,13 +198,16 @@ func (e hubProjectExecutor) projectConfigurationCommand(ctx context.Context, nam
 	if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET routing_settings_json = ?, revision = revision + 1 WHERE organization_id = ? AND id = ?", string(rawSettings), scope.organization, selected.RunnerID); err != nil {
 		return operatortool.Result{}, err
 	}
+	if err := storeRunnerRoutingFacts(ctx, tx, selected.RunnerID, string(rawSettings)); err != nil {
+		return operatortool.Result{}, err
+	}
 	view.RunnerRevision = selected.Revision + 1
 	view.RequestID, view.Applied, view.Saved, view.Pending = args.RequestID, false, false, true
 	raw, err := json.Marshal(view)
 	if err != nil {
 		return operatortool.Result{}, err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", scope.organization, scope.credential.ID, operation, args.RequestID, hash, string(raw), formatHubTime(now)); err != nil {
+	if _, err := insertNativeCommandReceipt(ctx, tx, scope.organization, scope.credential.ID, operation, args.RequestID, hash, string(raw), formatHubTime(now)); err != nil {
 		return operatortool.Result{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -252,16 +256,15 @@ func (s *Service) prepareProjectConfigurationIssuer(ctx context.Context, scope n
 	if scope.credential.Runner.RunnerID == "" {
 		return projectConfigurationIssuer{}, nil
 	}
-	var raw sql.NullString
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT json_extract(routing_settings_json, '$.project_configuration_request') FROM runner_identities WHERE organization_id = ? AND id = ?", scope.organization, scope.credential.Runner.RunnerID).Scan(&raw); err != nil {
-		return projectConfigurationIssuer{}, err
-	}
-	if !raw.Valid {
+	command, err := readConfigurationCommandFacts(ctx, s.database.reader, scope.organization, scope.credential.Runner.RunnerID)
+	if errors.Is(err, sql.ErrNoRows) {
 		return projectConfigurationIssuer{}, nil
 	}
-	var command runnerauth.ProjectConfigurationCommand
-	if err := json.Unmarshal([]byte(raw.String), &command); err != nil {
+	if err != nil {
 		return projectConfigurationIssuer{}, err
+	}
+	if command == nil {
+		return projectConfigurationIssuer{}, nil
 	}
 	if command.Request.ProjectID != string(scope.project) || observation != nil && observation.RequestID == command.Request.RequestID {
 		return projectConfigurationIssuer{}, nil
@@ -391,23 +394,21 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 			}
 		}
 	}
-	var settingsRaw string
-	if err := tx.QueryRowContext(ctx, "SELECT routing_settings_json FROM runner_identities WHERE organization_id=? AND id=?", scope.organization, scope.credential.Runner.RunnerID).Scan(&settingsRaw); err != nil {
+	pendingCommand, err := readConfigurationCommandFacts(ctx, tx, scope.organization, scope.credential.Runner.RunnerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return runnerauth.ProjectConfigurationRequest{}, nil
+	}
+	if err != nil {
 		return runnerauth.ProjectConfigurationRequest{}, err
 	}
-	var pendingSettings runnerSettings
-	if err := json.Unmarshal([]byte(settingsRaw), &pendingSettings); err != nil {
-		return runnerauth.ProjectConfigurationRequest{}, err
-	}
-	pending := pendingSettings.ProjectConfigurationCommand != nil && pendingSettings.ProjectConfigurationCommand.Request.ProjectID == string(scope.project)
-	if !pending {
+	if pendingCommand == nil || pendingCommand.Request.ProjectID != string(scope.project) {
 		return runnerauth.ProjectConfigurationRequest{}, nil
 	}
 	r, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
 	if err != nil {
 		return runnerauth.ProjectConfigurationRequest{}, err
 	}
-	command := r.ProjectConfigurationCommand
+	command := pendingCommand
 	if command == nil || command.Request.ProjectID != string(scope.project) {
 		return runnerauth.ProjectConfigurationRequest{}, nil
 	}
@@ -430,7 +431,7 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		operation := request.Operation + " " + r.RunnerID + " " + string(scope.project)
-		if _, err := tx.ExecContext(ctx, "UPDATE native_commands SET response_json = ? WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ?", string(raw), scope.organization, credential.ID, operation, request.RequestID); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE native_commands SET response_json = ?,response_pending=0 WHERE organization_id = ? AND actor_id = ? AND operation = ? AND command_key = ?", string(raw), scope.organization, credential.ID, operation, request.RequestID); err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		settings := settingsFromRouting(r.Routing)
@@ -444,6 +445,9 @@ func (s *Service) runnerProjectConfiguration(ctx context.Context, tx *sql.Tx, sc
 		}
 		_, err = tx.ExecContext(ctx, "UPDATE runner_identities SET routing_settings_json = ? WHERE organization_id = ? AND id = ?", string(rawSettings), scope.organization, r.RunnerID)
 		if err != nil {
+			return runnerauth.ProjectConfigurationRequest{}, err
+		}
+		if err := storeRunnerRoutingFacts(ctx, tx, r.RunnerID, string(rawSettings)); err != nil {
 			return runnerauth.ProjectConfigurationRequest{}, err
 		}
 		return runnerauth.ProjectConfigurationRequest{}, nil

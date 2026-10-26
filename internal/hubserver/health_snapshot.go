@@ -181,7 +181,7 @@ func readHealthRunners(ctx context.Context, q nativeQueryer, organization tracke
  (SELECT count(*) FROM leases l INDEXED BY health_active_host JOIN lease_runners lr ON lr.lease_id=l.lease_id WHERE l.machine_id=r.machine_id AND lr.runner_id=r.id AND l.released_at IS NULL),
  (SELECT count(*) FROM leases l INDEXED BY health_active_host JOIN lease_runners lr ON lr.lease_id=l.lease_id WHERE l.machine_id=r.machine_id AND lr.runner_id=r.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?)),
  (SELECT count(*) FROM leases l WHERE l.machine_id=r.machine_id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?)),
- coalesce(json_extract(m.capabilities_json, '$.native_admission.' || r.id), '{}'), r.state
+ r.state
  FROM runner_identities r JOIN machines m ON m.id=r.machine_id JOIN api_tokens t ON t.id=r.token_id
  WHERE r.organization_id=? AND r.removed_at IS NULL AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR julianday(t.expires_at)>julianday(?)) ORDER BY r.id LIMIT ?`, formatHubTime(now), formatHubTime(now), organization, formatHubTime(now), healthRunnerLimit+1)
 	if err != nil {
@@ -191,18 +191,15 @@ func readHealthRunners(ctx context.Context, q nativeQueryer, organization tracke
 	runners := []healthRunnerState{}
 	for rows.Next() {
 		var r healthRunnerState
-		var routing, heartbeat, created, admission, state string
+		var routing, heartbeat, created, state string
 		var capacity, hostCapacity, hostLeases, activeLeases int
-		if err := rows.Scan(&r.ID, &r.MachineID, &routing, &heartbeat, &created, &capacity, &hostCapacity, &r.Leases, &activeLeases, &hostLeases, &admission, &state); err != nil {
+		if err := rows.Scan(&r.ID, &r.MachineID, &routing, &heartbeat, &created, &capacity, &hostCapacity, &r.Leases, &activeLeases, &hostLeases, &state); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(routing), &r.Routing); err != nil {
 			return nil, err
 		}
 		r.Routing.State = state
-		if err := json.Unmarshal([]byte(admission), &r.Admissions); err != nil {
-			return nil, err
-		}
 		if r.Heartbeat, err = parseTimeValue(heartbeat); err != nil {
 			return nil, err
 		}
@@ -223,6 +220,13 @@ func readHealthRunners(ctx context.Context, q nativeQueryer, organization tracke
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err
+	}
+	for i := range runners {
+		admissions, err := readHealthAdmissionFacts(ctx, q, organization, runners[i].ID, tracker.MachineID(runners[i].MachineID))
+		if err != nil {
+			return nil, err
+		}
+		runners[i].Admissions = admissions
 	}
 	for i := range runners {
 		leased, err := readHealthRunnerLeasedProjects(ctx, q, runners[i].MachineID, runners[i].ID)

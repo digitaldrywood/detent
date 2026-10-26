@@ -208,7 +208,7 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 				if baseline.Scheduling.Outcome != baselineOutcome || len(baseline.Admission) != 1 || baseline.Admission[0].SelectorObservedAt != nil {
 					t.Fatalf("unknown selectors were invented: %#v", baseline)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capabilities_json=json_set(capabilities_json, '$.sprite_name', 'preserved') WHERE id=?", r.binding.MachineID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET machine_facts_ready=NULL,capabilities_json=json_set(capabilities_json, '$.sprite_name', 'preserved') WHERE id=?", r.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}
 				context := current
@@ -233,7 +233,10 @@ func TestNativeAdmissionExplanation(t *testing.T) {
 					}
 				}
 				if test.observation == "project" {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capabilities_json=json_set(json_remove(capabilities_json, ?), ?, json(?)) WHERE id=?", admissionObservationPath(r.binding.RunnerID, f.project.ID), admissionObservationPath(r.binding.RunnerID, "prj_other"), `{"context":{},"runner_revision":1}`, r.binding.MachineID); err != nil {
+					if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM runner_admission_observations WHERE runner_id=?`, r.binding.RunnerID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET machine_facts_ready=NULL,capabilities_json=json_set(json_remove(capabilities_json, ?), ?, json(?)) WHERE id=?", admissionObservationPath(r.binding.RunnerID, f.project.ID), admissionObservationPath(r.binding.RunnerID, "prj_other"), `{"context":{},"runner_revision":1}`, r.binding.MachineID); err != nil {
 						t.Fatal(err)
 					}
 				}

@@ -614,9 +614,13 @@ func (s *Service) describeSpritePoolMembers(ctx context.Context, scope nativeSco
 		if err != nil {
 			return err
 		}
-		var failed string
-		var raw sql.NullString
-		if err := s.database.reader.QueryRowContext(ctx, `SELECT COALESCE(json_extract(m.capabilities_json,'$.sprite_wake_failed_at'),''),json_extract(r.local_checks_json,?) FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.id=? AND r.organization_id=?`, "$."+jsonPathKey(string(member.AllocationProjectID)), member.RunnerID, scope.organization).Scan(&failed, &raw); err != nil {
+		facts, err := readMachineSpriteFacts(ctx, s.database.reader, scope.organization, runner.MachineID)
+		if err != nil {
+			return err
+		}
+		failed := spriteFactValue(facts.WakeFailedAt)
+		raw, err := readLocalCheckFacts(ctx, s.database.reader, member.RunnerID, member.AllocationProjectID)
+		if err != nil {
 			return err
 		}
 		failedAt, parseErr := parseTimeValue(failed)
