@@ -12,7 +12,191 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/mutation"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
+
+func TestCoordinatorActionQueryMetadata(t *testing.T) {
+	t.Parallel()
+	f := newCoordinatorFixture(t, "action metadata")
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	for _, stage := range []string{"typed", "legacy", "backfilled"} {
+		for index := range 2 {
+			record := f.seed(t, fmt.Sprintf("%s action %d", stage, index), nil)
+			agent := fmt.Sprintf("Example Agent %d", index)
+			for _, proposal := range []struct{ id, agent string }{{"action", "Earlier Agent"}, {"action", agent}, {"other-action", "Other Agent"}} {
+				data, err := json.Marshal(map[string]any{"operator_action": map[string]any{"action": map[string]string{"id": proposal.id, "agent": proposal.agent}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				message := conversationMessageRecord{Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "Example proposal", Data: data, Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}}
+				f.transact(t, func(tx *sql.Tx) error {
+					return f.conversations.appendMessage(t.Context(), tx, &record, &message, f.service.config.now())
+				})
+			}
+			prepare := func() {
+				t.Helper()
+				if stage == "typed" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversation_messages SET data_json='{}' WHERE conversation_id=?", record.ID); err != nil {
+						t.Fatal(err)
+					}
+					return
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversation_messages SET query_metadata_version=0,operator_action_id=NULL,operator_action_agent=NULL,operator_action_result=NULL WHERE conversation_id=?`, record.ID); err != nil {
+					t.Fatal(err)
+				}
+				if stage == "backfilled" {
+					if err := f.service.convertConversationQueryMetadata(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			prepare()
+			action := chat.Action{ID: "action", ConversationID: record.ID, OrganizationID: string(f.organization), ProjectID: string(f.project.ID), Mutation: mutation.Metadata{Source: "chat"}, Title: "Example action", Status: chat.ActionSucceeded, Result: "Applied"}
+			got, err := f.service.coordinatorProposalAgent(t.Context(), action)
+			if err != nil || got != agent {
+				t.Fatalf("%s conversation %d agent=%q want %q: %v", stage, index, got, agent, err)
+			}
+			missing := action
+			missing.ID = "missing-action"
+			got, err = f.service.coordinatorProposalAgent(t.Context(), missing)
+			if err != nil || got != coordinatorAgentName {
+				t.Fatalf("%s missing proposal agent=%q: %v", stage, got, err)
+			}
+			if err := f.service.publishCoordinatorDecision(t.Context(), action); err != nil {
+				t.Fatal(err)
+			}
+			messages := f.messages(t, record.ID)
+			if len(messages) != 4 || messages[3].Text != "Example action: succeeded. Applied" {
+				t.Fatalf("%s conversation %d lost its result: %+v", stage, index, messages)
+			}
+			prepare()
+			if err := f.service.publishCoordinatorDecision(t.Context(), action); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.messages(t, record.ID); len(got) != len(messages) || got[3].ID != messages[3].ID {
+				t.Fatalf("%s replay duplicated its result: %+v", stage, got)
+			}
+			if err := f.service.publishCoordinatorDecision(t.Context(), missing); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.messages(t, record.ID); len(got) != 5 {
+				t.Fatalf("%s another action result was hidden: %+v", stage, got)
+			}
+		}
+	}
+}
+
+func TestCollaborationActivityQueryMetadata(t *testing.T) {
+	t.Parallel()
+	a := newTerminalAttemptFixture(t)
+	if err := a.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	other := a.create(t, "other activity history")
+	var started int64
+	if err := a.service.database.reader.QueryRowContext(t.Context(), "SELECT sequence FROM collaboration_events WHERE work_item_id=? AND type='run.started'", a.issue.WorkItemID).Scan(&started); err != nil {
+		t.Fatal(err)
+	}
+	wantSettled := []int64{started}
+	for _, item := range []tracker.NativeWorkItemID{a.issue.WorkItemID, other.WorkItemID} {
+		for _, test := range []struct {
+			kind, attempt string
+			activity      *workflowmetrics.ActivityProfile
+			eligible      bool
+		}{
+			{"run.observed", a.start.Data.AttemptID, &workflowmetrics.ActivityProfile{Spans: []workflowmetrics.ActivitySpan{{ID: "example-span", Kind: "tool"}}}, true},
+			{"run.checkpointed", a.start.Data.AttemptID, &workflowmetrics.ActivityProfile{Spans: []workflowmetrics.ActivitySpan{}}, true},
+			{"run.observed", a.start.Data.AttemptID, &workflowmetrics.ActivityProfile{}, false},
+			{"run.observed", a.start.Data.AttemptID, nil, false},
+			{"run.checkpointed", "missing-attempt", &workflowmetrics.ActivityProfile{Spans: []workflowmetrics.ActivitySpan{{ID: "foreign-span", Kind: "tool"}}}, false},
+		} {
+			tx, err := a.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = tx.Rollback() })
+			data := tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: test.attempt, Runtime: &tracker.NativeRuntimeObservation{Activity: test.activity}}}
+			if err := appendNativeHistory(t.Context(), tx, a.scope, string(item), test.kind, data, a.service.config.now()); err != nil {
+				t.Fatal(err)
+			}
+			var sequence int64
+			if err := tx.QueryRowContext(t.Context(), "SELECT event_sequence FROM issues WHERE native_id=?", item).Scan(&sequence); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if item == a.issue.WorkItemID && test.eligible {
+				wantSettled = append(wantSettled, sequence)
+			}
+		}
+	}
+	for _, phase := range []string{"running", "recently finished", "settled"} {
+		if phase == "recently finished" {
+			a.finish(t)
+			var sequence int64
+			if err := a.service.database.reader.QueryRowContext(t.Context(), "SELECT sequence FROM collaboration_events WHERE work_item_id=? AND type='run.finished'", a.issue.WorkItemID).Scan(&sequence); err != nil {
+				t.Fatal(err)
+			}
+			wantSettled = append(wantSettled, sequence)
+		}
+		if phase == "settled" {
+			a.advance(2 * time.Hour)
+		}
+		for _, stage := range []string{"typed", "legacy", "backfilled"} {
+			if stage == "legacy" {
+				if _, err := a.service.database.db.ExecContext(t.Context(), "UPDATE collaboration_events SET query_metadata_version=0,run_attempt_id=NULL,activity_spans_present=NULL"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if stage == "backfilled" {
+				if err := a.service.convertConversationQueryMetadata(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, item := range []tracker.NativeWorkItemID{a.issue.WorkItemID, other.WorkItemID} {
+				candidate := eventCompactionCandidate{organization: a.scope.organization, project: a.scope.project, kind: "work_item", id: string(item)}
+				events, spans, complete, err := obsoleteWorkItemEvents(t.Context(), a.service.database.reader, candidate, a.service.config.now())
+				if err != nil || !complete || len(events) != 0 {
+					t.Fatalf("%s %s plan: events=%v complete=%t: %v", phase, stage, events, complete, err)
+				}
+				got, want := []int64{}, []int64{}
+				for _, span := range spans {
+					got = append(got, span.sequence)
+				}
+				if phase == "settled" && item == a.issue.WorkItemID {
+					want = wantSettled
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("%s %s item %s spans=%v want %v", phase, stage, item, got, want)
+				}
+			}
+		}
+	}
+	for _, field := range []struct {
+		column string
+		value  any
+	}{{"activity_spans_present", false}, {"run_attempt_id", "missing-attempt"}} {
+		if _, err := a.service.database.db.ExecContext(t.Context(), "UPDATE collaboration_events SET "+field.column+"=? WHERE work_item_id=?", field.value, a.issue.WorkItemID); err != nil {
+			t.Fatal(err)
+		}
+		candidate := eventCompactionCandidate{organization: a.scope.organization, project: a.scope.project, kind: "work_item", id: string(a.issue.WorkItemID)}
+		_, spans, _, err := obsoleteWorkItemEvents(t.Context(), a.service.database.reader, candidate, a.service.config.now())
+		if err != nil || len(spans) != 0 {
+			t.Fatalf("typed %s did not filter spans: %v %v", field.column, spans, err)
+		}
+		if _, err := a.service.database.db.ExecContext(t.Context(), "UPDATE collaboration_events SET query_metadata_version=0 WHERE work_item_id=?", a.issue.WorkItemID); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.service.convertConversationQueryMetadata(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 func TestConversationEventQueryMetadata(t *testing.T) {
 	t.Parallel()
@@ -376,35 +560,61 @@ func TestConversationExecutionQueryMetadata(t *testing.T) {
 func TestConversationLegacyToolRevision(t *testing.T) {
 	t.Parallel()
 	f := newConversationFixture(t)
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	now := f.service.config.now().UTC()
-	for index := range 2 {
-		record := f.create(t, f.record(f.owner, fmt.Sprintf("tool %d", index), now))
-		message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageTool, Text: "original", Data: json.RawMessage(`{"tool":"search","item_id":"item","status":"running"}`), Delivery: conversation.DeliveryResponding, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}, CreatedAt: now}
-		tx := f.tx(t)
-		if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
-			t.Fatal(err)
-		}
-		f.commit(t, tx)
-		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversation_messages SET query_metadata_version=0,actor_kind=NULL,tool_name=NULL,tool_item_id=NULL,tool_status=NULL WHERE id=?`, message.ID); err != nil {
-			t.Fatal(err)
-		}
-		prepared, err := f.store.prepareLegacyToolRevisions(t.Context(), record.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		message.Text = "finished"
-		message.Data = json.RawMessage(`{"tool":"search","item_id":"item","status":"completed"}`)
-		tx = f.tx(t)
-		if err := f.store.updateMessage(prepared, tx, message); err != nil {
-			t.Fatal(err)
-		}
-		f.commit(t, tx)
-		var text, tool, item, status string
-		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT text,tool,item_id,status FROM conversation_tool_revisions WHERE conversation_id=? AND message_id=? AND revision=1`, record.ID, message.ID).Scan(&text, &tool, &item, &status); err != nil {
-			t.Fatal(err)
-		}
-		if !reflect.DeepEqual([]string{text, tool, item, status}, []string{"original", "search", "item", "running"}) {
-			t.Fatalf("lost legacy revision: %q %q %q %q", text, tool, item, status)
+	for _, stage := range []string{"typed", "legacy", "backfilled"} {
+		for _, actor := range []conversation.ActorKind{conversation.ActorCoordinator, conversation.ActorHuman} {
+			for index := range 2 {
+				record := f.create(t, f.record(f.owner, fmt.Sprintf("%s %s tool %d", stage, actor, index), now))
+				message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageTool, Text: "original", Data: json.RawMessage(`{"tool":"search","item_id":"item","status":"running"}`), Delivery: conversation.DeliveryResponding, Actor: conversation.Actor{Kind: actor, PrincipalID: f.owner}, CreatedAt: now}
+				tx := f.tx(t)
+				if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+					t.Fatal(err)
+				}
+				f.commit(t, tx)
+				if stage == "typed" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversation_messages SET data_json='{}',actor_json='{}' WHERE id=?", message.ID); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversation_messages SET query_metadata_version=0,actor_kind=NULL,tool_name=NULL,tool_item_id=NULL,tool_status=NULL WHERE id=?`, message.ID); err != nil {
+						t.Fatal(err)
+					}
+					if stage == "backfilled" {
+						if err := f.service.convertConversationQueryMetadata(t.Context()); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				prepared, err := f.store.prepareLegacyToolRevisions(t.Context(), record.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				message.Text = "finished"
+				message.Data = json.RawMessage(`{"tool":"search","item_id":"item","status":"completed"}`)
+				message.Actor = conversation.Actor{Kind: conversation.ActorCoordinator}
+				tx = f.tx(t)
+				if err := f.store.updateMessage(prepared, tx, message); err != nil {
+					t.Fatal(err)
+				}
+				f.commit(t, tx)
+				var text, tool, item, status string
+				err = f.service.database.reader.QueryRowContext(t.Context(), `SELECT text,tool,item_id,status FROM conversation_tool_revisions WHERE conversation_id=? AND message_id=? AND revision=1`, record.ID, message.ID).Scan(&text, &tool, &item, &status)
+				if actor != conversation.ActorCoordinator {
+					if !errors.Is(err, sql.ErrNoRows) {
+						t.Fatalf("%s preserved a non-coordinator revision: %v", stage, err)
+					}
+					continue
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual([]string{text, tool, item, status}, []string{"original", "search", "item", "running"}) {
+					t.Fatalf("%s lost revision: %q %q %q %q", stage, text, tool, item, status)
+				}
+			}
 		}
 	}
 }
