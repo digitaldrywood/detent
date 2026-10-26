@@ -88,7 +88,7 @@ describe("billing state text", () => {
     [report({ status: "unapproved_plan" }), "Subscription unapproved plan"],
     [report({ status: "multiple_subscriptions" }), "Billing needs attention"],
   ])("names %#", (value, title) => {
-    expect(billingStatusText(value).title).toBe(title);
+    expect(billingStatusText(value, new Date("2026-10-15T00:00:00Z")).title).toBe(title);
   });
 
   it("reads the access deadlines for an active subscription", () => {
