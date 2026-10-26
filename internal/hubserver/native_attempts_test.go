@@ -454,6 +454,19 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 			if len(page.Items) != 1 || page.Items[0].FencingToken != replacement.FencingToken || page.Items[0].Status != "running" {
 				t.Fatalf("successor page = %#v", page)
 			}
+			response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?direction=newest&limit=1", other, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &page)
+			if len(page.Items) != 1 || page.Items[0].FencingToken != replacement.FencingToken || page.NextCursor == "" {
+				t.Fatalf("newest attempt page = %#v", page)
+			}
+			response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?direction=newest&limit=1&cursor="+url.QueryEscape(page.NextCursor), other, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			page = tracker.Page[tracker.NativeAttempt]{}
+			decodeHubResponse(t, response, &page)
+			if len(page.Items) != 1 || page.Items[0].FencingToken != lease.FencingToken || page.NextCursor != "" {
+				t.Fatalf("older attempt page = %#v", page)
+			}
 			var recovery tracker.NativeRecovery
 			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"?view=recovery", other, nil), &recovery)
 			if len(recovery.Attempts) != 2 || recovery.Attempts[0].Checkpoint == nil || recovery.Attempts[0].Checkpoint.EffectState != "ambiguous" || string(recovery.Attempts[0].MachineID) != firstMachine || recovery.Attempts[1].AttemptID != next.Data.AttemptID || recovery.Attempts[1].Checkpoint != nil {
@@ -848,4 +861,41 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 	denied := other.worker(t, "denied")
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?view=blockers", denied, nil), http.StatusNotFound)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?view=blockers", denied, nil), http.StatusNotFound)
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	var sequence int64
+	var source string
+	if err := tx.QueryRowContext(t.Context(), "SELECT max(sequence) FROM collaboration_events WHERE work_item_id=?", issue.WorkItemID).Scan(&sequence); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.QueryRowContext(t.Context(), "SELECT id FROM collaboration_events WHERE work_item_id=? AND type='run.finished' LIMIT 1", issue.WorkItemID).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	for index := range 101 {
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at)
+SELECT ?,organization_id,project_id,work_item_id,?,type,schema_version,actor_json,data_json,recorded_at FROM collaboration_events WHERE id=?`, newNativeID("evt"), sequence+int64(index)+1, source); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?view=timeline&direction=newest&limit=100", worker, nil)
+	t.Logf("newest timeline history page: elapsed=%s bytes=%d", time.Since(started), response.Body.Len())
+	requireNativeStatus(t, response, http.StatusOK)
+	var timeline tracker.Page[tracker.CollaborationEvent]
+	decodeHubResponse(t, response, &timeline)
+	if len(timeline.Items) != 100 || timeline.NextCursor == "" || response.Body.Len() > 100<<10 {
+		t.Fatalf("timeline page rows=%d bytes=%d cursor=%t", len(timeline.Items), response.Body.Len(), timeline.NextCursor != "")
+	}
+	for _, event := range timeline.Items {
+		if event.Data.Run != nil || event.DataOmission != nil {
+			t.Fatal("timeline loaded large run detail instead of the event envelope")
+		}
+	}
+
 }

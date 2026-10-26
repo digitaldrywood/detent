@@ -131,12 +131,19 @@ func TestHotReadQueryPlans(t *testing.T) {
 
 	organization := browserHostedOrganizationBase
 	project := organization + "/projects/" + f.project
+	var item string
+	if err := reader.QueryRowContext(t.Context(), "SELECT native_id FROM issues WHERE project_id=? AND native_id IS NOT NULL LIMIT 1", f.project).Scan(&item); err != nil {
+		t.Fatal(err)
+	}
 	known := make(map[string]bool)
 	for _, read := range []struct {
 		name string
 		path string
 	}{
 		{"activity", organization + "/activity"},
+		{"newest issue history", project + "/work-items/" + item + "/history?direction=newest&view=timeline&limit=100"},
+		{"newest issue attempts", project + "/work-items/" + item + "/attempts?direction=newest&limit=100"},
+		{"newest issue comments", project + "/work-items/" + item + "/comments?direction=newest&limit=100"},
 		{"work items list", project + "/work-items?limit=50"},
 		{"board lanes", project + "/work-items?include=board&state=Todo&open=true&limit=50"},
 		{"projects", organization + "/projects"},

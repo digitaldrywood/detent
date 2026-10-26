@@ -337,6 +337,7 @@ export function LiveRow(props: LiveRowProps): React.ReactElement {
 }
 
 export interface ActivityFeedProps {
+  readonly ref?: React.Ref<HTMLElement>;
   readonly onChangeComment?: ((comment: ActivityComment, body: string, deleted: boolean) => Promise<void>) | null;
   readonly projectId?: string | undefined;
   readonly rows: readonly ActivityRow[];
@@ -383,7 +384,7 @@ export function ActivityFeed(props: ActivityFeedProps): React.ReactElement {
     );
 
   return (
-    <section data-testid="issue-activity">
+    <section ref={props.ref} data-testid="issue-activity">
       <h2 className="mb-1.5 font-semibold text-[15px]">Activity</h2>
       {groups.length === 0 && props.live === null ? (
         <p className="text-muted-foreground text-sm">Nothing has happened on this issue yet.</p>

@@ -86,13 +86,15 @@ function ArchivedDiagnostics(props: Parameters<typeof IssueDiagnosticsBody>[0]) 
   return <IssueDiagnosticsBody {...props} attempts={attempts} attemptsAvailable />;
 }
 
-function IssueDiagnosticsBody({ issue, attempts, history, now, attemptsAvailable = true, historyAvailable = true }: {
+function IssueDiagnosticsBody({ issue, attempts, history, now, attemptsAvailable = true, historyAvailable = true, historyPartial = false, attemptsPartial = false }: {
   readonly issue: NativeIssue;
   readonly attempts: readonly NativeAttempt[];
   readonly history: readonly CollaborationEvent[];
   readonly now: number;
   readonly attemptsAvailable?: boolean;
   readonly historyAvailable?: boolean;
+  readonly historyPartial?: boolean;
+  readonly attemptsPartial?: boolean;
 }) {
   const http = useWorkHttp();
   const [explanation, setExplanation] = React.useState<IssueExplanation | null>(null);
@@ -137,8 +139,8 @@ function IssueDiagnosticsBody({ issue, attempts, history, now, attemptsAvailable
       </>}
     </Section>
     <Section title="Clock">
-      <p className="text-xs text-muted-foreground">From the first Todo entry; Backlog excluded.</p>
-      {clock === null ? <p className="text-muted-foreground">{historyAvailable ? "No Todo transition recorded." : "History unavailable."}</p> : <>
+      <p className="text-xs text-muted-foreground">{historyPartial || attemptsPartial ? "Loaded history and attempts only; Backlog excluded." : "From the first Todo entry; Backlog excluded."}</p>
+      {clock === null ? <p className="text-muted-foreground">{historyAvailable ? historyPartial ? "No Todo transition in loaded history." : "No Todo transition recorded." : "History unavailable."}</p> : <>
         <div className="flex h-3 overflow-hidden rounded-sm bg-muted" role="img" aria-label={clock.lanes.map(({ lane, duration }) => `${lane}: ${durationLabel(duration)}`).join(", ")}>
           {clock.lanes.map(({ lane, duration }) => <span key={lane} className={LANE_COLORS[lane.toLowerCase()] || "bg-muted-foreground"} style={{ width: `${clock.total === 0 ? 0 : duration / clock.total * 100}%` }} />)}
         </div>
@@ -159,7 +161,7 @@ function IssueDiagnosticsBody({ issue, attempts, history, now, attemptsAvailable
         <Kv name="Human action">{humanAction}</Kv>
       </dl>
     </Section>
-    <Section title="Attempts">
+    <Section title={attemptsPartial ? "Attempts (loaded)" : "Attempts"}>
       {!attemptsAvailable ? <p className="text-muted-foreground">Attempts unavailable.</p> : groups.length === 0 ? <p className="text-muted-foreground">No attempts yet.</p> : <Table tabIndex={0} aria-label="Attempts" className="tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <TableHeader><TableRow>{["When", "Stage", "Model · effort", "Duration", "Outcome", "Tokens", "Cost"].map((label) => <TableHead key={label} className={label === "Tokens" || label === "Cost" || label === "Duration" ? "text-right" : undefined}>{label}</TableHead>)}</TableRow></TableHeader>
         <TableBody>{groups.map((group) => {

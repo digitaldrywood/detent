@@ -86,6 +86,7 @@ export interface ChatWorkspaceProps {
   } | undefined;
   /** The issue page passes its own reads rather than repeating them. */
   readonly attempts?: readonly NativeAttempt[];
+  readonly attemptsPartial?: boolean;
   readonly history?: readonly CollaborationEvent[];
   readonly archived?: boolean;
 
@@ -140,7 +141,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps): React.ReactElement {
   const scopeKey = props.conversationId ?? props.workItemId ?? "new";
   const panel = useRightPanel(props.workItemId ?? scopeKey);
   const detailOpen = panel.isOpen && panel.surfaces.some((surface) => surface.id === panel.activeSurfaceId && (surface.kind === "diff" || surface.kind === "pull-request"));
-  const surfaces = useIssueSurfaces(projectId, props.archived === true && !detailOpen ? null : props.workItemId);
+  const surfaces = useIssueSurfaces(projectId, props.archived === true && !detailOpen ? null : props.workItemId, props.attempts, props.attemptsPartial);
 
   const workspace = useRightPanelWorkspace({
     panel,
