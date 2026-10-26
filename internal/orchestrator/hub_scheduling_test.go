@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hostpressure"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -716,6 +717,7 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
 		name            string
+		pressure        string
 		state           string
 		setup           func(*State, connector.Issue)
 		want            bool
@@ -806,12 +808,8 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 			s.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
 			s.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(-time.Minute), Attempt: 2}
 		}},
-		{name: "io pressure hold refuses readiness before a claim", state: "Merging", native: true, setup: func(s *State, issue connector.Issue) {
-			s.IOPressure.DispatchHeld = true
-		}},
-		{name: "memory pressure hold refuses readiness before a claim", state: "Todo", native: true, setup: func(s *State, issue connector.Issue) {
-			s.MemoryPressure.DispatchHeld = true
-		}},
+		{name: "io pressure hold refuses readiness before a claim", state: "Merging", native: true, pressure: "io"},
+		{name: "memory pressure hold refuses readiness before a claim", state: "Todo", native: true, pressure: "memory"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, MaxConcurrentAgentsByState: map[string]int{"Merging": 1}, ActiveStates: []string{"Merging", "Rework", "Todo"}, TerminalStates: []string{"Done"}, Project: schedulerProjectCandidate("widgets"), SchedulingRepository: "acme/widgets"})
@@ -827,6 +825,15 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 				backend = &nativeHubSchedulingConnector{&hubSchedulingConnector{}}
 			}
 			o := Orchestrator{cfg: cfg, connector: backend, scheduling: source, now: func() time.Time { return now }}
+			switch test.pressure {
+			case "io":
+				o.cfg.IOPressureFullAvg10Max = 5
+				o.readIOPressure = pressureReader(now, hostpressure.Sample{Full: hostpressure.Pressure{Avg10: 6}}, nil)
+			case "memory":
+				o.cfg.MemoryPressureSomeAvg60Max = 5
+				o.readMemoryPressure = pressureReader(now, hostpressure.Sample{Some: hostpressure.Pressure{Avg60: 6}}, nil)
+			}
+
 			state := newState(cfg)
 			if test.setup != nil {
 				test.setup(&state, issue)

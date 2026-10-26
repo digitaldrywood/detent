@@ -804,6 +804,7 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 				}
 			}
 
+			o.observeHostPressure(ctx, state, now)
 			if state.MemoryPressure.DispatchHeld || state.IOPressure.DispatchHeld || state.CPUPressure.DispatchHeld {
 				observedReason, observedPredicate = dispatchSkipLocalSlotUnavailable, "host_pressure"
 				// The dispatch stage would refuse this candidate under the host
