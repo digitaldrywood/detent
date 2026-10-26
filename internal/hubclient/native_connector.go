@@ -121,23 +121,6 @@ func (c *NativeConnector) FetchIssuesByStates(ctx context.Context, states []stri
 }
 
 func (c *NativeConnector) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]connector.Issue, error) {
-	if native, supported, err := c.client.heartbeatIssues(ctx); supported {
-		if err != nil {
-			return nil, err
-		}
-		var issues []connector.Issue
-		for _, item := range native {
-			if !slices.Contains(ids, string(item.WorkItemID)) {
-				continue
-			}
-			issue, err := c.issueWithLanding(ctx, item)
-			if err != nil {
-				return nil, err
-			}
-			issues = append(issues, issue)
-		}
-		return issues, nil
-	}
 	issues := make([]connector.Issue, 0, len(ids))
 	for _, id := range ids {
 		issue, err := c.client.Issue(ctx, tracker.NativeWorkItemID(id))
