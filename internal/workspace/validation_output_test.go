@@ -32,6 +32,26 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 		selection          *ReviewOutputRange
 		wantDiagnostics    []string
 	}{
+		{
+			name: "separated failures survive both limits",
+			output: "assertion setup\nAssertionError: expected range\nexpected selection\nactual null\n--- FAIL: TestFirst (0.01s)\nTOKEN=private-assignment\n" +
+				strings.Repeat("ok example.org/passing\n", 4000) +
+				"--- FAIL: TestSecond/世界 (0.02s)\nFAIL\texample.org/second\t1s\n" +
+				strings.Repeat("ok example.org/passing\n", 4000) +
+				"panic: test timed out after 1m0s\nrunning tests:\n\tTestThird (1m0s)\n\tTestFourth (1m0s)\n\n" +
+				strings.Repeat("goroutine stack\n", 4000) +
+				"internal/example.go:12:3: unchecked result (errcheck)\nfatal error: concurrent map writes\n" +
+				strings.Repeat("ok example.org/passing\n", 4000) + "FAIL\texample.org/third\t61s\nend\n",
+			command: "cat output.txt; exit 1", exit: 1, truncated: true,
+			wantDiagnostics: []string{"assertion setup", "AssertionError: expected range", "expected selection", "actual null", "--- FAIL: TestFirst (0.01s)\n", "--- FAIL: TestSecond/世界 (0.02s)\n", "FAIL\texample.org/second\t1s\n", "panic: test timed out after 1m0s\n", "running tests:\n\tTestThird (1m0s)\n\tTestFourth (1m0s)\n", "internal/example.go:12:3: unchecked result (errcheck)\n", "fatal error: concurrent map writes\n", "FAIL\texample.org/third\t61s\n"},
+		},
+		{
+			name: "secret assignment crosses retention boundaries",
+			output: "panic: example failure\n" + strings.Repeat("context line\n", 20) +
+				strings.Repeat("ok example.org/passing\n", 4000) + "TOKEN=" + strings.Repeat("private-fragment", 12000) + "\nend\n",
+			command: "cat output.txt; exit 1", exit: 1, truncated: true,
+			wantDiagnostics: []string{"panic: example failure", "TOKEN=[redacted]"},
+		},
 		{name: "reservation failure prevents command", command: "touch should-not-run", reservationFailure: true},
 		{name: "bounded source capture before host completion", output: strings.Repeat("a", 2*1024*1024), command: "cat output.txt", selection: &ReviewOutputRange{Offset: 1024 * 1024, Length: 1}, truncated: true},
 		{name: "paged failure retains diagnostics", output: strings.Repeat("a", 2*1024*1024), command: "cat output.txt; echo source-failure >&2; exit 7", exit: 7, selection: &ReviewOutputRange{Offset: 1024 * 1024, Length: 1}, truncated: true},
@@ -161,6 +181,9 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 					},
 					finished: func(result gate.CommandResult, cleanupErr error) error {
 						finished = true
+						if test.selection == nil && strings.Contains(result.Output, "private") {
+							t.Fatal("host completion retained unredacted output")
+						}
 						if cleanupErr != nil {
 							t.Fatalf("cleanup: %v", cleanupErr)
 						}
@@ -241,7 +264,7 @@ func TestReviewCommandOutputSurvivesJSONByteBudget(t *testing.T) {
 						t.Errorf("original diagnostic missing from command or public receipt: %q", want)
 					}
 				}
-				if strings.Contains(public.Output, "private") || strings.Contains(public.Output, "\x1b") || !strings.Contains(public.Output, "[redacted]") {
+				if strings.Contains(decoded.Output, "private") || strings.Contains(public.Output, "private") || strings.Contains(public.Output, "\x1b") || !strings.Contains(public.Output, "[redacted]") {
 					t.Errorf("public receipt did not redact normalized diagnostic")
 				}
 				if len(public.Output) > tracker.NativeFinalizationTextLimit || !utf8.ValidString(public.Output) || !public.OutputTruncated || public.ExitCode != decoded.ExitCode || public.HeadSHA != decoded.HeadSHA || public.TreeSHA != decoded.TreeSHA {
