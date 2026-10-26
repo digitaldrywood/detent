@@ -315,10 +315,10 @@ func seedProductionShapedRollups(t *testing.T, s *Service, scope nativeScope, at
 		{`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM n WHERE i<?-1),
 items AS (SELECT native_id,row_number() OVER (ORDER BY native_id)-1 AS k,count(*) OVER () AS total FROM issues WHERE organization_id=? AND project_id=? AND native_id IS NOT NULL),
 shaped AS (SELECT i,strftime('%Y-%m-%dT%H:%M:%SZ',?,'-'||(i*7776000/?)||' seconds') AS at FROM n)
-INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at)
-SELECT 'bench_event_'||i,?,?,(SELECT native_id FROM items WHERE k=i%total),1000000+i,'workflow.transitioned',1,'{}',json_object('from_state',CASE WHEN i%5=0 THEN 'Done' ELSE 'Todo' END,'to_state','In Progress'),at FROM shaped`,
+INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at,analytics_from_state,analytics_to_state,analytics_projection_version)
+SELECT 'bench_event_'||i,?,?,(SELECT native_id FROM items WHERE k=i%total),1000000+i,'workflow.transitioned',1,'{}',json_object('from_state',CASE WHEN i%5=0 THEN 'Done' ELSE 'Todo' END,'to_state','In Progress'),at,CASE WHEN i%5=0 THEN 'Done' ELSE 'Todo' END,'In Progress',1 FROM shaped`,
 			[]any{events, scope.organization, scope.project, now, events, scope.organization, scope.project}},
-		{analyticsSourceEvents + `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) SELECT organization_id,project_id,hour,metric,dimension,value,data_json FROM analytics_source_events WHERE organization_id=? AND project_id=? AND dimension LIKE 'bench_event_%'`,
+		{analyticsSourceEvents + `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,work_item_id,sequence,type,recorded_at,projection_version) SELECT organization_id,project_id,hour,metric,dimension,value,data_json,work_item_id,sequence,type,recorded_at,1 FROM analytics_source_events WHERE organization_id=? AND project_id=? AND dimension LIKE 'bench_event_%'`,
 			[]any{scope.organization, scope.project}},
 		{`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM n WHERE i<?-1),
 items AS (SELECT native_id,row_number() OVER (ORDER BY native_id)-1 AS k,count(*) OVER () AS total FROM issues WHERE organization_id=? AND project_id=? AND native_id IS NOT NULL),
@@ -342,6 +342,7 @@ FROM shaped`,
 			t.Fatalf("seed production-shaped rollups: %v\n%s", err, statement.query)
 		}
 	}
+	convertTestAnalyticsProjections(t, s)
 }
 
 type explainedPlanLine struct {
@@ -425,7 +426,7 @@ func rollupRepeatedReadViolations(statement string, plan []explainedPlanLine) []
 var windowedRollupReads = []struct{ name, fragment, index, bound string }{
 	{"usage rows", "FROM analytics_attempt_usage u LEFT JOIN analytics_native_attempts a ON a.id = u.attempt_id", "analytics_usage_window", ">?"},
 	{"attempts in window", "julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND (?=''", "analytics_attempt_started", ""},
-	{"failed attempts in window", "WHERE metric='attempt' AND json_extract(data_json,'$.failed_at') IS NOT NULL", "analytics_attempt_failed", ">?"},
+	{"failed attempts in window", "WHERE metric='attempt' AND failed_at IS NOT NULL", "analytics_attempt_failed", ">?"},
 	{"residence transitions", "type='workflow.transitioned' AND julianday(recorded_at)>=julianday(?)", "analytics_event_order", ">?"},
 }
 

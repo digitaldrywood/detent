@@ -46,6 +46,7 @@ func TestCommitReadOnlyTransactionSkipsRefreshes(t *testing.T) {
 
 func rebuildTestAnalyticsRollups(t testing.TB, s *Service, scope nativeScope) {
 	t.Helper()
+	convertTestAnalyticsProjections(t, s)
 	tx, err := s.database.db.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -203,7 +204,7 @@ func TestAnalyticsRollupFailurePreservesEvent(t *testing.T) {
 			issue := f.create(t, "projection failure")
 			healthy := f.create(t, "healthy projection")
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER reject_analytics BEFORE INSERT ON analytics_hourly_rollups WHEN json_extract(NEW.data_json,'$.work_item_id')='`+string(issue.WorkItemID)+`' BEGIN SELECT RAISE(ABORT,'projection unavailable'); END`); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER reject_analytics BEFORE INSERT ON analytics_hourly_rollups WHEN NEW.work_item_id='`+string(issue.WorkItemID)+`' BEGIN SELECT RAISE(ABORT,'projection unavailable'); END`); err != nil {
 				t.Fatal(err)
 			}
 			commitTestAnalytics(t, f.service, func(tx *sql.Tx) {
@@ -217,7 +218,7 @@ func TestAnalyticsRollupFailurePreservesEvent(t *testing.T) {
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision'", scope.organization, scope.project).Scan(&events); err != nil || events != 2 {
 				t.Fatalf("event lost: count=%d err=%v", events, err)
 			}
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='event' AND json_extract(data_json,'$.work_item_id')=? AND json_extract(data_json,'$.type')='scheduler.decision'", scope.organization, scope.project, healthy.WorkItemID).Scan(&projected); err != nil || projected != 1 {
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='event' AND work_item_id=? AND type='scheduler.decision'", scope.organization, scope.project, healthy.WorkItemID).Scan(&projected); err != nil || projected != 1 {
 				t.Fatalf("failure blocked another item's projection: count=%d err=%v", projected, err)
 			}
 			if analyticsRollupsServed(t, f.service, scope) {
@@ -243,7 +244,7 @@ func TestAnalyticsRollupFailurePreservesEvent(t *testing.T) {
 	}
 }
 
-func TestAnalyticsRollupMigrationBackfill(t *testing.T) {
+func TestAnalyticsRollupBackfill(t *testing.T) {
 	f := newUsageHostedFixture(t)
 	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
 	other := nativeScope{organization: scope.organization, project: tracker.ProjectID(f.privateProject)}
@@ -263,24 +264,10 @@ func TestAnalyticsRollupMigrationBackfill(t *testing.T) {
 			t.Fatalf("project %s has no rollups to backfill", project.project)
 		}
 	}
-	for _, version := range []struct {
-		id   int64
-		name string
-	}{{20261021193000, "reports_attempt_window"}, {20261014233000, "analytics_attempt_projection"}, {20261014200000, "drop_redundant_attempt_indexes"}, {20261014160000, "analytics_attempt_payload"}, {20261014120000, "analytics_rollup_report_columns"}, {20261013083000, "analytics_rollups"}} {
-		migration, err := migrationFiles.ReadFile("migrations/" + strconv.FormatInt(version.id, 10) + "_" + version.name + ".sql")
-		if err != nil {
+	for _, statement := range []string{"DELETE FROM analytics_hourly_rollups", "DELETE FROM analytics_rollup_positions", "INSERT OR IGNORE INTO analytics_rollup_backfill SELECT organization_id,id FROM projects"} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
 			t.Fatal(err)
 		}
-		down := strings.Split(string(migration), "-- +goose Down")[1]
-		if _, err := f.service.database.db.ExecContext(t.Context(), down); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hub_schema_version WHERE version_id=?", version.id); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := runMigrations(t.Context(), f.service.database.db, discardLogger()); err != nil {
-		t.Fatal(err)
 	}
 	for _, project := range scopes {
 		if got := readTestRollupRows(t, f.service.database.reader, project); len(got) != 0 {
@@ -346,6 +333,7 @@ func TestAnalyticsRollupUsageWrites(t *testing.T) {
 
 func drainTestAnalytics(t *testing.T, s *Service) {
 	t.Helper()
+	convertTestAnalyticsProjections(t, s)
 	for {
 		more, err := s.database.drainAnalyticsDirty(t.Context(), s.config.now())
 		if err != nil {
@@ -439,7 +427,7 @@ func TestAnalyticsBackfillItemsBoundedByEvents(t *testing.T) {
 		sequence int64
 		want     int
 	}{
-		{"small items fill the batch", 1, 3},
+		{"one small item per transaction", 1, 1},
 		{"large items stop at the event budget", analyticsBackfillEvents/2 + 1, 1},
 		{"one oversized item still progresses", analyticsBackfillEvents * 2, 1},
 	} {
@@ -733,7 +721,7 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer projectedTx.Rollback()
-			if _, err := projectedTx.ExecContext(t.Context(), `DELETE FROM analytics_hourly_rollups WHERE metric='event' AND NOT (json_extract(data_json,'$.type')='scheduler.decision' AND coalesce(json_extract(data_json,'$.outcome'),'')='ready')`); err != nil {
+			if _, err := projectedTx.ExecContext(t.Context(), `DELETE FROM analytics_hourly_rollups WHERE metric='event' AND NOT (type='scheduler.decision' AND coalesce(scheduler_outcome,'')='ready')`); err != nil {
 				t.Fatal(err)
 			}
 			q := analyticsRollupReader{projectedTx}
@@ -1184,4 +1172,23 @@ func TestAnalyticsHourlyRetentionScopes(t *testing.T) {
 		})
 	}
 
+}
+
+func convertTestAnalyticsProjections(t testing.TB, s *Service) {
+	t.Helper()
+	for {
+		if err := s.convertSchedulerDecisions(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.database.convertAnalyticsProjections(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		var more bool
+		if err := s.database.reader.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM collaboration_events WHERE analytics_projection_version IS NULL) OR EXISTS(SELECT 1 FROM analytics_hourly_rollups WHERE projection_version IS NULL)").Scan(&more); err != nil {
+			t.Fatal(err)
+		}
+		if !more {
+			return
+		}
+	}
 }

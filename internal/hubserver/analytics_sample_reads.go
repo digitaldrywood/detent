@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"math"
 	"slices"
@@ -257,8 +258,8 @@ func addAnalyticsCapacityHours(ctx context.Context, q nativeQueryer, scope nativ
 }
 
 func readAnalyticsSlotHours(ctx context.Context, q nativeQueryer, scope nativeScope, out *diagnosticsReport) error {
-	rows, err := q.QueryContext(ctx, `SELECT hour,value,data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='slots' AND hour<? AND hour+3600>?
-UNION ALL SELECT hour,total,'' FROM analytics_sample_hours WHERE organization_id=? AND project_id=? AND metric='slots' AND hour<? AND hour+3600>?`, scope.organization, scope.project, out.To.Unix(), out.From.Unix(), scope.organization, scope.project, out.To.Unix(), out.From.Unix())
+	rows, err := q.QueryContext(ctx, `SELECT hour,value,acquired_at,released_at,expires_at FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='slots' AND hour<? AND hour+3600>?
+UNION ALL SELECT hour,total,NULL,NULL,NULL FROM analytics_sample_hours WHERE organization_id=? AND project_id=? AND metric='slots' AND hour<? AND hour+3600>?`, scope.organization, scope.project, out.To.Unix(), out.From.Unix(), scope.organization, scope.project, out.To.Unix(), out.From.Unix())
 	if err != nil {
 		return err
 	}
@@ -266,32 +267,24 @@ UNION ALL SELECT hour,total,'' FROM analytics_sample_hours WHERE organization_id
 	for rows.Next() {
 		var hour int64
 		var slots float64
-		var raw string
-		if err := rows.Scan(&hour, &slots, &raw); err != nil {
+		var acquiredRaw, releasedRaw, expiresRaw sql.NullString
+		if err := rows.Scan(&hour, &slots, &acquiredRaw, &releasedRaw, &expiresRaw); err != nil {
 			return err
 		}
 		start := time.Unix(hour, 0).UTC()
 		finish := start.Add(time.Hour)
-		if raw != "" {
-			var lease struct {
-				Acquired string  `json:"acquired_at"`
-				Released *string `json:"released_at"`
-				Expires  string  `json:"expires_at"`
-			}
-			if err := json.Unmarshal([]byte(raw), &lease); err != nil {
-				return err
-			}
-			acquired, err := parseTimeValue(lease.Acquired)
+		if acquiredRaw.Valid {
+			acquired, err := parseTimeValue(acquiredRaw.String)
 			if err != nil {
 				return err
 			}
-			expires, err := parseTimeValue(lease.Expires)
+			expires, err := parseTimeValue(expiresRaw.String)
 			if err != nil {
 				return err
 			}
 			start, finish = maxTime(start, acquired), minTime(finish, expires)
-			if lease.Released != nil {
-				released, err := parseTimeValue(*lease.Released)
+			if releasedRaw.Valid {
+				released, err := parseTimeValue(releasedRaw.String)
 				if err != nil {
 					return err
 				}
@@ -302,7 +295,7 @@ UNION ALL SELECT hour,total,'' FROM analytics_sample_hours WHERE organization_id
 			b := &out.Capacity[i]
 			end := minTime(b.Hour.Add(time.Hour), out.To)
 			overlap := max(0, minTime(end, finish).Sub(maxTime(maxTime(b.Hour, out.From), start)).Seconds())
-			if raw != "" {
+			if acquiredRaw.Valid {
 				b.Slots += overlap / end.Sub(b.Hour).Seconds()
 			} else {
 				b.Slots += slots * overlap / end.Sub(b.Hour).Seconds()

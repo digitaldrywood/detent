@@ -78,7 +78,7 @@ func analyticsEventsInRecordedOrder(q nativeQueryer) string {
 	if _, projected := q.(analyticsRollupReader); !projected {
 		return "collaboration_events INDEXED BY collaboration_events_analytics_order"
 	}
-	return `(SELECT r.organization_id,r.project_id,r.dimension AS id,r.json_work_item_id AS work_item_id,r.json_sequence AS sequence,r.json_type AS type,r.json_recorded_at AS recorded_at,e.data_json FROM analytics_hourly_rollups r INDEXED BY analytics_event_order CROSS JOIN main.collaboration_events e ON e.id=r.dimension WHERE r.metric='event') AS collaboration_events`
+	return `(SELECT r.organization_id,r.project_id,r.dimension AS id,r.work_item_id AS work_item_id,r.sequence AS sequence,r.type AS type,r.recorded_at AS recorded_at,e.data_json FROM analytics_hourly_rollups r INDEXED BY analytics_event_order CROSS JOIN main.collaboration_events e ON e.id=r.dimension WHERE r.metric='event') AS collaboration_events`
 }
 
 func readQualityLandings(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) ([]nativeAnalyticsLanding, error) {

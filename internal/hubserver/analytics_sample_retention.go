@@ -24,6 +24,9 @@ ON CONFLICT(organization_id,project_id,metric,hour,dimension,bucket) DO UPDATE S
 }
 
 func (d *database) compactAnalyticsSamples(ctx context.Context, now time.Time) error {
+	if err := d.convertAnalyticsProjections(ctx); err != nil {
+		return err
+	}
 	through := now.UTC().Truncate(time.Hour).Add(-analyticsSampleRetention).Unix()
 	deadline := time.Now().Add(analyticsBackfillBudget)
 	for range analyticsSampleCompactionBatch {
@@ -55,20 +58,25 @@ func compactAnalyticsSample(ctx context.Context, tx *sql.Tx, through int64) (boo
 	var metric, dimension, raw string
 	var value float64
 	err := tx.QueryRowContext(ctx, `SELECT rowid,organization_id,project_id,hour,metric,dimension,value,data_json FROM analytics_hourly_rollups r
-WHERE hour<? AND (metric IN ('skip_sample','slots','capacity_claim') OR (metric='capacity_wait' AND json_extract(data_json,'$.AtNS')<?*1000000000) OR
-(metric='lease' AND unixepoch(coalesce(json_extract(data_json,'$.released_at'),json_extract(data_json,'$.expires_at')))<?))
+WHERE projection_version=1 AND hour<? AND (metric IN ('skip_sample','slots','capacity_claim') OR (metric='capacity_wait' AND sample_ns<?*1000000000) OR
+(metric='lease' AND unixepoch(coalesce(released_at,expires_at))<?))
 ORDER BY hour,metric,dimension LIMIT 1`, through, through, through).Scan(&rowid, &scope.organization, &scope.project, &hour, &metric, &dimension, &value, &raw)
 	if err == nil {
 		switch metric {
 		case "skip_sample":
 			var exists bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM analytics_hourly_rollups a WHERE a.organization_id=? AND a.project_id=? AND a.metric='skipped' AND a.hour=? AND a.dimension=json_array(coalesce(json_extract(?,'$.Source'),''),coalesce(json_extract(?,'$.Reason'),'')))`, scope.organization, scope.project, hour, raw, raw).Scan(&exists); err != nil {
+			var sample analyticsSkipSample
+			if err := json.Unmarshal([]byte(raw), &sample); err != nil {
+				return false, err
+			}
+			key := analyticsDimension(sample.Source, sample.Reason)
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM analytics_hourly_rollups a WHERE a.organization_id=? AND a.project_id=? AND a.metric='skipped' AND a.hour=? AND a.dimension=?)`, scope.organization, scope.project, hour, key).Scan(&exists); err != nil {
 				return false, err
 			}
 			if !exists {
 				return false, errors.New("skip sample has no hourly total")
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO analytics_hourly_rollups VALUES(?,?,0,'skip_compacted','',?,'{}') ON CONFLICT(organization_id,project_id,metric,hour,dimension) DO UPDATE SET value=max(value,excluded.value)`, scope.organization, scope.project, through); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,projection_version) VALUES(?,?,0,'skip_compacted','',?,'{}',1) ON CONFLICT(organization_id,project_id,metric,hour,dimension) DO UPDATE SET value=max(value,excluded.value)`, scope.organization, scope.project, through); err != nil {
 				return false, err
 			}
 		case "slots":
@@ -210,7 +218,7 @@ WHERE r.metric='residence_hour' AND r.hour<? GROUP BY r.organization_id,r.projec
 
 func cleanupAnalyticsResidence(ctx context.Context, tx *sql.Tx, through int64) (bool, error) {
 	result, err := tx.ExecContext(ctx, `DELETE FROM analytics_hourly_rollups WHERE rowid IN (
-SELECT r.rowid FROM analytics_hourly_rollups r JOIN analytics_residence_retention p ON p.organization_id=r.organization_id AND p.project_id=r.project_id AND p.work_item_id=CASE WHEN r.metric='residence_hour' THEN r.dimension ELSE json_extract(r.data_json,'$.ID') END
+SELECT r.rowid FROM analytics_hourly_rollups r JOIN analytics_residence_retention p ON p.organization_id=r.organization_id AND p.project_id=r.project_id AND p.work_item_id=CASE WHEN r.metric='residence_hour' THEN r.dimension ELSE r.sample_id END
 WHERE r.hour<min(p.through_hour,?) AND (r.metric='residence_edge' OR
 (r.metric='residence_hour' AND r.hour<(SELECT max(b.hour) FROM analytics_hourly_rollups b WHERE b.organization_id=r.organization_id AND b.project_id=r.project_id AND b.metric='residence_hour' AND b.dimension=r.dimension AND b.hour<min(p.through_hour,?)))) LIMIT ?)`, through, through, analyticsSampleCompactionBatch)
 	if err != nil {

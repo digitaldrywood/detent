@@ -1,11 +1,8 @@
 db/queries/store.sql 56
 db/queries/worker_generations.sql 1
 internal/hubserver/account_commands.go 4
-internal/hubserver/analytics_capacity_rollups.go 15
-internal/hubserver/analytics_residence_rollups.go 25
-internal/hubserver/analytics_rollups.go 38
-internal/hubserver/analytics_sample_retention.go 7
-internal/hubserver/analytics_skip_rollups.go 3
+internal/hubserver/analytics_capacity_rollups.go 8
+internal/hubserver/analytics_residence_rollups.go 11
 internal/hubserver/api_worker.go 11
 internal/hubserver/app_ui.go 2
 internal/hubserver/artifacts.go 3
@@ -39,7 +36,7 @@ internal/hubserver/hosted_allowances.go 2
 internal/hubserver/hosted_artifacts.go 2
 internal/hubserver/hosted_auth.go 1
 internal/hubserver/hosted_context.go 1
-internal/hubserver/hosted_diagnostics.go 15
+internal/hubserver/hosted_diagnostics.go 10
 internal/hubserver/hosted_fleet_sprites.go 2
 internal/hubserver/hosted_reports.go 7
 internal/hubserver/hosted_reports_filters.go 21
@@ -82,11 +79,11 @@ internal/hubserver/onboarding_issue_intake.go 5
 internal/hubserver/operator_activity.go 16
 internal/hubserver/operator_activity_durations.go 1
 internal/hubserver/operator_analytics.go 19
-internal/hubserver/operator_analytics_attempts.go 11
+internal/hubserver/operator_analytics_attempts.go 9
 internal/hubserver/operator_analytics_quality.go 27
 internal/hubserver/operator_analytics_queue.go 2
 internal/hubserver/operator_analytics_residence.go 4
-internal/hubserver/operator_failure_signatures.go 13
+internal/hubserver/operator_failure_signatures.go 7
 internal/hubserver/outbox.go 1
 internal/hubserver/policy.go 2
 internal/hubserver/project_configuration.go 2

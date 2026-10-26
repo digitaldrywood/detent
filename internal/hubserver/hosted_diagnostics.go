@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -304,12 +305,10 @@ func diagnosticsMergeWaits(ctx context.Context, q nativeQueryer, scope nativeSco
 	if err != nil {
 		return nil, err
 	}
-	statement := `SELECT json_extract(l.value,'$.landing.landed_at'),max(e.recorded_at),l.key
-FROM json_each(?) l JOIN collaboration_events e ON e.organization_id=? AND e.project_id=? AND e.work_item_id=json_extract(l.value,'$.work_item_id')
-AND e.type='workflow.transitioned' AND json_extract(e.data_json,'$.to_state')='Merging'
-AND julianday(e.recorded_at)<=julianday(json_extract(l.value,'$.landing.landed_at')) GROUP BY l.key ORDER BY l.key`
-	if _, projected := q.(analyticsRollupReader); projected {
-		statement = `WITH landings AS (SELECT key,value FROM json_each(?)),waits AS (SELECT l.key,json_extract(l.value,'$.landing.landed_at') AS landed,(SELECT json_extract(e.data_json,'$.At') FROM analytics_hourly_rollups e WHERE e.organization_id=? AND e.project_id=? AND e.metric='merge_entry' AND json_extract(e.data_json,'$.ID')=json_extract(l.value,'$.work_item_id') AND julianday(json_extract(e.data_json,'$.At'))<=julianday(json_extract(l.value,'$.landing.landed_at')) ORDER BY json_extract(e.data_json,'$.AtNS') DESC LIMIT 1) AS entered FROM landings l) SELECT landed,entered,key FROM waits WHERE entered IS NOT NULL`
+	_, projected := q.(analyticsRollupReader)
+	statement := `SELECT json_extract(l.value,'$.landing.landed_at'),e.recorded_at,l.key,e.data_json FROM json_each(?) l JOIN collaboration_events e ON e.organization_id=? AND e.project_id=? AND e.work_item_id=json_extract(l.value,'$.work_item_id') AND e.type='workflow.transitioned' AND (e.analytics_to_state='Merging' OR e.analytics_projection_version IS NULL) AND julianday(e.recorded_at)<=julianday(json_extract(l.value,'$.landing.landed_at')) ORDER BY l.key,e.recorded_at DESC`
+	if projected {
+		statement = `WITH landings AS (SELECT key,value FROM json_each(?)),waits AS (SELECT l.key,json_extract(l.value,'$.landing.landed_at') AS landed,(SELECT e.sample_at FROM analytics_hourly_rollups e WHERE e.organization_id=? AND e.project_id=? AND e.metric='merge_entry' AND e.sample_id=json_extract(l.value,'$.work_item_id') AND julianday(e.sample_at)<=julianday(json_extract(l.value,'$.landing.landed_at')) ORDER BY e.sample_ns DESC LIMIT 1) AS entered FROM landings l) SELECT landed,entered,key,'{}' FROM waits WHERE entered IS NOT NULL`
 	}
 	rows, err := q.QueryContext(ctx, statement, encoded, scope.organization, scope.project)
 	if err != nil {
@@ -321,12 +320,26 @@ AND julianday(e.recorded_at)<=julianday(json_extract(l.value,'$.landing.landed_a
 		seconds float64
 	}
 	var ordered []wait
+	seen := map[int]bool{}
 	for rows.Next() {
-		var landed, entered string
+		var landed, entered, raw string
 		var landing int
-		if err := rows.Scan(&landed, &entered, &landing); err != nil {
+		if err := rows.Scan(&landed, &entered, &landing, &raw); err != nil {
 			return nil, err
 		}
+		if !projected {
+			var data tracker.CollaborationData
+			if err := json.Unmarshal([]byte(raw), &data); err != nil {
+				return nil, err
+			}
+			if data.ToState != "Merging" {
+				continue
+			}
+		}
+		if seen[landing] {
+			continue
+		}
+		seen[landing] = true
 		finish, err := parseTimeValue(landed)
 		if err != nil {
 			return nil, err

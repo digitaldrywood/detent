@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -64,7 +65,7 @@ func TestTenantServesRunnersWhileReadsAreSlow(t *testing.T) {
 }
 
 func TestTenantRunnerWritesStayFlatWithHistory(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "tenant-writes")
+	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC) }})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	worker := f.worker(t, "worker")
 	f.service.config.Hosted = &HostedConfig{}

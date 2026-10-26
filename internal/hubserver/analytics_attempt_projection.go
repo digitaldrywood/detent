@@ -14,10 +14,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
-const analyticsAttemptUpsert = `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,?,'attempt',?,1,?) ON CONFLICT DO UPDATE SET hour=excluded.hour,value=excluded.value,data_json=excluded.data_json WHERE data_json<>excluded.data_json`
-
 func refreshAnalyticsAttempts(ctx context.Context, tx *sql.Tx, statements analyticsStatements, organization, project, item string) error {
-	query := `SELECT id,work_item_id,lease_id,status,started_at,updated_at,data_json,` + analyticsAttemptFailedAt + ` FROM native_attempts WHERE organization_id=? AND project_id=?`
+	query := `SELECT id,work_item_id,lease_id,status,started_at,updated_at,data_json FROM native_attempts WHERE organization_id=? AND project_id=?`
 	args := []any{organization, project}
 	if item != "" {
 		query += " AND work_item_id=?"
@@ -36,9 +34,14 @@ func refreshAnalyticsAttempts(ctx context.Context, tx *sql.Tx, statements analyt
 	for rows.Next() {
 		var id, workItem, lease, status, started, updated, raw string
 		var failed sql.NullString
-		if err := rows.Scan(&id, &workItem, &lease, &status, &started, &updated, &raw, &failed); err != nil {
+		var observation analyticsAttemptProjection
+		if err := rows.Scan(&id, &workItem, &lease, &status, &started, &updated, &raw); err != nil {
 			return fmt.Errorf("scan analytics attempt source: %w", err)
 		}
+		if err := json.Unmarshal([]byte(raw), &observation); err != nil {
+			return err
+		}
+		failed = analyticsFailureTime(observation.Runtime.Landing, status, updated)
 		payload, err := projectAnalyticsAttempt(raw, id, workItem, lease, status, started, updated, failed)
 		if err != nil {
 			return err
@@ -56,7 +59,7 @@ func refreshAnalyticsAttempts(ctx context.Context, tx *sql.Tx, statements analyt
 		return err
 	}
 	for _, attempt := range attempts {
-		if _, err := statements.exec(ctx, tx, analyticsAttemptUpsert, organization, project, attempt.hour, attempt.id, attempt.payload); err != nil {
+		if err := writeAnalyticsSample(ctx, tx, organization, project, attempt.hour, "attempt", attempt.id, 1, attempt.payload); err != nil {
 			return fmt.Errorf("write analytics attempt projection: %w", err)
 		}
 	}
@@ -158,4 +161,17 @@ func projectAnalyticsAttempt(raw, id, item, lease, status, started, updated stri
 	}
 	encoded, err := json.Marshal(payload)
 	return string(encoded), err
+}
+
+func analyticsFailureTime(landing *analyticsAttemptLanding, status, updated string) sql.NullString {
+	refusal := landing != nil && (landing.RefusalKind == "conflict" || landing.RefusalKind == "base_protected")
+	gate := landing != nil && landing.GateFailed
+	if status != "failed" && status != "interrupted" && !refusal && !gate {
+		return sql.NullString{}
+	}
+	at := updated
+	if landing != nil && ((refusal && !landing.Landed) || gate) && !landing.ObservedAt.IsZero() {
+		at = formatHubTime(landing.ObservedAt)
+	}
+	return sql.NullString{String: at, Valid: true}
 }

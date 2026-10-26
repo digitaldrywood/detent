@@ -769,7 +769,12 @@ func appendNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScope, wor
 	if data.Decision != nil {
 		decision = *data.Decision
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO collaboration_events (id, organization_id, project_id, work_item_id, sequence, type, schema_version, actor_json, data_json, recorded_at,scheduler_outcome,scheduler_reason,scheduler_source,scheduler_runner_id) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?,?,?,?,?)", id, scope.organization, scope.project, workItemID, sequence, eventType, actor, payload, formatHubTime(now), decision.Outcome, decision.Reason, decision.Source, decision.RunnerID)
+	key := analyticsDimension(decision.Source, decision.Reason)
+	attempt := ""
+	if data.Run != nil {
+		attempt = data.Run.AttemptID
+	}
+	_, err = tx.ExecContext(ctx, "INSERT INTO collaboration_events (id, organization_id, project_id, work_item_id, sequence, type, schema_version, actor_json, data_json, recorded_at,scheduler_outcome,scheduler_reason,scheduler_source,scheduler_runner_id,analytics_from_state,analytics_to_state,analytics_attempt_id,analytics_skip_key,analytics_recorded_ns,analytics_projection_version) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?,?,?,?,?,?,?,?,?,?,1)", id, scope.organization, scope.project, workItemID, sequence, eventType, actor, payload, formatHubTime(now), decision.Outcome, decision.Reason, decision.Source, decision.RunnerID, nullString(data.FromState), nullString(data.ToState), attempt, key, now.UnixNano())
 	if err != nil {
 		return err
 	}

@@ -24,8 +24,8 @@ func analyticsAttemptsInStartedOrder(q nativeQueryer) string {
 	if _, projected := q.(analyticsRollupReader); !projected {
 		return "native_attempts"
 	}
-	return `(SELECT organization_id,project_id,dimension AS id,json_work_item_id AS work_item_id,json_extract(data_json,'$.lease_id') AS lease_id,json_extract(data_json,'$.status') AS status,
-json_started_at AS started_at,json_updated_at AS updated_at,attempt_role,data_json FROM analytics_hourly_rollups INDEXED BY analytics_attempt_started WHERE metric='attempt')`
+	return `(SELECT organization_id,project_id,dimension AS id,work_item_id AS work_item_id,lease_id AS lease_id,status AS status,
+started_at AS started_at,updated_at AS updated_at,attempt_role,data_json FROM analytics_hourly_rollups INDEXED BY analytics_attempt_started WHERE metric='attempt')`
 }
 
 func loadNativeAnalyticsAttempts(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow, runner string) (nativeAnalyticsAttemptPopulation, error) {

@@ -86,7 +86,7 @@ func TestRunnerAdmissionPublishesNativeDecision(t *testing.T) {
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	for _, stage := range []string{"legacy", "converted"} {
 		if stage == "legacy" {
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE collaboration_events SET scheduler_outcome=NULL,scheduler_reason='',scheduler_source='',scheduler_runner_id='' WHERE organization_id=? AND project_id=? AND type='scheduler.decision'`, scope.organization, scope.project); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE collaboration_events SET analytics_projection_version=NULL,scheduler_outcome=NULL,scheduler_reason='',scheduler_source='',scheduler_runner_id='' WHERE organization_id=? AND project_id=? AND type='scheduler.decision'`, scope.organization, scope.project); err != nil {
 				t.Fatal(err)
 			}
 		} else if err := f.service.convertSchedulerDecisions(t.Context()); err != nil {

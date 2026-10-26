@@ -156,12 +156,12 @@ func nativeFailureClass(f tracker.NativeTerminalFailure) string {
 // failed_at the projection records with the same rule as the raw read, in
 // failure order from the analytics_attempt_failed index.
 const analyticsRollupFailures = `SELECT a.id,a.work_item_id,a.status,a.started_at,a.updated_at,a.failed_at,
-json_remove(a.data_json,'$.runtime.phases'),
+a.data_json,
 (SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id),
 (SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id)
-FROM (SELECT organization_id,project_id,dimension AS id,json_work_item_id AS work_item_id,json_extract(data_json,'$.lease_id') AS lease_id,json_extract(data_json,'$.status') AS status,
-json_started_at AS started_at,json_updated_at AS updated_at,data_json,json_extract(data_json,'$.failed_at') AS failed_at
-FROM analytics_hourly_rollups WHERE metric='attempt' AND json_extract(data_json,'$.failed_at') IS NOT NULL) a WHERE a.organization_id=? AND a.project_id=?`
+FROM (SELECT organization_id,project_id,dimension AS id,work_item_id AS work_item_id,lease_id AS lease_id,status AS status,
+started_at AS started_at,updated_at AS updated_at,data_json,failed_at,failed_day
+FROM analytics_hourly_rollups WHERE metric='attempt' AND failed_at IS NOT NULL) a WHERE a.organization_id=? AND a.project_id=?`
 
 func readNativeFailures(ctx context.Context, q nativeQueryer, scope nativeScope, item string, w *operatortool.AnalyticsWindow) ([]nativeFailure, bool, error) {
 	query := `WITH failures AS (
@@ -174,9 +174,9 @@ json_remove(a.data_json,'$.runtime.phases'),
 (SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id),
 (SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id)
 FROM failures a WHERE 1=1`
-	failedAt := "a.failed_at"
+	failedAt := "julianday(a.failed_at)"
 	if _, projected := q.(analyticsRollupReader); projected {
-		query, failedAt = analyticsRollupFailures, "json_extract(a.data_json,'$.failed_at')"
+		query, failedAt = analyticsRollupFailures, "a.failed_day"
 	}
 	args := []any{scope.organization, scope.project}
 	if item != "" {
@@ -184,7 +184,7 @@ FROM failures a WHERE 1=1`
 		args = append(args, item)
 	}
 	if w != nil {
-		query += " AND julianday(" + failedAt + ")>=julianday(?) AND julianday(" + failedAt + ")<julianday(?)"
+		query += " AND " + failedAt + ">=julianday(?) AND " + failedAt + "<julianday(?)"
 		args = append(args, formatHubTime(w.From), formatHubTime(w.To))
 	}
 	scoped, scopedArgs, err := reportsScopedClause(ctx, "a")
@@ -193,7 +193,7 @@ FROM failures a WHERE 1=1`
 	}
 	query += scoped
 	args = append(args, scopedArgs...)
-	query += " ORDER BY julianday(" + failedAt + ") DESC,a.id DESC LIMIT ? OFFSET ?"
+	query += " ORDER BY " + failedAt + " DESC,a.id DESC LIMIT ? OFFSET ?"
 	rows, err := queryAnalyticsPopulation(ctx, q, "failures", query, args...)
 	if err != nil {
 		return nil, false, err
