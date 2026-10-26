@@ -804,7 +804,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 	completedSource := data.Disposition != nil && data.Disposition.Status == "complete" && finalization != nil &&
 		finalization.Settled && finalization.Changed && finalization.ChangeID != "" && finalization.VersionID != "" && finalization.HeadSHA != "" &&
 		finalization.VersionError == "" && finalization.Error == ""
-	retain := rejection == nil && e.scheduler.client.runner != nil && (data.Outcome == "" || data.Outcome == "interrupted" && !completedSource)
+	retain := data.Identity != nil && rejection == nil && e.scheduler.client.runner != nil && (data.Outcome == "" || data.Outcome == "interrupted" && !completedSource)
 	if !retain {
 		if err := e.claim.source.client.Release(ctx, e.claim.lease, "released"); err != nil && !claimLost(err) {
 			return errors.Join(finishErr, err)

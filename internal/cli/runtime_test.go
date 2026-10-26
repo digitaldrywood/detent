@@ -1029,7 +1029,9 @@ func TestGHAuthFailureOmitsCommandOutput(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-			token, err := runGHAuthToken(t.Context(), nil)
+			commandContexts := newControlledRuntimeCommandContexts()
+			commandContexts.AllowCommand()
+			token, err := runGHAuthTokenWithCommandContext(t.Context(), nil, commandContexts.New)
 			if err == nil || token != "" || strings.Contains(err.Error(), "private-token") || !strings.Contains(err.Error(), "gh auth "+stage+" failed") {
 				t.Fatalf("authentication failure leaked output or lost its stage: %v", err)
 			}

@@ -167,6 +167,7 @@ func normalizeWorkerHosts(hosts []string) []string {
 }
 
 func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, issues []connector.Issue, now time.Time, maintenanceIssues ...connector.Issue) {
+	defer o.releaseDeferredSchedulingClaims(context.WithoutCancel(ctx), state, issues)
 	for _, issue := range issues {
 		if stateIn(issue.State, o.cfg.ActiveStates) && !o.currentBlockedHumanIntent(ctx, state, issue) && !o.currentBlockedOperatorStop(ctx, state, issue) {
 			clearBlockedStatusIssue(state, issue)
@@ -180,6 +181,9 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	}
 	if err := o.prepareDispatchProject(ctx); err != nil {
 		o.cancelPendingGlobalDispatches()
+		for _, issue := range issues {
+			o.recordPostSelectionDispatchRefusal(ctx, state, now, dispatchPlanDecision{Issue: issue}, dispatchIssueOutcome{reason: dispatchIssueFailureWorkerHostUnavailable, waitReason: err.Error()})
+		}
 		return
 	}
 	issues = o.localIntakeIssues(state, issues)
@@ -284,7 +288,6 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	})
 	o.reconcilePendingGlobalDispatches(issues, decisions, outcomes)
 	o.reconcileMergeControlDemand(decisions, outcomes)
-	o.releaseDeferredSchedulingClaims(ctx, state, issues)
 	o.observeProjectDispatchStatus(ctx, state, issues, decisions, outcomes, now)
 }
 

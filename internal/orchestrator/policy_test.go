@@ -143,7 +143,8 @@ func TestProjectSetupFailurePreservesIssueAccounting(t *testing.T) {
 			beforeRetry := state.Retry[issue.ID]
 			beforeBreaker := cloneProjectFailureBreaker(state.FailureBreaker)
 			attempts := &recordingWorkAttemptStore{}
-			orch := Orchestrator{cfg: cfg, workAttempts: attempts, scheduling: preparingProjectScheduling{err: errors.New("instance project setup exited 7")}}
+			source := &hubSchedulingSource{}
+			orch := Orchestrator{cfg: cfg, workAttempts: attempts, scheduling: preparingProjectScheduling{SchedulingSource: source, err: errors.New("instance project setup exited 7")}}
 			if granted {
 				outcome := orch.dispatchIssueWithGlobalGrant(t.Context(), &state, issue, 2, time.Now(), "", false, true, nil, &scheduler.DispatchResult{})
 				if outcome.dispatched || outcome.reason != dispatchIssueFailureWorkerHostUnavailable {
@@ -151,8 +152,11 @@ func TestProjectSetupFailurePreservesIssueAccounting(t *testing.T) {
 				}
 			} else {
 				orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, time.Now())
+				if source.releases != 1 || len(attempts.decisions) != 1 || attempts.decisions[0].Reason != dispatchIssueFailureWorkerHostUnavailable || attempts.decisions[0].WaitReason != "instance project setup exited 7" {
+					t.Fatalf("preparation refusal was not released and recorded: releases=%d decisions=%+v", source.releases, attempts.decisions)
+				}
 			}
-			if !reflect.DeepEqual(state.Retry[issue.ID], beforeRetry) || !reflect.DeepEqual(state.FailureBreaker, beforeBreaker) || len(state.Running) != 0 || len(state.Claimed) != 0 || len(attempts.decisions) != 0 {
+			if !reflect.DeepEqual(state.Retry[issue.ID], beforeRetry) || !reflect.DeepEqual(state.FailureBreaker, beforeBreaker) || len(state.Running) != 0 || len(state.Claimed) != 0 || len(attempts.starts) != 0 {
 				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
 			}
 		})

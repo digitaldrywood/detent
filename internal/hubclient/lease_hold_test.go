@@ -91,12 +91,25 @@ func TestSchedulerLeaseHoldOutlivesReleasedLease(t *testing.T) {
 			descriptor := clientTestPolicy()
 			id := "wi_" + strings.Repeat("b", 32)
 			lease := tracker.NativeLease{ID: "lease", WorkItemID: tracker.NativeWorkItemID(id), FencingToken: 1, PolicyID: descriptor.ID, ServerTime: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}
+			releaseRequests := 0
 			transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 				status, body := http.StatusOK, `{}`
 				switch {
 				case strings.HasSuffix(request.URL.Path, "/claims"):
 					status, body = http.StatusConflict, `{"code":"no_claimable_work","message":"No work"}`
 				case strings.HasSuffix(request.URL.Path, "/release"):
+					releaseRequests++
+					var mutation tracker.NativeLeaseMutation
+					if err := json.NewDecoder(request.Body).Decode(&mutation); err != nil {
+						t.Fatal(err)
+					}
+					wantReason := "released"
+					if tt.operation == "lost" {
+						wantReason = "cancelled"
+					}
+					if !strings.HasSuffix(request.URL.Path, "/leases/lease/release") || mutation.FencingToken != lease.FencingToken || mutation.Reason != wantReason || mutation.CancelAttempt != (tt.operation == "lost") || !time.Now().Before(lease.ExpiresAt) {
+						t.Fatalf("release lost exact lease authority or deadline: path=%s mutation=%+v", request.URL.Path, mutation)
+					}
 					encoded, err := json.Marshal(lease)
 					if err != nil {
 						return nil, err
@@ -138,6 +151,9 @@ func TestSchedulerLeaseHoldOutlivesReleasedLease(t *testing.T) {
 			case "release":
 				if err := scheduler.ReleaseClaim(t.Context(), id, "completed"); err != nil {
 					t.Fatal(err)
+				}
+				if releaseRequests != 1 {
+					t.Fatalf("release requests=%d, want 1 before lease expiry", releaseRequests)
 				}
 			case "lost":
 				err := scheduler.nativeClaimError(t.Context(), id, lease.FencingToken, &APIError{Status: http.StatusConflict, Code: "stale_fencing_token"})
