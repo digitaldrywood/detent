@@ -115,6 +115,17 @@ WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, internalID, scop
 	return issue, internalID, err
 }
 
+type displayLandingFactsKey struct{}
+
+func withDisplayLandingFacts(ctx context.Context) context.Context {
+	return context.WithValue(ctx, displayLandingFactsKey{}, true)
+}
+
+func displayLandingFacts(ctx context.Context) bool {
+	display, ok := ctx.Value(displayLandingFactsKey{}).(bool)
+	return ok && display && claimPrepared(ctx) == nil
+}
+
 func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope nativeScope, id string, compact bool) (tracker.NativeIssue, tracker.WorkItemID, error) {
 	var issue tracker.NativeIssue
 	var internalID tracker.WorkItemID
@@ -258,7 +269,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visi
 	}
 	if issue.ListChange != nil {
 		_, pending, err := readPendingLandingFact(ctx, query, internalID)
-		if err != nil {
+		if err != nil && (!displayLandingFacts(ctx) || !errors.Is(err, errClaimHintStale)) {
 			return issue, 0, err
 		}
 		issue.ListChange.LandingPending = pending
