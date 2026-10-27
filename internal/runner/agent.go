@@ -1655,12 +1655,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			turnRecovery = nativeTurnResumeAttempt(req.Execution.Recovery())
 		}
 	}
-	publicationRecovery := false
-	if req.Execution != nil && mode == RunModeImplement && publicationRecoveryRole(runRole(mode, req.Issue)) {
-		if previous := req.Execution.Recovery().SourceAttempt(); previous != nil {
-			publicationRecovery = previous.Checkpoint.UncertainForgeEffect()
-		}
-	}
+	publicationRecovery := req.publicationRecovery(mode)
 	if req.Execution != nil && !nativeLanding && !publicationRecovery && reviewRecovery == nil && turnRecovery == nil && nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
 		if !req.operatorFreshRetry() {
 			resume, err := r.nativeInterruptedResumeState(ctx, req, agentRuntime)

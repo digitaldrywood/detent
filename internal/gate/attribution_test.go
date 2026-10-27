@@ -82,8 +82,9 @@ func TestMixedFindingAttributionPreservesEveryFinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var commands []gate.CommandResult
-	for _, command := range []string{"sh check.sh existing", "sh check.sh caller"} {
+	commandNames := []string{"sh check.sh existing", "sh check.sh caller"}
+	commands := make([]gate.CommandResult, len(commandNames))
+	for i, command := range commandNames {
 		h, err := backend.RunBaseCommand(t.Context(), workspace.Info{Path: directory}, workspace.Issue{}, head, command)
 		if err != nil {
 			t.Fatal(err)
@@ -94,7 +95,7 @@ func TestMixedFindingAttributionPreservesEveryFinding(t *testing.T) {
 		}
 		observation := gate.CommandObservation(b)
 		h.BaseReproduction = &observation
-		commands = append(commands, h)
+		commands[i] = h
 	}
 	findings := []gate.Finding{{Body: "existing", CheckCommand: commands[0].Command, CheckDiagnostic: strings.TrimSpace(commands[0].Output)}, {Body: "caller", CheckCommand: commands[1].Command, CheckDiagnostic: strings.TrimSpace(commands[1].Output)}, {Body: "unreproduced", Path: "untouched.go"}}
 	got := gate.AttributeFindings(base, head, findings, commands)

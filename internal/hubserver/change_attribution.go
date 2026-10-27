@@ -66,8 +66,10 @@ func storeAttributionSlots(ctx context.Context, tx *sql.Tx, version, record stri
 	for role, list := range slots {
 		for i, slot := range list {
 			evidence := failureattribution.Evidence{BaseExitCode: -1}
-			if slot.evidence != nil && *slot.evidence != nil {
-				evidence = **slot.evidence
+			if slot.evidence != nil {
+				if proof := *slot.evidence; proof != nil {
+					evidence = *proof
+				}
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO change_finding_attributions
 (version_id,record_id,role,position,attribution,base_sha,head_sha,command,diagnostic,head_output_digest,base_output_digest,base_exit_code)

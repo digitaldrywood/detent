@@ -83,8 +83,9 @@ func TestMixedFindingAttributionPreservesEveryFinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var commands []gate.CommandResult
-	for _, command := range []string{"sh check.sh existing", "sh check.sh caller"} {
+	commandNames := []string{"sh check.sh existing", "sh check.sh caller"}
+	commands := make([]gate.CommandResult, len(commandNames))
+	for i, command := range commandNames {
 		h, err := backend.RunBaseCommand(t.Context(), workspace.Info{Path: directory}, workspace.Issue{}, head, command)
 		if err != nil {
 			t.Fatal(err)
@@ -95,7 +96,7 @@ func TestMixedFindingAttributionPreservesEveryFinding(t *testing.T) {
 		}
 		observation := gate.CommandObservation(b)
 		h.BaseReproduction = &observation
-		commands = append(commands, h)
+		commands[i] = h
 	}
 	findings := []securityaudit.Finding{{ID: "existing", Body: "existing", CheckCommand: commands[0].Command, CheckDiagnostic: strings.TrimSpace(commands[0].Output)}, {ID: "caller", Body: "caller", CheckCommand: commands[1].Command, CheckDiagnostic: strings.TrimSpace(commands[1].Output)}, {ID: "unknown", Body: "unreproduced", Path: "untouched.go"}}
 	checks := []securityaudit.CheckComparison{{Head: gate.CommandObservation(commands[0]), Base: *commands[0].BaseReproduction}, {Head: gate.CommandObservation(commands[1]), Base: *commands[1].BaseReproduction}}

@@ -601,6 +601,15 @@ func executionCheckpointPreservingPublication(execution Execution, state *worksp
 	return executionCheckpoint(state)
 }
 
+func (req RunRequest) publicationRecovery(mode string) bool {
+	if req.Execution != nil && mode == RunModeImplement && publicationRecoveryRole(runRole(mode, req.Issue)) {
+		if previous := req.Execution.Recovery().SourceAttempt(); previous != nil {
+			return previous.Checkpoint.UncertainForgeEffect()
+		}
+	}
+	return false
+}
+
 func publicationRecoveryRole(role string) bool {
 	return role == RoleCode || role == RoleRework
 }
