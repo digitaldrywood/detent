@@ -208,6 +208,13 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 		if !version.Policy.Gates.GitHubPullRequest {
 			return nil
 		}
+		e.scheduler.mu.Lock()
+		pinned := e.scheduler.claimPolicies[string(e.claim.lease.WorkItemID)]
+		e.scheduler.mu.Unlock()
+		unresolvedAtStart := e.data.Handoff.UncertainForgeEffect()
+		reconcileStale := unresolvedAtStart && e.recoveredSource != nil &&
+			*e.recoveredSource == (tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}) &&
+			pinned.descriptor.ID == e.data.PolicyID && pinned.descriptor.Gates.GitHubPullRequest
 		authorize := func(ctx context.Context) error {
 			if checkpoint := e.data.Handoff; checkpoint != nil && (checkpoint.EffectState == "pending" || checkpoint.EffectState == "ambiguous") && checkpoint.ExternalEffect != "git_push" && checkpoint.ExternalEffect != "pr_create" {
 				return &workspace.LandRefusal{Kind: workspace.LandRefusalHeadMoved, Reason: "PR publication has an unresolved " + checkpoint.ExternalEffect + " effect; preserve source and reconcile its checkpoint before resuming"}
@@ -227,12 +234,13 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 			if err != nil {
 				return err
 			}
-			if current.Change.CurrentVersion != version.ID || version.HeadSHA != change.HeadSHA || version.Repository != e.repository || current.Summary.Status == "stale_policy" || current.Change.CurrentLanding() != nil {
+			if current.Change.CurrentVersion != version.ID || version.HeadSHA != change.HeadSHA || version.Repository != e.repository || current.Summary.Status == "stale_policy" && !reconcileStale || current.Change.CurrentLanding() != nil {
 				return errors.New("PR publication source, current version or review requirements changed; reconcile the current Change before retrying")
 			}
-			if previous := e.claim.recovery.SourceAttempt(); previous != nil && previous.Checkpoint != nil &&
-				(previous.Checkpoint.EffectState == "pending" || previous.Checkpoint.EffectState == "ambiguous") {
-				checkpoint := previous.Checkpoint
+			// Inherited effects need restored source proof. Effects started by
+			// this execution already passed publication authorization.
+			if previous := e.claim.recovery.SourceAttempt(); previous != nil && previous.Checkpoint.UncertainForgeEffect() && e.data.Handoff.UncertainForgeEffect() {
+				checkpoint := e.data.Handoff
 				if e.role != runner.RoleCode && e.role != runner.RoleRework || !checkpoint.UncertainForgeEffect() || e.recoveredSource == nil ||
 					checkpoint.Change == nil || *checkpoint.Change != (tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}) ||
 					checkpoint.HeadSHA != version.HeadSHA || checkpoint.Storage != "local_only" && !checkpoint.GitRef() || checkpoint.Availability != "available" || e.lastDiff.HeadSHA != version.HeadSHA {
@@ -292,7 +300,6 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 				}
 			}
 		}
-		unresolvedAtStart := e.data.Handoff.UncertainForgeEffect()
 		effect := func(ctx context.Context, kind, state string, publication workspace.GitHubPublication) error {
 			check := authorize
 			if state == "pending" {
@@ -392,6 +399,11 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 		}
 
 		if detail.Summary.Status == "stale_policy" {
+			if e.data.Handoff.UncertainForgeEffect() {
+				if err := e.preparePRPublication(ctx, &runner.NativeChange{ChangeID: changeID, VersionID: version.ID, HeadSHA: version.HeadSHA}); err != nil {
+					return "", false, err
+				}
+			}
 			break
 		}
 

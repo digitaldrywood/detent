@@ -607,7 +607,7 @@ func nativePublicationRecovery(recovery tracker.NativeRecovery, local *workspace
 		return false
 	}
 	return recovery.ChangeDetail != nil && recovery.ChangeDetail.Change.ID == version.ChangeID && recovery.ChangeDetail.Change.CurrentVersion == version.ID &&
-		recovery.ChangeDetail.Change.CurrentLanding() == nil && recovery.ChangeDetail.Summary.Status != "stale_policy"
+		recovery.ChangeDetail.Change.CurrentLanding() == nil
 }
 
 func (r *Runner) afterExecution(ctx context.Context, req RunRequest, backend workspace.Backend, info workspace.Info, issue workspace.Issue, resume AgentResume, turnStarted bool) error {

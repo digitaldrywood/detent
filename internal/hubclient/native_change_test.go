@@ -2518,6 +2518,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		hosted               bool
 		rework               bool
 		foreignRunner        bool
+		stalePolicy          bool
 		reopened             bool
 		formal               bool
 		failDetail           bool
@@ -2549,6 +2550,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "uncertain publication post push ref read failure retries infrastructure", publication: "lost_push", publicationFault: "post_push_read", rework: true, formal: true},
 		{name: "held publication reconciles lost push through new Runner lease", publication: "lost_push", rework: true, formal: true},
 		{name: "held implementation publication reconciles lost push on another Runner", publication: "lost_push", foreignRunner: true, staged: true},
+		{name: "held implementation publication refreshes stale policy on another Runner", publication: "lost_push", publicationFault: "policy", foreignRunner: true, stalePolicy: true, staged: true},
 		{name: "held publication records a fresh validator decision on new Runner lease", publication: "lost_create", rework: true, formal: true, validator: "pass"},
 		{name: "confirmed publication retries pending validator on unchanged source", publication: "confirmed", rework: true, validator: "wait"},
 		{name: "confirmed publication retries validator rework after prerequisite repair", publication: "confirmed", rework: true, validator: "rework"},
@@ -4028,6 +4030,17 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if test.publicationFault == "policy" {
 					h.repolicy(t)
 				}
+				if test.stalePolicy {
+					rules, err := h.admin.ChangeReviewPolicy(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					rules.PolicyID = h.descriptor.ID
+					rules.RequireReview = true
+					if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), ExpectedID: rules.ID, Policy: rules}); err != nil {
+						t.Fatal(err)
+					}
+				}
 				publicationRetry = true
 				reconcileLane := "Rework"
 				if !test.rework {
@@ -4049,6 +4062,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				}
 				execution = h.scheduler.RunExecution(issue.ID)
 				owner = execution.(*nativeExecution)
+				if test.stalePolicy && (owner.Recovery().ChangeDetail == nil || owner.Recovery().ChangeDetail.Summary.Status != "stale_policy") {
+					t.Fatal("retry must reproduce a stale current Change policy")
+				}
 				if owner.claim.lease.MachineID != machineID || owner.claim.lease.ID == oldLease.ID || owner.claim.lease.FencingToken <= oldLease.FencingToken {
 					t.Fatal("retry reused old lease authority")
 				}
@@ -4102,6 +4118,24 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				}
 				prBefore := forgePull
 				callsBefore := provider.calls
+				if test.stalePolicy {
+					if err := os.WriteFile(filepath.Join(provider.workspace, "LOCAL.md"), []byte("unpublished local work\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					freshRoot := nativeChangeTempDir(t)
+					nativeChangeGit(t, freshRoot, "clone", remote, "source")
+					freshSource := filepath.Join(freshRoot, "source")
+					nativeChangeGit(t, freshSource, "remote", "set-url", "origin", nativeChangeRepository)
+					nativeChangeGit(t, freshSource, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+					dependencies.Workspace, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(freshRoot, "workspaces"), SourceRoot: freshSource, AutoBranch: true})
+					if err != nil {
+						t.Fatal(err)
+					}
+					agent, err = runner.NewRunner(dependencies)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
 				result, err = agent.Run(t.Context(), runner.RunRequest{Execution: &nativePublicationFixtureExecution{nativeExecution: owner, forge: forge, losePush: &losePush, retainedHead: retainedHead}, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
 				result.NativeChange = owner.NativeChange()
 				if test.publicationFault == "initial_read" || test.publicationFault == "post_push_read" {
@@ -4185,6 +4219,33 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				detail, err := h.admin.Change(t.Context(), item, expected.Change.ID)
 				if err != nil {
 					t.Fatal(err)
+				}
+				if test.stalePolicy {
+					if len(detail.Versions) != len(expected.Versions)+1 || detail.Change.CurrentVersion == expected.Change.CurrentVersion || result.NativeChange.Reviewed || detail.Summary.Status == "stale_policy" || detail.Summary.NativeReview != "pending" {
+						t.Fatalf("stale policy recovery did not publish source for current review: change=%+v summary=%+v versions=%d", result.NativeChange, detail.Summary, len(detail.Versions))
+					}
+					for i, version := range detail.Versions {
+						if i < len(expected.Versions) {
+							version.External = nil
+							prior := expected.Versions[i]
+							prior.External = nil
+							if !reflect.DeepEqual(version, prior) {
+								t.Fatal("policy refresh changed an immutable source version")
+							}
+							continue
+						}
+						if version.ID != detail.Change.CurrentVersion || version.HeadSHA != oldPublicationHead || version.PolicyID != h.descriptor.ID || version.Source == nil || !owner.publication.Matches(detail.Change.ID, version) {
+							t.Fatalf("policy refresh lost verified source or publication identity: %+v", version)
+						}
+					}
+					if !reflect.DeepEqual(detail.Reviews, expected.Reviews) || !reflect.DeepEqual(detail.Checks, expected.Checks) || detail.Change.Landed != nil {
+						t.Fatal("policy refresh changed review, checks or landing evidence")
+					}
+					local, err := os.ReadFile(filepath.Join(provider.workspace, "LOCAL.md"))
+					if err != nil || string(local) != "unpublished local work\n" {
+						t.Fatal("foreign recovery discarded unpublished work on the original runner")
+					}
+					return
 				}
 				for i := range detail.Versions {
 					detail.Versions[i].External = nil

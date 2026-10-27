@@ -2177,6 +2177,12 @@ func TestNativePublicationRecoveryOnAnyRunner(t *testing.T) {
 			r.Lease.MachineID = "other"
 			(*local).WorkspaceFingerprint = "fresh-checkout-digest"
 		}, true},
+		{"another runner restored source under a stale policy", RoleCode, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			r.Lease.PolicyID = "new-policy"
+			r.ChangeDetail.Summary.Status = "stale_policy"
+			(*local).WorkspaceFingerprint = "fresh-checkout-digest"
+		}, true},
 		{"restored head differs from the version", RoleRework, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
 			r.Lease.MachineID = "other"
 			(*local).HeadSHA = "other-head"
