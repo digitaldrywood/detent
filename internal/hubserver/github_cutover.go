@@ -161,8 +161,12 @@ FROM issues i LEFT JOIN github_imports g ON g.work_item_id = i.native_id LEFT JO
 	if result.IncompleteImports != 0 && !request.AcceptPartial {
 		result.Blockers = append(result.Blockers, "Finish all import pages and reimport changed source issues, or explicitly accept partial history")
 	}
-	err = tx.QueryRowContext(ctx, `SELECT count(*) FROM github_import_records r JOIN github_imports g ON g.id = r.import_id
-WHERE g.project_id = ? AND r.kind = 'dependency' AND r.current_dependency = 1 AND NOT EXISTS (SELECT 1 FROM issues i WHERE i.project_id = g.project_id AND i.github_node_id = json_extract(r.record_json, '$.dependency_id'))`, scope.project).Scan(&result.UnresolvedDependencies)
+	prefix, legacyDependencies, err := legacyImportDependencies(ctx, tx, scope.project)
+	if err != nil {
+		return result, err
+	}
+	err = tx.QueryRowContext(ctx, prefix+`SELECT count(*) FROM github_import_records r JOIN github_imports g ON g.id = r.import_id
+WHERE g.project_id = ? AND r.kind = 'dependency' AND r.current_dependency = 1 AND NOT EXISTS (SELECT 1 FROM issues i WHERE i.project_id = g.project_id AND i.github_node_id = `+importedDependencyID+`)`, append(legacyDependencies, scope.project)...).Scan(&result.UnresolvedDependencies)
 	if err != nil {
 		return result, err
 	}
@@ -233,8 +237,12 @@ func applyCutover(ctx context.Context, tx *sql.Tx, scope nativeScope, request Cu
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at)
-SELECT b.id, i.id, 'github_import', ?, ? FROM github_import_records r JOIN github_imports g ON g.id = r.import_id JOIN issues i ON i.native_id = g.work_item_id JOIN issues b ON b.project_id = i.project_id AND b.github_node_id = json_extract(r.record_json, '$.dependency_id') WHERE g.project_id = ? AND r.kind = 'dependency' AND r.current_dependency = 1 ON CONFLICT DO NOTHING`, stamp, stamp, scope.project)
+	prefix, legacyDependencies, err := legacyImportDependencies(ctx, tx, scope.project)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, prefix+`INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at)
+SELECT b.id, i.id, 'github_import', ?, ? FROM github_import_records r JOIN github_imports g ON g.id = r.import_id JOIN issues i ON i.native_id = g.work_item_id JOIN issues b ON b.project_id = i.project_id AND b.github_node_id = `+importedDependencyID+` WHERE g.project_id = ? AND r.kind = 'dependency' AND r.current_dependency = 1 ON CONFLICT DO NOTHING`, append(legacyDependencies, stamp, stamp, scope.project)...)
 	if err != nil {
 		return err
 	}
@@ -400,6 +408,6 @@ func enqueueNativeSourceSummary(ctx context.Context, tx *sql.Tx, scope nativeSco
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO github_outbox (idempotency_key, repository_id, issue_id, mutation_kind, desired_json, status, coalesce_key, created_at, updated_at) VALUES (?, ?, ?, 'workpad', ?, 'pending', ?, ?, ?)`, "native:"+item+":"+key, repositoryID, issueID, desired, coalesce, formatOutboxTime(now), formatOutboxTime(now))
+	_, err = tx.ExecContext(ctx, `INSERT INTO github_outbox (idempotency_key, repository_id, issue_id, mutation_kind, desired_json, status, coalesce_key, created_at, updated_at, desired_issue_number, desired_summary) VALUES (?, ?, ?, 'workpad', ?, 'pending', ?, ?, ?, ?, 1)`, "native:"+item+":"+key, repositoryID, issueID, desired, coalesce, formatOutboxTime(now), formatOutboxTime(now), linkedNumber)
 	return err
 }

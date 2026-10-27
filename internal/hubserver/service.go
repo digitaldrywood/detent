@@ -77,6 +77,7 @@ type Service struct {
 	boardRefresh            chan struct{}
 	boardRefreshCursor      string
 	boardRetentionScope     nativeScope
+	githubBatchCursor       tracker.ProjectID
 	workerStopOnce          sync.Once
 	reconcileCancel         context.CancelFunc
 	reconcileDone           chan struct{}

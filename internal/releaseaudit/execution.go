@@ -184,21 +184,23 @@ func (e *execution) acceptHuntLedger(ctx context.Context, assigned, updates json
 		}
 		positions[unit.ID] = i
 	}
-	if _, exists := positions[target.ID]; !exists {
+	targetIndex, exists := positions[target.ID]
+	if !exists {
 		return errors.New("release audit assignment is absent from ledger")
 	}
 	seen := map[string]bool{}
+	var replacement json.RawMessage
 	for _, raw := range patch {
 		var unit identity
 		if json.Unmarshal(raw, &unit) != nil || unit.ID == "" || seen[unit.ID] {
 			return errors.New("release audit hunt repeats or omits a coverage identity")
 		}
 		seen[unit.ID] = true
-		if index, exists := positions[unit.ID]; exists {
+		if _, exists := positions[unit.ID]; exists {
 			if unit.ID != target.ID {
 				return errors.New("release audit hunt changed an unassigned unit")
 			}
-			current[index] = raw
+			replacement = raw
 		} else {
 			if unit.Status != "planned" {
 				return errors.New("release audit discovered unit is not planned")
@@ -208,6 +210,12 @@ func (e *execution) acceptHuntLedger(ctx context.Context, assigned, updates json
 	}
 	if !seen[target.ID] {
 		return errors.New("release audit hunt omitted its assigned unit")
+	}
+	for index := range current {
+		if index == targetIndex {
+			current[index] = replacement
+			break
+		}
 	}
 	ledger, err := json.Marshal(current)
 	if err != nil {

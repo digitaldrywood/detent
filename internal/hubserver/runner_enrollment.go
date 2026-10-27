@@ -435,7 +435,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,1)`, binding.MachineID, request.Hostname, r
 				return nil, err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO runner_identities (id, organization_id, machine_id, token_id, enrollment_id, operations_json, created_at, display_name, capacity_limit, reported_capacity, os, architecture, last_heartbeat_at, scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, binding.RunnerID, identity.OrganizationID, binding.MachineID, binding.RunnerID, id, operations, formatHubTime(now), request.DisplayName, request.Capacity, request.Capacity, request.OS, request.Architecture, formatHubTime(now), enrollmentScope); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO runner_identities (id, organization_id, machine_id, token_id, enrollment_id, operations_json, created_at, display_name, capacity_limit, reported_capacity, os, architecture, last_heartbeat_at, scope, operations_known) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`, binding.RunnerID, identity.OrganizationID, binding.MachineID, binding.RunnerID, id, operations, formatHubTime(now), request.DisplayName, request.Capacity, request.Capacity, request.OS, request.Architecture, formatHubTime(now), enrollmentScope); err != nil {
+			return nil, err
+		}
+		if err := writeRunnerOperations(ctx, tx, binding.RunnerID, operations); err != nil {
 			return nil, err
 		}
 		if request.SpriteName != "" {

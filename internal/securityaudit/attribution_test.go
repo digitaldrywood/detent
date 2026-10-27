@@ -83,9 +83,8 @@ func TestMixedFindingAttributionPreservesEveryFinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commandNames := []string{"sh check.sh existing", "sh check.sh caller"}
-	commands := make([]gate.CommandResult, len(commandNames))
-	for i, command := range commandNames {
+	var commands [2]gate.CommandResult
+	for i, command := range [2]string{"sh check.sh existing", "sh check.sh caller"} {
 		h, err := backend.RunBaseCommand(t.Context(), workspace.Info{Path: directory}, workspace.Issue{}, head, command)
 		if err != nil {
 			t.Fatal(err)

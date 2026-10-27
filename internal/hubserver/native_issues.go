@@ -706,8 +706,8 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		}
 		reportContext.Valid = true
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO issues (native_id, organization_id, project_id, number, workflow_state_id, title, body, url, github_number, github_state, labels_json, assignees_json, source_version, source_updated_at, synchronized_at, created_at, updated_at, author_login, actor_json, provenance_json, native_source_key, native_created_at, native_updated_at, issue_contract_json, issue_type, report_context_json)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, '', '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?)`, issue.WorkItemID, scope.organization, scope.project, issue.Number, workflowID, issue.Title, issue.Body, importedURL, sourceNumber, labels, assignees, formatHubTime(now), formatHubTime(now), author, actor, provenance, sourceKey, formatHubTime(now), formatHubTime(now), contractJSON, issue.Type, reportContext)
+	result, err := tx.ExecContext(ctx, `INSERT INTO issues (native_id, organization_id, project_id, number, workflow_state_id, title, body, url, github_number, github_state, labels_json, assignees_json, source_version, source_updated_at, synchronized_at, created_at, updated_at, author_login, actor_json, provenance_json, native_source_key, native_created_at, native_updated_at, issue_contract_json, issue_type, report_context_json, provenance_provider, provenance_external_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, '', '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?)`, issue.WorkItemID, scope.organization, scope.project, issue.Number, workflowID, issue.Title, issue.Body, importedURL, sourceNumber, labels, assignees, formatHubTime(now), formatHubTime(now), author, actor, provenance, sourceKey, formatHubTime(now), formatHubTime(now), contractJSON, issue.Type, reportContext, provenanceProvider(issue.Provenance), provenanceExternalID(issue.Provenance))
 	if err != nil {
 		return tracker.NativeIssue{}, err
 	}

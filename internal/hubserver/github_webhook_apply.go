@@ -498,8 +498,8 @@ func applyIssueProjection(ctx context.Context, tx *sql.Tx, repositoryID int64, i
 			INSERT INTO issues (
 				repository_id, workflow_state_id, github_node_id, github_database_id, github_number,
 				title, body, url, github_state, author_login, labels_json, assignees_json,
-				source_version, source_updated_at, synchronized_at, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				source_version, source_updated_at, synchronized_at, created_at, updated_at, provenance_provider, provenance_external_id
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '')
 		`, repositoryID, optionalInt64(workflowStateID), issue.NodeID, optionalInt64(issue.DatabaseID), issue.Number,
 			issue.Title, issue.Body, issue.URL, issue.State, issue.AuthorID, string(labelsJSON), string(assigneesJSON),
 			stamp.Version, formatWebhookTime(stamp.UpdatedAt), formatWebhookTime(now),

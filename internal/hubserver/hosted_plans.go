@@ -370,7 +370,7 @@ func (d *database) seedHostedPlans(ctx context.Context, tx *sql.Tx, config Hoste
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_plans(id,version,record_json,runtime_id) VALUES(?,?,?,?)", plan.ID, plan.Version, string(encoded), runtimeID); err != nil {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_plans(id,version,record_json,runtime_id,collaboration_bytes) VALUES(?,?,?,?,?)", plan.ID, plan.Version, string(encoded), runtimeID, plan.Allowances["collaboration_bytes"]); err != nil {
 			return err
 		}
 		command := hostedPlanCommand{ID: "seed_" + uuid.NewString(), Action: "create_plan", Plan: plan.PlanReference, Definition: &plan, Reason: reason}

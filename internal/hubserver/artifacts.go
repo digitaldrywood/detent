@@ -80,7 +80,7 @@ func (s *Service) bindArtifactServiceCommand(ctx context.Context, tx *sql.Tx, sc
 	if err != nil {
 		return artifact.Binding{}, err
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO artifact_services(organization_id,project_id,id,binding_json,publisher_token_id) VALUES(?,?,?,?,?) ON CONFLICT(organization_id,project_id,id) DO UPDATE SET binding_json=excluded.binding_json,publisher_token_id=excluded.publisher_token_id", scope.organization, scope.project, binding.ServiceID, raw, binding.PublisherTokenID)
+	_, err = tx.ExecContext(ctx, "INSERT INTO artifact_services(organization_id,project_id,id,binding_json,publisher_token_id,binding_mode,hosted_opt_in) VALUES(?,?,?,?,?,?,?) ON CONFLICT(organization_id,project_id,id) DO UPDATE SET binding_json=excluded.binding_json,publisher_token_id=excluded.publisher_token_id,binding_mode=excluded.binding_mode,hosted_opt_in=excluded.hosted_opt_in", scope.organization, scope.project, binding.ServiceID, raw, binding.PublisherTokenID, binding.Mode, binding.HostedOptIn)
 	binding.PublisherTokenID = ""
 	return binding, err
 }

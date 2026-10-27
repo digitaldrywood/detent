@@ -330,6 +330,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"writeConversationQueryMetadata":    "Backfills one source row per transaction, conditional on its unchanged payload, under the existing retention owner.",
 		"recordSpriteWakeFacts":             "The Sprite lifecycle owner atomically updates the candidate machine's wake result and matching typed facts.",
 		"populateRunnerFact":                "Retention verifies one unchanged source row and writes that row's typed facts per transaction.",
+		"populateHostedImportField":         "Projects one reader-evaluated legacy source row with a payload comparison in the existing retention owner.",
 		"populateClaimFact":                 "Populates at most 100 unknown claim projections from their source rows in the existing retention transaction owner.",
 		"convertAttemptHotProjection":       "Converts one attempt projection after checking its source row under the write transaction.",
 		"convertNativeBoardRank":            "Converts one project workflow rank set after checking its source under the write transaction.",

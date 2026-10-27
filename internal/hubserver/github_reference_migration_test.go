@@ -58,13 +58,17 @@ func TestImportedGitHubReferenceMapping(t *testing.T) {
 func TestImportedGitHubReferenceBackfill(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	other := newNativeFixture(t, f.service, "", "other-imports")
 	const sourceURL = "https://github.com/digitaldrywood/detent/issues/2199"
 	for index, test := range []struct {
 		name, body, storedURL, recordURL, recordNode, wantURL string
-		originalBody, otherProject                            bool
+		originalBody, otherProject, typedProvenance           bool
 	}{
 		{name: "resolved migration context", body: "## Migration context\nImported from " + sourceURL, wantURL: sourceURL},
+		{name: "typed provenance excludes legacy payload", body: "## Migration context\nImported from " + sourceURL, typedProvenance: true},
 		{name: "resolved original body", body: "## Migration context\n" + sourceURL, originalBody: true, wantURL: sourceURL},
 		{name: "resolved import record", recordURL: sourceURL, wantURL: sourceURL},
 		{name: "resolved other project", body: "Migration context: " + sourceURL, otherProject: true, wantURL: sourceURL},
@@ -86,6 +90,11 @@ func TestImportedGitHubReferenceBackfill(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var issue tracker.NativeIssue
 			decodeHubResponse(t, response, &issue)
+			if test.typedProvenance {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET provenance_provider='other' WHERE native_id=?`, issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			body := test.body
 			if test.originalBody {
 				body = "Native edits removed migration context"
@@ -128,7 +137,7 @@ func TestImportedGitHubReferenceBackfill(t *testing.T) {
 			if !reflect.DeepEqual(after.ExternalReferences, []tracker.ExternalReference{want}) {
 				t.Fatalf("backfilled references = %+v, want %+v", after.ExternalReferences, want)
 			}
-			if test.wantURL == "" && (!strings.Contains(logs.String(), string(issue.WorkItemID)) || !reflect.DeepEqual(before, after)) {
+			if test.wantURL == "" && !test.typedProvenance && (!strings.Contains(logs.String(), string(issue.WorkItemID)) || !reflect.DeepEqual(before, after)) {
 				t.Fatalf("unresolved reference changed or was not logged: %s", logs.String())
 			}
 			after.ExternalReferences = before.ExternalReferences

@@ -199,7 +199,7 @@ func (d *database) applyHostedPlanCommand(ctx context.Context, actor string, com
 		if encodeErr != nil {
 			return encodeErr
 		}
-		_, err = tx.ExecContext(ctx, "INSERT INTO hosted_plans(id,version,record_json) VALUES(?,?,?)", command.Plan.ID, command.Plan.Version, string(encoded))
+		_, err = tx.ExecContext(ctx, "INSERT INTO hosted_plans(id,version,record_json,collaboration_bytes) VALUES(?,?,?,?)", command.Plan.ID, command.Plan.Version, string(encoded), normalizeHostedPlan(*command.Definition).Allowances["collaboration_bytes"])
 	case "base":
 		_, err = tx.ExecContext(ctx, "UPDATE hosted_plan_assignments SET base_id = ?,base_version = ? WHERE organization_id = ?", command.Plan.ID, command.Plan.Version, d.hostedOrganization)
 	case "subscription":

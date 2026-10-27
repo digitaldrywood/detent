@@ -82,9 +82,8 @@ func TestMixedFindingAttributionPreservesEveryFinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	commandNames := []string{"sh check.sh existing", "sh check.sh caller"}
-	commands := make([]gate.CommandResult, len(commandNames))
-	for i, command := range commandNames {
+	var commands [2]gate.CommandResult
+	for i, command := range [2]string{"sh check.sh existing", "sh check.sh caller"} {
 		h, err := backend.RunBaseCommand(t.Context(), workspace.Info{Path: directory}, workspace.Issue{}, head, command)
 		if err != nil {
 			t.Fatal(err)
@@ -98,7 +97,7 @@ func TestMixedFindingAttributionPreservesEveryFinding(t *testing.T) {
 		commands[i] = h
 	}
 	findings := []gate.Finding{{Body: "existing", CheckCommand: commands[0].Command, CheckDiagnostic: strings.TrimSpace(commands[0].Output)}, {Body: "caller", CheckCommand: commands[1].Command, CheckDiagnostic: strings.TrimSpace(commands[1].Output)}, {Body: "unreproduced", Path: "untouched.go"}}
-	got := gate.AttributeFindings(base, head, findings, commands)
+	got := gate.AttributeFindings(base, head, findings, commands[:])
 	if got != "change" || len(findings) != 3 || findings[0].Attribution != "independent" || findings[1].Attribution != "change" || findings[2].Attribution != "unknown" {
 		t.Fatalf("mixed attribution = %s, findings = %#v", got, findings)
 	}

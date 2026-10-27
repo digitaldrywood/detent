@@ -111,7 +111,7 @@ func (s *Service) auditEntryKey(ctx context.Context, exec hostedExecer, audit *e
 		return nil
 	}
 	now := s.config.now()
-	result, err := exec.ExecContext(ctx, `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json,recorded_at_ns) VALUES(?,?,?,?,'','key_call',?,?,?,?,?,?,?,?)`, claims.Audience, claims.Key.ID, claims.Subject, claims.Subject, audit.operation, audit.project, status, formatHubTime(claims.IssuedAt), formatHubTime(claims.ExpiresAt), formatHubTime(now), string(metadata), now.UnixNano())
+	result, err := exec.ExecContext(ctx, `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json,recorded_at_ns,account_kind,account_retry) VALUES(?,?,?,?,'','key_call',?,?,?,?,?,?,?,?,'','')`, claims.Audience, claims.Key.ID, claims.Subject, claims.Subject, audit.operation, audit.project, status, formatHubTime(claims.IssuedAt), formatHubTime(claims.ExpiresAt), formatHubTime(now), string(metadata), now.UnixNano())
 	if err != nil {
 		return err
 	}
@@ -294,7 +294,7 @@ func (s *Service) entryKeyAudit(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	now := s.config.now()
-	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json,recorded_at_ns) VALUES(?,?,?,?,'',?,?,'',0,?,?,?,?,?)`, claims.Audience, event.KeyID, event.Owner, event.Owner, event.Event, claims.Path, formatHubTime(claims.IssuedAt), formatHubTime(claims.ExpiresAt), formatHubTime(now), string(metadata), now.UnixNano())
+	_, err = s.database.db.ExecContext(c.Request().Context(), `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json,recorded_at_ns,account_kind,account_retry) VALUES(?,?,?,?,'',?,?,'',0,?,?,?,?,?,'','')`, claims.Audience, event.KeyID, event.Owner, event.Owner, event.Event, claims.Path, formatHubTime(claims.IssuedAt), formatHubTime(claims.ExpiresAt), formatHubTime(now), string(metadata), now.UnixNano())
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}

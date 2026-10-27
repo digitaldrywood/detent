@@ -46,7 +46,7 @@ func (s *Service) CreateWebSession(ctx context.Context, record auth.SessionRecor
 	if err != nil {
 		return auth.ErrInvalidSession
 	}
-	_, err = s.database.db.ExecContext(ctx, "INSERT INTO hosted_sessions (token_hash,email,identity_json,expires_at,created_at) VALUES (?,?,?,?,?)", record.TokenHash, record.Email, string(encoded), formatHubTime(record.ExpiresAt), formatHubTime(record.CreatedAt))
+	_, err = s.database.db.ExecContext(ctx, "INSERT INTO hosted_sessions (token_hash,email,identity_json,expires_at,created_at,identity_subject) VALUES (?,?,?,?,?,?)", record.TokenHash, record.Email, string(encoded), formatHubTime(record.ExpiresAt), formatHubTime(record.CreatedAt), record.Identity.Subject)
 	return err
 }
 
@@ -667,7 +667,8 @@ func (s *Service) hostedAuditWith(ctx context.Context, exec hostedExecer, identi
 		summary = string(raw)
 	}
 	now := s.config.now()
-	_, err := exec.ExecContext(ctx, `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json,recorded_at_ns)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, s.config.Hosted.OrganizationID, identity.SessionID, actor, identity.Subject, identity.SupportReason, event, route, project, status, formatHubTime(identity.CreatedAt), formatHubTime(identity.ExpiresAt), formatHubTime(now), summary, now.UnixNano())
+	account := decodeAccountFields(event)
+	_, err := exec.ExecContext(ctx, `INSERT INTO hosted_audit(organization_id,session_id,actual_actor,effective_user,reason,event,route,project_id,status,started_at,expires_at,recorded_at,mutation_json,recorded_at_ns,account_kind,account_retry)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, s.config.Hosted.OrganizationID, identity.SessionID, actor, identity.Subject, identity.SupportReason, event, route, project, status, formatHubTime(identity.CreatedAt), formatHubTime(identity.ExpiresAt), formatHubTime(now), summary, now.UnixNano(), account.Kind, account.Retry)
 	return err
 }

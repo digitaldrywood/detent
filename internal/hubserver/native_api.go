@@ -509,6 +509,10 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		return nil, err
 	}
 	operationID := options.OperationID
+	preparedCtx, preparationErr := s.prepareHostedImportMutation(ctx, scope, operationID, input)
+	if preparationErr == nil {
+		ctx = preparedCtx
+	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -546,6 +550,9 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 			return nil, err
 		}
 		return json.RawMessage(response), nil
+	}
+	if preparationErr != nil {
+		return nil, preparationErr
 	}
 	now, err := s.database.currentTime()
 	if err != nil {

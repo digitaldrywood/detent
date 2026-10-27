@@ -1351,7 +1351,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(fullQueries.statements) != 14 || full["collaboration_bytes"] < int64(retained*3*32768) {
+		if len(fullQueries.statements) != 13 || full["collaboration_bytes"] < int64(retained*3*32768) {
 			t.Fatalf("full queries=%d bytes=%d", len(fullQueries.statements), full["collaboration_bytes"])
 		}
 		for index, test := range []struct {
@@ -1445,8 +1445,8 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 			{"lease validation", hostedRunnerTransactionMetrics(nativeBase + "/leases/:lease/validate"), 2},
 			{"provider preview", hostedRunnerTransactionMetrics(nativeBase + "/claims/preview"), 2},
 			{"heartbeat", hostedRunnerTransactionMetrics(nativeBase + "/machines/:machine/heartbeat"), 3},
-			{"enrollment redemption", hostedRunnerTransactionMetrics(enrollmentBase + "/redeem"), 14},
-			{"runner mutation", hostedRunnerTransactionMetrics(runnerBase + "/:runner/rotate"), 14},
+			{"enrollment redemption", hostedRunnerTransactionMetrics(enrollmentBase + "/redeem"), 13},
+			{"runner mutation", hostedRunnerTransactionMetrics(runnerBase + "/:runner/rotate"), 13},
 			{"attachment preflight", []string{"collaboration_bytes"}, 1},
 			{"attachment growth", []string{"collaboration_bytes", "usage_windows"}, 2},
 		} {

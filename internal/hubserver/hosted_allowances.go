@@ -52,16 +52,14 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 		return result, nil
 	}
 	queries := map[string]string{
-		"artifact_retained_bytes": "SELECT coalesce(sum(json_extract(usage_json,'$.retained_bytes')),0) FROM hosted_artifact_usage",
-		"artifact_reserved_bytes": "SELECT coalesce(sum(json_extract(usage_json,'$.reserved_bytes')),0) FROM hosted_artifact_usage",
-		"members":                 "SELECT count(*) FROM hosted_members WHERE active = 1",
-		"projects":                "SELECT count(*) FROM projects WHERE deleted_at IS NULL",
-		"unarchived_issues":       "SELECT count(*) FROM issues i JOIN projects p ON p.id = i.project_id LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.organization_id = ? AND p.deleted_at IS NULL AND p.profile = 'native' AND i.archived = 0 AND coalesce(ws.terminal, 0) = 0",
-		"repositories":            "SELECT count(*) FROM repositories",
-		"registered_runners":      `SELECT (SELECT count(*) FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE t.revoked_at IS NULL) + (SELECT count(*) FROM machines m JOIN api_tokens t ON t.id = m.token_id WHERE t.revoked_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_identities r WHERE r.machine_id = m.id))`,
-		"history_records":         "SELECT value FROM hosted_usage_counters WHERE name = 'history_records'",
-		"events_total":            "SELECT value FROM hosted_usage_counters WHERE name = 'events_total'",
-		"collaboration_bytes":     "SELECT value FROM hosted_usage_counters WHERE name = 'collaboration_bytes'",
+		"members":             "SELECT count(*) FROM hosted_members WHERE active = 1",
+		"projects":            "SELECT count(*) FROM projects WHERE deleted_at IS NULL",
+		"unarchived_issues":   "SELECT count(*) FROM issues i JOIN projects p ON p.id = i.project_id LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id WHERE i.organization_id = ? AND p.deleted_at IS NULL AND p.profile = 'native' AND i.archived = 0 AND coalesce(ws.terminal, 0) = 0",
+		"repositories":        "SELECT count(*) FROM repositories",
+		"registered_runners":  `SELECT (SELECT count(*) FROM runner_identities r JOIN api_tokens t ON t.id = r.token_id WHERE t.revoked_at IS NULL) + (SELECT count(*) FROM machines m JOIN api_tokens t ON t.id = m.token_id WHERE t.revoked_at IS NULL AND NOT EXISTS(SELECT 1 FROM runner_identities r WHERE r.machine_id = m.id))`,
+		"history_records":     "SELECT value FROM hosted_usage_counters WHERE name = 'history_records'",
+		"events_total":        "SELECT value FROM hosted_usage_counters WHERE name = 'events_total'",
+		"collaboration_bytes": "SELECT value FROM hosted_usage_counters WHERE name = 'collaboration_bytes'",
 	}
 	for name, statement := range queries {
 		if len(metrics) > 0 && !slices.Contains(metrics, name) {
@@ -76,6 +74,18 @@ func (d *database) hostedConsumption(ctx context.Context, query nativeQueryer, n
 			return nil, err
 		}
 		result[name] = count
+	}
+	if len(metrics) == 0 || slices.Contains(metrics, "artifact_retained_bytes") || slices.Contains(metrics, "artifact_reserved_bytes") {
+		retained, reserved, err := d.readHostedArtifactUsage(ctx, query)
+		if err != nil {
+			return nil, err
+		}
+		if len(metrics) == 0 || slices.Contains(metrics, "artifact_retained_bytes") {
+			result["artifact_retained_bytes"] = retained
+		}
+		if len(metrics) == 0 || slices.Contains(metrics, "artifact_reserved_bytes") {
+			result["artifact_reserved_bytes"] = reserved
+		}
 	}
 	for _, sample := range []struct {
 		name, statement string

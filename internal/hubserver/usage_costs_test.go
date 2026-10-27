@@ -31,12 +31,16 @@ func costTestObservation(metric string, from, to time.Time) costObservation {
 
 func recordTestCost(t *testing.T, db *sql.DB, organization, project string, o costObservation, now time.Time) (bool, error) {
 	t.Helper()
-	tx, err := db.BeginTx(t.Context(), nil)
+	ctx, err := prepareHostedImportFields(t.Context(), db, "usage_cost_observations", `organization_id=? AND project_id=? AND resource_id=?`, organization, project, o.ResourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	changed, err := recordCostObservation(t.Context(), tx, organization, project, o, now)
+	changed, err := recordCostObservation(ctx, tx, organization, project, o, now)
 	if err != nil {
 		return changed, err
 	}
@@ -275,10 +279,38 @@ func TestCostLedgerReplay(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(before, after) {
 		t.Fatalf("restart totals changed: before=%+v after=%+v error=%v", before, after, err)
 	}
+	rawVoided := corrected
+	rawVoided.Voided = true
+	payload, err := json.Marshal(rawVoided)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.database.db.ExecContext(t.Context(), `UPDATE usage_cost_observations SET observation_json=? WHERE revision=2`, string(payload)); err != nil {
+		t.Fatal(err)
+	}
+	overlapping := corrected
+	overlapping.SourceID = "other-source"
+	if _, err := recordTestCost(t, s.database.db, "org", "original", overlapping, now); err == nil {
+		t.Fatal("typed active observation was ignored because its payload was voided")
+	}
+	typed, err := readCostObservations(t.Context(), s.database.reader, "org", nil, usageWindow{From: from, To: to})
+	if err != nil || len(typed) != 1 {
+		t.Fatalf("typed observation disappeared from report: %v %v", typed, err)
+	}
+	payload, err = json.Marshal(corrected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.database.db.ExecContext(t.Context(), `UPDATE usage_cost_observations SET observation_json=? WHERE revision=2`, string(payload)); err != nil {
+		t.Fatal(err)
+	}
 	voided := corrected
 	voided.Voided, voided.Revision = true, 3
 	if changed, err := recordTestCost(t, s.database.db, "org", "original", voided, now); err != nil || !changed {
 		t.Fatalf("void original period: %t %v", changed, err)
+	}
+	if _, err := s.database.db.ExecContext(t.Context(), `UPDATE usage_cost_observations SET voided=NULL WHERE revision=3`); err != nil {
+		t.Fatal(err)
 	}
 	replacement := corrected
 	replacement.To, replacement.ObservedAt, replacement.Revision = to.Add(time.Minute), to.Add(time.Minute), 1

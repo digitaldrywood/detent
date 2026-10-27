@@ -453,9 +453,11 @@ func TestHuntUpdatesPreserveUnassignedCoverage(t *testing.T) {
 		name    string
 		changes []string
 		wantErr bool
+		units   int
 	}{
-		{name: "assigned only", changes: []string{"assigned"}},
-		{name: "discovered work", changes: []string{"assigned", "new"}},
+		{name: "assigned only", changes: []string{"assigned"}, units: 2},
+		{name: "discovered work", changes: []string{"assigned", "new"}, units: 3},
+		{name: "discovered work before assignment", changes: []string{"new", "assigned"}, units: 3},
 		{name: "unassigned update", changes: []string{"assigned", "other"}, wantErr: true},
 		{name: "missing assignment", changes: []string{"new"}, wantErr: true},
 		{name: "duplicate assignment", changes: []string{"assigned", "assigned"}, wantErr: true},
@@ -505,21 +507,23 @@ func TestHuntUpdatesPreserveUnassignedCoverage(t *testing.T) {
 			if err := json.Unmarshal(e.state.Ledger, &actual); err != nil {
 				t.Fatal(err)
 			}
-			found := false
+			found, replaced := false, false
 			for _, raw := range actual {
 				if string(raw) == string(other) {
 					found = true
+				}
+				if string(raw) == string(covered[0]) {
+					replaced = true
 				}
 			}
 			if !found {
 				t.Fatal("unassigned unit changed or disappeared")
 			}
-			want := 2
-			if tc.name == "discovered work" {
-				want = 3
+			if !replaced {
+				t.Fatal("assigned unit was not replaced")
 			}
-			if len(actual) != want {
-				t.Fatalf("units=%d want=%d", len(actual), want)
+			if len(actual) != tc.units {
+				t.Fatalf("units=%d want=%d", len(actual), tc.units)
 			}
 		})
 	}

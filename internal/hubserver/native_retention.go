@@ -30,6 +30,7 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 			return s.database.populateRunnerFacts(s.runDetailContext(s.contentContext(ctx)))
 		}},
 		{"populate archive facts", s.database.populateArchiveFacts},
+		{"populate hosted import fields", s.database.populateHostedImportFields},
 		{"populate time indexes", s.database.populateTimeIndexes},
 		{"expire native records", func(ctx context.Context) error { return s.expireNativeRecords(ctx, now) }},
 		{"archive closed issues", func(ctx context.Context) error { return s.archiveClosedNativeIssues(ctx, now) }},

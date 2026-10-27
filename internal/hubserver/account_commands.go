@@ -81,8 +81,7 @@ func (s *Service) executeHostedAccountFor(ctx context.Context, credential apiCre
 		s.hostedMutationMu.Lock()
 		defer s.hostedMutationMu.Unlock()
 	}
-	var raw string
-	err := s.database.reader.QueryRowContext(ctx, `SELECT event FROM hosted_audit WHERE organization_id=? AND actual_actor=? AND json_extract(CASE WHEN json_valid(event) THEN event ELSE '{}' END,'$.kind')='account_administration' AND json_extract(CASE WHEN json_valid(event) THEN event ELSE '{}' END,'$.retry')=? ORDER BY id DESC LIMIT 1`, s.config.Hosted.OrganizationID, credential.Hosted.Subject, m.RetryIdentity).Scan(&raw)
+	raw, err := readAccountReceipt(ctx, s.database.reader, s.config.Hosted.OrganizationID, credential.Hosted.Subject, m.RetryIdentity)
 	if err == nil {
 		var receipt accountReceipt
 		if json.Unmarshal([]byte(raw), &receipt) != nil {

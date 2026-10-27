@@ -1,6 +1,5 @@
 db/queries/store.sql 25
 db/queries/worker_generations.sql 1
-internal/hubserver/account_commands.go 4
 internal/hubserver/analytics_capacity_rollups.go 8
 internal/hubserver/analytics_residence_rollups.go 11
 internal/hubserver/app_ui.go 2
@@ -14,10 +13,6 @@ internal/hubserver/conversation_coordinator_tools.go 5
 internal/hubserver/conversation_preferences.go 1
 internal/hubserver/conversation_service.go 1
 internal/hubserver/conversation_store.go 2
-internal/hubserver/github_batch_worker.go 2
-internal/hubserver/github_cutover.go 2
-internal/hubserver/github_import.go 4
-internal/hubserver/github_reference_migration.go 2
 internal/hubserver/health_detector.go 1
 internal/hubserver/health_email.go 1
 internal/hubserver/health_issues.go 8
@@ -25,16 +20,13 @@ internal/hubserver/health_rate_snapshot.go 7
 internal/hubserver/health_reads.go 4
 internal/hubserver/health_scheduled.go 4
 internal/hubserver/health_snapshot.go 22
-internal/hubserver/hosted_admin.go 3
-internal/hubserver/hosted_allowances.go 2
-internal/hubserver/hosted_artifacts.go 2
+internal/hubserver/hosted_admin.go 2
 internal/hubserver/hosted_auth.go 1
 internal/hubserver/hosted_context.go 1
 internal/hubserver/hosted_diagnostics.go 10
 internal/hubserver/hosted_reports.go 7
 internal/hubserver/hosted_reports_filters.go 21
 internal/hubserver/hosted_usage_api.go 1
-internal/hubserver/integration.go 2
 internal/hubserver/issue_email.go 8
 internal/hubserver/linked_issue_sources.go 2
 internal/hubserver/luna_usage_costs.go 1
@@ -61,7 +53,6 @@ internal/hubserver/native_shipped.go 1
 internal/hubserver/native_work_page.go 2
 internal/hubserver/native_work_search.go 1
 internal/hubserver/onboarding_batch.go 2
-internal/hubserver/onboarding_issue_intake.go 5
 internal/hubserver/operator_activity.go 16
 internal/hubserver/operator_activity_durations.go 1
 internal/hubserver/operator_analytics.go 19
@@ -70,7 +61,6 @@ internal/hubserver/operator_analytics_quality.go 27
 internal/hubserver/operator_analytics_queue.go 2
 internal/hubserver/operator_analytics_residence.go 4
 internal/hubserver/operator_failure_signatures.go 7
-internal/hubserver/outbox.go 1
 internal/hubserver/policy.go 2
 internal/hubserver/report_productivity.go 7
 internal/hubserver/report_productivity_rollups.go 17
@@ -78,7 +68,7 @@ internal/hubserver/slack_delivery.go 1
 internal/hubserver/storage_conversion.go 4
 internal/hubserver/time_indexes.go 1
 internal/hubserver/usage_cost_report.go 2
-internal/hubserver/usage_costs.go 3
+internal/hubserver/usage_costs.go 1
 internal/hubserver/validation_evidence.go 2
 internal/hubserver/workflow_policy.go 4
 internal/store/sqlc/store.sql.go 25

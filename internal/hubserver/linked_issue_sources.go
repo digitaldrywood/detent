@@ -216,7 +216,7 @@ FROM linked_issue_sources s WHERE work_item_id = ?`, issue.WorkItemID).Scan(&tit
 	if _, err := tx.ExecContext(ctx, "UPDATE linked_issue_sources SET snapshot_json = ? WHERE work_item_id = ?", raw, issue.WorkItemID); err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE issues SET provenance_json = ?, author_login = ? WHERE native_id = ?", provenance, snapshot.Provenance.AuthorID, issue.WorkItemID); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE issues SET provenance_json = ?, author_login = ?, provenance_provider = ?, provenance_external_id = ? WHERE native_id = ?", provenance, snapshot.Provenance.AuthorID, snapshot.Provenance.Provider, snapshot.Provenance.ExternalID, issue.WorkItemID); err != nil {
 		return nil, err
 	}
 	issue.LinkedSource.Status = "complete"

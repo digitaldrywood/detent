@@ -217,7 +217,7 @@ func (s *Service) sharedHostedSession(ctx context.Context, c echo.Context) (auth
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
 	defer tx.Rollback()
-	inserted, err := tx.ExecContext(ctx, "INSERT INTO hosted_sessions (token_hash,email,identity_json,expires_at,created_at) VALUES (?,?,?,?,?) ON CONFLICT(token_hash) DO NOTHING", claims.Binding, claims.Email, string(encoded), formatHubTime(claims.SessionExpiresAt), formatHubTime(s.config.now()))
+	inserted, err := tx.ExecContext(ctx, "INSERT INTO hosted_sessions (token_hash,email,identity_json,expires_at,created_at,identity_subject) VALUES (?,?,?,?,?,?) ON CONFLICT(token_hash) DO NOTHING", claims.Binding, claims.Email, string(encoded), formatHubTime(claims.SessionExpiresAt), formatHubTime(s.config.now()), identity.Subject)
 	if err != nil {
 		return auth.Session{}, "", auth.ErrInvalidSession
 	}
@@ -468,7 +468,7 @@ func (s *Service) revokeHostedSharedBinding(ctx context.Context, binding, now st
 	var encoded string
 	var identity auth.HostedIdentity
 	active := tx.QueryRowContext(ctx, "SELECT identity_json FROM hosted_sessions WHERE token_hash = ? AND revoked_at IS NULL", binding).Scan(&encoded) == nil
-	if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_sessions (token_hash,email,identity_json,expires_at,created_at,revoked_at) VALUES (?,'','{}',?,?,?) ON CONFLICT(token_hash) DO UPDATE SET revoked_at = COALESCE(revoked_at, excluded.revoked_at)", binding, now, now, now); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO hosted_sessions (token_hash,email,identity_json,expires_at,created_at,revoked_at,identity_subject) VALUES (?,'','{}',?,?,?,'') ON CONFLICT(token_hash) DO UPDATE SET revoked_at = COALESCE(revoked_at, excluded.revoked_at)", binding, now, now, now); err != nil {
 		return err
 	}
 	if active && json.Unmarshal([]byte(encoded), &identity) == nil && identity.SupportActor != "" {

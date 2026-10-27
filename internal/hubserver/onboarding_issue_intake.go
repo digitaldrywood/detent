@@ -79,7 +79,7 @@ func saveGitHubBatch(ctx context.Context, tx *sql.Tx, scope nativeScope, batch *
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO onboarding_issue_intake(project_id,request_json) VALUES(?,?) ON CONFLICT(project_id) DO UPDATE SET request_json=excluded.request_json`, scope.project, raw)
+	_, err = tx.ExecContext(ctx, `INSERT INTO onboarding_issue_intake(project_id,request_json,hub_owned,batch_status) VALUES(?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET request_json=excluded.request_json,hub_owned=excluded.hub_owned,batch_status=excluded.batch_status`, scope.project, raw, batch.HubOwned, batch.Status)
 	return err
 }
 
@@ -115,19 +115,29 @@ func batchHasPending(batch *tracker.GitHubBatch) bool {
 }
 
 func requireBatchRunner(ctx context.Context, tx *sql.Tx, scope nativeScope, runner, repository string, now time.Time) error {
-	var count int
-	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM runner_identities r
+	var known, heartbeat sql.NullBool
+	var raw sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT r.operations_known,EXISTS(SELECT 1 FROM runner_operations o WHERE o.runner_id=r.id AND o.operation='heartbeat'),CASE WHEN r.operations_known IS NULL THEN r.operations_json END FROM runner_identities r
  JOIN api_tokens t ON t.id=r.token_id
  JOIN token_grants g ON g.token_id=t.id AND g.organization_id=r.organization_id AND g.project_id=?
  JOIN runner_checkout_repositories cr ON cr.runner_id=r.id AND cr.project_id=g.project_id
  WHERE r.id=? AND r.organization_id=? AND r.state='active' AND t.revoked_at IS NULL
  AND julianday(t.expires_at)>julianday(?) AND lower(cr.repository)=lower(?)
- AND julianday(cr.reported_at)>julianday(?)
- AND EXISTS(SELECT 1 FROM json_each(r.operations_json) WHERE value='heartbeat')`, scope.project, runner, scope.organization, formatHubTime(now), repository, formatHubTime(now.Add(-5*time.Minute))).Scan(&count)
-	if err != nil {
+ AND julianday(cr.reported_at)>julianday(?)`, scope.project, runner, scope.organization, formatHubTime(now), repository, formatHubTime(now.Add(-5*time.Minute))).Scan(&known, &heartbeat, &raw)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if count == 0 {
+	if errors.Is(err, sql.ErrNoRows) {
+		return intakeInvalid("Select an active enrolled runner with a recent matching checkout report")
+	}
+	if !known.Valid {
+		operations, err := cachedRunnerOperations(ctx, tx, raw.String)
+		if err != nil {
+			return err
+		}
+		heartbeat.Bool = slices.Contains(operations, "heartbeat")
+	}
+	if !heartbeat.Bool {
 		return intakeInvalid("Select an active enrolled runner with a recent matching checkout report")
 	}
 	return nil
@@ -246,9 +256,7 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 				if err != nil {
 					return nil, err
 				}
-				var existing string
-				err = tx.QueryRowContext(ctx, `SELECT native_id FROM issues WHERE organization_id=? AND project_id=? AND
-    (native_source_key IN (?,?) OR github_node_id=? OR (json_extract(provenance_json, '$.provider')='github' AND json_extract(provenance_json, '$.external_id')=?) OR (repository_id=? AND github_number=?))`, scope.organization, scope.project, "github:"+preview.URL, "github:"+preview.ID, preview.ID, preview.ID, integration.RepositoryID, number).Scan(&existing)
+				existing, err := findExistingGitHubIssue(ctx, tx, scope, integration.RepositoryID, preview)
 				if err == nil {
 					batch.Items = append(batch.Items, tracker.GitHubBatchItem{Number: number, WorkItemID: tracker.NativeWorkItemID(existing), Status: "skipped"})
 					continue
@@ -841,9 +849,7 @@ func (s *Service) importBatchItem(ctx context.Context, tx *sql.Tx, scope nativeS
 		if err != nil {
 			return err
 		}
-		var existing string
-		err = tx.QueryRowContext(ctx, `SELECT native_id FROM issues WHERE organization_id=? AND project_id=? AND
-   (native_source_key IN (?,?) OR github_node_id=? OR (json_extract(provenance_json, '$.provider')='github' AND json_extract(provenance_json, '$.external_id')=?) OR (repository_id=? AND github_number=?))`, scope.organization, scope.project, "github:"+preview.URL, "github:"+preview.ID, preview.ID, preview.ID, integration.RepositoryID, preview.Number).Scan(&existing)
+		existing, err := findExistingGitHubIssue(ctx, tx, scope, integration.RepositoryID, preview)
 		if err == nil {
 			item.WorkItemID, item.Status = tracker.NativeWorkItemID(existing), "skipped"
 			return nil

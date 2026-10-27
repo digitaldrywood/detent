@@ -302,11 +302,51 @@ func requireIntegrationIdle(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 }
 
 func supersedeDisallowedOutbox(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
-	_, err := tx.ExecContext(ctx, `UPDATE github_outbox SET status = 'superseded', completed_at = ?, updated_at = ?
-WHERE issue_id IN (SELECT i.id FROM issues i JOIN projects p ON p.id = i.project_id WHERE p.id = ? AND
-((p.profile = 'native' AND (mutation_kind = 'workflow_label' OR (mutation_kind = 'workpad' AND ((p.github_projection = 'disabled' AND COALESCE(json_extract(desired_json, '$.issue_number'), 0) = 0) OR COALESCE(json_extract(desired_json, '$.summary'), 0) = 0)))) OR (mutation_kind = 'merge_pull_request' AND p.github_repository_enabled = 0)))
-AND status IN ('pending', 'retrying')`, formatOutboxTime(now), formatOutboxTime(now), scope.project)
-	return err
+	rows, err := tx.QueryContext(ctx, `SELECT o.id,o.desired_json,o.desired_issue_number,o.desired_summary,p.github_projection FROM github_outbox o JOIN issues i ON i.id=o.issue_id JOIN projects p ON p.id=i.project_id WHERE p.id=? AND p.profile='native' AND o.mutation_kind='workpad' AND o.status IN ('pending','retrying') AND (o.desired_issue_number IS NULL OR o.desired_summary IS NULL)`, scope.project)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var legacy []int64
+	for rows.Next() {
+		var id int64
+		var raw, projection string
+		var number sql.NullInt64
+		var summary sql.NullBool
+		if err := rows.Scan(&id, &raw, &number, &summary, &projection); err != nil {
+			return err
+		}
+		fields, err := evaluatedHostedImportFields(ctx, tx, "github_outbox", raw)
+		if err != nil {
+			return err
+		}
+		value := fields.outbox
+		if number.Valid {
+			value.IssueNumber = int(number.Int64)
+		}
+		if summary.Valid {
+			value.Summary = summary.Bool
+		}
+		if (projection == "disabled" && value.IssueNumber == 0) || !value.Summary {
+			legacy = append(legacy, id)
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE github_outbox SET status='superseded',completed_at=?,updated_at=?
+WHERE issue_id IN (SELECT i.id FROM issues i JOIN projects p ON p.id=i.project_id WHERE p.id=? AND
+((p.profile='native' AND (mutation_kind='workflow_label' OR (mutation_kind='workpad' AND ((p.github_projection='disabled' AND desired_issue_number=0) OR desired_summary=0)))) OR (mutation_kind='merge_pull_request' AND p.github_repository_enabled=0)))
+AND status IN ('pending','retrying')`, formatOutboxTime(now), formatOutboxTime(now), scope.project)
+	if err != nil {
+		return err
+	}
+	for _, id := range legacy {
+		if _, err := tx.ExecContext(ctx, `UPDATE github_outbox SET status='superseded',completed_at=?,updated_at=? WHERE id=? AND status IN ('pending','retrying')`, formatOutboxTime(now), formatOutboxTime(now), id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func repositoryOwnership(ctx context.Context, query nativeQueryer, id int64) (string, bool, error) {

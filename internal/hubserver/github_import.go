@@ -290,7 +290,7 @@ func applyGitHubImportPage(ctx context.Context, tx *sql.Tx, scope nativeScope, i
 		if err != nil {
 			return err
 		}
-		inserted, err := tx.ExecContext(ctx, `INSERT INTO github_import_records (import_id, source_key, kind, record_json, observed_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, current.ID, record.SourceKey, record.Kind, raw, formatHubTime(now))
+		inserted, err := tx.ExecContext(ctx, `INSERT INTO github_import_records (import_id, source_key, kind, record_json, observed_at, dependency_id, provenance_external_id) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`, current.ID, record.SourceKey, record.Kind, raw, formatHubTime(now), record.DependencyID, record.Provenance.ExternalID)
 		if err != nil {
 			return err
 		}
@@ -356,12 +356,22 @@ func (s *Service) fetchImportPage(ctx context.Context, integration ProjectIntegr
 	request := GitHubImportRequest{Repository: integration.Repository, Profile: integration.Profile, IssueNumber: job.IssueNumber, Stage: job.Stage, Cursor: job.Cursor}
 	var sequence int64
 	if job.Stage == "edits" {
-		err := s.database.reader.QueryRowContext(readCtx, `SELECT sequence, COALESCE(json_extract(record_json, '$.provenance.external_id'), '') FROM github_import_records WHERE import_id = ? AND kind IN ('issue', 'comment') AND sequence > ? ORDER BY sequence LIMIT 1`, job.ID, job.EditSequence).Scan(&sequence, &request.SourceID)
+		var external, legacy sql.NullString
+		err := s.database.reader.QueryRowContext(readCtx, `SELECT sequence, provenance_external_id, CASE WHEN provenance_external_id IS NULL THEN record_json END FROM github_import_records WHERE import_id = ? AND kind IN ('issue', 'comment') AND sequence > ? ORDER BY sequence LIMIT 1`, job.ID, job.EditSequence).Scan(&sequence, &external, &legacy)
 		if errors.Is(err, sql.ErrNoRows) {
 			return GitHubImportPage{EditsFinished: true}, nil
 		}
 		if err != nil {
 			return GitHubImportPage{}, err
+		}
+		if external.Valid {
+			request.SourceID = external.String
+		} else {
+			var record GitHubImportRecord
+			if err := json.Unmarshal([]byte(legacy.String), &record); err != nil {
+				return GitHubImportPage{}, err
+			}
+			request.SourceID = record.Provenance.ExternalID
 		}
 		if request.SourceID == "" {
 			return GitHubImportPage{EditSequence: sequence, Gaps: []string{"Source node ID was unavailable for an edit-history lookup"}}, nil
@@ -439,21 +449,25 @@ func importGitHubComment(ctx context.Context, tx *sql.Tx, scope nativeScope, ite
 }
 
 func resolveImportedDependencies(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) error {
-	_, err := tx.ExecContext(ctx, `DELETE FROM issue_dependencies WHERE provenance = 'github_import'
+	prefix, legacy, err := legacyImportDependencies(ctx, tx, scope.project)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, prefix+`DELETE FROM issue_dependencies WHERE provenance = 'github_import'
 AND dependent_issue_id IN (SELECT i.id FROM issues i JOIN github_imports g ON g.work_item_id = i.native_id WHERE g.project_id = ? AND g.intake_pending = 1)
 AND NOT EXISTS (SELECT 1 FROM github_import_records r JOIN github_imports g ON g.id = r.import_id JOIN issues b ON b.id = issue_dependencies.blocker_issue_id JOIN issues i ON i.id = issue_dependencies.dependent_issue_id
-WHERE g.work_item_id = i.native_id AND r.kind = 'dependency' AND r.current_dependency = 1 AND b.github_node_id = json_extract(r.record_json, '$.dependency_id'))`, scope.project)
+WHERE g.work_item_id = i.native_id AND r.kind = 'dependency' AND r.current_dependency = 1 AND b.github_node_id = `+importedDependencyID+`)`, append(append([]any{}, legacy...), scope.project)...)
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at)
-SELECT b.id, i.id, 'github_import', ?, ? FROM github_import_records r JOIN github_imports g ON g.id = r.import_id JOIN issues i ON i.native_id = g.work_item_id JOIN issues b ON b.project_id = i.project_id AND b.github_node_id = json_extract(r.record_json, '$.dependency_id') WHERE g.project_id = ? AND g.intake_pending = 1 AND r.kind = 'dependency' AND r.current_dependency = 1 ON CONFLICT DO NOTHING`, formatHubTime(now), formatHubTime(now), scope.project)
+	_, err = tx.ExecContext(ctx, prefix+`INSERT INTO issue_dependencies (blocker_issue_id, dependent_issue_id, provenance, created_at, updated_at)
+SELECT b.id, i.id, 'github_import', ?, ? FROM github_import_records r JOIN github_imports g ON g.id = r.import_id JOIN issues i ON i.native_id = g.work_item_id JOIN issues b ON b.project_id = i.project_id AND b.github_node_id = `+importedDependencyID+` WHERE g.project_id = ? AND g.intake_pending = 1 AND r.kind = 'dependency' AND r.current_dependency = 1 ON CONFLICT DO NOTHING`, append(append([]any{}, legacy...), formatHubTime(now), formatHubTime(now), scope.project)...)
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE github_imports SET intake_pending = 0 WHERE project_id = ? AND intake_pending = 1 AND stage = 'finished' AND NOT EXISTS (
+	_, err = tx.ExecContext(ctx, prefix+`UPDATE github_imports SET intake_pending = 0 WHERE project_id = ? AND intake_pending = 1 AND stage = 'finished' AND NOT EXISTS (
 SELECT 1 FROM github_import_records r WHERE r.import_id = github_imports.id AND r.kind = 'dependency' AND r.current_dependency = 1 AND NOT EXISTS (
-SELECT 1 FROM issues i WHERE i.project_id = github_imports.project_id AND i.github_node_id = json_extract(r.record_json, '$.dependency_id')))`, scope.project)
+SELECT 1 FROM issues i WHERE i.project_id = github_imports.project_id AND i.github_node_id = `+importedDependencyID+`))`, append(append([]any{}, legacy...), scope.project)...)
 	return err
 }
 

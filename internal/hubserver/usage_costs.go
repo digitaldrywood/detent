@@ -131,21 +131,21 @@ WHERE organization_id=? AND provider=? AND provider_account=? AND source_id=? AN
 			return false, nil
 		}
 	}
-	var overlaps int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM usage_cost_observations u
+	var overlaps bool
+	if overlaps, err = costOverlaps(ctx, tx, `SELECT u.voided,CASE WHEN u.voided IS NULL THEN u.observation_json END FROM usage_cost_observations u
 WHERE u.organization_id=? AND u.provider=? AND u.provider_account=? AND u.resource_id=? AND u.bucket=? AND u.metric=?
-AND COALESCE(json_extract(u.observation_json,'$.voided'),0)=0
+AND (u.voided=0 OR u.voided IS NULL)
 AND u.period_start<? AND u.period_end>? AND NOT (u.source_id=? AND u.period_start=? AND u.period_end=?)
 AND NOT EXISTS (SELECT 1 FROM usage_cost_observations newer WHERE newer.organization_id=u.organization_id AND newer.provider=u.provider AND newer.provider_account=u.provider_account AND newer.source_id=u.source_id AND newer.period_start=u.period_start AND newer.period_end=u.period_end AND newer.revision>u.revision)`,
-		organization, o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, o.To.Format(costTimeLayout), o.From.Format(costTimeLayout), o.SourceID, o.From.Format(costTimeLayout), o.To.Format(costTimeLayout)).Scan(&overlaps); err != nil {
+		organization, o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, o.To.Format(costTimeLayout), o.From.Format(costTimeLayout), o.SourceID, o.From.Format(costTimeLayout), o.To.Format(costTimeLayout)); err != nil {
 		return false, fmt.Errorf("check cost source coverage: %w", err)
 	}
-	if overlaps != 0 {
+	if overlaps {
 		return false, nativePublicInvalid("Overlapping usage must correct the original source period instead of adding another source")
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO usage_cost_observations
-(organization_id,project_id,provider,provider_account,resource_id,bucket,metric,source_id,period_start,period_end,revision,observation_json,received_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, organization, project, o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, o.SourceID, o.From.Format(costTimeLayout), o.To.Format(costTimeLayout), o.Revision, string(encoded), now.UTC().Format(costTimeLayout))
+(organization_id,project_id,provider,provider_account,resource_id,bucket,metric,source_id,period_start,period_end,revision,observation_json,received_at,voided)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, organization, project, o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, o.SourceID, o.From.Format(costTimeLayout), o.To.Format(costTimeLayout), o.Revision, string(encoded), now.UTC().Format(costTimeLayout), o.Voided)
 	if err != nil {
 		return false, fmt.Errorf("record cost observation: %w", err)
 	}
@@ -168,9 +168,9 @@ func readCostObservations(ctx context.Context, query nativeQueryer, organization
 	if err != nil {
 		return nil, err
 	}
-	rows, err := query.QueryContext(ctx, `SELECT u.project_id,u.observation_json,u.received_at FROM usage_cost_observations u
+	rows, err := query.QueryContext(ctx, `SELECT u.project_id,u.observation_json,u.received_at,u.voided FROM usage_cost_observations u
 WHERE u.organization_id=? AND u.period_start<? AND u.period_end>? AND (? OR u.project_id IN (SELECT value FROM json_each(?)))
-AND COALESCE(json_extract(u.observation_json,'$.voided'),0)=0
+AND (u.voided=0 OR u.voided IS NULL)
 AND NOT EXISTS (SELECT 1 FROM usage_cost_observations newer WHERE newer.organization_id=u.organization_id AND newer.provider=u.provider AND newer.provider_account=u.provider_account AND newer.source_id=u.source_id AND newer.period_start=u.period_start AND newer.period_end=u.period_end AND newer.revision>u.revision)
 ORDER BY u.project_id,u.bucket,u.provider,u.provider_account,u.resource_id,u.metric,u.period_start,u.source_id`, organization, window.To.Format(costTimeLayout), window.From.Format(costTimeLayout), projects == nil, string(encoded))
 	if err != nil {
@@ -181,11 +181,15 @@ ORDER BY u.project_id,u.bucket,u.provider,u.provider_account,u.resource_id,u.met
 	for rows.Next() {
 		var entry attributedCostObservation
 		var raw, received string
-		if err := rows.Scan(&entry.ProjectID, &raw, &received); err != nil {
+		var voided sql.NullBool
+		if err := rows.Scan(&entry.ProjectID, &raw, &received, &voided); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(raw), &entry.costObservation); err != nil {
 			return nil, fmt.Errorf("decode monthly cost observation: %w", err)
+		}
+		if !voided.Valid && entry.Voided {
+			continue
 		}
 		entry.ReceivedAt, err = time.Parse(costTimeLayout, received)
 		if err != nil {
@@ -203,4 +207,33 @@ func allocateCostMicros(amount int64, from, to, start, end time.Time) int64 {
 		return product.Quo(product, duration)
 	}
 	return new(big.Int).Sub(boundary(end), boundary(start)).Int64()
+}
+
+func costOverlaps(ctx context.Context, query nativeQueryer, statement string, args ...any) (bool, error) {
+	rows, err := query.QueryContext(ctx, statement, args...)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var voided sql.NullBool
+		var raw sql.NullString
+		if err := rows.Scan(&voided, &raw); err != nil {
+			return false, err
+		}
+		if voided.Valid {
+			if !voided.Bool {
+				return true, nil
+			}
+			continue
+		}
+		fields, err := evaluatedHostedImportFields(ctx, query, "usage_cost_observations", raw.String)
+		if err != nil {
+			return false, err
+		}
+		if !fields.voided {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }

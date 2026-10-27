@@ -1629,6 +1629,18 @@ func (r *Runner) recoverRunChangeSource(ctx context.Context, req RunRequest, run
 	return nil
 }
 
+func restoreRunWorkspaceCheckpoint(req RunRequest, runWorkspace workspace.Backend, issue *workspace.Issue, nativeLanding bool) {
+	if req.Execution != nil && !nativeLanding && !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), *issue) {
+		issue.Checkpoint = nativeRestorableCheckpoint(req.Execution.Recovery(), issue.Source)
+		if previous := req.Execution.Recovery().SourceAttempt(); previous != nil && cleanLocalCheckpoint(previous.Checkpoint) {
+			issue.FreshCheckout = true
+			if issue.Source == nil {
+				issue.BaseRef = previous.Checkpoint.HeadSHA
+			}
+		}
+	}
+}
+
 func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult, returnErr error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -1717,15 +1729,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if err := r.recoverRunChangeSource(ctx, req, runWorkspace, &workspaceIssue, nativeLanding, reviewRecovery != nil || publicationRecovery); err != nil {
 		return RunResult{}, err
 	}
-	if req.Execution != nil && !nativeLanding && !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), workspaceIssue) {
-		workspaceIssue.Checkpoint = nativeRestorableCheckpoint(req.Execution.Recovery(), workspaceIssue.Source)
-		if previous := req.Execution.Recovery().SourceAttempt(); previous != nil && cleanLocalCheckpoint(previous.Checkpoint) {
-			workspaceIssue.FreshCheckout = true
-			if workspaceIssue.Source == nil {
-				workspaceIssue.BaseRef = previous.Checkpoint.HeadSHA
-			}
-		}
-	}
+	restoreRunWorkspaceCheckpoint(req, runWorkspace, &workspaceIssue, nativeLanding)
 	var landingTarget NativeLandingTarget
 	if nativeLanding {
 		if runtime, ok := req.Execution.(LandingRuntimeExecution); ok {
