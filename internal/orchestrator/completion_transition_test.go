@@ -96,6 +96,79 @@ func TestCompletedActiveReviewRequiresFinishedWork(t *testing.T) {
 	}
 }
 
+func TestWorkflowWriteStaleFencingStopsCompletedReviewRetry(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		err    error
+		lost   bool
+		direct bool
+	}{
+		{name: "stale fencing", err: fmt.Errorf("stale_fencing_token: %w", runpkg.ErrExecutionAuthorityUnavailable), lost: true},
+		{name: "stale direct promotion", err: fmt.Errorf("stale_fencing_token: %w", runpkg.ErrExecutionAuthorityUnavailable), lost: true, direct: true},
+		{name: "current token"},
+		{name: "network", err: errors.New("connection reset by peer")},
+		{name: "server", err: completionDeferralAvailabilityError()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 10, 27, 1, 0, 0, 0, time.UTC)
+			cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}})
+			issues := make([]connector.Issue, 2)
+			state := newState(cfg)
+			for index := range issues {
+				issue := completionTransitionIssue("In Progress", "OPEN")
+				issue.ID = fmt.Sprintf("wi_item_%d", index)
+				issue.PullRequest.HeadSHA = "published-head"
+				issue.PullRequest.Number = index + 1
+				issue.PullRequest.MergeableState = "clean"
+				issue.PullRequest.CIStatus = "pass"
+				if test.direct {
+					issue.PullRequest.UnresolvedReviewThreads = []connector.PullRequestReviewThread{{Path: "example.go", Line: 1}}
+				}
+				issue.Comments = []connector.IssueComment{{Body: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"}}
+				issues[index] = issue
+				state.Completed[issue.ID] = Completed{Issue: issue, FinalState: FinalStateCompleted, CompletedAt: now, successfulAttemptPersisted: true}
+				state.Claimed[issue.ID] = Claimed{Issue: issue}
+			}
+			backend := &autoPromoteTickConnector{stateIssues: issues, updateErr: test.err}
+			claims := &hubSchedulingSource{}
+			orch := &Orchestrator{cfg: cfg, connector: backend, scheduling: claims}
+			orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, issues, now)
+			if len(backend.updates) != 2 {
+				t.Fatalf("initial writes = %v, want one per item", backend.updates)
+			}
+			if test.lost {
+				if len(state.Completed) != 0 || len(state.Claimed) != 0 || claims.releases != 2 {
+					t.Errorf("stale leases retained local state: completed=%d claimed=%d releases=%d", len(state.Completed), len(state.Claimed), claims.releases)
+				}
+			} else if test.err != nil {
+				if len(state.Completed) != 2 || len(state.Claimed) != 2 || claims.releases != 0 {
+					t.Fatal("transient failure discarded completion or lease")
+				}
+				backend.updateErr = nil
+			}
+			for tick := 1; tick <= 3; tick++ {
+				orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, backend.stateIssues, now.Add(time.Duration(tick)*time.Minute))
+			}
+			wantWrites := 2
+			if test.err != nil && !test.lost {
+				wantWrites = 4
+			}
+			if len(backend.updates) != wantWrites {
+				t.Fatalf("writes after later ticks = %d, want %d", len(backend.updates), wantWrites)
+			}
+			if !test.lost {
+				for _, issue := range backend.stateIssues {
+					if issue.State != "Human Review" {
+						t.Fatalf("current lease did not transition: %s", issue.State)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestCompletedActiveReviewTargetState(t *testing.T) {
 	t.Parallel()
 

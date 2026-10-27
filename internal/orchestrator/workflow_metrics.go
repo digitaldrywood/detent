@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/provenance"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -182,7 +183,11 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 	strict bool,
 ) error {
 	unlock := o.lockLaneWrites()
-	defer unlock()
+	var trackerWriteErr error
+	defer func() {
+		unlock()
+		o.discardUnavailableCompletedClaim(ctx, state, issueID, trackerWriteErr)
+	}()
 	if reason != string(AutoPromoteReasonOperationalCompletion) &&
 		(reason != string(AutoPromoteReasonReady) || gate.Effective(o.cfg.AutoPromote.Gate).Kind != gate.KindArtifact) &&
 		normalizeState(targetState) == normalizeState(doneStateName(o.cfg.TerminalStates)) && issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "merged" {
@@ -255,6 +260,9 @@ func (o *Orchestrator) updateIssueStateByIDWithMetadataMode(
 		result := "uncertain"
 		if errors.Is(err, connector.ErrStateUpdateBlocked) {
 			result = "blocked"
+		} else if errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) {
+			result = "failed"
+			trackerWriteErr = err
 		}
 		return errors.Join(err, o.resolveLaneWrite(ctx, write, result))
 	}

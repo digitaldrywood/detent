@@ -2,11 +2,13 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -126,6 +128,9 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReviewWithHydratedValida
 			}
 			o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, promoted.State)
 			o.recordAutoPromoteReworkHandoff(state, issue, summary, decision, promoted.State)
+			continue
+		}
+		if _, retained := state.Completed[issueID]; !retained {
 			continue
 		}
 		if !cfg.humanReviewEnabled() && (decision.Reason == AutoPromoteReasonValidatorMissing || decision.QuietRemaining > 0 || autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg)) {
@@ -302,6 +307,28 @@ func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
 		return false, connector.Issue{}, AutoPromoteSummary{}, AutoPromoteDecision{}
 	}
 	return true, promotedIssue(issue, effectiveTargetState, now), summary, decision
+}
+
+func (o *Orchestrator) discardUnavailableCompletedClaim(ctx context.Context, state *State, issueID string, err error) {
+	if state == nil || !errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) {
+		return
+	}
+	if _, completed := state.Completed[issueID]; !completed {
+		return
+	}
+	if running, active := state.Running[issueID]; active && !running.CompletionOwnershipReleased {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	if releaseErr := o.abandonClaim(cleanupCtx, issueID); releaseErr != nil && o.logger != nil {
+		o.logger.Warn("abandon obsolete review claim failed", "issue_id", issueID, "error", releaseErr)
+	}
+	delete(state.Completed, issueID)
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
+	delete(state.PriorAttempts, issueID)
 }
 
 func (o *Orchestrator) finishCompletedActiveReviewTransition(

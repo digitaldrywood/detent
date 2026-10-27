@@ -36,7 +36,7 @@
     "internal/orchestrator/autopromote_tick.go:applyStaleMergedPullRequestDecision": "b244fe108d32adec7c008795a08c6c1ebf0cb78cfa9fe1232c832a5c00fd45e1",
     "internal/orchestrator/autopromote_tick.go:applyStaleMergingPullRequestDecision": "4f13339935e0cb0d2a4b05727c20224f8bf8b6b685ded22e0ba6134f84ac0bc3",
     "internal/orchestrator/autopromote_tick.go:applyStaleTodoPullRequestDecision": "bc21a3871b4509cd8118ed97b4ef7d1f1158770ef60210badb2a35aa536b96c2",
-    "internal/orchestrator/completion_transition.go:transitionCompletedActiveIssuesToReviewWithHydratedValidatorHeads": "cb0ccdc6d1bb3338b8bbe5032fee64e52d0d4d338af3f59ed1f81ed4024b3aa8",
+    "internal/orchestrator/completion_transition.go:transitionCompletedActiveIssuesToReviewWithHydratedValidatorHeads": "2fc54d74b489ef8236390b57948db404c8071f05b804ac854cf913a2fd58c7d1",
     "internal/orchestrator/deliverable_recovery.go:blockDeliverableRecoveryFailure": "304e815f0ad6d57e22badc4373c8b0f847c8c9170bff6b721b2991f57eef83e9",
     "internal/orchestrator/deliverable_recovery.go:blockHumanOwnedWorkerFailure": "25c3dc2b8920328fbc81e69af83b88b53e0088edae9cbb39501aa85aa3332f17",
     "internal/orchestrator/implement_progress.go:blockImplementProgress": "6f0572367ad61fe02435ba44636bccaaa83f87daa1fa41a4155572f80d132496",
@@ -54,6 +54,6 @@
     "internal/orchestrator/workflow_metrics.go:updateIssueStateByID": "072e7213f3009b9d2bea4458af718434a8f7f9497b306490e51ad4d20b26c8fd",
     "internal/orchestrator/workflow_metrics.go:updateIssueStateByIDStrictWithMetadata": "656ee6ae67664fb30ab795a18a9fd010758063d68944674b69c9c1b603f63b13",
     "internal/orchestrator/workflow_metrics.go:updateIssueStateByIDWithMetadata": "f9e2541bd1a2f834b30a364e7b18be5d8901d437f63ee1c0778c3f6b30669cb6",
-    "internal/orchestrator/workflow_metrics.go:updateIssueStateByIDWithMetadataMode": "bc9fac327cf704236b0554a299a11747e512466174efeb7c4b2fdef174881dbd"
+    "internal/orchestrator/workflow_metrics.go:updateIssueStateByIDWithMetadataMode": "d9ed157530b8f011380fc2dcf27215d7832907f0c0e52f53c2c675763400b68b"
   }
 }
