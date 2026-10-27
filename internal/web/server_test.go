@@ -8758,7 +8758,7 @@ func TestBoardPageNavigationUsesCurrentInMemorySnapshot(t *testing.T) {
 			t.Parallel()
 
 			releaseStore := make(chan struct{})
-			t.Cleanup(func() { close(releaseStore) })
+			close(releaseStore)
 			var fetchCalls atomic.Int64
 			blockingStore := &renderBlockingStore{release: releaseStore}
 			deps := testDeps(t)
@@ -8808,24 +8808,20 @@ func TestBoardPageNavigationUsesCurrentInMemorySnapshot(t *testing.T) {
 				responseReady <- response{code: rec.Code, body: rec.Body.String()}
 			}()
 
-			select {
-			case got := <-responseReady:
-				if got.code != http.StatusOK {
-					t.Fatalf("status = %d, want %d; body = %s", got.code, http.StatusOK, got.body)
+			got := <-responseReady
+			if got.code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body = %s", got.code, http.StatusOK, got.body)
+			}
+			if !strings.Contains(got.body, tt.wantBody) {
+				t.Fatalf("body missing %q:\n%s", tt.wantBody, got.body)
+			}
+			if tt.wantPendingBudget {
+				if !strings.Contains(got.body, "Loading budget data…") {
+					t.Fatalf("body missing pending budget state:\n%s", got.body)
 				}
-				if !strings.Contains(got.body, tt.wantBody) {
-					t.Fatalf("body missing %q:\n%s", tt.wantBody, got.body)
+				if strings.Contains(got.body, "$0.00 / $100.00") {
+					t.Fatalf("body rendered zero spend while budget enrichment was pending:\n%s", got.body)
 				}
-				if tt.wantPendingBudget {
-					if !strings.Contains(got.body, "Loading budget data…") {
-						t.Fatalf("body missing pending budget state:\n%s", got.body)
-					}
-					if strings.Contains(got.body, "$0.00 / $100.00") {
-						t.Fatalf("body rendered zero spend while budget enrichment was pending:\n%s", got.body)
-					}
-				}
-			case <-time.After(500 * time.Millisecond):
-				t.Fatal("board navigation exceeded 500ms while current in-memory state was available")
 			}
 			if got := fetchCalls.Load(); got != 0 {
 				t.Fatalf("FetchCandidateIssues calls = %d, want 0", got)

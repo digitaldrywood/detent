@@ -1,7 +1,6 @@
 package releaseaudit
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -289,38 +288,33 @@ func (s *Stage) Run(ctx context.Context, request Request) (result Snapshot, retu
 		if err := e.validateFinding(ctx, record, candidate.Fingerprint); err != nil {
 			return result, err
 		}
-		response, err = e.invoke(ctx, "independent-record-verifier", record)
+		record, accepted, err := e.verifyRecord(ctx, "independent-record-verifier", record)
 		if err != nil {
 			return result, err
 		}
-		response.Output, err = e.normalizeFinding(response.Output, observations)
-		if err != nil {
-			return result, err
-		}
-		if err := e.validateFinding(ctx, response.Output, candidate.Fingerprint); err != nil {
-			return result, err
-		}
-		if !jsonEqual(record, response.Output) {
-			replacement, err := e.invoke(ctx, "replacement-record-verifier", response.Output)
+		if !accepted {
+			record, err = e.normalizeFinding(record, observations)
 			if err != nil {
 				return result, err
 			}
-			replacement.Output, err = e.normalizeFinding(replacement.Output, observations)
+			if err := e.validateFinding(ctx, record, candidate.Fingerprint); err != nil {
+				return result, err
+			}
+			record, accepted, err = e.verifyRecord(ctx, "replacement-record-verifier", record)
 			if err != nil {
 				return result, err
 			}
-			if !jsonEqual(response.Output, replacement.Output) {
+			if !accepted {
 				e.state.Reason = "record_verification_unresolved"
 				return result, nil
 			}
-			response = replacement
 		}
-		e.state.Findings = append(e.state.Findings, response.Output)
+		e.state.Findings = append(e.state.Findings, record)
 		e.state.Candidates = e.state.Candidates[1:]
 		if err := e.publish(ctx); err != nil {
 			return result, err
 		}
-		if err := e.reportFinding(ctx, response.Output); err != nil {
+		if err := e.reportFinding(ctx, record); err != nil {
 			return result, err
 		}
 	}
@@ -370,20 +364,4 @@ func (e *execution) reportFinding(ctx context.Context, record json.RawMessage) e
 
 func validUsage(usage Usage) bool {
 	return usage.Input >= 0 && usage.Output >= 0 && usage.Cached >= 0 && usage.Cached <= usage.Input
-}
-
-func jsonEqual(a, b json.RawMessage) bool {
-	var left, right any
-	leftDecoder, rightDecoder := json.NewDecoder(bytes.NewReader(a)), json.NewDecoder(bytes.NewReader(b))
-	leftDecoder.UseNumber()
-	rightDecoder.UseNumber()
-	if leftDecoder.Decode(&left) != nil || rightDecoder.Decode(&right) != nil {
-		return false
-	}
-	l, err := json.Marshal(left)
-	if err != nil {
-		return false
-	}
-	r, err := json.Marshal(right)
-	return err == nil && string(l) == string(r)
 }

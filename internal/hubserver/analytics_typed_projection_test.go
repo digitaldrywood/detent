@@ -201,8 +201,23 @@ SELECT organization_id,project_id,unixepoch(period),'usage',json_array(attempt_i
 			}
 			before[project] = out
 		}
-		if err := d.compactAnalyticsSamples(t.Context(), at.Add(analyticsSampleRetention+2*time.Hour)); err != nil {
-			t.Fatal(err)
+		remaining := func() int {
+			t.Helper()
+			var count int
+			if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_hourly_rollups WHERE metric IN ('capacity_claim','skip_sample')`).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			return count
+		}
+		for count := remaining(); count > 0; {
+			if err := d.compactAnalyticsSamples(t.Context(), at.Add(analyticsSampleRetention+2*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			next := remaining()
+			if next >= count {
+				t.Fatalf("compaction made no progress: before=%d after=%d", count, next)
+			}
+			count = next
 		}
 		for _, project := range projects {
 			var samples int

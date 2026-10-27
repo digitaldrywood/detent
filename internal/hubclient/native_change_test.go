@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -190,9 +191,15 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	if err != nil {
 		t.Fatal(err)
 	}
-	var currentService atomic.Pointer[hubserver.Service]
-	currentService.Store(service)
+	var requests sync.RWMutex
+	serve := func(w http.ResponseWriter, r *http.Request) {
+		requests.RLock()
+		defer requests.RUnlock()
+		service.Handler().ServeHTTP(w, r)
+	}
 	t.Cleanup(func() {
+		requests.Lock()
+		defer requests.Unlock()
 		if err := service.Close(); err != nil {
 			t.Error(err)
 		}
@@ -203,13 +210,11 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		serverURL = "http://native-hub.test"
 		httpClient = &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 			recorder := httptest.NewRecorder()
-			currentService.Load().Handler().ServeHTTP(recorder, request)
+			serve(recorder, request)
 			return recorder.Result(), nil
 		})}
 	} else {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			currentService.Load().Handler().ServeHTTP(w, r)
-		}))
+		server := httptest.NewServer(http.HandlerFunc(serve))
 		t.Cleanup(server.Close)
 		serverURL, httpClient = server.URL, server.Client()
 	}
@@ -226,17 +231,18 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 	h := &nativeChangeHub{review: review, organization: organizations.Items[0].ID, descriptor: clientTestPolicy()}
 	h.reopen = func(seed func(string) error) {
 		t.Helper()
+		requests.Lock()
+		defer requests.Unlock()
 		if err := service.Close(); err != nil {
-			t.Fatal(err)
+			t.Fatalf("close fixture before seed: %v", err)
 		}
 		if err := seed(config.DatabasePath); err != nil {
-			t.Fatal(err)
+			t.Fatalf("seed stopped fixture: %v", err)
 		}
 		service, err = hubserver.Open(t.Context(), config)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("reopen seeded fixture: %v", err)
 		}
-		currentService.Store(service)
 	}
 	var project tracker.NativeProject
 	body := map[string]any{"name": "native-change", "idempotency_key": "project-native-change", "states": states, "require_dependencies": requireDependencies}
