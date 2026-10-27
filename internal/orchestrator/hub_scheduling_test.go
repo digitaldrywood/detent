@@ -505,6 +505,7 @@ func TestHubSchedulingHeartbeatPreservesClaimedIssue(t *testing.T) {
 }
 
 type hubSchedulingSource struct {
+	repository      string
 	admission       tracker.NativeAdmissionContext
 	execution       runpkg.Execution
 	issues          []connector.Issue
@@ -543,7 +544,11 @@ func (s *hubSchedulingSource) HeartbeatInterval() time.Duration {
 func (s *hubSchedulingSource) FetchCandidateIssues(ctx context.Context, request SchedulingRequest) ([]connector.Issue, error) {
 	s.fetches++
 	s.request = request
-	if request.Repository != "acme/widgets" {
+	repository := s.repository
+	if repository == "" {
+		repository = "acme/widgets"
+	}
+	if request.Repository != repository {
 		return nil, errors.New("unexpected repository")
 	}
 	if s.fetchError != nil {

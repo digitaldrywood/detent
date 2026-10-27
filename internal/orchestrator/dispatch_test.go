@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestRunningWorkAttemptMetadataJSONPersistsPullRequestFingerprint(t *testing.T) {
@@ -4444,6 +4445,46 @@ func TestTimedOutWorkerProbeDoesNotHoldDispatch(t *testing.T) {
 				if decision.SkipReason == "worker_github_budget_monitor_unavailable" {
 					t.Fatalf("timeout revived retired dispatch skip: %#v", decision)
 				}
+			}
+		})
+	}
+}
+
+func TestNativeAuthorizationBeforeClaim(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		auth   selector.Selector
+		refuse bool
+	}{
+		{name: "composed labels", auth: selector.Selector{And: []selector.Selector{{Labels: selector.Labels{Include: []string{"ready"}}}, {Labels: selector.Labels{Include: []string{"canary"}}}}}},
+		{name: "alternatives refuse", auth: selector.Selector{Or: []selector.Selector{{Labels: selector.Labels{Include: []string{"ready"}}}, {Labels: selector.Labels{Include: []string{"canary"}}}}}, refuse: true},
+		{name: "nested alternatives refuse", auth: selector.Selector{And: []selector.Selector{{Or: []selector.Selector{{Labels: selector.Labels{Include: []string{"ready"}}}, {Labels: selector.Labels{Include: []string{"canary"}}}}}}}, refuse: true},
+		{name: "invalid labels refuse", auth: selector.Selector{Labels: selector.Labels{Include: []string{" "}}}, refuse: true},
+		{name: "unresolved identity refuses", auth: selector.Selector{AuthorIn: []string{"@me"}}, refuse: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo"}, SchedulingRepository: "example-org/example-project", Authorization: test.auth})
+			scheduling := &hubSchedulingSource{repository: cfg.SchedulingRepository}
+			o := &Orchestrator{cfg: cfg, scheduling: scheduling, connector: &nativeWorkflowConnector{}}
+			state := newState(cfg)
+			state.nativeAdmission = &tracker.NativeAdmissionContext{PolicyID: "previous"}
+			_, err := o.fetchCandidateIssuesForTick(t.Context(), &state)
+			if test.refuse {
+				if err == nil || scheduling.fetches != 0 {
+					t.Fatalf("unsupported policy reached claim: %d, %v", scheduling.fetches, err)
+				}
+			} else {
+				if err != nil || scheduling.fetches != 1 || !slices.Equal(scheduling.request.Filter.LabelInclude, []string{"ready", "canary"}) {
+					t.Fatalf("claim filter=%#v fetches=%d err=%v", scheduling.request.Filter, scheduling.fetches, err)
+				}
+			}
+			state.Draining = true
+			o.snapshotNativeAdmission(&state)
+			if test.refuse && state.nativeAdmission != nil {
+				t.Fatal("unsupported authorization published unrestricted admission")
+			}
+			if !test.refuse && (state.nativeAdmission == nil || !slices.Equal(state.nativeAdmission.LabelInclude, []string{"ready", "canary"})) {
+				t.Fatal("admission evidence differs from claim")
 			}
 		})
 	}

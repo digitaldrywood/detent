@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -35,6 +36,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	schedulerpkg "github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
@@ -1203,4 +1205,63 @@ func (s runnerProjectTickScheduling) FetchCandidateIssues(ctx context.Context, r
 	default:
 	}
 	return nil, nil
+}
+
+func TestRunnerProjectsRejectHostAuthorization(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		auth selector.Selector
+	}{
+		{name: "include", auth: selector.Selector{Labels: selector.Labels{Include: []string{"canary"}}}},
+		{name: "exclude", auth: selector.Selector{Labels: selector.Labels{Exclude: []string{"manual"}}}},
+		{name: "composed", auth: selector.Selector{And: []selector.Selector{{Labels: selector.Labels{Include: []string{"canary"}}}, {Labels: selector.Labels{Exclude: []string{"manual"}}}}}},
+		{name: "invalid", auth: selector.Selector{Labels: selector.Labels{Include: []string{" "}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_new": "new"})
+			hub.credential.Store("test")
+			hub.repositories["prj_new"] = "example-org/example-project"
+			client, err := hubclient.New(hubclient.Config{URL: hub.server.URL + "/organizations/org_example", TokenSource: func() string { return "test" }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := globalconfig.Config{WorkspaceRoot: t.TempDir()}
+			cfg.Client.OrganizationID = "org_example"
+			auth := test.auth
+			cfg.Projects = []globalconfig.Project{{ID: "prj_new", Authorization: auth}}
+			identity := runnerauth.Identity{OrganizationID: "org_example", ProjectIDs: []tracker.ProjectID{"prj_new"}}
+			cfg.Client.NativeProjects = map[string]string{"prj_new": "prj_new"}
+			for range 2 {
+				cfg, err = runnerProjectsForIdentity(t.Context(), cfg, client, identity, false, false)
+				if err == nil || !strings.Contains(err.Error(), "do not support host project authorization") {
+					t.Fatalf("unsupported host authorization was not refused: %v", err)
+				}
+				if !reflect.DeepEqual(cfg.Projects[0].Authorization, auth) {
+					t.Fatalf("refusal changed configured authorization: %#v", cfg.Projects[0].Authorization)
+				}
+				hub.server.Close()
+			}
+			cfg.Client.URL = hub.server.URL
+			cfg.Client.IdentityFile = filepath.Join(t.TempDir(), "identity.json")
+			current := cfg
+			current.Projects = []globalconfig.Project{{ID: "prj_new"}}
+			manager := &globalReloadManager{}
+			runtimeApplied := false
+			reloader := &globalConfigReloader{
+				current: current,
+				manager: manager,
+				applyRuntime: func(globalconfig.Config) error {
+					runtimeApplied = true
+					return nil
+				},
+			}
+			_, err = reloader.applyCandidate(t.Context(), configwatcher.FileUpdate[globalconfig.Config]{Value: cfg})
+			if err == nil || !strings.Contains(err.Error(), "do not support host project authorization") {
+				t.Fatalf("reload discarded host authorization before refusal: %v", err)
+			}
+			if manager.calls != 0 || runtimeApplied || !reflect.DeepEqual(reloader.current, current) {
+				t.Fatal("rejected reload replaced the accepted runtime configuration")
+			}
+		})
+	}
 }

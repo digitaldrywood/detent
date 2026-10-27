@@ -481,6 +481,9 @@ func resolveRunnerProjectsWithMode(ctx context.Context, cfg globalconfig.Config,
 	if cfg.Client.IdentityFile == "" || cfg.WorkspaceRoot == "" {
 		return cfg, nil
 	}
+	if err := validateCloudRunnerAuthorization(cfg.Projects); err != nil {
+		return cfg, err
+	}
 	if len(previous) > 0 {
 		current := previous[0]
 		if cfg.Client.IdentityFile == current.Client.IdentityFile && cfg.Client.URL == current.Client.URL &&
@@ -514,6 +517,9 @@ func resolveRunnerProjectsWithMode(ctx context.Context, cfg globalconfig.Config,
 func runnerProjectsForIdentity(ctx context.Context, cfg globalconfig.Config, client *hubclient.Client, identity runnerauth.Identity, prepare, readOnly bool) (globalconfig.Config, error) {
 	if string(identity.OrganizationID) != cfg.Client.OrganizationID {
 		return cfg, errors.New("runner organization does not match enrolled identity")
+	}
+	if err := validateCloudRunnerAuthorization(cfg.Projects); err != nil {
+		return cfg, err
 	}
 	previous := cfg.Projects
 	previousNative := cfg.Client.NativeProjects
@@ -587,6 +593,15 @@ func runnerProjectsForIdentity(ctx context.Context, cfg globalconfig.Config, cli
 		cfg.Projects = append(cfg.Projects, selected)
 	}
 	return cfg, ctx.Err()
+}
+
+func validateCloudRunnerAuthorization(projects []globalconfig.Project) error {
+	for _, project := range projects {
+		if project.Authorization.Configured() || len(project.Authorization.Validate("authorization")) > 0 {
+			return fmt.Errorf("cloud runners do not support host project authorization for %q; configure authorization in the approved project workflow", project.ID)
+		}
+	}
+	return nil
 }
 
 func retainedRunnerProject(previous []globalconfig.Project, previousNative map[string]string, id tracker.ProjectID, err error) (globalconfig.Project, bool) {

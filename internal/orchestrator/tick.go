@@ -721,6 +721,14 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 	if len(states) == 0 {
 		return []connector.Issue{}, nil
 	}
+	filter := o.authorizationFilterHint()
+	if o.nativeWorkflow() {
+		var err error
+		filter, err = selector.NativeFilterHint(o.cfg.Authorization, o.cfg.SelectorContext)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if o.scheduling != nil {
 		if storage, ok := o.scheduling.(interface{ WorkspaceStorageConstraint(context.Context) string }); ok && storage.WorkspaceStorageConstraint(ctx) != "" {
 			now := time.Now()
@@ -744,7 +752,7 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 			ProjectID:               o.cfg.Project.ID,
 			Repository:              o.cfg.SchedulingRepository,
 			WorkflowStates:          states,
-			Filter:                  o.authorizationFilterHint(),
+			Filter:                  filter,
 		}
 		request.NativeLandingBatch = o.nativeWorkflow() && !o.cfg.Policy.Gates.GitHubPullRequest
 		if request.NativeLandingBatch {
@@ -877,7 +885,7 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 		return o.scheduling.FetchCandidateIssues(ctx, request)
 	}
 	if fetcher, ok := o.connector.(connector.CandidateIssuesFilterFetcher); ok {
-		return fetcher.FetchCandidateIssuesByStatesWithFilter(ctx, states, o.authorizationFilterHint())
+		return fetcher.FetchCandidateIssuesByStatesWithFilter(ctx, states, filter)
 	}
 	if fetcher, ok := o.connector.(connector.CandidateIssuesByStatesFetcher); ok {
 		return fetcher.FetchCandidateIssuesByStates(ctx, states)
@@ -904,6 +912,14 @@ func (o *Orchestrator) NativeAdmissionContext() (tracker.NativeAdmissionContext,
 
 func (o *Orchestrator) snapshotNativeAdmission(state *State) {
 	filter := o.authorizationFilterHint()
+	if o.nativeWorkflow() {
+		var err error
+		filter, err = selector.NativeFilterHint(o.cfg.Authorization, o.cfg.SelectorContext)
+		if err != nil {
+			state.nativeAdmission = nil
+			return
+		}
+	}
 	now := time.Now()
 	if o.now != nil {
 		now = o.now()
