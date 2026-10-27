@@ -76,7 +76,7 @@ func (s analyticsStatements) close() error {
 const (
 	analyticsSlotHorizon    = 24 * time.Hour
 	analyticsBackfillBatch  = 20
-	analyticsBackfillBudget = 20 * time.Second
+	analyticsBackfillBudget = 2 * time.Second
 	analyticsBackfillEvents = 5000
 
 	analyticsSampleRetention       = 30 * 24 * time.Hour
