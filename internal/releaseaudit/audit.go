@@ -251,7 +251,7 @@ func (s *Stage) Run(ctx context.Context, request Request) (result Snapshot, retu
 			if json.Unmarshal(response.Output, &hunt) != nil {
 				return result, errors.New("release audit hunter returned an invalid envelope")
 			}
-			if err := e.acceptLedger(ctx, hunt.Ledger); err != nil {
+			if err := e.acceptHuntLedger(ctx, unit, hunt.Ledger); err != nil {
 				return result, err
 			}
 			for _, candidate := range hunt.Candidates {
