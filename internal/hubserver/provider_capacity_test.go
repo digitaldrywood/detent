@@ -342,7 +342,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 	}{
 		{name: "resolved health finding leaves preview read-only", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, unavailable: "resolved health", want: []int{0, 1, 2}},
 		{name: "legacy numeric order", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, unavailable: "provider", want: []int{0, 1, 2}, winner: 1},
-		{name: "issue priority beats merging lane", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{0, 3, 2}, order: []string{"Merging", "Rework", "In Progress", "Todo"}, want: []int{0, 2, 1}},
+		{name: "reviewed merging beats higher priority implementation", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{0, 3, 2}, order: []string{"Merging", "Rework", "In Progress", "Todo"}, want: []int{1, 0, 2}, winner: 1},
 		{name: "merging lane lands before newer work of the same priority", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo", "Merging"}, want: []int{1, 0, 2}, winner: 1},
 		{name: "configured lane preference yields to age", states: []string{"Merging", "Todo", "Rework"}, priorities: []int{1, 1, 1}, order: []string{"Todo", "Rework", "Merging"}, want: []int{0, 1, 2}},
 		{name: "source lanes yield to age", states: []string{"Todo", "In Progress", "Rework"}, priorities: []int{1, 1, 1}, order: []string{"Rework", "In Progress", "Todo"}, want: []int{0, 1, 2}},
