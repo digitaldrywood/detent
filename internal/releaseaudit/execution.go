@@ -59,8 +59,8 @@ func (e *execution) invoke(ctx context.Context, phase string, input any) (Respon
 	}
 	fmt.Fprintf(&instructions, "\nCurrent phase: %s.\n", phase)
 	switch phase {
-	case "recon-ledger", "coverage-critic", "final-coverage-critic":
-		instructions.WriteString("Return the full coverage-ledger.json array. Preserve every existing coverage ID and unresolved candidate; add gaps as planned units. Use the upstream canonical IDs and required ledger fields. Covered status requires concrete checks; prior coverage never implies current coverage. Critics must not invent completed checks.\n")
+	case "recon-ledger", "coverage-critic", "final-coverage-critic", "ledger-correction":
+		instructions.WriteString("Return the full coverage-ledger.json array. Preserve every existing coverage ID and unresolved candidate; add gaps as planned units. Use the upstream canonical IDs and required ledger fields. Every unit, including out_of_scope, requires nonempty source-grounded starting_paths. Do not invent a synthetic catch-all historical unit. On ledger-correction, correct the supplied rejected document using the validator diagnostics; retain its coverage IDs, candidates and review claims without inventing checks or changing scope. Covered status requires concrete checks; prior coverage never implies current coverage. Critics must not invent completed checks.\n")
 	case "hunt":
 		instructions.WriteString("Audit the supplied coverage unit and attack class. Return {\"ledger\": <full updated coverage ledger array>, \"candidates\": [{\"fingerprint\": <stable source-derived root-cause identity>, \"coverage_id\": <assigned coverage id>, \"record\": <candidate evidence object>}]}. Include source paths and symbols in each root-cause identity, never run IDs, SHA, severity or prose titles. Record the actual agent ID in the assigned unit.\n")
 	case "candidate-disprover", "independent-record-verifier", "replacement-record-verifier":
@@ -135,6 +135,24 @@ func boundedUsageSum(total, delta int64) int64 {
 func (e *execution) exhausted() bool {
 	limit, used := e.request.Allowance.Usage, e.state.Usage
 	return used.Input >= limit.Input || used.Output >= limit.Output || used.Cached > limit.Cached
+}
+
+func (e *execution) acceptLedger(ctx context.Context, ledger json.RawMessage) error {
+	for attempt := 0; ; attempt++ {
+		err := e.updateLedger(ctx, ledger)
+		var invalid *documentValidationError
+		if err == nil || attempt >= 2 || !errors.As(err, &invalid) {
+			return err
+		}
+		response, invokeErr := e.invoke(ctx, "ledger-correction", struct {
+			Rejected    json.RawMessage `json:"rejected_ledger"`
+			Diagnostics string          `json:"validation_diagnostics"`
+		}{ledger, invalid.diagnostics})
+		if invokeErr != nil {
+			return invokeErr
+		}
+		ledger = response.Output
+	}
 }
 
 func (e *execution) updateLedger(ctx context.Context, ledger json.RawMessage) error {

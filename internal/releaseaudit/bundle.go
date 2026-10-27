@@ -1,6 +1,7 @@
 package releaseaudit
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"embed"
@@ -51,6 +52,23 @@ func prepareBundle(directory string) error {
 	return nil
 }
 
+type documentValidationError struct {
+	diagnostics string
+}
+
+func (e *documentValidationError) Error() string { return "release audit document failed validation" }
+
+type validationOutput struct{ bytes.Buffer }
+
+func (b *validationOutput) Write(p []byte) (int, error) {
+	n := len(p)
+	remaining := 16*1024 - b.Len()
+	if remaining > 0 {
+		_, _ = b.Buffer.Write(p[:min(len(p), remaining)])
+	}
+	return n, nil
+}
+
 func validateDocument(ctx context.Context, directory, kind string, content []byte) error {
 	if len(content) > maxDocumentBytes {
 		return errors.New("release audit document exceeds its allowance")
@@ -66,7 +84,13 @@ func validateDocument(ctx context.Context, directory, kind string, content []byt
 	command.Args = append(command.Args, filepath.Join(directory, "bundle", validator), filepath.Join(directory, name))
 	command.Dir = directory
 	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + directory, "TMPDIR=" + directory, "TMP=" + directory, "TEMP=" + directory}
+	var diagnostics validationOutput
+	command.Stdout, command.Stderr = &diagnostics, &diagnostics
 	if err := command.Run(); err != nil {
+		var exit *exec.ExitError
+		if ctx.Err() == nil && errors.As(err, &exit) && exit.ExitCode() == 1 {
+			return &documentValidationError{diagnostics: diagnostics.String()}
+		}
 		return fmt.Errorf("validate release audit %s: %w", kind, err)
 	}
 	return nil
