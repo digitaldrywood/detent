@@ -77,7 +77,7 @@ func TestChangeContentObjects(t *testing.T) {
 	ctx := f.service.contentContext(t.Context())
 	input := changeTestInput()
 	bundle := changeTestSource(t, &input, bytes.Repeat([]byte("retained source\n"), 20000))
-	input.Validation = &gate.CommandResult{Command: "make check-land", HeadSHA: input.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 123, Output: strings.Repeat("validation output\n", 3000)}
+	input.Validation = &gate.CommandResult{Attribution: "unknown", Command: "make check-land", HeadSHA: input.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 123, Output: strings.Repeat("validation output\n", 3000)}
 	versions := make([]tracker.ChangeVersion, 3)
 	expected := ""
 	for i := range versions {

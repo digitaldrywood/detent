@@ -4081,6 +4081,8 @@ func (r *Runner) validate(ctx context.Context, req ValidatorRequest) (returnValu
 	validation.HeadSHA = req.Diff.HeadSHA
 	validation.DiffDigest = req.Diff.Digest
 	validation.DiffFiles = append([]string(nil), req.Diff.Files...)
+	gate.AttributeFindings(validation.BaseSHA, validation.HeadSHA, validation.Findings, validation.Commands)
+	gate.NormalizeAttribution(&validation)
 	validation.AttachmentReads = nil
 	if attachments != nil {
 		validation.AttachmentReads = attachments.evidence()
@@ -4174,11 +4176,13 @@ type validatorJSONResult struct {
 }
 
 type validatorJSONFinding struct {
-	Severity string `json:"severity"`
-	Body     string `json:"body"`
-	Message  string `json:"message"`
-	Path     string `json:"path"`
-	Line     int    `json:"line"`
+	CheckCommand    string `json:"check_command"`
+	CheckDiagnostic string `json:"check_diagnostic"`
+	Severity        string `json:"severity"`
+	Body            string `json:"body"`
+	Message         string `json:"message"`
+	Path            string `json:"path"`
+	Line            int    `json:"line"`
 }
 
 func parseValidatorResult(output string) (gate.ValidatorResult, error) {
@@ -4209,10 +4213,13 @@ func parseValidatorResult(output string) (gate.ValidatorResult, error) {
 			body = strings.TrimSpace(finding.Message)
 		}
 		findings = append(findings, gate.Finding{
-			Severity: strings.ToLower(strings.TrimSpace(finding.Severity)),
-			Body:     body,
-			Path:     strings.TrimSpace(finding.Path),
-			Line:     finding.Line,
+			Attribution:     "unknown",
+			CheckCommand:    finding.CheckCommand,
+			CheckDiagnostic: finding.CheckDiagnostic,
+			Severity:        strings.ToLower(strings.TrimSpace(finding.Severity)),
+			Body:            body,
+			Path:            strings.TrimSpace(finding.Path),
+			Line:            finding.Line,
 		})
 	}
 

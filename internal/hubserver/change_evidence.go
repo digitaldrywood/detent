@@ -162,6 +162,7 @@ func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 	}
 
 	review := tracker.ChangeReview{SecurityAudit: request.SecurityAudit, SessionMachineID: sessionMachineID, ImplementationReview: request.ImplementationReview, Validator: request.Validator, ID: newNativeID("review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: now}
+	reviewAttributionSlots(&review)
 	if err := storeChangeReview(ctx, tx, string(scope.organization), change.ID, review); err != nil {
 		return nil, err
 	}
@@ -219,6 +220,10 @@ func (s *Service) discussChangeCommand(ctx context.Context, tx *sql.Tx, scope na
 }
 
 func storeChangeReview(ctx context.Context, tx *sql.Tx, organization, changeID string, review tracker.ChangeReview) error {
+	slots := reviewAttributionSlots(&review)
+	if err := storeAttributionSlots(ctx, tx, review.VersionID, review.ID, slots); err != nil {
+		return err
+	}
 	storedReview := review
 	if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
 		raw, err := json.Marshal(review)

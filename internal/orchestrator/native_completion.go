@@ -10,6 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -607,6 +608,15 @@ func nativeChangeMetadata(change *runpkg.NativeChange) map[string]any {
 	if change == nil {
 		return nil
 	}
+	if change.Validator != nil && change.Validator.Attribution == "" {
+		gate.NormalizeAttribution(change.Validator)
+	}
+	if change.ImplementationReview != nil && change.ImplementationReview.Attribution == "" {
+		gate.NormalizeAttribution(change.ImplementationReview)
+	}
+	if change.SecurityAudit != nil && change.SecurityAudit.Run.Attribution == "" {
+		securityaudit.NormalizeAttribution(&change.SecurityAudit.Run)
+	}
 	metadata := map[string]any{"native_changed": change.Changed, "native_files": change.Files}
 	if change.ChangeID != "" {
 		metadata["native_change_id"] = change.ChangeID
@@ -622,6 +632,15 @@ func nativeChangeMetadata(change *runpkg.NativeChange) map[string]any {
 	}
 	if change.VersionCode != "" {
 		metadata["native_version_code"] = change.VersionCode
+	}
+	if change.Validator != nil {
+		metadata["validator_attribution"] = change.Validator.Attribution
+	}
+	if change.ImplementationReview != nil {
+		metadata["implementation_review_attribution"] = change.ImplementationReview.Attribution
+	}
+	if change.SecurityAudit != nil {
+		metadata["security_audit_attribution"] = change.SecurityAudit.Run.Attribution
 	}
 	return metadata
 }

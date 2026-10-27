@@ -89,6 +89,10 @@ func (v *validatorCommands) execute(ctx context.Context, command string, validat
 		return result, fmt.Errorf("%w: validation command evidence differs from reviewed content", ErrValidatorInfrastructure)
 	}
 
+	if validation && result.ExitCode != 0 {
+		attributeCommandFailure(ctx, v.run, v.info, v.issue, v.base, &result)
+	}
+
 	v.results = append(v.results, result)
 	if validation {
 		key := result.Command + "\x00" + result.TreeSHA
@@ -200,4 +204,18 @@ func (v *validatorCommands) evidence() ([]gate.CommandResult, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	return slices.Clone(v.results), v.failure
+}
+
+func attributeCommandFailure(ctx context.Context, runner workspace.ReviewCommandRunner, info workspace.Info, issue workspace.Issue, base string, result *gate.CommandResult) {
+	if result.ExitCode == 0 {
+		return
+	}
+	var reproduction gate.CommandResult
+	err := errors.New("base reproduction is unavailable")
+	if host, ok := runner.(interface {
+		RunBaseCommand(context.Context, workspace.Info, workspace.Issue, string, string) (gate.CommandResult, error)
+	}); ok {
+		reproduction, err = host.RunBaseCommand(ctx, info, issue, base, result.Command)
+	}
+	workspace.AttributeCommandFailure(result, base, reproduction, err)
 }

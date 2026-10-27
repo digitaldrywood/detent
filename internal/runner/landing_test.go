@@ -519,11 +519,11 @@ func TestLandNativeChange(t *testing.T) {
 				t.Fatalf("result = %#v", result)
 			}
 			if backend.result.Gate.Command != "" {
-				if result.NativeLanding.Gate == nil || *result.NativeLanding.Gate != backend.result.Gate {
+				if result.NativeLanding.Gate == nil || !reflect.DeepEqual(*result.NativeLanding.Gate, backend.result.Gate) {
 					t.Fatalf("landing lost gate command evidence: %#v", result.NativeLanding)
 				}
 				for _, recorded := range stub.recorded {
-					if recorded.Gate == nil || *recorded.Gate != backend.result.Gate {
+					if recorded.Gate == nil || !reflect.DeepEqual(*recorded.Gate, backend.result.Gate) {
 						t.Fatalf("published landing lost gate: %#v", recorded)
 					}
 				}
@@ -531,6 +531,10 @@ func TestLandNativeChange(t *testing.T) {
 			if receipt := backend.headReceipt; receipt != nil {
 				wantReceipt := *receipt
 				wantReceipt.Stage = test.wantHeadStage
+				if receipt.ExitCode != 0 {
+					wantReceipt.Attribution = "unknown"
+					wantReceipt.Findings = []gate.Finding{{Attribution: "unknown", Body: "Command failed", CheckCommand: receipt.Command}}
+				}
 				if result.NativeLanding.Gate == nil || !reflect.DeepEqual(*result.NativeLanding.Gate, wantReceipt) || receipt.ExitCode == 0 && (backend.received.Validation == nil || !reflect.DeepEqual(*backend.received.Validation, *receipt)) || receipt.ExitCode != 0 && backend.received.HeadSHA != "" {
 					t.Fatalf("unreceipted head validation = landing %#v, options %#v", result.NativeLanding, backend.received)
 				}

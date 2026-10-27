@@ -37,7 +37,7 @@ Within this security-only scope, review these surfaces when touched: authenticat
 Do not repeat suspected credentials, tokens, secrets, or other sensitive values in the output. Identify their location and risk without reproducing the value.
 
 Return exactly one JSON object with this schema:
-{"verdict":"pass|fail|undetermined","summary":"concise audit summary","findings":[{"id":"stable finding id","certainty":"confirmed|disproved|undetermined","severity":"p1|p2|p3 (omit for undetermined)","body":"actionable explanation or rejection reasoning","unresolved_fact":"required for undetermined","path":"optional/path","line":0,"status":"resolved|unresolved|rejected"}]}
+{"verdict":"pass|fail|undetermined","summary":"concise audit summary","findings":[{"id":"stable finding id","certainty":"confirmed|disproved|undetermined","severity":"p1|p2|p3 (omit for undetermined)","body":"actionable explanation or rejection reasoning","unresolved_fact":"required for undetermined","path":"optional/path","line":0,"check_command":"exact supplied failed host command, if any","check_diagnostic":"exact diagnostic from that command, if any","status":"resolved|unresolved|rejected"}]}
 
 Use verdict fail when any confirmed unresolved in-scope security finding exists; otherwise undetermined when any undetermined lead exists, otherwise pass, even if resolved findings remain or rejected leads remain. Use verdict pass with zero findings when no in-scope security finding exists and there are no prior findings to retain. Do not wrap the JSON in Markdown.`
 
@@ -52,6 +52,7 @@ type PreviousAudit struct {
 }
 
 type Snapshot struct {
+	Checks           []CheckComparison
 	Chunk            *ChunkIdentity
 	DiffComplete     bool
 	Verification     *Result
@@ -113,6 +114,7 @@ func BuildPrompt(snapshot Snapshot, maxDiffBytes int) (string, error) {
 	}
 
 	payload := struct {
+		Checks       []CheckComparison `json:"host_checks,omitempty"`
 		Verification *Result           `json:"verification_of,omitempty"`
 		Chunk        *ChunkIdentity    `json:"chunk,omitempty"`
 		ProjectID    string            `json:"project_id"`
@@ -127,6 +129,7 @@ func BuildPrompt(snapshot Snapshot, maxDiffBytes int) (string, error) {
 		PullRequest  any               `json:"pull_request"`
 		Diff         string            `json:"textual_diff"`
 	}{
+		Checks:       snapshot.Checks,
 		Verification: snapshot.Verification,
 		Chunk:        snapshot.Chunk,
 		ProjectID:    snapshot.ProjectID,
@@ -203,6 +206,7 @@ func ParseOutput(output string) (Result, error) {
 	seen := make(map[string]struct{}, len(result.Findings))
 	for index := range result.Findings {
 		finding := &result.Findings[index]
+		finding.Attribution, finding.AttributionEvidence = "unknown", nil
 		if finding.Status != "" && finding.Status != "resolved" && finding.Status != "unresolved" && finding.Status != "rejected" {
 			return Result{}, fmt.Errorf("%w: invalid finding status", ErrInvalidOutput)
 		}

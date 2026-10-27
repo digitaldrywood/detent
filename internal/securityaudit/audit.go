@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 )
 
 const (
@@ -53,14 +55,18 @@ type Key struct {
 }
 
 type Finding struct {
-	Certainty      string `json:"certainty"`
-	UnresolvedFact string `json:"unresolved_fact,omitempty"`
-	Status         string `json:"status,omitempty"`
-	ID             string `json:"id"`
-	Severity       string `json:"severity,omitempty"`
-	Body           string `json:"body"`
-	Path           string `json:"path,omitempty"`
-	Line           int    `json:"line,omitempty"`
+	Attribution         string                       `json:"attribution"`
+	AttributionEvidence *failureattribution.Evidence `json:"attribution_evidence,omitempty"`
+	CheckCommand        string                       `json:"check_command,omitempty"`
+	CheckDiagnostic     string                       `json:"check_diagnostic,omitempty"`
+	Certainty           string                       `json:"certainty"`
+	UnresolvedFact      string                       `json:"unresolved_fact,omitempty"`
+	Status              string                       `json:"status,omitempty"`
+	ID                  string                       `json:"id"`
+	Severity            string                       `json:"severity,omitempty"`
+	Body                string                       `json:"body"`
+	Path                string                       `json:"path,omitempty"`
+	Line                int                          `json:"line,omitempty"`
 }
 
 type Result struct {
@@ -75,6 +81,8 @@ type Verification struct {
 }
 
 type Run struct {
+	Checks             []CheckComparison `json:"checks,omitempty"`
+	Attribution        string            `json:"attribution"`
 	Verification       *Verification
 	ID                 int64
 	InvocationID       string

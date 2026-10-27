@@ -408,7 +408,7 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 	var validation gate.CommandResult
 	validationInfo := normalized
 	validationInfo.Path = staging
-	validation, err = l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, mergeSHA)
+	validation, err = l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, mergeSHA, targetHead)
 	if err != nil {
 		return LandResult{Rebased: rebased, Gate: validation, BaseBefore: targetHead}, err
 	}
@@ -785,7 +785,7 @@ func forgetStale(path string) bool {
 	return false
 }
 
-func (l *LocalGit) validateLanding(ctx context.Context, info Info, issue Issue, command, head string) (gate.CommandResult, error) {
+func (l *LocalGit) validateLanding(ctx context.Context, info Info, issue Issue, command, head, base string) (gate.CommandResult, error) {
 	if strings.TrimSpace(command) == "" {
 		return gate.CommandResult{}, nil
 	}
@@ -808,6 +808,8 @@ func (l *LocalGit) validateLanding(ctx context.Context, info Info, issue Issue, 
 		return result, err
 	}
 	if result.ExitCode != 0 {
+		reproduction, baseErr := l.RunBaseCommand(ctx, info, validationIssue, base, command)
+		AttributeCommandFailure(&result, base, reproduction, baseErr)
 		return result, newValidationError(ValidationStageLanding, result, fmt.Errorf("exit status %d", result.ExitCode))
 	}
 	return result, nil

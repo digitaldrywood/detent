@@ -3288,11 +3288,15 @@ func storeFindingsFromGate(findings []gate.Finding) []store.ValidatorFinding {
 	out := make([]store.ValidatorFinding, 0, len(findings))
 	for _, finding := range findings {
 		out = append(out, store.ValidatorFinding{
-			Severity: finding.Severity,
-			Body:     finding.Body,
-			URL:      finding.URL,
-			Path:     finding.Path,
-			Line:     finding.Line,
+			Attribution:         finding.Attribution,
+			AttributionEvidence: finding.AttributionEvidence,
+			CheckCommand:        finding.CheckCommand,
+			CheckDiagnostic:     finding.CheckDiagnostic,
+			Severity:            finding.Severity,
+			Body:                finding.Body,
+			URL:                 finding.URL,
+			Path:                finding.Path,
+			Line:                finding.Line,
 		})
 	}
 	return out
@@ -3302,11 +3306,15 @@ func gateFindingsFromStore(findings []store.ValidatorFinding) []gate.Finding {
 	out := make([]gate.Finding, 0, len(findings))
 	for _, finding := range findings {
 		out = append(out, gate.Finding{
-			Severity: finding.Severity,
-			Body:     finding.Body,
-			URL:      finding.URL,
-			Path:     finding.Path,
-			Line:     finding.Line,
+			Attribution:         finding.Attribution,
+			AttributionEvidence: finding.AttributionEvidence,
+			CheckCommand:        finding.CheckCommand,
+			CheckDiagnostic:     finding.CheckDiagnostic,
+			Severity:            finding.Severity,
+			Body:                finding.Body,
+			URL:                 finding.URL,
+			Path:                finding.Path,
+			Line:                finding.Line,
 		})
 	}
 	return out

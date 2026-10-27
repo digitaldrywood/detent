@@ -170,6 +170,7 @@ func TestRecordedValidatorRequiresExactPublication(t *testing.T) {
 		{name: "different decision", change: func(d *tracker.ChangeDetail, _ *gate.ValidatorResult) { d.Reviews[0].Decision = "changes_requested" }},
 		{name: "different body", change: func(d *tracker.ChangeDetail, _ *gate.ValidatorResult) { d.Reviews[0].Body = "Other publication" }},
 		{name: "different session", change: func(_ *tracker.ChangeDetail, r *gate.ValidatorResult) { r.SessionID++ }},
+		{name: "different attribution", change: func(_ *tracker.ChangeDetail, r *gate.ValidatorResult) { r.Attribution = "independent" }},
 		{name: "different source", change: func(_ *tracker.ChangeDetail, r *gate.ValidatorResult) { r.HeadSHA = strings.Repeat("d", 40) }},
 		{name: "different evidence", change: func(_ *tracker.ChangeDetail, r *gate.ValidatorResult) {
 			r.Commands = []gate.CommandResult{{Command: "other check"}}
@@ -178,6 +179,7 @@ func TestRecordedValidatorRequiresExactPublication(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			result := gate.ValidatorResult{VersionID: "version_current", SessionID: 42, Submitted: true, Verdict: "pass", HeadSHA: strings.Repeat("c", 40)}
 			stored := result
+			gate.NormalizeAttribution(&stored)
 			detail := tracker.ChangeDetail{
 				Change:  tracker.ChangeRequest{CurrentVersion: result.VersionID},
 				Reviews: []tracker.ChangeReview{{ID: "review_current", VersionID: result.VersionID, SessionMachineID: "machine_current", Actor: tracker.Actor{Kind: "runner"}, Decision: "approved", Body: "Validated", Validator: &stored}},

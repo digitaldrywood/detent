@@ -6,6 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 )
 
@@ -74,7 +75,13 @@ func TestPublicGateResultRedactsCheckEvidence(t *testing.T) {
 					FinishedAt: time.Date(2026, 10, 9, 12, 0, 1, 0, time.UTC),
 				}}},
 			}
+			result.BaseReproduction = &failureattribution.Observation{Command: resultCommand, Output: test.output, Complete: !test.wasTruncated}
+			result.Findings = []gate.Finding{{CheckCommand: resultCommand, CheckDiagnostic: test.output, AttributionEvidence: &failureattribution.Evidence{Command: resultCommand, Diagnostic: test.output}}}
 			got := PublicGateResult(result)
+			if got.BaseReproduction.Command != wantCommand || got.BaseReproduction.Output != got.Output || got.Findings[0].CheckCommand != wantCommand || got.Findings[0].CheckDiagnostic != got.Output || got.Findings[0].AttributionEvidence.Command != wantCommand || got.Findings[0].AttributionEvidence.Diagnostic != got.Output {
+				t.Fatalf("attribution proof was not redacted: %#v %#v", got.BaseReproduction, got.Findings)
+			}
+
 			if got.Command != wantCommand {
 				t.Fatalf("PublicGateResult command = %q, want %q", got.Command, wantCommand)
 			}

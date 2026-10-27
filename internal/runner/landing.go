@@ -268,6 +268,7 @@ func validateLandingHead(ctx context.Context, backend workspace.Backend, info wo
 		return options.Validation, err
 	}
 	if receipt.ExitCode != 0 {
+		attributeCommandFailure(ctx, commands, info, issue, options.ExpectedBaseSHA, &receipt)
 		receipt.Stage = gate.StageLanding
 		receipt = tracker.PublicGateResult(receipt)
 		return &receipt, &workspace.ValidationError{Stage: workspace.ValidationStageLanding, Result: receipt, Output: receipt.Output, Err: fmt.Errorf("exit status %d", receipt.ExitCode)}

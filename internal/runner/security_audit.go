@@ -340,6 +340,9 @@ func (r *Runner) auditSession(ctx context.Context, req SecurityAuditRequest, ver
 	}
 	if err == nil {
 		execution.Result, execution.Output, err = plan.Aggregate(outputs)
+		if err == nil {
+			securityaudit.AttributeFindings(req.Snapshot.BaseSHA, req.Snapshot.HeadSHA, execution.Result.Findings, req.Snapshot.Checks)
+		}
 	}
 	if err != nil {
 		runResult.FinalState = finalStateForTurnError(err)

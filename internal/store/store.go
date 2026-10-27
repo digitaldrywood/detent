@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/efficiency"
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/operations"
 	"github.com/digitaldrywood/detent/internal/retro"
 	routinemodel "github.com/digitaldrywood/detent/internal/routine/model"
@@ -642,6 +643,11 @@ type ValidatorVerdictQuery struct {
 }
 
 type ValidatorFinding struct {
+	Attribution         string                       `json:"attribution"`
+	AttributionEvidence *failureattribution.Evidence `json:"attribution_evidence,omitempty"`
+	CheckCommand        string                       `json:"check_command,omitempty"`
+	CheckDiagnostic     string                       `json:"check_diagnostic,omitempty"`
+
 	Severity string `json:"severity,omitempty"`
 	Body     string `json:"body,omitempty"`
 	URL      string `json:"url,omitempty"`

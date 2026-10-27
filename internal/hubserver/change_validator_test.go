@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -26,6 +27,14 @@ import (
 
 func TestChangeValidatorSessionAuthority(t *testing.T) {
 	t.Parallel()
+	attributedRework := func(r *tracker.ReviewChange) {
+		result := r.Validator
+		r.Decision, result.Verdict = "changes_requested", "rework"
+		diagnostic := "source.go:4: invalid input"
+		base := failureattribution.Observation{Command: "check-input", HeadSHA: result.BaseSHA, ExitCode: 1, Output: diagnostic, Complete: true}
+		result.Commands = []gate.CommandResult{{Command: base.Command, HeadSHA: result.HeadSHA, ExitCode: 1, Output: diagnostic, FinishedAt: time.Now(), BaseReproduction: &base}}
+		result.Findings = []gate.Finding{{Severity: "p1", Body: diagnostic, CheckCommand: base.Command, CheckDiagnostic: diagnostic}}
+	}
 	implementationReview := func(r *tracker.ReviewChange) {
 		r.ImplementationReview, r.Validator = r.Validator, nil
 	}
@@ -42,7 +51,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		r.SecurityAudit.Run.HeadSHA = strings.Repeat("e", 40)
 	}
 	largeFindingIdentities := func(r *tracker.ReviewChange) {
-		for i := range 6000 {
+		for i := range 5800 {
 			r.SecurityAudit.Run.Findings = append(r.SecurityAudit.Run.Findings, securityaudit.Finding{ID: fmt.Sprintf("finding-%06d-%s", i, strings.Repeat("i", 64)), Status: "resolved", Severity: "p1", Body: "Resolved"})
 		}
 	}
@@ -206,6 +215,11 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"another version", func(r *tracker.ReviewChange) { r.Validator.VersionID = "version_other" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"human approval from worker", func(r *tracker.ReviewChange) { r.Validator = nil }, http.StatusForbidden, "needs_evidence", nil},
 		{"verdict mismatch", func(r *tracker.ReviewChange) { r.Validator.Verdict = "rework" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"Attribution independent retains rejection", attributedRework, http.StatusOK, "needs_evidence", nil},
+		{"Attribution without proof stays unknown", func(r *tracker.ReviewChange) {
+			r.Decision, r.Validator.Verdict = "changes_requested", "rework"
+			r.Validator.Findings = []gate.Finding{{Severity: "p1", Body: "untouched file failure", Path: "untouched.go", Attribution: "independent"}}
+		}, http.StatusOK, "needs_evidence", nil},
 		{"separate session rework", func(r *tracker.ReviewChange) { r.Decision, r.Validator.Verdict = "changes_requested", "rework" }, http.StatusOK, "needs_evidence", nil},
 		{"separate session wait", func(r *tracker.ReviewChange) { r.Decision, r.Validator.Verdict = "commented", "wait" }, http.StatusOK, "needs_evidence", nil},
 		{"missing evidence cannot pass", func(r *tracker.ReviewChange) { r.Validator.CriteriaEvidence = nil }, http.StatusUnprocessableEntity, "needs_evidence", nil},
@@ -462,6 +476,18 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
 			requireNativeStatus(t, response, test.want)
+			if strings.HasPrefix(test.name, "Attribution") {
+				var outcome tracker.ChangeReview
+				decodeHubResponse(t, response, &outcome)
+				want := "independent"
+				if strings.Contains(test.name, "without proof") {
+					want = "unknown"
+				}
+				if outcome.Decision != "changes_requested" || outcome.Validator.Attribution != want || len(outcome.Validator.Findings) != 1 || outcome.Validator.Findings[0].Attribution != want {
+					t.Fatalf("lost rejection attribution: %#v", outcome)
+				}
+			}
+
 			if test.name == "object-backed storage exhausted" {
 				request.IdempotencyKey += "-another-output"
 				request.Validator.Commands[0].Output += "distinct rejected output"

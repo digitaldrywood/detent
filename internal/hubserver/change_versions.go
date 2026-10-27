@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -187,6 +188,7 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	}
 	storedVersion := version
 	if version.Validation != nil {
+		gate.NormalizeCommandAttribution(version.BaseSHA, version.HeadSHA, version.Validation)
 		command := *version.Validation
 		storedVersion.Validation = &command
 	}
@@ -199,6 +201,13 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO change_versions (id, change_id, number, record_json, policy_revision_id, claim_head_sha, gate_github_pull_request) VALUES (?, ?, ?, ?, ?, ?, ?)", version.ID, change.ID, version.Number, raw, version.PolicyID, version.HeadSHA, version.Policy.Gates.GitHubPullRequest); err != nil {
 		return nil, err
+	}
+	if version.Validation != nil {
+		slots := make(map[string][]attributionSlot)
+		commandAttributionSlots(slots, "validation", version.Validation)
+		if err := storeAttributionSlots(ctx, tx, version.ID, version.ID, slots); err != nil {
+			return nil, err
+		}
 	}
 	if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok && version.Validation != nil {
 		command := *version.Validation

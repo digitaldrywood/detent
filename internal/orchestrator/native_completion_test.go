@@ -13,6 +13,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -220,6 +221,32 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 	validatorRework := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Files: 2, Validator: &gate.ValidatorResult{VersionID: "version_1", Submitted: true, Verdict: gate.ValidatorVerdictRework, Score: 1}}
 	auditRework := *waiting
 	auditRework.SecurityAudit = &tracker.SecurityAuditReview{Verdict: "rework", Run: securityaudit.Run{Findings: []securityaudit.Finding{{ID: "audit-finding-1", Severity: "p1", Body: "Handle missing authority"}, {ID: "audit-finding-2", Severity: "p2", Body: "Preserve the request boundary"}, {ID: "resolved-finding", Status: "resolved"}}}}
+	attributed := func(role, value string) *runpkg.NativeChange {
+		base := strings.Repeat("a", 40)
+		diagnostic := "source.go:4: invalid input"
+		reproduction := failureattribution.Observation{Command: "check-input", HeadSHA: base, ExitCode: 1, Output: diagnostic, Complete: true}
+		if value == "change" {
+			reproduction.ExitCode, reproduction.Output = 0, ""
+		}
+		if value == "unknown" {
+			reproduction.Complete = false
+		}
+		receipt := gate.CommandResult{Command: "check-input", HeadSHA: head, ExitCode: 1, Output: diagnostic, FinishedAt: time.Now(), BaseReproduction: &reproduction}
+		review := &gate.ValidatorResult{BaseSHA: base, HeadSHA: head, Verdict: "rework", Findings: []gate.Finding{{Severity: "p1", Body: diagnostic, CheckCommand: receipt.Command, CheckDiagnostic: diagnostic}}, Commands: []gate.CommandResult{receipt}}
+		gate.AttributeFindings(base, head, review.Findings, review.Commands)
+		gate.NormalizeAttribution(review)
+		change := *waiting
+		change.BaseSHA = base
+		switch role {
+		case "validator":
+			change.Validator = review
+		case "implementation_review":
+			change.ImplementationReview = review
+		case "security_audit":
+			change.SecurityAudit = &tracker.SecurityAuditReview{Verdict: "rework", Run: securityaudit.Run{BaseSHA: base, HeadSHA: head, Findings: []securityaudit.Finding{{ID: "input", Severity: "p1", Body: diagnostic, CheckCommand: receipt.Command, CheckDiagnostic: diagnostic}}, Checks: []securityaudit.CheckComparison{{Head: gate.CommandObservation(receipt), Base: reproduction}}}}
+		}
+		return &change
+	}
 	sourceWait := &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Files: 2, ImplementationReview: &gate.ValidatorResult{VersionID: "version_1", HeadSHA: head, Verdict: "wait", Commands: []gate.CommandResult{{Command: "unavailable-host-tool", HeadSHA: head, ExitCode: 127}}}}
 	chatGPTCriterion := "a real ChatGPT custom connector signs in against production"
 	claudeCriterion := "a real Claude connector signs in against production"
@@ -303,6 +330,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		wantFindings     bool
 		auditFindings    bool
 		humanReview      *bool
+		wantAttribution  string
 		wantState        string
 		wantComment      string
 		wantReason       string
@@ -476,6 +504,15 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "criteria gate lane outage defers without a generic permission wait", change: criterionChange(gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}, gate.CriterionEvidence{Criterion: claudeCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}), states: unfinishedWorkflow, humanReview: &no, updateErr: errors.New("native lane write unavailable"), wantDeferred: true, wantState: "Blocked", wantQuestion: connectorAction},
 		{name: "mixed criteria block with only unsatisfiable actions", change: criterionChange(gate.CriterionEvidence{Criterion: "Missing regression test", Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionReworkFixable}, gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}, gate.CriterionEvidence{Criterion: claudeCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}), states: unfinishedWorkflow, humanReview: &no, finalMessage: unfinishedReport, wantState: "Rework"},
 		{name: "rewritten connector criterion reuses retained source and passes", change: criterionChange(gate.CriterionEvidence{Criterion: "Connector sign-in covered by local regression", Kind: gate.EvidenceTest, Reference: "connector_test.go:TestSignIn", Behavior: "The local client signs in successfully"}), states: rework, sourceState: "Rework", humanReview: &no, wantState: "Merging", wantComment: "runner lands it next"},
+		{name: "Attribution validator independent retains Rework", change: attributed("validator", "independent"), wantAttribution: "independent", states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
+		{name: "Attribution validator change retains Rework", change: attributed("validator", "change"), wantAttribution: "change", states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
+		{name: "Attribution validator unknown retains Rework", change: attributed("validator", "unknown"), wantAttribution: "unknown", states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
+		{name: "Attribution implementation_review independent retains Rework", change: attributed("implementation_review", "independent"), wantAttribution: "independent", states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
+		{name: "Attribution implementation_review change retains Rework", change: attributed("implementation_review", "change"), wantAttribution: "change", states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
+		{name: "Attribution implementation_review unknown retains Rework", change: attributed("implementation_review", "unknown"), wantAttribution: "unknown", states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
+		{name: "Attribution security_audit independent retains Rework", change: attributed("security_audit", "independent"), wantAttribution: "independent", states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
+		{name: "Attribution security_audit change retains Rework", change: attributed("security_audit", "change"), wantAttribution: "change", states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
+		{name: "Attribution security_audit unknown retains Rework", change: attributed("security_audit", "unknown"), wantAttribution: "unknown", states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
 		{name: "validator rework routes to Rework", diffStats: DiffStats{Status: "clean", HeadSHA: head, TreeSHA: "changed-tree"}, retryCycles: true, change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework", Summary: "Changes requested", NotVerified: []string{"Reject invalid input"}, Findings: []gate.Finding{{Severity: "p1", Path: "input.go", Body: "Invalid input is accepted"}}}}, states: unfinishedWorkflow, wantState: "Rework", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"Reject invalid input", "p1 input.go: Invalid input is accepted", "Changes requested"}},
 		{name: "exhausted source review budget retains completion routing", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework", Summary: "Shared implementation and review turn budget exhausted", NotVerified: []string{"Reject invalid input"}, Findings: []gate.Finding{{Severity: "p1", Path: "input.go", Body: "Invalid input is accepted"}}}}, states: unfinishedWorkflow, finalMessage: unfinishedReport, wantState: "Rework", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"Reject invalid input", "p1 input.go: Invalid input is accepted", "Shared implementation and review turn budget exhausted"}},
 		{name: "validator rework bounds long summary and retains criteria", change: &runpkg.NativeChange{Changed: true, ChangeID: "change", VersionID: "version", HeadSHA: head, Validator: &gate.ValidatorResult{Verdict: "rework", Summary: strings.Repeat("界", workpad.MaxFinalSummaryBytes), NotVerified: []string{"Reject invalid input"}}}, states: customRework, reworkState: "Fixing", humanReview: &no, wantState: "Fixing", wantComment: "validator requested changes", laneReason: "validator_rework", details: []string{"Reject invalid input", "…"}},
@@ -1102,11 +1139,14 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 					t.Fatalf("settlement lost provider accounting: %+v", attempts.completions[0])
 				}
 				var metadata struct {
-					ChangeID     string `json:"native_change_id"`
-					VersionID    string `json:"native_version_id"`
-					HeadSHA      string `json:"native_head_sha"`
-					VersionError string `json:"native_version_error"`
-					VersionCode  string `json:"native_version_code"`
+					ChangeID                  string `json:"native_change_id"`
+					VersionID                 string `json:"native_version_id"`
+					HeadSHA                   string `json:"native_head_sha"`
+					VersionError              string `json:"native_version_error"`
+					VersionCode               string `json:"native_version_code"`
+					ValidatorAttribution      string `json:"validator_attribution"`
+					ImplementationAttribution string `json:"implementation_review_attribution"`
+					AuditAttribution          string `json:"security_audit_attribution"`
 				}
 				if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &metadata); err != nil {
 					t.Fatal(err)
@@ -1462,14 +1502,29 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				t.Fatal("successful native review consumed failure allowance")
 			}
 			var metadata struct {
-				ChangeID     string `json:"native_change_id"`
-				VersionID    string `json:"native_version_id"`
-				HeadSHA      string `json:"native_head_sha"`
-				VersionError string `json:"native_version_error"`
-				VersionCode  string `json:"native_version_code"`
+				ChangeID                  string `json:"native_change_id"`
+				VersionID                 string `json:"native_version_id"`
+				HeadSHA                   string `json:"native_head_sha"`
+				VersionError              string `json:"native_version_error"`
+				VersionCode               string `json:"native_version_code"`
+				ValidatorAttribution      string `json:"validator_attribution"`
+				ImplementationAttribution string `json:"implementation_review_attribution"`
+				AuditAttribution          string `json:"security_audit_attribution"`
 			}
 			if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &metadata); err != nil {
 				t.Fatal(err)
+			}
+			if test.wantAttribution != "" {
+				got := metadata.ValidatorAttribution
+				if got == "" {
+					got = metadata.ImplementationAttribution
+				}
+				if got == "" {
+					got = metadata.AuditAttribution
+				}
+				if got != test.wantAttribution {
+					t.Fatalf("outcome attribution = %q, want %q", got, test.wantAttribution)
+				}
 			}
 			wantChange := test.change
 			if wantChange == nil {
@@ -1727,5 +1782,23 @@ func assertCompletionMachineRetry(t *testing.T, orch *Orchestrator, state State,
 	got, ok := restored.Retry[issueID]
 	if !ok || got.Attempt != attempt || !got.DueAt.Equal(retry.DueAt) || got.Error != retry.Error || got.Issue.State != retry.Issue.State || got.WorkerHost != retry.WorkerHost {
 		t.Fatalf("persisted retry restoration = %+v, want %+v", got, retry)
+	}
+}
+
+func TestFindingAttributionSurvivesOutcomeAdapters(t *testing.T) {
+	evidence := &failureattribution.Evidence{BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), Command: "check-input", Diagnostic: "source.go:4: invalid input", BaseExitCode: 1}
+	original := []gate.Finding{{Body: "Invalid input", Attribution: "independent", AttributionEvidence: evidence, CheckCommand: evidence.Command, CheckDiagnostic: evidence.Diagnostic}}
+	for _, test := range []struct {
+		name   string
+		result []gate.Finding
+	}{
+		{"validator store", gateFindingsFromStore(storeFindingsFromGate(original))},
+		{"promotion summary", gateFindings(autoPromoteFindingsFromGate(original))},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if !reflect.DeepEqual(test.result, original) {
+				t.Fatalf("attribution lost in outcome adapter: %#v", test.result)
+			}
+		})
 	}
 }

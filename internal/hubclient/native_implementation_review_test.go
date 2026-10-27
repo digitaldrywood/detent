@@ -85,7 +85,7 @@ func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 			if err := execution.Checkpoint(ctx, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", HeadSHA: head, ExternalEffect: "none", EffectState: "none"}); err != nil {
 				t.Fatal(err)
 			}
-			receipt := gate.CommandResult{Command: "make check", HeadSHA: head, TreeSHA: strings.Repeat("a", 40), StartedAt: time.Now().UTC().Add(time.Hour), DurationNS: int64(time.Second), Evidence: &gate.CommandEvidence{Environment: gate.CheckEnvironment{OS: "linux", Architecture: "amd64", GoVersion: "go1.26.9"}}}
+			receipt := gate.CommandResult{Attribution: "unknown", Command: "make check", HeadSHA: head, TreeSHA: strings.Repeat("a", 40), StartedAt: time.Now().UTC().Add(time.Hour), DurationNS: int64(time.Second), Evidence: &gate.CommandEvidence{Environment: gate.CheckEnvironment{OS: "linux", Architecture: "amd64", GoVersion: "go1.26.9"}}}
 			receipt.FinishedAt = receipt.StartedAt.Add(time.Second)
 			receipt.ReceiptID = receipt.PipelineTiming("finalization").ID()
 			if err := execution.(runner.SourceValidationExecution).RecordSourceValidation(ctx, receipt); err != nil {
@@ -315,6 +315,7 @@ func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 					result.Verdict = gate.ValidatorVerdictRework
 					failed := receipt
 					failed.ExitCode, failed.StartedAt = 7, receipt.StartedAt.Add(-2*time.Hour)
+					failed.Findings = []gate.Finding{{Attribution: "unknown", Body: "Command failed", CheckCommand: failed.Command}}
 					failed.FinishedAt = failed.StartedAt.Add(time.Second)
 					failed.ReceiptID = failed.PipelineTiming("finalization").ID()
 					result.Commands = []gate.CommandResult{failed}

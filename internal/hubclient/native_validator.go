@@ -330,6 +330,7 @@ func recordedValidatorMatches(detail tracker.ChangeDetail, result gate.Validator
 			}
 		}
 		gate.NormalizeCriterionEvidence(&normalized, criteria, tree)
+		gate.NormalizeAttribution(&normalized)
 		canonical, err := json.Marshal(normalized)
 		if err != nil {
 			return false

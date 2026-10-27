@@ -902,7 +902,7 @@ func (l *LocalGit) prepareGitHubLanding(ctx context.Context, info Info, issue Is
 	if err := l.executeHook(ctx, "before_run", l.hooks.BeforeRun, validationInfo, issue); err != nil {
 		return "", gate.CommandResult{}, err
 	}
-	validation, err := l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, head)
+	validation, err := l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, head, base)
 	return head, validation, err
 }
 

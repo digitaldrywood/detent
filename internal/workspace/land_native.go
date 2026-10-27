@@ -189,7 +189,7 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 				if scopeErr != nil {
 					err = scopeErr
 				} else {
-					result.Gate, err = l.validateLanding(ctx, validationInfo, request.Issue, command, merged)
+					result.Gate, err = l.validateLanding(ctx, validationInfo, request.Issue, command, merged, stageHead)
 					if !result.Gate.StartedAt.IsZero() {
 						result.Gate.TimingStage = "landing_validation"
 						result.Pipeline = append(result.Pipeline, result.Gate.PipelineTiming("landing_validation"))

@@ -288,6 +288,7 @@ func (s *Service) landChange(c echo.Context) error {
 				return nil, nativePublicInvalid("landing requires security audit evidence for its exact base and head")
 			}
 			audit := request.Receipt.SecurityAudit
+			securityaudit.NormalizeAttribution(&audit.Run)
 			run := audit.Run
 			evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: string(scope.project), Repository: version.Repository, PRNumber: run.PRNumber, BaseSHA: request.Receipt.BaseSHA, HeadSHA: request.MergeSHA}, "", []string{"none"})
 			auditRaw, err := marshalNative(audit)

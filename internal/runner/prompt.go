@@ -484,7 +484,7 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 		b.WriteString("- Do not modify files, commit, push, change labels, or transition issue state. Do not claim final acceptance or map acceptance evidence; the separate validator performs that task after this review.\n")
 		b.WriteString("- Report only introduced, reachable, actionable defects with a concrete trace. Use severities p1, p2, p3, or p4. Score is confidence from 0 to 1 in the source review's conclusion about implementation quality.\n")
 		b.WriteString("- Return pass when no blocking source defects remain, rework for actionable defects, or wait when source review cannot be completed. Missing later feature-acceptance evidence alone is not a source-review defect.\n")
-		b.WriteString("- Return only JSON: {\"verdict\":\"pass|wait|rework\",\"score\":0.0,\"summary\":\"...\",\"findings\":[{\"severity\":\"p1|p2|p3|p4\",\"body\":\"concrete traced defect\",\"path\":\"optional\",\"line\":0}]}.\n")
+		b.WriteString("- Return only JSON: {\"verdict\":\"pass|wait|rework\",\"score\":0.0,\"summary\":\"...\",\"findings\":[{\"severity\":\"p1|p2|p3|p4\",\"body\":\"concrete traced defect\",\"path\":\"optional\",\"line\":0,\"check_command\":\"exact failed host command, if any\",\"check_diagnostic\":\"exact diagnostic from that command, if any\"}]}.\n")
 		fmt.Fprintf(&b, "Minimum source-review score: %g. Blocking severities: %s.\n", validator.MinScore, strings.Join(validator.BlockOn, ", "))
 		return b.String()
 	}
@@ -519,7 +519,7 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 	} else {
 		b.WriteString("- Any not_verified criterion under rework policy forces rework and must be named in the summary. Under pass-with-disclosure, evidence gaps may pass but must remain not_verified; min_score and block_on still apply.\n")
 	}
-	b.WriteString("- Return only JSON with this shape: {\"verdict\":\"pass|wait|rework\",\"score\":0.0,\"summary\":\"...\",\"criteria_evidence\":[{\"criterion\":\"exact criterion\",\"kind\":\"receipt|test|attachment|not_verified\"," + unverifiedClassField + "\"reference\":\"receipt description or file:test name or gap reason\",\"receipt_ids\":[\"exact host receipt_id for receipt evidence\"],\"head_sha\":\"attachment or legacy receipt head only\",\"tree_sha\":\"attachment or legacy receipt tree only\",\"behavior\":\"independent assertion or observed outcome\",\"restates_implementation\":false}],\"findings\":[{\"severity\":\"p1|p2|p3|p4\",\"body\":\"...\",\"path\":\"optional\",\"line\":0}]}.\n")
+	b.WriteString("- Return only JSON with this shape: {\"verdict\":\"pass|wait|rework\",\"score\":0.0,\"summary\":\"...\",\"criteria_evidence\":[{\"criterion\":\"exact criterion\",\"kind\":\"receipt|test|attachment|not_verified\"," + unverifiedClassField + "\"reference\":\"receipt description or file:test name or gap reason\",\"receipt_ids\":[\"exact host receipt_id for receipt evidence\"],\"head_sha\":\"attachment or legacy receipt head only\",\"tree_sha\":\"attachment or legacy receipt tree only\",\"behavior\":\"independent assertion or observed outcome\",\"restates_implementation\":false}],\"findings\":[{\"severity\":\"p1|p2|p3|p4\",\"body\":\"...\",\"path\":\"optional\",\"line\":0,\"check_command\":\"exact failed host command, if any\",\"check_diagnostic\":\"exact diagnostic from that command, if any\"}]}.\n")
 	if validator.MinScore > 0 {
 		b.WriteString("- The configured minimum score is ")
 		b.WriteString(strconv.FormatFloat(validator.MinScore, 'f', -1, 64))

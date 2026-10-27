@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -15,8 +16,9 @@ import (
 )
 
 func (execution SecurityAuditExecution) auditRun(snapshot securityaudit.Snapshot) securityaudit.Run {
-	return securityaudit.Run{
+	run := securityaudit.Run{
 		Verification:       execution.Verification,
+		Checks:             snapshot.Checks,
 		ID:                 execution.SessionID,
 		InvocationID:       execution.InvocationID,
 		ProjectID:          snapshot.ProjectID,
@@ -46,6 +48,8 @@ func (execution SecurityAuditExecution) auditRun(snapshot securityaudit.Snapshot
 		CompletedAt:        execution.CompletedAt,
 		RecordedAt:         execution.CompletedAt,
 	}
+	securityaudit.NormalizeAttribution(&run)
+	return run
 }
 
 func (r *Runner) auditNativeChange(ctx context.Context, req RunRequest) (approved bool, err error) {
@@ -88,6 +92,21 @@ func (r *Runner) auditNativeChange(ctx context.Context, req RunRequest) (approve
 		return false, err
 	}
 
+	commands := make([]gate.CommandResult, 0, len(input.Commands)+1)
+	if input.Version.Validation != nil {
+		commands = append(commands, *input.Version.Validation)
+	}
+	commands = append(commands, input.Commands...)
+	latest := make(map[string]int, len(commands))
+	for i, command := range commands {
+		latest[command.Command] = i
+	}
+	for i, command := range commands {
+		if latest[command.Command] != i || command.ExitCode == 0 || command.BaseReproduction == nil {
+			continue
+		}
+		snapshot.Checks = append(snapshot.Checks, securityaudit.CheckComparison{Head: gate.CommandObservation(command), Base: *command.BaseReproduction})
+	}
 	var publisher ValidationEvidenceExecution
 	if evidence, ok := req.Execution.(ValidationEvidenceExecution); ok {
 		publisher = evidence

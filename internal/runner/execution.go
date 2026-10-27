@@ -795,6 +795,7 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 						if runErr != nil {
 							err = runErr
 						} else if receipt.ExitCode != 0 {
+							attributeCommandFailure(ctx, commands, info, validationIssue, issue.BaseRef, &receipt)
 							receipt.Stage = gate.StageSourceFinalization
 							receipt = tracker.PublicGateResult(receipt)
 							err = &workspace.ValidationError{Stage: workspace.ValidationStageSourceFinalization, Result: receipt, Output: receipt.Output, Err: fmt.Errorf("exit status %d", receipt.ExitCode)}
