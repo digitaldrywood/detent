@@ -252,7 +252,13 @@ func TestRunnerHostSummaryWriteCost(t *testing.T) {
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
+	for _, pragma := range []string{"PRAGMA synchronous=NORMAL", "PRAGMA wal_autocheckpoint=0"} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), pragma); err != nil {
+			t.Fatal(err)
+		}
+	}
 	now := time.Now().UTC()
+	f.service.config.now = func() time.Time { return now }
 	for _, r := range f.runners {
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"capacity": 8, "version": "test", "backend_isolation": r.redemption.BackendIsolation}), http.StatusOK)
 	}

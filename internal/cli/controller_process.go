@@ -463,6 +463,7 @@ func runControllerSupervisor(ctx context.Context, shutdown *ShutdownController, 
 	var stopStartup context.CancelFunc
 	var startupDone <-chan struct{}
 	var ownerDone <-chan struct{}
+	ownerError := runCtx.Err
 	var startupFailure error
 	beginStartup := func() {
 		nextCtx, stop := cfg.startupContext(runCtx, controllerStartupTimeout)
@@ -476,6 +477,7 @@ func runControllerSupervisor(ctx context.Context, shutdown *ShutdownController, 
 			stopStartup()
 		}
 		startupDone, ownerDone = nil, nil
+		ownerError = runCtx.Err
 	}
 	defer finishStartup()
 	beginStartup()
@@ -502,7 +504,7 @@ func runControllerSupervisor(ctx context.Context, shutdown *ShutdownController, 
 		case <-startupDone:
 			rejectStartup(fmt.Errorf("controller startup did not complete: %w", startupCause()))
 		case <-ownerDone:
-			rejectStartup(fmt.Errorf("controller adoption canceled: %w", pending.process.peer.Context().Err()))
+			rejectStartup(fmt.Errorf("controller adoption canceled: %w", ownerError()))
 		case request := <-shutdown.Requests():
 			stopping = true
 			if starting != nil {
@@ -541,7 +543,8 @@ func runControllerSupervisor(ctx context.Context, shutdown *ShutdownController, 
 				}
 				pending = &event
 				beginStartup()
-				ownerDone = event.process.peer.Context().Done()
+				owner := event.process.peer.Context()
+				ownerDone, ownerError = owner.Done(), owner.Err
 			case "cancel_restart":
 				event.process.canceledRestart = max(event.process.canceledRestart, event.restartID)
 				if pending != nil && pending.process == event.process && pending.restartID == event.restartID {

@@ -338,7 +338,7 @@ func (s *Service) landChange(c echo.Context) error {
 		if err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE change_requests SET record_json = ?, claim_version_id = ?, claim_head_sha = ?, landed_version_id=? WHERE id = ?", raw, version.ID, version.HeadSHA, change.Landed.VersionID, change.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE change_requests SET record_json = ?, claim_version_id = ?, claim_head_sha = ?, landed_version_id=?, activity_created_at = julianday(?), activity_current_version_id = ? WHERE id = ?", raw, version.ID, version.HeadSHA, change.Landed.VersionID, formatHubTime(change.CreatedAt), change.CurrentVersion, change.ID); err != nil {
 			return nil, err
 		}
 		if err := writeArchiveChangeFacts(ctx, tx, change, ""); err != nil {

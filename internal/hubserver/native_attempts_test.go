@@ -787,6 +787,9 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 			})
 		}
 	}
+	if len(full) == 0 {
+		t.Fatal("missing full attempt fixtures")
+	}
 	raw, err := json.Marshal(tracker.Page[tracker.NativeAttempt]{Items: full})
 	if err != nil || len(raw) <= 1<<20 {
 		t.Fatalf("old count-only payload bytes=%d, error=%v", len(raw), err)

@@ -199,7 +199,11 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO change_versions (id, change_id, number, record_json, policy_revision_id, claim_head_sha, gate_github_pull_request, external_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", version.ID, change.ID, version.Number, raw, version.PolicyID, version.HeadSHA, version.Policy.Gates.GitHubPullRequest, changeVersionExternalURL(version)); err != nil {
+	var activityURL string
+	if version.External != nil {
+		activityURL = version.External.URL
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO change_versions (id, change_id, number, record_json, policy_revision_id, claim_head_sha, gate_github_pull_request, external_url, activity_external_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", version.ID, change.ID, version.Number, raw, version.PolicyID, version.HeadSHA, version.Policy.Gates.GitHubPullRequest, changeVersionExternalURL(version), activityURL); err != nil {
 		return nil, err
 	}
 	if version.Validation != nil {
@@ -245,7 +249,7 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE change_requests SET record_json = ?, claim_version_id = ?, claim_head_sha = ? WHERE id = ?", raw, version.ID, version.HeadSHA, change.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE change_requests SET record_json = ?, claim_version_id = ?, claim_head_sha = ?, activity_created_at = julianday(?), activity_current_version_id = ? WHERE id = ?", raw, version.ID, version.HeadSHA, formatHubTime(change.CreatedAt), change.CurrentVersion, change.ID); err != nil {
 		return nil, err
 	}
 	if err := writeArchiveChangeFacts(ctx, tx, change, ""); err != nil {

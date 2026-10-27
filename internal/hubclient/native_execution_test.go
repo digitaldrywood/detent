@@ -93,6 +93,9 @@ func TestRetiredControllerRenewsClaimsWithoutReportingOldBuild(t *testing.T) {
 	issue := h.createInProgress(t, "Finish the active attempt")
 	h.claim(t, issue.ID)
 	source := h.scheduler.nativeProject("local")
+	if source == nil {
+		t.Fatal("local native project is required")
+	}
 	transport := h.native.client.httpClient.Transport
 	var reports atomic.Int64
 	h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {

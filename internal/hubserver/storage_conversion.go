@@ -85,6 +85,9 @@ func (s *Service) convertLegacyStorage(ctx context.Context, now time.Time) error
 	if err := s.convertIssuePageFacts(ctx); err != nil {
 		return err
 	}
+	if err := s.convertActivityProjections(ctx); err != nil {
+		return err
+	}
 	if err := s.convertAttemptHotProjections(ctx); err != nil {
 		return err
 	}

@@ -3353,16 +3353,38 @@ func TestCheckDoctorLocalWorkflowOverlay(t *testing.T) {
 	}
 }
 
-func TestDefaultGitTracked(t *testing.T) {
+func TestDefaultGitWorkspaceChecks(t *testing.T) {
 	if testing.Short() {
 		t.Skip("real Git integration")
 	}
 
 	t.Parallel()
 
-	repo := t.TempDir()
+	repo := filepath.Join(t.TempDir(), "example project; echo injected")
+	if err := os.Mkdir(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := runDoctorCommandInDir(context.Background(), ".", nil, "git", "-C", repo, "init"); err != nil {
 		t.Fatalf("git init error = %v", err)
+	}
+	bare := t.TempDir()
+	if err := runDoctorCommandInDir(t.Context(), ".", nil, "git", "init", "--bare", bare); err != nil {
+		t.Fatalf("git init --bare error = %v", err)
+	}
+	for _, tt := range []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "literal checkout path", path: repo, want: true},
+		{name: "bare repository", path: bare},
+		{name: "missing directory", path: filepath.Join(repo, "missing")},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := defaultGitWorkTree(t.Context(), tt.path); (err == nil) != tt.want {
+				t.Fatalf("defaultGitWorkTree() error = %v, want success %t", err, tt.want)
+			}
+		})
 	}
 	path := filepath.Join(repo, "WORKFLOW.local.md")
 	if err := os.WriteFile(path, []byte("---\n---\nlocal\n"), 0o600); err != nil {

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -26,7 +25,7 @@ import (
 func workerProtocolPreflight(ctx context.Context, path string) error {
 	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(probeCtx, path, SSHProbeArgument)
+	cmd := detentupdate.ReleaseCommand(probeCtx, path, SSHProbeArgument)
 	procgroup.Configure(probeCtx, cmd)
 	cmd.WaitDelay = time.Second
 	output, err := cmd.Output()

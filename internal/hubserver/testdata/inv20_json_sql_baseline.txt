@@ -44,8 +44,6 @@ internal/hubserver/native_recovery.go 26
 internal/hubserver/native_shipped.go 1
 internal/hubserver/native_work_search.go 1
 internal/hubserver/onboarding_batch.go 2
-internal/hubserver/operator_activity.go 16
-internal/hubserver/operator_activity_durations.go 1
 internal/hubserver/operator_analytics.go 19
 internal/hubserver/operator_analytics_attempts.go 9
 internal/hubserver/operator_analytics_quality.go 27

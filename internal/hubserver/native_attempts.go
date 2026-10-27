@@ -481,6 +481,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`, data.AttemptID, scope.org
 			return false, false, err
 		}
 	}
+	if err := updateActivityAttemptProjection(ctx, tx, data.AttemptID, data, data.Handoff); err != nil {
+		return false, false, err
+	}
 	if err := updateAttemptClaimFacts(ctx, tx, data.AttemptID, data); err != nil {
 		return false, false, err
 	}

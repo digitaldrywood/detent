@@ -173,6 +173,7 @@ func TestNativeRunDetailReferences(t *testing.T) {
 	second := first
 	second.IdempotencyKey, second.Data.Sequence = "observed-2", 4
 	first.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: f.service.config.now(), Validation: &gate.CommandResult{Command: "make check-land", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), DurationNS: 1, Output: strings.Repeat("validation output\n", 3000)}}
+	first.Data.Runtime.Phases = []tracker.NativePhase{{Name: "implementation", StartedAt: now.Add(-2 * time.Minute), FinishedAt: now.Add(-time.Minute)}}
 	second.Data.Runtime = first.Data.Runtime
 	event.IdempotencyKey, event.Data.Sequence, event.PriorEvents = "checkpoint-2", 5, []tracker.NativeRunEvent{first, second}
 	event.Data.Runtime = first.Data.Runtime
@@ -273,6 +274,26 @@ func TestNativeRunDetailReferences(t *testing.T) {
 	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT data_json FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
+	for _, stage := range []string{"writer", "backfill"} {
+		if stage == "backfill" {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET activity_projection_version=NULL WHERE id=?`, event.Data.AttemptID); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.convertActivityProjections(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		phases, err := readActivityPhases(t.Context(), f.service.database.reader, event.Data.AttemptID)
+		if err != nil || !reflect.DeepEqual(phases, first.Data.Runtime.Phases) {
+			t.Fatalf("%s lost archived phases: %v err=%v", stage, phases, err)
+		}
+		var seconds float64
+		var partial bool
+		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT seconds,partial FROM activity_attempt_durations WHERE attempt_id=?`, event.Data.AttemptID).Scan(&seconds, &partial); err != nil || seconds != 60 || partial {
+			t.Fatalf("%s duration=%g partial=%t err=%v", stage, seconds, partial, err)
+		}
+	}
+
 	var hydrated tracker.NativeRunData
 	if err := decodeRunDetail(f.service.runDetailContext(t.Context()), f.service.database.reader, raw, &hydrated); err != nil {
 		t.Fatal(err)

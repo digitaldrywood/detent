@@ -284,7 +284,7 @@ func readActivityIssueSamples(ctx context.Context, q nativeQueryer, organization
 }
 
 func readActivityIssueAttempts(ctx context.Context, q nativeQueryer, organization, project, id string, start, now time.Time) ([]activityIssueAttempt, bool, error) {
-	rows, err := q.QueryContext(ctx, `SELECT a.data_json,a.started_at,a.updated_at,a.status,a.role,coalesce(lr.runner_id,''),coalesce(l.session_id,''),coalesce(l.renewed_at,''),coalesce(l.expires_at,''),coalesce(l.released_at,'') FROM native_attempts a LEFT JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND (julianday(a.updated_at)>=julianday(?) OR (a.status='running' AND julianday(l.expires_at)>=julianday(?))) ORDER BY a.started_at DESC,a.id DESC LIMIT ?`, organization, project, id, formatHubTime(start), formatHubTime(start), activityIssueHistoryLimit+1)
+	rows, err := q.QueryContext(ctx, `SELECT a.data_json,a.started_at,a.updated_at,a.status,coalesce(a.role,''),coalesce(lr.runner_id,''),coalesce(l.session_id,''),coalesce(l.renewed_at,''),coalesce(l.expires_at,''),coalesce(l.released_at,'') FROM native_attempts a LEFT JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND (julianday(a.updated_at)>=julianday(?) OR (a.status='running' AND julianday(l.expires_at)>=julianday(?))) ORDER BY a.started_at DESC,a.id DESC LIMIT ?`, organization, project, id, formatHubTime(start), formatHubTime(start), activityIssueHistoryLimit+1)
 	if err != nil {
 		return nil, false, err
 	}
@@ -307,11 +307,8 @@ func readActivityIssueAttempts(ctx context.Context, q nativeQueryer, organizatio
 		if err != nil {
 			return nil, false, err
 		}
-		if a.role == "" && a.run.Identity != nil {
-			a.role = a.run.Identity.Role
-		}
-		if a.role == "" && a.run.Runtime != nil {
-			a.role = a.run.Runtime.Identity.Role
+		if a.role == "" {
+			a.role = activityRunRole(a.run)
 		}
 		if a.runner == "" {
 			a.runner = a.run.RunnerID

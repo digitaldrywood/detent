@@ -332,6 +332,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"populateRunnerFact":                "Retention verifies one unchanged source row and writes that row's typed facts per transaction.",
 		"populateHostedImportField":         "Projects one reader-evaluated legacy source row with a payload comparison in the existing retention owner.",
 		"convertIssuePageFact":              "Writes one source-checked issue, event, board or version projection after decoding on the reader pool in the existing storage maintenance owner.",
+		"convertActivityAttempt":            "Backfills one attempt and its owned phase and duration projections after verifying its current source.",
 		"populateClaimFact":                 "Populates at most 100 unknown claim projections from their source rows in the existing retention transaction owner.",
 		"convertAttemptHotProjection":       "Converts one attempt projection after checking its source row under the write transaction.",
 		"convertNativeBoardRank":            "Converts one project workflow rank set after checking its source under the write transaction.",
