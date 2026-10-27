@@ -232,6 +232,10 @@ func TestHubMCPStopRun(t *testing.T) {
 				}
 			}
 			current := readWorkItem(t, f.nativeFixture, issue.WorkItemID, "")
+			if current.ChangeSequence < issue.ChangeSequence {
+				t.Fatal("stop regressed project change sequence")
+			}
+			issue.ChangeSequence = current.ChangeSequence
 			stopped, found, err := readLease(lease.ID)
 			if err != nil || !found || (stopped.session.ReleasedAt != nil) != (scenario == "execute") {
 				t.Fatalf("wrong lease released: %+v %v", stopped, err)
@@ -243,7 +247,12 @@ func TestHubMCPStopRun(t *testing.T) {
 				t.Fatal("refused stop changed item")
 			}
 			other, found, err := readLease(otherLease.ID)
-			if err != nil || !found || !reflect.DeepEqual(other, otherBefore) || !reflect.DeepEqual(unrelated, readWorkItem(t, f.nativeFixture, unrelated.WorkItemID, "")) {
+			otherItem := readWorkItem(t, f.nativeFixture, unrelated.WorkItemID, "")
+			if otherItem.ChangeSequence < unrelated.ChangeSequence {
+				t.Fatal("stop regressed unrelated project change sequence")
+			}
+			unrelated.ChangeSequence = otherItem.ChangeSequence
+			if err != nil || !found || !reflect.DeepEqual(other, otherBefore) || !reflect.DeepEqual(unrelated, otherItem) {
 				t.Fatalf("unrelated item or lease changed: %+v %v", other, err)
 			}
 			retained := performHubAPIRequest(t, f.service, http.MethodGet, sourcePath, f.token, nil)

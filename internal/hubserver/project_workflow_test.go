@@ -113,6 +113,10 @@ func TestHostedProjectWorkflowConfiguration(t *testing.T) {
 	}
 	var retained tracker.NativeIssue
 	browserHostedDecode(t, api(t, "owner", http.MethodGet, base+"/work-items/"+string(currentItem.WorkItemID), nil, http.StatusOK), &retained)
+	if retained.ChangeSequence <= currentItem.ChangeSequence {
+		t.Fatal("workflow edit did not advance project change sequence")
+	}
+	currentItem.ChangeSequence = retained.ChangeSequence
 	if !reflect.DeepEqual(retained, currentItem) {
 		t.Fatalf("workflow edit changed current item or dependencies: %#v", retained)
 	}

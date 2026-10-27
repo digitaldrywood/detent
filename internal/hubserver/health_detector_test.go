@@ -149,6 +149,9 @@ func TestHealthFindingLifecycle(t *testing.T) {
 func TestHealthDetectorEmptyTenantAndObservationOnly(t *testing.T) {
 	t.Parallel()
 	f := newNativeFixture(t, nil, "", "empty-health")
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	addHealthBacklog(t, f)
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	if err := f.service.evaluateOrganizationHealth(t.Context(), f.project.OrganizationID, now); err != nil {
@@ -166,6 +169,7 @@ func TestHealthDetectorEmptyTenantAndObservationOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	drainTestNativeBoard(t, f.service)
 	if err := f.service.evaluateOrganizationHealth(t.Context(), f.project.OrganizationID, now); err != nil {
 		t.Fatal(err)
 	}
@@ -187,6 +191,10 @@ func TestHealthDetectorEmptyTenantAndObservationOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if after.ChangeSequence <= before.ChangeSequence {
+		t.Fatal("board refresh did not advance project change sequence")
+	}
+	before.ChangeSequence = after.ChangeSequence
 	a, _ := json.Marshal(before)
 	b, _ := json.Marshal(after)
 	if string(a) != string(b) {

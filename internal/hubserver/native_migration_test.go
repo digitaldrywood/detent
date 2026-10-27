@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -304,14 +305,22 @@ func TestHubMigrationPreservesExistingData(t *testing.T) {
 				SELECT 'existing-change', organization_id, project_id, native_id, '{"current_version_id":"existing-version"}' FROM issues WHERE id = ?`, issueID); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_versions (id, change_id, number, record_json) VALUES ('existing-version', 'existing-change', 1, '{"head_sha":"preserved"}')`); err != nil {
+			firstVersion, err := json.Marshal(tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "preserved"}, Policy: hubTestPolicy()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_versions (id, change_id, number, record_json) VALUES ('existing-version', 'existing-change', 1, ?)`, string(firstVersion)); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_requests (id,organization_id,project_id,work_item_id,record_json)
 SELECT 'second-change',organization_id,project_id,native_id,'{"current_version_id":"second-version"}' FROM issues WHERE id=?`, issueID); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_versions(id,change_id,number,record_json) VALUES('second-version','second-change',1,'{"head_sha":"second-head"}')`); err != nil {
+			secondVersion, err := json.Marshal(tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "second-head"}, Policy: hubTestPolicy()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.ExecContext(t.Context(), `INSERT INTO change_versions(id,change_id,number,record_json) VALUES('second-version','second-change',1,?)`, string(secondVersion)); err != nil {
 				t.Fatal(err)
 			}
 			if test.version >= 17 {
@@ -371,7 +380,7 @@ SELECT 'second-change',organization_id,project_id,native_id,'{"current_version_i
 				{"onboarding timestamp", "SELECT updated_at FROM project_onboarding", testTimestamp},
 				{"identity migration", "SELECT count(*) FROM hub_schema_version WHERE version_id = 17 AND is_applied = 1", "1"},
 				{"version 18 recorded once", "SELECT count(*) FROM hub_schema_version WHERE version_id = 18 AND is_applied = 1", "1"},
-				{"existing code version", "SELECT record_json FROM change_versions WHERE id = 'existing-version'", `{"head_sha":"preserved"}`},
+				{"existing code version", "SELECT record_json FROM change_versions WHERE id = 'existing-version'", string(firstVersion)},
 				{"first claim version", "SELECT claim_version_id||':'||claim_head_sha FROM change_requests WHERE id='existing-change'", "existing-version:preserved"},
 				{"second claim version", "SELECT claim_version_id||':'||claim_head_sha FROM change_requests WHERE id='second-change'", "second-version:second-head"},
 				{"viewed state", "SELECT viewed FROM change_viewed_files WHERE version_id = 'existing-version' AND principal_id = 'reviewer'", "1"},
