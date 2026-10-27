@@ -40,7 +40,7 @@ async function openReports(page) {
   page.on("pageerror", (error) => errors.push(String(error)));
   const ranges = await routeReports(page);
   await page.goto(hub.fixture.accounts.owner);
-  await page.goto(hub.fixture.chat);
+  await page.goto(`${hub.fixture.chat}/p/${hub.fixture.project_id}`);
   if (page.viewportSize().width < 768)
     await page.getByRole("button", { name: "Toggle main sidebar", exact: true }).click();
   await page.getByTestId("nav-reports").click();
