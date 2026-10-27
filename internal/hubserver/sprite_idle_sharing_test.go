@@ -250,6 +250,14 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 				setMonthlyBudgetFixture(t, f, false, budget.MonthlyPolicy{Enabled: true, SpriteMicros: new(int64)})
 			}
 			claim := providerClaim(r, foreign, "sharing")
+			if test.ownReady {
+				claim.WorkItemID = ""
+				claim.ProviderCandidates = append(claim.ProviderCandidates, providerClaim(r, own, "").ProviderCandidates[0])
+			}
+			if ranked.service != nil {
+				claim.WorkItemID = ""
+				claim.ProviderCandidates = append(claim.ProviderCandidates, providerClaim(r, rankedIssue, "").ProviderCandidates[0])
+			}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, other.base+"/claims", r.redemption.Credential, claim)
 			requireNativeStatus(t, response, test.status)
 			if test.status == http.StatusOK {

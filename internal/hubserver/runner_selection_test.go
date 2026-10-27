@@ -79,7 +79,7 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 					t.Fatal(err)
 				}
 				issue := general.create(t, "ready source work")
-				claim := tracker.NativeClaim{LandingCapacity: 1, PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "general-source", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+				claim := tracker.NativeClaim{LandingCapacity: 1, PolicyID: hubTestPolicy().ID, MachineID: r.binding.MachineID, SessionID: "general-source", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 				switch scenario.landing {
 				case "native-only request":
 					claim.LandingCapacity = 0
@@ -203,6 +203,7 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 			}
 			claim := providerClaim(r, generalIssue, "general-provider")
 			if scenario.ready {
+				claim.WorkItemID = ""
 				claim.ProviderCandidates = append(claim.ProviderCandidates, providerClaim(r, preferredIssue, "").ProviderCandidates[0])
 			}
 			if scenario.contract != "" {
@@ -339,6 +340,7 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 		{"empty allowlist runs nothing", 1, 4, 0, 1, -time.Hour, time.Hour, "empty", false, "", "", false, false, false},
 		{"project capacity yields to another project", 1, 4, 0, 1, -time.Hour, time.Hour, "project-full", false, "", "", false, false, false},
 		{"project rank beats issue priority", 2, 1, 0, 1, -time.Hour, time.Hour, "both", true, "", "", false, false, false},
+		{"targeted work item bypasses unrequested project head", 2, 1, 0, 1, -time.Hour, time.Hour, "targeted", true, "", "", false, false, false},
 		{"foreign provider candidate competes", 2, 1, 1, 2, -time.Hour, time.Hour, "provider", true, "", "", false, false, false},
 		{"provider claim honors runner rank override", 1, 2, 1, 2, -time.Hour, time.Hour, "provider-override", false, "", "", false, false, false},
 		{"project rank breaks priority ties", 2, 2, 0, 1, time.Hour, -time.Hour, "both", true, "", "", false, false, false},
@@ -525,15 +527,29 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 				report.Models = append(report.Models, "gpt-6.1-sol")
 				publishCapacity(t, first, r, report)
 				claim = providerClaim(r, issues[loser.project.ID], "lower-provider")
+				claim.WorkItemID = ""
+				claim.ProviderCandidates = append(claim.ProviderCandidates, providerClaim(r, issues[winner.project.ID], "").ProviderCandidates[0])
+			}
+			if scenario.allowed == "targeted" {
+				claim.WorkItemID = issues[loser.project.ID].WorkItemID
 			}
 			assertRunnerAdmissionFacts(t, first, r)
 			assertRunnerAdmissionFacts(t, second, r)
 			response := performHubAPIRequest(t, first.service, http.MethodPost, loser.base+"/claims", r.redemption.Credential, claim)
+			if scenario.allowed == "targeted" {
+				requireNativeStatus(t, response, http.StatusOK)
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				if lease.WorkItemID != issues[loser.project.ID].WorkItemID {
+					t.Fatalf("claimed %s, want requested %s", lease.WorkItemID, issues[loser.project.ID].WorkItemID)
+				}
+				return
+			}
 			if response.Code == http.StatusOK {
 				t.Fatalf("lower-ranked or unauthorized project acquired work: %s", response.Body.String())
 			}
 			if scenario.allowed == "provider" || scenario.allowed == "provider-override" {
-				claim = providerClaim(r, issues[winner.project.ID], "higher-provider")
+				claim.SessionID = "higher-provider"
 			}
 			response = performHubAPIRequest(t, first.service, http.MethodPost, winner.base+"/claims", r.redemption.Credential, claim)
 			if scenario.allowed == "empty" {
