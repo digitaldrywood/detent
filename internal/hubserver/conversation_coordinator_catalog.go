@@ -31,19 +31,19 @@ func coordinatorCatalogTools() []runner.AgentTool {
 	}
 }
 
-func coordinatorCatalogExcluded(name string) bool {
+func coordinatorCatalogExcluded(name string, tools []runner.AgentTool) bool {
 	switch name {
 	case coordinatorToolFindTools, coordinatorToolCallTool, string(chat.ActionStopRun), string(chat.ActionFileIssue), string(chat.ActionSetPriority), operatortool.ActionResult, operatortool.ConnectionInfo, "get_operator_chat", "post_operator_chat", "post_conversation_command", "stream_conversation_events":
 		return true
 	}
-	return slices.ContainsFunc((&coordinatorToolset{}).tools(), func(tool runner.AgentTool) bool { return tool.Name == name })
+	return slices.ContainsFunc(tools, func(tool runner.AgentTool) bool { return tool.Name == name })
 }
 
 // coordinatorCatalogWrite reports whether a confirmed chat action runs a
 // catalog tool through the operator executor rather than a coordinator tool.
 func coordinatorCatalogWrite(name string) bool {
 	definition, ok := operatortool.Lookup(name)
-	return ok && !definition.Annotations.ReadOnly && !coordinatorCatalogExcluded(name)
+	return ok && !definition.Annotations.ReadOnly && !coordinatorCatalogExcluded(name, (&coordinatorToolset{}).tools())
 }
 
 func (t *coordinatorToolset) catalogContext(ctx context.Context, record conversationRecord) (context.Context, error) {
@@ -63,7 +63,8 @@ func (s *Service) coordinatorCatalog(ctx context.Context) ([]operatortool.Defini
 	if err != nil {
 		return nil, err
 	}
-	return slices.DeleteFunc(definitions, func(definition operatortool.Definition) bool { return coordinatorCatalogExcluded(definition.Name) }), nil
+	tools := (&coordinatorToolset{}).tools()
+	return slices.DeleteFunc(definitions, func(definition operatortool.Definition) bool { return coordinatorCatalogExcluded(definition.Name, tools) }), nil
 }
 
 type coordinatorCatalogEntry struct {
@@ -144,7 +145,7 @@ func (t *coordinatorToolset) callTool(ctx context.Context, record conversationRe
 	if err := decodeCoordinatorArgumentsWithLimit(call.Arguments, &args, coordinatorWorkflowArgumentBytes); err != nil {
 		return nil, err
 	}
-	if coordinatorCatalogExcluded(args.Name) {
+	if coordinatorCatalogExcluded(args.Name, (&coordinatorToolset{}).tools()) {
 		return nil, fmt.Errorf("%w: call %s directly instead of through call_tool", errCoordinatorToolArguments, args.Name)
 	}
 	ctx, err := t.catalogContext(ctx, record)
