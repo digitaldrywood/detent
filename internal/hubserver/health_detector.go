@@ -11,8 +11,9 @@ import (
 )
 
 type healthDetector struct {
-	cancel context.CancelFunc
-	done   chan struct{}
+	cancel    context.CancelFunc
+	done      chan struct{}
+	contracts healthContractCache
 }
 
 func (s *Service) startHealthDetector() {
@@ -111,7 +112,7 @@ func (s *Service) readHealthSnapshot(ctx context.Context, organization tracker.O
 		return healthSnapshot{}, err
 	}
 	defer tx.Rollback()
-	return readHealthSnapshot(ctx, tx, organization, now)
+	return readHealthSnapshotWithContracts(ctx, tx, organization, now, &s.healthDetector.contracts)
 }
 
 func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, now time.Time, findings []healthFinding) ([]string, error) {

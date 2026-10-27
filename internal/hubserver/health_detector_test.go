@@ -776,10 +776,11 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "bounded-health")
+			f.service.stopHealthDetector()
 			addHealthBacklog(t, f)
 			item := f.create(t, "bounded")
 			now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
-			finding := newHealthFinding("test", "instance", "project", string(f.project.ID), "Summary.", "The operator acts.", []string{string(f.project.ID)}, healthEvidence{})
+			finding := newHealthFinding("test", "flow", "project", string(f.project.ID), "Summary.", "The operator acts.", []string{string(f.project.ID)}, healthEvidence{})
 			applyTestHealth(t, f, now, []healthFinding{finding})
 			if test.projects {
 				_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?) INSERT INTO projects(id,organization_id,name,profile,created_at) SELECT 'health-project-'||x,?,'health-project-'||x,'native',? FROM n`, healthProjectLimit, f.project.OrganizationID, formatHubTime(now))
@@ -787,7 +788,7 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else if test.candidates > 0 {
-				_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS(SELECT 3 UNION ALL SELECT x+1 FROM n WHERE x<?)
+				_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS(SELECT 2 UNION ALL SELECT x+1 FROM n WHERE x<?)
  INSERT INTO issues(organization_id,project_id,workflow_state_id,number,title,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at)
  SELECT i.organization_id,i.project_id,i.workflow_state_id,n.x,'candidate','','open','1',i.source_updated_at,i.synchronized_at,i.created_at,i.updated_at FROM n CROSS JOIN issues i WHERE i.native_id=?`, test.candidates, item.WorkItemID)
 				if err != nil {

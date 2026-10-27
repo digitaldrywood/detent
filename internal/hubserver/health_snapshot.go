@@ -28,6 +28,10 @@ type healthRunnerState struct {
 }
 
 func readHealthSnapshot(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, now time.Time) (healthSnapshot, error) {
+	return readHealthSnapshotWithContracts(ctx, q, organization, now, nil)
+}
+
+func readHealthSnapshotWithContracts(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, now time.Time, contracts *healthContractCache) (healthSnapshot, error) {
 	snapshot := healthSnapshot{}
 	runners, err := readHealthRunners(ctx, q, organization, now)
 	if err != nil {
@@ -58,26 +62,25 @@ func readHealthSnapshot(ctx context.Context, q nativeQueryer, organization track
 			return snapshot, err
 		}
 		p.CandidateIDs = make(map[string]bool, len(candidates))
+		var revisions map[string]tracker.Revision
 		if len(candidates) > 0 {
-			raw, err := json.Marshal(candidates)
-			if err != nil {
-				return snapshot, err
-			}
-			if p.CandidateSince, err = readHealthCandidateCreation(ctx, q, string(raw), p.CandidateIDs); err != nil {
+			if p.CandidateSince, revisions, err = readHealthCandidateRevisions(ctx, q, scope, candidates, p.CandidateIDs); err != nil {
 				return snapshot, err
 			}
 		}
-		for item := range p.CandidateIDs {
-			issue, _, err := readNativeIssue(ctx, q, scope, item)
+		policyID := ""
+		if contracts != nil && len(revisions) > 0 {
+			if policyID, err = readHealthContractPolicyID(ctx, q, scope); err != nil {
+				return snapshot, err
+			}
+		}
+		for item, revision := range revisions {
+			wait, err := contracts.read(ctx, q, scope, item, revision, policyID)
 			if err != nil {
 				return snapshot, err
 			}
-			evaluation, err := evaluateNativeIssueContract(ctx, q, scope, issue)
-			if err != nil {
-				return snapshot, err
-			}
-			if evaluation.ReasonCode == "issue_contract_unsatisfied" {
-				snapshot.Waits = append(snapshot.Waits, healthWait{Item: item, Project: p.ID, Since: issue.UpdatedAt, Active: true, Reason: evaluation.Reason})
+			if wait != nil {
+				snapshot.Waits = append(snapshot.Waits, *wait)
 			}
 		}
 		fallbackReasons := []string{}
@@ -478,28 +481,36 @@ func readHealthCurrentWaits(ctx context.Context, q nativeQueryer, organization t
 	return rows.Err()
 }
 
-func readHealthCandidateCreation(ctx context.Context, q nativeQueryer, ids string, seen map[string]bool) (time.Time, error) {
+func readHealthCandidateRevisions(ctx context.Context, q nativeQueryer, scope nativeScope, ids []tracker.WorkItemID, seen map[string]bool) (time.Time, map[string]tracker.Revision, error) {
 	var since time.Time
-	rows, err := q.QueryContext(ctx, "SELECT native_id, native_created_at FROM issues WHERE id IN (SELECT value FROM json_each(?))", ids)
+	revisions := make(map[string]tracker.Revision)
+	args := make([]any, 0, len(ids)+2)
+	args = append(args, scope.organization, scope.project)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := q.QueryContext(ctx, "SELECT native_id, native_created_at, revision FROM issues WHERE organization_id=? AND project_id=? AND id IN ("+placeholders(len(ids))+")", args...)
 	if err != nil {
-		return since, err
+		return since, nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id, at string
-		if err := rows.Scan(&id, &at); err != nil {
-			return since, err
+		var revision tracker.Revision
+		if err := rows.Scan(&id, &at, &revision); err != nil {
+			return since, nil, err
 		}
 		created, err := parseTimeValue(at)
 		if err != nil {
-			return since, err
+			return since, nil, err
 		}
 		seen[id] = true
+		revisions[id] = revision
 		if since.IsZero() || created.Before(since) {
 			since = created
 		}
 	}
-	return since, errors.Join(rows.Err(), rows.Close())
+	return since, revisions, errors.Join(rows.Err(), rows.Close())
 }
 
 func readHealthRunnerLeasedProjects(ctx context.Context, q nativeQueryer, machineID, runnerID any) ([]string, error) {
