@@ -101,7 +101,7 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 	}
 
 	dashboardCommitted := make(chan struct{}, 1)
-	db, err := openTimedWriter(sqliteWriterDSN(path, cfg.BusyTimeout, cfg.Hosted != nil), dashboardCommitted)
+	db, err := openTimedWriter(sqliteWriterDSN(path, cfg.BusyTimeout, cfg.Hosted != nil), cfg.Logger, dashboardCommitted)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("open hub database: %w", err), lock.Close())
 	}

@@ -437,7 +437,7 @@ func TestHostedEventsTwoHubOwnersRecoverOtherWriter(t *testing.T) {
 	t.Parallel()
 	f, user, first := controlledHostedDelivery(t, dashboardDeliveryConfig{})
 	committed := make(chan struct{}, 1)
-	writer, err := openTimedWriter(sqliteWriterDSN(f.service.database.path, f.service.config.BusyTimeout, true), committed)
+	writer, err := openTimedWriter(sqliteWriterDSN(f.service.database.path, f.service.config.BusyTimeout, true), nil, committed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,7 +618,7 @@ func TestHostedEventsLegacyBoardFiltersAndGap(t *testing.T) {
 func TestHostedEventsNotifyOnlyAfterCommit(t *testing.T) {
 	t.Parallel()
 	committed := make(chan struct{}, 1)
-	writer, err := openTimedWriter(sqliteWriterDSN(filepath.Join(t.TempDir(), "notifications.db"), time.Second, false), committed)
+	writer, err := openTimedWriter(sqliteWriterDSN(filepath.Join(t.TempDir(), "notifications.db"), time.Second, false), nil, committed)
 	if err != nil {
 		t.Fatal(err)
 	}

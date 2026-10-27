@@ -79,6 +79,9 @@ func hostedLogAttr(attr slog.Attr) (slog.Attr, bool) {
 	if hostedContentKey(attr.Key) {
 		return slog.Attr{}, false
 	}
+	if owner, ok := attr.Value.Any().(writerHoldOwner); ok && attr.Key == "owner" {
+		return slog.String(attr.Key, string(owner)), true
+	}
 	attr.Value = attr.Value.Resolve()
 	if (attr.Key == "method" || attr.Key == "route" || hostedTimingCounters[attr.Key]) && !hostedTimingAttr(attr) {
 		return slog.Attr{}, false
