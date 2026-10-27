@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 )
 
 func TestLandingMergeResolutionBoundsConflictReads(t *testing.T) {
@@ -14,8 +16,12 @@ func TestLandingMergeResolutionBoundsConflictReads(t *testing.T) {
 		name, before, after string
 		wantCalls           int
 		wantError           bool
+		validationCommand   string
+		wantAttribution     string
 	}{
 		{name: "symlink conflict uses Git entries", before: "symlink", after: "symlink", wantCalls: 1},
+		{name: "gate failure reproduces on integration base", before: "symlink", after: "symlink", wantCalls: 1, validationCommand: "printf 'landing validation failed\\n'; exit 1", wantAttribution: failureattribution.Independent},
+		{name: "gate failure introduced by resolution", before: "symlink", after: "symlink", wantCalls: 1, validationCommand: "if [ \"$(readlink feature.txt)\" = missing-resolved-target ]; then printf 'landing validation failed\\n'; exit 1; fi", wantAttribution: failureattribution.Change},
 		{name: "oversized original stops before provider", before: "oversized", wantError: true},
 		{name: "resolved symlink cannot replace text hunks", after: "symlink", wantCalls: 1, wantError: true},
 		{name: "oversized resolution stops before gate", after: "oversized", wantCalls: 1, wantError: true},
@@ -67,8 +73,12 @@ func TestLandingMergeResolutionBoundsConflictReads(t *testing.T) {
 			}
 			base := fixture.remoteMain(t)
 			calls := 0
+			command := test.validationCommand
+			if command == "" {
+				command = "git diff --check HEAD^ HEAD"
+			}
 			result, err := fixture.backend.ResolveLandingConflict(t.Context(), fixture.info, fixture.issue, LandOptions{
-				HeadSHA: fixture.head, TargetBranch: "main", Message: "resolved change", ValidationCommand: "git diff --check HEAD^ HEAD",
+				HeadSHA: fixture.head, TargetBranch: "main", Message: "resolved change", ValidationCommand: command,
 			}, func(ctx context.Context, path string, files []string) error {
 				calls++
 				if len(files) != 1 || files[0] != "feature.txt" {
@@ -87,7 +97,18 @@ func TestLandingMergeResolutionBoundsConflictReads(t *testing.T) {
 				_, err := runGitAt(ctx, path, "add", "feature.txt")
 				return err
 			})
-			if errors.Is(err, ErrMergeResolutionInvalid) != test.wantError || err != nil && !test.wantError {
+			if test.wantAttribution != "" {
+				var validationErr *ValidationError
+				if !errors.As(err, &validationErr) || validationErr.Stage != ValidationStageLanding {
+					t.Fatalf("resolution error = %v, want landing validation failure", err)
+				}
+				if result.BaseSHA != base || result.HeadSHA == "" || result.Gate.ExitCode != 1 || result.Gate.Attribution != test.wantAttribution {
+					t.Fatalf("gate lost failure attribution: %#v", result)
+				}
+				if reproduction := result.Gate.BaseReproduction; reproduction == nil || !reproduction.Complete || reproduction.HeadSHA != base || reproduction.Command != command {
+					t.Fatalf("gate did not reproduce on integration base %s: %#v", base, reproduction)
+				}
+			} else if errors.Is(err, ErrMergeResolutionInvalid) != test.wantError || err != nil && !test.wantError {
 				t.Fatalf("resolution error = %v, want invalid = %v", err, test.wantError)
 			}
 			if calls != test.wantCalls || len(result.ConflictFiles) != 1 || result.ConflictFiles[0] != "feature.txt" || fixture.remoteMain(t) != base {
@@ -97,7 +118,7 @@ func TestLandingMergeResolutionBoundsConflictReads(t *testing.T) {
 				if !result.Gate.StartedAt.IsZero() || result.HeadSHA != "" {
 					t.Fatalf("unsafe source reached commit or gate: %#v", result)
 				}
-			} else if result.Unchanged || result.HeadSHA == "" || result.Gate.ExitCode != 0 || result.Gate.StartedAt.IsZero() {
+			} else if test.wantAttribution == "" && (result.Unchanged || result.HeadSHA == "" || result.Gate.ExitCode != 0 || result.Gate.StartedAt.IsZero()) {
 				t.Fatalf("symlink resolution did not require new review: %#v", result)
 			}
 		})
