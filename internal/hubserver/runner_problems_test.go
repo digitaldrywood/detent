@@ -3,6 +3,7 @@ package hubserver
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -537,6 +538,21 @@ func TestRunnerExpiredRuntimeProblems(t *testing.T) {
 			view := read(r)
 			if (len(view.Problems) == 1) != test.want || (view.Health == "needs_attention") != test.want {
 				t.Fatalf("health=%s problems=%+v, want expired runtime=%v", view.Health, view.Problems, test.want)
+			}
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			admission, err := readRunnerForDispatch(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Runner: runnerauth.Identity{Binding: r.binding}}}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			if len(admission.Leases) != 0 || len(admission.Problems) != 0 || admission.Health != "online" || !reflect.DeepEqual(admission.Exclusions(f.project.ID, policy.Requirements{}, false), view.Exclusions(f.project.ID, policy.Requirements{}, false)) {
+				t.Fatalf("runtime display enrichment changed admission: %+v", admission)
 			}
 			if test.want {
 				problem := view.Problems[0]

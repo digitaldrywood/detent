@@ -112,6 +112,10 @@ func readRunner(ctx context.Context, db nativeQueryer, organization tracker.Orga
 }
 
 func readRunnerWithClock(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, clock func() time.Time, joining ...string) (runnerauth.Runner, error) {
+	return readRunnerFactsWithClock(ctx, db, organization, id, clock, true, joining...)
+}
+
+func readRunnerFactsWithClock(ctx context.Context, db nativeQueryer, organization tracker.OrganizationID, id string, clock func() time.Time, display bool, joining ...string) (runnerauth.Runner, error) {
 	r, reports, now, err := scanRunnerIdentity(db.QueryRowContext(ctx, runnerIdentitySelect+" WHERE r.organization_id = ? AND r.id = ?", organization, id), clock)
 	if err != nil {
 		return r, err
@@ -131,13 +135,20 @@ func readRunnerWithClock(ctx context.Context, db nativeQueryer, organization tra
 	if err != nil {
 		return r, err
 	}
-	r.Leases = []runnerauth.RunnerLease{}
+	if display {
+		r.Leases = []runnerauth.RunnerLease{}
+	}
 	r.ProjectUsed = make(map[tracker.ProjectID]int)
 	runnerSlots := make(map[string]bool)
-	rows, err := db.QueryContext(ctx, `SELECT l.expires_at, coalesce(lr.runner_id, ''), l.lease_id, l.fencing_token, coalesce(i.native_id, ''), i.title, coalesce(i.project_id, ''), coalesce(p.metadata_json, ''), coalesce(pp.policy_id, ''), l.session_id, `+nativeLandingCapacityProject+`
+	leaseQuery := `SELECT l.expires_at, coalesce(lr.runner_id, ''), l.lease_id, coalesce(i.project_id, ''), l.session_id, ` + nativeLandingCapacityProject + `
+FROM leases l JOIN issues i ON i.id = l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id ` + nativeLandingCapacityJoins + ` WHERE l.machine_id = ? AND l.released_at IS NULL ORDER BY l.fencing_token`
+	if display {
+		leaseQuery = `SELECT l.expires_at, coalesce(lr.runner_id, ''), l.lease_id, l.fencing_token, coalesce(i.native_id, ''), i.title, coalesce(i.project_id, ''), coalesce(p.metadata_json, ''), coalesce(pp.policy_id, ''), l.session_id, ` + nativeLandingCapacityProject + `
 FROM leases l JOIN issues i ON i.id = l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id
 LEFT JOIN lease_policies lp ON lp.lease_id = l.lease_id LEFT JOIN policy_revisions p ON p.scope = lp.scope AND p.policy_id = lp.policy_id
-LEFT JOIN project_policies pp ON pp.scope = lp.scope `+nativeLandingCapacityJoins+` WHERE l.machine_id = ? AND l.released_at IS NULL ORDER BY l.fencing_token`, r.MachineID)
+LEFT JOIN project_policies pp ON pp.scope = lp.scope ` + nativeLandingCapacityJoins + ` WHERE l.machine_id = ? AND l.released_at IS NULL ORDER BY l.fencing_token`
+	}
+	rows, err := db.QueryContext(ctx, leaseQuery, r.MachineID)
 	if err != nil {
 		return r, err
 	}
@@ -150,7 +161,11 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope `+nativeLandingCapacityJoin
 	var landingRows []landingUsageRow
 	for rows.Next() {
 		var value landingUsageRow
-		if err := rows.Scan(&value.expiry, &value.runner, &value.lease.ID, &value.lease.FencingToken, &value.lease.WorkItemID, &value.lease.Title, &value.lease.ProjectID, &value.raw, &value.approved, &value.session, &value.batchProject); err != nil {
+		destinations := []any{&value.expiry, &value.runner, &value.lease.ID, &value.lease.ProjectID, &value.session, &value.batchProject}
+		if display {
+			destinations = []any{&value.expiry, &value.runner, &value.lease.ID, &value.lease.FencingToken, &value.lease.WorkItemID, &value.lease.Title, &value.lease.ProjectID, &value.raw, &value.approved, &value.session, &value.batchProject}
+		}
+		if err := rows.Scan(destinations...); err != nil {
 			return r, err
 		}
 		landingRows = append(landingRows, value)
@@ -184,6 +199,9 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope `+nativeLandingCapacityJoin
 					r.ProjectUsed[lease.ProjectID]++
 					runnerSlots[key] = true
 				}
+				if !display {
+					continue
+				}
 				lease.ExpiresAt = end
 				if raw != "" {
 					if err := json.Unmarshal([]byte(raw), &lease.Policy); err != nil {
@@ -204,15 +222,19 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope `+nativeLandingCapacityJoin
 	if err := rows.Close(); err != nil {
 		return r, err
 	}
-	if err := appendRunnerRuntimeProblems(ctx, db, &r, now); err != nil {
-		return r, err
+	if display {
+		if err := appendRunnerRuntimeProblems(ctx, db, &r, now); err != nil {
+			return r, err
+		}
 	}
-	for _, report := range reports {
-		view, err := providerView(ctx, db, organization, id, report, now, group)
+	if len(reports) > 0 {
+		snapshot, err := readProviderCapacitySnapshot(ctx, db, organization, now)
 		if err != nil {
 			return r, err
 		}
-		r.ProviderCapacity = append(r.ProviderCapacity, view)
+		for _, report := range reports {
+			r.ProviderCapacity = append(r.ProviderCapacity, snapshot.view(id, report, now, group))
+		}
 	}
 	for i := range r.Leases {
 		reservation, reserved, err := readProviderReservation(ctx, db, r.Leases[i].ID)
@@ -702,15 +724,15 @@ JOIN runner_identities r ON r.id = lr.runner_id WHERE l.lease_id = ? AND i.organ
 }
 
 func validateRunnerDispatch(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time, joining ...string) error {
-	r, err := readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now, joining...)
+	r, err := readRunnerForDispatch(ctx, tx, scope, now, joining...)
 	if err != nil {
 		return err
 	}
 	return runnerExcluded(r.Exclusions(scope.project, policy.Requirements{}, false))
 }
 
-func readRunnerForDispatch(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time, joining ...string) (runnerauth.Runner, error) {
-	return readRunner(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now, joining...)
+func readRunnerForDispatch(ctx context.Context, tx nativeQueryer, scope nativeScope, now time.Time, joining ...string) (runnerauth.Runner, error) {
+	return readRunnerFactsWithClock(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, func() time.Time { return now }, false, joining...)
 }
 
 func (s *Service) validateRunnerLease(c echo.Context) error {
