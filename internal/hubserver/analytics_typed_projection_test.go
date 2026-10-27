@@ -448,7 +448,7 @@ func TestAnalyticsMaintenanceFailureBatchProgress(t *testing.T) {
 			if completed(string(other.project.ID), "good") {
 				t.Fatal("fixture did not exceed the first pass budget")
 			}
-			for pass := 0; pass < 10 && !completed(string(other.project.ID), "good"); pass++ {
+			for pass := 0; pass < test.rows+3 && !completed(string(other.project.ID), "good"); pass++ {
 				maintenance()
 			}
 			for _, fixture := range []nativeFixture{f, other} {
@@ -463,7 +463,7 @@ func TestAnalyticsMaintenanceFailureBatchProgress(t *testing.T) {
 			if _, err := d.db.ExecContext(t.Context(), `UPDATE analytics_hourly_rollups SET data_json='{"State":"Done"}' WHERE project_id=? AND dimension='bad-00000'`, f.project.ID); err != nil {
 				t.Fatal(err)
 			}
-			for pass := 0; pass < 10 && !completed(string(f.project.ID), "bad-00000"); pass++ {
+			for pass := 0; pass < test.rows+3 && !completed(string(f.project.ID), "bad-00000"); pass++ {
 				maintenance()
 			}
 			if !completed(string(f.project.ID), "bad-00000") {
