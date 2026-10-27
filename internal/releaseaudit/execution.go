@@ -133,7 +133,7 @@ func (e *execution) invokeOnce(ctx context.Context, phase string, input any) (Re
 		return result, errors.Join(usageErr, invokeErr)
 	}
 	if !seen || (result.SessionID == "" && invokeErr == nil) || e.sessions[result.SessionID] || len(result.Output) > maxDocumentBytes {
-		return result, errors.New("release audit provider omitted usage, reused a session or returned invalid output")
+		return result, errors.Join(errors.New("release audit provider omitted usage, reused a session or returned invalid output"), invokeErr)
 	}
 	if result.SessionID != "" {
 		e.sessions[result.SessionID] = true

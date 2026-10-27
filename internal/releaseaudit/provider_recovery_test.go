@@ -11,6 +11,7 @@ import (
 type recoveryProvider struct {
 	calls int
 	mode  string
+	cause error
 }
 
 func (p *recoveryProvider) Invoke(_ context.Context, invocation Invocation, observe func(Usage) error) (Response, error) {
@@ -25,6 +26,8 @@ func (p *recoveryProvider) Invoke(_ context.Context, invocation Invocation, obse
 		}
 	}
 	switch p.mode {
+	case "missing usage":
+		return response, p.cause
 	case "missing session":
 		response.SessionID = ""
 	case "interrupted":
@@ -61,6 +64,7 @@ func TestProviderRecoveryRetainsEvidenceAndBudget(t *testing.T) {
 	for _, tc := range []struct {
 		name, mode                            string
 		limit, calls                          int
+		cause                                 error
 		wantError, reused, publicationFailure bool
 	}{
 		{name: "interrupted", mode: "interrupted", calls: 2},
@@ -70,6 +74,7 @@ func TestProviderRecoveryRetainsEvidenceAndBudget(t *testing.T) {
 		{name: "permanent without session", mode: "always without session", calls: 3, wantError: true},
 		{name: "invocation bound", mode: "always", limit: 1, calls: 1, wantError: true},
 		{name: "missing usage", mode: "missing usage", calls: 1, wantError: true},
+		{name: "missing usage retains provider cause", mode: "missing usage", cause: errors.New("provider startup failure"), calls: 1, wantError: true},
 		{name: "missing session", mode: "missing session", calls: 1, wantError: true},
 		{name: "reused session", reused: true, calls: 1, wantError: true},
 		{name: "cancelled", mode: "cancelled", calls: 1, wantError: true},
@@ -79,7 +84,7 @@ func TestProviderRecoveryRetainsEvidenceAndBudget(t *testing.T) {
 		{name: "publication failure", mode: "interrupted", publicationFailure: true, calls: 1, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			provider := &recoveryProvider{mode: tc.mode}
+			provider := &recoveryProvider{mode: tc.mode, cause: tc.cause}
 			records := &memoryRecords{}
 			if tc.publicationFailure {
 				records.failStatus = "incomplete"
@@ -98,6 +103,9 @@ func TestProviderRecoveryRetainsEvidenceAndBudget(t *testing.T) {
 			response, err := e.invoke(t.Context(), "recon-surfaces", nil)
 			if (err != nil) != tc.wantError {
 				t.Fatalf("error=%v wantError=%v", err, tc.wantError)
+			}
+			if tc.cause != nil && !errors.Is(err, tc.cause) {
+				t.Fatalf("lost provider cause: %v", err)
 			}
 			if provider.calls != tc.calls || len(e.state.Evidence) != tc.calls {
 				t.Fatalf("calls=%d evidence=%d want=%d", provider.calls, len(e.state.Evidence), tc.calls)
