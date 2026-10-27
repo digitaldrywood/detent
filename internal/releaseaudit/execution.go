@@ -64,12 +64,13 @@ func (e *execution) invokeOnce(ctx context.Context, phase string, input any) (Re
 	if e.stage.sandbox == nil {
 		instructions.WriteString("Target execution is unavailable: no OS sandbox has been supplied. Never execute target code. Any execution-dependent lead remains needs_validation with the exact unresolved fact and no severity.\n")
 	}
+	fmt.Fprintf(&instructions, "Trusted bundle upstream base: %s. Exact packaged content digest: %s. The file headers identify the upstream base; the digest includes local corrections.\n", BundleCommit, BundleDigest)
 	for _, name := range []string{"SKILL.md", "RECONNAISSANCE.md", "HUNTING.md", "ATTACK-CLASSES.md", "VALIDATION-AND-REPORTING.md", "report-schema.json"} {
 		content, err := bundle.ReadFile("bundle/" + name)
 		if err != nil {
 			return result, err
 		}
-		fmt.Fprintf(&instructions, "\nTrusted bundle file %s (upstream base %s, bundled digest %s):\n%s\n", name, BundleCommit, BundleDigest, content)
+		fmt.Fprintf(&instructions, "\nTrusted bundle file %s at %s:\n%s\n", name, BundleCommit, content)
 	}
 	fmt.Fprintf(&instructions, "\nCurrent phase: %s.\n", phase)
 	switch phase {
