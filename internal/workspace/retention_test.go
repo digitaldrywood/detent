@@ -405,7 +405,7 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 		{name: "expired unpushed", age: 2 * time.Hour, remove: true}, {name: "boundary", age: time.Hour, remove: true},
 		{name: "recent", age: 30 * time.Minute}, {name: "active", age: 2 * time.Hour, active: true},
 		{name: "live", age: 2 * time.Hour, live: true}, {name: "lookup failure", age: 2 * time.Hour, lookupError: true},
-		{name: "expired landing preserves Code", age: 2 * time.Hour, landing: true, remove: true},
+		{name: "expired completion removes Code and landing", age: 2 * time.Hour, landing: true, remove: true},
 		{name: "active issue protects landing", age: 2 * time.Hour, landing: true, active: true},
 		{name: "active native alias protects work", age: 2 * time.Hour, active: true, alias: true},
 	} {
@@ -421,6 +421,7 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			codePath := info.Path
 			var codeUnchanged func()
 			if test.landing {
 				remote := initBareRemote(t)
@@ -474,7 +475,7 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 				backend.scanWorkspacePaths = func(context.Context, string) ([]int, error) { return []int{999999}, nil }
 			}
 			total, err := backend.SweepRetention(t.Context(), request)
-			if codeUnchanged != nil {
+			if codeUnchanged != nil && !test.remove {
 				codeUnchanged()
 			}
 			if (err != nil) != test.lookupError {
@@ -487,7 +488,17 @@ func TestRetentionCompletedWorkspace(t *testing.T) {
 			if !test.remove {
 				return
 			}
-			if total.Ownership.Count != 1 || total.Ownership.Bytes == 0 {
+			wantRemoved := 1
+			if test.landing {
+				wantRemoved = 2
+				if _, err := os.Stat(codePath); !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("completed Code workspace remains: %v", err)
+				}
+			}
+			if total.Workspaces.Count != wantRemoved || total.Workspaces.Bytes == 0 {
+				t.Fatalf("workspace removals = %+v, want %d", total.Workspaces, wantRemoved)
+			}
+			if total.Ownership.Count != wantRemoved || total.Ownership.Bytes == 0 {
 				t.Fatalf("ownership removals = %+v", total.Ownership)
 			}
 			if _, err := os.Stat(filepath.Join(backend.root, ".detent/retained")); !errors.Is(err, fs.ErrNotExist) {
