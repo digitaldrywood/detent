@@ -22,7 +22,21 @@ func (e *execution) publish(ctx context.Context) error {
 	return nil
 }
 
+type providerInvocationError struct{ error }
+
+func (e *providerInvocationError) Unwrap() error { return e.error }
+
 func (e *execution) invoke(ctx context.Context, phase string, input any) (Response, error) {
+	for attempt := 0; ; attempt++ {
+		result, err := e.invokeOnce(ctx, phase, input)
+		var retryable *providerInvocationError
+		if err == nil || attempt >= 2 || ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrAllowance) || !errors.As(err, &retryable) {
+			return result, err
+		}
+	}
+}
+
+func (e *execution) invokeOnce(ctx context.Context, phase string, input any) (Response, error) {
 	var result Response
 	if e.state.Invocations >= e.request.Allowance.Invocations || e.exhausted() {
 		return result, ErrAllowance
@@ -115,13 +129,19 @@ func (e *execution) invoke(ctx context.Context, phase string, input any) (Respon
 	if err := e.publish(context.WithoutCancel(ctx)); err != nil {
 		return result, errors.Join(invokeErr, usageErr, err)
 	}
-	if usageErr != nil || invokeErr != nil {
+	if usageErr != nil {
 		return result, errors.Join(usageErr, invokeErr)
 	}
-	if !seen || result.SessionID == "" || e.sessions[result.SessionID] || len(result.Output) > maxDocumentBytes || !json.Valid(result.Output) {
+	if !seen || result.SessionID == "" || e.sessions[result.SessionID] || len(result.Output) > maxDocumentBytes {
 		return result, errors.New("release audit provider omitted usage, reused a session or returned invalid output")
 	}
 	e.sessions[result.SessionID] = true
+	if invokeErr != nil {
+		return result, &providerInvocationError{invokeErr}
+	}
+	if !json.Valid(result.Output) {
+		return result, &providerInvocationError{errors.New("release audit provider returned invalid JSON")}
+	}
 	return result, nil
 }
 
