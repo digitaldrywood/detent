@@ -48,7 +48,23 @@ export interface SidebarShellData {
 
 const SidebarDataContext = React.createContext<SidebarShellData | null>(null);
 
-export const SidebarDataProvider = SidebarDataContext.Provider;
+export type ProjectCounts = Readonly<Record<string, { running: number; blocked: number }>>;
+const ProjectCountsContext = React.createContext<{ counts: ProjectCounts; setCounts: React.Dispatch<React.SetStateAction<ProjectCounts>> } | null>(null);
+
+export function SidebarDataProvider({ value, children }: { value: SidebarShellData | null; children: React.ReactNode }): React.ReactElement {
+  const [counts, setCounts] = React.useState<ProjectCounts>({});
+  const context = React.useMemo(() => ({ counts, setCounts }), [counts]);
+  return <SidebarDataContext.Provider value={value}><ProjectCountsContext.Provider value={context}>{children}</ProjectCountsContext.Provider></SidebarDataContext.Provider>;
+}
+
+export function useSidebarProjectCounts(): ProjectCounts {
+  return React.use(ProjectCountsContext)?.counts ?? {};
+}
+
+export function usePublishProjectCounts(counts: ProjectCounts | undefined): void {
+  const setCounts = React.use(ProjectCountsContext)?.setCounts;
+  React.useEffect(() => { if (counts !== undefined) setCounts?.(counts); }, [counts, setCounts]);
+}
 
 export function useSidebarData(): SidebarShellData | null {
   return React.use(SidebarDataContext);

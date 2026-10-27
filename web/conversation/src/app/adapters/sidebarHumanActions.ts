@@ -11,6 +11,7 @@ const holdingLanes = new Set(["blocked", "human review", "plan review"]);
 
 export interface SidebarHumanAction {
   readonly id: string;
+  readonly projectId?: string;
   readonly label: string;
   readonly to: string;
   readonly opened_at: string;
@@ -25,6 +26,7 @@ export function pendingHumanAction(issue: NativeIssue, explanation: IssueExplana
   if (!humanAction) return null;
   return {
     id: issue.work_item_id,
+    projectId: issue.project_id,
     label: `#${issue.number} ${issue.title}`,
     to: `/work/i/${encodeURIComponent(issue.work_item_id)}`,
     opened_at: explanation.latest_transition?.at ?? issue.updated_at,

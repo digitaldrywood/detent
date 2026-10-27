@@ -28,11 +28,12 @@ export function workHttpFor(client: ReturnType<typeof useClient>): WorkHttp {
 }
 
 export interface BoardState extends BoardData {
+  readonly projectCounts?: Readonly<Record<string, { running: number; blocked: number }>>;
   readonly sequence: number | null;
   readonly live: boolean;
 }
 
-export function useBoard(projectId: string | null, view: WorkViewState): BoardState & {
+export function useBoard(projectId: string | null, view: WorkViewState, projectIds?: readonly string[]): BoardState & {
   readonly reload: () => void;
   readonly loadMore: () => void;
   readonly loadBacklog: () => void;
@@ -41,10 +42,13 @@ export function useBoard(projectId: string | null, view: WorkViewState): BoardSt
   const client = useClient();
   const http = useWorkHttp();
   const runnerNames = useRunnerNames();
-  const store = getBoardRead(client, http, projectId, view);
+  const readProject = projectIds === undefined ? projectId : projectIds.length === 1 ? projectIds[0]! : null;
+  const store = getBoardRead(client, http, readProject, view, projectIds);
   const streamScope = store.scope;
   const streamKey = JSON.stringify([store.owner, streamScope]);
-  const data = React.useSyncExternalStore(store.subscribe, store.snapshot, store.snapshot);
+  const snapshot = React.useSyncExternalStore(store.subscribe, store.snapshot, store.snapshot);
+  const data = React.useMemo(() => projectIds === undefined ? snapshot : store.projectSnapshot(projectId), [store, snapshot, projectId, projectIds === undefined]);
+  const projectCounts = React.useMemo(() => store.projectCounts(), [store, snapshot]);
   const [state, setState] = React.useState({ key: streamKey, live: false, sequence: null as number | null });
   const reload = store.reload;
   React.useEffect(() => { store.start(); }, [store]);
@@ -78,7 +82,7 @@ export function useBoard(projectId: string | null, view: WorkViewState): BoardSt
     return () => subscriptions.forEach((stop) => stop());
   }, [http, store, streamKey, streamScope]);
 
-  return { ...data, live: data.resolved && state.key === streamKey && state.live,
+  return { ...data, projectCounts, live: data.resolved && state.key === streamKey && state.live,
     sequence: state.key === streamKey ? state.sequence : null,
     items, reload, loadMore: store.loadMore, loadBacklog: store.loadBacklog, applyItem: store.applyItem };
 }

@@ -22,6 +22,8 @@ import { relativeTimeLabel } from "../lib/sidebarLogic.ts";
 import { cn } from "../../lib/utils.ts";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from "../../components/ui/sidebar.tsx";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip.tsx";
+import { useUiStateStore } from "../../uiStateStore.ts";
+import { sidebarProjectScopeKey } from "./shell.ts";
 import { useSidebarData } from "./sidebarData.tsx";
 
 export function SidebarLandmark({
@@ -181,7 +183,10 @@ export function SidebarDestinations(): React.ReactElement | null {
   const [browseExpanded, setBrowseExpanded] = React.useState(true);
   const navigation = data?.navigation;
   const findings = data?.findings ?? [];
-  const humanActions = data?.humanActions ?? [];
+  const focus = useUiStateStore((state) => state.sidebarProjectScopeKey);
+  const workingKeys = useUiStateStore((state) => state.sidebarProjectWorkingSetKeys);
+  const visibleProjects = data?.projects.filter((project) => focus !== null ? sidebarProjectScopeKey(project) === focus : workingKeys.length === 0 || workingKeys.includes(sidebarProjectScopeKey(project)));
+  const humanActions = (data?.humanActions ?? []).filter((action) => action.projectId === undefined || (focus === null && workingKeys.length === 0) || visibleProjects?.some((project) => project.id === action.projectId));
   const [needsExpanded, setNeedsExpanded] = React.useState(true);
   const [favoritesExpanded, setFavoritesExpanded] = React.useState(true);
   const activeProjectId = data?.activeProjectId ?? null;

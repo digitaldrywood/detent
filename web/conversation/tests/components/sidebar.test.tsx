@@ -11,6 +11,10 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import userEvent from "@testing-library/user-event";
+import { useUiStateStore } from "../../src/uiStateStore.ts";
+import { sidebarProjectScopeKey } from "../../src/app/adapters/shell.ts";
+import { PROJECTS } from "./sidebarHarness.tsx";
 import { SidebarDestinations } from "../../src/app/adapters/sidebarDestinations.tsx";
 import { SidebarDataProvider, type SidebarShellData } from "../../src/app/adapters/sidebarData.tsx";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
@@ -234,35 +238,116 @@ describe("the thread sidebar", () => {
     ["Secondary Example Organization", "All Secondary Example Organization projects"],
     ["Tertiary Example Organization", "All Tertiary Example Organization projects"],
     ["", "All projects"],
-  ])("names the %s project scope and reports project and all-project selections", async (organizationName, label) => {
+  ])("names the empty working set for %s and supports selecting and clearing", async (organizationName, label) => {
     const onProjectChange = vi.fn();
     await renderSidebar({ onProjectChange, organizationName });
-    expect(
-      screen.getByLabelText("Filter threads by project").textContent,
-    ).toContain(label);
-    expect(screen.getByLabelText("Filter threads by project").getAttribute("title")).toBe(label);
-    fireEvent.click(screen.getByLabelText("Filter threads by project"));
+    const trigger = screen.getByLabelText("Filter threads by project");
+    expect(trigger.textContent).toContain(label);
+    expect(trigger.getAttribute("title")).toBe(label);
+    fireEvent.click(trigger);
     fireEvent.click(await screen.findByRole("option", { name: "beta" }));
+    expect(trigger.textContent).toContain("1 of 2 projects");
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    fireEvent.keyDown(screen.getByLabelText("Search projects"), { key: "Escape" });
+    const working = within(screen.getByRole("list", { name: "Project working set" }));
+    fireEvent.click(working.getByRole("button", { name: "beta" }));
     expect(onProjectChange).toHaveBeenLastCalledWith("proj_beta");
-    expect(screen.getByLabelText("Filter threads by project").textContent).toContain("beta");
-    fireEvent.click(screen.getByLabelText("Filter threads by project"));
-    fireEvent.click(await screen.findByRole("option", { name: label }));
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("button", { name: "Clear" }));
     expect(onProjectChange).toHaveBeenLastCalledWith("");
+    expect(trigger.textContent).toContain(label);
   });
 
-  it("updates the current scope and reset option when the organization changes", async () => {
+  it("keeps case-insensitive alphabetical dropdown order while toggling, searching and selecting all", async () => {
+    const projects = [
+      { id: "proj_z", name: "zeta", can_write: true },
+      { id: "proj_b", name: "Beta", can_write: true },
+      { id: "proj_a", name: "alpha", can_write: true },
+    ];
+    await renderSidebar({ projects });
+    const trigger = screen.getByLabelText("Filter threads by project");
+    fireEvent.click(trigger);
+    const labels = () => screen.getAllByRole("option").map((row) => row.textContent);
+    await screen.findByRole("option", { name: "alpha" });
+    expect(labels()).toEqual(["alpha", "Beta", "zeta"]);
+    fireEvent.click(screen.getByRole("option", { name: "zeta" }));
+    fireEvent.click(screen.getByRole("option", { name: "alpha" }));
+    expect(labels()).toEqual(["alpha", "Beta", "zeta"]);
+    expect(screen.getByRole("option", { name: "zeta" }).getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(screen.getByRole("option", { name: "zeta" }));
+    expect(screen.getByRole("option", { name: "zeta" }).getAttribute("aria-selected")).toBe("false");
+    fireEvent.change(screen.getByLabelText("Search projects"), { target: { value: "be" } });
+    expect(labels()).toEqual(["Beta"]);
+    fireEvent.click(screen.getByRole("button", { name: "Select all" }));
+    expect(trigger.textContent).toContain("3 of 3 projects");
+    fireEvent.keyDown(screen.getByLabelText("Search projects"), { key: "Escape" });
+    const rows = within(screen.getByRole("list", { name: "Project working set" })).getAllByRole("button");
+    expect(rows.map((row) => row.textContent)).toEqual(["All", "alpha", "Beta", "zeta"]);
+    expect(rows.every((row) => row.tabIndex === 0)).toBe(true);
+    expect(rows.every((row) => row.querySelector("[aria-label$='active runners'], [aria-label$='blocked issues']") === null)).toBe(true);
+  });
+
+  it("shows existing runner and blocked counts, totals, hover details and project settings", async () => {
+    useUiStateStore.setState({ sidebarProjectWorkingSetKeys: PROJECTS.map(sidebarProjectScopeKey) });
+    await renderSidebar({}, { counts: { proj_alpha: { running: 2, blocked: 3 }, proj_beta: { running: 1, blocked: 0 } } });
+    const working = within(screen.getByRole("list", { name: "Project working set" }));
+    const all = working.getByRole("button", { name: "All" });
+    expect(within(all).getByLabelText("3 active runners").textContent).toBe("3");
+    expect(within(all).getByLabelText("3 blocked issues").textContent).toBe("3");
+    const alpha = working.getByRole("button", { name: "alpha" });
+    expect(within(alpha).getByLabelText("2 active runners").textContent).toBe("2");
+    expect(within(alpha).getByLabelText("3 blocked issues").textContent).toBe("3");
+    expect(within(working.getByRole("button", { name: "beta" })).queryByLabelText(/blocked issues/)).toBeNull();
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+      alpha.focus();
+    });
+    expect((await screen.findByRole("tooltip")).textContent).toContain("alpha2 runners active3 blockedClick to show only this project");
+    act(() => all.focus());
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip.textContent).toBe("alpha32beta1Click to show all 2");
+    expect(within(tooltip).getByLabelText("3 blocked issues").textContent).toBe("3");
+    expect(within(tooltip).queryByLabelText("0 blocked issues")).toBeNull();
+    fireEvent.click(screen.getByLabelText("Filter threads by project"));
+    const keys = useUiStateStore.getState().sidebarProjectWorkingSetKeys;
+    fireEvent.click(within(await screen.findByRole("option", { name: "alpha" })).getByTitle("Project settings for alpha"));
+    expect(useUiStateStore.getState().sidebarProjectWorkingSetKeys).toEqual(keys);
+    await settleNavigation();
+  });
+
+  it("opens with Enter and Space, toggles a highlighted project with Space and focuses a sidebar row with Enter", async () => {
+    const user = userEvent.setup();
     const onProjectChange = vi.fn();
-    const fixture = await renderSidebar({ onProjectChange, organizationName: "Secondary Example Organization" });
+    await renderSidebar({ onProjectChange });
+    const trigger = screen.getByLabelText("Filter threads by project");
+    trigger.focus();
+    await user.keyboard("{Enter}");
+    const search = await screen.findByLabelText("Search projects");
+    await waitFor(() => expect(document.activeElement).toBe(search));
+    await user.keyboard("{ArrowDown}");
+    expect(search.getAttribute("aria-activedescendant")).toBeTruthy();
+    await user.keyboard(" ");
+    expect(trigger.textContent).toContain("1 of 2 projects");
+    await user.keyboard("{Escape}");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    trigger.focus();
+    await user.keyboard(" ");
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    trigger.focus();
+    await user.keyboard(" ");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    const working = within(screen.getByRole("list", { name: "Project working set" }));
+    const project = working.getAllByRole("button")[1]!;
+    project.focus();
+    await user.keyboard("{Enter}");
+    expect(project.getAttribute("aria-pressed")).toBe("true");
+    expect(onProjectChange).toHaveBeenLastCalledWith(project.textContent === "alpha" ? "proj_alpha" : "proj_beta");
+  });
+
+  it("updates the empty working set label when the organization changes", async () => {
+    const fixture = await renderSidebar({ organizationName: "Secondary Example Organization" });
     fixture.setOrganization("Tertiary Example Organization");
     expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All Tertiary Example Organization projects");
-    fireEvent.click(screen.getByLabelText("Filter threads by project"));
-    fireEvent.click(await screen.findByRole("option", { name: "beta" }));
-    fixture.setOrganization("Secondary Example Organization");
-    expect(screen.getByLabelText("Filter threads by project").textContent).toContain("beta");
-    expect(onProjectChange).toHaveBeenLastCalledWith("proj_beta");
-    fireEvent.click(screen.getByLabelText("Filter threads by project"));
-    fireEvent.click(await screen.findByRole("option", { name: "All Secondary Example Organization projects" }));
-    expect(onProjectChange).toHaveBeenLastCalledWith("");
   });
 
   it("carries the footer utility menu, pointed at Detent's destinations", async () => {

@@ -163,11 +163,13 @@ function normalized(view: WorkViewState): WorkViewState {
     assignee: values(view.assignee), priority: values(view.priority), lanes: view.lanes === null ? null : values(view.lanes) };
 }
 
-export function getBoardRead(client: BoardAccount, http: WorkHttp, projectId: string | null, input: WorkViewState): BoardRead {
+export function getBoardRead(client: BoardAccount, http: WorkHttp, projectId: string | null, input: WorkViewState, projectIds?: readonly string[]): BoardRead {
   const owner = boardAccountKey(client);
   authorizeBoardCache(owner);
   const accessible = client.bootstrap.projects.map((project) => project.id).sort();
-  const scope = projectId === null ? accessible : accessible.includes(projectId) ? [projectId] : [];
+  const scope = projectIds === undefined
+    ? (projectId === null ? accessible : accessible.includes(projectId) ? [projectId] : [])
+    : [...new Set(projectIds)].filter((id) => accessible.includes(id)).sort();
   const view = normalized(input);
   const key = JSON.stringify([owner, projectId, scope, view.q, view.state, view.type, view.label, view.assignee,
     view.priority.map((name) => String(priorityValue(name) ?? name)).sort(), view.archived === true, view.completedWindow,
@@ -224,6 +226,30 @@ export class BoardRead {
       if (previous !== undefined) this.state = { ...EMPTY, lanes: previous.state.lanes,
         workflows: previous.state.workflows, project: previous.state.project, ...facets.get(this.facetKey) };
     }
+  }
+
+  projectSnapshot(projectId: string | null): BoardData {
+    if (projectId === null || !this.state.resolved || this.entries.length === 0) return this.state;
+    const entries = this.entries.filter((entry) => entry.project.project_id === projectId);
+    if (entries.length === 0) return { ...EMPTY, loading: this.state.loading, resolved: this.state.resolved, error: this.state.error };
+    const data = this.build(entries, this.state.asOf ?? Date.now());
+    return { ...data, project: toProjectView(entries[0]!.project, entries[0]!.issues),
+      cached: this.state.cached, loading: this.state.loading, backlogLoading: this.state.backlogLoading,
+      refreshing: this.state.refreshing, error: this.state.error };
+  }
+
+  projectCounts(): Readonly<Record<string, { running: number; blocked: number }>> {
+    return Object.fromEntries(this.entries.map((entry) => {
+      const runners = new Set(entry.cards?.flatMap((card) => {
+        const runner = card.execution?.running ? card.execution.runner_id : card.attempt?.status === "running" ? card.attempt.runner_id : undefined;
+        return runner === undefined ? [] : [runner];
+      }) ?? []);
+      return [entry.project.project_id, {
+        running: runners.size || entry.work?.lanes.reduce((count, lane) => count + lane.running, 0) || 0,
+        blocked: entry.work?.lanes.filter((lane) => lane.state.toLowerCase() === "blocked").reduce((count, lane) => count + lane.total, 0)
+          ?? entry.issues.filter((issue) => issue.state.toLowerCase() === "blocked" && !issue.terminal).length,
+      }];
+    }));
   }
 
   snapshot = (): BoardData => this.state;

@@ -40,9 +40,11 @@ import { WorkList } from "./components/WorkList.tsx";
 import { WorkToolbar } from "./components/WorkToolbar.tsx";
 import { WorkTopBar } from "./components/WorkTopBar.tsx";
 import { useShell } from "../App.tsx";
-import { useWorkSidebarSearch } from "../adapters/sidebarData.tsx";
+import { usePublishProjectCounts, useWorkSidebarSearch } from "../adapters/sidebarData.tsx";
 import { boardConnectionChip } from "./lib/freshness.ts";
 import { allProjectsLabel } from "../lib/projectScope.ts";
+import { useUiStateStore } from "../../uiStateStore.ts";
+import { sidebarProjectScopeKey } from "../adapters/shell.ts";
 import { prefetchIssue } from "./lib/issueQuery.ts";
 
 const HOVER_INTENT_MS = 150;
@@ -97,8 +99,16 @@ export function WorkBoard({ projectId, savedView }: { projectId: string | null; 
   const project = client.bootstrap.projects.find((candidate) => candidate.id === projectId);
   usePageTitle(savedView?.name ?? "Work", project?.name);
   const http = useWorkHttp();
-  const [view, setView] = useViewState(projectId, savedView);
-  const board = useBoard(projectId, view);
+  const workingSetKeys = useUiStateStore((state) => state.sidebarProjectWorkingSetKeys);
+  const workingProjects = React.useMemo(() => client.bootstrap.projects
+    .filter((entry) => workingSetKeys.includes(sidebarProjectScopeKey(entry)))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" })), [client.bootstrap.projects, workingSetKeys]);
+  const workingIds = React.useMemo(() => savedView === undefined && workingProjects.length > 0 &&
+    (projectId === null || workingProjects.some((entry) => entry.id === projectId))
+    ? workingProjects.map((entry) => entry.id) : undefined, [workingProjects, projectId, savedView]);
+  const [view, setView] = useViewState(workingIds === undefined ? projectId : null, savedView);
+  const board = useBoard(projectId, view, workingIds);
+  usePublishProjectCounts(board.projectCounts);
   const currentView = React.useRef(view);
   currentView.current = view;
   const setQuery = React.useCallback((q: string) => setView({ ...currentView.current, q }), [setView]);
@@ -265,7 +275,7 @@ export function WorkBoard({ projectId, savedView }: { projectId: string | null; 
   });
   const scopeName =
     projectId === null
-      ? allProjectsLabel(client.bootstrap.organization?.name)
+      ? (workingIds === undefined ? allProjectsLabel(client.bootstrap.organization?.name) : `${workingProjects.length} projects`)
       : (board.project?.name ?? projects.get(projectId) ?? projectId);
   const laneNames = board.lanes.map((lane) => lane.name);
   const visible = board.lanes.filter((lane) => laneVisible(view, lane));
@@ -296,7 +306,8 @@ export function WorkBoard({ projectId, savedView }: { projectId: string | null; 
     <WorkTopBar
       context="Work"
       title={savedView?.name ?? scopeName}
-      titleTooltip={scopeName}
+      titleTooltip={projectId === null && workingIds !== undefined ? workingProjects.map((entry) => entry.name).join(", ") : scopeName}
+      scopeGroup={projectId === null && workingIds !== undefined}
       completed={noProjects ? null : (
         <div className="flex shrink-0 items-center gap-1">
           <LiveCounter count={board.resolved ? stats.running : null} loading={board.loading} />

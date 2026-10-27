@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import changeFixture from "../../src/contracts/fixtures/work-change-detail.json";
 import commentsFixture from "../../src/contracts/fixtures/work-comment-list.json";
@@ -1267,19 +1267,20 @@ describe("the cached Work read", () => {
     }
   });
 
-  it("shares concurrent base reads and shows memory cards on the first return render", async () => {
+  it.each([false, true])("shares base reads and refreshes memory cards on return (working set: %s)", async (workingSet) => {
     const fixture = workPaginationFixture();
     await fixture.control();
     let hold = false;
     let release!: () => void;
     const pending = new Promise<void>((resolve) => { release = resolve; });
+    onTestFinished(() => release());
     vi.stubGlobal("fetch", async (...args: Parameters<typeof fixture.fetch>) => {
       if (hold) await pending;
       return fixture.fetch(...args);
     });
     const snapshots: ReturnType<typeof useBoard>[] = [];
     function Probe() {
-      const board = useBoard(null, DEFAULT_VIEW_STATE);
+      const board = useBoard(null, DEFAULT_VIEW_STATE, workingSet ? ["proj_alpha", "proj_beta"] : undefined);
       snapshots.push(board);
       return <div>{board.items.length}</div>;
     }
@@ -1289,6 +1290,7 @@ describe("the cached Work read", () => {
     expect(fixture.requests.filter((request) => request.url.pathname.endsWith("/proj_alpha"))).toHaveLength(1);
     mounted.unmount();
     hold = true;
+    const requestCount = fixture.requests.length;
     const before = snapshots.length;
     render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
     expect(snapshots[before]!.items.length).toBeGreaterThan(0);
@@ -1296,9 +1298,10 @@ describe("the cached Work read", () => {
     expect(snapshots[before]!.live).toBe(false);
     expect(snapshots.at(-1)!.items.length).toBeGreaterThan(0);
     await act(async () => { release(); });
+    await waitFor(() => expect(fixture.requests.length).toBeGreaterThan(requestCount));
   });
 
-  it("patches only the pushed card and performs no requests for an unchanged tick", async () => {
+  it("patches pushed cards across working-set focus without new requests or streams", async () => {
     const sources: EventTarget[] = [];
     vi.stubGlobal("EventSource", class extends EventTarget {
       readyState = 1;
@@ -1309,7 +1312,13 @@ describe("the cached Work read", () => {
     await fixture.control();
     vi.stubGlobal("fetch", fixture.fetch);
     let current!: ReturnType<typeof useBoard>;
-    function Probe() { current = useBoard(null, DEFAULT_VIEW_STATE); return <div />; }
+    let focus!: (project: string | null) => void;
+    function Probe() {
+      const [project, setProject] = React.useState<string | null>(null);
+      focus = setProject;
+      current = useBoard(project, DEFAULT_VIEW_STATE, ["proj_alpha", "proj_beta"]);
+      return <div />;
+    }
     render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
     await waitFor(() => expect(current.resolved).toBe(true));
     const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?include=board&state=Todo");
@@ -1317,12 +1326,22 @@ describe("the cached Work read", () => {
     const card = page.cards[0];
     const unchanged = current.items.find((item) => item.id !== card.issue.work_item_id)!;
     const before = fixture.requests.length;
+    expect(sources).toHaveLength(2);
+    act(() => focus("proj_alpha"));
+    expect(current.items.every((item) => item.projectId === "proj_alpha")).toBe(true);
+    act(() => focus("proj_beta"));
+    expect(current.items.every((item) => item.projectId === "proj_beta")).toBe(true);
+    expect(fixture.requests).toHaveLength(before);
+    expect(sources).toHaveLength(2);
     const emit = (data: unknown) => act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify(data) })));
     emit({ sequence: 0, gap: false, deltas: [] });
     expect(fixture.requests).toHaveLength(before);
     emit({ sequence: 1, gap: false, deltas: [{ sequence: 1, previous: card,
       current: { ...card, attempt: { ...ATTEMPTS[0]!, count: 4 }, issue: { ...card.issue, title: "Pushed title", revision: "900" } } }], work: page.work });
+    expect(current.items.some((item) => item.id === card.issue.work_item_id)).toBe(false);
+    act(() => focus(null));
     expect(current.items.find((item) => item.id === card.issue.work_item_id)?.title).toBe("Pushed title");
+    expect(sources).toHaveLength(2);
     expect(current.items.find((item) => item.id === card.issue.work_item_id)?.attempt?.attemptNumber).toBe(4);
     expect(current.items.find((item) => item.id === unchanged.id)).toBe(unchanged);
     expect(current.refreshing).toBe(false);

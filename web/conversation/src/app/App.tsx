@@ -5,7 +5,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/unstable/reactivity";
 import React from "react";
-import { Outlet, useNavigate, useParams, useRouter, useRouterState } from "@tanstack/react-router";
+import { Outlet, useNavigate, useRouter, useRouterState } from "@tanstack/react-router";
 
 import type { Conversation } from "../contracts/index.ts";
 import { HUB_ENVIRONMENT_ID } from "../contracts/index.ts";
@@ -17,7 +17,7 @@ import { useSidebarHumanActions } from "./adapters/sidebarHumanActions.ts";
 import { ProjectSetupProvider } from "./account/projectSetup.tsx";
 import { SidebarDataProvider } from "./adapters/sidebarData.tsx";
 import { sidebarProjectScopeKey } from "./adapters/shell.ts";
-import { setSidebarProjectScopeKey, useUiStateStore } from "../uiStateStore.ts";
+import { activateSidebarProjectScope, setSidebarProjectWorkingSetKeys, setSidebarProjectScopeKey, useUiStateStore } from "../uiStateStore.ts";
 import { publishPaletteShell } from "./adapters/paletteContext.ts";
 import { CommandPalette } from "./components/CommandPalette.tsx";
 import { NewProjectProvider } from "./projects/NewProject.tsx";
@@ -158,13 +158,13 @@ function ShellBody(): React.ReactElement {
   const list = useListState(client);
   const search = useAtomSet(client.searchConversations, { mode: "promise" });
   const refreshList = useAtomSet(client.refreshList, { mode: "promise" });
-  const params = useParams({ strict: false }) as { conversationId?: string; projectId?: string; project?: string; workItemId?: string; viewId?: string };
+  const params = useRouterState({ select: (state) => state.matches[state.matches.length - 1]?.params ?? {} }) as { conversationId?: string; projectId?: string; project?: string; workItemId?: string; viewId?: string };
   const savedView = useSavedViews()?.views.find((view) => view.id === params.viewId);
   // The Work destination and the Browse group need to know where they are.
   // `useRouterState` is the only source of the current path that stays correct
   // through a redirect; `params` alone cannot tell `/work` from `/work/changes`.
   const context = (useRouterState({ select: (state) => state.matches[state.matches.length - 1]?.context }) ?? {}) as { resolvedProjectId?: string; resolvedWorkItemId?: string };
-  const routePath = useRouterState({ select: (state) => withoutBasePath(state.location.pathname, routerBasePath()) });
+  const routePath = useRouterState({ select: (state) => withoutBasePath(state.matches[state.matches.length - 1]?.pathname ?? state.location.pathname, routerBasePath()) });
   const activePath = context.resolvedWorkItemId ? `/work/i/${context.resolvedWorkItemId}` : context.resolvedProjectId ? `/work/p/${context.resolvedProjectId}` : routePath;
 
   const [newChatSubjectId, setNewChatSubjectId] = React.useState<string | null>(null);
@@ -180,17 +180,37 @@ function ShellBody(): React.ReactElement {
   const [selectedProjectId, setProjectIdState] = React.useState(
     () => readLastProject() ?? projects[0]?.id ?? "",
   );
+  React.useLayoutEffect(() => {
+    const remembered = readLastProject();
+    if (remembered) writeLastProject(remembered);
+  }, []);
+  const scopeAccount = JSON.stringify([client.http.origin, client.http.apiBase, client.bootstrap.organization.id, client.bootstrap.actor?.principal_id]);
+  const scopeAccountKey = useUiStateStore((state) => state.sidebarProjectScopeAccountKey);
+  const focusKey = useUiStateStore((state) => state.sidebarProjectScopeKey);
+  React.useLayoutEffect(() => {
+    useUiStateStore.setState((state) => activateSidebarProjectScope(state, scopeAccount));
+  }, [scopeAccount]);
+  const focusedProjectId = projects.find((project) => sidebarProjectScopeKey(project) === focusKey)?.id ?? "";
+  const isWorkBoard = activePath === "/work" || activePath.startsWith("/work/p/");
+  const [projectScopePath, setProjectScopePath] = React.useState<string | null>(null);
+  const enteringWorkBoard = isWorkBoard && projectScopePath !== routePath;
+  const workBoardPath = isWorkBoard ? routePath : null;
   const savedProjectId = savedView === undefined ? undefined : savedView.project_id ?? "";
-  const requestedProject = params.project ?? params.projectId ?? context.resolvedProjectId ?? savedProjectId ?? (activePath === "/work" ? "" : selectedProjectId);
+  const requestedProject = routePath === "/chat" || (isWorkBoard && !enteringWorkBoard)
+    ? focusedProjectId
+    : params.project ?? params.projectId ?? context.resolvedProjectId ?? savedProjectId ?? ((activePath === "/work" || activePath === "/chat") ? focusedProjectId : selectedProjectId);
   const projectId = client.account?.projects.find((project) => project.id === requestedProject || project.slug === requestedProject)?.id ?? requestedProject;
   React.useEffect(() => {
+    if (scopeAccountKey !== scopeAccount) return;
+    setProjectScopePath(routePath);
     setProjectIdState(projectId);
     writeLastProject(projectId);
     const project = projects.find((candidate) => candidate.id === projectId);
-    useUiStateStore.setState((state) =>
-      setSidebarProjectScopeKey(state, project === undefined ? null : sidebarProjectScopeKey(project)),
-    );
-  }, [projectId, projects]);
+    useUiStateStore.setState((state) => {
+      const key = project === undefined ? null : sidebarProjectScopeKey(project);
+      return setSidebarProjectScopeKey(savedView === undefined ? state : setSidebarProjectWorkingSetKeys(state, key === null ? [] : [key]), key);
+    });
+  }, [projectId, projects, workBoardPath, scopeAccount, scopeAccountKey, savedView]);
   // The copied `components/Sidebar.tsx` owns its search box and searches its
   // own list by title (`Sidebar.logic.ts`). The shell reads that query back
   // off the input so it can ask the hub for conversations past the first page
@@ -278,14 +298,15 @@ function ShellBody(): React.ReactElement {
     activeProjectId: projectId === "" ? null : projectId,
     onProjectChange: (id: string) => {
       setProjectId(id);
+      if (isWorkBoard) return;
       if (activePath === "/reports" || activePath.startsWith("/reports/")) {
         writeLastProject(id);
         void navigate({
           to: activePath,
           search: (previous: Record<string, unknown>) => ({ ...previous, project: id === "" ? "all" : id, projects: undefined }),
         } as never);
-      } else if (activePath.startsWith("/work")) {
-        void navigate({ to: id === "" ? "/work" : `/work/p/${id}` });
+      } else if (activePath.startsWith("/work") && activePath !== "/work") {
+        void navigate({ to: "/work", search: (previous: Record<string, unknown>) => previous } as never);
       } else {
         void navigate({ to: id === "" ? "/chat" : `/chat/p/${id}` });
       }
@@ -333,7 +354,7 @@ function ShellBody(): React.ReactElement {
     <ShellContext.Provider value={shell}>
 
       <ProjectSetupProvider projectId={projectId}>
-      <SidebarDataProvider value={sidebarProps}>
+      <SidebarDataProvider key={scopeAccount} value={sidebarProps}>
         <SidebarSearchProvider work={activePath === "/work" || activePath.startsWith("/work/")}>
 
         <NewProjectProvider>

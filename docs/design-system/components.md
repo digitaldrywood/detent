@@ -412,7 +412,7 @@ A short static status or count with semantic colour, paired with text so colour 
 - Kind: Primitive; status: available; id: `badge`.
 - Import: `import { Badge, badgeVariants } from "~/components/ui/badge";`
 - Source: [src/components/ui/badge.tsx](../../web/conversation/src/components/ui/badge.tsx).
-- Variants: `variant`: `default`, `secondary`, `outline`, `info`, `success`, `warning`, `error`, `destructive`, `label`; `size`: `control`, `default`, `lg`, `sm`.
+- Variants: `variant`: `default`, `secondary`, `outline`, `info`, `success`, `warning-outline`, `warning`, `error`, `destructive`, `label`; `size`: `control`, `default`, `lg`, `sm`.
 - States: none of its own.
 - Keyboard: Static by default; with `render` it can become a link or button and takes that element's keyboard behaviour.
 - Avoid: Actions (use Button) and context reference chips in the composer (use the file tag chip).

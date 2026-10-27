@@ -524,7 +524,7 @@
       "source": "src/components/ui/badge.tsx",
       "exports": ["Badge", "badgeVariants"],
       "variants": {
-        "variant": ["default", "secondary", "outline", "info", "success", "warning", "error", "destructive", "label"],
+        "variant": ["default", "secondary", "outline", "info", "success", "warning-outline", "warning", "error", "destructive", "label"],
         "size": ["control", "default", "lg", "sm"]
       },
       "states": [],
