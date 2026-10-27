@@ -179,11 +179,11 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 						if issue.Priority == nil || *issue.Priority != 1 || !slices.Equal(issue.Labels, []string{"infrastructure"}) || issue.Title != "intake(instance): retry_storm: protocol failure" {
 							t.Fatalf("instance routing = %+v", issue)
 						}
-						if issue.State != "Backlog" || issue.Actor != (tracker.Actor{Kind: "integration", PrincipalID: "health_detector"}) {
+						if issue.State != "Todo" || issue.Actor != (tracker.Actor{Kind: "integration", PrincipalID: "health_detector"}) {
 							t.Fatalf("state/attribution = %+v", issue)
 						}
-						if !strings.Contains(issue.Body, "<!-- detent:no-dispatch -->") || strings.Contains(issue.Body, "## Acceptance criteria") || strings.Contains(issue.Body, "## How we know it worked") || issue.IssueContract != nil && len(issue.IssueContract.ConfirmedSections) != 0 {
-							t.Fatal("diagnostic report fabricated an execution contract")
+						if strings.Contains(issue.Body, "<!-- detent:no-dispatch -->") || !strings.Contains(issue.Body, "## Acceptance criteria") || !strings.Contains(issue.Body, "## How we know it worked") || issue.IssueContract != nil && len(issue.IssueContract.ConfirmedSections) != 0 {
+							t.Fatal("finding contract missing or confirmation fabricated")
 						}
 						origin, ok := issueorigin.Parse(issue.Body)
 						if !ok || origin.Fingerprint != "1d5d5e843dc0caa89c068f4d504ec65a4791ead9f512e1741ec30ca58e84db79" || origin.Source != read.ID || origin.Instance != "health_detector" {
@@ -195,11 +195,17 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 							}
 						}
 					}
+					if step.terminal && !test.cancelled {
+						if issue.WorkItemID == owner.WorkItemID {
+							t.Fatal("Done owner suppressed a new episode")
+						}
+						owner = issue
+					}
 					if issue.WorkItemID != owner.WorkItemID || issue.Body != owner.Body {
 						t.Fatalf("occurrence replaced owner: %+v", issue)
 					}
 					if step.offset < 68*time.Minute {
-						wantState := "Backlog"
+						wantState := "Todo"
 						if issue.State != wantState {
 							t.Fatalf("operational state = %s, want %s", issue.State, wantState)
 						}
@@ -219,11 +225,11 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 						if err := tx.Rollback(); err != nil {
 							t.Fatal(err)
 						}
-						if slices.Contains(ids, id) {
-							t.Fatal("diagnostic report became a source candidate")
+						if !slices.Contains(ids, id) {
+							t.Fatal("finding with a complete contract did not become a source candidate")
 						}
 					}
-					if step.offset >= 68*time.Minute && (!issue.Terminal || issue.State != terminalState) {
+					if test.cancelled && step.offset >= 68*time.Minute && (!issue.Terminal || issue.State != terminalState) {
 						t.Fatalf("terminal issue reopened: %+v", issue)
 					}
 					if step.offset == 67*time.Minute && read.ID == firstFinding {
@@ -236,8 +242,19 @@ func TestHealthFindingIssueLifecycle(t *testing.T) {
 					if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", owner.WorkItemID).Scan(&comments); err != nil {
 						t.Fatal(err)
 					}
-					if issues != 2 || comments != step.comments {
-						t.Fatalf("issues=%d comments=%d want 2/%d", issues, comments, step.comments)
+					wantIssues, wantComments := 2, step.comments
+					if !test.cancelled && step.offset >= 68*time.Minute {
+						wantIssues = 3
+						wantComments = 0
+						if step.offset >= 69*time.Minute {
+							wantComments = 1
+						}
+						if step.offset >= 130*time.Minute {
+							wantComments = 2
+						}
+					}
+					if issues != wantIssues || comments != wantComments {
+						t.Fatalf("issues=%d comments=%d want %d/%d", issues, comments, wantIssues, wantComments)
 					}
 					if step.name == "resolves" {
 						var body string
@@ -316,8 +333,8 @@ func TestHealthFindingReporterPreservesHistory(t *testing.T) {
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT work_item_id FROM health_finding_issues").Scan(&item); err != nil {
 				t.Fatal(err)
 			}
-			if item != owner.WorkItemID {
-				t.Fatal("report did not reuse imported owner")
+			if (item == owner.WorkItemID) == (test.state == "Done") {
+				t.Fatal("report did not preserve open ownership or start a new Done episode")
 			}
 			var pending, issues, comments int
 			if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT
@@ -326,11 +343,11 @@ func TestHealthFindingReporterPreservesHistory(t *testing.T) {
  (SELECT count(*) FROM native_comments)`, f.project.ID).Scan(&pending, &issues, &comments); err != nil {
 				t.Fatal(err)
 			}
-			wantComments := 1
+			wantComments, wantIssues := 1, 1
 			if test.state == "Done" {
-				wantComments = 0
+				wantComments, wantIssues = 0, 2
 			}
-			if pending != 1 || issues != 1 || comments != wantComments {
+			if pending != 1 || issues != wantIssues || comments != wantComments {
 				t.Fatalf("pending=%d issues=%d comments=%d", pending, issues, comments)
 			}
 		})
@@ -371,7 +388,7 @@ func TestHealthFindingResolutionOwnership(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			issue.Body = strings.ReplaceAll(issue.Body, "<!-- detent:no-dispatch -->", "") + "\n\n" + nativeContractTestBody
+			issue.Body = strings.ReplaceAll(issue.Body, "<!-- detent:no-dispatch -->", "")
 			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Todo'),body=? WHERE id=?", scope.project, issue.Body, id); err != nil {
 				t.Fatal(err)
 			}
@@ -569,9 +586,11 @@ func TestHealthFindingIssueScope(t *testing.T) {
 	for _, fixture := range []nativeFixture{f, other} {
 		workflow := config.Workflow{Config: config.Default()}
 		workflow.Config.Tracker.Kind = config.TrackerHubNative
+		workflow.SharedPrompt = "## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n"
 		if fixture.project.ID == other.project.ID {
-			workflow.SharedPrompt = "## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n- Safety regression\n"
+			workflow.SharedPrompt += "- Safety regression\n"
 		}
+		workflow.SharedPrompt += "\nAgent-authored criteria do not require human confirmation.\n"
 		descriptor, err := config.ResolvePolicy(workflow)
 		if err != nil {
 			t.Fatal(err)
@@ -644,7 +663,7 @@ func TestHealthFindingIssueScope(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if issue.State != "Backlog" || strings.Contains(issue.Body, string(test.hidden)) || issue.IssueContract != nil && len(issue.IssueContract.ConfirmedSections) != 0 {
+					if issue.State != "Todo" || strings.Contains(issue.Body, string(test.hidden)) || issue.IssueContract != nil && len(issue.IssueContract.ConfirmedSections) != 0 {
 						t.Fatal("diagnostic escaped intake, confirmation policy or project scope")
 					}
 					if owner := owners[scope.project]; owner != "" && owner != issue.WorkItemID {
@@ -669,8 +688,8 @@ func TestHealthFindingIssueScope(t *testing.T) {
 					}
 					issue.State = "Todo"
 					evaluation, err := evaluateNativeIssueContract(t.Context(), f.service.database.db, scope, issue)
-					if err != nil || evaluation.Allowed || evaluation.ReasonCode != "no_claimable_work" {
-						t.Fatalf("diagnostic admitted as repair: %+v, %v", evaluation, err)
+					if err != nil || !evaluation.Allowed {
+						t.Fatalf("complete finding contract refused: %+v, %v", evaluation, err)
 					}
 					tx, err := f.service.database.reader.BeginTx(t.Context(), &sql.TxOptions{ReadOnly: true})
 					if err != nil {
@@ -680,8 +699,8 @@ func TestHealthFindingIssueScope(t *testing.T) {
 					if rollbackErr := tx.Rollback(); err != nil || rollbackErr != nil {
 						t.Fatalf("candidates: %v, rollback: %v", err, rollbackErr)
 					}
-					if slices.Contains(ids, id) {
-						t.Fatal("diagnostic entered dispatch candidates")
+					if !slices.Contains(ids, id) {
+						t.Fatal("finding did not enter dispatch candidates")
 					}
 					repair, repairID, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(repairs[scope.project].WorkItemID))
 					if err != nil || repair.State != "Todo" || repair.Body != repairs[scope.project].Body || !slices.Contains(ids, repairID) {
@@ -702,16 +721,20 @@ func TestHealthFindingIssueWorkflow(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		states []tracker.NativeState
+		todo   *tracker.NativeState
 		want   string
 	}{
-		{name: "reserved triage", states: []tracker.NativeState{{Name: "Triage"}}},
-		{name: "custom intake", states: []tracker.NativeState{{Name: "Intake"}}, want: "Intake"},
-		{name: "first eligible intake", states: []tracker.NativeState{{Name: "Intake"}, {Name: "Later"}}, want: "Intake"},
-		{name: "backlog preferred", states: []tracker.NativeState{{Name: "Intake"}, {Name: "Backlog"}, {Name: "Later"}}, want: "Backlog"},
-		{name: "no intake"},
-		{name: "dispatchable backlog", states: []tracker.NativeState{{Name: "Backlog", Dispatchable: true}}},
-		{name: "terminal backlog", states: []tracker.NativeState{{Name: "Backlog", Terminal: true}}},
-		{name: "operator backlog", states: []tracker.NativeState{{Name: "Backlog", OperatorOnly: true}}},
+		{name: "reserved triage", states: []tracker.NativeState{{Name: "Triage"}}, want: "Todo"},
+		{name: "custom intake", states: []tracker.NativeState{{Name: "Intake"}}, want: "Todo"},
+		{name: "first eligible intake", states: []tracker.NativeState{{Name: "Intake"}, {Name: "Later"}}, want: "Todo"},
+		{name: "backlog never selected", states: []tracker.NativeState{{Name: "Intake"}, {Name: "Backlog"}, {Name: "Later"}}, want: "Todo"},
+		{name: "no intake", want: "Todo"},
+		{name: "dispatchable backlog", states: []tracker.NativeState{{Name: "Backlog", Dispatchable: true}}, want: "Todo"},
+		{name: "terminal backlog", states: []tracker.NativeState{{Name: "Backlog", Terminal: true}}, want: "Todo"},
+		{name: "operator backlog", states: []tracker.NativeState{{Name: "Backlog", OperatorOnly: true}}, want: "Todo"},
+		{name: "nondispatchable Todo", todo: &tracker.NativeState{Name: "Todo"}},
+		{name: "terminal Todo", todo: &tracker.NativeState{Name: "Todo", Terminal: true}},
+		{name: "operator Todo", todo: &tracker.NativeState{Name: "Todo", Dispatchable: true, OperatorOnly: true}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -719,6 +742,9 @@ func TestHealthFindingIssueWorkflow(t *testing.T) {
 			other := newNativeFixture(t, f.service, f.project.OrganizationID, "health-standard-workflow")
 			addHealthBacklog(t, other)
 			states := nativeFixtureStates()
+			if test.todo != nil {
+				states[0] = *test.todo
+			}
 			if len(test.states) > 0 {
 				if !slices.ContainsFunc(test.states, func(state tracker.NativeState) bool { return state.Name == "Triage" }) {
 					states = append(states, tracker.NativeState{Name: "Triage"})
@@ -752,7 +778,7 @@ func TestHealthFindingIssueWorkflow(t *testing.T) {
 				for _, project := range []struct {
 					fixture nativeFixture
 					want    string
-				}{{f, test.want}, {other, "Backlog"}} {
+				}{{f, test.want}, {other, "Todo"}} {
 					scope := nativeScope{organization: f.project.OrganizationID, project: project.fixture.project.ID}
 					page, err := f.service.readHealthFindings(t.Context(), scope, "open", "", "", 100)
 					if err != nil {
@@ -775,7 +801,7 @@ func TestHealthFindingIssueWorkflow(t *testing.T) {
 						t.Fatalf("report missing, duplicated or unscoped: count=%d links=%+v", count, page.Items[0].Issues)
 					}
 					issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(page.Items[0].Issues[0].WorkItemID))
-					if err != nil || issue.State != project.want || !strings.Contains(issue.Body, "<!-- detent:no-dispatch -->") {
+					if err != nil || issue.State != project.want || strings.Contains(issue.Body, "<!-- detent:no-dispatch -->") {
 						t.Fatalf("report intake = %+v, %v", issue, err)
 					}
 				}

@@ -49,10 +49,19 @@ func healthIssueRequest(f healthFinding) (tracker.CreateIssue, error) {
 	}
 	request := tracker.CreateIssue{
 		Title:    "intake(instance): " + title,
+		State:    "Todo",
 		Priority: new(1),
 		Labels:   []string{"infrastructure"},
 	}
-	body := fmt.Sprintf("Finding: `%s`\nClass: %s\nSubject: %s %s\nOpened: %s\nObserved: %s\n\n%s\n\nNext action: %s\n\nEvidence:\n```json\n%s\n```\n\n```detent-agent\nschema: 1\neffort: high\n```\n\nDiagnostic report only. This finding does not establish a reproducible source repair.\n\n<!-- detent:no-dispatch -->", f.ID, f.Class, f.Subject.Kind, f.Subject.ID, formatHubTime(f.OpenedAt), formatHubTime(f.LastSeenAt), f.Summary, f.NextAction, evidence)
+	body := fmt.Sprintf(
+		"## Current behavior\n\nFinding: `%s`\nSignal: %s\nClass: %s\nSubject: %s %s\nOpened: %s\nObserved: %s\n\n%s\n\nDiagnostic next action: %s\n\nRecorded evidence for this observation window:\n```json\n%s\n```\n\n"+
+			"## Desired behavior\n\nClear the recorded `%s` condition for %s %s by correcting its diagnosed cause within existing intended behavior.\n\n"+
+			"## Acceptance criteria\n\n- Reproduce the recorded condition with a focused test or fixture using the evidence above, and show that it fails before the repair.\n- Correct the diagnosed cause so that the same test or fixture passes and the recorded condition is cleared in that fixture before merge.\n\n"+
+			"## Must not break\n\nPreserve existing behavior, machine fingerprints, duplicate ownership and instance attribution. Infrastructure evidence alone does not authorize speculative source changes; establish the cause with the reproducing test or fixture first.\n\n"+
+			"## How we know it worked\n\nRecord the reproducing test or fixture, its command and its failing and passing results against the observed cause. Run focused checks for the changed packages before merge; no deployment or outside-system verification is required.\n\n"+
+			"## Invariants touched\n\nPreserve INV-2 instance attribution, INV-7 machine identity, INV-18 bounded writes and INV-21 bounded evaluation cost. Under INV-3, repair or consolidate the existing owner; add no protection mechanism.\n\n"+
+			"## Safety regression\n\nThis report changes no safety-critical path. If diagnosis requires changing completion, retry or dispatch controls, preserve their existing safety regression tables and boundary seeds and name the affected behavior in the repair.\n\n```detent-agent\nschema: 1\neffort: high\n```",
+		f.ID, f.Signal, f.Class, f.Subject.Kind, f.Subject.ID, formatHubTime(f.OpenedAt), formatHubTime(f.LastSeenAt), f.Summary, f.NextAction, evidence, f.Signal, f.Subject.Kind, f.Subject.ID)
 	request.Body = issueorigin.Stamp(body, issueorigin.Origin{Kind: "audit", Instance: "health_detector", Source: f.ID, Fingerprint: f.Fingerprint})
 	return request, nil
 }
@@ -172,7 +181,13 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 	created := []tracker.NativeIssue{}
 	for _, o := range pending {
 		if o.item != "" && !o.resolved.Valid && o.resolved == o.reportedResolved && o.digest == o.reportedDigest {
-			continue
+			var done bool
+			if err := tx.QueryRowContext(ctx, `SELECT ws.terminal=1 AND ws.detent_state='Done' FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.native_id=? AND i.organization_id=? AND i.project_id=?`, o.item, organization, o.project).Scan(&done); err != nil {
+				return nil, err
+			}
+			if !done {
+				continue
+			}
 		}
 		scope := healthIssueScope(organization, o.project)
 		var reported tracker.NativeIssue
@@ -197,15 +212,17 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 			if err != nil {
 				return nil, err
 			}
+			request.State = ""
 			for _, state := range project.States {
-				if state.Name != "Triage" && !state.Terminal && !state.OperatorOnly && !state.Dispatchable && (request.State == "" || state.Name == "Backlog") {
-					request.State = state.Name
+				if state.Name == "Todo" && !state.Terminal && !state.OperatorOnly && state.Dispatchable {
+					request.State = "Todo"
+					break
 				}
 			}
 			if request.State == "" {
 				continue
 			}
-			issue, err := reportHealthIssue(ctx, tx, scope, request, o.finding.OpenedAt, now)
+			issue, err := reportHealthIssue(ctx, tx, scope, request, o.finding.Subject, o.finding.OpenedAt, now)
 			if err != nil {
 				return nil, err
 			}
@@ -226,8 +243,38 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 	return created, nil
 }
 
-func reportHealthIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, opened, now time.Time) (tracker.NativeIssue, error) {
-	issue, err := reportNativeMachineIssueTx(ctx, tx, scope, request, now)
+func reportHealthIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, subject healthSubject, opened, now time.Time) (tracker.NativeIssue, error) {
+	search, err := prepareNativeDuplicates(ctx, tx, scope, request, now, true)
+	if err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	if (len(search.matches) == 0 || search.matches[0].terminal) && subject.Kind == "work_item" {
+		var owner possibleDuplicate
+		err := tx.QueryRowContext(ctx, `WITH subject AS (
+ SELECT id FROM issues WHERE organization_id=? AND project_id=? AND native_id=?
+), blockers AS (
+ SELECT blocker_issue_id AS id FROM issue_dependencies WHERE dependent_issue_id=(SELECT id FROM subject) LIMIT ?
+), forward_links AS (
+ SELECT second_issue_id AS id FROM issue_relationships WHERE first_issue_id=(SELECT id FROM subject) AND relationship_type='related' LIMIT ?
+), reverse_links AS (
+ SELECT first_issue_id AS id FROM issue_relationships WHERE second_issue_id=(SELECT id FROM subject) AND relationship_type='related' LIMIT ?
+), candidates AS (SELECT id FROM blockers UNION SELECT id FROM forward_links UNION SELECT id FROM reverse_links)
+ SELECT i.native_id,i.number,i.title,ws.detent_state,i.revision FROM candidates c JOIN issues i ON i.id=c.id
+ JOIN workflow_states ws ON ws.id=i.workflow_state_id
+ WHERE i.organization_id=? AND i.project_id=? AND i.archived=0 AND ws.terminal=0
+ ORDER BY i.number DESC LIMIT 1`, scope.organization, scope.project, subject.ID, duplicateCandidateLimit, duplicateCandidateLimit, duplicateCandidateLimit, scope.organization, scope.project).Scan(&owner.WorkItemID, &owner.Number, &owner.Title, &owner.State, &owner.revision)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return tracker.NativeIssue{}, err
+		}
+		if err == nil {
+			search.matches = []possibleDuplicate{owner}
+		}
+	}
+	scope.duplicateSearch = search
+	issue, err := reportNativeMachineOccurrenceTx(ctx, tx, scope, request, now, true)
+	if err == nil && issue.Terminal && issue.State == "Done" && issue.Actor == scope.actor() && issue.Provenance == nil && legacyHealthIssueBody(issue.Body) {
+		return createNativeIssue(ctx, tx, scope, request, now, true)
+	}
 	if err != nil || !issue.Terminal || issue.State != "Cancelled" || issue.Actor != scope.actor() {
 		return issue, err
 	}
@@ -244,6 +291,16 @@ func reportHealthIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, reque
 		return createNativeIssue(ctx, tx, scope, request, now, true)
 	}
 	return issue, nil
+}
+
+func legacyHealthIssueBody(body string) bool {
+	origin, ok := issueorigin.Parse(body)
+	if !ok || origin.Kind != "audit" || origin.Instance != "health_detector" || origin.Source == "" {
+		return false
+	}
+	suffix := "\n\nDiagnostic report only. This finding does not establish a reproducible source repair.\n\n<!-- detent:no-dispatch -->"
+	content, _, legacy := strings.Cut(body, suffix)
+	return legacy && strings.HasPrefix(content, "Finding: `"+origin.Source+"`\nClass: instance\nSubject: ") && body == issueorigin.Stamp(content+suffix, origin)
 }
 
 func resolveHealthIssues(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, now time.Time) error {

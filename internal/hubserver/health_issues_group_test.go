@@ -237,7 +237,7 @@ func TestHealthFindingOccurrenceDeduplication(t *testing.T) {
 	}
 }
 
-func TestHealthIntakeResolution(t *testing.T) {
+func TestHealthIntakeLegacyResolution(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name       string
@@ -322,6 +322,9 @@ func TestHealthIntakeResolution(t *testing.T) {
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT work_item_id FROM health_finding_issues LIMIT 1").Scan(&item); err != nil {
 				t.Fatal(err)
 			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Backlog') WHERE native_id=?", f.project.ID, item); err != nil {
+				t.Fatal(err)
+			}
 			if test.move {
 				for _, state := range []string{"Todo", "Backlog"} {
 					if state == "Backlog" && !test.returnMove {
@@ -381,7 +384,7 @@ func TestHealthIntakeResolution(t *testing.T) {
 				requireNativeStatus(t, response, http.StatusOK)
 				var matches tracker.NativeIssuePage
 				decodeHubResponse(t, response, &matches)
-				if len(matches.Items) != 1 || matches.Items[0].WorkItemID == previous.WorkItemID || matches.Items[0].State != "Backlog" {
+				if len(matches.Items) != 1 || matches.Items[0].WorkItemID == previous.WorkItemID || matches.Items[0].State != "Todo" {
 					t.Fatalf("new episode did not file one open intake: %+v", matches.Items)
 				}
 				current, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(previous.WorkItemID))
