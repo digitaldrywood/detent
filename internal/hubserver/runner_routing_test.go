@@ -6,7 +6,9 @@ import (
 	"maps"
 	"net/http"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -467,16 +469,64 @@ func sharedRunner(t *testing.T, first runnerFixture) runnerFixture {
 	return r
 }
 
+func assertRunnerAdmissionFacts(t *testing.T, f nativeFixture, r runnerFixture, joining ...string) runnerauth.Runner {
+	t.Helper()
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	now := f.service.config.now()
+	fullQuery := &runtimeReadQuery{nativeQueryer: tx}
+	full, err := readRunner(t.Context(), fullQuery, f.project.OrganizationID, r.binding.RunnerID, now, joining...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admissionQuery := &runtimeReadQuery{nativeQueryer: tx}
+	admission, err := readRunnerForDispatch(t.Context(), admissionQuery, nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Runner: runnerauth.Identity{Binding: r.binding}}}, now, joining...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(admission.Leases) != 0 {
+		t.Fatal("dispatch read includes display lease details")
+	}
+	full.Leases = admission.Leases
+	if !reflect.DeepEqual(full, admission) {
+		t.Fatalf("admission facts differ from full runner read: full=%+v admission=%+v", full, admission)
+	}
+	for _, query := range []*runtimeReadQuery{fullQuery, admissionQuery} {
+		snapshots := 0
+		for _, statement := range query.statements {
+			if strings.Contains(statement, "SELECT r.id, r.provider_reports_json") {
+				snapshots++
+			}
+		}
+		want := 0
+		if len(full.ProviderCapacity) > 0 {
+			want = 1
+		}
+		if snapshots != want {
+			t.Fatalf("runner read loaded %d provider snapshots for %d reports, want %d", snapshots, len(full.ProviderCapacity), want)
+		}
+	}
+	return admission
+}
+
 func TestRunnerSharedHostConcurrentClaimsAndRestart(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 	cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}
 	f := newNativeFixture(t, openTestService(t, cfg), "", "shared")
+	otherProject := newNativeFixture(t, f.service, f.project.OrganizationID, "other-shared")
 	first := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 	first.enroll(t)
 	second := sharedRunner(t, first)
+	for _, r := range []runnerFixture{first, second} {
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, map[string]any{"expected_revision": 1, "display_name": "Shared runner", "state": "active", "capacity_limit": 8, "project_ids": []tracker.ProjectID{f.project.ID, otherProject.project.ID}}), http.StatusOK)
+	}
 	descriptor := hubTestPolicy()
 	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+	approveHubTestPolicy(t, f.service, otherProject.base+"/policy", descriptor)
 	start := make(chan struct{})
 	type outcome struct {
 		runner runnerFixture
@@ -488,14 +538,18 @@ func TestRunnerSharedHostConcurrentClaimsAndRestart(t *testing.T) {
 	var workers sync.WaitGroup
 	for i := range 8 {
 		r := first
+		project := f
 		if i%2 != 0 {
 			r = second
+			project = otherProject
 		}
-		issue := f.create(t, fmt.Sprintf("work-%d", i))
+		r.nativeFixture = project
+		r.base = project.base
+		issue := project.create(t, fmt.Sprintf("work-%d", i))
 		claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: fmt.Sprintf("session-%d", i), TTLSeconds: 300, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 		workers.Go(func() {
 			<-start
-			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
+			response := performHubAPIRequest(t, f.service, http.MethodPost, project.base+"/claims", r.redemption.Credential, claim)
 			result := outcome{runner: r, claim: claim, status: response.Code}
 			if response.Code == http.StatusOK {
 				decodeHubResponse(t, response, &result.lease)
@@ -531,11 +585,11 @@ func TestRunnerSharedHostConcurrentClaimsAndRestart(t *testing.T) {
 		if winner.runner.binding.RunnerID == first.binding.RunnerID {
 			other = second
 		}
-		path := f.base + "/leases/" + string(winner.lease.ID)
+		path := winner.runner.base + "/leases/" + string(winner.lease.ID)
 		for _, operation := range []string{"renew", "release", "validate"} {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/"+operation, other.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: winner.lease.FencingToken, TTLSeconds: 300, Reason: "released"}), http.StatusNotFound)
 		}
-		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", winner.runner.redemption.Credential, winner.claim), http.StatusOK)
+		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, winner.runner.base+"/claims", winner.runner.redemption.Credential, winner.claim), http.StatusOK)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/validate", winner.runner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: winner.lease.FencingToken}), http.StatusOK)
 	}
 	if err := f.service.Close(); err != nil {
@@ -550,6 +604,14 @@ func TestRunnerSharedHostConcurrentClaimsAndRestart(t *testing.T) {
 		t.Fatalf("fleet = %#v", fleet)
 	}
 	for _, r := range fleet {
+		fixture := first
+		fixture.binding.RunnerID = r.RunnerID
+		admission := assertRunnerAdmissionFacts(t, f, fixture)
+		for _, project := range []tracker.ProjectID{f.project.ID, otherProject.project.ID} {
+			if !reflect.DeepEqual(r.Exclusions(project, descriptor.Requirements, false), admission.Exclusions(project, descriptor.Requirements, false)) {
+				t.Fatal("admission read changed shared-host claim eligibility")
+			}
+		}
 		if r.HostUsed != 2 || r.HostCapacity != 2 {
 			t.Fatalf("host capacity after restart = %#v", r)
 		}
@@ -565,7 +627,7 @@ func TestRunnerSharedHostConcurrentClaimsAndRestart(t *testing.T) {
 	now = now.Add(301 * time.Second)
 	winner := winners[0]
 	winner.claim.SessionID = "offline-target"
-	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", winner.runner.redemption.Credential, winner.claim)
+	response = performHubAPIRequest(t, f.service, http.MethodPost, winner.runner.base+"/claims", winner.runner.redemption.Credential, winner.claim)
 	requireNativeStatus(t, response, http.StatusConflict)
 	var failure nativeError
 	decodeHubResponse(t, response, &failure)
