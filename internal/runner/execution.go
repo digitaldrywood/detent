@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -1359,7 +1360,8 @@ func (*NativeImplementationReviewError) BackendErrorStatus() string { return "in
 
 func nativeReviewResumeAttempt(recovery tracker.NativeRecovery, command string) *tracker.NativeAttempt {
 	detail := recovery.ChangeDetail
-	if detail == nil || recovery.Change == nil || detail.Change.ID != recovery.Change.ChangeID || detail.Change.CurrentVersion != recovery.Change.VersionID || detail.Change.CurrentLanding() != nil || detail.Summary.Status == "stale_policy" || detail.Summary.NativeReview == "changes_requested" || nativeLandingRework(recovery) || NativeReviewConversationRefusal(recovery) != "" {
+	repairResume := detail != nil && tracker.RepairDependenciesReady(recovery.Issue, changerequest.IndependentRepairDependencies(*detail))
+	if detail == nil || recovery.Change == nil || detail.Change.ID != recovery.Change.ChangeID || detail.Change.CurrentVersion != recovery.Change.VersionID || detail.Change.CurrentLanding() != nil || detail.Summary.Status == "stale_policy" || detail.Summary.NativeReview == "changes_requested" && !repairResume || nativeLandingRework(recovery) || NativeReviewConversationRefusal(recovery) != "" {
 		return nil
 	}
 	if landing := nativeRecoveryLanding(recovery); landing != nil && (NativeLanding{Landed: landing.Landed, CI: landing.CI, GateFailed: landing.GateFailed, RefusalKind: landing.RefusalKind, Refusal: landing.Refusal}).RequiresRework() {
@@ -1372,14 +1374,14 @@ func nativeReviewResumeAttempt(recovery tracker.NativeRecovery, command string) 
 			break
 		}
 	}
-	if current == nil || current.HeadSHA != recovery.Change.HeadSHA || current.Policy.ID != current.PolicyID || current.Policy.Gates.AutomatedReview != gate.AutomatedReviewRequired || current.Source == nil || current.RunID == "" || current.AttemptID == "" {
+	if current == nil || current.HeadSHA != recovery.Change.HeadSHA || current.Policy.ID != current.PolicyID || current.Policy.Gates.AutomatedReview != gate.AutomatedReviewRequired && !repairResume || current.Source == nil || current.RunID == "" || current.AttemptID == "" {
 		return nil
 	}
 	if command != "" && (current.Validation == nil || current.Validation.Command != command || current.Validation.ExitCode != 0 || current.Validation.HeadSHA != current.HeadSHA || current.Validation.TreeSHA == "") {
 		return nil
 	}
 	var sourceReview, acceptanceReview *gate.ValidatorResult
-	newerHumanFeedback := false
+	newerHumanFeedback := NativeReviewDiscussionForVersion(recovery.Discussion, detail.Discussion, current.ID).HumanFeedbackSince(current.CreatedAt)
 	sourceReviewIndex, acceptanceReviewIndex := -1, -1
 	for i := len(detail.Reviews) - 1; i >= 0; i-- {
 		review := detail.Reviews[i]
@@ -1397,10 +1399,13 @@ func nativeReviewResumeAttempt(recovery tracker.NativeRecovery, command string) 
 			break
 		}
 	}
-	if sourceReview != nil && sourceReview.Verdict != gate.ValidatorVerdictPass && sourceReview.Verdict != gate.ValidatorVerdictWait || acceptanceReview != nil && acceptanceReview.Verdict != gate.ValidatorVerdictPass && acceptanceReview.Verdict != gate.ValidatorVerdictWait {
+	if repairResume && newerHumanFeedback {
 		return nil
 	}
-	if sourceReview != nil && sourceReview.Verdict == gate.ValidatorVerdictPass && acceptanceReview != nil && acceptanceReview.Verdict == gate.ValidatorVerdictPass && acceptanceReviewIndex > sourceReviewIndex && !newerHumanFeedback {
+	if !repairResume && (sourceReview != nil && sourceReview.Verdict != gate.ValidatorVerdictPass && sourceReview.Verdict != gate.ValidatorVerdictWait || acceptanceReview != nil && acceptanceReview.Verdict != gate.ValidatorVerdictPass && acceptanceReview.Verdict != gate.ValidatorVerdictWait) {
+		return nil
+	}
+	if !repairResume && sourceReview != nil && sourceReview.Verdict == gate.ValidatorVerdictPass && acceptanceReview != nil && acceptanceReview.Verdict == gate.ValidatorVerdictPass && acceptanceReviewIndex > sourceReviewIndex && !newerHumanFeedback {
 		return nil
 	}
 	var source *tracker.NativeAttempt
@@ -1430,7 +1435,7 @@ func nativeReviewResumeAttempt(recovery tracker.NativeRecovery, command string) 
 	if parsed == nil || parsed.Status != workpad.StatusComplete || parsed.Blockers || parsed.HumanAction || parsed.ReasonCode != "" {
 		return nil
 	}
-	if !current.Policy.Gates.Validator && sourceReview != nil && sourceReview.Verdict == gate.ValidatorVerdictPass && !finalizationPending && !newerHumanFeedback {
+	if !repairResume && !current.Policy.Gates.Validator && sourceReview != nil && sourceReview.Verdict == gate.ValidatorVerdictPass && !finalizationPending && !newerHumanFeedback {
 		return nil
 	}
 	return source

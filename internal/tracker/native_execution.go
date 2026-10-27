@@ -82,23 +82,24 @@ type NativePhase struct {
 }
 
 type NativeRuntimeObservation struct {
-	WorkerLaunch    *NativeWorkerLaunch              `json:"worker_launch,omitempty"`
-	Pipeline        []gate.PipelineTiming            `json:"pipeline,omitempty"`
-	PipelineDropped int                              `json:"pipeline_dropped,omitempty"`
-	Validation      *gate.CommandResult              `json:"validation,omitempty"`
-	Recovery        *NativeRecoveryDecision          `json:"recovery,omitempty"`
-	Completion      *NativeCompletionObservation     `json:"completion,omitempty"`
-	PhasesDropped   int                              `json:"phases_dropped"`
-	LocalAttemptID  int64                            `json:"local_attempt_id,omitempty"`
-	Generation      uint64                           `json:"generation,omitempty"`
-	HeartbeatAt     time.Time                        `json:"heartbeat_at"`
-	Phase           string                           `json:"phase"`
-	Phases          []NativePhase                    `json:"phases"`
-	Identity        agentidentity.Identity           `json:"identity,omitzero"`
-	Activity        *workflowmetrics.ActivityProfile `json:"activity,omitempty"`
-	Landing         *NativeLandingReceipt            `json:"landing,omitempty"`
-	REST            *NativeRESTEvidence              `json:"rest,omitempty"`
-	GitHub          *NativeGitHubScope               `json:"github,omitempty"`
+	RepairDependencies []NativeWorkItemID               `json:"repair_dependencies,omitempty"`
+	WorkerLaunch       *NativeWorkerLaunch              `json:"worker_launch,omitempty"`
+	Pipeline           []gate.PipelineTiming            `json:"pipeline,omitempty"`
+	PipelineDropped    int                              `json:"pipeline_dropped,omitempty"`
+	Validation         *gate.CommandResult              `json:"validation,omitempty"`
+	Recovery           *NativeRecoveryDecision          `json:"recovery,omitempty"`
+	Completion         *NativeCompletionObservation     `json:"completion,omitempty"`
+	PhasesDropped      int                              `json:"phases_dropped"`
+	LocalAttemptID     int64                            `json:"local_attempt_id,omitempty"`
+	Generation         uint64                           `json:"generation,omitempty"`
+	HeartbeatAt        time.Time                        `json:"heartbeat_at"`
+	Phase              string                           `json:"phase"`
+	Phases             []NativePhase                    `json:"phases"`
+	Identity           agentidentity.Identity           `json:"identity,omitzero"`
+	Activity           *workflowmetrics.ActivityProfile `json:"activity,omitempty"`
+	Landing            *NativeLandingReceipt            `json:"landing,omitempty"`
+	REST               *NativeRESTEvidence              `json:"rest,omitempty"`
+	GitHub             *NativeGitHubScope               `json:"github,omitempty"`
 }
 
 type NativeWorkerLaunch struct {

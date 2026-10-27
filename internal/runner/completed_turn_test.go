@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
@@ -43,7 +44,7 @@ func (*completedExecutionWorkspace) Use(ctx context.Context, _ workspace.Issue) 
 }
 
 func (w *completedExecutionWorkspace) Head(context.Context, workspace.Info, workspace.Issue) (string, error) {
-	return "completed-head", nil
+	return w.recoveryStates[0].HeadSHA, nil
 }
 
 func (w *completedExecutionWorkspace) RunReviewCommand(ctx context.Context, _ workspace.Info, issue workspace.Issue, command string) (gate.CommandResult, error) {
@@ -253,6 +254,7 @@ func TestNativeCompletedTurnRetry(t *testing.T) {
 		name, stage                                 string
 		changedSource, changedPolicy, changedReview bool
 		rejectedGate, rejectedReview                bool
+		independentGate                             bool
 		turns, commits, validations                 int
 	}{
 		{name: "commit", stage: "commit", turns: 1, commits: 2},
@@ -263,11 +265,21 @@ func TestNativeCompletedTurnRetry(t *testing.T) {
 		{name: "changed policy", stage: "publication", changedPolicy: true, turns: 2, commits: 2},
 		{name: "changed review state", stage: "publication", changedReview: true, turns: 2, commits: 2},
 		{name: "rejected gate", stage: "publication", rejectedGate: true, turns: 2, commits: 2},
+		{name: "independent gate resumes finalization", stage: "publication", independentGate: true, turns: 1, commits: 2, validations: 2},
 		{name: "rejected review", stage: "publication", rejectedReview: true, turns: 2, commits: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			message := "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
 			backend := &completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: "native"}, recoveryStates: []workspace.RecoveryState{{HeadSHA: "completed-head", WorkspaceFingerprint: "completed-digest"}}}}}
+			var independentBase string
+			if test.independentGate {
+				source := initRunnerSourceRepo(t)
+				independentBase = strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+				attemptDiffFile(t, source, "example.txt", "changed source")
+				runRunnerGit(t, source, "add", "example.txt")
+				runRunnerGit(t, source, "commit", "-m", "Change source")
+				backend.recoveryStates[0].HeadSHA = strings.TrimSpace(runRunnerGit(t, source, "rev-parse", "HEAD"))
+			}
 			backend.finalizationBase = "finalized-base"
 			if test.stage == "commit" {
 				backend.finalizationErr = errors.New("finalization unavailable")
@@ -306,6 +318,16 @@ func TestNativeCompletedTurnRetry(t *testing.T) {
 			if test.rejectedGate {
 				second.recovery.Attempts[0].FencingToken = 1
 				second.recovery.Attempts[0].Runtime = &tracker.NativeRuntimeObservation{Validation: &gate.CommandResult{ExitCode: 1}}
+			}
+			if test.independentGate {
+				diagnostic := "source.go:4:2: independent failure"
+				base := &failureattribution.Observation{Command: "make check", HeadSHA: independentBase, ExitCode: 1, Output: diagnostic, Complete: true}
+				command := &gate.CommandResult{Command: base.Command, HeadSHA: backend.recoveryStates[0].HeadSHA, ExitCode: 1, Output: diagnostic, FinishedAt: time.Now(), BaseReproduction: base}
+				gate.NormalizeCommandAttribution(independentBase, command.HeadSHA, command)
+				second.recovery.Attempts[0].FencingToken = 1
+				second.recovery.Attempts[0].Runtime = &tracker.NativeRuntimeObservation{Validation: command, RepairDependencies: []tracker.NativeWorkItemID{"wi_repair"}}
+				second.recovery.Issue.DependencyReady = true
+				second.recovery.Issue.Blockers = []tracker.NativeDependency{{ID: "wi_repair", State: "Done", Terminal: true}}
 			}
 			if test.rejectedReview {
 				second.recovery.ChangeDetail = &tracker.ChangeDetail{Reviews: []tracker.ChangeReview{{ID: "review-rejected", Decision: "changes_requested"}}}

@@ -17,6 +17,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -330,6 +331,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 	for _, test := range []struct {
 		name                     string
 		reviewResume             string
+		independentRepair        bool
 		producerFailure          bool
 		resumeTwice              bool
 		writableResume           bool
@@ -367,6 +369,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		{name: "resolved pause preserves later replay conflict", resolvedPause: true, pausedLaterConflict: true},
 		{name: "resolved pause retains genuine final gate failure", resolvedPause: true, failedFinalGate: true},
 		{name: "complete evidence wait resumes review only", reviewResume: "wait", staged: true},
+		{name: "IndependentFailure repair refreshes base and reviews changed source", reviewResume: "pass", reviewEvidence: "source_pass", staged: true, independentRepair: true},
 		{name: "complete operator resume in code lane only reviews", reviewResume: "pass", normal: true, staged: true},
 		{name: "complete source review and acceptance resume without coding", reviewResume: "pass", staged: true},
 		{name: "complete source producer failure preserves zero-turn version", reviewResume: "pass", staged: true, producerFailure: true},
@@ -615,6 +618,17 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				case "validator_rework_before_source":
 					owner.recovery.ChangeDetail.Reviews = []tracker.ChangeReview{review(false, gate.ValidatorVerdictRework, version.ID), sourcePass}
 				}
+				if test.independentRepair {
+					diagnostic := "source.go:4:2: independent failure"
+					command := gate.CommandResult{Command: "check-source", HeadSHA: original, ExitCode: 1, Output: diagnostic, FinishedAt: time.Unix(200, 0), BaseReproduction: &failureattribution.Observation{Command: "check-source", HeadSHA: base, ExitCode: 1, Output: diagnostic, Complete: true}}
+					failed := &gate.ValidatorResult{Verdict: "rework", BaseSHA: base, HeadSHA: original, Findings: []gate.Finding{{Severity: "p1", Body: diagnostic, CheckCommand: command.Command, CheckDiagnostic: diagnostic}}, Commands: []gate.CommandResult{command}}
+					gate.NormalizeAttribution(failed)
+					owner.recovery.ChangeDetail.Reviews = append(owner.recovery.ChangeDetail.Reviews, tracker.ChangeReview{VersionID: version.ID, Decision: "changes_requested", Validator: failed, RepairDependencies: []tracker.NativeWorkItemID{"wi_repair"}})
+					owner.recovery.ChangeDetail.Summary.NativeReview = "changes_requested"
+					owner.recovery.Issue.DependencyReady = true
+					owner.recovery.Issue.Blockers = []tracker.NativeDependency{{ID: "wi_repair", State: "Done", Terminal: true}}
+					owner.repairTree = strings.TrimSpace(runRunnerGit(t, info.Path, "merge-tree", "--write-tree", original, target))
+				}
 				if test.humanChanges {
 					owner.recovery.ChangeDetail.Summary.NativeReview = "changes_requested"
 					owner.recovery.ChangeDetail.Reviews = append(owner.recovery.ChangeDetail.Reviews, tracker.ChangeReview{VersionID: version.ID, Decision: "changes_requested", Body: "Revise the current source to address the requested behavior.", Actor: tracker.Actor{Kind: "human", PrincipalID: "person_example"}})
@@ -748,6 +762,16 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				}
 				if agent.reviewCalls == 0 {
 					t.Fatal("source review never ran")
+				}
+				if test.independentRepair {
+					if owner.head == original || owner.head == "" || owner.validation == nil || owner.validation.HeadSHA != owner.head || owner.validation.ExitCode != 0 || owner.diffHead != owner.head || result.NativeChange == nil || result.NativeChange.VersionID == version.ID || len(owner.reviews) != 1 || owner.reviews[0].HeadSHA != owner.head || owner.reviews[0].Verdict != "pass" {
+						t.Fatalf("repair resume lost rebased gate or review: head=%s validation=%+v reviews=%+v result=%+v", owner.head, owner.validation, owner.reviews, result)
+					}
+					runRunnerGit(t, agent.request.Workspace, "merge-base", "--is-ancestor", target, owner.head)
+					if owner.recovery.ChangeDetail.Reviews[0].ImplementationReview.HeadSHA != original {
+						t.Fatal("new base rewrote historical review receipt")
+					}
+					return
 				}
 				if owner.head != original || owner.body != disposition.FinalSummary || result.NativeChange == nil || result.NativeChange.ReusedDispositionAttemptID != "attempt_source" || len(owner.reviews) != 1 || owner.reviews[0].Verdict != test.reviewResume {
 					t.Fatalf("review recovery altered immutable source or provenance: head=%s body=%q reviews=%+v", owner.head, owner.body, owner.reviews)

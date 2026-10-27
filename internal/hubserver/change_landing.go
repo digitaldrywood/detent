@@ -146,6 +146,14 @@ func returnChangeForRework(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 	if issue.Terminal {
 		return nil
 	}
+	if len(review.RepairDependencies) == 0 && len(review.IndependentFailures()) != 0 && review.RepairRefusal == "" {
+		if err := routeIndependentReview(ctx, tx, scope, change, &review, now); err != nil {
+			return err
+		}
+	}
+	if len(review.RepairDependencies) != 0 {
+		return nil
+	}
 	if err := appendReviewInstructions(ctx, tx, scope, issue, change, review, now); err != nil {
 		return err
 	}
@@ -157,7 +165,7 @@ func routeChangeForRework(ctx context.Context, tx *sql.Tx, scope nativeScope, is
 	if err != nil {
 		return err
 	}
-	if issue.Archived || !issue.DependencyReady || !reviewSource && !strings.EqualFold(issue.State, landingLane) {
+	if issue.Archived || !reviewSource && !strings.EqualFold(issue.State, landingLane) {
 		return nil
 	}
 	project, err := readNativeProject(ctx, tx, scope)

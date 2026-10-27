@@ -282,6 +282,7 @@ func ReviewState(detail tracker.ChangeDetail, versionID, headSHA string) connect
 	if !result.Current {
 		return result
 	}
+	result.RepairPending = len(IndependentRepairDependencies(detail)) != 0
 	result.ChangesRequested = detail.Summary.NativeReview == "changes_requested"
 	for _, version := range detail.Versions {
 		if version.ID != versionID {

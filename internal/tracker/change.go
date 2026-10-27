@@ -162,6 +162,8 @@ type SecurityAuditReview struct {
 }
 
 type ChangeReview struct {
+	RepairDependencies   []NativeWorkItemID    `json:"repair_dependencies,omitempty"`
+	RepairRefusal        string                `json:"repair_refusal,omitempty"`
 	SecurityAudit        *SecurityAuditReview  `json:"security_audit,omitempty"`
 	SessionMachineID     MachineID             `json:"session_machine_id,omitempty"`
 	ImplementationReview *gate.ValidatorResult `json:"implementation_review,omitempty"`

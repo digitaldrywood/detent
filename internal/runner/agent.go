@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/agentidentity"
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -1660,11 +1661,15 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		req.RetryMode = RetryModeFresh
 	}
 	var reviewRecovery *tracker.NativeAttempt
+	repairResume := false
 	var turnRecovery *tracker.NativeAttempt
 	if req.Execution != nil && mode == RunModeImplement {
-		reviewRecovery = nativeReviewResumeAttempt(req.Execution.Recovery(), gate.Effective(workflow.Config.Gate).Run)
+		recovery := req.Execution.Recovery()
+		reviewRecovery = nativeReviewResumeAttempt(recovery, gate.Effective(workflow.Config.Gate).Run)
+		repairResume = reviewRecovery != nil && recovery.ChangeDetail != nil && len(changerequest.IndependentRepairDependencies(*recovery.ChangeDetail)) != 0
 		if reviewRecovery == nil {
 			turnRecovery = nativeTurnResumeAttempt(req.Execution.Recovery())
+			repairResume = turnRecovery != nil && nativeIndependentGateResume(req.Execution.Recovery())
 		}
 	}
 	publicationRecovery := req.publicationRecovery(mode)
@@ -1725,7 +1730,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	workspaceIssue.FreshCheckout = false
 	landingRework := req.Execution != nil && mode == RunModeImplement && nativeLandingRework(req.Execution.Recovery())
-	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework)
+	workspaceIssue.NativeRework = req.Execution != nil && mode == RunModeImplement && (runRole(mode, req.Issue) == RoleRework || landingRework || repairResume)
 	if err := r.recoverRunChangeSource(ctx, req, runWorkspace, &workspaceIssue, nativeLanding, reviewRecovery != nil || publicationRecovery); err != nil {
 		return RunResult{}, err
 	}
@@ -2146,7 +2151,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if publicationRecovery || reviewRecovery != nil || turnRecovery != nil {
 		req.reviewSource = nil
 		req.finalizeNativeWork = true
-		req.reviewOnly = reviewRecovery != nil
+		req.reviewOnly = reviewRecovery != nil && !repairResume
+		req.repairResume = repairResume
 		result := RunResult{FinalState: FinalStateCompleted, RuntimeIdentity: runtimeIdentity}
 		if turnRecovery != nil {
 			result.FinalMessage = turnRecovery.CompletionBody

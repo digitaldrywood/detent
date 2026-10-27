@@ -188,6 +188,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		return handoff(fmt.Errorf("read native workflow states: %w", err))
 	}
 	reviewChangesRequested := false
+	repairPending := false
 	if change != nil {
 		var reviewErr error
 		var review connector.ChangeReview
@@ -195,7 +196,28 @@ func (o *Orchestrator) completeNativeChangeRun(
 		if reviewErr != nil {
 			return handoff(reviewErr)
 		}
+		repairPending = review.RepairPending
 		reviewChangesRequested = review.ChangesRequested && (report == nil || len(report.Blockers) == 0 && report.HumanAction == "")
+	}
+	if repairPending && !humanReview && !blocked && !clearedBlockers && change != nil && change.VersionError == "" {
+		target := issue.State
+		if !dispatchableState(states, target) {
+			var allowed bool
+			target, allowed = nativeRetryLane(states, issue.State, cfg.ReworkState)
+			if !allowed {
+				return handoff(errors.New("native workflow has no dispatchable repair wait lane"))
+			}
+			if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, issue, target, event.CompletedAt, "state_transition", workflowLaneMetadata{}); err != nil {
+				return handoff(err)
+			}
+		}
+		issue.State = target
+		if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(running.Attempt), event.CompletedAt, "independent failure awaits repair dependency", running.WorkerHost); err != nil {
+			return handoff(err)
+		}
+		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "independent failure awaits repair dependency", nativeChangeMetadata(change))
+		o.recordCompletionUsage(ctx, state, event, issue)
+		return true
 	}
 	needsReview := change != nil && change.VersionError != "" || !changed && !accepted || reported && !accepted
 	review := cfg.reviewTargetState()

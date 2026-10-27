@@ -31,6 +31,7 @@ type ChangeReviewReader interface {
 }
 
 type ChangeReview struct {
+	RepairPending    bool
 	Current          bool
 	Reviewed         bool
 	ChangesRequested bool

@@ -1659,6 +1659,22 @@ func TestMachineFailuresUseRetryOwner(t *testing.T) {
 		{"repeated failure", func(o *Orchestrator, s *State, r Running) {
 			o.retryMachineCompletion(t.Context(), s, runpkg.Completion{CompletedAt: now}, r, 50, "validation failed")
 		}},
+		{"independent repair dependency", func(o *Orchestrator, s *State, r Running) {
+			o.cfg.AutoPromote.HumanReview = new(false)
+			native := &nativeWorkflowConnector{
+				autoPromoteTickConnector: &autoPromoteTickConnector{},
+				states:                   []connector.WorkflowState{{Name: r.Issue.State, Dispatchable: true}},
+				reviewState:              &connector.ChangeReview{Current: true, ChangesRequested: true, RepairPending: true},
+			}
+			o.connector = native
+			event := runpkg.Completion{IssueID: r.Issue.ID, CompletedAt: now, Result: runpkg.RunResult{NativeChange: &runpkg.NativeChange{Changed: true, ChangeID: "change_example", VersionID: "version_example", HeadSHA: "head"}}}
+			if !o.completeNativeChangeRun(t.Context(), s, event, r, FinalStateCompleted) {
+				t.Fatal("independent repair escaped native completion")
+			}
+			if len(native.updates) != 0 || len(native.comments) != 0 {
+				t.Fatal("repair wait rewrote the dispatchable lane or requested implementation")
+			}
+		}},
 		{"merge current head CI wait", func(o *Orchestrator, s *State, r Running) {
 			o.waitForMergeWorkerCurrentHeadCI(t.Context(), s, runpkg.Completion{IssueID: r.Issue.ID, CompletedAt: now}, r, r.Issue)
 		}},
@@ -1744,7 +1760,7 @@ func TestMachineFailuresUseRetryOwner(t *testing.T) {
 				if scheduling.releases != beforeReleases+1 {
 					t.Fatalf("releases = %d, want %d", scheduling.releases, beforeReleases+1)
 				}
-				if strings.HasPrefix(tt.name, "merge ") && tt.name != "merge exhaustion" && tt.name != "merge duration" || tt.name == "programmatic merge failure" || tt.name == "incomplete merge" || tt.name == "ordinary error" {
+				if strings.HasPrefix(tt.name, "merge ") && tt.name != "merge exhaustion" && tt.name != "merge duration" || tt.name == "programmatic merge failure" || tt.name == "incomplete merge" || tt.name == "ordinary error" || tt.name == "independent repair dependency" {
 					state.Retry[issue.ID] = retry
 					upper := time.Second << attempt
 					if attempt > 5 {

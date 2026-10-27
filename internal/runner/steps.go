@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -67,6 +68,7 @@ func loadStep(ctx context.Context, execution Execution, binding tracker.NativeSt
 }
 
 func nativeTurnResumeAttempt(recovery tracker.NativeRecovery) *tracker.NativeAttempt {
+	repairResume := nativeIndependentGateResume(recovery)
 	if nativeLandingRework(recovery) || NativeReviewConversationRefusal(recovery) != "" {
 		return nil
 	}
@@ -83,17 +85,17 @@ func nativeTurnResumeAttempt(recovery tracker.NativeRecovery) *tracker.NativeAtt
 	state := tracker.NativeStepReviewState(recovery)
 	for i := len(recovery.Attempts) - 1; i >= 0; i-- {
 		attempt := &recovery.Attempts[i]
-		if attempt.Status == "succeeded" {
+		if attempt.Status == "succeeded" && !repairResume {
 			return nil
 		}
-		if attempt.Runtime != nil && attempt.Runtime.Validation != nil && attempt.Runtime.Validation.ExitCode != 0 {
+		if attempt.Runtime != nil && attempt.Runtime.Validation != nil && attempt.Runtime.Validation.ExitCode != 0 && !repairResume {
 			return nil
 		}
 		for _, receipt := range attempt.Steps {
 			if receipt.Step != "agent_turn" {
 				continue
 			}
-			if receipt.PolicyID != recovery.Lease.PolicyID || receipt.ReviewState != state || receipt.ReviewEpoch != tracker.NativeStepReviewEpoch(recovery) {
+			if receipt.PolicyID != recovery.Lease.PolicyID || receipt.ReviewState != state || receipt.ReviewEpoch != tracker.NativeStepReviewEpoch(recovery) && !repairResume {
 				return nil
 			}
 			disposition := NativeDispositionFromMessage(receipt.CompletionBody)
@@ -156,7 +158,7 @@ func (r *Runner) finalizeNativeCommit(ctx context.Context, req RunRequest, backe
 		return "", err
 	}
 	previous, err := loadStep(ctx, req.Execution, binding)
-	if err != nil || previous.Step != "" {
+	if err != nil || previous.Step != "" && !req.repairResume {
 		return previous.FinalizedBaseSHA, err
 	}
 	agentBinding := binding
@@ -209,4 +211,27 @@ func validationStepBinding(execution Execution, input NativeValidation, step str
 	}
 	source.WorkspaceDigest += ":" + policy.Digest(raw)
 	return stepBinding(execution, step, source, tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}), nil
+}
+
+func nativeIndependentGateResume(recovery tracker.NativeRecovery) bool {
+	if !recovery.Issue.DependencyReady {
+		return false
+	}
+	for i := len(recovery.Attempts) - 1; i >= 0; i-- {
+		attempt := recovery.Attempts[i]
+		if attempt.Status == "running" {
+			continue
+		}
+		if attempt.Runtime == nil || !tracker.RepairDependenciesReady(recovery.Issue, attempt.Runtime.RepairDependencies) || attempt.Runtime.Validation == nil {
+			return false
+		}
+		command := attempt.Runtime.Validation
+		if command.BaseReproduction == nil || attempt.Checkpoint == nil || attempt.Checkpoint.HeadSHA != command.HeadSHA {
+			return false
+		}
+		result := &gate.ValidatorResult{Verdict: gate.ValidatorVerdictRework, BaseSHA: command.BaseReproduction.HeadSHA, HeadSHA: command.HeadSHA, Commands: []gate.CommandResult{*command}}
+		gate.NormalizeAttribution(result)
+		return len(tracker.IndependentGateFailures(result)) != 0
+	}
+	return false
 }

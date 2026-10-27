@@ -505,6 +505,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "criteria gate lane outage defers without a generic permission wait", change: criterionChange(gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}, gate.CriterionEvidence{Criterion: claudeCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}), states: unfinishedWorkflow, humanReview: &no, updateErr: errors.New("native lane write unavailable"), wantDeferred: true, wantState: "Blocked", wantQuestion: connectorAction},
 		{name: "mixed criteria block with only unsatisfiable actions", change: criterionChange(gate.CriterionEvidence{Criterion: "Missing regression test", Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionReworkFixable}, gate.CriterionEvidence{Criterion: chatGPTCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}, gate.CriterionEvidence{Criterion: claudeCriterion, Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable}), states: unfinishedWorkflow, humanReview: &no, finalMessage: unfinishedReport, wantState: "Rework"},
 		{name: "rewritten connector criterion reuses retained source and passes", change: criterionChange(gate.CriterionEvidence{Criterion: "Connector sign-in covered by local regression", Kind: gate.EvidenceTest, Reference: "connector_test.go:TestSignIn", Behavior: "The local client signs in successfully"}), states: rework, sourceState: "Rework", humanReview: &no, wantState: "Merging", wantComment: "runner lands it next"},
+		{name: "IndependentFailure repair dependency retains dispatchable lane", change: attributed("validator", "independent"), reviewState: &connector.ChangeReview{Current: true, ChangesRequested: true, RepairPending: true}, states: unfinishedWorkflow, humanReview: &no, wantState: "In Progress", wantSameState: true, wantContinue: true},
 		{name: "Attribution validator independent retains Rework", change: attributed("validator", "independent"), wantAttribution: "independent", states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
 		{name: "Attribution validator change retains Rework", change: attributed("validator", "change"), wantAttribution: "change", states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
 		{name: "Attribution validator unknown retains Rework", change: attributed("validator", "unknown"), wantAttribution: "unknown", states: unfinishedWorkflow, humanReview: &no, wantState: "Rework"},
@@ -1445,6 +1446,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 				}
 				if test.wantDeferred && test.finalMessage == "" && len(tick.comments) != 0 {
 					t.Fatalf("a handed-off item was commented on: %#v", tick.comments)
+				}
+				return
+			}
+			if test.reviewState != nil && test.reviewState.RepairPending {
+				if len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Blocked) != 0 || !retry.DueAt.After(now) || retry.DueAt.After(now.Add(cfg.MaxRetryBackoff)) || retry.Attempt != 2 || len(attempts.completions) != 1 {
+					t.Fatalf("repair wait lost retry owner: retry=%+v updates=%v blocked=%v completions=%v", retry, tick.updates, state.Blocked, attempts.completions)
 				}
 				return
 			}

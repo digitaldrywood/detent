@@ -877,6 +877,7 @@ func TestHandleRunResultResetsRetryAfterProgress(t *testing.T) {
 		assertedUpdate  bool
 		beforeTree      string
 		artifactChurn   bool
+		nativeRepair    string
 	}{
 		{
 			name:  "yieldless completion preserves failures",
@@ -926,12 +927,18 @@ func TestHandleRunResultResetsRetryAfterProgress(t *testing.T) {
 		{name: "missing prior history retains attempts", issue: implementProgressIssue("head"), hydrated: implementProgressIssue("head")},
 		{name: "unfinished Workpad retains attempts", issue: implementProgressIssue("head"), hydrated: implementProgressIssue("head"), unfinished: true, history: []store.WorkAttempt{implementProgressHistoryAttempt(1, autoPromoteReworkSignature{PRNumber: 1070, HeadSHA: "head"}, store.WorkAttemptTerminalSuccess)}},
 		{name: "nil error failed final state retains attempts", issue: implementProgressIssueWithoutPR(), finalState: runpkg.FinalStateFailed},
+		{name: "independent repair dependency preserves attempts", issue: implementProgressIssueWithoutPR(), nativeRepair: "pending", beforeTree: "same-tree", diff: DiffStats{Status: "clean", TreeSHA: "same-tree"}},
+		{name: "completed repair without source progress preserves attempts", issue: implementProgressIssueWithoutPR(), nativeRepair: "done", beforeTree: "same-tree", diff: DiffStats{Status: "clean", TreeSHA: "same-tree"}},
+		{name: "completed repair with verified source progress resets attempts", issue: implementProgressIssueWithoutPR(), nativeRepair: "done", beforeTree: "old-tree", diff: DiffStats{Status: "clean", TreeSHA: "new-tree"}, wantReset: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			if tt.nativeRepair != "" {
+				tt.issue.State = "Rework"
+			}
 			refreshed := cloneIssue(tt.issue)
 			if tt.refreshedState != "" {
 				refreshed.State = tt.refreshedState
@@ -956,6 +963,18 @@ func TestHandleRunResultResetsRetryAfterProgress(t *testing.T) {
 				ContinuationRetryDelay: time.Minute,
 			})
 			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+			var nativeChange *runpkg.NativeChange
+			var finalMessage string
+			if tt.nativeRepair != "" {
+				orch.cfg.AutoPromote.HumanReview = new(false)
+				orch.connector = &nativeWorkflowConnector{
+					autoPromoteTickConnector: &autoPromoteTickConnector{},
+					states:                   []connector.WorkflowState{{Name: tt.issue.State, Dispatchable: true}},
+					reviewState:              &connector.ChangeReview{Current: true, Reviewed: tt.nativeRepair == "done", ChangesRequested: tt.nativeRepair == "pending", RepairPending: tt.nativeRepair == "pending"},
+				}
+				nativeChange = &runpkg.NativeChange{Changed: true, ChangeID: "change_example", VersionID: "version_example", HeadSHA: "head"}
+				finalMessage = "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```"
+			}
 			if tt.missingStore {
 				orch.workAttempts = nil
 			}
@@ -985,10 +1004,13 @@ func TestHandleRunResultResetsRetryAfterProgress(t *testing.T) {
 					IssueID:     tt.issue.ID,
 					CompletedAt: base,
 					Request:     runpkg.RunRequest{Mode: runpkg.RunModeImplement},
-					Result:      runpkg.RunResult{FinalState: firstNonBlank(tt.finalState, FinalStateCompleted), DiffStats: diff, PullRequestUpdated: tt.assertedUpdate},
+					Result:      runpkg.RunResult{FinalState: firstNonBlank(tt.finalState, FinalStateCompleted), DiffStats: diff, PullRequestUpdated: tt.assertedUpdate, NativeChange: nativeChange, FinalMessage: finalMessage},
 				})
 
 				if retry, ok := state.Retry[tt.issue.ID]; ok {
+					if tt.nativeRepair != "" && (len(state.Blocked) != 0 || retry.Issue.State != tt.issue.State || !retry.DueAt.After(base) || retry.DueAt.After(base.Add(cfg.MaxRetryBackoff))) {
+						t.Fatalf("repair retry lost dispatchable lane or capped backoff: retry=%+v blocked=%+v", retry, state.Blocked)
+					}
 					if !tt.wantReset && retry.Attempt != attempt+1 {
 						t.Fatalf("no-progress retry attempt = %d, want %d", retry.Attempt, attempt+1)
 					}

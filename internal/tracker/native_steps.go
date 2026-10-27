@@ -53,7 +53,7 @@ func NativeStepReviewState(recovery NativeRecovery) string {
 			}
 		}
 		for _, review := range detail.Reviews {
-			if review.Decision == "changes_requested" {
+			if review.Decision == "changes_requested" && (len(review.RepairDependencies) == 0 || len(review.IndependentFailures()) == 0) {
 				state = append(state, review.ID, review.Decision, review.CreatedAt.UTC().Format(time.RFC3339Nano))
 			}
 		}

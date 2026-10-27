@@ -347,6 +347,9 @@ func prepareNativeAttempt(ctx context.Context, tx nativeQueryer, scope nativeSco
 			}
 			event.Data = data
 		}
+		if data.Runtime != nil && previous.Runtime != nil {
+			data.Runtime.RepairDependencies = previous.Runtime.RepairDependencies
+		}
 		data.Evidence = previous.Evidence
 		reconnecting := (status == "running" || status == "interrupted") && event.Type == "run.observed" && data.Runtime != nil && data.Runtime.LocalAttemptID == 0 && data.Runtime.Generation == 0 && data.Outcome == ""
 		usageCorrection := status != "running" && event.Type == "run.finished" && nativeUsageCorrection(previous, data)
@@ -393,6 +396,18 @@ func recordNativeAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, ite
 		return false, false, err
 	}
 	data := update.data
+	if data.Runtime != nil && !update.usageCorrection {
+		data.Runtime.RepairDependencies = nil
+	}
+	if !termination && !update.usageCorrection && event.Type == "run.finished" && data.Runtime != nil && data.Runtime.Validation != nil && data.Runtime.Validation.ExitCode != 0 {
+		issue, _, err := readNativeIssue(ctx, tx, scope, string(item))
+		if err != nil {
+			return false, false, err
+		}
+		if err := recordIndependentRunFailure(ctx, tx, scope, issue, &data, now); err != nil {
+			return false, false, err
+		}
+	}
 	if checkpoint := data.Handoff; !termination && checkpoint != nil && checkpoint.Publication != nil {
 		if err := recordNativePRPublication(ctx, tx, data, checkpoint.Publication); err != nil {
 			return false, false, err

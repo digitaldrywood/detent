@@ -142,8 +142,11 @@ dispatch-loop, token-ceiling and workspace retry brakes are consolidated into
 it; machine failures stay dispatchable with growing attempts and capped
 jittered backoff. A retry resumes at the first step whose receipt is no
 longer valid for the current source, policy and review state; it never repeats
-a step whose receipt is still valid. A rejected review, gate or audit result,
-or new human feedback, returns work to implementation on the same source.
+a step whose receipt is still valid. A rejected review, gate or audit result with any change-caused or unknown
+finding, or new human feedback, returns work to implementation on the same
+source. An outcome proven entirely independent of the change waits on typed
+repair dependencies in a dispatchable lane, then resumes through this same
+retry owner at the first invalid receipt.
 Only verified changed source resets the attempt count.
 Spending limits belong to the existing budget policy, not to retry brakes;
 historical brake metadata never vetoes the next attempt, and explicit human

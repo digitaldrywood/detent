@@ -214,6 +214,10 @@ func reportNativeMachineOccurrenceTx(ctx context.Context, tx *sql.Tx, scope nati
 			return tracker.NativeIssue{}, err
 		}
 	}
+	return recordNativeMachineOccurrenceTx(ctx, tx, scope, request, now, terminalRepair)
+}
+
+func recordNativeMachineOccurrenceTx(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, now time.Time, terminalRepair bool) (tracker.NativeIssue, error) {
 	matches, err := resolveNativeDuplicatesTx(ctx, tx, scope, request, now, true)
 	if err != nil {
 		return tracker.NativeIssue{}, err
