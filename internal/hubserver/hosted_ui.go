@@ -2,10 +2,7 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"strconv"
@@ -20,7 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/staticasset"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/web/templates"
-	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
 func (s *Service) registerHostedRoutes(e *echo.Echo) {
@@ -229,6 +225,9 @@ func (s *Service) hostedEvents(c echo.Context) error {
 	if err := s.requireHostedProject(c.Request().Context(), s.database.auth(), initialScope, false); err != nil {
 		return s.hostedJSONError(c, http.StatusForbidden, "Project access is required for events")
 	}
+	if err := requireDashboardProject(c.Request().Context(), s.database.reader, initialScope); err != nil {
+		return s.nativeAPIError(c, err)
+	}
 	workspaceID := c.QueryParam("workspace")
 	workItemID := c.QueryParam("work_item")
 	if workItemID != "" {
@@ -248,115 +247,29 @@ func (s *Service) hostedEvents(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	board := c.QueryParam("board") == "true"
-	var boardSequence int64
 	if board {
 		if workspaceID != "" || workItemID != "" {
 			return s.nativeAPIError(c, nativePublicInvalid("board stream cannot include a workspace or item"))
 		}
-		value := c.Request().Header.Get("Last-Event-ID")
-		if value == "" {
-			value = c.QueryParam("since")
-		}
-		if value != "" {
-			boardSequence, err = strconv.ParseInt(value, 10, 64)
-			if err != nil || boardSequence < 0 {
-				return s.nativeAPIError(c, nativePublicInvalid("Stream sequence is invalid"))
-			}
-		}
-		params := c.QueryParams()
+		params := c.Request().URL.Query()
 		params.Del("board")
 		params.Del("since")
 		if err := validateNativeIssueQuery(params); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 	}
-	c.Response().Header().Set(echo.HeaderContentType, "text/event-stream")
-	c.Response().Header().Set("Cache-Control", "no-cache")
-	c.Response().Header().Set("X-Accel-Buffering", "no")
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	var workspaceRevision int64
-	var healthTick string
-	for s.ready.Load() {
-		credential, _, err := s.appCredential(c)
-		if err != nil {
-			return nil
-		}
-		scope := nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), project: tracker.ProjectID(c.Param("project")), credential: credential}
-		observation, err := s.readHostedEventObservation(c.Request().Context(), scope, workspaceID, workItemID)
-		if err != nil {
-			return nil
-		}
-		if board {
-			readCtx, cancelRead := context.WithTimeout(c.Request().Context(), hubReadTimeout)
-			tx, err := s.database.reader.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
-			if err != nil {
-				cancelRead()
-				return nil
-			}
-			frame, err := readNativeBoardFrame(readCtx, tx, scope, boardSequence)
-			if err == nil {
-				frame.Work, err = readNativeBoardSummary(readCtx, tx, scope, c.QueryParams(), s.config.now())
-			}
-			if err != nil {
-				_ = tx.Rollback()
-				cancelRead()
-				return nil
-			}
-			if err := tx.Commit(); err != nil {
-				cancelRead()
-				return nil
-			}
-			cancelRead()
-			for i := range frame.Deltas {
-				if frame.Deltas[i].Current != nil {
-					frame.Deltas[i].Current.Issue = s.nativeIssueResponse(frame.Deltas[i].Current.Issue)
-				}
-			}
-			raw, err := json.Marshal(frame)
-			if err != nil {
-				return nil
-			}
-			if _, err := fmt.Fprintf(c.Response(), "id: %d\nevent: activity\ndata: %s\n\n", frame.Sequence, raw); err != nil {
-				return nil
-			}
-			boardSequence = frame.Sequence
-		} else {
-			if _, err := fmt.Fprintf(c.Response(), "event: activity\ndata: %d\n\n", observation.Sequence); err != nil {
-				return nil
-			}
-		}
-		if record := observation.Workspace; record != nil && record.Revision != workspaceRevision {
-			resource, err := json.Marshal(record)
-			if err != nil {
-				return nil
-			}
-			if _, err := fmt.Fprintf(c.Response(), "event: %s\ndata: %s\n\n", workspacesession.EventType(record.State), resource); err != nil {
-				return nil
-			}
-			workspaceRevision = record.Revision
-		}
-		if workspaceID == "" && workItemID == "" {
-			var tick string
-			err := s.database.reader.QueryRowContext(c.Request().Context(), "SELECT last_tick_at FROM health_detector_ticks WHERE organization_id=?", scope.organization).Scan(&tick)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return nil
-			}
-			if tick != healthTick {
-				if _, err := fmt.Fprintf(c.Response(), "event: health.findings\ndata: %s\n\n", tick); err != nil {
-					return nil
-				}
-				healthTick = tick
-			}
-		}
-		c.Response().Flush()
-		select {
-		case <-c.Request().Context().Done():
-			return nil
-		case <-ticker.C:
+	value := c.Request().Header.Get("Last-Event-ID")
+	if value == "" {
+		value = c.QueryParam("since")
+	}
+	var sequence int64
+	if value != "" {
+		sequence, err = strconv.ParseInt(value, 10, 64)
+		if err != nil || sequence < 0 {
+			return s.nativeAPIError(c, nativePublicInvalid("Stream sequence is invalid"))
 		}
 	}
-	return nil
+	return s.serveDashboardEvents(c, initialScope, sequence, value == "", board, workspaceID, workItemID)
 }
 
 func (s *Service) hostedMetadata(c echo.Context) error {

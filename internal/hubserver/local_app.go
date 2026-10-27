@@ -65,6 +65,10 @@ func (s *Service) localAppUnauthorized(c echo.Context, status int) error {
 }
 
 func (s *Service) localAppCredential(c echo.Context) (apiCredential, int, error) {
+	return s.localAppCredentialContext(c.Request().Context(), c)
+}
+
+func (s *Service) localAppCredentialContext(ctx context.Context, c echo.Context) (apiCredential, int, error) {
 	if s.config.Hosted != nil {
 		return apiCredential{}, http.StatusUnauthorized, errors.New("local authentication is unavailable")
 	}
@@ -75,7 +79,7 @@ func (s *Service) localAppCredential(c echo.Context) (apiCredential, int, error)
 	if err != nil || len(token) > maxBearerTokenBytes || token == "" {
 		return apiCredential{}, http.StatusUnauthorized, errors.New("local credentials are required")
 	}
-	credential, status, err := s.authenticateAPIToken(c.Request().Context(), token, "", "")
+	credential, status, err := s.authenticateAPIToken(ctx, token, "", "")
 	if err != nil {
 		return apiCredential{}, status, err
 	}
@@ -145,10 +149,14 @@ func (s *Service) appOrganizationID() string {
 }
 
 func (s *Service) appCredential(c echo.Context) (apiCredential, int, error) {
+	return s.appCredentialContext(c.Request().Context(), c)
+}
+
+func (s *Service) appCredentialContext(ctx context.Context, c echo.Context) (apiCredential, int, error) {
 	if s.config.Hosted != nil {
-		return s.hostedCredential(c.Request().Context(), c)
+		return s.hostedCredential(ctx, c)
 	}
-	return s.localAppCredential(c)
+	return s.localAppCredentialContext(ctx, c)
 }
 
 func appSubject(credential apiCredential) string {

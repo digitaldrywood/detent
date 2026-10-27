@@ -33,6 +33,7 @@ const (
 )
 
 type Service struct {
+	dashboard               *dashboardDelivery
 	releaseNotes            []releasenotes.Build
 	activityDurations       activityDurationCache
 	issuePages              nativeIssuePageCache
@@ -256,6 +257,8 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	service.startHostedBilling()
 	service.startHealthDetector()
 	service.startIssueMailer()
+	service.dashboard = newDashboardDelivery(service)
+	service.dashboard.start()
 	return service, nil
 }
 
@@ -420,6 +423,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 	s.ready.Store(false)
 	s.notifications.closeAll()
+	s.dashboard.stop()
 	if s.conversations != nil {
 		s.conversations.stop()
 	}
@@ -458,6 +462,7 @@ func (s *Service) CloseContext(ctx context.Context) error {
 	s.closeOnce.Do(func() {
 		s.ready.Store(false)
 		s.notifications.closeAll()
+		s.dashboard.stop()
 		var mcpErr error
 		if s.mcpHTTP != nil {
 			mcpErr = s.mcpHTTP.Shutdown(ctx)

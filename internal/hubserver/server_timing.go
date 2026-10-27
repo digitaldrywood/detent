@@ -178,6 +178,7 @@ func (timedJSONSerializer) Serialize(c echo.Context, i any, indent string) error
 // timedRows counts the time spent stepping a result set toward the request's
 // db span, since SQLite does most of a query's work while rows are read.
 type timedRows struct {
+	committed func()
 	driver.Rows
 	timing *requestTiming
 }
@@ -192,6 +193,10 @@ func (r *timedRows) Next(dest []driver.Value) error {
 func (r *timedRows) Close() error {
 	start := time.Now()
 	err := r.Rows.Close()
+	if err == nil && r.committed != nil {
+		r.committed()
+		r.committed = nil
+	}
 	r.timing.addDB(start)
 	return err
 }

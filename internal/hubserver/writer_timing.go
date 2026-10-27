@@ -80,8 +80,8 @@ func (t *writerTiming) logAttrs() []any {
 // openTimedWriter opens the writer pool through a connector that records each
 // transaction's and auto-commit statement's hold time against the request
 // context that started it.
-func openTimedWriter(dsn string) (*sql.DB, error) {
-	return openTimedDB(dsn, true)
+func openTimedWriter(dsn string, committed ...chan struct{}) (*sql.DB, error) {
+	return openTimedDB(dsn, true, committed...)
 }
 
 // openTimedReader opens a reader pool whose statements count toward the
@@ -90,7 +90,7 @@ func openTimedReader(dsn string) (*sql.DB, error) {
 	return openTimedDB(dsn, false)
 }
 
-func openTimedDB(dsn string, writer bool) (*sql.DB, error) {
+func openTimedDB(dsn string, writer bool, committed ...chan struct{}) (*sql.DB, error) {
 	if err := registerStorageConversionDigest(); err != nil {
 		return nil, err
 	}
@@ -102,13 +102,18 @@ func openTimedDB(dsn string, writer bool) (*sql.DB, error) {
 	if err := probe.Close(); err != nil {
 		return nil, err
 	}
-	return sql.OpenDB(timedConnector{dsn: dsn, driver: base, writer: writer}), nil
+	var wake chan struct{}
+	if len(committed) > 0 {
+		wake = committed[0]
+	}
+	return sql.OpenDB(timedConnector{dsn: dsn, driver: base, writer: writer, committed: wake}), nil
 }
 
 type timedConnector struct {
-	driver driver.Driver
-	dsn    string
-	writer bool
+	committed chan struct{}
+	driver    driver.Driver
+	dsn       string
+	writer    bool
 }
 
 func (c timedConnector) Connect(context.Context) (driver.Conn, error) {
@@ -116,12 +121,13 @@ func (c timedConnector) Connect(context.Context) (driver.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &timedConn{Conn: conn, writer: c.writer}, nil
+	return &timedConn{Conn: conn, writer: c.writer, committed: c.committed}, nil
 }
 
 func (c timedConnector) Driver() driver.Driver { return c.driver }
 
 type timedConn struct {
+	committed chan struct{}
 	driver.Conn
 	inTx   bool
 	writer bool
@@ -140,7 +146,11 @@ func (t *timedTx) Commit() error {
 	start := time.Now()
 	defer t.request.addDB(start)
 	defer t.request.span("tx_commit", start)
-	return t.Tx.Commit()
+	err := t.Tx.Commit()
+	if err == nil {
+		t.conn.notifyCommit()
+	}
+	return err
 }
 
 func (t *timedTx) Rollback() error {
@@ -191,6 +201,9 @@ func (c *timedConn) ExecContext(ctx context.Context, query string, args []driver
 	requestTimingFrom(ctx).statement(start, query, args)
 	if c.writer && !c.inTx {
 		writerTimingFrom(ctx).add(start)
+		if err == nil {
+			c.notifyCommit()
+		}
 	}
 	return result, err
 }
@@ -204,10 +217,17 @@ func (c *timedConn) QueryContext(ctx context.Context, query string, args []drive
 	start := time.Now()
 	rows, err := queryer.QueryContext(ctx, query, args)
 	timing.statement(start, query, args)
-	if err != nil || timing == nil {
+	if err != nil {
 		return rows, err
 	}
-	return &timedRows{Rows: rows, timing: timing}, nil
+	var committed func()
+	if c.writer && !c.inTx && c.committed != nil {
+		committed = c.notifyCommit
+	}
+	if timing == nil && committed == nil {
+		return rows, nil
+	}
+	return &timedRows{Rows: rows, timing: timing, committed: committed}, nil
 }
 
 func (c *timedConn) Ping(ctx context.Context) error {
@@ -294,4 +314,13 @@ func (s *Service) logWriterWaits() {
 	}
 	s.config.Logger.Info("hub writer waits", "waits", waits, "wait_ms", waited.Milliseconds(), "in_use", stats.InUse, "interval_s", (now-last)/int64(time.Second),
 		"reader_waits", readerWaits, "reader_wait_ms", readerWaited.Milliseconds(), "reader_in_use", reader.InUse, "reader_max", reader.MaxOpenConnections)
+}
+
+func (c *timedConn) notifyCommit() {
+	if c.writer && c.committed != nil {
+		select {
+		case c.committed <- struct{}{}:
+		default:
+		}
+	}
 }

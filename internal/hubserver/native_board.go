@@ -286,6 +286,10 @@ func redactNativeBoardCard(card *tracker.NativeBoardCard, grants map[tracker.Pro
 }
 
 func readNativeBoardFrame(ctx context.Context, q nativeQueryer, scope nativeScope, since int64) (tracker.NativeBoardFrame, error) {
+	return readNativeBoardFrameThrough(ctx, q, scope, since, 0)
+}
+
+func readNativeBoardFrameThrough(ctx context.Context, q nativeQueryer, scope nativeScope, since, through int64) (tracker.NativeBoardFrame, error) {
 	frame := tracker.NativeBoardFrame{Deltas: []tracker.NativeBoardDelta{}}
 	grants, err := nativeBoardGrants(ctx, q, scope)
 	if err != nil {
@@ -304,7 +308,10 @@ func readNativeBoardFrame(ctx context.Context, q nativeQueryer, scope nativeScop
 		frame.Gap = true
 		return frame, nil
 	}
-	rows, err := q.QueryContext(ctx, "SELECT sequence,previous_json,current_json FROM native_board_deltas WHERE organization_id=? AND project_id=? AND topic='board' AND sequence>? ORDER BY sequence LIMIT ?", scope.organization, scope.project, since, nativeBoardReplayLimit)
+	if through > 0 {
+		frame.Sequence = min(frame.Sequence, through)
+	}
+	rows, err := q.QueryContext(ctx, "SELECT sequence,previous_json,current_json FROM native_board_deltas WHERE organization_id=? AND project_id=? AND topic='board' AND sequence>? AND sequence<=? ORDER BY sequence LIMIT ?", scope.organization, scope.project, since, frame.Sequence, nativeBoardReplayLimit)
 	if err != nil {
 		return frame, err
 	}

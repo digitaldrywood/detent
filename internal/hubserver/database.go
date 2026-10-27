@@ -46,6 +46,7 @@ const readerCachePragma = "cache_size(-8000)"
 const readerConnectionLifetime = time.Hour
 
 type database struct {
+	dashboardCommitted     chan struct{}
 	analyticsRetryMu       sync.Mutex
 	analyticsRetryCursor   string
 	linkedSourceBase       string
@@ -98,7 +99,8 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 		return nil, errors.Join(err, lock.Close())
 	}
 
-	db, err := openTimedWriter(sqliteWriterDSN(path, cfg.BusyTimeout, cfg.Hosted != nil))
+	dashboardCommitted := make(chan struct{}, 1)
+	db, err := openTimedWriter(sqliteWriterDSN(path, cfg.BusyTimeout, cfg.Hosted != nil), dashboardCommitted)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("open hub database: %w", err), lock.Close())
 	}
@@ -109,7 +111,7 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	store := &database{logger: logger, db: db, lock: lock, path: path, now: cfg.now, newLeaseID: cfg.newLeaseID, aiCreditCostMultiplier: defaultAICreditCostMultiplier}
+	store := &database{dashboardCommitted: dashboardCommitted, logger: logger, db: db, lock: lock, path: path, now: cfg.now, newLeaseID: cfg.newLeaseID, aiCreditCostMultiplier: defaultAICreditCostMultiplier}
 	if cfg.Hosted != nil {
 		store.linkedSourceBase = cfg.Hosted.PublicURL
 		if cfg.Hosted.SharedEntry != nil {

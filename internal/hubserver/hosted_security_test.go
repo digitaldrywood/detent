@@ -860,8 +860,9 @@ func TestHostedSecuritySSERevocation(t *testing.T) {
 	for _, revocation := range []string{"provider session", "membership", "project grant", "shutdown"} {
 		t.Run(revocation, func(t *testing.T) {
 			t.Parallel()
-			f := newHostedSecurityFixture(t, func(cfg *Config) {
-				cfg.Workspace = &WorkspaceConfig{Enabled: true}
+			clock := &leaseTestClock{value: time.Now().UTC()}
+			f, _, delivery := controlledHostedDelivery(t, dashboardDeliveryConfig{}, func(cfg *Config) {
+				cfg.now = clock.Now
 			})
 			owner := f.user(t, "member", "member", "member@example.test", "write", "")
 			item := f.seedIssue(t, 1)
@@ -873,6 +874,7 @@ func TestHostedSecuritySSERevocation(t *testing.T) {
 			decodeHubResponse(t, created, &workspace)
 			user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
 			if revocation == "shutdown" {
+				delivery.start()
 				ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 				defer cancel()
 				request := httptest.NewRequestWithContext(ctx, http.MethodGet, "/projects/"+string(f.project)+"/events?workspace="+workspace.ID, nil)
@@ -894,11 +896,11 @@ func TestHostedSecuritySSERevocation(t *testing.T) {
 				return
 			}
 			reader := openHostedTestStream(t, f, user, "?workspace="+workspace.ID)
-			kind, _ := readHostedEvent(t, reader)
-			if kind != "activity" {
-				t.Fatalf("initial event = %q", kind)
+			pumpHostedDelivery(t, delivery)
+			kind := ""
+			for kind != "workspace.requested" {
+				kind, _ = readHostedEvent(t, reader)
 			}
-			kind, _ = readHostedEvent(t, reader)
 			if kind != "workspace.requested" {
 				t.Fatalf("workspace event = %q", kind)
 			}
@@ -916,7 +918,16 @@ func TestHostedSecuritySSERevocation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			clock.Advance(21 * time.Second)
+			pumpHostedDelivery(t, delivery)
 			frame, err := readSSEFrame(reader)
+			for err == nil && frame.Event == "checkpoint" {
+				frame, err = readSSEFrame(reader)
+			}
+			if err != nil || frame.Event != "reset" {
+				t.Fatalf("revocation reset=%+v: %v", frame, err)
+			}
+			frame, err = readSSEFrame(reader)
 			if !errors.Is(err, io.EOF) {
 				t.Fatalf("revoked stream produced %+v, error=%v", frame, err)
 			}
