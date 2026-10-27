@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -23,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -30,6 +32,101 @@ type executionTransport struct {
 	next http.RoundTripper
 	drop atomic.Bool
 	down atomic.Bool
+}
+
+func TestControllerRetirementWaitsForOldMachineReport(t *testing.T) {
+	t.Parallel()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	var workers sync.WaitGroup
+	defer func() { releaseOnce.Do(func() { close(release) }); workers.Wait() }()
+	var reports atomic.Int64
+	client, err := New(Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture-token" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		if reports.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"fixture-machine","hostname":"fixture-host","capacity":1,"version":"1.0.0"}`)), Request: request}, nil
+	})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := NewScheduler(client, SchedulerConfig{Machine: Machine{ID: "fixture-machine", Hostname: "fixture-host", Capacity: 1, Version: "1.0.0"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reported := make(chan error, 1)
+	workers.Go(func() { reported <- source.ensureMachine(t.Context()) })
+	<-entered
+	paused := make(chan func(), 1)
+	workers.Go(func() { paused <- source.PauseController() })
+	testenv.WaitUntil(t, t.Context(), func() error {
+		select {
+		case <-paused:
+			t.Fatal("controller retired before its old machine report completed")
+		default:
+		}
+		if source.controlMu.TryRLock() {
+			source.controlMu.RUnlock()
+			return errors.New("controller retirement has not reached the in-flight report")
+		}
+		return nil
+	})
+	releaseOnce.Do(func() { close(release) })
+	if err := <-reported; err != nil {
+		t.Fatal(err)
+	}
+	resume := <-paused
+	source.lastHeartbeat = time.Time{}
+	if err := source.ensureMachine(t.Context()); err != nil || reports.Load() != 1 {
+		t.Fatalf("retired controller published an old build: reports=%d err=%v", reports.Load(), err)
+	}
+	resume()
+	if err := source.ensureMachine(t.Context()); err != nil || reports.Load() != 2 {
+		t.Fatalf("failed adoption did not restore machine reporting: reports=%d err=%v", reports.Load(), err)
+	}
+}
+
+func TestRetiredControllerRenewsClaimsWithoutReportingOldBuild(t *testing.T) {
+	t.Parallel()
+	h := newNativeChangeHub(t, true)
+	issue := h.createInProgress(t, "Finish the active attempt")
+	h.claim(t, issue.ID)
+	source := h.scheduler.nativeProject("local")
+	transport := h.native.client.httpClient.Transport
+	var reports atomic.Int64
+	h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPost && (strings.Contains(request.URL.Path, "/machines/") || strings.HasSuffix(request.URL.Path, "/machines")) {
+			reports.Add(1)
+		}
+		return transport.RoundTrip(request)
+	})
+	t.Cleanup(func() { h.native.client.httpClient.Transport = transport })
+	resume := h.scheduler.PauseController()
+	for _, resumed := range []bool{false, true} {
+		if resumed {
+			resume()
+		}
+		h.scheduler.mu.Lock()
+		h.scheduler.nativeHeartbeats[source.client.project] = time.Time{}
+		h.scheduler.mu.Unlock()
+		before := reports.Load()
+		if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); err != nil {
+			t.Fatalf("renew active lease while resumed=%t: %v", resumed, err)
+		}
+		if sent := reports.Load() > before; sent != resumed {
+			t.Fatalf("controller machine reports after renewal: sent=%t resumed=%t", sent, resumed)
+		}
+	}
+	resume = h.scheduler.PauseController()
+	defer resume()
+	claim := h.scheduler.nativeClaims[issue.ID]
+	if err := source.client.Release(t.Context(), claim.lease, "cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+		t.Fatalf("retirement bypassed authoritative lease loss: %v", err)
+	}
 }
 
 func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {

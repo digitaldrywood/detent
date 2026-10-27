@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -61,6 +62,8 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
+	controlMu         sync.RWMutex
+	controlPaused     atomic.Bool
 	releasedStopped   func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error)
 	availableCapacity func(context.Context, int) int
 
@@ -109,6 +112,17 @@ type Scheduler struct {
 	leaseHoldPending      chan struct{}
 	nativeFetches         int
 	githubBatchRunning    bool
+}
+
+func (s *Scheduler) PauseController() func() {
+	s.controlMu.Lock()
+	s.controlPaused.Store(true)
+	s.controlMu.Unlock()
+	return func() {
+		s.controlMu.Lock()
+		s.controlPaused.Store(false)
+		s.controlMu.Unlock()
+	}
 }
 
 func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
@@ -399,6 +413,11 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 }
 
 func (s *Scheduler) ensureMachine(ctx context.Context) error {
+	s.controlMu.RLock()
+	defer s.controlMu.RUnlock()
+	if s.controlPaused.Load() {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now().UTC()

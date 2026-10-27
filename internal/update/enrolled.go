@@ -19,8 +19,17 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 	if s == nil {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if request == nil {
 		if s.operationMu.TryLock() {
+			if ctx.Err() == nil {
+				if _, pending := s.restartBehindControlLocked(); pending {
+					s.operationMu.Unlock()
+					return s.enrolledObservation(running)
+				}
+			}
 			lastCheck := s.Status().LastCheckAt
 			s.mu.RLock()
 			pendingVerification := !s.enrolledStateValid && s.enrolledReceipt != nil && s.enrolledReceipt.AdvancedFollowHubRelease()
@@ -61,7 +70,6 @@ func (s *Scheduler) EnrolledUpdate(ctx context.Context, running runnerauth.Build
 					}
 				}
 			}
-			s.restartBehindControlLocked(ctx)
 			s.operationMu.Unlock()
 		}
 		return s.enrolledObservation(running)

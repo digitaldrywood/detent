@@ -457,7 +457,7 @@ detent --format json config path`),
 				}
 			}
 			var recovery StartupRecovery
-			if opts.startupRecovery != nil && boot.Mode == BootModeRunning {
+			if opts.startupRecovery != nil && boot.Mode == BootModeRunning && !supervisesControllers(boot) {
 				recovery, err = opts.startupRecovery(cmd.Context(), boot)
 				if err != nil {
 					return fmt.Errorf("initialize startup recovery: %w", err)
@@ -465,7 +465,7 @@ detent --format json config path`),
 				boot.StartupRecovery = recovery
 			}
 			bootErr := opts.boot(cmd.Context(), boot)
-			if bootErr != nil && recovery != nil {
+			if bootErr != nil && recovery != nil && (boot.Restart == nil || boot.Restart.control == nil || !boot.Restart.control.retired.Load()) {
 				recovery.HandleFailure(cmd.Context(), bootErr)
 			}
 			return bootErr

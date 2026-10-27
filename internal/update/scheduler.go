@@ -234,7 +234,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 			delay = pendingDelay
 		}
 		s.updateStatus(func(status *AutoStatus) {
-			if !pending {
+			if !pending && s.controlRestart == nil && status.State != "restart_requested" {
 				status.State = "scheduled"
 			}
 			status.NextCheckAt = &next
@@ -284,6 +284,18 @@ func (s *Scheduler) CheckNow(ctx context.Context) (Status, error) {
 	}
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return Status{}, err
+	}
+	if installed, pending := s.restartBehindControlLocked(); pending {
+		checkedAt := s.cfg.Now()
+		s.updateStatus(func(status *AutoStatus) {
+			status.LastCheckAt = &checkedAt
+			status.NextCheckAt = nil
+		})
+		return installed, s.persistLastCheck(checkedAt)
+	}
 
 	s.updateStatus(func(status *AutoStatus) {
 		status.State = "checking"
@@ -471,7 +483,7 @@ func (s *Scheduler) applyWorkerReleaseLocked(ctx context.Context, opts ApplyOpti
 	})
 	s.recordEnrolledApplied(applied, true)
 	persistErr := s.persistCurrentState()
-	s.restartBehindControlLocked(ctx)
+	s.restartBehindControlLocked()
 	return applied, persistErr
 }
 
@@ -501,38 +513,34 @@ func (s *Scheduler) installControlLocked(ctx context.Context, opts ApplyOptions,
 	s.mu.Lock()
 	s.controlRestart = &controlRestart{installed: installed}
 	s.mu.Unlock()
-	s.cfg.Logger.Info("controller binary replaced; restart pending until idle", "version", version)
+	s.cfg.Logger.Info("controller binary replaced; restart pending", "version", version)
 	return installed, true
 }
 
-func (s *Scheduler) restartBehindControlLocked(ctx context.Context) {
+func (s *Scheduler) restartBehindControlLocked() (Status, bool) {
 	s.mu.RLock()
 	pending := s.controlRestart
 	s.mu.RUnlock()
 	if pending == nil || s.cfg.RequestRestart == nil {
-		return
-	}
-	if s.cfg.ReserveIdle == nil {
-		return
-	}
-	releaseIdle, idle := s.cfg.ReserveIdle(ctx)
-	if !idle {
-		if releaseIdle != nil {
-			releaseIdle()
-		}
-		return
+		return Status{}, false
 	}
 	if !s.cfg.RequestRestart(pending.installed.Binary) {
-		if releaseIdle != nil {
-			releaseIdle()
-		}
-		return
+		s.updateStatus(func(status *AutoStatus) {
+			status.State = "applied_restart_deferred"
+			status.LastError = "Update restart request was declined"
+		})
+		s.cfg.Logger.Warn("controller restart request declined; retaining applied release for the next update tick", "version", pending.installed.LatestVersion)
+		return pending.installed, true
 	}
 	s.mu.Lock()
 	s.controlRestart = nil
 	s.mu.Unlock()
-	s.updateStatus(func(status *AutoStatus) { status.State = "restart_requested" })
-	s.cfg.Logger.Info("idle controller behind applied release; restart requested", "version", pending.installed.LatestVersion)
+	s.updateStatus(func(status *AutoStatus) {
+		status.State = "restart_requested"
+		status.LastError = ""
+	})
+	s.cfg.Logger.Info("controller behind applied release; restart requested", "version", pending.installed.LatestVersion)
+	return pending.installed, true
 }
 
 func (s *Scheduler) applyExceptionalWorkerUpdateLocked(ctx context.Context, opts ApplyOptions, err error) (Status, error) {

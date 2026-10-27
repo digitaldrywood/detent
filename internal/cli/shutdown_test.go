@@ -1647,13 +1647,15 @@ func waitForShutdownSession(t *testing.T, registry *projectpkg.Registry, ready f
 func TestShutdownDrainBudget(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name          string
-		parentTimeout time.Duration
-		wantShort     bool
-		updateRestart bool
+		name                string
+		parentTimeout       time.Duration
+		wantShort           bool
+		updateRestart       bool
+		operatorAfterUpdate bool
 	}{
 		{name: "full drain budget"},
 		{name: "update preserves active attempt beyond drain budget", updateRestart: true},
+		{name: "operator drain bounds a retired controller", updateRestart: true, operatorAfterUpdate: true},
 		{name: "short parent", parentTimeout: 10 * time.Second, wantShort: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1730,6 +1732,14 @@ func TestShutdownDrainBudget(t *testing.T) {
 					t.Fatal("shutdown released the active claim")
 				}
 				failedEarly := strings.Contains(logs.String(), "drain projects during shutdown failed")
+				if tc.operatorAfterUpdate {
+					controller.RequestDrain()
+					if err := <-done; !errors.Is(err, ErrShutdownTimeout) {
+						t.Fatalf("operator drain of retired controller = %v, want drain timeout", err)
+					}
+					close(release)
+					return
+				}
 				close(release)
 				synctest.Wait()
 				time.Sleep(shutdownDrainPollInterval)

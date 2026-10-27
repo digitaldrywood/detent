@@ -91,41 +91,67 @@ func TestRootCommandRequiresStartupRecoveryInitialization(t *testing.T) {
 
 func TestRootCommandHandlesBootFailureWithStartupRecovery(t *testing.T) {
 	t.Parallel()
-
-	bootErr := errors.New("startup validation failed")
-	configPath := t.TempDir() + "/global.yaml"
-	global := validDoctorGlobalWithProjects(configPath)
-	recovery := &recordingStartupRecovery{}
-	cmd := NewRootCommand(context.Background(),
-		func(opts *options) {
-			configured := successfulDoctorOptionsWithConfig(configPath, global)
-			opts.resolvePath = configured.resolvePath
-			opts.read = configured.read
-			opts.startupRecovery = func(_ context.Context, cfg BootConfig) (StartupRecovery, error) {
-				if cfg.Mode != BootModeRunning || cfg.Global.Path != configPath {
-					t.Fatalf("startup recovery config = %#v, want running %s", cfg, configPath)
-				}
-				return recovery, nil
+	for _, test := range []struct {
+		name       string
+		supervisor bool
+		child      bool
+		retired    bool
+	}{
+		{name: "ordinary controller owns recovery"},
+		{name: "supervised controller owns recovery", child: true},
+		{name: "retired controller cannot rewrite current recovery", child: true, retired: true},
+		{name: "supervisor delegates recovery to its controller", supervisor: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			bootErr := errors.New("startup validation failed")
+			configPath := filepath.Join(t.TempDir(), "global.yaml")
+			global := validDoctorGlobalWithProjects(configPath)
+			recovery := &recordingStartupRecovery{}
+			restart := NewRestartRequest()
+			if test.supervisor || test.child {
+				restart = NewProcessRestartRequest(func(string) error { return nil })
 			}
-		},
-		WithVersion("0.93.0"),
-		WithBootFunc(func(_ context.Context, cfg BootConfig) error {
-			if cfg.StartupRecovery != recovery {
-				t.Fatal("BootConfig.StartupRecovery was not injected")
+			if test.child {
+				restart.control = &controllerConnection{}
+				restart.control.retired.Store(test.retired)
 			}
-			return bootErr
-		}),
-	)
-	cmd.SetArgs([]string{"--config", configPath, "--headless", "--port", "0"})
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-
-	err := cmd.Execute()
-	if !errors.Is(err, bootErr) {
-		t.Fatalf("Execute() error = %v, want %v", err, bootErr)
-	}
-	if len(recovery.failures) != 1 || !errors.Is(recovery.failures[0], bootErr) {
-		t.Fatalf("HandleFailure() errors = %v, want startup error", recovery.failures)
+			initialized := false
+			cmd := NewRootCommand(t.Context(),
+				func(opts *options) {
+					configured := successfulDoctorOptionsWithConfig(configPath, global)
+					opts.resolvePath, opts.read = configured.resolvePath, configured.read
+					opts.startupRecovery = func(_ context.Context, cfg BootConfig) (StartupRecovery, error) {
+						initialized = true
+						if cfg.Mode != BootModeRunning || cfg.Global.Path != configPath {
+							t.Fatal("startup recovery received the wrong runtime")
+						}
+						return recovery, nil
+					}
+				},
+				WithRestartRequest(restart),
+				WithVersion("0.93.0"),
+				WithBootFunc(func(_ context.Context, cfg BootConfig) error {
+					if test.supervisor && cfg.StartupRecovery != nil || !test.supervisor && cfg.StartupRecovery != recovery {
+						t.Fatal("startup recovery has the wrong process owner")
+					}
+					return bootErr
+				}),
+			)
+			cmd.SetArgs([]string{"--config", configPath, "--headless", "--port", "0"})
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			if err := cmd.Execute(); !errors.Is(err, bootErr) {
+				t.Fatalf("Execute() error = %v, want startup error", err)
+			}
+			if initialized == test.supervisor {
+				t.Fatal("the supervisor initialized controller recovery state")
+			}
+			wantFailure := !test.supervisor && !test.retired
+			if (len(recovery.failures) == 1) != wantFailure {
+				t.Fatalf("recovery failures = %v, want failure recorded=%t", recovery.failures, wantFailure)
+			}
+		})
 	}
 }
 

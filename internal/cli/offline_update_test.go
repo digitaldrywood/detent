@@ -198,9 +198,18 @@ func testOfflineBusyControllerConvergence(t *testing.T, configPath, binary strin
 	<-runner.started
 	registry := projectpkg.NewRegistry()
 	mustSetProject(t, registry, project)
-	controller, restart := NewShutdownController(), NewRestartRequest()
-	started, finished := make(chan struct{}), make(chan struct{})
+	controller := NewShutdownController()
 	replaced := make(chan error, 1)
+	restart := &RestartRequest{control: &controllerConnection{}, reserve: func() func() { return func() {} }, execute: func(_ context.Context, path string) error {
+		child := exec.CommandContext(ctx, path, "-test.run=^TestOfflineUpdateControllerProcess$")
+		child.Env = append(os.Environ(), "DETENT_OFFLINE_UPDATE_PHASE=heartbeat", "GOCOVERDIR="+t.TempDir())
+		output, err := child.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("replacement controller: %w: %s", err, output)
+		}
+		return nil
+	}}
+	started, finished := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(finished)
 		if err := runWithShutdown(ctx, runningShutdownConfig{Controller: controller, Registry: registry, DrainTimeout: time.Minute, Logger: logger, Output: io.Discard}, func(ctx context.Context) error {
@@ -211,13 +220,7 @@ func testOfflineBusyControllerConvergence(t *testing.T, configPath, binary strin
 			replaced <- err
 			return
 		}
-		child := exec.CommandContext(ctx, restart.Binary(), "-test.run=^TestOfflineUpdateControllerProcess$")
-		child.Env = append(os.Environ(), "DETENT_OFFLINE_UPDATE_PHASE=heartbeat")
-		output, err := child.CombinedOutput()
-		if err != nil {
-			err = fmt.Errorf("replacement controller: %w: %s", err, output)
-		}
-		replaced <- err
+		replaced <- nil
 	}()
 	defer func() { cancel(); <-finished }()
 	select {
@@ -233,7 +236,13 @@ func testOfflineBusyControllerConvergence(t *testing.T, configPath, binary strin
 		ReserveDrain: func(context.Context) (func(), error) {
 			return nil, errors.New("routine update must preserve active attempts")
 		},
-		RequestRestart: func(path string) bool { return requestUpdateRestart(controller, restart, path) },
+		RequestRestart: func(path string) bool {
+			accepted, err := requestRuntimeUpdateRestart(ctx, controller, restart, path, nil)
+			if err != nil {
+				t.Error(err)
+			}
+			return accepted
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -248,14 +257,11 @@ func testOfflineBusyControllerConvergence(t *testing.T, configPath, binary strin
 		t.Fatal("enrolled update observation is missing before the busy update")
 	}
 	applied := scheduler.EnrolledUpdate(ctx, scheduler.RunningBuild(), &runnerauth.UpdateRequest{ID: "busy-update", Service: "detent", Version: offlineUpdateVersion, Release: true, FromRelease: true, FollowHub: true, ExpectedBuildRevision: before.Revision, RequestedAt: time.Now().UTC()})
-	if applied == nil || applied.Receipt == nil || applied.Receipt.Applied == nil || !applied.Receipt.Applied.VerifiedRelease || !applied.Receipt.ExecutionReady() || applied.Running.Version != "1.2.2" || applied.Receipt.Applied.Version != offlineUpdateVersion {
+	if applied == nil || applied.Receipt == nil || applied.Receipt.Applied == nil || !applied.Receipt.Applied.VerifiedRelease || applied.Receipt.Status != "restart_requested" || !applied.Receipt.ExecutionArtifact || applied.Running.Version != "1.2.2" || applied.Receipt.Applied.Version != offlineUpdateVersion {
 		t.Fatalf("busy update did not apply the release: %+v", applied)
 	}
-	if restart.Binary() != "" || controller.shutdownRequested.Load() {
-		t.Fatalf("busy update requested a draining restart into %q", restart.Binary())
-	}
-	if status, ok := controller.currentShutdownStatus(); ok && status.Draining {
-		t.Fatalf("busy update left the controller draining: %+v", status)
+	if restart.Binary() != "" || !controller.updateRestart.Load() {
+		t.Fatal("controller replacement did not retain the old attempt owner")
 	}
 	state, err := project.Orchestrator().State(ctx)
 	if err != nil {
@@ -267,8 +273,8 @@ func testOfflineBusyControllerConvergence(t *testing.T, configPath, binary strin
 	if _, ok := state.Claimed["active-issue"]; !ok {
 		t.Fatal("update released the active claim before completion")
 	}
-	if _, err := os.Stat(reportPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("replacement reported before the active attempt completed: %v", err)
+	if _, err := os.Stat(reportPath); err != nil {
+		t.Fatalf("replacement did not report while the active attempt continues: %v", err)
 	}
 	select {
 	case err := <-replaced:
@@ -284,10 +290,6 @@ func testOfflineBusyControllerConvergence(t *testing.T, configPath, binary strin
 		}
 		return nil
 	})
-	scheduler.EnrolledUpdate(ctx, scheduler.RunningBuild(), nil)
-	if restart.Binary() != binary {
-		t.Fatalf("idle controller restart selected %q, want %q", restart.Binary(), binary)
-	}
 	select {
 	case err := <-replaced:
 		if err != nil {

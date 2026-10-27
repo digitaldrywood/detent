@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -40,6 +41,8 @@ const (
 )
 
 type ShutdownController struct {
+	requestMu               sync.Mutex
+	updateCancel            context.CancelFunc
 	requests                chan ShutdownRequest
 	active                  atomic.Bool
 	shutdownRequested       atomic.Bool
@@ -55,13 +58,24 @@ func NewShutdownController() *ShutdownController {
 
 func (c *ShutdownController) RequestDrain() {
 	if c != nil {
+		c.requestMu.Lock()
+		defer c.requestMu.Unlock()
+		if c.updateCancel != nil {
+			c.updateCancel()
+		}
+		c.updateRestart.Store(false)
 		c.shutdownRequested.Store(true)
 	}
 	c.request(ShutdownRequestDrain)
 }
 
 func (c *ShutdownController) RequestDrainIfIdle(accepted func()) bool {
-	if c == nil || !c.Active() || !c.shutdownRequested.CompareAndSwap(false, true) {
+	if c == nil {
+		return false
+	}
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
+	if !c.Active() || !c.shutdownRequested.CompareAndSwap(false, true) {
 		return false
 	}
 	if accepted != nil {
@@ -71,8 +85,39 @@ func (c *ShutdownController) RequestDrainIfIdle(accepted func()) bool {
 	return true
 }
 
+func (c *ShutdownController) executeUpdateRestart(ctx context.Context, execute func(context.Context) error, adopted func()) (bool, error) {
+	if c == nil || execute == nil {
+		return false, nil
+	}
+	c.requestMu.Lock()
+	if !c.Active() || c.shutdownRequested.Load() || c.updateCancel != nil {
+		c.requestMu.Unlock()
+		return false, nil
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	c.updateCancel = cancel
+	c.requestMu.Unlock()
+	err := execute(ctx)
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
+	c.updateCancel = nil
+	cancel()
+	if err != nil {
+		return false, fmt.Errorf("replace control process: %w", err)
+	}
+	if adopted != nil {
+		adopted()
+	}
+	return true, nil
+}
+
 func (c *ShutdownController) RequestForce() {
 	if c != nil {
+		c.requestMu.Lock()
+		defer c.requestMu.Unlock()
+		if c.updateCancel != nil {
+			c.updateCancel()
+		}
 		c.shutdownRequested.Store(true)
 		c.forceRequested.Store(true)
 	}
@@ -122,8 +167,16 @@ func (c *ShutdownController) RequestInterrupt() bool {
 }
 
 func (c *ShutdownController) RequestInterruptKind() (ShutdownRequest, bool) {
-	if c == nil || !c.Active() {
+	if c == nil {
 		return 0, false
+	}
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
+	if !c.Active() {
+		return 0, false
+	}
+	if c.updateCancel != nil {
+		c.updateCancel()
 	}
 	if c.shutdownRequested.CompareAndSwap(false, true) {
 		c.request(ShutdownRequestDrain)
@@ -348,6 +401,15 @@ func runDrainShutdown(
 			return ctx.Err()
 		case request := <-cfg.Controller.Requests():
 			shutdownLogger(cfg).Debug("shutdown request received", "operation", "shutdown_request", "request", request.String())
+			if request == ShutdownRequestDrain && updateRestart {
+				updateRestart = false
+				drainTimeout = shutdownDrainTimeoutForConfig(cfg)
+				if drainTimeout > 0 {
+					timeoutTimer = time.NewTimer(drainTimeout)
+					timeout = timeoutTimer.C
+					defer timeoutTimer.Stop()
+				}
+			}
 			if request == ShutdownRequestForce {
 				cancelDrain()
 				machine = machine.Apply(shutdownstate.EventForceRequested)

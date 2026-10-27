@@ -125,7 +125,7 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 					break
 				}
 				observed = scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), request)
-				if observed.Receipt == nil || !observed.Receipt.ExecutionReady() || observed.Running.Version != "1.0.0" || observed.Receipt.Applied == nil || observed.Receipt.Applied.Version != "1.0.1" || observed.Receipt.Applied.SHA256 != updater.applyStatus.BinarySHA256 {
+				if observed.Receipt == nil || observed.Receipt.Status != "restart_requested" || !observed.Receipt.ExecutionArtifact || observed.Running.Version != "1.0.0" || observed.Receipt.Applied == nil || !observed.Receipt.Applied.VerifiedRelease || observed.Receipt.FailureReason != "" || observed.Receipt.Applied.Version != "1.0.1" || observed.Receipt.Applied.SHA256 != updater.applyStatus.BinarySHA256 {
 					t.Fatalf("untruthful mixed-version update receipt: %+v", observed)
 				}
 				resumed, resumeErr := NewScheduler(scheduler.cfg)
@@ -146,21 +146,25 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 				request.FollowHub = false
 				request.ID, request.Version, request.ExpectedBuildRevision = "update-2", "1.0.2", observed.Revision
 				observed = scheduler.EnrolledUpdate(t.Context(), scheduler.RunningBuild(), request)
-				if observed.Receipt == nil || !observed.Receipt.ExecutionReady() || observed.Receipt.Applied.Version != "1.0.2" || observed.Running.Version != "1.0.0" || observed.Validate() != nil {
+				if observed.Receipt == nil || observed.Receipt.Status != "restart_requested" || !observed.Receipt.ExecutionArtifact || observed.Receipt.Applied == nil || !observed.Receipt.Applied.VerifiedRelease || observed.Receipt.FailureReason != "" || observed.Receipt.Applied.Version != "1.0.2" || observed.Running.Version != "1.0.0" || observed.Validate() != nil {
 					t.Fatalf("consecutive execution preparation failed: %+v", observed)
 				}
 			default:
 				_, err = scheduler.ApplyRelease(t.Context(), true)
 			}
 			wantControllerInstalls := 1
-			wantState := "applied"
+			wantState := "restart_requested"
+			wantRestarts := 1
 			switch path {
 			case "startup", "authenticated startup":
 				wantControllerInstalls, wantState = 0, "scheduled"
+				wantRestarts = 0
 			case "enrolled advanced target":
 				wantControllerInstalls, wantState = 0, "failed"
+				wantRestarts = 0
 			case "enrolled":
 				wantControllerInstalls = 2
+				wantRestarts = 2
 			}
 			if path == "download failure" {
 				if err == nil || drains != 0 || restarts != 0 {
@@ -172,8 +176,8 @@ func TestWorkerArtifactsRoutineUpdatePaths(t *testing.T) {
 				if drains != 1 || restarts != 1 || updater.applyCalls != 1 {
 					t.Fatalf("exceptional update did not use existing replacement: drains=%d restarts=%d applies=%d", drains, restarts, updater.applyCalls)
 				}
-			} else if drains != 0 || restarts != 0 || updater.applyCalls != wantControllerInstalls || scheduler.Status().State != wantState {
-				t.Fatalf("busy routine update drained, restarted or skipped the controller binary: drains=%d restarts=%d applies=%d want %d state=%q want %q", drains, restarts, updater.applyCalls, wantControllerInstalls, scheduler.Status().State, wantState)
+			} else if drains != 0 || restarts != wantRestarts || updater.applyCalls != wantControllerInstalls || scheduler.Status().State != wantState {
+				t.Fatalf("routine controller adoption: drains=%d restarts=%d want %d applies=%d want %d state=%q want %q", drains, restarts, wantRestarts, updater.applyCalls, wantControllerInstalls, scheduler.Status().State, wantState)
 			}
 			if path == "critical" || path == "protocol incompatible" || path == "startup critical" || path == "startup incompatible" {
 				fixture.listErr = errors.New("discovery unavailable")
@@ -222,10 +226,10 @@ func TestSchedulerRestartsControllerBehindAppliedRelease(t *testing.T) {
 		wantState    string
 		wantReserved int
 	}{
-		{name: "busy controller keeps serving without a deferral drain", heartbeats: []heartbeat{{advance: 7 * time.Hour, accept: true}, {advance: 7 * time.Hour, accept: true}}, wantState: "applied"},
-		{name: "idle controller restarts into installed binary", heartbeats: []heartbeat{{advance: time.Minute}, {advance: time.Minute, idle: true, accept: true}, {advance: time.Minute, idle: true, accept: true}}, wantRestarts: []string{"verified-controller"}, wantState: "restart_requested", wantReserved: 1},
-		{name: "old launcher recovers applied release at startup", restore: true, heartbeats: []heartbeat{{accept: true}, {idle: true, accept: true}}, wantRestarts: []string{"verified-controller"}, wantState: "restart_requested", wantReserved: 1},
-		{name: "declined idle restart retries", heartbeats: []heartbeat{{idle: true}, {idle: true, accept: true}}, wantRestarts: []string{"verified-controller", "verified-controller"}, wantState: "restart_requested", wantReserved: 1},
+		{name: "busy controller requests adoption on next tick", heartbeats: []heartbeat{{advance: time.Minute, accept: true}, {advance: time.Minute, accept: true}}, wantRestarts: []string{"verified-controller"}, wantState: "restart_requested"},
+		{name: "idle controller restarts into installed binary", heartbeats: []heartbeat{{advance: time.Minute}, {advance: time.Minute, idle: true, accept: true}, {advance: time.Minute, idle: true, accept: true}}, wantRestarts: []string{"verified-controller", "verified-controller"}, wantState: "restart_requested"},
+		{name: "old launcher recovers applied release at startup", restore: true, heartbeats: []heartbeat{{accept: true}, {idle: true, accept: true}}, wantRestarts: []string{"verified-controller"}, wantState: "restart_requested"},
+		{name: "declined idle restart retries", heartbeats: []heartbeat{{idle: true}, {idle: true, accept: true}}, wantRestarts: []string{"verified-controller", "verified-controller"}, wantState: "restart_requested"},
 		{name: "controller install refused never restarts", applyErr: ErrRefused, heartbeats: []heartbeat{{idle: true, accept: true}, {advance: 7 * time.Hour, accept: true}}, wantState: "applied"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -239,7 +243,7 @@ func TestSchedulerRestartsControllerBehindAppliedRelease(t *testing.T) {
 				updater.applyStatus = Status{Action: ActionRefused}
 			}
 			now := time.Now().UTC()
-			current := heartbeat{accept: true}
+			current := heartbeat{}
 			var restarts []string
 			reserved := 0
 			scheduler, err := NewScheduler(SchedulerConfig{WorkerArtifacts: artifacts, Now: func() time.Time { return now }, Updater: updater, AutoApplyEnabled: true, CheckInterval: time.Hour, MaxDeferral: 6 * time.Hour,
@@ -263,9 +267,10 @@ func TestSchedulerRestartsControllerBehindAppliedRelease(t *testing.T) {
 			if observed.Receipt == nil || observed.Receipt.Applied == nil || !observed.Receipt.Applied.VerifiedRelease || !observed.Receipt.ExecutionArtifact {
 				t.Fatalf("routine update lost execution readiness: %+v restarts=%v", observed.Receipt, restarts)
 			}
-			if len(restarts) != 0 || reserved != 0 {
-				t.Fatalf("busy controller requested restart = %v reserved = %d, want no restart while attempts run", restarts, reserved)
+			if reserved != 0 || test.applyErr == nil && !slices.Equal(restarts, []string{"verified-controller"}) || test.applyErr != nil && len(restarts) != 0 {
+				t.Fatalf("initial controller adoption request = %v reserved = %d", restarts, reserved)
 			}
+			restarts = nil
 			wantInstalls := 1
 			if test.restore {
 				scheduler, err = NewScheduler(scheduler.cfg)

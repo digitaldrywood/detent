@@ -66,6 +66,9 @@ func (s *Scheduler) ObserveNativeAdmission(project string, current tracker.Nativ
 }
 
 func (s *Scheduler) Heartbeat(ctx context.Context) error {
+	if s.controlPaused.Load() {
+		return nil
+	}
 	if s.client.runner == nil {
 		return nil
 	}
@@ -87,6 +90,9 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 }
 
 func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeConnector, projectOwner func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration) error {
+	if s.controlPaused.Load() {
+		return nil
+	}
 	project := source.client.project
 	s.mu.Lock()
 	if s.nativeHeartbeatMu == nil {
@@ -283,7 +289,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 			}
 			machine.ProjectConfiguration = &view
 			heartbeat.Lock()
-			err := source.client.HeartbeatMachine(ctx, machine)
+			err := s.sendNativeMachineHeartbeat(ctx, source, machine, false)
 			heartbeat.Unlock()
 			if err != nil {
 				return err
@@ -298,7 +304,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 				s.mu.Unlock()
 				machine.Update = applied
 				heartbeat.Lock()
-				err := source.client.HeartbeatMachine(ctx, machine)
+				err := s.sendNativeMachineHeartbeat(ctx, source, machine, false)
 				heartbeat.Unlock()
 				if err != nil {
 					return err

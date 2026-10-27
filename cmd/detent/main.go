@@ -32,7 +32,7 @@ func main() {
 	if gobudget.IsWrapperInvocation(os.Args[0]) {
 		os.Exit(gobudget.RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
 	}
-	exitCode, restartBinary := runCLIResult(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	exitCode, restartBinary := runCLIResultWithRestart(context.Background(), os.Args[1:], os.Stdout, os.Stderr, automaticRestartRequest())
 	manager := service.ManagerFromProcessEnvironment(runtime.GOOS, os.LookupEnv)
 	os.Exit(finishCLI(exitCode, restartBinary, manager, restartProcess))
 }
@@ -56,6 +56,10 @@ func runCLI(ctx context.Context, args []string, stdout io.Writer, stderr io.Writ
 }
 
 func runCLIResult(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) (int, string) {
+	return runCLIResultWithRestart(ctx, args, stdout, stderr, cli.NewRestartRequest())
+}
+
+func runCLIResultWithRestart(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, restartRequest *cli.RestartRequest) (int, string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -64,7 +68,6 @@ func runCLIResult(ctx context.Context, args []string, stdout io.Writer, stderr i
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	shutdownController := cli.NewShutdownController()
-	restartRequest := cli.NewRestartRequest()
 	stopSignals := notifyShutdownRequests(shutdownController, cancel, stderr, os.Exit)
 	defer stopSignals()
 

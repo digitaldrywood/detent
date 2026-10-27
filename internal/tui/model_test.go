@@ -165,6 +165,13 @@ func TestModelRendersSnapshotFromHub(t *testing.T) {
 			t.Fatalf("View() missing %q:\n%s", want, view)
 		}
 	}
+	for _, version := range []string{"1.0.1", "1.0.2"} {
+		next, _ = next.(Model).Update(buildinfo.Info{Version: version, Commit: "abcdef1234567890"})
+		view = ansi.Strip(next.(Model).View().Content)
+		if !strings.Contains(view, "detent "+version+" (abcdef1)") {
+			t.Fatalf("terminal dashboard retained the previous controller build: %s", view)
+		}
+	}
 }
 
 func TestAssertGoldenAcceptsWindowsLineEndings(t *testing.T) {

@@ -229,6 +229,7 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		t.Fatal(err)
 	}
 	h := &nativeChangeHub{review: review, organization: organizations.Items[0].ID, descriptor: clientTestPolicy()}
+	reopens := 0
 	h.reopen = func(seed func(string) error) {
 		t.Helper()
 		requests.Lock()
@@ -236,9 +237,15 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		if err := service.Close(); err != nil {
 			t.Fatalf("close fixture before seed: %v", err)
 		}
-		if err := seed(config.DatabasePath); err != nil {
+		reopens++
+		seedPath := filepath.Join(filepath.Dir(config.DatabasePath), fmt.Sprintf("seed-%d.db", reopens))
+		if err := hubserver.BackupDatabase(t.Context(), config.DatabasePath, seedPath); err != nil {
+			t.Fatalf("snapshot stopped fixture: %v", err)
+		}
+		if err := seed(seedPath); err != nil {
 			t.Fatalf("seed stopped fixture: %v", err)
 		}
+		config.DatabasePath = seedPath
 		service, err = hubserver.Open(t.Context(), config)
 		if err != nil {
 			t.Fatalf("reopen seeded fixture: %v", err)

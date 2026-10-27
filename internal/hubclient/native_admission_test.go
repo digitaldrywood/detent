@@ -457,6 +457,7 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 		second          bool
 		external        bool
 		instance        bool
+		retainedWriter  bool
 	}{
 		{name: "reported prerequisite registers dependency hold"},
 		{name: "instance-owned blocker recovers on any runner without a dependency", instance: true},
@@ -474,6 +475,7 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 		{name: "new approved policy recovers historical report", advancePolicy: true},
 		{name: "later released claim retains recorded recovery", laterLease: "released", dirty: true},
 		{name: "later expired claim retains recorded recovery", laterLease: "expired", dirty: true},
+		{name: "later expired claim seeding isolates retired writer", laterLease: "expired", dirty: true, retainedWriter: true},
 		{name: "later active claim retains hold", laterLease: "active", refusal: "active"},
 		{name: "later completed attempt supersedes report", laterLease: "attempt", refusal: "attempt"},
 		{name: "human action retains hold", refusal: "human"},
@@ -658,7 +660,29 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			}
 			latestFence := attempt.FencingToken
 			if test.laterLease != "" {
+				var retiredPath string
+				if test.retainedWriter {
+					h.reopen(func(path string) error {
+						retiredPath = path
+						return nil
+					})
+				}
 				h.reopen(func(path string) error {
+					if retiredPath != "" {
+						retired, err := sql.Open("sqlite", retiredPath)
+						if err != nil {
+							return err
+						}
+						defer retired.Close()
+						tx, err := retired.BeginTx(t.Context(), nil)
+						if err != nil {
+							return err
+						}
+						defer tx.Rollback()
+						if _, err := tx.ExecContext(t.Context(), "UPDATE leases SET renewed_at = renewed_at WHERE lease_id = ?", attempt.LeaseID); err != nil {
+							return err
+						}
+					}
 					db, err := sql.Open("sqlite", path)
 					if err != nil {
 						return err

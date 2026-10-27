@@ -41,6 +41,11 @@ func (s *Scheduler) acknowledgeHostMetrics(metrics *hostmetrics.Collector, summa
 }
 
 func (s *Scheduler) sendNativeMachineHeartbeat(ctx context.Context, source *NativeConnector, machine Machine, register bool) error {
+	s.controlMu.RLock()
+	defer s.controlMu.RUnlock()
+	if s.controlPaused.Load() {
+		return nil
+	}
 	s.hostMetricsMu.Lock()
 	defer s.hostMetricsMu.Unlock()
 	s.mu.Lock()
@@ -64,6 +69,11 @@ func (s *Scheduler) sendNativeMachineHeartbeat(ctx context.Context, source *Nati
 }
 
 func (s *Scheduler) flushHostMetrics(ctx context.Context, summaries []hostmetrics.Summary) error {
+	s.controlMu.RLock()
+	defer s.controlMu.RUnlock()
+	if s.controlPaused.Load() {
+		return nil
+	}
 	if len(summaries) == 0 || s.client.runner == nil {
 		return nil
 	}

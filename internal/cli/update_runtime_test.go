@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -29,6 +32,177 @@ import (
 
 type urgentRuntimeUpdater struct {
 	apply func(context.Context, detentupdate.ApplyOptions) (detentupdate.Status, error)
+}
+
+func TestUpdateRestartCancellationPreservesShutdownOwner(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name      string
+		request   func(*ShutdownController)
+		kind      ShutdownRequest
+		committed bool
+	}{
+		{name: "runtime cancellation"},
+		{name: "operator drain cancels startup", request: (*ShutdownController).RequestDrain, kind: ShutdownRequestDrain},
+		{name: "operator force cancels startup", request: (*ShutdownController).RequestForce, kind: ShutdownRequestForce},
+		{name: "interrupt cancels startup", request: func(c *ShutdownController) { c.RequestInterrupt() }, kind: ShutdownRequestDrain},
+		{name: "committed replacement retains operator drain", request: (*ShutdownController).RequestDrain, kind: ShutdownRequestDrain, committed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				controller := NewShutdownController()
+				defer controller.activate()()
+				gate, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 1}}}, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				finish := make(chan struct{})
+				var finished sync.Once
+				defer finished.Do(func() { close(finish) })
+				canceled := make(chan struct{})
+				restart := &RestartRequest{control: &controllerConnection{}, reserve: gate.PauseDispatch, execute: func(ctx context.Context, _ string) error {
+					select {
+					case <-ctx.Done():
+						close(canceled)
+					case <-finish:
+					}
+					<-finish
+					if test.committed {
+						return nil
+					}
+					return context.Canceled
+				}}
+				done := make(chan struct{})
+				var accepted bool
+				var restartErr error
+				go func() {
+					accepted, restartErr = requestRuntimeUpdateRestart(ctx, controller, restart, "verified-controller", nil)
+					close(done)
+				}()
+				synctest.Wait()
+				requested := make(chan struct{})
+				go func() {
+					if test.request != nil {
+						test.request(controller)
+					} else {
+						cancel()
+					}
+					close(requested)
+				}()
+				synctest.Wait()
+				select {
+				case <-requested:
+				default:
+					t.Fatal("pending adoption blocked the operator shutdown request")
+				}
+				select {
+				case <-canceled:
+				default:
+					t.Fatal("shutdown did not cancel the pending adoption")
+				}
+				if release, admitted := gate.ReserveDispatch(); admitted {
+					release()
+					t.Fatal("admission resumed before replacement rejection")
+				}
+				finished.Do(func() { close(finish) })
+				<-done
+				if accepted != test.committed || !test.committed && !errors.Is(restartErr, context.Canceled) || test.committed && restartErr != nil {
+					t.Fatalf("restart accepted=%t error=%v, committed=%t", accepted, restartErr, test.committed)
+				}
+				if controller.updateRestart.Load() || controller.shutdownRequested.Load() != (test.kind != 0) || restart.control.retired.Load() != test.committed {
+					t.Fatal("adoption overwrote the operator shutdown owner")
+				}
+				if test.kind != 0 {
+					if got := <-controller.Requests(); got != test.kind {
+						t.Fatalf("shutdown request = %v, want %v", got, test.kind)
+					}
+				}
+				release, admitted := gate.ReserveDispatch()
+				if admitted {
+					release()
+				}
+				if admitted == test.committed {
+					t.Fatalf("admission after restart = %t, committed=%t", admitted, test.committed)
+				}
+			})
+		})
+	}
+}
+
+func TestUpdateRestartHandsOffWhileAttemptRemainsActive(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		release := make(chan struct{})
+		var finish sync.Once
+		runner := &shutdownBlockingRunner{started: make(chan struct{}, 1), canceled: make(chan struct{}, 1), release: release}
+		tracked := newShutdownRuntimeProject(t, "fixture", []connector.Issue{{ID: "active-issue", Identifier: "owner/repository#1", Title: "Active implementation", State: "Todo", AssignedToWorker: true}}, runner)
+		if err := tracked.Start(ctx); err != nil {
+			t.Fatal(err)
+		}
+		defer tracked.Close()
+		defer finish.Do(func() { close(release) })
+		synctest.Wait()
+		select {
+		case <-runner.started:
+		default:
+			t.Fatal("fixture did not start the active attempt")
+		}
+		registry := project.NewRegistry()
+		mustSetProject(t, registry, tracked)
+		oldGate, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 1}}}, []scheduler.ProjectCandidate{{ID: "fixture"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		newGate, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 1}}}, []scheduler.ProjectCandidate{{ID: "fixture"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		controller := NewShutdownController()
+		replaced := false
+		restart := &RestartRequest{control: &controllerConnection{}, reserve: oldGate.PauseDispatch, execute: func(context.Context, string) error {
+			if runtimeUpdateIdle(ctx, registry) {
+				t.Error("replacement waited for the active attempt")
+			}
+			replaced = true
+			return nil
+		}}
+		done := make(chan error, 1)
+		go func() {
+			done <- runWithShutdown(ctx, runningShutdownConfig{Controller: controller, Registry: registry, DrainTimeout: time.Minute, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() })
+		}()
+		synctest.Wait()
+		if accepted, err := requestRuntimeUpdateRestart(ctx, controller, restart, "verified-controller", nil); !accepted || err != nil {
+			t.Fatalf("applied update was not adopted: %t %v", accepted, err)
+		}
+		synctest.Wait()
+		if !replaced || restart.Binary() != "" {
+			t.Fatal("supervisor did not replace the controller independently of attempt retirement")
+		}
+		if releaseClaim, admitted := oldGate.ReserveDispatch(); admitted {
+			releaseClaim()
+			t.Error("retired controller still claims work")
+		}
+		if releaseClaim, admitted := newGate.ReserveDispatch(); !admitted {
+			t.Fatal("new controller did not resume claiming while the old attempt runs")
+		} else {
+			releaseClaim()
+		}
+		select {
+		case <-done:
+			t.Error("old attempt owner exited before its attempt completed")
+		case <-runner.canceled:
+			t.Error("controller adoption canceled the active attempt")
+		default:
+		}
+		finish.Do(func() { close(release) })
+		if err := <-done; err != nil {
+			t.Fatalf("retiring attempt owner: %v", err)
+		}
+	})
 }
 
 func (u urgentRuntimeUpdater) Check(context.Context) (detentupdate.Status, error) {
@@ -196,6 +370,75 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 	if !runtimeUpdateIdle(context.Background(), project.NewRegistry()) {
 		t.Fatal("runtimeUpdateIdle() with empty registry = false, want true")
 	}
+	t.Run("pending admission maintenance does not block idle adoption", func(t *testing.T) {
+		backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = backend.Close() })
+		lookedUp := make(chan struct{}, 1)
+		attempts := &pendingAdmissionMaintenanceStore{Store: backend, lookedUp: lookedUp}
+		cfg := workflowconfig.Default()
+		cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+		tracked, err := projectfixture.New(project.Config{
+			Project:  globalconfig.Project{ID: "fixture", Workdir: t.TempDir(), Weight: 1},
+			Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
+		}, project.Dependencies{WorkAttempts: attempts, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = tracked.Close() })
+		if err := tracked.Start(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		<-lookedUp
+		registry := project.NewRegistry()
+		mustSetProject(t, registry, tracked)
+		gate, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 1}}}, []scheduler.ProjectCandidate{{ID: "fixture"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		controller := NewShutdownController()
+		executed := false
+		restart := NewProcessRestartRequest(func(binary string) error {
+			if binary != "verified-controller" {
+				t.Errorf("replacement binary = %q", binary)
+			}
+			executed = true
+			return nil
+		})
+		t.Cleanup(controller.activate())
+		updater, err := detentupdate.NewScheduler(detentupdate.SchedulerConfig{
+			CheckInterval: time.Minute,
+			RunningBuild:  runnerauth.BuildEvidence{Version: "1.0.0"},
+			Updater: urgentRuntimeUpdater{apply: func(context.Context, detentupdate.ApplyOptions) (detentupdate.Status, error) {
+				return detentupdate.Status{Action: detentupdate.ActionUpdated, LatestVersion: "1.0.1", Binary: "verified-controller"}, nil
+			}},
+			ReserveIdle: func(ctx context.Context) (func(), bool) { return runtimeUpdateIdleReservation(ctx, registry, gate) },
+			ReserveDrain: func(context.Context) (func(), error) {
+				t.Error("idle adoption waited for a drain")
+				return nil, errors.New("unexpected drain")
+			},
+			RequestRestart: func(binary string) bool {
+				accepted, err := requestRuntimeUpdateRestart(t.Context(), controller, restart, binary, func(ctx context.Context) (func(), bool) {
+					return runtimeUpdateIdleReservation(ctx, registry, gate)
+				})
+				if err != nil {
+					t.Error(err)
+				}
+				return accepted
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := updater.ApplyRelease(t.Context(), false); err != nil {
+			t.Fatal(err)
+		}
+		if !executed || updater.Status().State != "restart_requested" {
+			t.Fatalf("pending maintenance blocked adoption: executed=%t status=%+v", executed, updater.Status())
+		}
+	})
 	t.Run("restored completion still owns pending work", func(t *testing.T) {
 		if testing.Short() {
 			t.Skip("durable completion restore integration")
@@ -300,6 +543,19 @@ func TestRuntimeUpdateIdleIsConservative(t *testing.T) {
 	})
 }
 
+type pendingAdmissionMaintenanceStore struct {
+	store.Store
+	lookedUp chan struct{}
+}
+
+func (s *pendingAdmissionMaintenanceStore) ListLocalAdmittedIssueIDs(context.Context, string) ([]string, error) {
+	select {
+	case s.lookedUp <- struct{}{}:
+	default:
+	}
+	return nil, errors.New("store projections pending maintenance")
+}
+
 func TestRuntimeUpdateIdleReservationBlocksDispatch(t *testing.T) {
 	t.Parallel()
 
@@ -393,6 +649,90 @@ func TestRequestUpdateRestartUsesShutdownDrainState(t *testing.T) {
 			default:
 				if tt.wantDrainEvent {
 					t.Fatal("shutdown request missing, want drain")
+				}
+			}
+		})
+	}
+}
+
+func TestUpdateRestartExecFailurePreservesClaiming(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name          string
+		busy          bool
+		operatorDrain bool
+		supervised    bool
+	}{
+		{name: "failed process replacement resumes claims"},
+		{name: "busy process is never replaced", busy: true},
+		{name: "operator drain retains ownership", operatorDrain: true},
+		{name: "failed busy controller startup resumes claims", busy: true, supervised: true},
+		{name: "supervised adoption preserves operator drain", busy: true, supervised: true, operatorDrain: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			gate, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 1}}}, []scheduler.ProjectCandidate{{ID: "fixture"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			controller := NewShutdownController()
+			t.Cleanup(controller.activate())
+			if test.operatorDrain {
+				controller.RequestDrain()
+			}
+			native, _, _, workflow, create, _ := localWorkerHub(t)
+			native.SetClaimAdmission(gate.ReserveDispatch)
+			next := create("Next independent work")
+			claimRequest := orchestrator.SchedulingRequest{ProjectID: "local", Policy: workflow.Config.Policy, WorkflowStates: []string{"Todo"}, CandidateLimit: 1}
+			execErr := errors.New("process replacement failed")
+			calls := 0
+			restart := NewProcessRestartRequest(func(binary string) error {
+				calls++
+				if binary != "verified-controller" {
+					t.Errorf("replacement binary = %q", binary)
+				}
+				if release, admitted := gate.ReserveDispatch(); admitted {
+					release()
+					t.Error("new claim admitted during process replacement")
+				}
+				if issues, err := native.FetchCandidateIssues(t.Context(), claimRequest); err != nil || len(issues) != 0 {
+					t.Errorf("native claiming during process replacement: %+v %v", issues, err)
+				}
+				return execErr
+			})
+			if test.supervised {
+				restart.control = &controllerConnection{}
+				restart.reserve = gate.PauseDispatch
+			}
+			accepted, err := requestRuntimeUpdateRestart(t.Context(), controller, restart, "verified-controller", func(context.Context) (func(), bool) {
+				return gate.PauseDispatch(), !test.busy
+			})
+			wantExec := (!test.busy || test.supervised) && !test.operatorDrain
+			if accepted || errors.Is(err, execErr) != wantExec || (calls == 1) != wantExec {
+				t.Fatalf("replacement accepted=%t err=%v calls=%d, want failure with execution=%t", accepted, err, calls, wantExec)
+			}
+			if !controller.Active() || controller.updateRestart.Load() || controller.shutdownRequested.Load() != test.operatorDrain || restart.Binary() != "" {
+				t.Fatal("failed replacement changed the old controller lifecycle")
+			}
+			release, admitted := gate.ReserveDispatch()
+			if !admitted {
+				t.Fatal("failed replacement left native claiming paused")
+			}
+			release()
+			if !test.operatorDrain {
+				issues, err := native.FetchCandidateIssues(t.Context(), claimRequest)
+				if err != nil || len(issues) != 1 || issues[0].ID != next.ID {
+					t.Fatalf("old controller did not resume native claiming after exec failure: %+v %v", issues, err)
+				}
+			}
+			select {
+			case request := <-controller.Requests():
+				if !test.operatorDrain || request != ShutdownRequestDrain {
+					t.Fatalf("unexpected shutdown after exec failure: %v", request)
+				}
+			default:
+				if test.operatorDrain {
+					t.Fatal("failed replacement lost the operator drain")
 				}
 			}
 		})

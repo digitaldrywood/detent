@@ -227,10 +227,40 @@ func (w localWorkerPolicyWatcher) Watch(context.Context) (<-chan configwatcher.U
 	return w.updates, nil
 }
 
+var localWorkerHubTemplate struct {
+	once sync.Once
+	data []byte
+	err  error
+}
+
 func localWorkerHub(t *testing.T, observe ...func(*http.Request)) (*hubclient.Scheduler, *hubclient.NativeClient, *hubclient.NativeConnector, config.Workflow, func(string) connector.Issue, func()) {
+	return localWorkerHubFixture(t, nil, observe...)
+}
+
+func localWorkerHubFixture(t *testing.T, expose func(http.Handler, tracker.OrganizationID, tracker.ProjectID, string, config.Workflow), observe ...func(*http.Request)) (*hubclient.Scheduler, *hubclient.NativeClient, *hubclient.NativeConnector, config.Workflow, func(string) connector.Issue, func()) {
 	t.Helper()
 	const adminToken = "fixture-admin"
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(adminToken)})
+	localWorkerHubTemplate.once.Do(func() {
+		path := filepath.Join(t.TempDir(), "template.db")
+		template, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: path, InitialAdminToken: []byte(adminToken)})
+		if err != nil {
+			localWorkerHubTemplate.err = err
+			return
+		}
+		if err := template.Close(); err != nil {
+			localWorkerHubTemplate.err = err
+			return
+		}
+		localWorkerHubTemplate.data, localWorkerHubTemplate.err = os.ReadFile(path)
+	})
+	if localWorkerHubTemplate.err != nil {
+		t.Fatal(localWorkerHubTemplate.err)
+	}
+	databasePath := filepath.Join(t.TempDir(), "hub.db")
+	if err := os.WriteFile(databasePath, localWorkerHubTemplate.data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: databasePath, InitialAdminToken: []byte(adminToken)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,6 +355,9 @@ func localWorkerHub(t *testing.T, observe ...func(*http.Request)) (*hubclient.Sc
 	if err != nil {
 		t.Fatal(err)
 	}
+	if expose != nil {
+		expose(service.Handler(), organization, project.ID, token.Token, workflow)
+	}
 	create := func(name string) connector.Issue {
 		t.Helper()
 		draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: policy.Digest([]byte(name))}, Title: name, State: "Todo",
@@ -368,8 +401,9 @@ func localWorkerHub(t *testing.T, observe ...func(*http.Request)) (*hubclient.Sc
 }
 
 func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
+	scratch := t.TempDir()
 	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
-		t.Setenv(name, "")
+		t.Setenv(name, scratch)
 	}
 	if testing.Short() {
 		t.Skip("process and Hub lifecycle integration")

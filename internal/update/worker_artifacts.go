@@ -39,7 +39,7 @@ func (a *WorkerArtifact) Command(ctx context.Context, args ...string) (*exec.Cmd
 	if a == nil || a.binary == "" {
 		return nil, errors.New("execution command requires a verified artifact")
 	}
-	return releaseCommand(ctx, a.binary, args...), nil
+	return ReleaseCommand(ctx, a.binary, args...), nil
 }
 
 func (a *WorkerArtifact) Retain() (*WorkerArtifact, error) {
