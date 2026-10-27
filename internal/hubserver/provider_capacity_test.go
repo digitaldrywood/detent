@@ -349,7 +349,9 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 		unavailable string
 		want        []int
 		winner      int
+		targeted    bool
 	}{
+		{name: "single provider candidate bypasses unrequested project head", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, want: []int{0, 1, 2}, winner: 1, targeted: true},
 		{name: "resolved health finding leaves preview read-only", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, unavailable: "resolved health", want: []int{0, 1, 2}},
 		{name: "legacy numeric order", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, unavailable: "provider", want: []int{0, 1, 2}, winner: 1},
 		{name: "reviewed merging beats higher priority implementation", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{0, 3, 2}, order: []string{"Merging", "Rework", "In Progress", "Todo"}, want: []int{1, 0, 2}, winner: 1},
@@ -378,6 +380,16 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			if test.targeted {
+				higher := newNativeFixture(t, f.service, f.project.OrganizationID, "higher-ranked")
+				approveHubTestPolicy(t, f.service, higher.base+"/policy", hubTestPolicy())
+				higher.create(t, "unrequested head")
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=CASE WHEN id=? THEN 0 ELSE 1 END WHERE organization_id=?", higher.project.ID, f.project.OrganizationID); err != nil {
+					t.Fatal(err)
+				}
+				routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Provider runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID, higher.project.ID}}}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
+			}
 			states := []tracker.NativeState{
 				{Name: "Merging", Dispatchable: true, Transitions: []string{"Rework"}},
 				{Name: "Rework", Dispatchable: true},
@@ -398,6 +410,9 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: rules}), http.StatusOK)
 			report := capacityReport(f.service.config.now())
 			report.MaxConcurrent = 2
+			if test.targeted {
+				report.Models = append(report.Models, "gpt-6.1-sol")
+			}
 			publishCapacity(t, f, r, report)
 			issues := []tracker.NativeIssue{f.create(t, "head"), f.create(t, "next"), f.create(t, "tail")}
 			claim := providerClaim(r, issues[0], "fair")
@@ -553,6 +568,9 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 				if paged[index] != issues[want].WorkItemID {
 					t.Fatalf("paged=%v want=%v", paged, test.want)
 				}
+			}
+			if test.targeted {
+				claim.ProviderCandidates = claim.ProviderCandidates[test.winner : test.winner+1]
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 			requireNativeStatus(t, response, http.StatusOK)

@@ -19,6 +19,16 @@ func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query
 	if query.NativeScope == nil || query.NativeScope.credential.Runner.RunnerID == "" || query.WorkspaceLane {
 		return 0, false, nil
 	}
+	if query.WorkItemID > 0 || len(query.ProviderCandidates) == 1 {
+		approval, found, err := readProjectPolicy(ctx, tx, string(query.NativeScope.organization)+"/"+string(query.NativeScope.project))
+		if err != nil {
+			return 0, false, err
+		}
+		if !found || len(r.Exclusions(query.NativeScope.project, approval.Policy.Requirements, false)) > 0 {
+			return 0, true, nil
+		}
+		return 0, false, nil
+	}
 	projects, err := readRunnerProjects(ctx, tx, query.NativeScope.credential.ID, claimPreparationLimit)
 	if err != nil {
 		return 0, false, err
