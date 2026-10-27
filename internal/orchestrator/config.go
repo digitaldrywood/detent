@@ -23,7 +23,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 	}
 
 	contract := workflowconfig.DefaultIssueContract()
-	if resolved, err := workflowconfig.ResolvePolicyIssueContract(cfg.Policy); err == nil {
+	if resolved, err := cfg.PolicyIssueContract(); err == nil {
 		contract = resolved
 	}
 	stateLimits := cloneStateLimits(cfg.Agent.MaxConcurrentAgentsByState)

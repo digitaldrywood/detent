@@ -124,6 +124,7 @@ const (
 
 type Workflow struct {
 	machinePrompt     string
+	executionPolicy   *policy.Descriptor
 	Authored          *policy.Authored
 	DefinitionSources *ProjectDefinitionSources
 	Config            Config
@@ -170,6 +171,7 @@ type Config struct {
 	Operator          Operator             `yaml:"operator,omitempty"`
 	BacklogAdmission  BacklogAdmission     `yaml:"backlog_admission,omitempty"`
 
+	executionIssueContract              *IssueContract
 	configuredFields                    map[string]struct{}
 	scheduleOwnershipRepositoryExplicit bool
 }

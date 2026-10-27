@@ -225,13 +225,9 @@ func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflo
 }
 
 func applyAuthoredNativePolicy(workflow, shared Workflow) (Workflow, error) {
-	localPrompt := workflow.machinePrompt
-	if localPrompt == "" && workflow.DefinitionSources != nil && workflow.DefinitionSources.HasLocalWorkflow {
-		local, err := splitProjectWorkflow(workflow.DefinitionSources.LocalWorkflow)
-		if err != nil {
-			return Workflow{}, fmt.Errorf("parse machine workflow instructions: %w", err)
-		}
-		localPrompt = string(normalizeProjectDefinitionPrompt(local.prompt))
+	localPrompt, err := nativeMachinePrompt(workflow)
+	if err != nil {
+		return Workflow{}, err
 	}
 	workflow.Config = nativeProjectBehavior(shared.Config).apply(workflow.Config)
 	workflow.Prompt, workflow.SharedPrompt, workflow.AgentsPrompt = shared.Prompt, shared.SharedPrompt, shared.AgentsPrompt
@@ -241,6 +237,20 @@ func applyAuthoredNativePolicy(workflow, shared Workflow) (Workflow, error) {
 		workflow.Prompt = mergeWorkflowPrompts([]byte(workflow.Prompt), []byte(localPrompt))
 	}
 	return workflow, nil
+}
+
+func nativeMachinePrompt(workflow Workflow) (string, error) {
+	if workflow.machinePrompt != "" {
+		return workflow.machinePrompt, nil
+	}
+	if workflow.DefinitionSources != nil && workflow.DefinitionSources.HasLocalWorkflow {
+		local, err := splitProjectWorkflow(workflow.DefinitionSources.LocalWorkflow)
+		if err != nil {
+			return "", fmt.Errorf("parse machine workflow instructions: %w", err)
+		}
+		return string(normalizeProjectDefinitionPrompt(local.prompt)), nil
+	}
+	return "", nil
 }
 
 func applyNativePolicyConfiguration(workflow Workflow, descriptor policy.Descriptor) (Workflow, error) {
@@ -494,6 +504,7 @@ func cloneNativePolicyValue(value reflect.Value, pointers map[nativePolicyCloneK
 		switch copied := result.Interface().(type) {
 		case Config:
 			copied.configuredFields = maps.Clone(copied.configuredFields)
+			copied.executionIssueContract = cloneNativePolicyWithPointers(copied.executionIssueContract, pointers)
 			return reflect.ValueOf(copied)
 		case Worker:
 			copied.localDefaults = cloneNativePolicyWithPointers(copied.localDefaults, pointers)

@@ -14,6 +14,14 @@ import (
 
 const Schema = 1
 
+const ExecutionConfigurationVersion = 1
+
+type ExecutionConfiguration struct {
+	Version  int             `json:"version"`
+	PolicyID string          `json:"policy_id"`
+	Values   json.RawMessage `json:"values"`
+}
+
 var tokenPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
 
 type Requirements struct {
@@ -135,11 +143,12 @@ type WorkflowApply struct {
 }
 
 type Approval struct {
-	History     []WorkflowApply `json:"history,omitempty"`
-	HistoryNext string          `json:"history_next,omitempty"`
-	Policy      Descriptor      `json:"policy"`
-	ApprovedBy  string          `json:"approved_by"`
-	ApprovedAt  string          `json:"approved_at"`
+	ExecutionConfiguration *ExecutionConfiguration `json:"execution_configuration,omitempty"`
+	History                []WorkflowApply         `json:"history,omitempty"`
+	HistoryNext            string                  `json:"history_next,omitempty"`
+	Policy                 Descriptor              `json:"policy"`
+	ApprovedBy             string                  `json:"approved_by"`
+	ApprovedAt             string                  `json:"approved_at"`
 }
 
 type ObservedPolicy struct {

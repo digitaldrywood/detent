@@ -102,6 +102,23 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, claim), http.StatusUnprocessableEntity)
 	approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+	readExecution := func() policy.Approval {
+		t.Helper()
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/policy?execution_configuration=1", worker, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var approval policy.Approval
+		decodeHubResponse(t, response, &approval)
+		if approval.ExecutionConfiguration == nil || approval.ExecutionConfiguration.PolicyID != approval.Policy.ID {
+			t.Fatal("policy read lost execution configuration")
+		}
+		return approval
+	}
+	initialExecution := readExecution()
+	running, err := config.ApplyExecutionConfiguration(config.Workflow{Config: config.Default()}, initialExecution.Policy, initialExecution.ExecutionConfiguration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialValues := string(initialExecution.ExecutionConfiguration.Values)
 	for _, field := range []string{"states", "workflow_markdown"} {
 		request := map[string]any{"idempotency_key": "repository-override-" + field, "expected_revision": "2", "intake": "disabled", "projection": "disabled"}
 		if field == "states" {
@@ -139,6 +156,10 @@ func TestProjectPolicyAuthorizationAndAtomicClaims(t *testing.T) {
 	pinned, err := f.service.database.leasePolicyID(t.Context(), lease.ID)
 	if err != nil || pinned != descriptor.ID {
 		t.Fatalf("approval changed existing lease policy: %s %v", pinned, err)
+	}
+	updatedExecution := readExecution()
+	if updatedExecution.ExecutionConfiguration.PolicyID != changed.ID || running.Config.Policy.ID != pinned || string(initialExecution.ExecutionConfiguration.Values) != initialValues {
+		t.Fatal("policy approval replaced a running attempt's execution configuration")
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
 	reported := descriptor

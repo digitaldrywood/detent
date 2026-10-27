@@ -349,7 +349,20 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 						if approved == nil {
 							_, _ = w.Write([]byte(`{"policy":null}`))
 						} else {
-							_ = json.NewEncoder(w).Encode(policy.Approval{Policy: *approved})
+							approval := policy.Approval{Policy: *approved}
+							if approved.Configuration != nil || approved.Authored != nil {
+								shared, err := workflowconfig.ApplyNativePolicy(workflowconfig.Workflow{Config: workflowconfig.Default()}, *approved)
+								if err != nil {
+									t.Error(err)
+									return
+								}
+								approval.ExecutionConfiguration, err = workflowconfig.NewExecutionConfiguration(shared, *approved, workflowconfig.ResolveCloudModelSelection(workflowconfig.ModelSelection{}, workflowconfig.ModelSelection{}))
+								if err != nil {
+									t.Error(err)
+									return
+								}
+							}
+							_ = json.NewEncoder(w).Encode(approval)
 						}
 					default:
 						_ = json.NewEncoder(w).Encode(map[string]string{"code": "unavailable", "message": "down"})

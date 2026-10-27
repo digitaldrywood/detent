@@ -54,6 +54,10 @@ func (s *Service) policyScope(c echo.Context) (string, error) {
 func (s *Service) getProjectPolicy(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
+	version := c.QueryParam("execution_configuration")
+	if version != "" && version != "1" {
+		return s.nativeAPIError(c, nativeInvalid("unsupported execution configuration version"))
+	}
 	scope, err := s.policyScope(c)
 	if err != nil {
 		return s.nativeAPIError(c, err)
@@ -71,6 +75,24 @@ func (s *Service) getProjectPolicy(c echo.Context) error {
 	}
 	if err != nil {
 		return s.nativeAPIError(c, err)
+	}
+	if version != "" && approval.Policy.ID != "" {
+		workflow, err := projectPolicyWorkflow(ctx, scope, approval.Policy)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
+		selection := workflowconfig.ResolveCloudModelSelection(workflowconfig.ModelSelection{}, workflowconfig.ModelSelection{})
+		if c.Param("organization") != "" {
+			resolved, err := readCloudModelSelection(ctx, s.database.reader, nativeScope{organization: tracker.OrganizationID(c.Param("organization")), project: tracker.ProjectID(c.Param("project"))})
+			if err != nil {
+				return s.nativeAPIError(c, err)
+			}
+			selection = resolved.Effective
+		}
+		approval.ExecutionConfiguration, err = workflowconfig.NewExecutionConfiguration(workflow, approval.Policy, selection)
+		if err != nil {
+			return s.nativeAPIError(c, err)
+		}
 	}
 	view, err := s.projectPolicyRead(ctx, s.database.reader, scope, approval, !ok || !credential.Runner.Valid())
 	if err != nil {

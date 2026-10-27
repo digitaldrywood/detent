@@ -97,6 +97,14 @@ func TestApplyApprovedNativePolicy(t *testing.T) {
 			if err != nil || !reflect.DeepEqual(cachedWorkflow, applied) {
 				t.Fatalf("cached workflow differs from application: %v", err)
 			}
+			execution, err := NewExecutionConfiguration(cachedWorkflow, descriptor, ResolveCloudModelSelection(ModelSelection{}, ModelSelection{}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			executed, err := ApplyExecutionConfiguration(Workflow{Config: Default()}, descriptor, execution)
+			if err != nil || !reflect.DeepEqual(nativeProjectBehavior(executed.Config), nativeProjectBehavior(applied.Config)) || executed.Prompt != applied.Prompt {
+				t.Fatalf("execution configuration changed resolved behavior: %v", err)
+			}
 			cachedWorkflow.Config.Runners.Profiles["approved"] = policy.Requirements{RequiredTags: []string{"changed"}}
 			cachedWorkflow.Config.Tracker.PriorityMap.Map["changed"] = 1
 			copyDescriptor := cached.Descriptor()

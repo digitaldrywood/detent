@@ -56,15 +56,22 @@ func (c *NativeClient) ProjectPolicy(ctx context.Context) (policy.Approval, erro
 	}
 	revision := state.approvalRev
 	state.mu.Unlock()
-	var approval policy.Approval
-	err := retryableProjectRead(ctx, c.client.request(ctx, http.MethodGet, c.base()+"/policy", nil, &approval))
+	approval, err := c.readExecutionPolicy(ctx)
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	if c.client.runner != nil && err == nil {
-		c.client.runner.setApprovedPolicy(c.project, approval.Policy.ID)
 		if state.changes != nil && state.approvalRev == revision {
 			state.approval, state.approvalErr, state.approvalSet = approval, err, true
 		}
+	}
+	return approval, err
+}
+
+func (c *NativeClient) readExecutionPolicy(ctx context.Context) (policy.Approval, error) {
+	var approval policy.Approval
+	err := retryableProjectRead(ctx, c.client.request(ctx, http.MethodGet, c.base()+"/policy?execution_configuration=1", nil, &approval))
+	if c.client.runner != nil && err == nil {
+		c.client.runner.setApprovedPolicy(c.project, approval.Policy.ID)
 	}
 	return approval, err
 }
@@ -136,10 +143,8 @@ func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow work
 			return workflowconfig.Workflow{}, fmt.Errorf("decode Cloud model selection: %w", err)
 		}
 	}
-	sources := selection.Sources
-	selection = workflowconfig.ResolveCloudModelSelection(selection, workflowconfig.ModelSelection{})
-	for key, source := range sources {
-		selection.Sources[key] = source
+	if selection.Sources == nil {
+		selection.Sources = map[string]string{}
 	}
 	selection.Sources["authority"] = "cloud"
 	if problems := selection.Validate(); len(problems) > 0 {
@@ -151,7 +156,7 @@ func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow work
 	if workflow.Definition.Layout == workflowconfig.ProjectDefinitionCloud || supplied && provenance != nil {
 		return workflow, nil
 	}
-	approval, err := c.ProjectPolicy(ctx)
+	approval, err := c.readExecutionPolicy(ctx)
 	if err != nil {
 		return workflowconfig.Workflow{}, fmt.Errorf("load approved shared project configuration: %w", err)
 	}
@@ -161,7 +166,7 @@ func (c *NativeClient) ResolveProjectWorkflow(ctx context.Context, workflow work
 	if supplied && approval.Policy.Authored == nil && (approval.Policy.Configuration == nil || workflow.DefinitionSources != nil) {
 		return workflow, nil
 	}
-	return workflowconfig.ApplyNativePolicy(workflow, approval.Policy)
+	return workflowconfig.ApplyExecutionConfiguration(workflow, approval.Policy, approval.ExecutionConfiguration)
 }
 
 func (s *Scheduler) reportObservedPolicy(ctx context.Context, project string, source *NativeConnector, observation policy.Observation) error {

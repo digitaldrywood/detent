@@ -362,7 +362,7 @@ remain on the local runner.
 
 Every API claim requires an approved `policy_id`. Compatibility claims also
 supply exactly one `repositories` entry; native claims use their authenticated
-organization/project scope. Policies are resolved on the customer host. See
+organization/project scope. The Hub resolves approved shared policy for execution. See
 [configuration precedence and approval](config.md#repository-policy-with-hub-execution).
 
 | Endpoint suffix | Method | Authority and payload |
@@ -378,6 +378,21 @@ provenance from `GET .../policy`, without workflow apply history. Operator reads
 retain complete historical definitions and the existing `limit` and `after`
 pagination. Retained history therefore does not enlarge the runner's current
 execution contract.
+
+Native runners request `GET .../policy?execution_configuration=1`. Alongside
+the unchanged descriptor and approval provenance, the Hub returns
+`execution_configuration` with `version: 1`, the approved `policy_id`, and
+resolved `values`: shared behavior, prompts, issue contract, definition identity, and effective
+Cloud model and effort selection. Runners apply this snapshot without parsing
+the approved authored files or filling policy defaults. Host paths, provider
+credentials and execution hooks remain local inputs; sandbox isolation remains
+part of the pinned lease contract. A running attempt retains its snapshot when
+another policy is approved.
+
+Reads without the parameter retain the previous response for older runners.
+Unsupported requested versions are rejected explicitly. A new runner refuses
+to apply an approved shared policy if its Hub omits the resolved configuration
+or returns an unsupported version or a different policy identity.
 
 Hosted organizations approve through `PUT .../projects/{project}/onboarding/policy`
 (owner or admin); the generic `PUT .../policy` above stays instance-administrator
