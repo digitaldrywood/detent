@@ -89,6 +89,7 @@ func (s *Service) evaluateOrganizationHealth(ctx context.Context, organization t
 	if err != nil {
 		return err
 	}
+	findings := evaluateHealth(now, snapshot)
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -98,7 +99,6 @@ func (s *Service) evaluateOrganizationHealth(ctx context.Context, organization t
  ON CONFLICT(organization_id) DO UPDATE SET baseline_unavailable_json=excluded.baseline_unavailable_json`, organization, formatHubTime(now), string(raw)); err != nil {
 		return err
 	}
-	findings := evaluateHealth(now, snapshot)
 	if s.requestMetrics != nil && organization == s.requestMetrics.organization {
 		findings = append(findings, s.requestMetrics.findings(now)...)
 	}

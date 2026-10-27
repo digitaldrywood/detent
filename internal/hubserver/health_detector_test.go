@@ -962,12 +962,22 @@ func TestHealthDetectorChangeContent(t *testing.T) {
 			if _, err := service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET last_heartbeat_at=? WHERE id=?", formatHubTime(now.Add(-6*time.Minute)), r.binding.RunnerID); err != nil {
 				t.Fatal(err)
 			}
-			if err := service.evaluateTenantHealth(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-			var finding string
-			if err := service.database.db.QueryRowContext(t.Context(), "SELECT signal FROM health_findings WHERE organization_id=? AND signal='runner_heartbeat_gap' AND resolved_at IS NULL", f.project.OrganizationID).Scan(&finding); err != nil {
-				t.Fatalf("missing stale runner finding: %v", err)
+			var original [5]string
+			for _, evaluation := range []string{"initial", "repeated"} {
+				t.Run(evaluation, func(t *testing.T) {
+					if err := service.evaluateOrganizationHealth(service.runDetailContext(t.Context()), f.project.OrganizationID, now); err != nil {
+						t.Fatal(err)
+					}
+					var finding [5]string
+					if err := service.database.reader.QueryRowContext(t.Context(), "SELECT id,signal,severity,summary,evidence_json FROM health_findings WHERE organization_id=? AND signal='runner_heartbeat_gap' AND resolved_at IS NULL", f.project.OrganizationID).Scan(&finding[0], &finding[1], &finding[2], &finding[3], &finding[4]); err != nil {
+						t.Fatalf("missing stale runner finding: %v", err)
+					}
+					if evaluation == "initial" {
+						original = finding
+					} else if finding != original {
+						t.Fatalf("repeated evaluation changed finding: got=%v want=%v", finding, original)
+					}
+				})
 			}
 		})
 	}
