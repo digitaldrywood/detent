@@ -61,6 +61,7 @@ Use the selected project's actual tracker and supplied context. A GitHub reposit
 - Search open work by fingerprint and error phrase first; comment on a matching issue instead of filing a duplicate. Machine-filed issues carry an origin stamp and a stable fingerprint.
 - Express dependencies as typed dependency edges, not `Depends on:` text. Keep issues flat; no epics or umbrella issues.
 - If required context is missing or contradictory, record that through the existing workflow; never write to another tracker. Do not invent endpoints, project IDs, credentials or routing, or extract credentials from browser state or raw runtime databases.
+- An issue with a design embeds a screenshot of every designed screen and state as image attachments in the issue body when it is filed. A link to a mockup, canvas or artifact alone never counts as an attached design.
 - Write every issue to the [Issue Contract](WORKFLOW.md#issue-contract): acceptance criteria the system can verify before merge, never an outside system, deployment or human action. Choose effort under [Issue effort selection](WORKFLOW.md#issue-effort-selection).
 
 ## Mechanism budget
