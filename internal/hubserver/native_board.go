@@ -137,7 +137,7 @@ func refreshNativeBoardCard(ctx context.Context, tx *sql.Tx, id string, now time
 	err = tx.QueryRowContext(ctx, "SELECT i.organization_id,i.project_id, NOT ("+notWorkspaceItemClause+") FROM issues i WHERE i.native_id=?", id).Scan(&scope.organization, &scope.project, &workspace)
 	var current *tracker.NativeBoardCard
 	if err == nil && !workspace {
-		issue, _, err := readNativeIssueProjection(ctx, tx, scope, id, true)
+		issue, _, err := readNativeIssueProjection(withDisplayLandingFacts(ctx), tx, scope, id, true)
 		if err != nil {
 			return fmt.Errorf("read issue projection: %w", err)
 		}
