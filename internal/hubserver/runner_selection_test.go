@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -319,21 +320,34 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 		firstAge, secondAge           time.Duration
 		allowed                       string
 		wantFirst                     bool
+		firstLanding, secondLanding   string
+		localWork                     bool
 	}{
-		{"allowlist filters higher priority", 1, 4, 0, 1, -time.Hour, time.Hour, "second", false},
-		{"empty allowlist runs nothing", 1, 4, 0, 1, -time.Hour, time.Hour, "empty", false},
-		{"project rank beats issue priority", 2, 1, 0, 1, -time.Hour, time.Hour, "both", true},
-		{"foreign provider candidate competes", 2, 1, 1, 2, -time.Hour, time.Hour, "provider", true},
-		{"provider claim honors runner rank override", 1, 2, 1, 2, -time.Hour, time.Hour, "provider-override", false},
-		{"project rank breaks priority ties", 2, 2, 0, 1, time.Hour, -time.Hour, "both", true},
-		{"organization runner follows organization rank", 2, 1, 0, 1, -time.Hour, time.Hour, "organization", true},
-		{"runner rank override wins", 1, 2, 0, 1, -time.Hour, time.Hour, "override", false},
-		{"issue priority breaks equal ranks", 2, 1, 0, 0, -time.Hour, time.Hour, "both", false},
-		{"age breaks remaining ties", 2, 2, 0, 0, time.Hour, -time.Hour, "both", false},
+		{"allowlist filters higher priority", 1, 4, 0, 1, -time.Hour, time.Hour, "second", false, "", "", false},
+		{"empty allowlist runs nothing", 1, 4, 0, 1, -time.Hour, time.Hour, "empty", false, "", "", false},
+		{"project rank beats issue priority", 2, 1, 0, 1, -time.Hour, time.Hour, "both", true, "", "", false},
+		{"foreign provider candidate competes", 2, 1, 1, 2, -time.Hour, time.Hour, "provider", true, "", "", false},
+		{"provider claim honors runner rank override", 1, 2, 1, 2, -time.Hour, time.Hour, "provider-override", false, "", "", false},
+		{"project rank breaks priority ties", 2, 2, 0, 1, time.Hour, -time.Hour, "both", true, "", "", false},
+		{"organization runner follows organization rank", 2, 1, 0, 1, -time.Hour, time.Hour, "organization", true, "", "", false},
+		{"runner rank override wins", 1, 2, 0, 1, -time.Hour, time.Hour, "override", false, "", "", false},
+		{"issue priority breaks equal ranks", 2, 1, 0, 0, -time.Hour, time.Hour, "both", false, "", "", false},
+		{"age breaks remaining ties", 2, 2, 0, 0, time.Hour, -time.Hour, "both", false, "", "", false},
+		{"reviewed P2 landing beats P0 and P1 work", 3, 1, 0, 0, time.Hour, -time.Hour, "both", true, "reviewed", "", true},
+		{"lower project landing yields to higher project", 3, 1, 1, 0, -time.Hour, time.Hour, "both", false, "reviewed", "", false},
+		{"landing priority precedes creation", 3, 2, 0, 0, -time.Hour, time.Hour, "both", false, "reviewed", "reviewed", false},
+		{"landing creation breaks priority ties", 3, 3, 0, 0, -time.Hour, time.Hour, "both", true, "reviewed", "reviewed", false},
+		{"missing landing version yields to implementation", 1, 3, 0, 0, -time.Hour, time.Hour, "both", false, "missing version", "", false},
+		{"unreviewed landing yields to implementation", 1, 3, 0, 0, -time.Hour, time.Hour, "both", false, "missing review", "", false},
+		{"failed landing check yields to implementation", 1, 3, 0, 0, -time.Hour, time.Hour, "both", false, "failed check", "", false},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			first := newDefaultNativeFixture(t, Config{})
 			second := newNativeFixture(t, first.service, first.project.OrganizationID, "second")
+			if scenario.firstLanding != "" || scenario.secondLanding != "" {
+				first = newLandingCapacityFixture(t, first.service, "first-landings", false).nativeFixture
+				second = newLandingCapacityFixture(t, first.service, "second-landings", false).nativeFixture
+			}
 			r := prepareRunner(t, first, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
 			allowed := []tracker.ProjectID{first.project.ID, second.project.ID}
@@ -359,12 +373,45 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 				fixture        nativeFixture
 				priority, rank int
 				age            time.Duration
+				landing        string
 			}{
-				{first, scenario.firstPriority, scenario.firstRank, scenario.firstAge},
-				{second, scenario.secondPriority, scenario.secondRank, scenario.secondAge},
+				{first, scenario.firstPriority, scenario.firstRank, scenario.firstAge, scenario.firstLanding},
+				{second, scenario.secondPriority, scenario.secondRank, scenario.secondAge, scenario.secondLanding},
 			} {
 				approveHubTestPolicy(t, first.service, project.fixture.base+"/policy", descriptor)
 				issue := project.fixture.create(t, "ready")
+				if project.landing != "" && project.landing != "missing version" {
+					f := project.fixture
+					var principal string
+					if err := first.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name=?", "operator-"+f.project.Name).Scan(&principal); err != nil {
+						t.Fatal(err)
+					}
+					rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}}
+					requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: rules}), http.StatusOK)
+					path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
+					response := performHubAPIRequest(t, first.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: "Ready change"})
+					requireNativeStatus(t, response, http.StatusOK)
+					var change tracker.ChangeRequest
+					decodeHubResponse(t, response, &change)
+					cf := changeFixture{nativeFixture: f, issue: issue, change: change, path: path + "/" + change.ID}
+					version := cf.publish(t, "publish", "", true)
+					if project.landing != "missing review" {
+						requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPost, cf.path+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, Decision: "approved"}), http.StatusOK)
+					}
+					check := changeTestResult(version)
+					if project.landing == "failed check" {
+						check.Conclusion = "failure"
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPost, cf.path+"/versions/"+version.ID+"/checks", f.token, check), http.StatusOK)
+					if status := cf.detail(t).Summary.Status; (status == "reviewed") != (project.landing == "reviewed") {
+						t.Fatalf("landing summary = %s for %s", status, project.landing)
+					}
+				}
+				if project.landing != "" {
+					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Merging') WHERE native_id=?", project.fixture.project.ID, issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
 				issues[project.fixture.project.ID] = issue
 				for _, statement := range []struct {
 					sql  string
@@ -376,6 +423,45 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 				} {
 					if _, err := first.service.database.db.ExecContext(t.Context(), statement.sql, statement.args...); err != nil {
 						t.Fatal(err)
+					}
+				}
+			}
+			if scenario.localWork {
+				states := append(HostedProjectStates(), tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress"}})
+				raw, err := marshalNative(states)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", raw, first.project.ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := first.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,'Rework','Rework',0,1,?,?)", first.project.ID, formatHubTime(now), formatHubTime(now)); err != nil {
+					t.Fatal(err)
+				}
+				for index, state := range []string{"Rework", "Todo"} {
+					issue := first.create(t, state)
+					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state=?) WHERE native_id=?", first.project.ID, state, issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override=? WHERE issue_id=(SELECT id FROM issues WHERE native_id=?)", index, issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				credential := apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin, Runner: runnerauth.Identity{Binding: r.binding}}
+				scope := nativeScope{organization: first.project.OrganizationID, project: first.project.ID, credential: credential}
+				cursor := runnerSelectionCursor{}
+				query := claimCandidateQuery{NativeScope: &scope, Scope: string(first.project.ID), AvailableAt: now, Limit: 1, SelectionCursor: &cursor}
+				for _, want := range []string{"ready", "Rework", "Todo"} {
+					ids, err := nativeCandidateIDs(t.Context(), first.service.database.reader, query, nil, nil, nil, nil, nil, nil, nil)
+					if err != nil || len(ids) != 1 {
+						t.Fatalf("candidate page = %v, error = %v", ids, err)
+					}
+					var title string
+					if err := first.service.database.reader.QueryRowContext(t.Context(), "SELECT title FROM issues WHERE id=?", ids[0]).Scan(&title); err != nil {
+						t.Fatal(err)
+					}
+					if title != want {
+						t.Fatalf("candidate = %s, want %s", title, want)
 					}
 				}
 			}
@@ -404,6 +490,11 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 				}
 			} else {
 				requireNativeStatus(t, response, http.StatusOK)
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				if lease.WorkItemID != issues[winner.project.ID].WorkItemID {
+					t.Fatalf("claimed %s, want %s", lease.WorkItemID, issues[winner.project.ID].WorkItemID)
+				}
 			}
 		})
 	}

@@ -215,7 +215,7 @@ WHERE i.organization_id = `,
 	statement += `)`
 	order := "priority, aging_boost, landing, project_rank, created, identifier, id"
 	if query.NativeScope.credential.Runner.Valid() {
-		order = "project_rank, priority, aging_boost, landing, created, identifier, id"
+		order = "project_rank, landing, priority, aging_boost, created, identifier, id"
 	}
 	baseArgs := args
 	readPage := func(after tracker.WorkItemID, limit int, anchor bool) ([]tracker.WorkItemID, tracker.WorkItemID, int, error) {
@@ -234,7 +234,11 @@ WHERE i.organization_id = `,
 			page += ` AND id = ` + bind(after)
 		} else {
 			if cursor := query.SelectionCursor; cursor != nil && cursor.ID > 0 {
-				page += ` AND (priority, aging_boost, landing, created, identifier, id) > (` + bind(cursor.Priority) + `,` + bind(cursor.Aging) + `,` + bind(cursor.Landing) + `,` + bind(cursor.Created) + `,` + bind(cursor.Identifier) + `,` + bind(cursor.ID) + `)`
+				if query.NativeScope.credential.Runner.Valid() {
+					page += ` AND (landing, priority, aging_boost, created, identifier, id) > (` + bind(cursor.Landing) + `,` + bind(cursor.Priority) + `,` + bind(cursor.Aging) + `,` + bind(cursor.Created) + `,` + bind(cursor.Identifier) + `,` + bind(cursor.ID) + `)`
+				} else {
+					page += ` AND (priority, aging_boost, landing, created, identifier, id) > (` + bind(cursor.Priority) + `,` + bind(cursor.Aging) + `,` + bind(cursor.Landing) + `,` + bind(cursor.Created) + `,` + bind(cursor.Identifier) + `,` + bind(cursor.ID) + `)`
+				}
 			} else if after > 0 {
 				page += ` AND (` + order + `) > (SELECT ` + order + ` FROM candidates WHERE id = ` + bind(after) + `)`
 			}
