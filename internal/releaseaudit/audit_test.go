@@ -366,7 +366,7 @@ func TestLedgerCanonicalOrderPreservesUnitsAndRejectsDuplicates(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := &execution{directory: directory, stage: &Stage{records: &memoryRecords{}}, state: Snapshot{Status: "incomplete", Ledger: json.RawMessage("[]")}}
-	var first []json.RawMessage
+	var first [1]json.RawMessage
 	if err := json.Unmarshal(fixtureLedger("planned", false), &first); err != nil {
 		t.Fatal(err)
 	}
