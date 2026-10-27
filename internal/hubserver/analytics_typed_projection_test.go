@@ -407,10 +407,12 @@ func TestAnalyticsMaintenanceFailureBatchProgress(t *testing.T) {
 		name, metric string
 		rows         int
 		version      any
+		clockStep    time.Duration
 	}{
-		{"projection", "slots", storageConversionRows, nil},
-		{"samples", "capacity_claim", analyticsSampleCompactionBatch, 1},
-		{"residence", "residence_hour", analyticsSampleCompactionBatch, 1},
+		{"projection", "slots", storageConversionRows, nil, 0},
+		{"samples", "capacity_claim", analyticsSampleCompactionBatch, 1, 0},
+		{"residence", "residence_hour", analyticsSampleCompactionBatch, 1, 0},
+		{"time budget", "capacity_claim", 1, 1, analyticsBackfillBudget + time.Nanosecond},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC)
@@ -442,7 +444,12 @@ func TestAnalyticsMaintenanceFailureBatchProgress(t *testing.T) {
 			maintenance := func() {
 				t.Helper()
 				restarted := &database{db: d.db, reader: d.reader}
-				err := restarted.compactAnalyticsSamples(t.Context(), now.Add(analyticsSampleRetention+time.Hour))
+				elapsed := time.Duration(0)
+				err := restarted.compactAnalyticsSamplesWithClock(t.Context(), now.Add(analyticsSampleRetention+time.Hour), func() time.Time {
+					at := now.Add(elapsed)
+					elapsed += test.clockStep
+					return at
+				})
 				if err != nil && (!strings.Contains(err.Error(), "rowid=") || strings.Contains(err.Error(), "private customer content")) {
 					t.Fatalf("unexpected or unsafe diagnostic: %v", err)
 				}

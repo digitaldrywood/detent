@@ -24,13 +24,17 @@ ON CONFLICT(organization_id,project_id,metric,hour,dimension,bucket) DO UPDATE S
 }
 
 func (d *database) compactAnalyticsSamples(ctx context.Context, now time.Time) error {
+	return d.compactAnalyticsSamplesWithClock(ctx, now, time.Now)
+}
+
+func (d *database) compactAnalyticsSamplesWithClock(ctx context.Context, now time.Time, clock func() time.Time) error {
 	failures := d.convertAnalyticsProjections(ctx)
 	through := now.UTC().Truncate(time.Hour).Add(-analyticsSampleRetention).Unix()
 	after := analyticsSampleCursor{}
 	if err := d.reader.QueryRowContext(ctx, `SELECT sample_hour,sample_metric,sample_dimension,sample_rowid,samples_done,residence_hour,residence_organization,residence_project,residence_id FROM analytics_maintenance_cursor WHERE id=1`).Scan(&after.hour, &after.metric, &after.dimension, &after.rowid, &after.samplesDone, &after.residenceHour, &after.residenceOrganization, &after.residenceProject, &after.residenceID); err != nil {
 		return errors.Join(failures, err)
 	}
-	deadline := time.Now().Add(analyticsBackfillBudget)
+	deadline := clock().Add(analyticsBackfillBudget)
 	for range analyticsSampleCompactionBatch {
 		tx, err := d.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -61,7 +65,7 @@ func (d *database) compactAnalyticsSamples(ctx context.Context, now time.Time) e
 		if err := tx.Commit(); err != nil {
 			return errors.Join(failures, err)
 		}
-		if !more || time.Now().After(deadline) {
+		if !more || clock().After(deadline) {
 			return failures
 		}
 	}

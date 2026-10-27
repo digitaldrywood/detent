@@ -393,7 +393,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"discoverStorageRow":                "Queues one source row and advances its typed discovery state atomically on the existing conversion tick.",
 		"convertStorageAggregate":           "Commits one verified immutable reference and retires its owned inline row with the progress cursor after rechecking the aggregate and source snapshot.",
 		"compactRetainedEvent":              "Deletes one bounded batch of obsolete event history for one aggregate planned on the reader, on the existing maintenance tick.",
-		"compactAnalyticsSamples":           "Deletes one bounded batch of skip samples already counted by hourly rollups, on the existing maintenance tick.",
+		"compactAnalyticsSamplesWithClock":  "Deletes one bounded batch of skip samples already counted by hourly rollups, on the existing maintenance tick.",
 		"reclaimStorage":                    "Reclaims at most 128 free pages in one short transaction on the existing retention tick.",
 		"backfillChangeSource":              "Converts one legacy source representation after reader-pool validation on the existing maintenance tick.",
 		"backfillAnalyticsRollups":          "Projects one bounded batch of a project's work items and their positions on the existing maintenance tick.",
