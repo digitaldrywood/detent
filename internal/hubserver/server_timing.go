@@ -179,7 +179,11 @@ func (timedJSONSerializer) Serialize(c echo.Context, i any, indent string) error
 // db span, since SQLite does most of a query's work while rows are read.
 type timedRows struct {
 	driver.Rows
-	timing *requestTiming
+	timing       *requestTiming
+	writer       *timedConn
+	holder       writerHold
+	writerTiming *writerTiming
+	writerStart  time.Time
 }
 
 func (r *timedRows) Next(dest []driver.Value) error {
@@ -193,6 +197,10 @@ func (r *timedRows) Close() error {
 	start := time.Now()
 	err := r.Rows.Close()
 	r.timing.addDB(start)
+	if r.holder.n != 0 {
+		r.writerTiming.add(r.writerStart)
+		r.writer.endWriterHold(&r.holder)
+	}
 	return err
 }
 

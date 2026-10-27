@@ -126,6 +126,10 @@ func nativeCandidateIDs(ctx context.Context, tx nativeQueryer, query claimCandid
 		args = append(args, values...)
 		return placeholders(len(values))
 	}
+	laneOrder := "CASE WHEN lower(trim(ws.detent_state)) = 'merging' THEN 0 ELSE 1 END"
+	if query.NativeScope.credential.Runner.Valid() {
+		laneOrder = "CASE lower(trim(ws.detent_state)) WHEN 'merging' THEN 0 WHEN 'rework' THEN 1 WHEN 'in progress' THEN 2 ELSE 3 END"
+	}
 	statement := strings.Join([]string{`WITH candidates AS NOT MATERIALIZED (
 SELECT i.id, `, projectRank, ` AS project_rank,
  CASE WHEN q.priority_override BETWEEN 0 AND 3 THEN q.priority_override + 1 ELSE 5 END AS priority,
@@ -134,7 +138,7 @@ SELECT i.id, `, projectRank, ` AS project_rank,
   THEN substr(COALESCE(i.native_created_at, i.created_at), 21, length(COALESCE(i.native_created_at, i.created_at)) - 21) || '000000000'
   ELSE '000000000' END, 1, 9) AS created,
  CASE WHEN p.aging_enabled = 1 THEN -min(3, max(0, CAST(julianday(`, bind(formatHubTime(now)), `) - julianday(COALESCE(i.dispatch_wait_since, `, bind(formatHubTime(now)), `)) AS INTEGER))) ELSE 0 END AS aging_boost,
- CASE WHEN lower(trim(ws.detent_state)) = 'merging' THEN 0 ELSE 1 END AS landing,
+ `, laneOrder, ` AS landing,
  i.project_id || '#' || i.number AS identifier
 FROM issues i
 JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
@@ -215,7 +219,7 @@ WHERE i.organization_id = `,
 	statement += `)`
 	order := "priority, aging_boost, landing, project_rank, created, identifier, id"
 	if query.NativeScope.credential.Runner.Valid() {
-		order = "project_rank, priority, aging_boost, landing, created, identifier, id"
+		order = "landing, project_rank, priority, aging_boost, created, identifier, id"
 	}
 	baseArgs := args
 	readPage := func(after tracker.WorkItemID, limit int, anchor bool) ([]tracker.WorkItemID, tracker.WorkItemID, int, error) {
@@ -234,7 +238,11 @@ WHERE i.organization_id = `,
 			page += ` AND id = ` + bind(after)
 		} else {
 			if cursor := query.SelectionCursor; cursor != nil && cursor.ID > 0 {
-				page += ` AND (priority, aging_boost, landing, created, identifier, id) > (` + bind(cursor.Priority) + `,` + bind(cursor.Aging) + `,` + bind(cursor.Landing) + `,` + bind(cursor.Created) + `,` + bind(cursor.Identifier) + `,` + bind(cursor.ID) + `)`
+				if query.NativeScope.credential.Runner.Valid() {
+					page += ` AND (landing, priority, aging_boost, created, identifier, id) > (` + bind(cursor.Landing) + `,` + bind(cursor.Priority) + `,` + bind(cursor.Aging) + `,` + bind(cursor.Created) + `,` + bind(cursor.Identifier) + `,` + bind(cursor.ID) + `)`
+				} else {
+					page += ` AND (priority, aging_boost, landing, created, identifier, id) > (` + bind(cursor.Priority) + `,` + bind(cursor.Aging) + `,` + bind(cursor.Landing) + `,` + bind(cursor.Created) + `,` + bind(cursor.Identifier) + `,` + bind(cursor.ID) + `)`
+				}
 			} else if after > 0 {
 				page += ` AND (` + order + `) > (SELECT ` + order + ` FROM candidates WHERE id = ` + bind(after) + `)`
 			}

@@ -45,9 +45,12 @@ func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query
 	}
 	var preferredHead tracker.WorkItemID
 	var heads []tracker.WorkItemID
-	headProjects := make(map[tracker.WorkItemID]tracker.ProjectID)
-	incompleteRanks := make([]int, 0, len(projects))
-	preferredIncomplete := false
+	type selectionPosition struct {
+		lane, rank, priority int
+		preferred            bool
+	}
+	headPositions := make(map[tracker.WorkItemID]selectionPosition)
+	incomplete := make([]selectionPosition, 0, len(projects))
 	var contractRefusal error
 	quota := max(1, claimPreparationLimit/len(projects))
 projects:
@@ -207,6 +210,7 @@ projects:
 			progress.visits++
 			progress.dirty = true
 			if allowed {
+				progress.headLane, progress.headPriority = progress.cursor.Landing, progress.cursor.Priority
 				progress.cursor = before
 				progress.head = id
 				progress.done = true
@@ -217,17 +221,10 @@ projects:
 				preferredHead = progress.head
 			}
 			heads = append(heads, progress.head)
-			headProjects[progress.head] = project
+			headPositions[progress.head] = selectionPosition{lane: progress.headLane, rank: r.ProjectRanks[project], priority: progress.headPriority, preferred: project == preferred}
 		} else if !progress.done {
-			incompleteRanks = append(incompleteRanks, r.ProjectRanks[project])
-			preferredIncomplete = preferredIncomplete || project == preferred
+			incomplete = append(incomplete, selectionPosition{lane: progress.cursor.Landing, rank: r.ProjectRanks[project], priority: progress.cursor.Priority, preferred: project == preferred})
 		}
-	}
-	if preferredHead != 0 {
-		return preferredHead, true, nil
-	}
-	if preferredIncomplete {
-		return 0, true, nil
 	}
 	var selected tracker.WorkItemID
 	if len(heads) > 0 {
@@ -241,9 +238,21 @@ projects:
 			selected = ids[0]
 		}
 	}
+	if preferredHead != 0 && (selected == 0 || headPositions[preferredHead].lane <= headPositions[selected].lane) {
+		selected = preferredHead
+	}
 	if selected != 0 {
-		for _, rank := range incompleteRanks {
-			if rank < r.ProjectRanks[headProjects[selected]] {
+		head := headPositions[selected]
+		for _, pending := range incomplete {
+			switch {
+			case pending.lane != head.lane:
+				if pending.lane < head.lane {
+					return 0, true, nil
+				}
+			case head.preferred:
+			case pending.preferred,
+				pending.rank < head.rank,
+				pending.rank == head.rank && pending.priority < head.priority:
 				return 0, true, nil
 			}
 		}
@@ -267,6 +276,8 @@ type runnerSelectionProgress struct {
 	revision             int64
 	visits               int
 	head                 tracker.WorkItemID
+	headLane             int
+	headPriority         int
 	done, dirty, durable bool
 	written              bool
 }
