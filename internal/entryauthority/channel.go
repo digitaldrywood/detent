@@ -3,7 +3,6 @@ package entryauthority
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/rpc"
 	"os"
 	"time"
@@ -290,18 +289,18 @@ func (s *authorityServer) PublishContent(request ContentRequest, ref *attachment
 	return nil
 }
 func (s *authorityServer) ReadContent(request ContentRequest, content *[]byte) error {
+	started := time.Now()
 	if s.contents == nil || request.Organization != s.binding.Organization || request.Deadline.IsZero() || request.Reference.Validate(s.binding.Organization) != nil {
 		return cloudassert.ErrInvalid
 	}
 	ctx, cancel := s.contentContext(request.Deadline)
 	defer cancel()
-	if ctx.Err() != nil {
-		return cloudassert.ErrInvalid
+	if err := ctx.Err(); err != nil {
+		return contentFailure(request, started, "archive content unavailable", err)
 	}
 	result, err := s.contents.ReadContent(ctx, s.binding.Organization, request.Reference)
 	if err != nil {
-		slog.Error("archive content unavailable", "error", err)
-		return errors.New("archive content unavailable")
+		return contentFailure(request, started, "archive content unavailable", err)
 	}
 	*content = result
 	return nil
@@ -316,19 +315,20 @@ func (c *Client) ReadContent(ctx context.Context, organization string, ref attac
 	ctx, cancel := context.WithTimeout(ctx, c.budget)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
-	return callAuthority[[]byte](ctx, c, "ReadContent", ContentRequest{Organization: organization, Reference: ref, Deadline: deadline})
+	data, err := callAuthority[[]byte](ctx, c, "ReadContent", ContentRequest{Organization: organization, Reference: ref, Deadline: deadline})
+	return data, contentClientError(err)
 }
 
 type ContentHandler func(context.Context, ContentRequest) ([]byte, error)
 
 func (s *authorityServer) Content(request ContentRequest, result *[]byte) error {
+	started := time.Now()
 	if s.content == nil || request.Organization != s.binding.Organization || request.Deadline.IsZero() || len(request.Data) > attachment.MaxArchiveBytes || request.Reference.Validate(s.binding.Organization) != nil {
 		return cloudassert.ErrInvalid
 	}
 	data, err := s.content(request)
 	if err != nil {
-		slog.Error("immutable content unavailable", "error", err)
-		return errors.New("immutable content unavailable")
+		return contentFailure(request, started, "immutable content unavailable", err)
 	}
 	*result = data
 	return nil
@@ -339,7 +339,8 @@ func (c *Client) Content(ctx context.Context, request ContentRequest) ([]byte, e
 	defer cancel()
 	request.Deadline, _ = ctx.Deadline()
 	client := &Client{client: c.client, budget: contentTimeout}
-	return callAuthority[[]byte](ctx, client, "Content", request)
+	data, err := callAuthority[[]byte](ctx, client, "Content", request)
+	return data, contentClientError(err)
 }
 
 type DetailRequest struct {

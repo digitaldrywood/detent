@@ -19,24 +19,17 @@ func ReadArchive(ctx context.Context, storage Storage, organization string, ref 
 	if ref.Validate(organization) != nil {
 		return nil, ErrInvalid
 	}
-	body, err := storage.Open(ctx, ref.Key)
+	compressed, err := ReadArchiveObject(ctx, storage, organization, ref)
 	if err != nil {
-		return nil, artifact.ErrStorage
-	}
-	compressed, err := io.ReadAll(io.LimitReader(body, ref.CompressedSize+1))
-	if err = errors.Join(err, body.Close()); err != nil {
-		return nil, artifact.ErrStorage
-	}
-	if int64(len(compressed)) != ref.CompressedSize || artifact.Digest(compressed) != ref.SHA256 {
-		return nil, artifact.ErrIntegrity
+		return nil, err
 	}
 	reader, err := gzip.NewReader(bytes.NewReader(compressed))
 	if err != nil {
-		return nil, artifact.ErrIntegrity
+		return nil, &ArchiveReadError{BytesRead: int64(len(compressed)), ExpectedSize: ref.CompressedSize, Err: errors.Join(artifact.ErrIntegrity, err)}
 	}
 	data, err := io.ReadAll(io.LimitReader(reader, ref.UncompressedSize+1))
 	if err = errors.Join(err, reader.Close()); err != nil || int64(len(data)) != ref.UncompressedSize {
-		return nil, artifact.ErrIntegrity
+		return nil, &ArchiveReadError{BytesRead: int64(len(compressed)), ExpectedSize: ref.CompressedSize, Err: errors.Join(artifact.ErrIntegrity, err)}
 	}
 	return data, nil
 }
