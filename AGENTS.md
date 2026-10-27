@@ -55,6 +55,7 @@ Nothing else is normative. Reference pages under `docs/` describe the product an
 
 Use the selected project's actual tracker and supplied context. A GitHub repository identity or PR landing path does not make GitHub the issue authority.
 
+- When a human asks in chat for an issue to be filed, file it in Todo. Backlog is only for machine-filed intake and for work an agent proposes that no human asked for. The rules that hold an issue in Backlog (missing design, unmerged dependency, missing sections) govern admission of intake and never override a human's request to file work. If something the issue needs is missing, file it in Todo anyway and tell the human what is missing.
 - For a native project, file through its project-scoped `file_issue` or supported application owner, which keeps content, discussion, typed dependencies, workflow and deduplication, including imported provenance. See [API & MCP setup](docs/api-mcp-setup.md) and [Hub API](docs/hub-api.md).
 - File GitHub issues only when the selected project makes GitHub the issue authority, through its configured filing path and workflow mapping.
 - Search open work by fingerprint and error phrase first; comment on a matching issue instead of filing a duplicate. Machine-filed issues carry an origin stamp and a stable fingerprint.
