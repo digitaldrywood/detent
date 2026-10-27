@@ -925,11 +925,15 @@ func TestProjectPolicyCacheConcurrentReads(t *testing.T) {
 		name     string
 		otherKey string
 		fail     bool
+		panic    bool
+		evict    bool
 	}{
 		{name: "same key shares one decode and independent results"},
 		{name: "unrelated warm hit completes during decode", otherKey: "warm"},
 		{name: "unrelated cold miss completes during decode", otherKey: "cold"},
 		{name: "failed decode reaches waiters and later retries", fail: true},
+		{name: "panicked decode releases waiters and later retries", panic: true},
+		{name: "eviction during decode preserves cache entries", evict: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -949,37 +953,62 @@ func TestProjectPolicyCacheConcurrentReads(t *testing.T) {
 				started, release := make(chan struct{}), make(chan struct{})
 				resume := sync.OnceFunc(func() { close(release) })
 				var readers sync.WaitGroup
+				db := &database{}
 				t.Cleanup(func() {
 					resume()
+					synctest.Wait()
+					if t.Failed() {
+						db.policies.mu.Lock()
+						for key, pending := range db.policies.inflight {
+							select {
+							case <-pending.done:
+							default:
+								pending.err = errors.New("test cleanup released pending decode")
+								close(pending.done)
+							}
+							delete(db.policies.inflight, key)
+						}
+						db.policies.mu.Unlock()
+					}
 					readers.Wait()
 				})
 				var decodes atomic.Int32
 				decodeErr := errors.New("example decode failure")
-				db := &database{policies: projectPolicyCache{decode: func(input string) (*config.ResolvedNativePolicy, error) {
+				const panicValue = "example private policy input"
+				db.policies.decode = func(input string) (*config.ResolvedNativePolicy, error) {
 					if input == string(raw) && decodes.Add(1) == 1 {
 						close(started)
 						<-release
+						if test.panic {
+							panic(panicValue)
+						}
 						if test.fail {
 							return nil, decodeErr
 						}
 					}
 					return decodeResolvedProjectPolicy(input)
-				}}}
+				}
 				ctx := db.policyContext(t.Context())
 				scope := "organization/project"
-				if test.otherKey == "warm" {
+				if test.otherKey == "warm" || test.evict {
 					if _, err := decodeProjectPolicy(ctx, scope, other.ID, string(otherRaw), policy.Approval{}); err != nil {
 						t.Fatal(err)
 					}
 				}
 				type readResult struct {
-					approval policy.Approval
-					err      error
+					approval   policy.Approval
+					err        error
+					panicValue any
 				}
 				const count = 8
 				results := make(chan readResult, count)
 				read := func() {
 					defer readers.Done()
+					defer func() {
+						if value := recover(); value != nil {
+							results <- readResult{panicValue: value}
+						}
+					}()
 					approval, err := decodeProjectPolicy(ctx, scope, descriptor.ID, string(raw), policy.Approval{})
 					results <- readResult{approval: approval, err: err}
 				}
@@ -1017,12 +1046,37 @@ func TestProjectPolicyCacheConcurrentReads(t *testing.T) {
 				if got := decodes.Load(); got != 1 {
 					t.Fatalf("paused decodes = %d, want 1", got)
 				}
+				if test.evict {
+					for i := range projectPolicyCacheLimit {
+						if _, err := decodeProjectPolicy(ctx, fmt.Sprintf("replacement/%d", i), other.ID, string(otherRaw), policy.Approval{}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if _, ok := db.policies.entries[projectPolicyCacheKey{scope: scope, id: other.ID}]; ok {
+						t.Fatal("warm entry survived eviction during decode")
+					}
+				}
 				resume()
-				readers.Wait()
+				synctest.Wait()
 				values := make([]policy.Descriptor, 0, count)
+				panics := 0
 				for range count {
-					result := <-results
-					if test.fail {
+					var result readResult
+					select {
+					case result = <-results:
+					default:
+						t.Fatal("reader remained blocked after decode completed")
+					}
+					if result.panicValue != nil {
+						if !test.panic || result.panicValue != panicValue {
+							t.Fatalf("unexpected decoder panic: %v", result.panicValue)
+						}
+						panics++
+					} else if test.panic {
+						if result.err == nil || result.err.Error() != "decode project policy panicked" || !reflect.DeepEqual(result.approval, policy.Approval{}) {
+							t.Fatalf("panic waiter = %+v, %v", result.approval, result.err)
+						}
+					} else if test.fail {
 						if !errors.Is(result.err, decodeErr) {
 							t.Fatalf("shared decode error = %v, want %v", result.err, decodeErr)
 						}
@@ -1033,12 +1087,42 @@ func TestProjectPolicyCacheConcurrentReads(t *testing.T) {
 						values = append(values, result.approval.Policy)
 					}
 				}
-				if !test.fail {
+				readers.Wait()
+				if test.panic && panics != 1 {
+					t.Fatalf("decoder panics = %d, want 1", panics)
+				}
+				if !test.fail && !test.panic {
 					values[0].Requirements.RequiredTags[0] = "changed"
 					for _, value := range values[1:] {
 						if !reflect.DeepEqual(value, descriptor) {
 							t.Fatal("concurrent results share mutable values")
 						}
+					}
+				}
+				if test.evict {
+					if len(db.policies.entries) != projectPolicyCacheLimit || len(db.policies.inflight) != 0 {
+						t.Fatal("completed decode violated cache bound or retained pending entry")
+					}
+					if _, ok := db.policies.entries[projectPolicyCacheKey{scope: scope, id: other.ID}]; ok {
+						t.Fatal("completed decode restored an evicted entry")
+					}
+					if _, ok := db.policies.entries[projectPolicyCacheKey{scope: "replacement/0", id: other.ID}]; ok {
+						t.Fatal("completed decode did not evict the oldest replacement")
+					}
+					for i := 1; i < projectPolicyCacheLimit; i++ {
+						if _, ok := db.policies.entries[projectPolicyCacheKey{scope: fmt.Sprintf("replacement/%d", i), id: other.ID}]; !ok {
+							t.Fatal("completed decode evicted a newer replacement")
+						}
+					}
+					seen := make(map[projectPolicyCacheKey]bool)
+					for _, key := range db.policies.order {
+						if _, ok := db.policies.entries[key]; !ok || seen[key] {
+							t.Fatal("eviction left stale or duplicate cache ordering")
+						}
+						seen[key] = true
+					}
+					if len(seen) != len(db.policies.entries) {
+						t.Fatal("completed decode published an orphaned cache entry")
 					}
 				}
 				for range 2 {
@@ -1048,7 +1132,7 @@ func TestProjectPolicyCacheConcurrentReads(t *testing.T) {
 					}
 				}
 				want := int32(1)
-				if test.fail {
+				if test.fail || test.panic {
 					want++
 				}
 				if got := decodes.Load(); got != want {

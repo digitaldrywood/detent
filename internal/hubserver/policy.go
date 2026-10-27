@@ -570,7 +570,19 @@ func (c *projectPolicyCache) resolve(scope, id, raw string) (*workflowconfig.Res
 	if decode == nil {
 		decode = decodeResolvedProjectPolicy
 	}
-	value, err := decode(raw)
+	value, err := func() (*workflowconfig.ResolvedNativePolicy, error) {
+		defer func() {
+			if value := recover(); value != nil {
+				c.mu.Lock()
+				pending.err = errors.New("decode project policy panicked")
+				delete(c.inflight, key)
+				close(pending.done)
+				c.mu.Unlock()
+				panic(value)
+			}
+		}()
+		return decode(raw)
+	}()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	pending.value, pending.err = value, err
