@@ -10,7 +10,9 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -913,6 +915,146 @@ func TestProjectPolicyCache(t *testing.T) {
 			if decodes != want {
 				t.Fatalf("policy decodes = %d, want %d", decodes, want)
 			}
+		})
+	}
+}
+
+func TestProjectPolicyCacheConcurrentReads(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		otherKey string
+		fail     bool
+	}{
+		{name: "same key shares one decode and independent results"},
+		{name: "unrelated warm hit completes during decode", otherKey: "warm"},
+		{name: "unrelated cold miss completes during decode", otherKey: "cold"},
+		{name: "failed decode reaches waiters and later retries", fail: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				descriptor := hubTestPolicy()
+				descriptor.Requirements.RequiredTags = []string{"example"}
+				descriptor = descriptor.WithID()
+				raw, err := json.Marshal(descriptor)
+				if err != nil {
+					t.Fatal(err)
+				}
+				other := hubTestPolicy()
+				otherRaw, err := json.Marshal(other)
+				if err != nil {
+					t.Fatal(err)
+				}
+				started, release := make(chan struct{}), make(chan struct{})
+				resume := sync.OnceFunc(func() { close(release) })
+				var readers sync.WaitGroup
+				t.Cleanup(func() {
+					resume()
+					readers.Wait()
+				})
+				var decodes atomic.Int32
+				decodeErr := errors.New("example decode failure")
+				db := &database{policies: projectPolicyCache{decode: func(input string) (*config.ResolvedNativePolicy, error) {
+					if input == string(raw) && decodes.Add(1) == 1 {
+						close(started)
+						<-release
+						if test.fail {
+							return nil, decodeErr
+						}
+					}
+					return decodeResolvedProjectPolicy(input)
+				}}}
+				ctx := db.policyContext(t.Context())
+				scope := "organization/project"
+				if test.otherKey == "warm" {
+					if _, err := decodeProjectPolicy(ctx, scope, other.ID, string(otherRaw), policy.Approval{}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				type readResult struct {
+					approval policy.Approval
+					err      error
+				}
+				const count = 8
+				results := make(chan readResult, count)
+				read := func() {
+					defer readers.Done()
+					approval, err := decodeProjectPolicy(ctx, scope, descriptor.ID, string(raw), policy.Approval{})
+					results <- readResult{approval: approval, err: err}
+				}
+				readers.Add(1)
+				go read()
+				<-started
+				if !db.policies.mu.TryLock() {
+					t.Fatal("shared cache mutex held during decode")
+				}
+				db.policies.mu.Unlock()
+				for range count - 1 {
+					readers.Add(1)
+					go read()
+				}
+				if test.otherKey != "" {
+					otherResult := make(chan readResult, 1)
+					readers.Add(1)
+					go func() {
+						defer readers.Done()
+						approval, err := decodeProjectPolicy(ctx, scope, other.ID, string(otherRaw), policy.Approval{})
+						otherResult <- readResult{approval: approval, err: err}
+					}()
+					synctest.Wait()
+					select {
+					case result := <-otherResult:
+						if result.err != nil || !reflect.DeepEqual(result.approval.Policy, other) {
+							t.Fatalf("unrelated read = %+v, %v", result.approval, result.err)
+						}
+					default:
+						t.Fatal("unrelated read blocked on paused decode")
+					}
+				} else {
+					synctest.Wait()
+				}
+				if got := decodes.Load(); got != 1 {
+					t.Fatalf("paused decodes = %d, want 1", got)
+				}
+				resume()
+				readers.Wait()
+				values := make([]policy.Descriptor, 0, count)
+				for range count {
+					result := <-results
+					if test.fail {
+						if !errors.Is(result.err, decodeErr) {
+							t.Fatalf("shared decode error = %v, want %v", result.err, decodeErr)
+						}
+					} else {
+						if result.err != nil || !reflect.DeepEqual(result.approval.Policy, descriptor) {
+							t.Fatalf("concurrent read = %+v, %v", result.approval, result.err)
+						}
+						values = append(values, result.approval.Policy)
+					}
+				}
+				if !test.fail {
+					values[0].Requirements.RequiredTags[0] = "changed"
+					for _, value := range values[1:] {
+						if !reflect.DeepEqual(value, descriptor) {
+							t.Fatal("concurrent results share mutable values")
+						}
+					}
+				}
+				for range 2 {
+					approval, err := decodeProjectPolicy(ctx, scope, descriptor.ID, string(raw), policy.Approval{})
+					if err != nil || !reflect.DeepEqual(approval.Policy, descriptor) {
+						t.Fatalf("later read = %+v, %v", approval, err)
+					}
+				}
+				want := int32(1)
+				if test.fail {
+					want++
+				}
+				if got := decodes.Load(); got != want {
+					t.Fatalf("decodes = %d, want %d", got, want)
+				}
+			})
 		})
 	}
 }

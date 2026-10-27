@@ -502,11 +502,18 @@ type projectPolicyCacheKey struct {
 }
 
 type projectPolicyCache struct {
-	mu      sync.Mutex
-	entries map[projectPolicyCacheKey]*workflowconfig.ResolvedNativePolicy
-	order   []projectPolicyCacheKey
-	oldest  int
-	decode  func(string) (*workflowconfig.ResolvedNativePolicy, error)
+	mu       sync.Mutex
+	entries  map[projectPolicyCacheKey]*workflowconfig.ResolvedNativePolicy
+	inflight map[projectPolicyCacheKey]*projectPolicyDecode
+	order    []projectPolicyCacheKey
+	oldest   int
+	decode   func(string) (*workflowconfig.ResolvedNativePolicy, error)
+}
+
+type projectPolicyDecode struct {
+	done  chan struct{}
+	value *workflowconfig.ResolvedNativePolicy
+	err   error
 }
 
 type projectPolicyCacheContextKey struct{}
@@ -543,16 +550,32 @@ func (c *projectPolicyCache) resolve(scope, id, raw string) (*workflowconfig.Res
 		return decodeResolvedProjectPolicy(raw)
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	key := projectPolicyCacheKey{scope: scope, id: id}
 	if value, ok := c.entries[key]; ok {
+		c.mu.Unlock()
 		return value, nil
 	}
+	if pending, ok := c.inflight[key]; ok {
+		c.mu.Unlock()
+		<-pending.done
+		return pending.value, pending.err
+	}
+	pending := &projectPolicyDecode{done: make(chan struct{})}
+	if c.inflight == nil {
+		c.inflight = make(map[projectPolicyCacheKey]*projectPolicyDecode)
+	}
+	c.inflight[key] = pending
 	decode := c.decode
+	c.mu.Unlock()
 	if decode == nil {
 		decode = decodeResolvedProjectPolicy
 	}
 	value, err := decode(raw)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	pending.value, pending.err = value, err
+	delete(c.inflight, key)
+	close(pending.done)
 	if err != nil {
 		return nil, err
 	}
