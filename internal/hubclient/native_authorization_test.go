@@ -62,8 +62,8 @@ func TestNativeComposedAuthorizationClaimAndExecution(t *testing.T) {
 		}
 	}
 	setRouting("draining")
-	var ids []string
-	for _, test := range []struct {
+	var ids [4]string
+	for i, test := range []struct {
 		title    string
 		labels   []string
 		priority string
@@ -77,7 +77,7 @@ func TestNativeComposedAuthorizationClaimAndExecution(t *testing.T) {
 		if err = h.connector.SetField(t.Context(), string(issue.WorkItemID), "priority", test.priority); err != nil {
 			t.Fatal(err)
 		}
-		ids = append(ids, string(issue.WorkItemID))
+		ids[i] = string(issue.WorkItemID)
 	}
 	hint, err := selector.NativeFilterHint(selector.Selector{And: []selector.Selector{{Labels: selector.Labels{Include: []string{"ready"}}}, {Labels: selector.Labels{Include: []string{"canary"}, Exclude: []string{"manual"}}}}}, selector.Context{})
 	if err != nil {
