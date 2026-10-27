@@ -25,9 +25,15 @@ func (p *recoveryProvider) Invoke(_ context.Context, invocation Invocation, obse
 		}
 	}
 	switch p.mode {
+	case "missing session":
+		response.SessionID = ""
 	case "interrupted":
 		if p.calls == 1 {
 			return response, errors.New("provider interrupted")
+		}
+	case "interrupted without session":
+		if p.calls == 1 {
+			return Response{}, errors.New("provider interrupted")
 		}
 	case "truncated":
 		if p.calls == 1 {
@@ -35,6 +41,8 @@ func (p *recoveryProvider) Invoke(_ context.Context, invocation Invocation, obse
 		}
 	case "always":
 		return response, errors.New("provider unavailable")
+	case "always without session":
+		return Response{}, errors.New("provider interrupted")
 	case "reused failed session":
 		if p.calls == 1 {
 			return response, errors.New("provider interrupted")
@@ -56,10 +64,13 @@ func TestProviderRecoveryRetainsEvidenceAndBudget(t *testing.T) {
 		wantError, reused, publicationFailure bool
 	}{
 		{name: "interrupted", mode: "interrupted", calls: 2},
+		{name: "interrupted without session", mode: "interrupted without session", calls: 2},
 		{name: "truncated", mode: "truncated", calls: 2},
 		{name: "permanent", mode: "always", calls: 3, wantError: true},
+		{name: "permanent without session", mode: "always without session", calls: 3, wantError: true},
 		{name: "invocation bound", mode: "always", limit: 1, calls: 1, wantError: true},
 		{name: "missing usage", mode: "missing usage", calls: 1, wantError: true},
+		{name: "missing session", mode: "missing session", calls: 1, wantError: true},
 		{name: "reused session", reused: true, calls: 1, wantError: true},
 		{name: "cancelled", mode: "cancelled", calls: 1, wantError: true},
 		{name: "deadline", mode: "deadline", calls: 1, wantError: true},

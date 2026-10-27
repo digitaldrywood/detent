@@ -132,10 +132,12 @@ func (e *execution) invokeOnce(ctx context.Context, phase string, input any) (Re
 	if usageErr != nil {
 		return result, errors.Join(usageErr, invokeErr)
 	}
-	if !seen || result.SessionID == "" || e.sessions[result.SessionID] || len(result.Output) > maxDocumentBytes {
+	if !seen || (result.SessionID == "" && invokeErr == nil) || e.sessions[result.SessionID] || len(result.Output) > maxDocumentBytes {
 		return result, errors.New("release audit provider omitted usage, reused a session or returned invalid output")
 	}
-	e.sessions[result.SessionID] = true
+	if result.SessionID != "" {
+		e.sessions[result.SessionID] = true
+	}
 	if invokeErr != nil {
 		return result, &providerInvocationError{invokeErr}
 	}
