@@ -13,8 +13,22 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestCIReleaseAuditStatusGate(t *testing.T) {
+func TestCIEvidenceGates(t *testing.T) {
 	t.Parallel()
+	source := readNormalizedFile(t, ".github/workflows/ci.yml")
+	preflight := workflowBetween(t, source, "\n  preflight:\n", "\n  invariants:")
+	for _, tt := range []struct {
+		name string
+		want string
+	}{
+		{name: "dedupe requires a successful prior run", want: `and .conclusion == "success")`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if !strings.Contains(preflight, tt.want) {
+				t.Errorf("preflight missing evidence requirement %q", tt.want)
+			}
+		})
+	}
 	var workflow struct {
 		Jobs map[string]struct {
 			Needs yaml.Node `yaml:"needs"`
@@ -24,7 +38,7 @@ func TestCIReleaseAuditStatusGate(t *testing.T) {
 			} `yaml:"steps"`
 		} `yaml:"jobs"`
 	}
-	if err := yaml.Unmarshal([]byte(readNormalizedFile(t, ".github/workflows/ci.yml")), &workflow); err != nil {
+	if err := yaml.Unmarshal([]byte(source), &workflow); err != nil {
 		t.Fatal(err)
 	}
 	if _, exists := workflow.Jobs["release-security-audit"]; exists {
