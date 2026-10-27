@@ -445,7 +445,11 @@ func TestHealthFindingResolutionOwnership(t *testing.T) {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_issue_links(change_id,organization_id,project_id,work_item_id) VALUES(?,?,?,?)", change.ID, scope.organization, scope.project, item); err != nil {
 					t.Fatal(err)
 				}
-				version = `{"id":"health-version","head_sha":"retained-head"}`
+				versionRaw, err := json.Marshal(tracker.ChangeVersion{ID: "health-version", ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "retained-head"}, Policy: hubTestPolicy()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				version = string(versionRaw)
 				if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_versions(id,change_id,number,record_json) VALUES('health-version',?,1,?)", change.ID, version); err != nil {
 					t.Fatal(err)
 				}
