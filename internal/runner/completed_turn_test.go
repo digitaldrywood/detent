@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,6 +32,7 @@ type completedExecutionWorkspace struct {
 	validationOutput  string
 	finalizationErr   error
 	finalizationBase  string
+	onFinalize        func()
 	onValidation      func()
 	validationCalls   int
 	finalizationCalls int
@@ -66,6 +68,9 @@ func (w *completedExecutionWorkspace) FinalizeNativeWork(ctx context.Context, _ 
 	if _, ok := ctx.Deadline(); !ok {
 		return "", errors.New("finalization has no deadline")
 	}
+	if w.onFinalize != nil {
+		w.onFinalize()
+	}
 	return w.finalizationBase, validate(ctx)
 }
 
@@ -74,6 +79,76 @@ func (w *completedExecutionWorkspace) DiffStat(ctx context.Context, info workspa
 		return workspace.DiffStat{}, err
 	}
 	return w.fakeWorkspaceBackend.DiffStat(ctx, info, issue)
+}
+
+type finalizingDiffExecution struct {
+	finalizingTestExecution
+	diffSource AttemptDiffSource
+}
+
+func (e *finalizingDiffExecution) SetDiffSource(source AttemptDiffSource) {
+	e.diffSource = source
+}
+
+func TestCompletedNativeFinalizationDiff(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		commit       bool
+		newBase      bool
+		implicitBase bool
+	}{
+		{name: "host commit replaces the precommit diff", commit: true},
+		{name: "implicit base survives the host commit", commit: true, implicitBase: true},
+		{name: "no commit rework replaces an older diff"},
+		{name: "finalized base survives workspace cleanup", commit: true, newBase: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := initRunnerSourceRepo(t)
+			base := strings.TrimSpace(runRunnerGit(t, directory, "rev-parse", "HEAD"))
+			attemptDiffFile(t, directory, "implementation.go", "package example\n")
+			runRunnerGit(t, directory, "add", "implementation.go")
+			backend := &completedExecutionWorkspace{retainedExecutionWorkspace: retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: directory}, recoveryStates: []workspace.RecoveryState{{HeadSHA: base}}}}}
+			commit := func() {
+				runRunnerGit(t, directory, "commit", "-m", "implement")
+				backend.recoveryStates[0].HeadSHA = strings.TrimSpace(runRunnerGit(t, directory, "rev-parse", "HEAD"))
+			}
+			if test.commit {
+				backend.onFinalize = commit
+			} else {
+				commit()
+			}
+			if test.newBase {
+				backend.finalizationBase = base
+			}
+			execution := &finalizingDiffExecution{diffSource: func(context.Context) (tracker.AttemptDiffRequest, bool) {
+				return tracker.AttemptDiffRequest{BaseSHA: base, HeadSHA: base}, true
+			}}
+			r := attemptDiffRunner()
+			r.workspace, r.afterRunTimeout = backend, time.Minute
+			r.now = time.Now
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			request := RunRequest{Execution: execution, finalizeNativeWork: true}
+			issue := workspace.Issue{BaseRef: base}
+			if test.implicitBase {
+				issue.BaseRef = ""
+				request.attemptDiffSource = r.attemptDiffSource(ctx, backend.info, issue)
+			}
+			if err := r.afterExecution(ctx, request, backend, backend.info, issue, AgentResume{}, true); err != nil {
+				t.Fatal(err)
+			}
+			if !backend.afterRun || execution.checkpoint == nil {
+				t.Fatal("finalization did not checkpoint and clean up")
+			}
+			if err := os.Rename(directory, filepath.Join(t.TempDir(), "cleaned")); err != nil {
+				t.Fatal(err)
+			}
+			diff, ok := execution.diffSource(ctx)
+			if !ok || diff.HeadSHA != execution.checkpoint.HeadSHA || diff.HeadSHA == base || diff.BaseSHA != base || len(diff.Files) != 1 || diff.Files[0].Path != "implementation.go" {
+				t.Fatalf("final diff did not survive cleanup at the verified checkpoint: diff=%+v available=%t checkpoint=%+v", diff, ok, execution.checkpoint)
+			}
+		})
+	}
 }
 
 type finalizingTestExecution struct {

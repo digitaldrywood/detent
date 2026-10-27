@@ -177,6 +177,9 @@ func (e *nativeExecution) settleIntegratedChange(ctx context.Context, detail tra
 		if d := e.claim.recovery.Issue.ReleaseDelivery; d != nil && (d.ChangeID != detail.Change.ID || d.VersionID != version.ID || d.HeadSHA != version.HeadSHA || d.BaseSHA != version.BaseSHA || d.Repository != version.Repository) {
 			return false, errors.New("release association differs from current version")
 		}
+		if version.Policy.Gates.SecurityAudit && !version.Policy.Gates.GitHubPullRequest && e.claim.recovery.Issue.ReleaseDelivery == nil {
+			return false, nil
+		}
 		result, err := e.integrationSource(ctx, version, diff.HeadSHA)
 		if err != nil {
 			var refusal *workspace.LandRefusal

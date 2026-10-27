@@ -1873,7 +1873,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		if result.NativeChange != nil && result.NativeChange.MergeResolution {
 			workspaceIssue.BaseRef = result.NativeChange.BaseSHA
 			if diffs, ok := req.Execution.(DiffExecution); ok {
-				diffs.SetDiffSource(r.attemptDiffSource(ctx, info, workspaceIssue))
+				req.attemptDiffSource = r.attemptDiffSource(ctx, info, workspaceIssue)
+				diffs.SetDiffSource(req.attemptDiffSource)
 			}
 			if repository, ok := req.Execution.(RepositoryExecution); ok {
 				repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
@@ -2088,7 +2089,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 		// The stored attempt diff rides every checkpoint and the finish.
 		if diffs, ok := req.Execution.(DiffExecution); ok {
-			diffs.SetDiffSource(r.attemptDiffSource(ctx, info, workspaceIssue))
+			req.attemptDiffSource = r.attemptDiffSource(ctx, info, workspaceIssue)
+			diffs.SetDiffSource(req.attemptDiffSource)
 		}
 		if repository, ok := req.Execution.(RepositoryExecution); ok {
 			repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
@@ -2236,7 +2238,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				if precheck.BaseSHA != "" {
 					diffIssue.BaseRef = precheck.BaseSHA
 				}
-				diffs.SetDiffSource(r.attemptDiffSource(ctx, info, diffIssue))
+				req.attemptDiffSource = r.attemptDiffSource(ctx, info, diffIssue)
+				diffs.SetDiffSource(req.attemptDiffSource)
 			}
 			evidenceIssue := workspaceIssue
 			evidenceIssue.BaseRef = recoveryState.HeadSHA
@@ -2676,7 +2679,8 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 					info, workspaceIssue = restored, restoredIssue
 					turnRequest.Workspace, processRequest.Workspace = info.Path, info.Path
 					if diffs, ok := req.Execution.(DiffExecution); ok {
-						diffs.SetDiffSource(r.attemptDiffSource(afterRunCtx, info, workspaceIssue))
+						req.attemptDiffSource = r.attemptDiffSource(afterRunCtx, info, workspaceIssue)
+						diffs.SetDiffSource(req.attemptDiffSource)
 					}
 					if evidence, ok := req.Execution.(EvidenceSourceExecution); ok {
 						evidence.SetEvidenceSource(workspaceEvidenceSource(info.Path))

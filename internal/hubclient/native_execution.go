@@ -585,6 +585,12 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 		if err := nativeEffectError(ctx); err != nil {
 			return err
 		}
+		if e.storedSeq == finish && e.lastDiff != nil && e.worktreeHead != "" && e.lastDiff.HeadSHA != e.worktreeHead {
+			if err := e.append(ctx, "run.observed", "", nil, true); err != nil {
+				return err
+			}
+			finish = e.data.Sequence + 1
+		}
 		if e.storedSeq != finish {
 			if err := e.postDiff(ctx, finish); err != nil && e.ownsChangeCompletion() {
 				err = e.executionError(ctx, err)

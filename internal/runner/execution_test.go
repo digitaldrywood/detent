@@ -1658,8 +1658,14 @@ func TestNativeEpilogueStageContexts(t *testing.T) {
 		{name: "absent issue workspace has nothing to preserve", preserveErr: workspace.ErrMissingWorkspace},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			info := workspace.Info{}
+			head := "committed-head"
+			if test.remote {
+				info.Path = initRunnerSourceRepo(t)
+				head = strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+			}
 			synctest.Test(t, func(t *testing.T) {
-				state := workspace.RecoveryState{HeadSHA: "committed-head", WorkspaceFingerprint: "tested-source-digest", UnpushedCommits: 1}
+				state := workspace.RecoveryState{HeadSHA: head, WorkspaceFingerprint: "tested-source-digest", UnpushedCommits: 1}
 				if test.clean {
 					state.UnpushedCommits = 0
 				}
@@ -1716,7 +1722,7 @@ func TestNativeEpilogueStageContexts(t *testing.T) {
 						t.Fatalf("source iteration support = %t, want %t", supported, test.sourceIteration)
 					}
 				}
-				err := r.afterExecution(ctx, request, backend, workspace.Info{}, issue, AgentResume{}, true)
+				err := r.afterExecution(ctx, request, backend, info, issue, AgentResume{}, true)
 				if test.publicationHook {
 					if err != nil || execution.publicationSource == nil || execution.checkpoint == nil {
 						t.Fatalf("host finalization omitted publication hook: %v", err)

@@ -439,6 +439,9 @@ func (e *nativeExecution) SourceReview(ctx context.Context) (runner.NativeChange
 	if e.change == nil {
 		return runner.NativeChange{}, nil
 	}
+	if e.change.Error != "" && e.data.Handoff.UncertainForgeEffect() {
+		return *e.change, fmt.Errorf("%w: %s", ErrUnavailable, e.change.Error)
+	}
 	return *e.change, nil
 }
 

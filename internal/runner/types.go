@@ -673,6 +673,7 @@ type RunRequest struct {
 	repairResume              bool
 	checkpointRefs            *checkpointRefs
 	executionCancellation     func() error
+	attemptDiffSource         AttemptDiffSource
 	validationEvidenceSource  AttemptDiffSource
 	reviewSource              func(context.Context, *RunResult) (string, error)
 }

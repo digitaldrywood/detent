@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -37,10 +38,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -350,6 +353,11 @@ func (h *nativeChangeHub) candidates(t *testing.T) []connector.Issue {
 	t.Helper()
 	candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"Todo", "In Progress"}})
 	if err != nil {
+		page, readErr := h.admin.Issues(t.Context(), nil)
+		for _, issue := range page.Items {
+			t.Logf("candidate refusal issue=%s state=%s contract=%+v sections=%v", issue.WorkItemID, issue.State, issue.IssueContract, config.IssueContractSectionDigests(issue.Body))
+		}
+		t.Logf("candidate refusal issue read: %v", readErr)
 		t.Fatal(err)
 	}
 	return candidates
@@ -577,6 +585,9 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		integrate               bool
 		integrateHead           bool
 		integrateChanged        bool
+		integrateAudit          bool
+		integrationIncorporated bool
+		integrationConflict     bool
 		landingRestart          bool
 		reviewDispositions      bool
 		finalMessage            string
@@ -585,6 +596,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		unreadFinal             bool
 		refreshFinal            bool
 		checkpointHead          string
+		staleFinalDiff          bool
 		existing                bool
 		published               string
 		repolicy                bool
@@ -614,6 +626,12 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		// finish; the last one is current and carries the run's head.
 		wantVersions int
 	}{
+		{name: "NativeChange final checkpoint replaces a stored precommit diff", staleFinalDiff: true, role: runner.RoleCode, outcome: "succeeded", worktree: "clean", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "NativeChange no commit Rework settles the current final head", staleFinalDiff: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "clean", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "NativeChange changed integration head publishes a new version", land: true, integrate: true, integrateChanged: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
+		{name: "NativeChange audit enabled changed integration head publishes a new version", land: true, integrate: true, integrateChanged: true, integrateAudit: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
+		{name: "NativeChange audit enabled published integration head retains its audit", land: true, integrate: true, integrateChanged: true, integrateHead: true, integrateAudit: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
+		{name: "NativeChange genuine integration conflict retains Rework evidence", land: true, integrate: true, integrationConflict: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
 		{name: "MergeResolution publishes changed source for independent review", mergeResolution: true, existing: true, published: nativeChangeFixtureHead("d"), reviewer: true, retainSource: true, role: runner.RoleMerge, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{MergeResolution: true, Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 2},
 		{name: "fixing Rework binds recorded review dispositions to its published version", reviewDispositions: true, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1, disposition: &tracker.NativeDisposition{Status: "complete"}, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nreview_dispositions: [{thread_id: T1, disposition: fixed, evidence: regression passes}]\nblockers: []\nhuman_action: null\n```"},
 		{name: "required PR reopens landed history with a new PR", requiredPR: true, publicationLanded: true, publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 3},
@@ -699,7 +717,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "final checkpoint advances past the stored diff before cleanup", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(nativeChangeFixtureHead("b"), "README.md"), refreshFinal: true, unreadFinal: true, checkpointHead: nativeChangeFixtureHead("b"),
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
-		{name: "NativeCompletion differing final head already integrated with a nonempty diff", land: true, integrate: true, integrateChanged: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
+		{name: "NativeCompletion differing final head already integrated with a nonempty diff", land: true, integrate: true, integrateChanged: true, integrationIncorporated: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
 		{name: "an unavailable final diff cannot reuse an older checkpoint head", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, unreadFinal: true, checkpointHead: nativeChangeFixtureHead("b"),
 			wantDiagnostic: "checkpoint head", wantChanges: 1, wantVersions: 1},
 		{name: "rework preserves the same head after configuration changes", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, repolicy: true,
@@ -752,6 +770,14 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				}, true)
 			} else {
 				h = newNativeChangeHub(t, true)
+			}
+			if test.integrateAudit {
+				previous := h.descriptor.ID
+				h.descriptor.Gates.SecurityAudit = true
+				h.descriptor = h.descriptor.WithID()
+				if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: previous, Policy: h.descriptor}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			issue := h.createInProgress(t, "Native change")
 			if test.releasedBlocked {
@@ -1166,6 +1192,11 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			}
 			if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: test.role, Backend: "codex", Model: "test"}); err != nil {
 				t.Fatal(err)
+			}
+			if test.integrateAudit {
+				if err := execution.(runner.RuntimeExecution).ObserveRuntime(guarded, tracker.NativeRuntimeObservation{Phase: "implementation", Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 41}}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if test.mergeResolution {
 				if err := execution.(runner.MergeResolutionExecution).PrepareMergeResolution(); err != nil {
@@ -1694,7 +1725,38 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					return execution.(runner.CompletionExecution).PrepareFinish(ctx, outcome, test.finalMessage, nil)
 				}
 			}
+			if test.staleFinalDiff {
+				owner := execution.(*nativeExecution)
+				owner.SetDiffSource(nativeChangeDiff(base, "README.md"))
+				if err := owner.postDiff(guarded, owner.data.Sequence+1); err != nil {
+					t.Fatal(err)
+				}
+				owner.SetDiffSource(test.source)
+			}
 			finishErr := finish(guarded, test.outcome)
+			if test.integrateAudit && finishErr == nil {
+				owner := execution.(*nativeExecution)
+				change := owner.NativeChange()
+				now := time.Now().UTC()
+				audit := tracker.SecurityAuditReview{VersionID: change.VersionID, SessionID: 42, DiffDigest: policy.Digest([]byte("diff")), Verdict: "pass", Run: securityaudit.Run{ID: 42, InvocationID: "integration-audit", ProjectID: string(h.project), IssueID: string(item), Repository: nativeChangeRepository, BaseSHA: change.BaseSHA, HeadSHA: change.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now, CompletedAt: now, ExitStatus: securityaudit.ExitStatusSuccess, OutputBytes: 1, OutputDigest: securityaudit.OutputDigest("result"), Verdict: "pass", Summary: "No findings"}}
+				if err := owner.RecordSecurityAudit(guarded, audit); err != nil {
+					t.Fatal(err)
+				}
+				if !owner.NativeChange().Reviewed {
+					t.Fatal("source audit did not approve the initial version")
+				}
+			}
+			if test.staleFinalDiff {
+				owner := execution.(*nativeExecution)
+				var stored tracker.AttemptDiff
+				path, err := nativeAttemptDiffPath(owner.data.AttemptID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := h.native.client.request(guarded, http.MethodGet, h.native.base()+path, nil, &stored); err != nil || stored.HeadSHA != owner.worktreeHead {
+					t.Fatalf("stored final diff differs from checkpoint: head=%s checkpoint=%s error=%v", stored.HeadSHA, owner.worktreeHead, err)
+				}
+			}
 			if test.publicationFailure != "" {
 				change := publicationOwner.NativeChange()
 				if finishErr != nil || publicationOwner.publication != nil || change == nil || change.VersionError == "" || change.Reviewed || change.VersionID != original.Change.CurrentVersion || !strings.Contains(change.VersionError, "preserve source") {
@@ -1747,6 +1809,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					}
 					h.claim(t, issue.ID)
 					owner := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+					owner.SetRepository(nativeChangeRepository)
 					ctx, release, err := owner.Guard(t.Context())
 					if err != nil {
 						t.Fatal(err)
@@ -1758,7 +1821,9 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					}
 					owner.SetDiffSource(nativeChangeDiff(checkpointHead))
 					if test.integrateChanged {
-						checkpointHead = nativeChangeFixtureHead("e")
+						if !test.integrateHead {
+							checkpointHead = nativeChangeFixtureHead("e")
+						}
 						owner.SetDiffSource(nativeChangeDiff(checkpointHead, "README.md"))
 					}
 					if err := owner.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
@@ -1773,6 +1838,12 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 							t.Fatalf("integration changed source identity: version=%+v base=%s", version, currentBase)
 						}
 						integrations++
+						if test.integrationConflict {
+							return workspace.LandResult{}, &workspace.LandRefusal{Kind: workspace.LandRefusalConflict, Reason: "the published source delta is not proven incorporated on the current integration base"}
+						}
+						if test.integrateChanged && !test.integrationIncorporated {
+							return workspace.LandResult{}, &workspace.LandRefusal{Kind: workspace.LandRefusalNothing, Reason: "the current integration base does not incorporate the published source delta"}
+						}
 						return workspace.LandResult{MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: "squash"}, nil
 					})
 					if err := owner.RecordUsage(ctx, tracker.NativeUsage{Provider: "openai", Model: "test", Input: 123, Output: 45}); err != nil {
@@ -1783,6 +1854,50 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					}
 					if err := owner.PrepareFinish(ctx, "succeeded", test.finalMessage, nil); err != nil {
 						t.Fatal(err)
+					}
+					if test.integrateChanged && !test.integrationIncorporated {
+						change := owner.NativeChange()
+						wantIntegrations := 1
+						if test.integrateAudit {
+							wantIntegrations = 0
+						}
+						if integrations != wantIntegrations || change == nil || change.VersionError != "" || change.Error != "" || change.Landing != nil || change.HeadSHA != checkpointHead || change.VersionID == "" {
+							t.Fatalf("changed source did not publish: integrations=%d change=%+v", integrations, change)
+						}
+						wantVersions := 2
+						if test.integrateHead {
+							wantVersions = 1
+						}
+						detail, err := h.admin.Change(ctx, item, change.ChangeID)
+						if err != nil || len(detail.Versions) != wantVersions || detail.Change.CurrentVersion != change.VersionID || detail.Change.CurrentLanding() != nil {
+							t.Fatalf("changed source did not retain its new version: detail=%+v error=%v", detail, err)
+						}
+						if test.integrateAudit && !test.integrateHead && (change.Reviewed || detail.Summary.Status == "reviewed") {
+							t.Fatal("new source reused the prior head's security audit")
+						}
+						if test.integrateHead && (!change.Reviewed || detail.Summary.Status != "reviewed") {
+							t.Fatal("unchanged published source lost its existing audit")
+						}
+						if err := owner.Finish(ctx, "succeeded"); err != nil {
+							t.Fatal(err)
+						}
+						if h.state(t, issue.ID) == "Done" || owner.data.Outcome != "succeeded" {
+							t.Fatalf("publication did not finish for review: state=%s outcome=%s", h.state(t, issue.ID), owner.data.Outcome)
+						}
+						return
+					}
+					if test.integrationConflict {
+						change := owner.NativeChange()
+						if integrations != 1 || change == nil || change.VersionError == "" || change.Landing != nil || change.Reviewed {
+							t.Fatalf("conflicting source settled as delivered: integrations=%d change=%+v", integrations, change)
+						}
+						if err := owner.Finish(ctx, "succeeded"); err != nil {
+							t.Fatal(err)
+						}
+						if owner.data.Outcome != "failed" || owner.data.TerminalFailure == nil || owner.data.TerminalFailure.Stage != "publication" || h.state(t, issue.ID) == "Done" {
+							t.Fatalf("conflict lost dispatchable Rework evidence: outcome=%s failure=%+v state=%s", owner.data.Outcome, owner.data.TerminalFailure, h.state(t, issue.ID))
+						}
+						return
 					}
 					if integrations != 1 || h.state(t, issue.ID) != "Done" {
 						t.Fatalf("finalization did not integrate once: integrations=%d state=%s", integrations, h.state(t, issue.ID))
@@ -2763,7 +2878,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "Rework scoped read failure releases claim before dispatch", rework: true, failDetail: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if !test.enrolled && test.publication != "head_read" && test.publicationFault != "initial_read" && test.publicationFault != "post_push_read" {
+			if test.publication != "head_read" && test.publicationFault != "initial_read" && test.publicationFault != "post_push_read" {
 				t.Parallel()
 			}
 			genuinePublication := test.publication != "" && test.validator != "" && (test.publicationFault == "" || test.publicationFault == "policy")
@@ -2858,12 +2973,14 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatal(err)
 				}
 				machine := Machine{ID: file.Identity.MachineID, Hostname: "host", Capacity: 1, Version: "test", BackendIsolation: isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}}
-				previousTransport := http.DefaultTransport
-				http.DefaultTransport = h.failChanges
-				_, enrollErr := EnrollRunner(t.Context(), identityPath, h.organization, enrollment.Token, machine)
-				http.DefaultTransport = previousTransport
-				if enrollErr != nil {
-					t.Fatal(enrollErr)
+				var identity runnerauth.Identity
+				redemption := runnerauth.Redemption{Binding: file.Identity.Binding, Credential: file.Credential, Hostname: machine.Hostname, DisplayName: machine.DisplayName, Capacity: machine.Capacity, Version: machine.Version, OS: runtime.GOOS, Architecture: runtime.GOARCH, IsolationTier: machine.IsolationTier, BackendIsolation: machine.BackendIsolation, SpriteName: runnerSpriteName(machine.Hostname)}
+				if err := enrollmentAdmin.runnerRequest(t.Context(), enrollment.Token, http.MethodPost, "/api/v2/organizations/"+string(h.organization)+"/runner-enrollments/redeem", redemption, &identity); err != nil {
+					t.Fatal(err)
+				}
+				file.Identity = identity
+				if err := runnerauth.Save(identityPath, file); err != nil {
+					t.Fatal(err)
 				}
 				fleet, err := NewFleetClient(enrollmentAdmin, h.organization, map[string]tracker.ProjectID{"local": h.project})
 				if err != nil {
@@ -2885,7 +3002,6 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if h.scheduler.client.runner == nil {
 					t.Fatal("fixture did not enroll the claim owner")
 				}
-				t.Parallel()
 			}
 			if test.localIntakeOff {
 				local, err := orchestrator.New(orchestrator.Config{LocalIntakeDisabled: true, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo"}}, orchestrator.Dependencies{Connector: fakehub.New(fakehub.Config{Issues: []connector.Issue{{ID: "local-queued", State: "Todo"}}}), Runner: orchestrator.FakeRunner{}})
@@ -2926,6 +3042,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				}
 			} else {
 				issue = h.createInProgress(t, "Update the README")
+			}
+			if test.summaryFailure {
+				confirmIssueContract(t, h.admin, issue.ID)
 			}
 			source := nativeChangeTempDir(t)
 			if err := os.CopyFS(source, os.DirFS(sourceSeed)); err != nil {
@@ -3421,7 +3540,14 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			if test.summaryFailure {
 				automatedReview = gate.AutomatedReviewRequired
 			}
+			var runLogs bytes.Buffer
+			t.Cleanup(func() {
+				if t.Failed() {
+					t.Log(runLogs.String())
+				}
+			})
 			dependencies := runner.Dependencies{
+				Logger:       slog.New(slog.NewTextHandler(&runLogs, nil)),
 				Store:        runtimeStore,
 				ProjectID:    "local",
 				Workflow:     config.Workflow{Config: config.Config{Gate: gate.Config{Run: validationCommand, AutomatedReview: automatedReview, Validator: gate.ValidatorConfig{Enabled: test.validator != ""}}}, Prompt: "Complete the issue"},

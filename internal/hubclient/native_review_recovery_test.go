@@ -345,7 +345,19 @@ func TestNativeReviewProducerRecoversAfterTemporaryFailure(t *testing.T) {
 				if err != nil {
 					t.Fatalf("observe recovery: deferred=%v source=%d security=%d validator=%d error=%v", deferred, provider.sourceCalls.Load(), provider.securityCalls.Load(), provider.validatorCalls.Load(), err)
 				}
-				if state.Retry[issue.ID].CompletionDeferred {
+				failureReached := true
+				switch test.stage {
+				case "source":
+					failureReached = provider.sourceCalls.Load() > 0
+				case "security":
+					failureReached = provider.securityCalls.Load() > 0
+				case "validator":
+					failureReached = provider.validatorCalls.Load() > 0
+				}
+				if test.publicationField != "" {
+					failureReached = publicationRefusals.Load() > 0
+				}
+				if state.Retry[issue.ID].CompletionDeferred && (deferred || failureReached) {
 					if !deferred && test.publicationField != "" {
 						owner := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
 						owner.mu.Lock()

@@ -774,7 +774,8 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 				} else if base != "" {
 					issue.BaseRef = base
 					if diffs, ok := req.Execution.(DiffExecution); ok {
-						diffs.SetDiffSource(r.attemptDiffSource(ctx, info, issue))
+						req.attemptDiffSource = r.attemptDiffSource(ctx, info, issue)
+						diffs.SetDiffSource(req.attemptDiffSource)
 					}
 				}
 			}
@@ -873,7 +874,25 @@ func (r *Runner) prepareExecutionCompletion(ctx context.Context, req RunRequest,
 			artifactErr = err
 		}
 	}
-	completionErr := errors.Join(finalizationErr, artifactErr, executionCancellation(req))
+	var diffErr error
+	if diffs, ok := req.Execution.(DiffExecution); ok && req.finalizeNativeWork && !req.retainCheckpoint && finalizationErr == nil && artifactErr == nil && ctx.Err() == nil && (checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
+		source := req.attemptDiffSource
+		if source == nil {
+			source = r.attemptDiffSource(ctx, info, issue)
+		}
+		finalDiff, available := source(ctx)
+		if !available || checkpoint.HeadSHA == "" || finalDiff.HeadSHA != checkpoint.HeadSHA {
+			diffErr = failedStep("checkpoint_recovery", ErrNativeRecoveryRequired)
+		} else {
+			diffs.SetDiffSource(func(ctx context.Context) (tracker.AttemptDiffRequest, bool) {
+				if current, available := source(ctx); available {
+					return current, true
+				}
+				return finalDiff, true
+			})
+		}
+	}
+	completionErr := errors.Join(finalizationErr, artifactErr, diffErr, executionCancellation(req))
 
 	if completionErr != nil || checkpoint.WorktreeState != "clean" || ctx.Err() != nil {
 		preserveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)

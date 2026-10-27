@@ -516,15 +516,21 @@ func newPendingLinkedChangeHub(t *testing.T) (*nativeChangeHub, tracker.NativeIs
 		t.Fatal(err)
 	}
 	h.reopen(func(path string) error {
-		db, err := sql.Open("sqlite", path)
+		db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?_pragma=busy_timeout(5000)&_txlock=immediate")
 		if err != nil {
 			return err
 		}
-		if _, err := db.ExecContext(t.Context(), "UPDATE issues SET native_source_key = ? WHERE native_id = ?", "github:https://github.com/acme/orders/issues/12", issue.WorkItemID); err != nil {
+		tx, err := db.BeginTx(t.Context(), nil)
+		if err != nil {
 			return errors.Join(err, db.Close())
 		}
-		_, seedErr := db.ExecContext(t.Context(), "INSERT INTO linked_issue_sources (work_item_id, source_url, title_supplied, body_supplied) VALUES (?, ?, 0, 0)", issue.WorkItemID, "https://github.com/acme/orders/issues/12")
-		return errors.Join(seedErr, db.Close())
+		if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET native_source_key = ? WHERE native_id = ?", "github:https://github.com/acme/orders/issues/12", issue.WorkItemID); err != nil {
+			return errors.Join(err, tx.Rollback(), db.Close())
+		}
+		if _, err := tx.ExecContext(t.Context(), "INSERT INTO linked_issue_sources (work_item_id, source_url, title_supplied, body_supplied) VALUES (?, ?, 0, 0)", issue.WorkItemID, "https://github.com/acme/orders/issues/12"); err != nil {
+			return errors.Join(err, tx.Rollback(), db.Close())
+		}
+		return errors.Join(tx.Commit(), db.Close())
 	})
 	issue, err = h.admin.Issue(t.Context(), issue.WorkItemID)
 	if err != nil {
