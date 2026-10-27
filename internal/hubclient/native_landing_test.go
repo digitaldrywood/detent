@@ -191,7 +191,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 	if err := work.Checkpoint(guarded, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: worktreeState, HeadSHA: head, ExternalEffect: "none", EffectState: "none"}); err != nil {
 		t.Fatal(err)
 	}
-	sourceValidation := gate.CommandResult{Command: "go test -short ./...", HeadSHA: head, TreeSHA: strings.Repeat("a", 40), DurationNS: int64(time.Second)}
+	sourceValidation := gate.CommandResult{Attribution: "unknown", Command: "go test -short ./...", HeadSHA: head, TreeSHA: strings.Repeat("a", 40), DurationNS: int64(time.Second)}
 	if err := work.(runner.SourceValidationExecution).RecordSourceValidation(guarded, sourceValidation); err != nil {
 		t.Fatal(err)
 	}

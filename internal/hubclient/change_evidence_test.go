@@ -88,7 +88,7 @@ func TestNativeChangeLargeValidationFinalization(t *testing.T) {
 			if err := e.Checkpoint(ctx, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", HeadSHA: head, ExternalEffect: "none", EffectState: "none"}); err != nil {
 				t.Fatal(err)
 			}
-			validation := gate.CommandResult{Command: "make check-land", HeadSHA: head, TreeSHA: strings.Repeat("d", 40), DurationNS: 1, Evidence: &gate.CommandEvidence{}, Output: strings.Repeat("validation passed 世界\n", 2000), Pipeline: &gate.PipelineEvidence{}}
+			validation := gate.CommandResult{Attribution: "unknown", Command: "make check-land", HeadSHA: head, TreeSHA: strings.Repeat("d", 40), DurationNS: 1, Evidence: &gate.CommandEvidence{}, Output: strings.Repeat("validation passed 世界\n", 2000), Pipeline: &gate.PipelineEvidence{}}
 			for i := range timings {
 				timing := gate.PipelineTiming{Stage: "finalization", Command: "go test -short -timeout=60s ./internal/example", HeadSHA: head, TreeSHA: validation.TreeSHA, StartedAt: time.Unix(1, int64(i)).UTC(), FinishedAt: time.Unix(2, int64(i)).UTC(), ExitCode: new(0), Execution: "executed"}
 				timing.ReceiptID = timing.ID()

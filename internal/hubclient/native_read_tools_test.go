@@ -677,14 +677,17 @@ func TestNativeChangeOversizedReviewRecovery(t *testing.T) {
 		text := strings.Repeat("<\\\"\n世界", 40000)
 		switch i {
 		case 0:
-			large.Validator = &gate.ValidatorResult{VersionID: version.ID, HeadSHA: version.HeadSHA, Verdict: "rework", Submitted: true, Findings: []gate.Finding{{Severity: "p1", Body: "Failed criterion"}}, CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "Retained criterion", Kind: gate.EvidenceNotVerified, Behavior: text, ReceiptIDs: []string{"receipt_failed"}, HeadSHA: version.HeadSHA}}, Commands: []gate.CommandResult{{ReceiptID: "receipt_failed", HeadSHA: version.HeadSHA, ExitCode: 1, Output: "Failed"}}}
+			large.Validator = &gate.ValidatorResult{Attribution: "unknown", VersionID: version.ID, HeadSHA: version.HeadSHA, Verdict: "rework", Submitted: true, Findings: []gate.Finding{{Attribution: "unknown", Severity: "p1", Body: "Failed criterion"}}, CriteriaEvidence: []gate.CriterionEvidence{{Criterion: "Retained criterion", Kind: gate.EvidenceNotVerified, Behavior: text, ReceiptIDs: []string{"receipt_failed"}, HeadSHA: version.HeadSHA}}, Commands: []gate.CommandResult{{Attribution: "unknown", Findings: []gate.Finding{{Attribution: "unknown", Body: "Command failed"}}, ReceiptID: "receipt_failed", HeadSHA: version.HeadSHA, ExitCode: 1, Output: "Failed"}}}
 		case 1:
-			large.SecurityAudit = &tracker.SecurityAuditReview{VersionID: version.ID, Verdict: "rework", Run: securityaudit.Run{Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Verdict: "fail", Findings: []securityaudit.Finding{{ID: "finding_blocking", Severity: "p2", Body: text}}}}
+			large.SecurityAudit = &tracker.SecurityAuditReview{VersionID: version.ID, Verdict: "rework", Run: securityaudit.Run{Attribution: "unknown", Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Verdict: "fail", Findings: []securityaudit.Finding{{Attribution: "unknown", ID: "finding_blocking", Severity: "p2", Body: text}}}}
 		default:
-			result := &gate.ValidatorResult{VersionID: version.ID, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Verdict: "rework", Submitted: true, Findings: []gate.Finding{{Severity: "p2", Body: "Command evidence requires rework"}}}
+			result := &gate.ValidatorResult{Attribution: "unknown", VersionID: version.ID, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Verdict: "rework", Submitted: true, Findings: []gate.Finding{{Attribution: "unknown", Severity: "p2", Body: "Command evidence requires rework"}}}
 			for command := range 76 {
 				receipt := fmt.Sprintf("receipt_%d_%02d", i, command)
-				result.Commands = append(result.Commands, gate.CommandResult{ReceiptID: receipt, Execution: "executed", Command: fmt.Sprintf("go test -timeout=60s ./internal/example%d -run TestCase%d", i, command), HeadSHA: version.HeadSHA, TreeSHA: strings.Repeat("f", 40), ExitCode: command % 2, Output: fmt.Sprintf("Command %d result\n", command) + strings.Repeat("output <\\\"\n世界", 500)})
+				result.Commands = append(result.Commands, gate.CommandResult{Attribution: "unknown", ReceiptID: receipt, Execution: "executed", Command: fmt.Sprintf("go test -timeout=60s ./internal/example%d -run TestCase%d", i, command), HeadSHA: version.HeadSHA, TreeSHA: strings.Repeat("f", 40), ExitCode: command % 2, Output: fmt.Sprintf("Command %d result\n", command) + strings.Repeat("output <\\\"\n世界", 500)})
+				if command%2 != 0 {
+					result.Commands[command].Findings = []gate.Finding{{Attribution: "unknown", Body: "Command failed", CheckCommand: result.Commands[command].Command}}
+				}
 				result.CriteriaEvidence = append(result.CriteriaEvidence, gate.CriterionEvidence{Criterion: fmt.Sprintf("Command criterion %d", command), Kind: gate.EvidenceNotVerified, Behavior: "Command evidence retained", ReceiptIDs: []string{receipt}, HeadSHA: version.HeadSHA})
 			}
 			large.ImplementationReview = result
@@ -854,16 +857,16 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 		}
 		reviews := []tracker.ChangeReview{
 			{ID: fmt.Sprintf("review_human_%d", i), VersionID: current.ID, Decision: "changes_requested", Body: strings.Repeat("human feedback <\n", 65536), Actor: tracker.Actor{Kind: "human", PrincipalID: "reviewer"}, CreatedAt: current.CreatedAt},
-			{ID: fmt.Sprintf("review_commands_%d", i), VersionID: old.ID, Decision: "approved", Actor: tracker.Actor{Kind: "runner", PrincipalID: "worker"}, CreatedAt: old.CreatedAt, ImplementationReview: &gate.ValidatorResult{VersionID: old.ID, Repository: old.Repository, BaseSHA: old.BaseSHA, HeadSHA: old.HeadSHA, Submitted: true, Verdict: "pass", Commands: []gate.CommandResult{{Command: "make check-land", Output: strings.Repeat("command output <\n", 40000)}}}},
+			{ID: fmt.Sprintf("review_commands_%d", i), VersionID: old.ID, Decision: "approved", Actor: tracker.Actor{Kind: "runner", PrincipalID: "worker"}, CreatedAt: old.CreatedAt, ImplementationReview: &gate.ValidatorResult{Attribution: "unknown", VersionID: old.ID, Repository: old.Repository, BaseSHA: old.BaseSHA, HeadSHA: old.HeadSHA, Submitted: true, Verdict: "pass", Commands: []gate.CommandResult{{Attribution: "unknown", Command: "make check-land", Output: strings.Repeat("command output <\n", 40000)}}}},
 		}
 		now := time.Now().UTC()
-		run := securityaudit.Run{ID: int64(42 + i), InvocationID: fmt.Sprintf("audit-%d", i), ProjectID: string(h.project), IssueID: string(item), Repository: current.Repository, BaseSHA: current.BaseSHA, HeadSHA: current.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now, CompletedAt: now, ExitStatus: securityaudit.ExitStatusSuccess, OutputBytes: 1, OutputDigest: policy.Digest([]byte("audit")), Verdict: "pass", Summary: strings.Repeat("s", (1<<20)-(16<<10))}
+		run := securityaudit.Run{Attribution: "unknown", ID: int64(42 + i), InvocationID: fmt.Sprintf("audit-%d", i), ProjectID: string(h.project), IssueID: string(item), Repository: current.Repository, BaseSHA: current.BaseSHA, HeadSHA: current.HeadSHA, ReviewerVersion: securityaudit.ReviewerVersion, ReviewerDigest: securityaudit.ReviewerDigest(), WorkerPID: 1, WorkerPGID: 1, WorkerStartedAt: now, StartedAt: now, CompletedAt: now, ExitStatus: securityaudit.ExitStatusSuccess, OutputBytes: 1, OutputDigest: policy.Digest([]byte("audit")), Verdict: "pass", Summary: strings.Repeat("s", (1<<20)-(16<<10))}
 		audit := &tracker.SecurityAuditReview{VersionID: current.ID, SessionID: run.ID, Verdict: "pass", DiffDigest: policy.Digest([]byte("diff")), Run: run}
 		decision := "approved"
 		if i == 1 {
 			audit.Run.Summary = "Blocking audit"
 			audit.Run.Verdict, audit.Verdict, decision = "fail", "rework", "changes_requested"
-			audit.Run.Findings = []securityaudit.Finding{{ID: "blocking", Severity: "p2", Body: strings.Repeat("finding <\n", 90_000)}, {ID: "resolved", Severity: "p1", Status: "resolved", Body: "Already addressed"}}
+			audit.Run.Findings = []securityaudit.Finding{{Attribution: "unknown", ID: "blocking", Severity: "p2", Body: strings.Repeat("finding <\n", 90_000)}, {Attribution: "unknown", ID: "resolved", Severity: "p1", Status: "resolved", Body: "Already addressed"}}
 		}
 		reviews = append(reviews, tracker.ChangeReview{ID: fmt.Sprintf("review_audit_%d", i), VersionID: current.ID, Decision: decision, SecurityAudit: audit, Actor: tracker.Actor{Kind: "runner", PrincipalID: "audit-worker"}, CreatedAt: current.CreatedAt})
 		var landing *tracker.SecurityAuditReview
