@@ -62,7 +62,7 @@ func (e *execution) invoke(ctx context.Context, phase string, input any) (Respon
 	case "recon-ledger", "coverage-critic", "final-coverage-critic", "ledger-correction":
 		instructions.WriteString("Return the full coverage-ledger.json array. Preserve every existing coverage ID and unresolved candidate; add gaps as planned units. Use the upstream canonical IDs and required ledger fields. Every unit, including out_of_scope, requires nonempty source-grounded starting_paths. Do not invent a synthetic catch-all historical unit. On ledger-correction, correct the supplied rejected document using the validator diagnostics; retain its coverage IDs, candidates and review claims without inventing checks or changing scope. Covered status requires concrete checks; prior coverage never implies current coverage. Critics must not invent completed checks.\n")
 	case "hunt":
-		instructions.WriteString("Audit the supplied coverage unit and attack class. Return {\"ledger\": <full updated coverage ledger array>, \"candidates\": [{\"fingerprint\": <stable source-derived root-cause identity>, \"coverage_id\": <assigned coverage id>, \"record\": <candidate evidence object>}]}. Include source paths and symbols in each root-cause identity, never run IDs, SHA, severity or prose titles. Record the actual agent ID in the assigned unit.\n")
+		instructions.WriteString("Audit the supplied coverage unit and attack class. Return {\"ledger\": <array containing the updated assigned unit and newly discovered planned units only>, \"candidates\": [{\"fingerprint\": <stable source-derived root-cause identity>, \"coverage_id\": <assigned coverage id>, \"record\": <candidate evidence object>}]}. Include source paths and symbols in each root-cause identity, never run IDs, SHA, severity or prose titles. Preserve the assigned coverage ID. Do not return or change other existing units; the host retains them. New units must be planned, never already covered. Record the actual agent ID in the assigned unit.\n")
 	case "candidate-disprover", "independent-record-verifier", "replacement-record-verifier":
 		instructions.WriteString("Try to disprove this candidate from the pinned source and bounded sandbox observations. Return exactly one report-schema.json record. Preserve its source-derived fingerprint. Independent record verification must verify every source claim anew; return an unchanged record only if every material claim is supported. Without a sandbox, keep a source-grounded lead needs_validation.\n")
 	default:
@@ -135,6 +135,62 @@ func boundedUsageSum(total, delta int64) int64 {
 func (e *execution) exhausted() bool {
 	limit, used := e.request.Allowance.Usage, e.state.Usage
 	return used.Input >= limit.Input || used.Output >= limit.Output || used.Cached > limit.Cached
+}
+
+func (e *execution) acceptHuntLedger(ctx context.Context, assigned, updates json.RawMessage) error {
+	if len(updates) > maxDocumentBytes {
+		return errors.New("release audit document exceeds its allowance")
+	}
+	type identity struct {
+		ID     string `json:"coverage_id"`
+		Status string `json:"status"`
+	}
+	var target identity
+	if json.Unmarshal(assigned, &target) != nil || target.ID == "" {
+		return errors.New("release audit assignment has no coverage identity")
+	}
+	var current, patch []json.RawMessage
+	if json.Unmarshal(e.state.Ledger, &current) != nil || json.Unmarshal(updates, &patch) != nil {
+		return errors.New("release audit hunt ledger is invalid")
+	}
+	positions := map[string]int{}
+	for i, raw := range current {
+		var unit identity
+		if json.Unmarshal(raw, &unit) != nil {
+			return errors.New("release audit current ledger is invalid")
+		}
+		positions[unit.ID] = i
+	}
+	if _, exists := positions[target.ID]; !exists {
+		return errors.New("release audit assignment is absent from ledger")
+	}
+	seen := map[string]bool{}
+	for _, raw := range patch {
+		var unit identity
+		if json.Unmarshal(raw, &unit) != nil || unit.ID == "" || seen[unit.ID] {
+			return errors.New("release audit hunt repeats or omits a coverage identity")
+		}
+		seen[unit.ID] = true
+		if index, exists := positions[unit.ID]; exists {
+			if unit.ID != target.ID {
+				return errors.New("release audit hunt changed an unassigned unit")
+			}
+			current[index] = raw
+		} else {
+			if unit.Status != "planned" {
+				return errors.New("release audit discovered unit is not planned")
+			}
+			current = append(current, raw)
+		}
+	}
+	if !seen[target.ID] {
+		return errors.New("release audit hunt omitted its assigned unit")
+	}
+	ledger, err := json.Marshal(current)
+	if err != nil {
+		return err
+	}
+	return e.acceptLedger(ctx, ledger)
 }
 
 func (e *execution) acceptLedger(ctx context.Context, ledger json.RawMessage) error {

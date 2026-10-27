@@ -446,3 +446,81 @@ func TestScopedCoverageRequiresCompleteInScopeEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestHuntUpdatesPreserveUnassignedCoverage(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		changes []string
+		wantErr bool
+	}{
+		{name: "assigned only", changes: []string{"assigned"}},
+		{name: "discovered work", changes: []string{"assigned", "new"}},
+		{name: "unassigned update", changes: []string{"assigned", "other"}, wantErr: true},
+		{name: "missing assignment", changes: []string{"new"}, wantErr: true},
+		{name: "duplicate assignment", changes: []string{"assigned", "assigned"}, wantErr: true},
+		{name: "invented completed discovery", changes: []string{"assigned", "new-covered"}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			directory := t.TempDir()
+			if err := os.Mkdir(filepath.Join(directory, "bundle"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := prepareBundle(filepath.Join(directory, "bundle")); err != nil {
+				t.Fatal(err)
+			}
+			var planned, covered []json.RawMessage
+			if err := json.Unmarshal(fixtureLedger("planned", false), &planned); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(fixtureLedger("covered", false), &covered); err != nil {
+				t.Fatal(err)
+			}
+			other := json.RawMessage(strings.ReplaceAll(strings.ReplaceAll(string(planned[0]), "route", "zroute"), "Route", "Zroute"))
+			initial, err := json.Marshal([]json.RawMessage{planned[0], other})
+			if err != nil {
+				t.Fatal(err)
+			}
+			variants := map[string]json.RawMessage{"assigned": covered[0], "other": other, "new": json.RawMessage(strings.ReplaceAll(strings.ReplaceAll(string(planned[0]), "route", "newroute"), "Route", "Newroute")), "new-covered": json.RawMessage(strings.ReplaceAll(strings.ReplaceAll(string(covered[0]), "route", "newroute"), "Route", "Newroute"))}
+			patch := []json.RawMessage{}
+			for _, key := range tc.changes {
+				patch = append(patch, variants[key])
+			}
+			updates, err := json.Marshal(patch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e := &execution{directory: directory, stage: &Stage{records: &memoryRecords{}}, state: Snapshot{Status: "incomplete", Ledger: initial}}
+			err = e.acceptHuntLedger(t.Context(), planned[0], updates)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error=%v wantErr=%v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				if string(e.state.Ledger) != string(initial) {
+					t.Fatal("rejected update mutated ledger")
+				}
+				return
+			}
+			var actual []json.RawMessage
+			if err := json.Unmarshal(e.state.Ledger, &actual); err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, raw := range actual {
+				if string(raw) == string(other) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("unassigned unit changed or disappeared")
+			}
+			want := 2
+			if tc.name == "discovered work" {
+				want = 3
+			}
+			if len(actual) != want {
+				t.Fatalf("units=%d want=%d", len(actual), want)
+			}
+		})
+	}
+}
