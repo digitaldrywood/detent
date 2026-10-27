@@ -67,7 +67,7 @@ for (const viewport of [{ width: 1440, height: 1100 }, { width: 390, height: 844
         constructor(url, options) {
           super(url, options);
           const streamURL = new URL(url, window.location.href);
-          if (/\/projects\/[^/]+\/events$/.test(streamURL.pathname) && streamURL.searchParams.has("work_item")) window.projectStreams.add(this);
+          if (/\/projects\/[^/]+\/events$/.test(streamURL.pathname)) window.projectStreams.add(this);
         }
         close() {
           window.projectStreams.delete(this);

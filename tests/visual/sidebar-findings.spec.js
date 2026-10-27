@@ -1,6 +1,7 @@
 const { test, expect } = require("@playwright/test");
 const path = require("node:path");
 const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
+const { dispatchHumanActionAnswered } = require("./project-stream");
 
 let hub;
 test.beforeAll(async () => {
@@ -67,10 +68,7 @@ async function installFindings(page) {
     sidebar, errors,
     answer: async () => {
       pending = false;
-      await page.evaluate(() => {
-        for (const source of window.findingSources) source.dispatchEvent(new MessageEvent("activity", { data: "human-action-answered" }));
-      });
-      await page.clock.runFor(30_000);
+      await page.evaluate(dispatchHumanActionAnswered, hub.fixture.work_item);
     },
     resolve: async (ids) => {
       findings = findings.filter((finding) => !ids.includes(finding.id));

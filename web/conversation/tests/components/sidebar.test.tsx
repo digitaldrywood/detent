@@ -33,6 +33,7 @@ import { conversation } from "./builders.ts";
 import { renderSidebar, resetSidebarState, rowFor } from "./sidebarHarness.tsx";
 import { useSidebarHumanActions } from "../../src/app/adapters/sidebarHumanActions.ts";
 import itemFixture from "../../src/contracts/fixtures/work-item.json";
+const { dispatchHumanActionAnswered } = require("../../../../tests/visual/project-stream.js");
 
 afterEach(() => {
   cleanup();
@@ -512,7 +513,12 @@ describe("human action stream invalidation", () => {
     await act(async () => {});
     expect(hook.result.current.map((action) => action.id)).toEqual(["i"]);
     mocks.getExplanation.mockResolvedValue({ current_lane: { name: "Blocked" }, required_gate: {} });
-    await act(async () => emit(Source.instances[0]!, 11, type));
+    await act(async () => {
+      if (type === "human_action") {
+        vi.stubGlobal("findingSources", Source.instances);
+        dispatchHumanActionAnswered("i");
+      } else emit(Source.instances[0]!, 11, type);
+    });
     expect(hook.result.current).toEqual([]);
     expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
   });
