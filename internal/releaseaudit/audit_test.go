@@ -169,6 +169,9 @@ func (p *fixtureProvider) Invoke(ctx context.Context, invocation Invocation, obs
 			if err := json.Unmarshal(response.Output, &finding); err != nil {
 				p.t.Fatal(err)
 			}
+			if finding == nil {
+				return response, errors.New("fixture finding is not an object")
+			}
 			finding["description"] = "Reviewed <source> & Unicode 雪."
 			response.Output, err = json.MarshalIndent(finding, "", "  ")
 		}
