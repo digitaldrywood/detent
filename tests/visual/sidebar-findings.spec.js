@@ -70,6 +70,7 @@ async function installFindings(page) {
       await page.evaluate(() => {
         for (const source of window.findingSources) source.dispatchEvent(new MessageEvent("activity", { data: "human-action-answered" }));
       });
+      await page.clock.runFor(30_000);
     },
     resolve: async (ids) => {
       findings = findings.filter((finding) => !ids.includes(finding.id));
