@@ -31,7 +31,7 @@ func updateEventPageFacts(ctx context.Context, tx *sql.Tx, id string, actor trac
 	return err
 }
 
-func updateBoardFilterFacts(ctx context.Context, tx *sql.Tx, card tracker.NativeBoardCard) error {
+func updateBoardFilterFacts(ctx context.Context, tx nativeExecer, card tracker.NativeBoardCard) error {
 	issue := card.Issue
 	var verification any
 	if issue.Verification != nil {

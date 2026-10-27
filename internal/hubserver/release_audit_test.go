@@ -219,8 +219,28 @@ func (p *hubAuditProvider) Invoke(ctx context.Context, invocation releaseaudit.I
 		}
 	case "coverage-critic", "final-coverage-critic":
 		output = hubAuditLedger("candidate")
-	case "candidate-disprover", "independent-record-verifier":
+	case "candidate-disprover":
 		output = json.RawMessage(hubAuditFinding)
+	case "independent-record-verifier", "replacement-record-verifier":
+		var input struct {
+			Task struct {
+				Record json.RawMessage `json:"record"`
+				Digest string          `json:"record_sha256"`
+			} `json:"task"`
+		}
+		if err := json.Unmarshal(invocation.Input, &input); err != nil {
+			p.t.Fatal(err)
+		}
+		if len(input.Task.Record) == 0 || input.Task.Digest != fmt.Sprintf("%x", sha256.Sum256(input.Task.Record)) {
+			p.t.Fatal("verification did not bind the exact report to its digest")
+		}
+		output, err = json.Marshal(struct {
+			Decision string `json:"decision"`
+			Digest   string `json:"record_sha256"`
+		}{"accept", input.Task.Digest})
+		if err != nil {
+			return releaseaudit.Response{}, err
+		}
 	}
 	return releaseaudit.Response{SessionID: strconv.Itoa(p.sessions), Output: output}, nil
 }

@@ -17,6 +17,10 @@ func refreshAnalyticsUsage(ctx context.Context, tx *sql.Tx, organization, projec
 	if err != nil {
 		return err
 	}
+	return writeAnalyticsUsageRows(ctx, tx, organization, project, rows)
+}
+
+func writeAnalyticsUsageRows(ctx context.Context, tx nativeExecer, organization, project string, rows *sql.Rows) error {
 	defer rows.Close()
 	type usage struct {
 		attempt, period, provider, model, currency, updated string
