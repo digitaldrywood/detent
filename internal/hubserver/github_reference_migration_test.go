@@ -120,6 +120,10 @@ func TestImportedGitHubReferenceBackfill(t *testing.T) {
 				t.Fatal(err)
 			}
 			after := readWorkItem(t, fixture, issue.WorkItemID, "")
+			if after.ChangeSequence < before.ChangeSequence {
+				t.Fatal("backfill regressed project change sequence")
+			}
+			before.ChangeSequence = after.ChangeSequence
 			want := tracker.GitHubIssueSourceReference(id, test.wantURL)
 			if !reflect.DeepEqual(after.ExternalReferences, []tracker.ExternalReference{want}) {
 				t.Fatalf("backfilled references = %+v, want %+v", after.ExternalReferences, want)

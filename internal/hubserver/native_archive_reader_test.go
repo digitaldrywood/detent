@@ -136,13 +136,14 @@ func assertArchiveGolden(t *testing.T, hot, archived []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var hotValue, archivedValue any
+	var hotValue, archivedValue map[string]any
 	if err := json.Unmarshal(left, &hotValue); err != nil {
 		t.Fatal(err)
 	}
 	if err := json.Unmarshal(right, &archivedValue); err != nil {
 		t.Fatal(err)
 	}
+	normalizeTestDashboardWatermark(t, hotValue, archivedValue)
 	if !reflect.DeepEqual(hotValue, archivedValue) {
 		t.Fatalf("archived output differs\nhot: %s\narchive: %s", hot, archived)
 	}
