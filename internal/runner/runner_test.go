@@ -4446,7 +4446,13 @@ func TestRunnerClassifiesChangeSourceRefusal(t *testing.T) {
 			if state == "" {
 				state = "In Progress"
 			}
-			_, err = runner.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1375", State: state}})
+			supervisor, err := NewSupervisor(runner, SupervisorConfig{FailureRetryBaseDelay: 10 * time.Second, MaxRetryBackoff: 25 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "example-org/example-project#1", State: state}}
+			completion := supervisor.Run(t.Context(), request)
+			err = completion.Err
 			cause := error(refusal)
 			if test.recoverError != nil {
 				cause = test.recoverError
@@ -4460,8 +4466,20 @@ func TestRunnerClassifiesChangeSourceRefusal(t *testing.T) {
 			if test.wantRecovery && (execution.failure == nil || execution.failure.ErrorClass != "source_recovery" || execution.failure.Attribution != "instance" || execution.failure.Stage != "workspace_preparation") {
 				t.Fatalf("terminal failure = %#v, want instance source_recovery before provider", execution.failure)
 			}
-			if errors.Is(test.recoverError, ErrChangeSourceVersionSuperseded) && !strings.Contains(execution.failure.Error, test.recoverError.Error()) {
-				t.Fatalf("completion lost source selection identities: %s", execution.failure.Error)
+			if test.wantRecovery && (!completion.Retryable || completion.RetryAttempt != 1 || completion.RetryDelay != 10*time.Second) {
+				t.Fatalf("source refusal bypassed failure retry owner: retryable=%t attempt=%d delay=%s error=%v", completion.Retryable, completion.RetryAttempt, completion.RetryDelay, completion.Err)
+			}
+			if errors.Is(test.recoverError, ErrChangeSourceVersionSuperseded) {
+				if !strings.Contains(execution.failure.Error, test.recoverError.Error()) {
+					t.Fatalf("completion lost source selection identities: %s", execution.failure.Error)
+				}
+				for i, delay := range []time.Duration{20 * time.Second, 25 * time.Second, 25 * time.Second} {
+					request.Attempt = completion.RetryAttempt
+					completion = supervisor.Run(t.Context(), request)
+					if !errors.Is(completion.Err, ErrChangeSourceVersionSuperseded) || !completion.Retryable || completion.RetryAttempt != i+2 || completion.RetryDelay != delay || agent.calls != 0 {
+						t.Fatalf("repeated refusal: retryable=%t attempt=%d delay=%s error=%v provider calls=%d", completion.Retryable, completion.RetryAttempt, completion.RetryDelay, completion.Err, agent.calls)
+					}
+				}
 			}
 		})
 	}
