@@ -98,7 +98,7 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 		return nil, errors.Join(err, lock.Close())
 	}
 
-	db, err := openTimedWriter(sqliteWriterDSN(path, cfg.BusyTimeout, cfg.Hosted != nil))
+	db, err := openTimedWriter(sqliteWriterDSN(path, cfg.BusyTimeout, cfg.Hosted != nil), cfg.Logger)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("open hub database: %w", err), lock.Close())
 	}

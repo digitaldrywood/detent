@@ -6,6 +6,8 @@ import (
 	"database/sql/driver"
 	"errors"
 	"log/slog"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,6 +20,7 @@ import (
 // connection, so slow requests can be attributed to their own writes or to
 // waiting behind someone else's.
 type writerTiming struct {
+	route string
 	hold  atomic.Int64
 	txs   atomic.Int64
 	mu    sync.Mutex
@@ -80,17 +83,17 @@ func (t *writerTiming) logAttrs() []any {
 // openTimedWriter opens the writer pool through a connector that records each
 // transaction's and auto-commit statement's hold time against the request
 // context that started it.
-func openTimedWriter(dsn string) (*sql.DB, error) {
-	return openTimedDB(dsn, true)
+func openTimedWriter(dsn string, logger *slog.Logger) (*sql.DB, error) {
+	return openTimedDB(dsn, true, logger)
 }
 
 // openTimedReader opens a reader pool whose statements count toward the
 // request's db span but never toward writer hold time.
 func openTimedReader(dsn string) (*sql.DB, error) {
-	return openTimedDB(dsn, false)
+	return openTimedDB(dsn, false, nil)
 }
 
-func openTimedDB(dsn string, writer bool) (*sql.DB, error) {
+func openTimedDB(dsn string, writer bool, logger *slog.Logger) (*sql.DB, error) {
 	if err := registerStorageConversionDigest(); err != nil {
 		return nil, err
 	}
@@ -102,13 +105,15 @@ func openTimedDB(dsn string, writer bool) (*sql.DB, error) {
 	if err := probe.Close(); err != nil {
 		return nil, err
 	}
-	return sql.OpenDB(timedConnector{dsn: dsn, driver: base, writer: writer}), nil
+	return sql.OpenDB(timedConnector{dsn: dsn, driver: base, writer: writer, logger: logger}), nil
 }
 
 type timedConnector struct {
 	driver driver.Driver
 	dsn    string
 	writer bool
+	logger *slog.Logger
+	now    func() time.Time
 }
 
 func (c timedConnector) Connect(context.Context) (driver.Conn, error) {
@@ -116,7 +121,15 @@ func (c timedConnector) Connect(context.Context) (driver.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &timedConn{Conn: conn, writer: c.writer}, nil
+	now := c.now
+	if now == nil {
+		now = time.Now
+	}
+	logger := c.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &timedConn{Conn: conn, writer: c.writer, logger: logger, now: now}, nil
 }
 
 func (c timedConnector) Driver() driver.Driver { return c.driver }
@@ -125,6 +138,8 @@ type timedConn struct {
 	driver.Conn
 	inTx   bool
 	writer bool
+	logger *slog.Logger
+	now    func() time.Time
 }
 
 type timedTx struct {
@@ -133,6 +148,59 @@ type timedTx struct {
 	timing  *writerTiming
 	request *requestTiming
 	start   time.Time
+	holder  writerHold
+}
+
+type writerHold struct {
+	start time.Time
+	pcs   [32]uintptr
+	n     int
+	route string
+}
+
+type writerHoldOwner string
+
+func (o writerHoldOwner) LogValue() slog.Value {
+	return slog.StringValue(string(o))
+}
+
+func (c *timedConn) startWriterHold(ctx context.Context) writerHold {
+	if !c.writer || c.inTx {
+		return writerHold{}
+	}
+	hold := writerHold{start: c.now()}
+	hold.n = runtime.Callers(2, hold.pcs[:])
+	if timing := writerTimingFrom(ctx); timing != nil {
+		hold.route = timing.route
+	}
+	return hold
+}
+
+func (c *timedConn) endWriterHold(hold *writerHold) {
+	if hold.n == 0 {
+		return
+	}
+	elapsed := c.now().Sub(hold.start)
+	if elapsed < time.Second {
+		return
+	}
+	owner := "unknown"
+	frames := runtime.CallersFrames(hold.pcs[:hold.n])
+	for {
+		frame, more := frames.Next()
+		if !strings.HasSuffix(frame.File, "/writer_timing.go") && !strings.HasPrefix(frame.Function, "database/sql.") {
+			owner = frame.Function
+			break
+		}
+		if !more {
+			break
+		}
+	}
+	attrs := []any{"owner", writerHoldOwner(owner), "hold_ms", elapsed.Milliseconds(), "txs", 1}
+	if hold.route != "" {
+		attrs = append(attrs, "route", hold.route)
+	}
+	c.logger.Warn("hub writer held", attrs...)
 }
 
 func (t *timedTx) Commit() error {
@@ -153,6 +221,7 @@ func (t *timedTx) Rollback() error {
 func (t *timedTx) end() {
 	t.conn.inTx = false
 	t.timing.add(t.start)
+	t.conn.endWriterHold(&t.holder)
 }
 
 func (c *timedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
@@ -161,6 +230,7 @@ func (c *timedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.
 	if !ok {
 		return nil, errors.New("sqlite driver does not support contextual transactions")
 	}
+	holder := c.startWriterHold(ctx)
 	tx, err := beginner.BeginTx(ctx, opts)
 	requestTimingFrom(ctx).addDB(start)
 	if err != nil {
@@ -171,7 +241,7 @@ func (c *timedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.
 	if c.writer {
 		timing = writerTimingFrom(ctx)
 	}
-	return &timedTx{Tx: tx, conn: c, timing: timing, request: requestTimingFrom(ctx), start: start}, nil
+	return &timedTx{Tx: tx, conn: c, timing: timing, request: requestTimingFrom(ctx), start: start, holder: holder}, nil
 }
 
 func (c *timedConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
@@ -187,11 +257,13 @@ func (c *timedConn) ExecContext(ctx context.Context, query string, args []driver
 		return nil, driver.ErrSkip
 	}
 	start := time.Now()
+	holder := c.startWriterHold(ctx)
 	result, err := execer.ExecContext(ctx, query, args)
 	requestTimingFrom(ctx).statement(start, query, args)
 	if c.writer && !c.inTx {
 		writerTimingFrom(ctx).add(start)
 	}
+	c.endWriterHold(&holder)
 	return result, err
 }
 
@@ -263,6 +335,7 @@ func (s *Service) timeWriterUse(next echo.HandlerFunc) echo.HandlerFunc {
 			ctx = withRequestTiming(ctx, request)
 		}
 		ctx, timing := withWriterTiming(ctx)
+		timing.route = c.Path()
 		c.SetRequest(c.Request().WithContext(ctx))
 		err := next(c)
 		elapsed := time.Since(start)

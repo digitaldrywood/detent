@@ -1,20 +1,26 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/labstack/echo/v4"
 )
 
 func TestTimedConnectionsAttributeStatements(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "timed.db")
-	writer, err := openTimedWriter(sqliteWriterDSN(path, time.Second, false))
+	writer, err := openTimedWriter(sqliteWriterDSN(path, time.Second, false), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,6 +81,141 @@ func TestTimedConnectionsAttributeStatements(t *testing.T) {
 				t.Fatalf("writer txs=%d db=%d traced=%d", hold.txs.Load(), timing.db.Load(), traced)
 			}
 		})
+	}
+}
+
+func TestLongWriterHoldLogsOwner(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		hold    time.Duration
+		action  string
+		request bool
+		writer  bool
+		logs    bool
+	}{
+		{"background commit", 1500 * time.Millisecond, "commit", false, true, true},
+		{"request rollback", 1500 * time.Millisecond, "rollback", true, true, true},
+		{"threshold included", time.Second, "commit", true, true, true},
+		{"below threshold", time.Second - time.Nanosecond, "commit", false, true, false},
+		{"autocommit", 2 * time.Second, "exec", false, true, true},
+		{"reader excluded", 2 * time.Second, "commit", false, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var output bytes.Buffer
+			logger := slog.New(hostedLogHandler{output: slog.NewJSONHandler(&output, nil)})
+			probe, err := sql.Open("sqlite", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := probe.Driver()
+			if err := probe.Close(); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			var hold time.Duration
+			db := sql.OpenDB(timedConnector{driver: base, dsn: ":memory:", writer: test.writer, logger: logger, now: func() time.Time {
+				calls++
+				now := time.Unix(0, 0)
+				if calls > 1 {
+					return now.Add(hold)
+				}
+				return now
+			}})
+			t.Cleanup(func() { db.Close() })
+			db.SetMaxOpenConns(1)
+			if _, err := db.ExecContext(t.Context(), "CREATE TABLE items(name TEXT)"); err != nil {
+				t.Fatal(err)
+			}
+			calls, hold = 0, test.hold
+			if test.request {
+				s := &Service{config: Config{Logger: logger}}
+				s.writerStatsAt.Store(time.Now().UnixNano())
+				request := httptest.NewRequest("POST", "/items/private-path-sentinel?token=private-token-sentinel", strings.NewReader("private-body-sentinel"))
+				c := echo.New().NewContext(request.WithContext(t.Context()), httptest.NewRecorder())
+				c.SetPath("/items/:item")
+				if err := s.timeWriterUse(func(c echo.Context) error {
+					runWriterHoldTest(t, db, c.Request().Context(), test.action)
+					return nil
+				})(c); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				runWriterHoldTest(t, db, t.Context(), test.action)
+			}
+			for _, sentinel := range []string{"private-path-sentinel", "private-token-sentinel", "private-body-sentinel", "private-query-sentinel", "private-value-sentinel"} {
+				if strings.Contains(output.String(), sentinel) {
+					t.Fatalf("log contains customer content: %s", output.String())
+				}
+			}
+			if !test.logs && output.Len() != 0 {
+				t.Fatalf("unexpected logs: %s", output.String())
+			}
+			var records []map[string]any
+			decoder := json.NewDecoder(&output)
+			for decoder.More() {
+				var record map[string]any
+				if err := decoder.Decode(&record); err != nil {
+					t.Fatal(err)
+				}
+				if record["msg"] == "hub writer held" {
+					records = append(records, record)
+				}
+			}
+			if !test.logs {
+				if len(records) != 0 {
+					t.Fatalf("unexpected long hold logs: %v", records)
+				}
+				return
+			}
+			if len(records) != 1 {
+				t.Fatalf("long hold logs = %d, want 1: %v", len(records), records)
+			}
+			delete(records[0], "time")
+			want := map[string]any{"level": "WARN", "msg": "hub writer held", "owner": "github.com/digitaldrywood/detent/internal/hubserver.runWriterHoldTest", "hold_ms": float64(test.hold.Milliseconds()), "txs": float64(1)}
+			if test.request {
+				want["route"] = "/items/:item"
+			}
+			if !reflect.DeepEqual(records[0], want) {
+				t.Fatalf("record = %v, want %v", records[0], want)
+			}
+		})
+	}
+}
+
+func runWriterHoldTest(t *testing.T, db *sql.DB, ctx context.Context, action string) {
+	t.Helper()
+	query := "INSERT INTO items(name) VALUES (? || 'private-query-sentinel')"
+	if action == "exec" {
+		if _, err := db.ExecContext(ctx, query, "private-value-sentinel"); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for range 2 {
+		if _, err := tx.ExecContext(ctx, query, "private-value-sentinel"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finishWriterHoldTest(t, tx, action)
+}
+
+func finishWriterHoldTest(t *testing.T, tx *sql.Tx, action string) {
+	t.Helper()
+	var err error
+	if action == "rollback" {
+		err = tx.Rollback()
+	} else {
+		err = tx.Commit()
+	}
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
