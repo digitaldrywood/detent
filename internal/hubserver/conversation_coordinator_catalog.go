@@ -64,7 +64,9 @@ func (s *Service) coordinatorCatalog(ctx context.Context) ([]operatortool.Defini
 		return nil, err
 	}
 	tools := (&coordinatorToolset{}).tools()
-	return slices.DeleteFunc(definitions, func(definition operatortool.Definition) bool { return coordinatorCatalogExcluded(definition.Name, tools) }), nil
+	return slices.DeleteFunc(definitions, func(definition operatortool.Definition) bool {
+		return coordinatorCatalogExcluded(definition.Name, tools)
+	}), nil
 }
 
 type coordinatorCatalogEntry struct {
