@@ -280,13 +280,9 @@ func applyNativeProjectStates(ctx context.Context, tx *sql.Tx, scope nativeScope
 	if reflect.DeepEqual(project.States, states) {
 		return nil
 	}
-	var occupied int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM issues i JOIN workflow_states w ON w.id=i.workflow_state_id
-WHERE i.project_id=? AND NOT EXISTS (SELECT 1 FROM json_each(?) s WHERE json_extract(s.value,'$.name')=w.detent_state)`, scope.project, encoded).Scan(&occupied); err != nil {
+	removals, err := nativeWorkflowRemovals(ctx, tx, scope.project, states)
+	if err != nil {
 		return err
-	}
-	if occupied != 0 {
-		return nativeWorkflowInvalid("Workflow states used by work items cannot be removed")
 	}
 	for rank, state := range states {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at,board_rank)
@@ -295,10 +291,39 @@ WHERE workflow_states.terminal IS NOT excluded.terminal OR workflow_states.dispa
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM workflow_states WHERE project_id=?
-AND NOT EXISTS (SELECT 1 FROM json_each(?) s WHERE json_extract(s.value,'$.name')=workflow_states.detent_state)`, scope.project, encoded); err != nil {
-		return err
+	for _, id := range removals {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM workflow_states WHERE project_id=? AND id=?", scope.project, id); err != nil {
+			return err
+		}
 	}
 	_, err = tx.ExecContext(ctx, "UPDATE projects SET states_json=? WHERE organization_id=? AND id=?", encoded, scope.organization, scope.project)
 	return err
+}
+
+func nativeWorkflowRemovals(ctx context.Context, q nativeQueryer, project tracker.ProjectID, states []tracker.NativeState) ([]int64, error) {
+	names := make(map[string]bool, len(states))
+	for _, state := range states {
+		names[state.Name] = true
+	}
+	rows, err := q.QueryContext(ctx, `SELECT w.id,w.detent_state,EXISTS(SELECT 1 FROM issues i WHERE i.workflow_state_id=w.id) FROM workflow_states w WHERE w.project_id=?`, project)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var removals []int64
+	for rows.Next() {
+		var id int64
+		var name string
+		var occupied bool
+		if err := rows.Scan(&id, &name, &occupied); err != nil {
+			return nil, err
+		}
+		if !names[name] {
+			if occupied {
+				return nil, nativeWorkflowInvalid("Workflow states used by work items cannot be removed")
+			}
+			removals = append(removals, id)
+		}
+	}
+	return removals, rows.Err()
 }

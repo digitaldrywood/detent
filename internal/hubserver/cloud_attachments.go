@@ -238,6 +238,13 @@ func (s *Service) readCloudAttachment(ctx context.Context, scope nativeScope, id
 }
 
 func readCloudAttachment(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (attachment.Metadata, error) {
+	if scope.credential.HostedRole == "reporter" {
+		pageQuery, pageErr := prepareNativePageQuery(ctx, query, nativeScope{organization: scope.organization}, "", "native_issue_actors")
+		if pageErr != nil {
+			return attachment.Metadata{}, pageErr
+		}
+		query = pageQuery
+	}
 	record, err := scanCloudAttachment(query.QueryRowContext(ctx, "SELECT "+cloudAttachmentColumns+" FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND kind='attachment' AND deleted_at IS NULL", scope.organization, scope.project, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return record, nativeNotFound()

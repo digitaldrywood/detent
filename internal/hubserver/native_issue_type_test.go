@@ -142,6 +142,7 @@ func TestNativeIssueTypeMigration(t *testing.T) {
 		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET labels_json=? WHERE native_id=?", "[\""+test.label+"\"]", test.id); err != nil {
 			t.Fatal(err)
 		}
+		syncNativeIssueFixtureFacts(t, f.service.database.db, test.id)
 	}
 	data, err := migrationFiles.ReadFile("migrations/20261013150500_issue_type.sql")
 	if err != nil {

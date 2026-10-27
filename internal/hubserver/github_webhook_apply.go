@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type webhookOutcome string
@@ -509,6 +511,10 @@ func applyIssueProjection(ctx context.Context, tx *sql.Tx, repositoryID int64, i
 		}
 		id, err := inserted.LastInsertId()
 		if err != nil {
+			return projectionApplyResult{}, err
+		}
+
+		if err := updateIssueActor(ctx, tx, id, tracker.Actor{Kind: "integration", PrincipalID: "github-import"}); err != nil {
 			return projectionApplyResult{}, err
 		}
 		if err := replaceIssueFilterValues(ctx, tx, id, issue.Labels, issue.Assignees); err != nil {

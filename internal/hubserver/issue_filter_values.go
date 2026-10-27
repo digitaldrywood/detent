@@ -34,7 +34,7 @@ func migrateIssueFilterValues(ctx context.Context, tx *sql.Tx) error {
 		if err := json.Unmarshal([]byte(assigneesRaw), &assignees); err != nil {
 			return err
 		}
-		if err := replaceIssueFilterValues(ctx, tx, id, labels, assignees); err != nil {
+		if err := replaceNormalizedIssueFilterValues(ctx, tx, id, labels, assignees); err != nil {
 			return err
 		}
 		after = id
@@ -42,6 +42,13 @@ func migrateIssueFilterValues(ctx context.Context, tx *sql.Tx) error {
 }
 
 func replaceIssueFilterValues(ctx context.Context, tx *sql.Tx, id int64, labels, assignees []string) error {
+	if err := replaceNormalizedIssueFilterValues(ctx, tx, id, labels, assignees); err != nil {
+		return err
+	}
+	return replaceIssuePageFilterValues(ctx, tx, id, labels, assignees)
+}
+
+func replaceNormalizedIssueFilterValues(ctx context.Context, tx *sql.Tx, id int64, labels, assignees []string) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM issue_filter_values WHERE issue_id=?", id); err != nil {
 		return err
 	}

@@ -107,7 +107,7 @@ func TestHealthIntakeSignatures(t *testing.T) {
 				if test.name == "overlapping signatures" {
 					index := slices.IndexFunc(page.Items, func(finding healthFinding) bool { return len(finding.Issues) == 2 })
 					visible := page.Items[index].Issues[0].WorkItemID
-					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET actor_json='{"kind":"human","principal_id":"reporter"}' WHERE native_id=?`, visible); err != nil {
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json='{"kind":"human","principal_id":"reporter"}' WHERE native_id=?`, visible); err != nil {
 						t.Fatal(err)
 					}
 					scope.credential.HostedRole = "reporter"

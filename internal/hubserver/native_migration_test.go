@@ -73,12 +73,44 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+versionTable+" (version_id,is_applied) VALUES (59,1),(20261023234600,1),(20261025220000,1),(20261025230900,1),(20261025233000,1),(20261026003000,1),(20261026041522,1)"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `DROP VIEW native_transition_facts;
+DROP INDEX collaboration_events_comment_actor;
+DROP INDEX collaboration_events_terminal_transition;
+DROP INDEX collaboration_events_page_unknown;
+DROP INDEX collaboration_events_transition_unknown;
+ALTER TABLE collaboration_events DROP COLUMN edited_body;
+ALTER TABLE collaboration_events DROP COLUMN edited_title;
+ALTER TABLE collaboration_events DROP COLUMN run_present;
+ALTER TABLE collaboration_events DROP COLUMN reason;
+ALTER TABLE collaboration_events DROP COLUMN to_state;
+ALTER TABLE collaboration_events DROP COLUMN from_state;
+ALTER TABLE collaboration_events DROP COLUMN event_revision;
+ALTER TABLE collaboration_events DROP COLUMN actor_principal_id;
+ALTER TABLE collaboration_events DROP COLUMN actor_kind;
+ALTER TABLE collaboration_events DROP COLUMN page_projection_ready;
+`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := provider.DownTo(t.Context(), 58); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := provider.Up(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	pageMigration, err := migrationFiles.ReadFile("migrations/20261025223000_issue_page_facts.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageSQL := string(pageMigration)
+	eventStart := strings.Index(pageSQL, "ALTER TABLE collaboration_events")
+	eventEnd := strings.Index(pageSQL, "ALTER TABLE native_board_items")
+	if _, err := f.service.database.db.ExecContext(t.Context(), pageSQL[eventStart:eventEnd]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE VIEW native_transition_facts AS SELECT id,organization_id,project_id,work_item_id,sequence,recorded_at,from_state,to_state FROM collaboration_events WHERE type='workflow.transitioned'`); err != nil {
+		t.Fatal(err)
+	}
+
 	var after tracker.Page[tracker.CollaborationEvent]
 	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", f.token, nil), &after)
 	if len(after.Items) != 1 || len(before.Items) != 1 || after.Items[0].ID != before.Items[0].ID || after.Items[0].Actor != before.Items[0].Actor || after.Items[0].RecordedAt != before.Items[0].RecordedAt {

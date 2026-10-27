@@ -695,7 +695,7 @@ func TestHostedFleetHostUsageScope(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_json=? WHERE native_id=?", string(encoded), second.WorkItemID); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json=? WHERE native_id=?", string(encoded), second.WorkItemID); err != nil {
 				t.Fatal(err)
 			}
 

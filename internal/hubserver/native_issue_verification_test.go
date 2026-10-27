@@ -90,7 +90,7 @@ func (v verificationFixture) file(t *testing.T, filer, key string, actor *tracke
 		if err != nil {
 			t.Fatal(err)
 		}
-		operatorSQL(t, v.hostedSecurityFixture, "UPDATE issues SET actor_json=? WHERE native_id=?", string(raw), issue.WorkItemID)
+		operatorSQL(t, v.hostedSecurityFixture, "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json=? WHERE native_id=?", string(raw), issue.WorkItemID)
 	}
 	if body != "" {
 		operatorSQL(t, v.hostedSecurityFixture, "UPDATE issues SET body=? WHERE native_id=?", body, issue.WorkItemID)

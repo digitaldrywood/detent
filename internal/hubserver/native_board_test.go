@@ -1119,13 +1119,13 @@ func TestNativeBoardRefreshSkipsFailingCard(t *testing.T) {
 				if i%2 != 0 {
 					expiry = now.Add(24 * time.Hour).UTC().Format("2006-01-02T15:04:05.000000000Z")
 				}
-				if _, err := db.ExecContext(t.Context(), `INSERT INTO native_board_items SELECT ?,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,?,record_json FROM native_board_items WHERE work_item_id=?`, fmt.Sprintf("wi_!%06d", i), expiry, broken); err != nil {
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO native_board_items(work_item_id,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json) SELECT ?,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,?,record_json FROM native_board_items WHERE work_item_id=?`, fmt.Sprintf("wi_!%06d", i), expiry, broken); err != nil {
 					t.Fatal(err)
 				}
 			}
 			for i := range test.failures {
 				id := fmt.Sprintf("wi_00000000000000000000000000000%03d", i)
-				if _, err := db.ExecContext(t.Context(), `INSERT INTO native_board_items SELECT ?,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json FROM native_board_items WHERE work_item_id=?`, id, broken); err != nil {
+				if _, err := db.ExecContext(t.Context(), `INSERT INTO native_board_items(work_item_id,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json) SELECT ?,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json FROM native_board_items WHERE work_item_id=?`, id, broken); err != nil {
 					t.Fatal(err)
 				}
 				if test.source == "expired" || (test.source == "mixed" && i%2 == 0) {
@@ -1243,7 +1243,7 @@ func TestNativeBoardCandidateQueryBounded(t *testing.T) {
 			defer tx.Rollback()
 			for i := range count * 2 {
 				id := fmt.Sprintf("wi_%06d", i)
-				if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_board_items SELECT ?,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json FROM native_board_items WHERE work_item_id=?`, id, issue.WorkItemID); err != nil {
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_board_items(work_item_id,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json) SELECT ?,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json FROM native_board_items WHERE work_item_id=?`, id, issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 				if i%2 == 0 {

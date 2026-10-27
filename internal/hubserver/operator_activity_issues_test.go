@@ -127,7 +127,7 @@ func TestActivityIssueRead(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := tx.ExecContext(t.Context(), `UPDATE issues SET actor_json=? WHERE native_id=?`, string(actor), id); err != nil {
+				if _, err := tx.ExecContext(t.Context(), `UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json=? WHERE native_id=?`, string(actor), id); err != nil {
 					t.Fatal(err)
 				}
 				ids = append(ids, id)

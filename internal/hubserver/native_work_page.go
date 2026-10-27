@@ -11,13 +11,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const nativeTerminalEnteredAt = `(SELECT e.recorded_at FROM collaboration_events e
-JOIN workflow_states target ON target.project_id = e.project_id AND target.detent_state = json_extract(e.data_json, '$.to_state') AND target.terminal = 1
-JOIN workflow_states origin ON origin.project_id = e.project_id AND origin.detent_state = json_extract(e.data_json, '$.from_state') AND origin.terminal = 0
-WHERE e.organization_id = i.organization_id AND e.project_id = i.project_id AND e.work_item_id = i.native_id AND e.type = 'workflow.transitioned'
+const nativeTerminalEnteredAt = `(SELECT e.recorded_at FROM native_transition_facts e
+JOIN workflow_states target ON target.project_id = e.project_id AND target.detent_state = e.to_state AND target.terminal = 1
+JOIN workflow_states origin ON origin.project_id = e.project_id AND origin.detent_state = e.from_state AND origin.terminal = 0
+WHERE e.organization_id = i.organization_id AND e.project_id = i.project_id AND e.work_item_id = i.native_id
 ORDER BY e.sequence DESC LIMIT 1)`
 
 func readNativeWorkSummary(ctx context.Context, db nativeQueryer, scope nativeScope, query string, args []any, limit int, now time.Time, completedWindow, search string) (*tracker.NativeWorkSummary, error) {
+	pageQuery, pageErr := prepareNativePageStatement(ctx, db, scope, "", query)
+	if pageErr != nil {
+		return nil, pageErr
+	}
+	db = pageQuery
 	live := `EXISTS (SELECT 1 FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
 WHERE a.organization_id = i.organization_id AND a.project_id = i.project_id AND a.work_item_id = i.native_id
 AND a.status = 'running' AND l.released_at IS NULL AND julianday(l.renewed_at) <= julianday(?) AND julianday(l.expires_at) > julianday(?))`

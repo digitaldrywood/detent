@@ -80,7 +80,7 @@ type nativeIssuePageItem struct {
 // readIssuePageItems returns up to limit+1 items after the cursor and the
 // list total. A first page also returns the whole frozen order, which the
 // caller keeps only when it hands out a continuation cursor.
-func (s *Service) readIssuePageItems(ctx context.Context, q nativeQueryer, query string, args []any, limit int, cursor *nativeCursor, sort, search string) ([]nativeIssuePageItem, []nativeIssuePageItem, int, error) {
+func (s *Service) readIssuePageItems(ctx context.Context, q nativeQueryer, query string, args []any, limit int, cursor *nativeCursor, sort, search string, scopes ...nativeScope) ([]nativeIssuePageItem, []nativeIssuePageItem, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	position := cursor.Issues
@@ -88,7 +88,7 @@ func (s *Service) readIssuePageItems(ctx context.Context, q nativeQueryer, query
 		if cursor.After != "" {
 			return nil, nil, 0, nativePublicInvalid("Work list order changed; restart the query")
 		}
-		projected, err := s.projectIssuePage(ctx, q, query, args, sort, search)
+		projected, err := s.projectIssuePage(ctx, q, query, args, sort, search, scopes...)
 		if err != nil {
 			return nil, nil, 0, err
 		}
@@ -222,8 +222,7 @@ func pageString(value any) string {
 }
 
 const nativeIssuePageProjection = `SELECT i.native_id,
-COALESCE((SELECT CAST(lane.key AS INTEGER) FROM projects p, json_each(p.states_json) lane
- WHERE p.id = i.project_id AND json_extract(lane.value, '$.name') = ws.detent_state), 2147483647),
+COALESCE((SELECT board_rank FROM native_workflow_ranks WHERE id=ws.id), 2147483647),
 COALESCE(ws.detent_state, ''),
 CASE WHEN ws.terminal = 1 THEN 0 ELSE COALESCE((SELECT CASE WHEN q.priority_override BETWEEN 0 AND 3 THEN q.priority_override ELSE 4 END
  FROM queue_entries q WHERE q.issue_id = i.id ORDER BY q.id LIMIT 1), 4) END,
@@ -238,7 +237,7 @@ i.project_id || '#' || i.number`
 
 const nativeIssuePageItemColumns = 9
 
-func (s *Service) projectIssuePage(ctx context.Context, q nativeQueryer, query string, args []any, sort, search string) (_ [][]any, resultErr error) {
+func (s *Service) projectIssuePage(ctx context.Context, q nativeQueryer, query string, args []any, sort, search string, scopes ...nativeScope) (_ [][]any, resultErr error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	selected := nativeIssuePageProjection
@@ -251,7 +250,16 @@ func (s *Service) projectIssuePage(ctx context.Context, q nativeQueryer, query s
 	} else {
 		selected += ", 0, ''"
 	}
-	rows, err := q.QueryContext(ctx, strings.Replace(query, "SELECT i.native_id", selected, 1), args...)
+	scope := nativeScope{}
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
+	statement := strings.Replace(query, "SELECT i.native_id", selected, 1)
+	pageQuery, err := prepareNativePageStatement(ctx, q, scope, "", statement)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := pageQuery.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, err
 	}

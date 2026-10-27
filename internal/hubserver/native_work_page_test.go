@@ -72,6 +72,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		transports[name] = hostedContextProtocol(t, f.service, ctx, name)
 	}
 	read := func(query string) tracker.NativeIssuePage {
+		syncNativeIssueFixtureFacts(t, f.service.database.db)
 		t.Helper()
 		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?include=work&limit=100"+query, f.token, nil)
 		requireNativeStatus(t, response, http.StatusOK)
@@ -298,6 +299,7 @@ func TestNativeWorkPageOperationalScope(t *testing.T) {
 		}
 		matching = read(query + "&cursor=" + url.QueryEscape(matching.NextCursor))
 	}
+	syncNativeIssueFixtureFacts(t, f.service.database.db)
 	if len(found) != 130 || !found[more[0].WorkItemID] {
 		t.Fatal("older open match was unreachable")
 	}

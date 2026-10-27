@@ -179,11 +179,7 @@ func intakeLinkedIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, id 
 	}
 	// Native field ownership includes an explicit edit back to the initial
 	// value. Comparing only strings would lose that human intent.
-	var titleOwned, bodyOwned bool
-	err = tx.QueryRowContext(ctx, `SELECT
-title_supplied OR EXISTS (SELECT 1 FROM collaboration_events e, json_each(e.data_json, '$.fields') f WHERE e.work_item_id = s.work_item_id AND e.type = 'issue.edited' AND f.value = 'title'),
-body_supplied OR EXISTS (SELECT 1 FROM collaboration_events e, json_each(e.data_json, '$.fields') f WHERE e.work_item_id = s.work_item_id AND e.type = 'issue.edited' AND f.value = 'body')
-FROM linked_issue_sources s WHERE work_item_id = ?`, issue.WorkItemID).Scan(&titleOwned, &bodyOwned)
+	titleOwned, bodyOwned, err := readNativeEditedOwnership(ctx, tx, issue.WorkItemID)
 	if err != nil {
 		return nil, err
 	}

@@ -29,7 +29,7 @@ func nativeBoardFilter(scope nativeScope, params url.Values, lanes bool) (string
 		return "", nil, err
 	}
 	if createdBy != "" {
-		where.WriteString(" AND json_extract(b.record_json, '$.issue.actor.principal_id') = ?")
+		where.WriteString(" AND " + nativeBoardFact("actor_principal_id") + " = ?")
 		args = append(args, createdBy)
 	}
 	switch params.Get("archived") {
@@ -53,12 +53,12 @@ func nativeBoardFilter(scope nativeScope, params url.Values, lanes bool) (string
 		}
 	}
 	for _, filter := range []struct{ name, clause string }{
-		{"type", "json_extract(b.record_json,'$.issue.type')=?"},
-		{"verification", "json_extract(b.record_json,'$.issue.verification.state')=?"},
+		{"type", nativeBoardFact("issue_type") + "=?"},
+		{"verification", nativeBoardFact("verification_state") + "=?"},
 		{"state", "b.state=?"},
-		{"label", "EXISTS(SELECT 1 FROM json_each(b.record_json,'$.issue.labels') WHERE value=?)"},
-		{"assignee", "EXISTS(SELECT 1 FROM json_each(b.record_json,'$.issue.assignees') WHERE value=?)"},
-		{"priority", "CAST(json_extract(b.record_json,'$.issue.priority') AS TEXT)=?"},
+		{"label", "EXISTS(SELECT 1 FROM native_board_filter_values WHERE work_item_id=b.work_item_id AND kind='label' AND value=?)"},
+		{"assignee", "EXISTS(SELECT 1 FROM native_board_filter_values WHERE work_item_id=b.work_item_id AND kind='assignee' AND value=?)"},
+		{"priority", "CAST(" + nativeBoardFact("priority") + " AS TEXT)=?"},
 	} {
 		if filter.name == "state" && !lanes {
 			continue
@@ -97,7 +97,11 @@ func readNativeBoardSummary(ctx context.Context, q nativeQueryer, scope nativeSc
 	if !filtered {
 		statement = "SELECT state,total,running FROM native_board_counts b WHERE " + where + " AND total>0"
 	}
-	rows, err := q.QueryContext(ctx, statement, args...)
+	pageQuery, pageErr := prepareNativePageStatement(ctx, q, scope, "", statement)
+	if pageErr != nil {
+		return nil, pageErr
+	}
+	rows, err := pageQuery.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +132,11 @@ func readNativeBoardSummary(ctx context.Context, q nativeQueryer, scope nativeSc
 	if err != nil {
 		return nil, err
 	}
-	windows, err := readNativeShippedWindows(ctx, q, scope, closedWhere, closedArgs, now)
+	closedQuery, err := prepareNativePageStatement(ctx, pageQuery, scope, "", closedWhere)
+	if err != nil {
+		return nil, err
+	}
+	windows, err := readNativeShippedWindows(ctx, closedQuery, scope, closedWhere, closedArgs, now)
 	if err != nil {
 		return nil, err
 	}
@@ -261,8 +269,12 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 		}
 	}
 	args = append(args, limit+1)
-	statement := strings.Join([]string{"SELECT b.record_json," + nativeActorDisplayName("json_extract(b.record_json, '$.issue.actor.principal_id')", "b.organization_id") + ",b.lane_rank,b.state,b.priority_rank,b.activity_missing,b.activity_at,b.identifier,b.closed_at" + searchColumns + " FROM " + from + " WHERE", where, "ORDER BY", order, "LIMIT ?"}, " ")
-	rows, err := tx.QueryContext(ctx, statement, args...)
+	statement := strings.Join([]string{"SELECT b.record_json," + nativeActorDisplayName(nativeBoardFact("actor_principal_id"), "b.organization_id") + ",b.lane_rank,b.state,b.priority_rank,b.activity_missing,b.activity_at,b.identifier,b.closed_at" + searchColumns + " FROM " + from + " WHERE", where, "ORDER BY", order, "LIMIT ?"}, " ")
+	pageQuery, err := prepareNativePageStatement(ctx, tx, scope, "", statement)
+	if err != nil {
+		return page, err
+	}
+	rows, err := pageQuery.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return page, err
 	}

@@ -42,7 +42,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 		if err := appendNativeHistory(t.Context(), tx, scope, ids[seed.name], "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: seed.state}, to.Add(-time.Duration(10+i)*time.Hour)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET actor_json=json_set(actor_json,'$.principal_id',?) WHERE native_id=?", seed.filer, ids[seed.name]); err != nil {
+		if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json=json_set(actor_json,'$.principal_id',?) WHERE native_id=?", seed.filer, ids[seed.name]); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -204,7 +204,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 			query string
 			args  []any
 		}{
-			{"UPDATE issues SET actor_json=json_set(actor_json,'$.principal_id','principal_rpt_secret') WHERE native_id=?", []any{issue.WorkItemID}},
+			{"UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json=json_set(actor_json,'$.principal_id','principal_rpt_secret') WHERE native_id=?", []any{issue.WorkItemID}},
 			{`INSERT INTO leases (lease_id, issue_id, machine_id, session_id, expires_at, acquired_at, renewed_at, released_at, created_at, updated_at)
  SELECT 'lease_rpt_secret',(SELECT id FROM issues WHERE native_id=?),machine_id,'session_rpt_secret',expires_at,acquired_at,renewed_at,released_at,created_at,updated_at FROM leases WHERE lease_id='lease_browser_usage_0_1'`, []any{issue.WorkItemID}},
 			{"INSERT INTO lease_runners (lease_id, runner_id) VALUES ('lease_rpt_secret','runner_browser_preview_shared')", nil},

@@ -107,6 +107,9 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 					}
 				}
 			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL WHERE native_id=?", issue.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hub_schema_version WHERE version_id=20261006192328"); err != nil {
 				t.Fatal(err)
 			}

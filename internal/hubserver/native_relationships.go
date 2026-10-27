@@ -33,6 +33,13 @@ func readNativeRelatedBatch(ctx context.Context, query nativeQueryer, scope nati
 	if len(items) == 0 {
 		return nil
 	}
+	if scope.credential.HostedRole == "reporter" {
+		pageQuery, pageErr := prepareNativePageQuery(ctx, query, nativeScope{organization: scope.organization}, "", "native_issue_actors")
+		if pageErr != nil {
+			return pageErr
+		}
+		query = pageQuery
+	}
 	ids := make([]any, 0, len(items))
 	for id, issue := range items {
 		ids = append(ids, id)

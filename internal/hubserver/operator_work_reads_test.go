@@ -63,7 +63,7 @@ func TestOperatorNativeWorkReadErrors(t *testing.T) {
 	}
 	ctx := capture(f.token)
 	broader := capture(foreign.token)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_json='[]' WHERE native_id=?", fault.WorkItemID); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json='[]' WHERE native_id=?", fault.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
 	for _, transport := range []string{"stdio", "http"} {

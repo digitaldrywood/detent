@@ -14,8 +14,8 @@ import (
 )
 
 func readNativeBlockerHistory(ctx context.Context, q nativeQueryer, scope nativeScope, issue tracker.NativeIssue) ([]tracker.CollaborationEvent, error) {
-	rows, err := q.QueryContext(ctx, `SELECT sequence, type, actor_json, data_json, recorded_at FROM collaboration_events
-WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND json_extract(data_json, '$.revision') IS NOT NULL ORDER BY sequence`, scope.organization, scope.project, issue.WorkItemID)
+	rows, err := q.QueryContext(ctx, `SELECT sequence, type, actor_json, data_json, recorded_at, page_projection_ready, event_revision FROM collaboration_events
+WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND (event_revision IS NOT NULL OR page_projection_ready IS NULL) ORDER BY sequence`, scope.organization, scope.project, issue.WorkItemID)
 	if err != nil {
 		return nil, err
 	}
@@ -24,14 +24,30 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND json_extra
 	for rows.Next() {
 		event := tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: issue.WorkItemID}
 		var actor, data, at string
-		if err := rows.Scan(&event.AggregateSequence, &event.Type, &actor, &data, &at); err != nil {
+		var ready, revision sql.NullInt64
+		if err := rows.Scan(&event.AggregateSequence, &event.Type, &actor, &data, &at, &ready, &revision); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(actor), &event.Actor); err != nil {
 			return nil, err
 		}
+		if !ready.Valid {
+			var projected tracker.CollaborationData
+			if err := decodePageEvent(data, &projected); err != nil {
+				return nil, err
+			}
+			if projected.Revision == 0 {
+				continue
+			}
+		}
 		if err := decodeRunHistory(ctx, q, data, &event.Data); err != nil {
 			return nil, err
+		}
+		if ready.Valid && ready.Int64 == 1 {
+			event.Data.Revision = tracker.Revision(revision.Int64)
+		}
+		if event.Data.Revision == 0 {
+			continue
 		}
 		if event.RecordedAt, err = parseTimeValue(at); err != nil {
 			return nil, err
