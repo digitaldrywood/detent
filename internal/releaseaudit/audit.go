@@ -88,6 +88,7 @@ type Candidate struct {
 }
 
 type Snapshot struct {
+	BaseCommit     string            `json:"base_commit,omitempty"`
 	Identity       Identity          `json:"identity"`
 	BundleCommit   string            `json:"bundle_commit"`
 	BundleDigest   string            `json:"bundle_digest"`
@@ -120,10 +121,13 @@ type Observation struct {
 }
 
 type Request struct {
-	Identity  Identity
-	Scratch   string
-	Allowance Allowance
-	Source    Source
+	// BaseCommit declares a caller-verified incremental range ending at Identity.Commit.
+	// Empty means a full-source audit; excluded units then prevent completion.
+	BaseCommit string
+	Identity   Identity
+	Scratch    string
+	Allowance  Allowance
+	Source     Source
 }
 
 type Stage struct {
@@ -153,11 +157,17 @@ func (s *Stage) Run(ctx context.Context, request Request) (result Snapshot, retu
 	if request.Source == nil || request.Identity.ProjectID == "" || request.Identity.Repository == "" || request.Identity.Commit != request.Source.Commit() || len(request.Identity.Commit) != 40 || request.Identity.RunID == "" || request.Identity.Attempt == "" || request.Identity.JobID == "" || request.Identity.ReleaseSeries == "" || !filepath.IsAbs(request.Scratch) || request.Allowance.Invocations <= 0 || !validUsage(request.Allowance.Usage) || request.Allowance.Usage.Input <= 0 || request.Allowance.Usage.Output <= 0 {
 		return result, errors.New("release audit request requires a pinned source, scheduled identity, job scratch and explicit allowances")
 	}
+	if request.BaseCommit != "" {
+		base, err := hex.DecodeString(request.BaseCommit)
+		if err != nil || len(base) != 20 || strings.ToLower(request.BaseCommit) != request.BaseCommit || request.BaseCommit == request.Identity.Commit {
+			return result, errors.New("release audit incremental scope requires a distinct pinned base commit")
+		}
+	}
 	directory, err := os.MkdirTemp(request.Scratch, "release-audit-")
 	if err != nil {
 		return result, fmt.Errorf("prepare release audit scratch: %w", err)
 	}
-	e := &execution{stage: s, request: request, directory: directory, sessions: map[string]bool{}, state: Snapshot{Identity: request.Identity, BundleCommit: BundleCommit, BundleDigest: BundleDigest, Status: "incomplete", Allowance: request.Allowance, Ledger: json.RawMessage("[]"), Findings: []json.RawMessage{}, Candidates: []Candidate{}, Evidence: []Evidence{}, Infrastructure: []string{}}}
+	e := &execution{stage: s, request: request, directory: directory, sessions: map[string]bool{}, state: Snapshot{BaseCommit: request.BaseCommit, Identity: request.Identity, BundleCommit: BundleCommit, BundleDigest: BundleDigest, Status: "incomplete", Allowance: request.Allowance, Ledger: json.RawMessage("[]"), Findings: []json.RawMessage{}, Candidates: []Candidate{}, Evidence: []Evidence{}, Infrastructure: []string{}}}
 	defer func() {
 		finalizeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
