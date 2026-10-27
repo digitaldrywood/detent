@@ -38,7 +38,6 @@ import { useClientSettings } from "../adapters/settings.ts";
 import { fleetHosts } from "../fleet/capacity.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import { allProjectsLabel } from "../lib/projectScope.ts";
-import { subscribeProjectEvents } from "../work/lib/projectEvents.ts";
 import { useWorkHttp } from "../work/lib/useWork.ts";
 import {
   activityGroups,
@@ -74,7 +73,6 @@ export function ActivityRoute() {
     const projects = (bootstrap?.projects ?? [])
       .filter((row) => !project || row.id === project)
       .map((row) => row.id);
-    const connected = new Set<string>();
     setLive(false);
     const resource = observeActivity(
       api,
@@ -89,32 +87,11 @@ export function ActivityRoute() {
             ? { ...previous, pending: true, error: null }
             : { ...next, api },
         ),
+      http,
+      projects,
+      setLive,
     );
-    const refreshVisible = resource.refresh;
-    const unsubscribe = projects.map((id) =>
-      subscribeProjectEvents(http, id, {
-        open: () => {
-          connected.add(id);
-          setLive(connected.size === projects.length);
-          refreshVisible();
-        },
-        activity: () => {
-          connected.add(id);
-          setLive(connected.size === projects.length);
-          refreshVisible();
-        },
-        error: () => {
-          connected.delete(id);
-          setLive(false);
-        },
-      }),
-    );
-    document.addEventListener("visibilitychange", refreshVisible);
-    return () => {
-      resource.close();
-      unsubscribe.forEach((stop) => stop());
-      document.removeEventListener("visibilitychange", refreshVisible);
-    };
+    return () => resource.close();
   }, [api, bootstrap?.projects, http, project]);
   return (
     <ActivityView

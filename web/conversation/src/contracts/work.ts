@@ -160,6 +160,7 @@ export const NativeVerification = Schema.Struct({
 export type NativeVerification = typeof NativeVerification.Type;
 
 export const NativeIssue = Schema.Struct({
+  change_sequence: Schema.optional(Schema.Number),
   issue_contract: Schema.optional(Schema.Struct({ human_action: Schema.optional(Schema.String) })),
   archive_summary: Schema.optional(Schema.Struct({ revision: Schema.String, attempts: Schema.Array(Schema.Unknown) })),
   reporter_status: Schema.optional(Schema.Literals(["submitted", "planned", "in_progress", "done", "cancelled"])),
@@ -267,6 +268,7 @@ export const NativeBoardFrame = Schema.Struct({
 export type NativeBoardFrame = typeof NativeBoardFrame.Type;
 
 export const WorkItemPage = Schema.Struct({
+  change_sequence: Schema.optional(Schema.Number),
   total: Schema.optional(Schema.Number),
   items: Schema.Array(NativeIssue),
   next_cursor: Schema.optional(Schema.String),
@@ -982,6 +984,7 @@ export type WorkspaceCapabilities = typeof WorkspaceCapabilities.Type;
  * field no surface reads.
  */
 export const Workspace = Schema.Struct({
+  change_sequence: Schema.optional(Schema.Number),
   id: Schema.String,
   organization_id: Schema.String,
   project_id: Schema.String,
@@ -1031,6 +1034,7 @@ export type Workspace = typeof Workspace.Type;
 
 /** `GET …/workspaces` — an envelope with no cursor. */
 export const WorkspaceList = Schema.Struct({
+  change_sequence: Schema.optional(Schema.Number),
   workspaces: Schema.Array(Workspace),
 });
 export type WorkspaceList = typeof WorkspaceList.Type;
@@ -1148,6 +1152,7 @@ export type ActionRunAccepted = typeof ActionRunAccepted.Type;
 
 /** `GET …/actions/:id/runs` — an action's runs, newest first. */
 export const ActionRunList = Schema.Struct({
+  change_sequence: Schema.optional(Schema.Number),
   items: Schema.Array(ActionRun),
 });
 export type ActionRunList = typeof ActionRunList.Type;

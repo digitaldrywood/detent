@@ -993,7 +993,7 @@ async function settledWork() {
 describe("issue timeline pagination", () => {
   it("reuses the page attempts in workspace surfaces without another request or false ordinals", async () => {
     const http = {
-      listAttempts: vi.fn(), listChanges: vi.fn(async () => []), getWorkItemDiff: vi.fn(async () => ({ diff: null })),
+      getWorkItem: vi.fn(async () => itemFixture), listAttempts: vi.fn(), listChanges: vi.fn(async () => []), getWorkItemDiff: vi.fn(async () => ({ diff: null })),
     };
     const spy = vi.spyOn(workHooks, "useWorkHttp").mockReturnValue(http as unknown as ReturnType<typeof workHooks.useWorkHttp>);
     function Surfaces() {
@@ -1431,7 +1431,7 @@ describe("the live Work continuation intent", () => {
     const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?include=board&state=Todo");
     const page = await response.json();
     const card = page.cards[0];
-    const emit = () => (order === "replay" ? sources.at(-2)! : sources[0]!).dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: 1, gap: false,
+    const emit = () => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: 1, gap: false,
       deltas: [{ sequence: 1, previous: card, current: mutation === "delete" ? null : { ...card, issue: { ...card.issue, title: "During continuation", revision: "900" } } }] }) }));
     act(() => {
       if (order === "delta-first") emit();
@@ -1915,7 +1915,7 @@ describe("the filter-first Work surface", () => {
       return fetch(input, init);
     });
     await waiting;
-    expect(sources).toHaveLength(0);
+    expect(sources).toHaveLength(2);
     expect(pendingSignal?.aborted).toBe(false);
     await act(async () => { release(); });
     await settledWork();
@@ -1936,8 +1936,8 @@ describe("the filter-first Work surface", () => {
     expect(screen.getAllByText("Queue item 1")).toHaveLength(2);
   });
 
-  it.each(["gap", "grant change", "expired session", "revoked access", "unavailable"])("checks access before reconnecting for %s", async (invalidation) => {
-    const sources: (EventTarget & { readyState: number; url: string })[] = [];
+  it.each([200, 401, 403, 503])("resumes without fetching and refreshes current access only on reset (%s)", async (status) => {
+    const sources: (EventTarget & { url: string })[] = [];
     vi.stubGlobal("EventSource", class extends EventTarget {
       readyState = 1;
       constructor(readonly url: string) { super(); sources.push(this); }
@@ -1950,46 +1950,33 @@ describe("the filter-first Work surface", () => {
       if (String(input).endsWith("/projects/proj_alpha") && accessStatus !== 200) {
         return Response.json({ code: "unauthorized", message: "Project access ended" }, { status: accessStatus });
       }
-      const response = await fixture.fetch(String(input), init);
-      if (!String(input).includes("/work-items")) return response;
-      return Response.json({ ...await response.json(), grant_version: "original-grants" });
+      return fixture.fetch(String(input), init);
     });
     let current!: ReturnType<typeof useBoard>;
     function Probe() { current = useBoard("proj_alpha", DEFAULT_VIEW_STATE); return <div />; }
     render(<ClientContext.Provider value={fixture.client}><Probe /></ClientContext.Provider>);
     await waitFor(() => expect(current.resolved).toBe(true));
-    const response = await fixture.fetch("/api/v2/organizations/org_mock/projects/proj_alpha/work-items?include=board&state=Todo");
-    const page = await response.json();
-    const card = page.cards[0];
-    act(() => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: 40, grant_version: "original-grants", gap: false, deltas: [] }) })));
+    act(() => sources[0]!.dispatchEvent(new MessageEvent("checkpoint", { data: "{}", lastEventId: "40" })));
     const before = fixture.requests.length;
-    accessStatus = invalidation === "expired session" ? 401 : invalidation === "revoked access" ? 403 : invalidation === "unavailable" ? 503 : 200;
     vi.useFakeTimers();
-    act(() => { sources[0]!.readyState = 2; sources[0]!.dispatchEvent(new Event("error")); });
-    act(() => vi.advanceTimersByTime(3000));
+    await act(async () => {
+      sources[0]!.dispatchEvent(new Event("error"));
+      await vi.advanceTimersByTimeAsync(1000);
+    });
     vi.useRealTimers();
-    if (accessStatus === 401 || accessStatus === 403) {
+    expect(sources).toHaveLength(2);
+    expect(sources[1]!.url).toContain("since=40");
+    expect(fixture.requests).toHaveLength(before);
+    accessStatus = status;
+    await act(async () => sources[1]!.dispatchEvent(new MessageEvent("reset", { data: "{}", lastEventId: "41" })));
+    if (status === 401 || status === 403) {
       await waitFor(() => expect(current.error).toBe("Access to the board is no longer available."));
       expect(current.items).toHaveLength(0);
-      expect(current.live).toBe(false);
-      vi.useFakeTimers();
-      act(() => vi.advanceTimersByTime(30_000));
-      vi.useRealTimers();
-      expect(sources).toHaveLength(1);
-      return;
+    } else {
+      await waitFor(() => expect(current.refreshing).toBe(false));
+      if (status === 503) expect(current.error).toBe("Project access ended");
+      else expect(fixture.requests.length).toBeGreaterThan(before);
     }
-    await waitFor(() => expect(sources).toHaveLength(2));
-    expect(new URL(sources[1]!.url, "http://fixture.test").searchParams.get("since")).toBe("40");
-    act(() => sources[1]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: 41, gap: false,
-      deltas: [{ sequence: 41, previous: card, current: { ...card, issue: { ...card.issue, title: "Missed delta", revision: "900" } } }] }) })));
-    expect(current.items.find((item) => item.id === card.issue.work_item_id)?.title).toBe("Missed delta");
-    if (accessStatus === 503) return;
-    expect(fixture.requests.slice(before).map(({ url }) => url.pathname)).toEqual(["/api/v2/organizations/org_mock/projects/proj_alpha"]);
-    const afterReconnect = fixture.requests.length;
-    act(() => sources[1]!.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify({ sequence: invalidation === "gap" ? 3000 : 41, grant_version: invalidation === "gap" ? "original-grants" : "changed-grants",
-      gap: invalidation === "gap", deltas: [] }) })));
-    await waitFor(() => expect(fixture.requests.length).toBeGreaterThan(afterReconnect));
-    await waitFor(() => expect(current.refreshing).toBe(false));
   });
 
 });

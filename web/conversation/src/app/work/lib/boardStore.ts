@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
+import { subscribeProjectQuery } from "./projectEvents.ts";
 
-import { NativeIssue, NativeProject, NativeWorkSummary, priorityValue, NativeBoardCard, type NativeBoardFrame, type NativeShippedWindow } from "../../../contracts/work.ts";
+import { NativeIssue, NativeProject, NativeWorkSummary, priorityValue, NativeBoardCard, NativeBoardFrame, type NativeShippedWindow } from "../../../contracts/work.ts";
 import { authorizeQueryCache, clearQueryCache, invalidateQueries } from "../../lib/queryCache.ts";
 import { BOARD_CACHE_LIMIT, BOARD_CACHE_VERSION, readBoardDisk, updateBoardDisk } from "./boardDisk.ts";
 import { toBoardCardView, toLanes, toProjectView, toWorkItemView } from "./fromWire.ts";
@@ -206,6 +207,9 @@ export class BoardRead {
   private readonly views = new Map<string, { issue: NativeIssue; card: NativeBoardCard | undefined; item: WorkItemView }>();
   private generation = 0;
   private pending = false;
+  private readonly queries = new Map<string, ReturnType<typeof subscribeProjectQuery>>();
+  private readonly dirtyProjects = new Set<string>();
+  private snapshotProjects = new Set<string>();
   private continuation = false;
   private revoked = false;
   private readonly facetKey: string;
@@ -226,9 +230,43 @@ export class BoardRead {
 
   subscribe = (notify: () => void): (() => void) => {
     this.subscribers.add(notify);
+    if (this.subscribers.size === 1) {
+      for (const id of this.scope) {
+        const query = subscribeProjectQuery(this.http, id, {
+          topics: ["work_item", "board", "lane", "activity"],
+          apply: (event) => {
+            if (event.type === "activity") {
+              try {
+                const frame = Schema.decodeUnknownSync(NativeBoardFrame)(JSON.parse((event as MessageEvent<string>).data));
+                this.applyFrame(id, frame);
+              } catch { return; }
+            } else {
+              if (event.type === "lane") metadata.delete(id);
+              query.refresh();
+            }
+          },
+          restart: () => {
+            const targets = new Set([...this.snapshotProjects, ...this.dirtyProjects, id]);
+            this.dispose();
+            metadata.delete(id);
+            this.read(false, targets);
+          },
+          refresh: () => {
+            this.dirtyProjects.add(id);
+            if (this.controller !== null) { this.pending = true; return; }
+            this.read(false, new Set([id]));
+          },
+        });
+        this.queries.set(id, query);
+      }
+    }
     return () => {
       this.subscribers.delete(notify);
-      if (this.subscribers.size === 0 && this.continuation) this.dispose();
+      if (this.subscribers.size === 0) {
+        for (const query of this.queries.values()) query.close();
+        this.queries.clear();
+        this.dispose();
+      }
     };
   };
 
@@ -311,7 +349,7 @@ export class BoardRead {
         issues.push(...page.items);
         cards.push(...(page.cards ?? []));
         work = page.work;
-        sequence = Math.min(sequence ?? Infinity, page.sequence ?? 0);
+        sequence = Math.min(sequence ?? Infinity, page.change_sequence ?? page.sequence ?? 0);
         grantVersion ??= page.grant_version;
         cursor = page.next_cursor;
         pageCount++;
@@ -346,7 +384,7 @@ export class BoardRead {
         issues.push(...page.items);
         cards.push(...(page.cards ?? []));
         cursor = page.next_cursor;
-        sequence = Math.min(sequence, page.sequence ?? 0);
+        sequence = Math.min(sequence, page.change_sequence ?? page.sequence ?? 0);
         grantVersion ??= page.grant_version;
         work = page.work;
         total = page.total ?? total;
@@ -371,7 +409,7 @@ export class BoardRead {
     const fallback = pages.length === 0 ? await this.http.listWorkItems({ ...filters, signal, includeBoard: true, limit: 1 }) : undefined;
     return { project: resolved, issues: pages.flatMap((page) => page.issues), cards: pages.flatMap((page) => page.cards),
       grantVersion: pages[0]?.grantVersion ?? fallback?.grant_version,
-      work: pages[0]?.work ?? fallback?.work, sequence: pages.length === 0 ? fallback?.sequence ?? 0 : Math.min(...pages.map((page) => page.sequence)),
+      work: pages[0]?.work ?? fallback?.work, sequence: pages.length === 0 ? fallback?.change_sequence ?? fallback?.sequence ?? 0 : Math.min(...pages.map((page) => page.sequence)),
       pageCount: 1, backlogCursor: back?.cursor, backlogPageCount: back?.pageCount ?? 0, backlogTotal: back?.total ?? 0 };
   }
 
@@ -459,7 +497,7 @@ export class BoardRead {
     this.read(true);
   };
 
-  private read(continuing: boolean): void {
+  private read(continuing: boolean, targets?: ReadonlySet<string>): void {
     if (this.revoked || this.scope.length === 0) return;
     const controller = new AbortController();
     this.controller = controller;
@@ -467,6 +505,10 @@ export class BoardRead {
     const signal = controller.signal;
     const generation = ++this.generation;
     let prior = this.entries;
+    this.snapshotProjects = new Set(targets ?? this.scope);
+    const snapshots = new Map([...this.queries].filter(([id]) => targets === undefined || targets.has(id))
+      .map(([id, query]) => [id, query.beginSnapshot()]));
+    this.dirtyProjects.clear();
     this.publish({ ...this.state, loading: (!this.state.resolved || (continuing && this.view.view !== "board")),
       backlogLoading: continuing && this.view.view === "board", refreshing: true, error: null });
     if (!this.state.resolved) void this.restore(generation);
@@ -475,6 +517,7 @@ export class BoardRead {
         const loaded = await pooled(this.scope, async (id) => {
           if (!continuing && prior.length === 0 && this.entries.length > 0) prior = this.entries;
           const previous = prior.find((entry) => entry.project.project_id === id);
+          if (targets !== undefined && !targets.has(id) && previous !== undefined) return previous;
           const entry = await this.loadProject(id, signal, previous, continuing);
           const issues = entry.issues;
           let changed = false;
@@ -498,7 +541,7 @@ export class BoardRead {
           }
           return { ...entry, issues: current, work: changed ? undefined : entry.work };
         });
-        if (signal.aborted || generation !== this.generation) return;
+        if (signal.aborted || generation !== this.generation || [...snapshots.values()].some((snapshot) => !snapshot.current())) return;
         this.entries = loaded;
         this.publish(this.build(loaded, Date.now()));
         for (const [id, frames] of this.frames) {
@@ -506,16 +549,23 @@ export class BoardRead {
         }
         this.frames.clear();
         this.persist();
+        this.controller = null;
+        for (const [id, snapshot] of snapshots) snapshot.complete(this.sequence(id));
       } catch (cause) {
         if (signal.aborted || generation !== this.generation) return;
+        for (const snapshot of snapshots.values()) snapshot.complete();
         if (unauthorized(cause)) rejectBoardCache(this.owner);
         else this.publish({ ...this.state, loading: false, backlogLoading: false, refreshing: false,
           error: cause instanceof Error ? cause.message : String(cause) });
       } finally {
         if (generation !== this.generation) return;
         this.controller = null;
+        this.snapshotProjects.clear();
         this.continuation = false;
-        if (this.pending) { this.pending = false; this.reload(); }
+        if (this.pending) {
+          this.pending = false;
+          this.read(false, this.dirtyProjects.size > 0 ? new Set(this.dirtyProjects) : undefined);
+        }
       }
     })();
   }

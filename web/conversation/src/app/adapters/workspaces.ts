@@ -1,4 +1,5 @@
 import React from "react";
+import { observeProjectQuery } from "../work/lib/projectEvents.ts";
 import * as Schema from "effect/Schema";
 
 import {
@@ -182,13 +183,11 @@ async function acquire(
 ): Promise<Workspace> {
   const existing = await http
     .listWorkspaces({ projectId, workItemId })
-    .then((page) =>
-      page.workspaces.find(
-        (candidate) =>
-          (candidate.attempt_id ?? null) === attemptId &&
-          isWorkspaceUsable(candidate.state) && workspaceSatisfies(candidate, requires),
-      ),
-    )
+    .then((page) => {
+      const workspace = page.workspaces.find((candidate) => (candidate.attempt_id ?? null) === attemptId &&
+        isWorkspaceUsable(candidate.state) && workspaceSatisfies(candidate, requires));
+      return workspace === undefined ? undefined : { ...workspace, change_sequence: page.change_sequence };
+    })
     .catch(() => undefined);
   if (existing !== undefined) return existing;
   try {
@@ -273,49 +272,28 @@ export function useWorkspace(input: UseWorkspaceInput): WorkspaceHandle {
       setResult({ binding, workspace: null, error: null, loading: false });
       return;
     }
-    let cancelled = false;
     setResult({ binding, workspace: null, error: null, loading: true });
-    void acquire(http, projectId, workItemId, requiresKey.split(","), attemptId)
-      .then((next) => {
-        if (cancelled) return;
-        setResult({ binding, workspace: next, error: null, loading: false });
-      })
-      .catch((cause: unknown) => {
-        if (cancelled) return;
-        setResult({ binding, workspace: null, error: describe(cause), loading: false });
-      });
-    return () => {
-      cancelled = true;
-    };
+    const query = observeProjectQuery(http, projectId, {
+      topics: WORKSPACE_EVENT_TYPES,
+      load: async () => {
+        const next = await acquire(http, projectId, workItemId, requiresKey.split(","), attemptId);
+        return { value: next, watermark: next.change_sequence };
+      },
+      apply: (next) => setResult({ binding, workspace: next, error: null, loading: false }),
+      error: (cause) => setResult({ binding, workspace: null, error: describe(cause), loading: false }),
+      event: (event) => {
+        setResult((current) => {
+          if (current.binding !== binding || current.workspace === null) return current;
+          const next = workspaceFromEvent((event as MessageEvent<string>).data, current.workspace.id);
+          if (next === null || BigInt(next.revision) <= BigInt(current.workspace.revision)) return current;
+          return { ...current, workspace: next };
+        });
+      },
+    });
+    return () => query.close();
   }, [binding, http, projectId, workItemId, attemptId, requiresKey, enabled, nonce]);
 
-  // Readiness by subscription. The stream is the project's, so every
-  // frame is filtered down to this workspace's id before it is believed.
   const workspaceId = workspace?.id ?? null;
-  React.useEffect(() => {
-    if (projectId === null || workspaceId === null) return;
-    if (typeof globalThis.EventSource !== "function") return;
-    const source = new globalThis.EventSource(http.eventsUrl(projectId, workspaceId), {
-      withCredentials: true,
-    });
-    const onWorkspaceEvent = (event: MessageEvent<string>) => {
-      const next = workspaceFromEvent(event.data, workspaceId);
-      if (next === null) return;
-      setResult((current) => current.binding === binding
-        ? { ...current, workspace: next }
-        : current);
-    };
-    for (const type of WORKSPACE_EVENT_TYPES) {
-      source.addEventListener(type, onWorkspaceEvent as EventListener);
-    }
-    return () => {
-      for (const type of WORKSPACE_EVENT_TYPES) {
-        source.removeEventListener(type, onWorkspaceEvent as EventListener);
-      }
-      source.close();
-    };
-  }, [binding, http, projectId, workspaceId]);
-
   const relayUrl = React.useMemo(
     () =>
       projectId === null || workspaceId === null

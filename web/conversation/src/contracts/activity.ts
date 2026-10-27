@@ -73,6 +73,7 @@ const ActivityIssue = Schema.Struct({
 });
 
 export const ActivityReport = Schema.Struct({
+  change_sequences: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
   organization_id: OrganizationId,
   observed_at: Schema.String,
   window: Schema.Struct({

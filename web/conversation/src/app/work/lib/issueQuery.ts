@@ -65,6 +65,10 @@ export function hintIssueProject(workItemId: string, projectId: string): void {
   if (projectHints.size > 2000) projectHints.delete(projectHints.keys().next().value!);
 }
 
+export function issueProjectHint(http: WorkHttp, workItemId: string): string | undefined {
+  return getQueryData<IssueData | null>(issueKey(http, workItemId, null))?.issue.project_id ?? projectHints.get(workItemId);
+}
+
 /** The cache key for an issue's head: the item and its project, all a hover prefetches. */
 function headKey(http: WorkHttp, workItemId: string) {
   return ["issue-head", workItemId, scopeOf(http)] as const;
@@ -85,24 +89,19 @@ function related(http: WorkHttp, projectId: string, workItemId: string, signal: 
   ]);
 }
 
-/**
- * Reads one issue and everything its first paint shows: the item, then its
- * project, attempts, history, comments and change list together — or all of
- * them at once when the item's project is already known. Change details load
- * after the first paint.
- */
-export function readIssue(http: WorkHttp, workItemId: string, requestedChange: string | null): Read<IssueData | null> {
+export function readIssue(http: WorkHttp, workItemId: string, requestedChange: string | null, refreshProject = false, snapshot = false): Read<IssueData | null> {
   return async (signal, partial) => {
     try {
       const cached = getQueryData<IssueData | null>(issueKey(http, workItemId, requestedChange));
       const head = getQueryData<IssueHead>(headKey(http, workItemId));
       const known = cached?.issue.project_id ?? head?.project.project_id ?? projectHints.get(workItemId);
-      const knownProject = cached?.project ?? head?.project;
+      const knownProject = refreshProject ? undefined : cached?.project ?? head?.project;
       let issue: NativeIssue;
       let rest: Awaited<ReturnType<typeof related>>;
-      if (known === undefined) {
+      if (known === undefined || snapshot) {
         issue = await http.getWorkItemById(workItemId, signal);
-        rest = await related(http, issue.project_id, workItemId, signal, undefined, issue);
+        rest = await related(http, issue.project_id, workItemId, signal,
+          issue.project_id === known ? knownProject : undefined, issue);
       } else {
         const [resolved, speculative] = await Promise.all([
           http.getWorkItemById(workItemId, signal),

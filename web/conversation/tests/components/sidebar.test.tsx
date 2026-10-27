@@ -27,7 +27,6 @@ import { AccountBootstrap } from "../../src/contracts/account.ts";
 import * as Schema from "effect/Schema";
 import accountFixture from "../../src/contracts/fixtures/account-bootstrap.json";
 import { makeClient } from "../../src/runtime/bootstrap.ts";
-import { ClientContext } from "../../src/app/client.ts";
 import type { Bootstrap } from "../../src/contracts/index.ts";
 import bootstrapFixture from "../../src/contracts/fixtures/bootstrap.json";
 import { conversation } from "./builders.ts";
@@ -351,108 +350,50 @@ vi.mock("../../src/app/work/lib/runnerNames.ts", () => ({
   runnerDisplay: (names: typeof mocks.runnerNames, id: string) => names.get(id)?.display ?? (id === "runner_1" ? "Studio" : id),
 }));
 
+const retainedSubscriptions: (() => void)[] = [];
 class Source extends EventTarget {
   static instances: Source[] = [];
   close = vi.fn();
   constructor(readonly url: string) { super(); Source.instances.push(this); }
 }
 
-afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetAllMocks(); mocks.runnerNames = new Map(); mocks.realHttp = false; Source.instances = []; });
+afterEach(() => { cleanup(); retainedSubscriptions.splice(0).forEach((stop) => stop()); vi.useRealTimers(); vi.unstubAllGlobals(); vi.resetAllMocks(); mocks.runnerNames = new Map(); mocks.realHttp = false; Source.instances = []; });
 
-it("bounds findings reads to mount and health ticks across renders and runner name updates", async () => {
-  vi.useFakeTimers();
+it("shares findings snapshots across rerenders and refreshes only the project named by a health frame", async () => {
   vi.stubGlobal("EventSource", Source);
-  const projects = ["p1", "p2", "p3", "p4"].map((id) => ({ id, name: `Project ${id}`, can_write: true }));
-  let tick = "2026-10-06T10:00:00Z";
-  let items = [{ id: "hf_runner", class: "instance", summary: "Runner attention", next_action: "Check runner", subject: { kind: "runner", id: "runner_1" }, opened_at: tick, severity: "attention", resolved_at: null }];
-  const request = vi.fn(async (_url: RequestInfo | URL) => new Response(JSON.stringify({ items, last_tick_at: tick })));
-  vi.stubGlobal("fetch", request);
-  mocks.realHttp = true;
-  const client = makeClient({ bootstrap: { ...bootstrapFixture, projects } as Bootstrap });
-  const { result, rerender, unmount } = renderHook(() => useSidebarFindings(projects.map((project) => ({ ...project }))), {
-    wrapper: ({ children }) => <ClientContext.Provider value={client}><HealthFindingsProvider projects={projects}>{children}</HealthFindingsProvider></ClientContext.Provider>,
-  });
-  const source = Source.instances[0]!;
-  await act(async () => {
-    source.dispatchEvent(new Event("open"));
-    source.dispatchEvent(new MessageEvent("health.findings", { data: tick }));
-  });
-  expect(result.current[0]?.label).toBe("Studio");
-  const expectReads = (perProject: number) => {
-    for (const project of projects) expect(request.mock.calls.filter(([url]) => String(url).includes(`/projects/${project.id}/health/findings`))).toHaveLength(perProject);
-  };
-  expectReads(1);
-  for (let second = 0; second < 60; second++) {
-    mocks.runnerNames = new Map([["runner_1", { display: `Runner ${second}`, host: "example-host" }]]);
-    rerender();
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1000);
-      source.dispatchEvent(new MessageEvent("activity", { data: String(second) }));
-      source.dispatchEvent(new MessageEvent("health.findings", { data: tick }));
-    });
-    expectReads(1);
-  }
-  expect(result.current[0]?.label).toBe("Runner 59");
-  expect(Source.instances).toHaveLength(1);
-  items = [];
-  tick = "2026-10-06T10:01:00Z";
-  await act(async () => source.dispatchEvent(new MessageEvent("health.findings", { data: tick })));
-  expectReads(2);
-  expect(result.current).toEqual([]);
-  items = [{ id: "hf_opened", class: "instance", summary: "New runner attention", next_action: "Check runner", subject: { kind: "runner", id: "runner_1" }, opened_at: tick, severity: "attention", resolved_at: null }];
-  tick = "2026-10-06T10:02:00Z";
-  await act(async () => {
-    source.dispatchEvent(new Event("open"));
-    source.dispatchEvent(new MessageEvent("health.findings", { data: tick }));
-  });
-  expectReads(3);
-  expect(result.current.map((finding) => [finding.id, finding.label, finding.to])).toEqual([["hf_opened", "Runner 59", "/fleet"]]);
-  unmount();
-  expect(source.close).toHaveBeenCalledOnce();
+  const projects = ["p1", "p2"].map((id) => ({ id, name: id, can_write: true }));
+  mocks.listHealthFindings.mockResolvedValue({ items: [], last_tick_at: null, change_sequence: 10 });
+  const hook = renderHook(() => useHealthFindings(), { wrapper: ({ children }) =>
+    <HealthFindingsProvider projects={projects}>{children}</HealthFindingsProvider> });
+  await act(async () => {});
+  hook.rerender();
+  expect(Source.instances).toHaveLength(2);
+  expect(mocks.listHealthFindings).toHaveBeenCalledTimes(2);
+  await act(async () => Source.instances[1]!.dispatchEvent(new MessageEvent("health.findings", {
+    data: JSON.stringify({ entity_id: "f", entity_revision: 2 }), lastEventId: "12",
+  })));
+  expect(mocks.listHealthFindings.mock.calls.map(([id]) => id)).toEqual(["p1", "p2", "p2"]);
 });
 
-it.each(["mount", "health event"])("retries the current health tick after a failed %s refresh", async (phase) => {
+it("retains successful findings and recovers a failed project on its next named invalidation", async () => {
   vi.stubGlobal("EventSource", Source);
-  const projects = ["p1", "p2"].map((id) => ({ id, name: `Project ${id}`, can_write: true }));
-  let tick = "2026-10-06T10:00:00Z";
-  let fail = phase === "mount";
-  let reject: (reason: Error) => void = () => {};
+  const projects = ["p1", "p2"].map((id) => ({ id, name: id, can_write: true }));
+  let fail = true;
   mocks.listHealthFindings.mockImplementation(async (id) => {
-    if (id === "p2" && fail) return new Promise((_resolve, rejectRequest) => { reject = rejectRequest; });
-    return { items: [{ id: `hf_${id}`, class: "flow", summary: "Project attention", next_action: "Check project", subject: { kind: "project", id }, opened_at: tick, severity: "attention", resolved_at: null }], last_tick_at: tick };
+    if (id === "p2" && fail) throw new Error("Unavailable");
+    return { items: [], last_tick_at: "2026-10-06T10:00:00Z", change_sequence: 10 };
   });
-  const { result, rerender } = renderHook(() => ({ findings: useSidebarFindings(projects), health: useHealthFindings() }), {
-    wrapper: ({ children }) => <HealthFindingsProvider projects={projects}>{children}</HealthFindingsProvider>,
-  });
-  const source = Source.instances[0]!;
-  if (phase === "health event") {
-    await waitFor(() => expect(result.current.findings.map((finding) => finding.id)).toEqual(["hf_p1", "hf_p2"]));
-    fail = true;
-    tick = "2026-10-06T10:01:00Z";
-  }
-  const attempts = phase === "mount" ? 1 : 2;
-  if (phase === "health event") await act(async () => {
-    source.dispatchEvent(new MessageEvent("health.findings", { data: tick }));
-    source.dispatchEvent(new MessageEvent("health.findings", { data: tick }));
-  });
-  expect(mocks.listHealthFindings).toHaveBeenCalledTimes(attempts * 2);
-  await act(async () => reject(new Error("Network unavailable")));
-  expect(result.current.health.error).toBe(true);
-  expect(result.current.findings.map((finding) => finding.id).sort()).toEqual(phase === "mount" ? ["hf_p1"] : ["hf_p1", "hf_p2"]);
-  rerender();
-  expect(mocks.listHealthFindings).toHaveBeenCalledTimes(attempts * 2);
+  const hook = renderHook(() => useHealthFindings(), { wrapper: ({ children }) =>
+    <HealthFindingsProvider projects={projects}>{children}</HealthFindingsProvider> });
+  await act(async () => {});
+  expect(hook.result.current.error).toBe(true);
   fail = false;
-  await act(async () => {
-    source.dispatchEvent(new Event("open"));
-    source.dispatchEvent(new MessageEvent("health.findings", { data: tick }));
-    source.dispatchEvent(new MessageEvent("health.findings", { data: tick }));
-  });
-  expect(mocks.listHealthFindings).toHaveBeenCalledTimes((attempts + 1) * 2);
-  expect(result.current.health.error).toBe(false);
-  expect(result.current.health.read?.last_tick_at).toBe(tick);
-  expect(result.current.findings.map((finding) => [finding.id, finding.to])).toEqual([["hf_p1", "/diagnostics"], ["hf_p2", "/diagnostics"]]);
-  await act(async () => source.dispatchEvent(new MessageEvent("health.findings", { data: tick })));
-  expect(mocks.listHealthFindings).toHaveBeenCalledTimes((attempts + 1) * 2);
+  await act(async () => Source.instances[1]!.dispatchEvent(new MessageEvent("health.findings", {
+    data: JSON.stringify({ entity_id: "f", entity_revision: 2 }), lastEventId: "12",
+  })));
+  expect(hook.result.current.error).toBe(false);
+  expect(hook.result.current.read?.last_tick_at).toBe("2026-10-06T10:00:00Z");
+  expect(mocks.listHealthFindings.mock.calls.map(([id]) => id)).toEqual(["p1", "p2", "p2"]);
 });
 
 it("reads current human holds without promoting dependency waits or stale health findings", async () => {
@@ -492,19 +433,19 @@ it("reads current human holds without promoting dependency waits or stale health
   vi.useFakeTimers();
   items = [issue("wi_old", "Todo"), issue("wi_dependency")];
   await act(async () => {
-    Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "1" }));
+    Source.instances[0]!.dispatchEvent(new MessageEvent("human_action", { data: "1" }));
     await vi.advanceTimersByTimeAsync(30_000);
   });
   expect(result.current).toEqual([]);
   items = [issue("wi_recent")];
   await act(async () => {
-    Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "2" }));
+    Source.instances[0]!.dispatchEvent(new MessageEvent("human_action", { data: "2" }));
     await vi.advanceTimersByTimeAsync(30_000);
   });
   expect(result.current.map((action) => action.id)).toEqual(["wi_recent"]);
   const explained = mocks.getExplanation.mock.calls.length;
   await act(async () => {
-    Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "2b" }));
+    Source.instances[0]!.dispatchEvent(new MessageEvent("human_action", { data: "2b" }));
     await vi.advanceTimersByTimeAsync(30_000);
   });
   expect(mocks.listWorkItems.mock.calls.length).toBeGreaterThan(3);
@@ -512,229 +453,95 @@ it("reads current human holds without promoting dependency waits or stale health
   answered = true;
   items = [{ ...issue("wi_recent"), revision: "answered" }];
   await act(async () => {
-    Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "3" }));
+    Source.instances[0]!.dispatchEvent(new MessageEvent("human_action", { data: "3" }));
     await vi.advanceTimersByTimeAsync(30_000);
   });
   expect(result.current).toEqual([]);
 });
 
-describe("human action refresh scheduling", () => {
+describe("human action stream invalidation", () => {
   const projects = ["p1", "p2"].map((id) => ({ id, name: id, can_write: true }));
-  const emit = (source: Source, data: unknown) => source.dispatchEvent(new MessageEvent("activity", { data: JSON.stringify(data) }));
-  const card = (state: string) => ({ issue: { ...itemFixture, state, terminal: false }, attempt: null, change: null });
-
   beforeEach(() => {
-    vi.useFakeTimers();
     vi.stubGlobal("EventSource", Source);
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-    mocks.getProject.mockResolvedValue({ states: [
-      { name: "Blocked", terminal: false, dispatchable: false },
-      { name: "Human Review", terminal: false, dispatchable: false },
-      { name: "Plan Review", terminal: false, dispatchable: false },
-    ] });
-    mocks.listWorkItems.mockResolvedValue({ items: [] });
+    mocks.getProject.mockResolvedValue({ states: [{ name: "Blocked", terminal: false, dispatchable: false }] });
+    mocks.listWorkItems.mockResolvedValue({ items: [], change_sequence: 10 });
   });
-
-  it("bounds 100 events per project and retains the last event without polling", async () => {
+  const emit = (source: Source, id: number, type = "human_action") => source.dispatchEvent(new MessageEvent(type, {
+    data: JSON.stringify({ entity_id: "i", related_id: "i", entity_revision: id }), lastEventId: String(id),
+  }));
+  it("coalesces a burst for the named project without polling or refreshing on open", async () => {
     renderHook(() => useSidebarHumanActions(projects));
     await act(async () => {});
-    for (let sequence = 1; sequence <= 100; sequence++) {
-      await act(async () => { for (const source of Source.instances) emit(source, sequence); });
-    }
-    expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
-    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-    for (const project of projects) {
-      expect(mocks.listWorkItems.mock.calls.filter(([input]) => input.projectId === project.id)).toHaveLength(2);
-    }
-    expect(mocks.getProject).toHaveBeenCalledTimes(4);
-    await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
-    expect(mocks.listWorkItems).toHaveBeenCalledTimes(4);
-  });
-
-  it.each(["Blocked", "Human Review", "Plan Review"])("bounds refreshes on a %s transition and ignores unrelated deltas", async (lane) => {
-    renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
-    await act(async () => {});
-    const source = Source.instances[0]!;
-    await act(async () => { emit(source, { sequence: 1, gap: false, deltas: [{ sequence: 1, previous: card("Todo"), current: card("Running") }] }); });
-    expect(mocks.listWorkItems).toHaveBeenCalledTimes(1);
-    await act(async () => { emit(source, { sequence: 2, gap: false, deltas: [{ sequence: 2, previous: card("Running"), current: card(lane) }] }); });
-    expect(mocks.listWorkItems).toHaveBeenCalledTimes(1);
-    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-    expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
-    await act(async () => { emit(source, { sequence: 3, gap: false, deltas: [{ sequence: 3, previous: card(lane), current: card("Todo") }] }); });
-    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-    expect(mocks.listWorkItems).toHaveBeenCalledTimes(3);
-    expect(mocks.getProject).toHaveBeenCalledOnce();
-  });
-
-  it("refreshes changes to a listed hold even without a lane transition", async () => {
-    const issue = { ...itemFixture, state: "Blocked", terminal: false, archived: false,
-      issue_contract: { human_action: "Choose an option" } };
-    mocks.listWorkItems.mockResolvedValue({ items: [issue] });
-    mocks.getExplanation.mockResolvedValue({ current_lane: { name: "Blocked" }, required_gate: {} });
-    const { result } = renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
-    await act(async () => {});
-    expect(result.current.map((action) => action.id)).toEqual([issue.work_item_id]);
-    mocks.listWorkItems.mockResolvedValue({ items: [] });
     await act(async () => {
-      emit(Source.instances[0]!, { sequence: 1, gap: false, deltas: [{ sequence: 1,
-        previous: card("Blocked"), current: card("Blocked") }] });
-      await vi.advanceTimersByTimeAsync(30_000);
+      for (let id = 11; id <= 110; id++) emit(Source.instances[0]!, id);
+      Source.instances[1]!.dispatchEvent(new Event("open"));
     });
-    expect(result.current).toEqual([]);
-    expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
+    expect(mocks.listWorkItems.mock.calls.map(([input]) => input.projectId)).toEqual(["p1", "p2", "p1"]);
+    expect(mocks.getProject).toHaveBeenCalledTimes(2);
   });
-
-  it.each(["numeric", "workflow", "policy", "reconnect", "expiry"])("discovers a newly added holding lane after %s", async (trigger) => {
-    mocks.getProject.mockResolvedValue({ states: [{ name: "Blocked", terminal: false, dispatchable: false }] });
+  it.each(["lane", "reset"])("discovers a changed holding lane after %s with one refresh of the affected project", async (type) => {
     const issue = { ...itemFixture, state: "Plan Review", terminal: false, archived: false,
       issue_contract: { human_action: "Approve the plan" } };
-    mocks.listWorkItems.mockImplementation(async ({ state }) => ({ items: state.includes("Plan Review") ? [issue] : [] }));
+    mocks.listWorkItems.mockImplementation(async ({ projectId, state }) => ({ items: projectId === "p1" && state.includes("Plan Review") ? [issue] : [], change_sequence: 10 }));
     mocks.getExplanation.mockResolvedValue({ current_lane: { name: "Plan Review" }, required_gate: {} });
-    const { result } = renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
+    const hook = renderHook(() => useSidebarHumanActions(projects));
     await act(async () => {});
-    expect(result.current).toEqual([]);
-    mocks.getProject.mockResolvedValue({ states: [
-      { name: "Blocked", terminal: false, dispatchable: false },
-      { name: "Plan Review", terminal: false, dispatchable: false },
-    ] });
-    await act(async () => {
-      const source = Source.instances[0]!;
-      if (trigger === "expiry") {
-        await vi.advanceTimersByTimeAsync(120_000);
-        emit(source, { sequence: 1, gap: false, deltas: [{ sequence: 1, previous: card("Todo"), current: card("Running") }] });
-      } else if (trigger === "reconnect") {
-        source.dispatchEvent(new Event("open"));
-      } else {
-        emit(source, trigger === "numeric" ? 1 : { type: `${trigger}.changed` });
-      }
-      await vi.advanceTimersByTimeAsync(30_000);
-    });
-    expect(mocks.getProject).toHaveBeenCalledTimes(2);
-    expect(result.current.map((action) => action.id)).toEqual([issue.work_item_id]);
-  });
-
-  it("bounds sustained listed-hold deltas with a leading delay and retains the final update", async () => {
-    const issue = { ...itemFixture, state: "Blocked", terminal: false, archived: false,
-      issue_contract: { human_action: "Choose an option" } };
-    mocks.listWorkItems.mockResolvedValue({ items: [issue] });
-    mocks.getExplanation.mockResolvedValue({ current_lane: { name: "Blocked" }, required_gate: {} });
-    const { result } = renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
-    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-    const source = Source.instances[0]!;
-    for (let sequence = 1; sequence <= 60; sequence++) {
+    expect(hook.result.current).toEqual([]);
+    let source = Source.instances[0]!;
+    if (type === "reset") {
+      vi.useFakeTimers();
       await act(async () => {
-        emit(source, { sequence, gap: false, deltas: [{ sequence, previous: card("Blocked"), current: card("Blocked") }] });
+        source.dispatchEvent(new Event("error"));
         await vi.advanceTimersByTimeAsync(1000);
       });
-      expect(mocks.listWorkItems).toHaveBeenCalledTimes(sequence < 2 ? 1 : 2 + Math.floor((sequence - 2) / 5));
+      source = Source.instances.at(-1)!;
+      expect(mocks.getProject).toHaveBeenCalledTimes(2);
     }
-    mocks.listWorkItems.mockResolvedValue({ items: [] });
-    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-    expect(mocks.listWorkItems).toHaveBeenCalledTimes(14);
-    expect(result.current).toEqual([]);
+    mocks.getProject.mockResolvedValue({ states: [{ name: "Plan Review", terminal: false, dispatchable: false }] });
+    await act(async () => { emit(source, 11, type); emit(source, 11, type); });
+    expect(mocks.getProject.mock.calls.map(([id]) => id)).toEqual(["p1", "p2", "p1"]);
+    expect(mocks.listWorkItems.mock.calls.map(([input]) => input.projectId)).toEqual(["p1", "p2", "p1"]);
+    expect(hook.result.current.map((action) => action.id)).toEqual([issue.work_item_id]);
   });
-
-  it.each([false, true])("clears an answered action promptly after initial load (slow refresh queued: %s)", async (queued) => {
-    const issue = { ...itemFixture, state: "Blocked", terminal: false, archived: false };
-    mocks.listWorkItems.mockResolvedValue({ items: [issue] });
-    mocks.getExplanation.mockResolvedValue({ current_lane: { name: "Blocked" }, required_gate: { human_action: "Choose an option" } });
-    const { result } = renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
-    await act(async () => {});
-    expect(result.current.map((action) => action.id)).toEqual([issue.work_item_id]);
-    mocks.listWorkItems.mockResolvedValue({ items: [{ ...issue, revision: "answered" }] });
-    mocks.getExplanation.mockResolvedValue({ current_lane: { name: "Blocked" }, required_gate: {} });
-    await act(async () => {
-      if (queued) emit(Source.instances[0]!, 1);
-      Source.instances[0]!.dispatchEvent(new MessageEvent("activity", { data: "human-action-answered" }));
-      await vi.advanceTimersByTimeAsync(4999);
-    });
-    expect(result.current).toHaveLength(1);
-    expect(mocks.listWorkItems).toHaveBeenCalledOnce();
-    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
-    expect(result.current).toEqual([]);
-    expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
-    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-    expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
-  });
-
-  it("cancels a pending relevant refresh on unmount", async () => {
+  it.each(["human_action", "reset"])("clears an answered action after %s even when the issue revision is unchanged", async (type) => {
+    const issue = { ...itemFixture, work_item_id: "i", state: "Blocked", terminal: false, archived: false };
+    mocks.listWorkItems.mockResolvedValue({ items: [issue], change_sequence: 10 });
+    mocks.getExplanation.mockResolvedValue({ current_lane: { name: "Blocked" }, required_gate: { human_action: "Choose" } });
     const hook = renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
     await act(async () => {});
-    await act(async () => {
-      emit(Source.instances[0]!, { sequence: 1, gap: false, deltas: [{ sequence: 1, previous: card("Todo"), current: card("Blocked") }] });
-    });
-    expect(vi.getTimerCount()).toBe(1);
-    hook.unmount();
-    expect(vi.getTimerCount()).toBe(0);
-    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-    expect(mocks.listWorkItems).toHaveBeenCalledOnce();
-    expect(Source.instances[0]!.close).toHaveBeenCalledOnce();
+    expect(hook.result.current.map((action) => action.id)).toEqual(["i"]);
+    mocks.getExplanation.mockResolvedValue({ current_lane: { name: "Blocked" }, required_gate: {} });
+    await act(async () => emit(Source.instances[0]!, 11, type));
+    expect(hook.result.current).toEqual([]);
+    expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
   });
-
-  it("coalesces events during an in-flight read and stops pagination when hidden", async () => {
-    let finish!: (page: unknown) => void;
+  it("buffers changes during snapshot load, uses its watermark and releases the barrier on teardown", async () => {
+    let finish: (page: unknown) => void = () => {};
     mocks.listWorkItems.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
-    const visibility = vi.spyOn(document, "visibilityState", "get");
     const hook = renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
     try {
       await act(async () => {});
-      await act(async () => {
-        for (let sequence = 1; sequence <= 100; sequence++) emit(Source.instances[0]!, sequence);
-        await vi.advanceTimersByTimeAsync(30_000);
-      });
+      await act(async () => { emit(Source.instances[0]!, 11); emit(Source.instances[0]!, 12); });
       expect(mocks.listWorkItems).toHaveBeenCalledOnce();
-      visibility.mockReturnValue("hidden");
-      act(() => document.dispatchEvent(new Event("visibilitychange")));
-      await act(async () => finish({ items: [itemFixture], next_cursor: "next-page" }));
-      expect(mocks.listWorkItems).toHaveBeenCalledOnce();
-      expect(mocks.getExplanation).not.toHaveBeenCalled();
-      visibility.mockReturnValue("visible");
-      await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+      await act(async () => finish({ items: [], change_sequence: 11 }));
       expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
       hook.unmount();
-      await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
-      expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
-    } finally {
-      hook.unmount();
-      await act(async () => finish?.({ items: [] }));
-    }
+      expect(Source.instances[0]!.close).toHaveBeenCalledOnce();
+    } finally { hook.unmount(); finish({ items: [], change_sequence: 12 }); }
   });
-
-  it.each([true, false])("defers hidden requests and catches up once on visible (initially hidden: %s)", async (initiallyHidden) => {
-    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue(initiallyHidden ? "hidden" : "visible");
-    renderHook(() => useSidebarHumanActions(projects));
-    await act(async () => {});
-    const initial = initiallyHidden ? 0 : 2;
-    visibility.mockReturnValue("hidden");
-    act(() => document.dispatchEvent(new Event("visibilitychange")));
-    await act(async () => {
-      for (let sequence = 1; sequence <= 100; sequence++) for (const source of Source.instances) emit(source, sequence);
-      await vi.advanceTimersByTimeAsync(90_000);
-    });
-    expect(mocks.listWorkItems).toHaveBeenCalledTimes(initial);
-    expect(mocks.getProject).toHaveBeenCalledTimes(initial);
-    visibility.mockReturnValue("visible");
-    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
-    expect(mocks.listWorkItems).toHaveBeenCalledTimes(initial + 2);
-    await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
-    expect(mocks.listWorkItems).toHaveBeenCalledTimes(initial + 2);
-  });
-
-  it("shares workflow reads across hook remounts and does not replay activity into another read", async () => {
+  it("shares workflow reads across hook remounts and never replays stale activity into a new query", async () => {
     const retained = subscribeProjectEvents(mocks, "p1", { activity: () => {} });
     try {
-      emit(Source.instances[0]!, 1);
       const hook = renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
       await act(async () => {});
       hook.unmount();
       renderHook(() => useSidebarHumanActions(projects.slice(0, 1)));
-      await act(async () => { await vi.advanceTimersByTimeAsync(90_000); });
+      await act(async () => {});
       expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
       expect(mocks.getProject).toHaveBeenCalledOnce();
-    } finally {
-      retained();
-    }
+      expect(Source.instances).toHaveLength(1);
+    } finally { retained(); }
   });
 });
 
@@ -762,13 +569,14 @@ it("shares project events while reading every page, filtering and resolving find
   mocks.getWorkItem.mockResolvedValue({ number: 550, title: "Open findings" });
   const onActivity = vi.fn();
   const unsubscribe = subscribeProjectEvents(mocks, "p1", { activity: onActivity });
+  retainedSubscriptions.push(unsubscribe);
   const { result, unmount } = renderHook(() => useSidebarFindings([{ id: "p1", name: "Example project", can_write: true }, { id: "p2", name: "Other", can_write: true }]), { wrapper: ({ children }) => <HealthFindingsProvider projects={[{ id: "p1", name: "Example project", can_write: true }, { id: "p2", name: "Other", can_write: true }]}>{children}</HealthFindingsProvider> });
   await waitFor(() => expect(result.current.map((f) => f.id)).toEqual(["hf_project", "hf_runner", "hf_item"]));
-  expect(Source.instances.map((source) => source.url)).toEqual(["/projects/p1/events"]);
+  expect(Source.instances.map((source) => source.url)).toEqual(["/projects/p1/events", "/projects/p2/events"]);
   expect(result.current.map((f) => [f.label, f.to])).toEqual([
     ["Example project", "/diagnostics"], ["Studio", "/fleet"], ["#550 Open findings", "/work/i/wi_1?tab=diagnostics"],
   ]);
-  expect(mocks.listHealthFindings).toHaveBeenCalledWith("p1", "page2", expect.any(AbortSignal), undefined);
+  expect(mocks.listHealthFindings).toHaveBeenCalledWith("p1", "page2", expect.any(AbortSignal));
   resolved = true;
   act(() => { for (const source of Source.instances) source.dispatchEvent(new MessageEvent("health.findings", { data: "new-tick" })); });
   await waitFor(() => expect(result.current).toEqual([]));
@@ -782,7 +590,7 @@ it("shares project events while reading every page, filtering and resolving find
   expect(onActivity).toHaveBeenCalledWith(activity);
   const lateActivity = vi.fn();
   const unsubscribeLate = subscribeProjectEvents(mocks, "p1", { activity: lateActivity });
-  expect(lateActivity).toHaveBeenCalledWith(activity);
+  expect(lateActivity).not.toHaveBeenCalled();
   unsubscribeLate();
   unmount();
   expect(source.close).not.toHaveBeenCalled();
@@ -797,6 +605,7 @@ it("shares project events while reading every page, filtering and resolving find
 it("discards an older response after a live refresh", async () => {
   vi.stubGlobal("EventSource", Source);
   let finish: (value: unknown) => void = () => {};
+  retainedSubscriptions.push(() => finish({ items: [], last_tick_at: null }));
   mocks.listHealthFindings.mockResolvedValueOnce({ items: [], last_tick_at: null })
     .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }))
     .mockResolvedValueOnce({ items: [], last_tick_at: null });
@@ -804,7 +613,7 @@ it("discards an older response after a live refresh", async () => {
   await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("health.findings", { data: "older" })));
   await waitFor(() => expect(mocks.listHealthFindings).toHaveBeenCalledTimes(2));
   await act(async () => Source.instances[0]!.dispatchEvent(new MessageEvent("health.findings", { data: "newer" })));
-  expect(mocks.listHealthFindings).toHaveBeenCalledTimes(3);
+  expect(mocks.listHealthFindings).toHaveBeenCalledTimes(2);
   await act(async () => finish({ items: [{ id: "stale", class: "flow", summary: "Flow attention", next_action: "Check flow", subject: { kind: "project", id: "p1" }, opened_at: "2026-10-06T00:00:00Z", severity: "attention", resolved_at: null }], last_tick_at: null }));
   expect(result.current).toEqual([]);
 });

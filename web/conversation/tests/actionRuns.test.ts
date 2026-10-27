@@ -301,6 +301,7 @@ describe("a run read back from the hub", () => {
       updated_at: "2026-09-12T10:00:05Z",
     } as ActionRun;
     expect(snapshotFromRecord(record, "Run tests")).toEqual({
+      revision: 3,
       runId: "run_9",
       actionId: "action_1",
       name: "Run tests",

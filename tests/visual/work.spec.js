@@ -102,8 +102,8 @@ test.describe("the work board", () => {
         && (!params.has("open") || issue.terminal === (params.get("open") === "false")));
       await route.fulfill({ json: { items, sequence: 0, total: items.length } });
     });
-    await page.route("**/projects/*/events?**", (route) => route.fulfill({
-      contentType: "text/event-stream", body: 'event: activity\ndata: {"sequence":0,"deltas":[]}\n\n',
+    await page.route(/\/projects\/[^/]+\/events(?:\?.*)?$/, (route) => route.fulfill({
+      contentType: "text/event-stream", body: 'id: 0\nevent: checkpoint\ndata: {}\n\n',
     }));
     await openWork(page, `/work/p/${hub.fixture.project_id}`);
     const todo = page.locator('[data-testid="board-lane"][data-lane="Todo"]');
@@ -277,14 +277,13 @@ test.describe("the work board", () => {
   test("moves an issue between lanes from the keyboard", async ({ page }) => {
     let sequence = 1_000_000;
     let ticks = 0;
-    await page.route("**/projects/*/events?**", (route) => {
-      if (new URL(route.request().url()).searchParams.get("board") !== "true") return route.continue();
+    await page.route(/\/projects\/[^/]+\/events(?:\?.*)?$/, (route) => {
       ticks += 1;
       sequence += 1;
       return route.fulfill({
         status: 200,
         headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-store" },
-        body: `retry: 1000\nevent: activity\ndata: ${JSON.stringify({ sequence, deltas: [] })}\n\n`,
+        body: `id: ${sequence}\nevent: checkpoint\ndata: {}\n\n`,
       });
     });
     await openWork(page, `/work/p/${hub.fixture.project_id}`);

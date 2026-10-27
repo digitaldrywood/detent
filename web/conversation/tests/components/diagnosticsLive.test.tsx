@@ -31,21 +31,31 @@ vi.mock("../../src/app/diagnostics/FindingAsk.tsx", () => ({
 }));
 vi.mock("@tanstack/react-router", () => ({ Link: ({ to, children, ...props }: { to: string; children: React.ReactNode }) => <a href={to} {...props}>{children}</a> }));
 
+const pendingBarriers: (() => void)[] = [];
 class FindingEvents extends EventTarget {
   static current: FindingEvents;
+  static instances: FindingEvents[] = [];
   close = vi.fn();
-  constructor() { super(); FindingEvents.current = this; }
+  constructor() { super(); FindingEvents.current = this; FindingEvents.instances.push(this); }
 }
 const healthFinding = decodeHealthFindings(health).items[0]!;
 const original = { ...healthFinding, subject: { ...healthFinding.subject, project_id: "prj_fixture" } };
 const next = { ...original, id: "new_finding", summary: "New finding" };
 const tick = "2026-10-07T10:00:00Z";
+const healthSequences = new Map<string, number>();
+function healthSequence(tick: string) {
+  let value = healthSequences.get(tick);
+  if (value === undefined) { value = healthSequences.size + 1; healthSequences.set(tick, value); }
+  return value;
+}
 let detectorTick = health.last_tick_at;
 let open = [original];
 let resolved: typeof open = [];
 function emit(at = tick) {
   detectorTick = at;
-  FindingEvents.current.dispatchEvent(new MessageEvent("health.findings", { data: at }));
+  for (const source of FindingEvents.instances) source.dispatchEvent(new MessageEvent("health.findings", {
+    data: JSON.stringify({ entity_id: "finding", entity_revision: healthSequence(at) }), lastEventId: String(healthSequence(at)),
+  }));
 }
 function openCount() {
   return screen.getByText("Open findings").parentElement!.firstElementChild!.textContent;
@@ -53,6 +63,9 @@ function openCount() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  FindingEvents.instances = [];
+  healthSequences.clear();
+  healthSequence(health.last_tick_at);
   vi.stubGlobal("EventSource", FindingEvents);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   open = [original];
@@ -62,9 +75,9 @@ beforeEach(() => {
   mocks.api.appUpdates.mockRejectedValue({ status: 404 });
   mocks.api.diagnostics.mockResolvedValue(decodeDiagnostics(report));
   mocks.api.fleet.mockResolvedValue({ runners: [] });
-  mocks.http.listHealthFindings.mockImplementation(async (_project, _cursor, _signal, options) => ({ items: options?.state === "all" ? [...open, ...resolved] : open, last_tick_at: detectorTick }));
+  mocks.http.listHealthFindings.mockImplementation(async (_project, _cursor, _signal, options) => ({ items: options?.state === "all" ? [...open, ...resolved] : open, last_tick_at: detectorTick, change_sequence: healthSequence(detectorTick) }));
 });
-afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); pendingBarriers.splice(0).forEach((release) => release()); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 const projects: readonly AccountProject[] = [
   { id: "prj_main", name: "Example project", profile: "native", can_write: true, can_manage_runners: true, states: [] },
@@ -270,20 +283,24 @@ it("catches up on visibility and ignores failed or superseded live reads after u
   await screen.findByText(original.summary);
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
   mocks.http.listHealthFindings.mockClear();
+  act(() => document.dispatchEvent(new Event("visibilitychange")));
   act(() => emit());
   expect(mocks.http.listHealthFindings).not.toHaveBeenCalled();
   visibility.mockReturnValue("visible");
   open = [original, next];
   act(() => document.dispatchEvent(new Event("visibilitychange")));
+  expect(mocks.http.listHealthFindings).not.toHaveBeenCalled();
+  act(() => emit());
   await screen.findByText(next.summary);
   let release!: (value: unknown) => void;
+  pendingBarriers.push(() => release?.({ items: [], last_tick_at: null }));
   mocks.http.listHealthFindings.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
-  act(() => emit("older"));
+  await act(async () => emit("older"));
   open = [next];
   resolved = [{ ...original, resolved_at: tick }];
   act(() => emit("newer"));
-  await waitFor(() => expect(screen.queryByText(original.summary)).toBeNull());
   await act(async () => release({ items: [original], last_tick_at: tick }));
+  await waitFor(() => expect(screen.queryByText(original.summary)).toBeNull());
   expect(openCount()).toBe("1");
   expect(screen.queryByText("Resolved")).toBeNull();
   mocks.http.listHealthFindings.mockRejectedValueOnce(new Error("offline"));
@@ -330,7 +347,7 @@ it("shares one findings read per project and detector tick between Diagnostics a
     if (unavailable && url.includes("prj_second/")) return Response.json({ error: "temporarily unavailable" }, { status: 503 });
     const since = new URL(url, "https://example.test").searchParams.get("since");
     const visible = items.filter((item) => item.resolved_at === null || (since !== null && item.resolved_at >= since));
-    return Response.json({ items: url.includes("prj_first/") ? visible : [], last_tick_at: at });
+    return Response.json({ items: url.includes("prj_first/") ? visible : [], last_tick_at: at, change_sequence: healthSequence(at) });
   });
   const options = { origin: "", apiBase: "/api/v2/organizations/org_fixture", csrfToken: "", fetch: request };
   const http = makeWorkHttp(options);
@@ -357,7 +374,6 @@ it("shares one findings read per project and detector tick between Diagnostics a
       await vi.advanceTimersByTimeAsync(1000);
       FindingEvents.current.dispatchEvent(new Event("open"));
       FindingEvents.current.dispatchEvent(new MessageEvent("activity", { data: String(second) }));
-      document.dispatchEvent(new Event("visibilitychange"));
       emit(at);
     });
     expectReads(1);
@@ -377,7 +393,7 @@ it("shares one findings read per project and detector tick between Diagnostics a
   expect(screen.queryByText("Resolved")).toBeNull();
   expect(openCount()).toBe("2");
   expect(within(sidebar).getByRole("link", { name: "Another finding" })).toBeTruthy();
-  expect(request.mock.calls.filter(([url]) => url.includes("state=all&since="))).toHaveLength(8);
+  expect(request.mock.calls.some(([url]) => url.includes("since="))).toBe(false);
   unavailable = true;
   at = "2026-10-07T10:03:00Z";
   items = items.map((item) => item.id === finding.id ? { ...item, resolved_at: at } : item);
@@ -398,7 +414,7 @@ it("shares one findings read per project and detector tick between Diagnostics a
   expect(openCount()).toBe("1");
   expect(within(sidebar).queryByRole("link", { name: finding.summary })).toBeNull();
   expect(within(sidebar).getByRole("link", { name: "Another finding" })).toBeTruthy();
-  expect(request.mock.calls.filter(([url]) => url.includes("state=all&since="))).toHaveLength(20);
+  expect(request.mock.calls.some(([url]) => url.includes("since="))).toBe(false);
 });
 
 it.each([

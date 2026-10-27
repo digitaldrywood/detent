@@ -8,7 +8,7 @@ import {
   type AgentPanelModel,
   type AttemptActivity,
 } from "./subagentRuntime.ts";
-import { subscribeProjectEvents } from "../work/lib/projectEvents.ts";
+import { observeProjectQuery, eventNamesItem } from "../work/lib/projectEvents.ts";
 import { useWorkHttp } from "../work/lib/useWork.ts";
 import type { WorkHttp } from "../work/lib/workHttp.ts";
 
@@ -221,27 +221,6 @@ const EMPTY: Omit<IssueSurfaces, "loading" | "error" | "reload"> = {
   agents: agentPanelModelFromAttempts([]),
 };
 
-/**
- * How long a burst of project activity is coalesced into one re-read. The
- * board's own stream reader uses the same number for the same reason: a runner
- * that checkpoints and finishes inside one tick is one refresh, not two.
- */
-const REFRESH_COALESCE_MS = 400;
-
-/**
- * Everything the live right-panel surfaces show for one issue. Loaded once per
- * issue, re-read on demand, and re-read again when the project's event stream
- * says something happened.
- *
- * The diff has to follow the run: the runner posts its worktree diff
- * before every `run.checkpointed` and before `run.finished`, and a reader
- * watching a running attempt should see each one land rather than having to
- * press Reload. The hub emits no typed project event for a run event, so the
- * signal available here is the project stream's `activity` frame — the issue
- * table's highest event sequence, which a run event appended to this issue's
- * history bumps. It is written on every tick whether or not it moved, so only
- * an increase is acted on, exactly as `useBoard` does with the same frame.
- */
 export function useIssueSurfaces(
   projectId: string | null,
   workItemId: string | null,
@@ -257,51 +236,24 @@ export function useIssueSurfaces(
   const [nonce, setNonce] = React.useState(0);
 
   React.useEffect(() => {
-    if (projectId === null || workItemId === null) return;
-    if (typeof globalThis.EventSource !== "function") return;
-    let previous: number | null = null;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const onActivity = (event: MessageEvent<string>) => {
-      const next = Number.parseInt(event.data, 10);
-      if (!Number.isFinite(next)) return;
-      const seen = previous;
-      previous = next;
-      if (seen === null || next <= seen) return;
-      clearTimeout(timer);
-      timer = setTimeout(() => setNonce((value) => value + 1), REFRESH_COALESCE_MS);
-    };
-    const unsubscribe = subscribeProjectEvents(http, projectId, { activity: onActivity as EventListener });
-    return () => {
-      clearTimeout(timer);
-      unsubscribe();
-    };
-  }, [http, projectId, workItemId]);
-
-  React.useEffect(() => {
     if (projectId === null || workItemId === null) {
-      setState(EMPTY);
-      setLoading(false);
-      setError(null);
+      setState(EMPTY); setLoading(false); setError(null);
       return;
     }
-    let cancelled = false;
     setLoading(true);
-    void read(http, projectId, workItemId, runnerNames, suppliedAttempts)
-      .then((next) => {
-        if (cancelled) return;
-        setState(next);
-        setError(null);
-      })
-      .catch((cause: unknown) => {
-        if (cancelled) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+    const query = observeProjectQuery(http, projectId, {
+      topics: ["work_item", "human_action", "board"],
+      accepts: (event) => eventNamesItem(event, workItemId),
+      load: async () => {
+        const issue = await http.getWorkItem(projectId, workItemId);
+        const value = await read(http, projectId, workItemId, runnerNames, suppliedAttempts);
+        return { value, watermark: issue.change_sequence };
+      },
+      apply: (next) => { setState(next); setError(null); setLoading(false); },
+      error: (cause) => { setError(cause instanceof Error ? cause.message : String(cause)); setLoading(false); },
+      event: () => query.refresh(),
+    });
+    return () => query.close();
   }, [http, projectId, workItemId, nonce, runnerNames, suppliedAttempts]);
 
   return React.useMemo(

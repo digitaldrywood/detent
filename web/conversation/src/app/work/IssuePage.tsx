@@ -68,7 +68,9 @@ import { useRunnerNames } from "./lib/runnerNames.ts";
 import { useNow, useWorkHttp } from "./lib/useWork.ts";
 import { newWorkKey, WorkApiError, type WorkHttp } from "./lib/workHttp.ts";
 import { invalidateQueries, scopeOf, setQueryData, useQuery } from "../lib/queryCache.ts";
-import { issueKey, readIssue, readOlderIssue, selectChangeId, type IssueData } from "./lib/issueQuery.ts";
+import { issueKey, issueProjectHint, hintIssueProject, readIssue, readOlderIssue, selectChangeId, type IssueData } from "./lib/issueQuery.ts";
+
+import { subscribeProjectQuery, eventNamesItem } from "./lib/projectEvents.ts";
 
 export { selectChangeId };
 
@@ -100,7 +102,52 @@ export function useIssue(
   apply: React.Dispatch<React.SetStateAction<IssueData | null>>;
 } {
   const key = issueKey(http, workItemId, requestedChange);
-  const query = useQuery(key, readIssue(http, workItemId, requestedChange));
+  const owner = React.useMemo(() => ({ active: true, projectChanged: false, stream: null as ReturnType<typeof subscribeProjectQuery> | null,
+    controller: null as AbortController | null }), [http, workItemId, requestedChange]);
+  React.useEffect(() => {
+    owner.active = true;
+    return () => { owner.active = false; owner.controller?.abort(); owner.stream?.close(); owner.stream = null; };
+  }, [owner]);
+  const query = useQuery<IssueData | null>(key, async (signal, partial) => {
+    if (typeof globalThis.EventSource === "function" && owner.stream === null) {
+      let project = issueProjectHint(http, workItemId);
+      if (project === undefined) {
+        const head = await http.getWorkItemById(workItemId, signal);
+        project = head.project_id;
+        hintIssueProject(workItemId, project);
+      }
+      if (!owner.active || signal.aborted) throw new Error("Issue read cancelled");
+      owner.stream = subscribeProjectQuery(http, project, {
+        topics: ["work_item", "human_action", "board", "lane"],
+        accepts: (event) => event.type === "lane" || eventNamesItem(event, workItemId),
+        apply: (event) => { owner.projectChanged ||= event.type === "lane"; owner.stream?.refresh(); },
+        refresh: () => invalidateQueries(["issue", workItemId]),
+        restart: () => { owner.projectChanged = true; owner.controller?.abort(); invalidateQueries(["issue", workItemId]); },
+      });
+    }
+    const snapshot = owner.stream?.beginSnapshot();
+    const controller = new AbortController();
+    owner.controller = controller;
+    const readSignal = AbortSignal.any([signal, controller.signal]);
+    let cancel = () => {};
+    const aborted = new Promise<never>((_resolve, reject) => {
+      cancel = () => reject(new Error("Issue snapshot superseded"));
+      readSignal.addEventListener("abort", cancel, { once: true });
+      if (readSignal.aborted) cancel();
+    });
+    try {
+      const result = await Promise.race([readIssue(http, workItemId, requestedChange, owner.projectChanged, owner.stream !== null)(readSignal,
+        (next) => { if (owner.active && !readSignal.aborted && snapshot?.current() !== false) partial(next); }), aborted]);
+      if (!owner.active || snapshot?.current() === false) throw new Error("Issue snapshot superseded");
+      owner.projectChanged = false;
+      setQueryData(key, result);
+      snapshot?.complete(result?.issue.change_sequence);
+      return result;
+    } finally {
+      readSignal.removeEventListener("abort", cancel);
+      snapshot?.complete();
+    }
+  });
   const data = query.data ?? null;
   const current = React.useRef(data);
   current.current = data;
@@ -126,31 +173,6 @@ export function useIssue(
       });
     }).catch(() => undefined).finally(() => { paging.current = false; });
   }, [http, workItemId]);
-
-  const projectId = data?.issue.work_item_id === workItemId ? data.issue.project_id : null;
-  React.useEffect(() => {
-    if (projectId === null || typeof globalThis.EventSource !== "function") return;
-    const source = new globalThis.EventSource(http.eventsUrl(projectId, undefined, workItemId), { withCredentials: true });
-    let previous: bigint | null = null;
-    const onActivity = (event: MessageEvent<string>) => {
-      if (!/^\d+$/.test(event.data)) return;
-      const next = BigInt(event.data);
-      const seen = previous;
-      previous = next;
-      const loaded = current.current?.history.at(-1)?.aggregate_sequence ?? "0";
-      if (next > (seen ?? BigInt(loaded))) invalidateQueries(["issue", workItemId]);
-    };
-    const onError = () => {
-      if (source.readyState === 2) reload();
-    };
-    source.addEventListener("activity", onActivity as EventListener);
-    source.addEventListener("error", onError);
-    return () => {
-      source.removeEventListener("activity", onActivity as EventListener);
-      source.removeEventListener("error", onError);
-      source.close();
-    };
-  }, [http, projectId, workItemId, reload]);
 
   const error = query.error === null || query.error === undefined ? null : query.error instanceof Error ? query.error.message : String(query.error);
   return {

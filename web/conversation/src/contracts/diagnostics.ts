@@ -126,6 +126,7 @@ export const HealthFinding = Schema.Struct({
 export type HealthFinding = typeof HealthFinding.Type;
 
 export const HealthFindingsRead = Schema.Struct({
+  change_sequence: Schema.optional(Schema.Number),
   items: Schema.Array(HealthFinding),
   last_tick_at: Schema.NullOr(Schema.String),
   next_cursor: Schema.optional(Schema.String),
