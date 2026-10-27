@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/hostmetrics"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -315,8 +316,10 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			return s.nativeAPIError(c, err)
 		}
 	}
+	var hostSummaries []hostmetrics.Summary
 	var admission, isolationRaw, workspaceRaw, skillsRaw, capacityRaw, checksRaw string
 	if scope.credential.Runner.RunnerID != "" {
+		hostSummaries = prepareRunnerHostMetrics(request.HostMetrics)
 		admission, err = prepareRunnerAdmissionObservation(request.Admission, receivedAt)
 		if err != nil {
 			return s.nativeAPIError(c, err)
@@ -430,7 +433,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 				}
 			}
 			step("host_metrics")
-			acknowledged := s.mergeRunnerHostMetrics(ctx, tx, scope, request.HostMetrics, now)
+			acknowledged := s.mergeRunnerHostMetrics(ctx, tx, scope, hostSummaries, now)
 			step("configuration")
 			configurationRequest, err := s.runnerProjectConfiguration(ctx, tx, scope, configuration, configurationIssuer, now)
 			if err != nil {

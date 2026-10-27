@@ -26,13 +26,19 @@ func (d *database) populateTimeIndexes(ctx context.Context) error {
 }
 
 func (d *database) populateTimeIndex(ctx context.Context, owner string) error {
+	var complete bool
+	if err := d.reader.QueryRowContext(ctx, `SELECT complete FROM time_index_progress WHERE owner=?`, owner).Scan(&complete); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if complete {
+		return nil
+	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	var cursor int64
-	var complete bool
 	err = tx.QueryRowContext(ctx, `SELECT last_rowid,complete FROM time_index_progress WHERE owner=?`, owner).Scan(&cursor, &complete)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err

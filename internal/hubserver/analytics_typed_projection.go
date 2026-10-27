@@ -169,6 +169,9 @@ func (d *database) convertAnalyticsProjections(ctx context.Context) error {
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
+	if len(batch) == 0 && after == 0 {
+		return nil
+	}
 	var failures error
 	for _, row := range batch {
 		after = row.id

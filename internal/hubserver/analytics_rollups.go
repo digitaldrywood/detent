@@ -206,6 +206,13 @@ func (s *Service) maintainAnalyticsRollups(ctx context.Context, now time.Time, r
 }
 
 func (d *database) backfillAnalyticsRollups(ctx context.Context, now time.Time) (bool, error) {
+	var pending bool
+	if err := d.reader.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM analytics_rollup_backfill)").Scan(&pending); err != nil {
+		return false, fmt.Errorf("read analytics backfill: %w", err)
+	}
+	if !pending {
+		return false, nil
+	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin analytics backfill: %w", err)
@@ -268,6 +275,13 @@ ORDER BY i.native_id LIMIT ?`, organization, project, 1)
 }
 
 func (d *database) drainAnalyticsDirty(ctx context.Context, now time.Time) (bool, error) {
+	var pending bool
+	if err := d.reader.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM analytics_rollup_dirty)").Scan(&pending); err != nil {
+		return false, fmt.Errorf("read analytics rollup work: %w", err)
+	}
+	if !pending {
+		return false, nil
+	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, fmt.Errorf("begin analytics drain: %w", err)
