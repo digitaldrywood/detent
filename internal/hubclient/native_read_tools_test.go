@@ -601,9 +601,13 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 				t.Fatal(err)
 			}
 			result, err := handler(t.Context(), runner.AgentToolCall{Name: operatortool.WorkRuns, Arguments: arguments})
-			var refusal operatortool.RequestError
-			if err == nil || result.Success || json.Unmarshal([]byte(result.Content), &refusal) != nil || refusal.Code != "attempt_record_too_large" || !strings.Contains(refusal.Message, "65536-byte") {
-				t.Fatalf("lost run page bound: result=%s error=%v", result.Content, err)
+			var page operatortool.WorkReadResult[tracker.Page[tracker.NativeAttempt]]
+			if err != nil || !result.Success || json.Unmarshal([]byte(result.Content), &page) != nil || len(result.Content) > operatortool.MaxResultBytes || len(page.Data.Items) != 1 {
+				t.Fatalf("lost bounded run summary: result=%s error=%v", result.Content, err)
+			}
+			attempt := page.Data.Items[0]
+			if attempt.AttemptID != finished.AttemptID || attempt.LeaseID != finished.LeaseID || attempt.FencingToken != finished.FencingToken || attempt.CompletionBody != "" || !slices.Contains(attempt.Unavailable, "completion_body") {
+				t.Fatalf("lost projected attempt authority: %+v", attempt)
 			}
 		})
 	}

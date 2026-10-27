@@ -59,6 +59,7 @@ type NativeChangeReference struct {
 
 type NativeAttempt struct {
 	NativeRunData
+	Unavailable                 []string          `json:"unavailable,omitempty"`
 	TerminalFailureAvailability string            `json:"terminal_failure_availability"`
 	FinalizationAvailability    string            `json:"finalization_availability"`
 	ClaimReleasedAt             *time.Time        `json:"claim_released_at,omitempty"`

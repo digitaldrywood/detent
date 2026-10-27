@@ -158,7 +158,7 @@ func (c *NativeConnector) issueWithLanding(ctx context.Context, native tracker.N
 			var err error
 			attempts, history, err = c.recordedBlockerContext(ctx, native.WorkItemID)
 			if err != nil {
-				return connector.Issue{}, err
+				return connector.Issue{}, fmt.Errorf("read recorded blockers for %s (%s): %w", issue.Identifier, native.WorkItemID, err)
 			}
 			if versioned {
 				c.client.client.reads.storeBlockerContext(native.WorkItemID, version, attempts, history)
