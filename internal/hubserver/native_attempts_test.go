@@ -841,6 +841,9 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 	}
 	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?limit=1", worker, nil)
 	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
+	if len(full) == 0 {
+		t.Fatal("missing full attempt for oversized record identity check")
+	}
 	if !strings.Contains(response.Body.String(), string(issue.WorkItemID)) || !strings.Contains(response.Body.String(), full[0].AttemptID) {
 		t.Fatal("oversized record refusal lost item or attempt identity")
 	}
