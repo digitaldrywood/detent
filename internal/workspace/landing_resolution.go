@@ -196,7 +196,7 @@ func (l *LocalGit) ResolveLandingConflict(ctx context.Context, info Info, issue 
 	}
 	validationInfo := info
 	validationInfo.Path = path
-	result.Gate, err = l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, result.HeadSHA)
+	result.Gate, err = l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, result.HeadSHA, result.BaseSHA)
 	if err != nil {
 		return result, err
 	}
