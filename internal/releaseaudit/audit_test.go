@@ -2,6 +2,7 @@ package releaseaudit
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,6 +81,8 @@ func (fixtureSandbox) Execute(context.Context, []string, string) (string, error)
 }
 
 type fixtureProvider struct {
+	verification    string
+	approved        json.RawMessage
 	malformedLedger bool
 	repeatMalformed bool
 	corrections     int
@@ -154,13 +157,55 @@ func (p *fixtureProvider) Invoke(ctx context.Context, invocation Invocation, obs
 			status = "candidate"
 		}
 		response.Output = fixtureLedger(status, p.verdict != "")
-	case "candidate-disprover", "independent-record-verifier", "replacement-record-verifier":
+	case "candidate-disprover":
 		if invocation.Phase == "candidate-disprover" && invocation.Sandbox != nil {
 			if _, err := invocation.Sandbox.Execute(ctx, []string{"fixture"}, invocation.Scratch); err != nil {
 				return response, err
 			}
 		}
 		response.Output = fixtureFinding(p.verdict)
+		if p.verification == "formatted report" {
+			var finding map[string]any
+			if err := json.Unmarshal(response.Output, &finding); err != nil {
+				p.t.Fatal(err)
+			}
+			finding["description"] = "Reviewed <source> & Unicode 雪."
+			response.Output, err = json.MarshalIndent(finding, "", "  ")
+		}
+	case "independent-record-verifier", "replacement-record-verifier":
+		var input struct {
+			Task struct {
+				Record json.RawMessage `json:"record"`
+				Digest string          `json:"record_sha256"`
+			} `json:"task"`
+		}
+		if err := json.Unmarshal(invocation.Input, &input); err != nil {
+			p.t.Fatal(err)
+		}
+		if len(input.Task.Record) == 0 || input.Task.Digest != fmt.Sprintf("%x", sha256.Sum256(input.Task.Record)) {
+			p.t.Fatal("verification did not bind the exact report to its digest")
+		}
+		decision := map[string]any{"decision": "accept", "record_sha256": input.Task.Digest}
+		if strings.HasPrefix(p.verification, "replace") && invocation.Phase == "independent-record-verifier" || p.verification == "replace again" {
+			decision["decision"] = "replace"
+			decision["replacement"] = fixtureFinding("rejected")
+		}
+		switch p.verification {
+		case "stale digest":
+			decision["record_sha256"] = strings.Repeat("0", 64)
+		case "accept with replacement":
+			decision["replacement"] = fixtureFinding("rejected")
+		case "unknown field":
+			decision["unreviewed"] = true
+		case "unknown decision":
+			decision["decision"] = "approve"
+		case "replace identity":
+			decision["replacement"] = json.RawMessage(strings.ReplaceAll(string(fixtureFinding("rejected")), fixtureFingerprint, "other.go:other:other"))
+		}
+		if decision["decision"] == "accept" {
+			p.approved = input.Task.Record
+		}
+		response.Output, err = json.Marshal(decision)
 	}
 	return response, err
 }
@@ -227,6 +272,7 @@ func TestStageBoundaries(t *testing.T) {
 	for _, test := range []struct {
 		malformedLedger, repeatMalformed bool
 		corrections                      int
+		verification, reason             string
 		name, verdict, want, fail        string
 		baseCommit                       string
 		failPublication                  string
@@ -240,6 +286,14 @@ func TestStageBoundaries(t *testing.T) {
 		repairs, infrastructure          int
 	}{
 		{name: "confirmed", verdict: "confirmed", want: "findings", sandbox: true, repairs: 2},
+		{name: "approval binds formatted report", verification: "formatted report", verdict: "rejected", want: "clean"},
+		{name: "replacement requires independent approval", verification: "replace", verdict: "confirmed", want: "clean", sandbox: true},
+		{name: "unapproved replacement retained", verification: "replace again", verdict: "confirmed", want: "incomplete", reason: "record_verification_unresolved", sandbox: true, retainedCandidates: true},
+		{name: "stale report approval rejected", verification: "stale digest", verdict: "confirmed", want: "failed", sandbox: true, infrastructure: 2, retainedCandidates: true},
+		{name: "accept cannot alter report", verification: "accept with replacement", verdict: "confirmed", want: "failed", sandbox: true, infrastructure: 2, retainedCandidates: true},
+		{name: "unknown review fields rejected", verification: "unknown field", verdict: "confirmed", want: "failed", sandbox: true, infrastructure: 2, retainedCandidates: true},
+		{name: "unknown review decision rejected", verification: "unknown decision", verdict: "confirmed", want: "failed", sandbox: true, infrastructure: 2, retainedCandidates: true},
+		{name: "replacement cannot change identity", verification: "replace identity", verdict: "confirmed", want: "failed", sandbox: true, infrastructure: 2, retainedCandidates: true},
 		{name: "sandbox unavailable", verdict: "confirmed", want: "needs_validation"},
 		{name: "needs validation", verdict: "needs_validation", want: "needs_validation"},
 		{name: "rejected", verdict: "rejected", want: "clean"},
@@ -259,7 +313,7 @@ func TestStageBoundaries(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			provider := &fixtureProvider{t: t, root: root, verdict: test.verdict, fail: test.fail, usage: test.usage, malformedLedger: test.malformedLedger, repeatMalformed: test.repeatMalformed}
+			provider := &fixtureProvider{t: t, root: root, verification: test.verification, verdict: test.verdict, fail: test.fail, usage: test.usage, malformedLedger: test.malformedLedger, repeatMalformed: test.repeatMalformed}
 			if provider.usage == (Usage{}) {
 				provider.usage = Usage{Input: 3, Output: 2, Cached: 1}
 			}
@@ -283,6 +337,7 @@ func TestStageBoundaries(t *testing.T) {
 			for _, run := range []string{"first", "second"} {
 				identity := Identity{ProjectID: "prj_example", Repository: "example-org/example-project", Commit: source.Commit(), ReleaseSeries: "release/v1.0", RunID: run, Attempt: "1", JobID: "audit", RunURL: "https://example.test/runs/" + run}
 				provider.corrections = 0
+				provider.approved = nil
 				result, err := stage.Run(t.Context(), Request{BaseCommit: test.baseCommit, Identity: identity, Source: source, Scratch: root, Allowance: allowance})
 				if provider.corrections != test.corrections {
 					t.Fatalf("corrections=%d want=%d", provider.corrections, test.corrections)
@@ -293,8 +348,14 @@ func TestStageBoundaries(t *testing.T) {
 				if result.Status != test.want {
 					t.Fatalf("status=%s want=%s err=%v", result.Status, test.want, err)
 				}
-				if test.want == "incomplete" && !errors.Is(err, ErrAllowance) {
+				if test.want == "incomplete" && test.reason == "" && !errors.Is(err, ErrAllowance) {
 					t.Fatalf("allowance result: %v", err)
+				}
+				if test.reason != "" && (result.Reason != test.reason || err != nil) {
+					t.Fatalf("reason=%s err=%v", result.Reason, err)
+				}
+				if len(result.Findings) == 1 && string(result.Findings[0]) != string(provider.approved) {
+					t.Fatal("published a report different from the independently approved bytes")
 				}
 				if test.want == "failed" && err == nil {
 					t.Fatal("failed audit returned success to its release workflow")
