@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -60,6 +62,105 @@ func TestSchedulerLeaseHoldFollowsNativeClaims(t *testing.T) {
 	}
 }
 
+func TestSchedulerLeaseHoldSpansCandidateFetch(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name             string
+		noWork           bool
+		hydrationFailure bool
+	}{
+		{name: "claim through execution"},
+		{name: "empty fetch", noWork: true},
+		{name: "hydration failure", hydrationFailure: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			h := newNativeChangeHub(t, true)
+			var item tracker.NativeWorkItemID
+			if !test.noWork {
+				item = tracker.NativeWorkItemID(h.createInProgress(t, "Native execution").ID)
+			}
+			var held, acquired atomic.Int64
+			h.scheduler.leaseHold = func(context.Context) (func(), error) {
+				acquired.Add(1)
+				held.Add(1)
+				return func() { held.Add(-1) }, nil
+			}
+			transport := h.native.client.httpClient.Transport
+			var claims, recoveries atomic.Int64
+			h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				claim := request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/claims")
+				recovery := request.URL.Query().Get("view") == "recovery"
+				if claim || recovery {
+					if held.Load() != 1 {
+						t.Errorf("%s %s has no scheduler hold", request.Method, request.URL.Path)
+					}
+					if claim {
+						claims.Add(1)
+					} else {
+						recoveries.Add(1)
+						if test.hydrationFailure {
+							return nil, errors.New("recovery unavailable")
+						}
+					}
+				}
+				return transport.RoundTrip(request)
+			})
+			request := orchestrator.SchedulingRequest{ProjectID: "local", Policy: h.descriptor, AdmissionLimit: 1, WorkflowStates: []string{"Todo", "In Progress"}}
+			issues, err := h.scheduler.FetchCandidateIssues(t.Context(), request)
+			if (err != nil) != test.hydrationFailure || claims.Load() == 0 {
+				t.Fatalf("fetch: issues=%+v error=%v claims=%d", issues, err, claims.Load())
+			}
+			if test.noWork || test.hydrationFailure {
+				if len(issues) != 0 || held.Load() != 0 {
+					t.Fatalf("idle fetch retained issues=%+v holds=%d", issues, held.Load())
+				}
+				if test.hydrationFailure {
+					h.native.client.httpClient.Transport = transport
+					lease, err := h.native.Claim(t.Context(), tracker.NativeClaim{PolicyID: h.descriptor.ID, WorkItemID: item, MachineID: h.scheduler.machine.ID, SessionID: "after-hydration-failure", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+					if err != nil {
+						t.Fatalf("hydration failure retained the old claim: %v", err)
+					}
+					if err := h.native.Release(t.Context(), lease, "cancelled"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return
+			}
+			if len(issues) != 1 || recoveries.Load() == 0 || held.Load() != 1 {
+				t.Fatalf("claimed fetch: issues=%+v recoveries=%d holds=%d", issues, recoveries.Load(), held.Load())
+			}
+			execution := h.scheduler.RunExecution(string(item)).(*nativeExecution)
+			if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			if held.Load() != 1 {
+				t.Fatal("execution lost its scheduler hold")
+			}
+			if err := execution.Finish(t.Context(), "failed"); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.scheduler.ReleaseClaim(t.Context(), string(item), "orchestrator_release"); err != nil {
+				t.Fatal(err)
+			}
+			if held.Load() != 1 || acquired.Load() != 1 {
+				t.Fatal("completion dropped the hold before the next fetch")
+			}
+			current, err := h.admin.Issue(t.Context(), item)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Done", Reason: "user_requested"}); err != nil {
+				t.Fatal(err)
+			}
+			issues, err = h.scheduler.FetchCandidateIssues(t.Context(), request)
+			if err != nil || len(issues) != 0 || held.Load() != 0 || acquired.Load() != 1 {
+				t.Fatalf("completed execution's empty fetch: issues=%+v holds=%d acquired=%d error=%v", issues, held.Load(), acquired.Load(), err)
+			}
+		})
+	}
+}
+
 func TestSchedulerLeaseHoldReleasesWhenClaimsVanishDuringAcquire(t *testing.T) {
 	t.Parallel()
 	released := 0
@@ -74,6 +175,46 @@ func TestSchedulerLeaseHoldReleasesWhenClaimsVanishDuringAcquire(t *testing.T) {
 	if released != 1 || s.leaseHoldRelease != nil {
 		t.Fatalf("released=%d held=%t, want 1 false", released, s.leaseHoldRelease != nil)
 	}
+}
+
+func TestSchedulerLeaseHoldConcurrentFetches(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		started, ready := make(chan struct{}), make(chan struct{})
+		acquired, released := 0, 0
+		s := &Scheduler{nativeFetches: 2}
+		s.leaseHold = func(context.Context) (func(), error) {
+			acquired++
+			close(started)
+			<-ready
+			return func() { released++ }, nil
+		}
+		done := make(chan struct{}, 2)
+		go func() { s.syncLeaseHold(t.Context()); done <- struct{}{} }()
+		<-started
+		go func() { s.syncLeaseHold(t.Context()); done <- struct{}{} }()
+		synctest.Wait()
+		if len(done) != 0 {
+			t.Fatal("candidate fetch proceeded before its task was acquired")
+		}
+		close(ready)
+		<-done
+		<-done
+		s.mu.Lock()
+		s.nativeFetches--
+		s.mu.Unlock()
+		s.syncLeaseHold(t.Context())
+		if acquired != 1 || released != 0 || s.leaseHoldRelease == nil {
+			t.Fatal("first empty fetch dropped the other fetch's hold")
+		}
+		s.mu.Lock()
+		s.nativeFetches--
+		s.mu.Unlock()
+		s.syncLeaseHold(t.Context())
+		if released != 1 || s.leaseHoldRelease != nil {
+			t.Fatal("last empty fetch did not release its task")
+		}
+	})
 }
 
 func TestSchedulerLeaseHoldOutlivesReleasedLease(t *testing.T) {

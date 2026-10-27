@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -26,16 +27,21 @@ func TestHoldSpriteTask(t *testing.T) {
 		wantErr     bool
 		wantFailed  bool
 		wantMethods []string
+		cancel      bool
 	}{
-		{"holds refreshes and releases", nil, false, false, []string{"POST", "PUT", "DELETE"}},
-		{"create refused", map[string]int{"POST": http.StatusServiceUnavailable}, true, false, []string{"POST"}},
-		{"refresh failure is reported", map[string]int{"PUT": http.StatusNotFound}, false, true, []string{"POST", "PUT", "DELETE"}},
+		{name: "holds refreshes and releases", wantMethods: []string{"POST", "PUT", "DELETE"}},
+		{name: "caller cancellation preserves hold until release", cancel: true, wantMethods: []string{"POST", "PUT", "DELETE"}},
+		{name: "create refused", status: map[string]int{"POST": http.StatusServiceUnavailable}, wantErr: true, wantMethods: []string{"POST"}},
+		{name: "refresh failure is reported", status: map[string]int{"PUT": http.StatusNotFound}, wantFailed: true, wantMethods: []string{"POST", "PUT", "DELETE"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var mu sync.Mutex
 			var methods []string
 			var created string
+			var task struct {
+				Name string `json:"name"`
+			}
 			refreshed := make(chan struct{}, 8)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body, _ := io.ReadAll(r.Body)
@@ -43,6 +49,11 @@ func TestHoldSpriteTask(t *testing.T) {
 				methods = append(methods, r.Method)
 				if r.Method == http.MethodPost {
 					created = string(body)
+					if err := json.Unmarshal(body, &task); err != nil {
+						t.Error(err)
+					}
+				} else if r.URL.Path != "/v1/tasks/"+task.Name {
+					t.Errorf("task path = %q, want created task %q", r.URL.Path, task.Name)
 				}
 				mu.Unlock()
 				if r.Host != "sprite" {
@@ -52,7 +63,13 @@ func TestHoldSpriteTask(t *testing.T) {
 					w.WriteHeader(code)
 				}
 				if r.Method == http.MethodPut {
-					refreshed <- struct{}{}
+					if string(body) != `{"expire":"5m"}` {
+						t.Errorf("refresh body = %q", body)
+					}
+					select {
+					case refreshed <- struct{}{}:
+					default:
+					}
 				}
 			}))
 			defer server.Close()
@@ -61,11 +78,16 @@ func TestHoldSpriteTask(t *testing.T) {
 				return dialer.DialContext(ctx, "tcp", server.Listener.Addr().String())
 			}
 			failed := make(chan struct{}, 1)
-			release, err := holdSpriteTaskWith(t.Context(), dial, 5*time.Millisecond, func() { failed <- struct{}{} })
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			release, err := holdSpriteTaskWith(ctx, dial, 5*time.Millisecond, func() { failed <- struct{}{} })
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("hold error = %v, want error %t", err, tt.wantErr)
 			}
 			if err == nil {
+				if tt.cancel {
+					cancel()
+				}
 				select {
 				case <-refreshed:
 				case <-testenv.WaitContext(t, t.Context()).Done():

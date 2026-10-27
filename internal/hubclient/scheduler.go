@@ -106,7 +106,8 @@ type Scheduler struct {
 	claims                map[string]tracker.Lease
 	leaseHold             func(context.Context) (func(), error)
 	leaseHoldRelease      func()
-	leaseHoldPending      bool
+	leaseHoldPending      chan struct{}
+	nativeFetches         int
 	githubBatchRunning    bool
 }
 

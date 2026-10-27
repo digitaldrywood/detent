@@ -97,11 +97,23 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 			var providersStopped atomic.Bool
 			newScheduler := func() *Scheduler {
 				t.Helper()
-				client, err := New(Config{URL: file.HubURL, IdentityFile: path, HTTPClient: h.admin.client.httpClient})
+				var held atomic.Bool
+				httpClient := *h.admin.client.httpClient
+				transport := httpClient.Transport
+				httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if request.URL.Query().Get("view") == "recovery" && !held.Load() {
+						t.Error("restart recovery ran without a scheduler hold")
+					}
+					return transport.RoundTrip(request)
+				})
+				client, err := New(Config{URL: file.HubURL, IdentityFile: path, HTTPClient: &httpClient})
 				if err != nil {
 					t.Fatal(err)
 				}
-				scheduler, err := NewScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: identity.MachineID, Hostname: redemption.Hostname, Capacity: 1, Version: "test", BackendIsolation: redemption.BackendIsolation}, HeartbeatInterval: 30 * time.Second, LeaseTTL: 10 * time.Minute})
+				scheduler, err := NewScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: identity.MachineID, Hostname: redemption.Hostname, Capacity: 1, Version: "test", BackendIsolation: redemption.BackendIsolation}, HeartbeatInterval: 30 * time.Second, LeaseTTL: 10 * time.Minute, LeaseHold: func(context.Context) (func(), error) {
+					held.Store(true)
+					return func() { held.Store(false) }, nil
+				}})
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -341,6 +341,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := t.Context()
 			db, err := store.Open(ctx, store.Config{Path: filepath.Join(t.TempDir(), "sessions.db")})
 			if err != nil {

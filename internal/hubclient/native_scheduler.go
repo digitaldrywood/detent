@@ -433,6 +433,16 @@ func (s *Scheduler) claimNative(ctx context.Context, source *NativeConnector, re
 }
 
 func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector) ([]connector.Issue, error) {
+	s.mu.Lock()
+	s.nativeFetches++
+	s.mu.Unlock()
+	s.syncLeaseHold(ctx)
+	defer func() {
+		s.mu.Lock()
+		s.nativeFetches--
+		s.mu.Unlock()
+		s.syncLeaseHold(ctx)
+	}()
 	if err := s.PrepareProject(ctx, request.ProjectID); err != nil {
 		return nil, errors.Join(orchestrator.ErrSchedulingUnavailable, err)
 	}
@@ -592,7 +602,6 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		claim.source.client.client.nativeLeases.Store(claim.source.client.base()+"/"+issueID, claim.lease)
 	}
 	s.mu.Unlock()
-	s.syncLeaseHold(ctx)
 	return issues, nil
 }
 
