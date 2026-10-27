@@ -36,8 +36,7 @@ func TestLocalGitLandingReplacement(t *testing.T) {
 		t.Skip("git subprocess integration")
 	}
 
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Parallel()
 	for _, test := range []struct {
 		name           string
 		cleanupFailure string
@@ -51,6 +50,7 @@ func TestLocalGitLandingReplacement(t *testing.T) {
 		{name: "retains a superseded PR without head evidence", supersededHead: "missing"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			cleanupFailure := test.cleanupFailure
 			f := newLandingFixture(t)
 			repository := "https://github.com/example/repo"

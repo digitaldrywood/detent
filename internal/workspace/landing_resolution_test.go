@@ -12,6 +12,7 @@ import (
 )
 
 func TestLandingMergeResolutionBoundsConflictReads(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, before, after string
 		wantCalls           int
@@ -27,6 +28,7 @@ func TestLandingMergeResolutionBoundsConflictReads(t *testing.T) {
 		{name: "oversized resolution stops before gate", after: "oversized", wantCalls: 1, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newLandingFixture(t)
 			outside := filepath.Join(t.TempDir(), "target.txt")
 			if err := os.WriteFile(outside, []byte("outside\n<<<<<<< HEAD\nbase\n=======\nreviewed\n>>>>>>> change\nkeep\n"), 0600); err != nil {
@@ -126,11 +128,13 @@ func TestLandingMergeResolutionBoundsConflictReads(t *testing.T) {
 }
 
 func TestLandingMergeResolutionRejectsDifferentPatch(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct{ name, resolved string }{
 		{name: "same text at another occurrence", resolved: "value\nkeep\nchanged\n"},
 		{name: "whitespace differs from reviewed source", resolved: " changed \nkeep\nvalue\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			source := initSourceRepo(t)
 			write := func(content string) {
 				t.Helper()
@@ -161,6 +165,7 @@ func TestLandingMergeResolutionRejectsDifferentPatch(t *testing.T) {
 }
 
 func TestLandingMergeResolutionGeneratedScope(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, header string
 		allowed      bool
@@ -169,6 +174,7 @@ func TestLandingMergeResolutionGeneratedScope(t *testing.T) {
 		{name: "handwritten source with a conflicted body"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			source := initSourceRepo(t)
 			path := filepath.Join(source, "example.go")
 			original := test.header + "package example\n<<<<<<< HEAD\nvar Value = 1\n=======\nvar Value = 2\n>>>>>>> reviewed\n"

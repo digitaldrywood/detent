@@ -146,6 +146,16 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 				out[i].Err = fmt.Errorf("unsupported merge method %q", method)
 				continue
 			}
+			delivered, err := deliveredLanding(ctx, info.Path, request.Options, base, target, method)
+			if err != nil {
+				out[i].Err = err
+				continue
+			}
+			if delivered.MergeSHA != "" {
+				out[i].Result = delivered
+				out[i].Err = RecordLanding(ctx, info, request.Options.HeadSHA, delivered)
+				continue
+			}
 			integrationStarted := time.Now()
 			if resolved := request.Options.Resolution; resolved != nil {
 				if resolved.BaseSHA != stageHead {

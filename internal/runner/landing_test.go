@@ -588,7 +588,7 @@ func TestLandNativeChange(t *testing.T) {
 				t.Fatalf("PR message = %q, want %q", backend.received.Message, test.wantMessage)
 			}
 			if test.wantRecorded == 1 {
-				if backend.received.ValidationCommand != "make check" || backend.received.HeadSHA != head || backend.received.Method != "merge" || !backend.received.PushAttemptBranch || (!test.wantGitHub && (!strings.Contains(backend.received.Message, "Add a sign-in link") || !strings.Contains(backend.received.Message, "round 2"))) {
+				if backend.received.ChangeID != target.ChangeID || backend.received.ValidationCommand != "make check" || backend.received.HeadSHA != head || backend.received.Method != "merge" || !backend.received.PushAttemptBranch || (!test.wantGitHub && (!strings.Contains(backend.received.Message, "Add a sign-in link") || !strings.Contains(backend.received.Message, "round 2"))) {
 					t.Fatalf("land options = %#v", backend.received)
 				}
 				if stub.recorded[0].MergeSHA != merge || stub.recorded[0].BaseRef != "main" || stub.recorded[0].ChangeID != "change_1" {

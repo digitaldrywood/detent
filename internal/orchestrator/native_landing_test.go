@@ -27,6 +27,7 @@ import (
 )
 
 func TestNativeLandingRunCompletion(t *testing.T) {
+	t.Parallel()
 	hosted := []connector.WorkflowState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Blocked", "Human Review", "Merging", "Done"}},
@@ -67,6 +68,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 	waiting.Refusal = "GitHub refused PUT repos/example/repo/pulls/7/merge: status 405: Pull Request has merge conflicts; current source is unproven"
 	for _, test := range []struct {
 		absorbed           bool
+		alreadyContains    string
 		name               string
 		finalMessage       string
 		landing            *runpkg.NativeLanding
@@ -116,7 +118,9 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "a protected refusal prefers Blocked without human review", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
 		{name: "a moved head prefers Blocked without human review", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalHeadMoved, Refusal: "Head branch was modified"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "Head branch was modified", wantMoves: 1},
 		{name: "a missing head prefers Blocked without human review", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalMissingHead, Refusal: "the reviewed head is missing"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "the reviewed head is missing", wantMoves: 1},
-		{name: "an already landed head prefers Blocked without human review", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalNothing, Refusal: "the base branch already contains everything"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "already contains everything", wantMoves: 1},
+		{name: "unproven identical content retains rework", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalNothing, Refusal: "the base branch already contains everything"}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "already contains everything", wantMoves: 1},
+		{name: "AlreadyContains ancestor completes through landing", alreadyContains: "ancestor", hubState: "Done", states: workflow, noHumanReview: true, wantState: "Done", wantComment: "Landed"},
+		{name: "AlreadyContains squash trailer completes through landing", alreadyContains: "squash", hubState: "Done", states: workflow, noHumanReview: true, wantState: "Done", wantComment: "Landed"},
 		{name: "a refusal falls back to Human Review without Blocked", landing: refused, hubState: "Merging", states: noBlocked, noHumanReview: true, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
 		{name: "an opted out refusal prefers Human Review over Blocked", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, optout: true, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
 		{name: "red barrier retains Merging without Rework", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Waiting: true, Refusal: "waiting for rolling barrier repair"}, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
@@ -157,6 +161,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "a connector without a workflow keeps the ordinary path", landing: landed, hubState: "Done", plain: true, wantContinue: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			issue := completionTransitionIssue("Merging", "")
 			if test.codingLane {
 				issue.State = "In Progress"
@@ -170,7 +175,23 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			branch := "detent/land"
 			landingHead := head
 			landed := *landed
-			if test.mergeMessage != "" || test.baseMoves > 0 {
+			if test.alreadyContains != "" {
+				journey = newNativeLandingJourney(t, issue, "", 0, false, false)
+				journey.target.GitHubPullRequest = false
+				journey.execution.target = journey.target
+				landingHead = journey.target.HeadSHA
+				journey.merge = landingHead
+				if test.alreadyContains == "squash" {
+					message := fmt.Sprintf("Prior delivery\n\nChange Request %s, round 1, head %s.", journey.target.ChangeID, landingHead)
+					journey.merge = nativeLandingGit(t, t.Context(), journey.source, "commit-tree", landingHead+"^{tree}", "-p", journey.base, "-m", message)
+				}
+				nativeLandingGit(t, t.Context(), journey.source, "push", "origin", journey.merge+":refs/heads/main")
+				result, runErr = journey.run(t)
+				if runErr != nil || result.Output != runpkg.RunOutputNativeLanded || !result.NativeLanding.Landed || result.NativeLanding.RefusalKind != "" || result.NativeLanding.BaseSHA != journey.merge || result.NativeLanding.Method != "squash" || result.NativeLanding.BaseRef != "main" || len(journey.execution.recorded) != 1 || journey.provider.calls.Load() != 0 || journey.mergeCalls.Load() != 0 {
+					t.Fatalf("existing delivery did not use normal landing completion: result=%#v error=%v", result, runErr)
+				}
+				branch, test.landing = result.WorkspaceBranch, result.NativeLanding
+			} else if test.mergeMessage != "" || test.baseMoves > 0 {
 				journey = newNativeLandingJourney(t, issue, test.mergeMessage, test.mergeStatus, test.sourceConflict, test.currentBase)
 				if test.baseMoves > 0 {
 					nativeLandingGit(t, t.Context(), journey.remote, "config", "core.logAllRefUpdates", "true")
@@ -260,7 +281,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				cfg.AutoPromote.HumanReview = &humanReview
 			}
 			cfg.AutoPromote.ReworkState = test.reworkState
-			cfg.Policy.Gates.GitHubPullRequest = test.wantInfrastructure || test.wantLandingWait || journey != nil
+			cfg.Policy.Gates.GitHubPullRequest = test.wantInfrastructure || test.wantLandingWait || journey != nil && test.alreadyContains == ""
 			attempts := &recordingWorkAttemptStore{}
 			scheduling := &hubSchedulingSource{}
 			var logs strings.Builder
@@ -456,7 +477,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				}
 				return
 			}
-			if journey != nil && !test.wantRecovered && (len(state.ForgeUnavailable) != 0 || nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main") == journey.merge) {
+			if journey != nil && !test.wantRecovered && test.alreadyContains == "" && (len(state.ForgeUnavailable) != 0 || nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main") == journey.merge) {
 				t.Fatalf("strict protection retained a base wait or landed without a receipt: retry %#v, state %#v", retry, state)
 			}
 			if len(tick.updates) != test.wantMoves || test.wantMoves == 1 && tick.updates[0].state != test.wantState {
@@ -522,8 +543,10 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 }
 
 func TestNativeLandingConfiguredCI(t *testing.T) {
+	t.Parallel()
 	for _, outcome := range []string{"success", "failure"} {
 		t.Run(outcome, func(t *testing.T) {
+			t.Parallel()
 			ci := &nativeLandingCIState{}
 			journey := newNativeLandingJourney(t, connector.Issue{ID: "issue_1", Identifier: "DD-1", State: "Merging"}, "", http.StatusOK, false, true, ci)
 			waiting, err := journey.run(t)

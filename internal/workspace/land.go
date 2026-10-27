@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -70,6 +71,7 @@ type GitHubRESTClient interface {
 
 type LandOptions struct {
 	Resolution            *LandingResolution
+	ChangeID              string
 	ReviewDispositions    []tracker.ReviewDisposition
 	ExpectedBaseSHA       string
 	SecurityAuditRequired bool
@@ -372,6 +374,9 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 	if kept, ok := keptLanding(ctx, normalized.Path, head, targetRef); ok {
 		return kept, nil
 	}
+	if delivered, err := deliveredLanding(ctx, normalized.Path, opts, targetHead, target, method); err != nil || delivered.MergeSHA != "" {
+		return delivered, err
+	}
 
 	staging := filepath.Join(l.root, "landing-"+normalized.Key)
 	defer func() {
@@ -435,6 +440,30 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 		}
 	}
 	return result, nil
+}
+
+func deliveredLanding(ctx context.Context, path string, opts LandOptions, base, target, method string) (LandResult, error) {
+	merge := ""
+	if _, err := runGitAt(ctx, path, "merge-base", "--is-ancestor", opts.HeadSHA, base); err == nil {
+		merge = opts.HeadSHA
+	} else {
+		var command *CommandError
+		if !errors.As(err, &command) || command.ExitCode != 1 {
+			return LandResult{}, fmt.Errorf("verify delivered head ancestry: %w", err)
+		}
+	}
+	if merge == "" && opts.ChangeID != "" {
+		pattern := "^Change Request " + regexp.QuoteMeta(opts.ChangeID) + ", round [0-9]+, head " + regexp.QuoteMeta(opts.HeadSHA) + "\\.$"
+		output, err := runGitAt(ctx, path, "log", "-1", "--format=%H", "--extended-regexp", "--grep="+pattern, base, "--")
+		if err != nil {
+			return LandResult{}, fmt.Errorf("verify delivered Change trailer: %w", err)
+		}
+		merge = strings.TrimSpace(output)
+	}
+	if merge == "" {
+		return LandResult{}, nil
+	}
+	return LandResult{MergeSHA: merge, BaseRef: target, BaseBefore: base, Method: method}, nil
 }
 
 func (l *LocalGit) VerifyIntegratedChange(ctx context.Context, info Info, issue Issue, opts LandOptions, sourceBase, integratedBase string) (LandResult, error) {

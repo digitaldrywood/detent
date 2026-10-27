@@ -28,6 +28,11 @@ func TestMain(m *testing.M) {
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
 	}
+	for key, value := range map[string]string{"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1"} {
+		if err := os.Setenv(key, value); err != nil {
+			panic(err)
+		}
+	}
 	if err := flag.Set("test.parallel", "8"); err != nil {
 		panic(err)
 	}
@@ -3152,7 +3157,7 @@ func waitForError(t *testing.T, result <-chan error, timeout time.Duration) erro
 func initSourceRepo(t *testing.T) string {
 	t.Helper()
 
-	dir := t.TempDir()
+	dir := testenv.TempDir(t)
 	initSourceRepoAt(t, dir)
 	return dir
 }
@@ -3177,8 +3182,9 @@ func initSourceRepoAt(t *testing.T, dir string) {
 func initBareRemote(t *testing.T) string {
 	t.Helper()
 
-	dir := filepath.Join(t.TempDir(), "origin.git")
-	runCommand(t, t.TempDir(), "git", "init", "--bare", "-b", "main", dir)
+	root := testenv.TempDir(t)
+	dir := filepath.Join(root, "origin.git")
+	runCommand(t, root, "git", "init", "--bare", "-b", "main", dir)
 	return dir
 }
 
