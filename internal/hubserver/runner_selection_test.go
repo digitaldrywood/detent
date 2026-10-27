@@ -326,6 +326,7 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 	}{
 		{"allowlist filters higher priority", 1, 4, 0, 1, -time.Hour, time.Hour, "second", false, "", "", false, false, false},
 		{"empty allowlist runs nothing", 1, 4, 0, 1, -time.Hour, time.Hour, "empty", false, "", "", false, false, false},
+		{"project capacity yields to another project", 1, 4, 0, 1, -time.Hour, time.Hour, "project-full", false, "", "", false, false, false},
 		{"project rank beats issue priority", 2, 1, 0, 1, -time.Hour, time.Hour, "both", true, "", "", false, false, false},
 		{"foreign provider candidate competes", 2, 1, 1, 2, -time.Hour, time.Hour, "provider", true, "", "", false, false, false},
 		{"provider claim honors runner rank override", 1, 2, 1, 2, -time.Hour, time.Hour, "provider-override", false, "", "", false, false, false},
@@ -363,6 +364,9 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 				allowed = []tracker.ProjectID{}
 			}
 			routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 2, ProjectIDs: allowed}}
+			if scenario.allowed == "project-full" {
+				routing.ProjectCapacityLimits = map[tracker.ProjectID]int{first.project.ID: 0, second.project.ID: 1}
+			}
 			if scenario.allowed == "organization" || scenario.allowed == "override" || scenario.allowed == "provider-override" {
 				routing.Scope = "organization"
 				routing.ProjectIDs = nil
@@ -370,7 +374,7 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 			if scenario.allowed == "override" || scenario.allowed == "provider-override" {
 				routing.ProjectRanks = map[tracker.ProjectID]int{first.project.ID: 2, second.project.ID: 0}
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
+			requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, runnerRoutingRequest{RoutingChange: routing, IdempotencyKey: "ordering"}), http.StatusOK)
 			descriptor := hubTestPolicy()
 			now := first.service.config.now()
 			issues := make(map[tracker.ProjectID]tracker.NativeIssue)
@@ -499,6 +503,8 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 				publishCapacity(t, first, r, report)
 				claim = providerClaim(r, issues[loser.project.ID], "lower-provider")
 			}
+			assertRunnerAdmissionFacts(t, first, r)
+			assertRunnerAdmissionFacts(t, second, r)
 			response := performHubAPIRequest(t, first.service, http.MethodPost, loser.base+"/claims", r.redemption.Credential, claim)
 			if response.Code == http.StatusOK {
 				t.Fatalf("lower-ranked or unauthorized project acquired work: %s", response.Body.String())

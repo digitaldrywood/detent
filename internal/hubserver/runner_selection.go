@@ -11,16 +11,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, now time.Time) (tracker.WorkItemID, bool, error) {
+func (d *database) runnerAllowedSelection(ctx context.Context, tx *sql.Tx, query claimCandidateQuery, r runnerauth.Runner, now time.Time) (tracker.WorkItemID, bool, error) {
 	if query.NativeScope == nil || query.NativeScope.credential.Runner.RunnerID == "" || query.WorkspaceLane {
 		return 0, false, nil
-	}
-	r, err := readRunnerForDispatch(ctx, tx, *query.NativeScope, now, query.LandingBatchGroup)
-	if err != nil {
-		return 0, false, err
 	}
 	projects, err := readRunnerProjects(ctx, tx, query.NativeScope.credential.ID, claimPreparationLimit)
 	if err != nil {

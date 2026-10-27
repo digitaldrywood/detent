@@ -109,6 +109,7 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 					}
 				}
 			}
+			assertRunnerAdmissionFacts(t, f, r)
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 			requireNativeStatus(t, response, test.want)
 			var count int
@@ -125,6 +126,14 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 			decodeHubResponse(t, response, &lease)
 			if lease.WorkItemID != issue.WorkItemID || count != 1 || lease.ProviderReservation == nil || lease.ProviderReservation.Model != "test-model" {
 				t.Fatalf("lease = %+v", lease)
+			}
+			assertRunnerAdmissionFacts(t, f, r)
+			response = performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var full runnerauth.Runner
+			decodeHubResponse(t, response, &full)
+			if len(full.Leases) != 1 || full.Leases[0].ID != lease.ID || full.Leases[0].Title != issue.Title || full.Leases[0].Policy.ID != hubTestPolicy().ID || full.Leases[0].ProviderReservation == nil || !reflect.DeepEqual(full.Leases[0].ProviderReservation, lease.ProviderReservation) {
+				t.Fatalf("runner response lost lease enrichment: %+v", full.Leases)
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 			requireNativeStatus(t, response, http.StatusOK)
@@ -170,6 +179,7 @@ func TestProviderProjectBackendReservations(t *testing.T) {
 			if lease.WorkItemID != issue.WorkItemID || lease.ProviderReservation == nil || lease.ProviderReservation.Backend != test.backend || lease.ProviderReservation.Model != test.model || lease.ProviderReservation.Report.Backend != test.backend || lease.ProviderReservation.Report.AccountAlias != "runner" || lease.ProviderReservation.Report.Availability != "unknown" {
 				t.Fatalf("project reservation=%+v", lease)
 			}
+			assertRunnerAdmissionFacts(t, f, r)
 		})
 	}
 	response := performHubAPIRequest(t, service, http.MethodGet, r.identityPath()+"/capacity", testHubAdminToken, nil)

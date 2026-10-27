@@ -17,7 +17,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -504,8 +506,13 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			return tracker.Lease{}, ErrNoClaimableWork
 		}
 	}
+	var admission runnerauth.Runner
 	if query.NativeScope != nil && query.NativeScope.credential.Runner.RunnerID != "" {
-		if err := validateRunnerDispatch(ctx, tx, *query.NativeScope, now, joining); err != nil {
+		admission, err = readRunnerForDispatch(ctx, tx, *query.NativeScope, now, joining)
+		if err == nil {
+			err = runnerExcluded(admission.Exclusions(query.NativeScope.project, policy.Requirements{}, false))
+		}
+		if err != nil {
 			source := "native_runner_routing"
 			var refusal *nativeError
 			if errors.As(err, &refusal) && refusal.Code == "host_capacity" {
@@ -514,7 +521,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, source, err, now)
 		}
 		if !query.WorkspaceLane {
-			if err := validateRunnerIsolation(ctx, tx, *query.NativeScope, now); err != nil {
+			if err := validateReadRunnerIsolation(ctx, tx, *query.NativeScope, admission); err != nil {
 				return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_runner_routing", err, now)
 			}
 		}
@@ -546,7 +553,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		}
 		ids = []tracker.WorkItemID{mode.hint.id}
 	} else {
-		selectedID, restricted, err := d.runnerAllowedSelection(ctx, tx, query, now)
+		selectedID, restricted, err := d.runnerAllowedSelection(ctx, tx, query, admission, now)
 		if err != nil {
 			var refusal *nativeError
 			if errors.As(err, &refusal) && refusal.Code == "issue_contract_unsatisfied" {

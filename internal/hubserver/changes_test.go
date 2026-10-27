@@ -1603,6 +1603,19 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/renew", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, TTLSeconds: 90}), http.StatusOK)
 			}
 			if test.sameBatch {
+				occupied := assertRunnerAdmissionFacts(t, f.nativeFixture, owner)
+				if occupied.HostUsed != 1 || occupied.Used != 1 || occupied.ProjectUsed[f.project.ID] != 1 {
+					t.Fatalf("landing occupancy=%+v", occupied)
+				}
+				group := landingCapacityKey(owner.binding.MachineID, string(f.project.ID), waiterSession)
+				joining := assertRunnerAdmissionFacts(t, f.nativeFixture, owner, group)
+				wantUsed := 1
+				if test.nativeOnly {
+					wantUsed = 0
+				}
+				if joining.HostUsed != wantUsed || joining.Used != wantUsed || joining.ProjectUsed[f.project.ID] != wantUsed {
+					t.Fatalf("joining landing occupancy: host=%d runner=%d project=%d, want %d", joining.HostUsed, joining.Used, joining.ProjectUsed[f.project.ID], wantUsed)
+				}
 				if !test.nativeOnly {
 					requireNativeStatus(t, f.claim(t, owner, second, waiterSession, 1), http.StatusConflict)
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
