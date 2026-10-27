@@ -117,6 +117,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		o.rejectWorkerCompletion(ctx, state, event, running, "worker generation or work-attempt lease no longer owns the item", nil)
 		return
 	}
+	if o.trimHostCache != nil {
+		o.startWorkspaceCleanup(ctx, state, o.clockNow())
+	}
 	o.captureNativeLandingRESTUsage(state, event.Result, event.CompletedAt)
 	if event.Result.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)

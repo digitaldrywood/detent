@@ -115,31 +115,39 @@ func (m *Managed) Maintain(ctx context.Context, policy Policy, now time.Time) (r
 			report.Error = err.Error()
 		}
 	}()
-	report, err = TrimWithReport(ctx, m.root, policy, now)
+	report.BuildPath = m.root
+	busy := func() (Report, error) {
+		report.Deferred = true
+		report.BuildBytes, err = size(ctx, m.root)
+		report.RetainedBytes = report.BuildBytes
+		return report, err
+	}
+	queue, err := m.tryLock(ctx, "admission", false)
 	if err != nil {
 		return report, err
 	}
-	capacity, capacityErr := CapacityBytes(m.root)
-	if capacityErr != nil {
-		capacity = 0
+	if queue == nil {
+		return busy()
 	}
-	policy = policy.NormalizedForCapacity(capacity)
-	if policy.reclaimBytes > 0 {
-		policy.MaxBytes = min(policy.MaxBytes, max(1, report.RetainedBytes-policy.reclaimBytes))
-	}
-	if report.RetainedBytes <= policy.MaxBytes {
-		return report, nil
-	}
-	queue, err := m.tryLock(ctx, "admission", false)
-	if err != nil || queue == nil {
-		return report, err
-	}
-	defer func() { err = errors.Join(err, queue.Close()) }()
+	defer func() {
+		if queue != nil {
+			err = errors.Join(err, queue.Close())
+		}
+	}()
 	usage, err := m.tryLock(ctx, "consumers", false)
-	if err != nil || usage == nil {
+	if err != nil {
 		return report, err
+	}
+	if usage == nil {
+		err = queue.Close()
+		queue = nil
+		if err != nil {
+			return report, err
+		}
+		return busy()
 	}
 	defer func() { err = errors.Join(err, usage.Close()) }()
+
 	_, err = trim(ctx, m.root, policy, now, &report, true)
 	return report, err
 }

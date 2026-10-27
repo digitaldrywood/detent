@@ -165,7 +165,17 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 	if err != nil {
 		return reclaimed, err
 	}
+	report.RetainedBytes = total
 	if managed {
+		if policy.reclaimBytes > 0 {
+			retained := total
+			for _, candidate := range candidates {
+				if candidate.modified.Before(now.Add(-policy.MaxAge)) {
+					retained -= candidate.bytes
+				}
+			}
+			policy.MaxBytes = min(policy.MaxBytes, max(1, retained-policy.reclaimBytes))
+		}
 		slices.SortFunc(candidates, func(a, b trimEntry) int { return a.modified.Compare(b.modified) })
 	}
 	stamp := now.UTC().Format(time.RFC3339Nano)
@@ -210,6 +220,7 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 		}
 		reclaimed += candidate.bytes
 		total -= candidate.bytes
+		report.RetainedBytes = total
 	}
 	total -= previousMarkerBytes
 	data := metadata(total + int64(len(metadata(0))))

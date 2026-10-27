@@ -53,6 +53,9 @@ func (o *Orchestrator) tickManual(ctx context.Context, state *State, request man
 }
 
 func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now time.Time, manual *manualRefreshRequest) {
+	if o.trimHostCache != nil {
+		o.startWorkspaceCleanup(ctx, state, now)
+	}
 	ctx = connector.WithRESTFanoutBudget(ctx, "refresh")
 	o.beginGlobalProjectCycle()
 	defer o.endGlobalProjectCycle()
@@ -368,7 +371,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		o.markRefreshSucceeded(state, now)
 	}
 	state.Pipeline = overlayIssueStateSnapshots(state.Pipeline, state.tickTransitions.pipeline)
-	if refreshOK && !reserve.degraded {
+	if o.trimHostCache == nil && refreshOK && !reserve.degraded {
 		timing.next("workspace_cleanup")
 		o.startWorkspaceCleanup(ctx, state, now)
 	}

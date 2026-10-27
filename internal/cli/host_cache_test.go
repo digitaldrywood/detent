@@ -56,6 +56,13 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 			if err := os.WriteFile(output, make([]byte, 2000), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			warm := filepath.Join(root, "00", strings.Repeat("d", 64)+"-d")
+			if err := os.WriteFile(warm, []byte("warm output"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(warm, time.Now().Add(time.Hour), time.Now().Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
 			candidate := scheduler.ProjectCandidate{ID: "example-project"}
 			gate, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "round_robin", Capacity: 2}}}, []scheduler.ProjectCandidate{candidate})
 			if err != nil {
@@ -115,6 +122,9 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 					if err != nil {
 						t.Fatalf("maintenance with %d active consumers did not yield: %v", active, err)
 					}
+					if report := managed.observe(); report == nil || !report.Deferred {
+						t.Fatalf("busy maintenance reported success: %+v", report)
+					}
 					if data, err := os.ReadFile(output); err != nil || len(data) != 2000 {
 						t.Fatalf("active cache changed: bytes=%d err=%v", len(data), err)
 					}
@@ -133,7 +143,7 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if report := managed.observe(); report == nil || report.SizeEvictedBytes != tt.wantEvicted || report.RetainedBytes > tt.maxBytes {
+				if report := managed.observe(); report == nil || report.Deferred || report.SizeEvictedBytes != tt.wantEvicted || report.RetainedBytes > tt.maxBytes {
 					t.Fatalf("maintenance result: %+v, want evicted=%d", report, tt.wantEvicted)
 				}
 				if _, err := os.Stat(output); os.IsNotExist(err) != (tt.wantEvicted != 0) {
@@ -157,6 +167,9 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer nextRelease()
+			if data, err := os.ReadFile(warm); err != nil || string(data) != "warm output" {
+				t.Fatalf("retained output not reusable: %q %v", data, err)
+			}
 			slot, acquired, err := gate.TryAcquire(t.Context(), candidate, scheduler.SlotRequest{State: "Todo"}, time.Now())
 			if err != nil || !acquired {
 				t.Fatalf("second dispatch: %t %v", acquired, err)

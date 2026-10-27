@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
@@ -2165,9 +2166,7 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 		{name: "quiesced", from: "Backlog", to: "Todo", quiesced: true},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
+		run := func(t *testing.T) {
 			issue := testIssue("issue-operator-move", "digitaldrywood/detent#1482", tt.from)
 			unrelated := testIssue("issue-unrelated-blocked", "digitaldrywood/detent#1483", "Blocked")
 			unrelated.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "Approve the requested scope"}
@@ -2200,15 +2199,36 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New() error = %v", err)
 			}
-			stop := runOrchestrator(t, orch)
-			defer stop()
-
-			waitForState(t, orch, func(state orchestrator.State) bool {
-				_, unrelatedBlocked := state.Blocked[unrelated.ID]
-				return unrelatedBlocked && !state.LastRefreshAt.IsZero()
-			})
+			ctx, cancel := context.WithCancel(t.Context())
+			done := make(chan error, 1)
+			go func() { done <- orch.Run(ctx) }()
+			defer func() {
+				cancel()
+				if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+					t.Fatalf("Run() error = %v", err)
+				}
+			}()
+			receiveRequest := func() orchestrator.RunRequest {
+				t.Helper()
+				synctest.Wait()
+				select {
+				case request := <-runner.started:
+					return request
+				default:
+					t.Fatal("runner request missing after dispatch settled")
+				}
+				return orchestrator.RunRequest{}
+			}
+			synctest.Wait()
+			initial, err := orch.State(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, unrelatedBlocked := initial.Blocked[unrelated.ID]; !unrelatedBlocked || initial.LastRefreshAt.IsZero() {
+				t.Fatalf("initial refresh did not establish blocked issue: %+v", initial.Blocked)
+			}
 			if tt.capacity {
-				if request := receiveRunRequest(t, runner.started); request.Issue.ID != resident.ID {
+				if request := receiveRequest(); request.Issue.ID != resident.ID {
 					t.Fatalf("initial RunRequest.Issue = %#v", request.Issue)
 				}
 				tracker.setCandidates(resident, issue)
@@ -2265,9 +2285,10 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 			if tt.stalledRefill {
 				release := sync.OnceFunc(func() { close(tracker.refillRelease) })
 				defer release()
+				synctest.Wait()
 				select {
 				case <-tracker.refillStarted:
-				case <-t.Context().Done():
+				default:
 					t.Fatal("move did not reach refill")
 				}
 				state, err := orch.State(t.Context())
@@ -2301,11 +2322,12 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 				}
 			}
 			if tt.wantDispatch {
-				request := receiveRunRequest(t, runner.started)
+				request := receiveRequest()
 				if request.Issue.ID != issue.ID || request.Issue.State != tt.to {
 					t.Fatalf("RunRequest.Issue = %#v, want moved %s issue", request.Issue, tt.to)
 				}
 			}
+			synctest.Wait()
 			state, err := orch.State(t.Context())
 			if err != nil {
 				t.Fatalf("State() error = %v", err)
@@ -2338,6 +2360,10 @@ func TestRunDispatchesOperatorMovedIssue(t *testing.T) {
 				}
 			}
 			close(runner.release)
+		}
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, run)
 		})
 	}
 }

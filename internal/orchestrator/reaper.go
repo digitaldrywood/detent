@@ -87,11 +87,6 @@ func (o *Orchestrator) reapDueWorkspacesAfterRefresh(ctx context.Context, state 
 		}
 		return
 	}
-	if o.trimHostCache != nil {
-		if err := o.trimHostCache(ctx, o.cfg.HostCache, now); err != nil {
-			o.logger.Warn("trim host Go cache", "error", err)
-		}
-	}
 	o.sweepRetention(ctx, state, now)
 	states := cleanupFetchStates(o.cfg)
 	swept := o.workspaceCleanupLocal || len(states) == 0 || o.reapWorkspaceStates(ctx, state, states, now)

@@ -99,13 +99,21 @@ func (c *runnerBuildCache) trimForVolume(ctx context.Context, policy toolcache.P
 		native, nativeErr = toolcache.TrimWithReport(ctx, c.native, policy, now)
 		err = errors.Join(err, nativeErr)
 	}
-	if err == nil {
-		freeAfter, _, freeAfterErr := volume(c.root)
-		slog.Info("managed Go build cache maintenance", "path", c.root,
-			"retained_bytes", report.RetainedBytes, "age_expired_bytes", report.AgeExpiredBytes,
-			"size_evicted_bytes", report.SizeEvictedBytes, "native_path", c.native, "native_age_expired_bytes", native.AgeExpiredBytes,
-			"pressure_reclaim_bytes", pressureReclaim, "free_bytes_before", freeBefore,
-			"free_bytes_after", freeAfter, "disk_observation_error", errors.Join(freeBeforeErr, freeAfterErr))
+	status := "complete"
+	if report.Deferred {
+		status = "busy"
 	}
+	if err != nil {
+		status = "failed"
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		status = "cancelled"
+	}
+	freeAfter, _, freeAfterErr := volume(c.root)
+	slog.Info("managed Go build cache maintenance", "path", c.root, "status", status,
+		"retained_bytes", report.RetainedBytes, "age_expired_bytes", report.AgeExpiredBytes,
+		"size_evicted_bytes", report.SizeEvictedBytes, "native_path", c.native, "native_age_expired_bytes", native.AgeExpiredBytes,
+		"pressure_reclaim_bytes", pressureReclaim, "free_bytes_before", freeBefore,
+		"free_bytes_after", freeAfter, "disk_observation_error", errors.Join(freeBeforeErr, freeAfterErr))
 	return err
 }

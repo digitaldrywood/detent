@@ -23,7 +23,7 @@ func (o *Orchestrator) startWorkspaceCleanup(ctx context.Context, state *State, 
 }
 
 func (o *Orchestrator) startWorkspaceCleanupPass(ctx context.Context, state *State, now time.Time, force bool) {
-	if o.reaper == nil || o.workspaceCleanupCancel != nil {
+	if (o.reaper == nil && o.trimHostCache == nil) || o.workspaceCleanupCancel != nil {
 		return
 	}
 	if o.workspaceCleanupResults == nil {
@@ -41,16 +41,28 @@ func (o *Orchestrator) startWorkspaceCleanupPass(ctx context.Context, state *Sta
 	worker := &Orchestrator{cfg: o.cfg, connector: o.connector, reaper: o.reaper, logger: o.logger, trimHostCache: o.trimHostCache, quarantineWarnings: o.quarantineWarnings}
 	remaining := workspaceCleanupBatchSize
 	worker.workspaceCleanupRemaining = &remaining
-	cleanupCtx, cancel := context.WithCancel(ctx)
+	budget := o.cfg.PollInterval
+	if budget <= 0 {
+		budget = defaultPollInterval
+	}
+	cleanupCtx, cancel := context.WithTimeout(ctx, budget)
 	restScope := &connector.RESTScope{ProjectID: o.cfg.Project.ID, Name: "async_workspace_cleanup"}
 	cleanupCtx = connector.WithRESTScope(cleanupCtx, restScope)
+	cleanupCtx = connector.WithRESTFanoutBudget(cleanupCtx, "workspace_cleanup")
 	cleanupCtx = workspace.WithCleanupBatch(cleanupCtx, workspaceCleanupBatchSize)
 	o.workspaceCleanupCancel = cancel
 	o.workspaceCleanupWG.Add(1)
 	go func() {
 		defer o.workspaceCleanupWG.Done()
 		defer connector.LogRESTScope(o.logger, restScope)
-		worker.reapWorkspacesIfDue(cleanupCtx, &after, now)
+		if worker.trimHostCache != nil {
+			if err := worker.trimHostCache(cleanupCtx, worker.cfg.HostCache, now); err != nil {
+				worker.logger.Warn("trim host Go cache", "error", err)
+			}
+		}
+		if cleanupCtx.Err() == nil {
+			worker.reapWorkspacesIfDue(cleanupCtx, &after, now)
+		}
 		if cleanupCtx.Err() == nil {
 			worker.reapDueWorkspacesAfterRefresh(cleanupCtx, &after, now)
 		}
@@ -63,6 +75,14 @@ func (o *Orchestrator) reclaimWorkspaceStorage(ctx context.Context, state *State
 		o.startWorkspaceCleanupPass(ctx, state, now, true)
 	}
 	if o.workspaceCleanupCancel == nil {
+		return
+	}
+	if o.trimHostCache != nil {
+		select {
+		case result := <-o.workspaceCleanupResults:
+			o.finishWorkspaceCleanup(state, result)
+		default:
+		}
 		return
 	}
 	select {
