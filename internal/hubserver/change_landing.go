@@ -333,6 +333,9 @@ func (s *Service) landChange(c echo.Context) error {
 		if _, err := tx.ExecContext(ctx, "UPDATE change_requests SET record_json = ?, claim_version_id = ?, claim_head_sha = ?, landed_version_id=? WHERE id = ?", raw, version.ID, version.HeadSHA, change.Landed.VersionID, change.ID); err != nil {
 			return nil, err
 		}
+		if err := writeArchiveChangeFacts(ctx, tx, change, ""); err != nil {
+			return nil, err
+		}
 		if err := recordPolicyLandingProvenance(ctx, tx, string(scope.organization)+"/"+string(scope.project), 0, validationRepository(version.Repository), request.MergeSHA, policyLanding{ChangeID: change.ID}); err != nil {
 			return nil, fmt.Errorf("record change policy landing: %w", err)
 		}

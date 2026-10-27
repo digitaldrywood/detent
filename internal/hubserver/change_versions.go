@@ -248,6 +248,9 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	if _, err := tx.ExecContext(ctx, "UPDATE change_requests SET record_json = ?, claim_version_id = ?, claim_head_sha = ? WHERE id = ?", raw, version.ID, version.HeadSHA, change.ID); err != nil {
 		return nil, err
 	}
+	if err := writeArchiveChangeFacts(ctx, tx, change, ""); err != nil {
+		return nil, err
+	}
 	ref := &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}
 	for _, item := range change.LinkedIssues {
 		if err := appendNativeHistory(ctx, tx, scope, string(item), "change.version_published", tracker.CollaborationData{Change: ref}, now); err != nil {

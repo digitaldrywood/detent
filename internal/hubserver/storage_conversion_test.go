@@ -415,6 +415,8 @@ func TestStorageConversionImmutability(t *testing.T) {
 				"claim_attempt_id": true, "run_id": true, "run_lease_id": true, "run_fencing_token": true,
 				"run_sequence": true, "run_policy_id": true, "push_change_id": true, "push_version_id": true,
 				"push_head_sha": true, "push_external_effect": true, "push_effect_state": true,
+				"archive_operation": true, "archive_from_state": true, "archive_to_state": true,
+				"archive_attempt_id": true, "archive_outcome": true, "archive_landed_commit": true,
 			}},
 		} {
 			rows, err := db.reader.QueryContext(t.Context(), "PRAGMA table_info("+table.name+")")

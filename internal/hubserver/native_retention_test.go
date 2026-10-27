@@ -363,11 +363,11 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 
 	t.Parallel()
 	for _, test := range []struct {
-		name, state                                                                            string
-		age                                                                                    int
-		lease, expiredLease, openChange, landedChange, never, restore, terminalMove, noHistory bool
-		period                                                                                 int
-		archived                                                                               bool
+		name, state                                                                                                     string
+		age                                                                                                             int
+		lease, expiredLease, openChange, landedChange, never, restore, typedRestore, typedOpen, terminalMove, noHistory bool
+		period                                                                                                          int
+		archived                                                                                                        bool
 	}{
 		{name: "old Done", state: "Done", age: 31, archived: true},
 		{name: "recent Done", state: "Done", age: 29},
@@ -380,6 +380,8 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 		{name: "landed Change", state: "Done", age: 31, openChange: true, landedChange: true, archived: true},
 		{name: "Never completed", state: "Done", age: 100, never: true},
 		{name: "Never cancelled", state: "Cancelled", age: 100, never: true},
+		{name: "typed restore resets clock", state: "Done", age: 100, typedRestore: true},
+		{name: "typed pending Change", state: "Done", age: 31, openChange: true, landedChange: true, typedOpen: true},
 		{name: "restore resets clock", state: "Done", age: 100, restore: true},
 		{name: "custom terminal", state: "Shipped", age: 31, archived: true},
 		{name: "terminal move preserves clock", state: "Shipped", age: 31, terminalMove: true, archived: true},
@@ -486,6 +488,19 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 					t.Fatal(err)
 				}
 			}
+			if test.typedOpen {
+				if _, err := tx.ExecContext(t.Context(), "UPDATE change_requests SET claim_version_id='new-version',claim_head_sha='new-head',landed_version_id='cv_retention' WHERE id='chg_retention'"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.typedRestore {
+				if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "issue.edited", tracker.CollaborationData{}, now.Add(-time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), "UPDATE collaboration_events SET archive_operation='restore' WHERE work_item_id=? AND type='issue.edited'", issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}
@@ -533,7 +548,7 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 					t.Fatal(err)
 				}
 				if test.openChange {
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_requests SET record_json=json_set(record_json,'$.landed.version_id','cv_retention') WHERE id='chg_retention'"); err != nil {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_requests SET archive_landed_version_id='cv_retention',record_json=json_set(record_json,'$.landed.version_id','cv_retention') WHERE id='chg_retention'"); err != nil {
 						t.Fatal(err)
 					}
 				}

@@ -3,6 +3,7 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -346,6 +347,38 @@ func TestArchiveQueryScopesLiveFallback(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "archive-query-scope")
 	item := f.create(t, "Selected issue")
 	f.create(t, "Unrelated issue")
+	t.Run("historical schema keeps scalar values", func(t *testing.T) {
+		original := archiveTestTable(t, f.service, "collaboration_events", "work_item_id=?", item.WorkItemID)
+		legacy := attachment.ArchiveTable{Name: original.Name}
+		var indexes []int
+		for index, column := range original.Columns {
+			if !archiveProjectionColumn(original.Name, column) {
+				legacy.Columns = append(legacy.Columns, column)
+				indexes = append(indexes, index)
+			}
+		}
+		for _, row := range original.Rows {
+			cells := make([]json.RawMessage, len(indexes))
+			for index, source := range indexes {
+				cells[index] = row[source]
+			}
+			legacy.Rows = append(legacy.Rows, cells)
+		}
+		section := &attachment.ArchiveSection{OrganizationID: string(f.project.OrganizationID), ProjectID: string(f.project.ID), WorkItemID: string(item.WorkItemID), SectionID: "history", Tables: []attachment.ArchiveTable{legacy}}
+		query, err := newNativeArchiveQuery(t.Context(), f.service.database.reader, section, string(item.WorkItemID), 1, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sequence int64
+		var kind, actor, data string
+		var operation sql.NullString
+		if err := query.QueryRowContext(t.Context(), "SELECT sequence,type,actor_json,data_json,archive_operation FROM collaboration_events WHERE work_item_id=? ORDER BY sequence LIMIT 1", item.WorkItemID).Scan(&sequence, &kind, &actor, &data, &operation); err != nil {
+			t.Fatal(err)
+		}
+		if sequence != 1 || kind != "issue.created" || !json.Valid([]byte(actor)) || !json.Valid([]byte(data)) || operation.Valid {
+			t.Fatalf("historical fields changed: sequence=%d type=%s actor=%s data=%s operation=%+v", sequence, kind, actor, data, operation)
+		}
+	})
 	for _, kind := range []string{"run", "change", "revision", "conversation", "history"} {
 		for _, name := range nativeArchiveTables(kind) {
 			t.Run(name, func(t *testing.T) {

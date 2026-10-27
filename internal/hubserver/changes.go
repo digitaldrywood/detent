@@ -690,6 +690,9 @@ func (s *Service) createChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 	if _, err := tx.ExecContext(ctx, "INSERT INTO change_requests (id, organization_id, project_id, work_item_id, record_json, claim_version_id, claim_head_sha,landed_version_id) VALUES (?, ?, ?, ?, ?, '', '', '')", change.ID, scope.organization, scope.project, change.WorkItemID, raw); err != nil {
 		return nil, err
 	}
+	if err := writeArchiveChangeFacts(ctx, tx, change, ""); err != nil {
+		return nil, err
+	}
 	for _, id := range change.LinkedIssues {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO change_issue_links VALUES (?, ?, ?, ?)", change.ID, scope.organization, scope.project, id); err != nil {
 			return nil, err

@@ -29,6 +29,7 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 		{"populate runner facts", func(ctx context.Context) error {
 			return s.database.populateRunnerFacts(s.runDetailContext(s.contentContext(ctx)))
 		}},
+		{"populate archive facts", s.database.populateArchiveFacts},
 		{"populate time indexes", s.database.populateTimeIndexes},
 		{"expire native records", func(ctx context.Context) error { return s.expireNativeRecords(ctx, now) }},
 		{"archive closed issues", func(ctx context.Context) error { return s.archiveClosedNativeIssues(ctx, now) }},
@@ -75,17 +76,17 @@ SELECT rowid FROM native_duplicate_challenges WHERE consumed_at IS NOT NULL OR j
 		return err
 	}
 	period := "CASE WHEN ws.detent_state = 'Cancelled' THEN p.archive_cancelled_after_days ELSE p.archive_completed_after_days END"
-	restored := `(SELECT e.recorded_at FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='issue.edited' AND json_extract(e.data_json,'$.operation')='restore' ORDER BY e.sequence DESC LIMIT 1)`
+	restored := `(SELECT e.recorded_at FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='issue.edited' AND e.archive_operation='restore' ORDER BY e.sequence DESC LIMIT 1)`
 	entered := "julianday(" + nativeTerminalEnteredAt + ")"
 	selection := `SELECT i.organization_id, i.project_id, i.native_id, ` + period + `
 FROM issues i JOIN projects p ON p.id=i.project_id AND p.organization_id=i.organization_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
 WHERE p.deleted_at IS NULL AND p.profile='native' AND i.archived=0 AND ws.terminal=1 AND ` + period + ` IS NOT NULL
 AND max(` + entered + `, COALESCE(julianday(` + restored + `), ` + entered + `)) < julianday(?) - (` + period + `)
+AND NOT EXISTS (SELECT 1 FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='issue.edited' AND e.archive_operation IS NULL)
 AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.issue_id=i.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?))
 AND NOT EXISTS (SELECT 1 FROM change_issue_links l JOIN change_requests c ON c.id=l.change_id
 WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id
-AND COALESCE(json_extract(c.record_json,'$.current_version_id'),'')<>''
-AND COALESCE(json_extract(c.record_json,'$.landed.version_id'),'')<>json_extract(c.record_json,'$.current_version_id'))
+AND (c.claim_version_id IS NULL OR c.archive_landed_version_id IS NULL OR (c.claim_version_id<>'' AND c.archive_landed_version_id<>c.claim_version_id)))
 `
 	rows, err := s.database.reader.QueryContext(ctx, selection+` ORDER BY i.id LIMIT 200`, formatHubTime(now), formatHubTime(now))
 	if err != nil {

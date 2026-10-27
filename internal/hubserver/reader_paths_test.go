@@ -382,6 +382,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"recordHostedRequest":               "Hosted GET accounting updates consumption in its own write transaction.",
 		"reserveHostedInvitationSeat":       "Reserves an invitation seat while checking the plan allowance.",
 		"executeNativeMutation":             "Runs a native mutation with authority, event and replay receipt in one transaction.",
+		"populateArchiveFact":               "Writes one unknown archive projection after reader-pool decoding, fenced by its unchanged source payload.",
 		"populateTimeIndex":                 "Populates one bounded chunk of typed timestamp facts and its cursor on the existing retention tick.",
 		"expireNativeRecords":               "Deletes one bounded batch of expired native records on the existing maintenance tick.",
 		"publishStorageArchive":             "Commits one issue archive pointer and its bounded section metadata after rechecking the exact issue and conversation revisions.",

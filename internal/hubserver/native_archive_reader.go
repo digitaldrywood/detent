@@ -338,12 +338,36 @@ func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *at
 		if err != nil {
 			return nil, err
 		}
-		if !slices.Equal(columns, table.Columns) {
-			return nil, &nativeArchiveError{Archive: &tracker.ArchiveDescriptor{Availability: "incompatible", SectionIDs: []string{section.SectionID}}}
+		flat := make([]json.RawMessage, 0, len(table.Rows)*len(columns))
+		for _, column := range table.Columns {
+			if !slices.Contains(columns, column) {
+				return nil, attachment.ErrInvalid
+			}
 		}
+		indexes := make([]int, len(columns))
+		for i, column := range columns {
+			indexes[i] = slices.Index(table.Columns, column)
+			if indexes[i] < 0 && !archiveProjectionColumn(table.Name, column) {
+				return nil, &nativeArchiveError{Archive: &tracker.ArchiveDescriptor{Availability: "incompatible", SectionIDs: []string{section.SectionID}}}
+			}
+		}
+		for _, row := range table.Rows {
+			if len(row) != len(table.Columns) {
+				return nil, attachment.ErrInvalid
+			}
+			for _, index := range indexes {
+				if index < 0 {
+					flat = append(flat, json.RawMessage("null"))
+				} else {
+					flat = append(flat, row[index])
+				}
+			}
+		}
+
 		var projection []string
+		width := strconv.Itoa(len(columns))
 		for index := range columns {
-			projection = append(projection, "json_extract(value, '$["+strconv.Itoa(index)+"]')")
+			projection = append(projection, "max(CASE WHEN key%"+width+"="+strconv.Itoa(index)+" THEN atom END)")
 		}
 		quoted := make([]string, len(columns))
 		liveProjection := make([]string, len(columns))
@@ -351,7 +375,7 @@ func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *at
 			quoted[i] = `"` + strings.ReplaceAll(column, `"`, `""`) + `"`
 			liveProjection[i] = "live." + quoted[i]
 		}
-		raw, err := json.Marshal(table.Rows)
+		raw, err := json.Marshal(flat)
 		if err != nil {
 			return nil, err
 		}
@@ -416,8 +440,8 @@ func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *at
 				result.values = append(result.values, next.Int64)
 			}
 		}
-		ctes = append(ctes, fmt.Sprintf(`archive_%s(%s) AS MATERIALIZED (SELECT %s FROM json_each(?)),
-%s AS NOT MATERIALIZED (SELECT * FROM archive_%s UNION ALL SELECT %s FROM main.%s AS live WHERE %s)`, name, strings.Join(quoted, ","), strings.Join(projection, ","), name, name, strings.Join(liveProjection, ","), name, strings.Join(conditions, " AND ")))
+		ctes = append(ctes, fmt.Sprintf(`archive_%s(%s) AS MATERIALIZED (SELECT %s FROM json_each(?) GROUP BY CAST(key/%s AS INTEGER)),
+%s AS NOT MATERIALIZED (SELECT * FROM archive_%s UNION ALL SELECT %s FROM main.%s AS live WHERE %s)`, name, strings.Join(quoted, ","), strings.Join(projection, ","), width, name, name, strings.Join(liveProjection, ","), name, strings.Join(conditions, " AND ")))
 	}
 	result.ctes = strings.Join(ctes, ",")
 	return result, nil
@@ -472,4 +496,13 @@ func archiveConversationQuery(ctx context.Context, query nativeQueryer, id strin
 		before--
 	}
 	return archiveQuery(ctx, query, record.WorkItemID, "conversation", id, before)
+}
+
+func archiveProjectionColumn(table, column string) bool {
+	switch table {
+	case "collaboration_events":
+		return slices.Contains([]string{"archive_operation", "archive_from_state", "archive_to_state", "archive_attempt_id", "archive_outcome", "archive_landed_commit"}, column)
+	default:
+		return false
+	}
 }

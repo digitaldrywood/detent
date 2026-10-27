@@ -25,13 +25,12 @@ const storageArchiveSafe = `EXISTS (SELECT 1 FROM workflow_states w WHERE w.id=i
 AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.issue_id=i.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?))
 AND NOT EXISTS (SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.work_item_id=i.native_id AND a.status='running')
 AND NOT EXISTS (SELECT 1 FROM conversations c WHERE c.organization_id=i.organization_id AND c.project_id=i.project_id AND (c.work_item_id=i.native_id OR c.subject_work_item_id=i.native_id)
-AND (COALESCE(json_extract(c.execution_json,'$.status'),'') NOT IN ('idle','completed','interrupted','failed')
+AND (c.execution_status IS NULL OR c.execution_lease_id IS NULL OR c.execution_status NOT IN ('idle','completed','interrupted','failed')
 OR EXISTS(SELECT 1 FROM conversation_messages m WHERE m.conversation_id=c.id AND m.delivery IN ('saved','queued','sending','sent','responding'))
 OR EXISTS(SELECT 1 FROM conversation_questions q WHERE q.conversation_id=c.id AND q.status IN ('pending','sending','sent'))))
 AND NOT EXISTS (SELECT 1 FROM change_issue_links l JOIN change_requests c ON c.id=l.change_id
 WHERE l.organization_id=i.organization_id AND l.project_id=i.project_id AND l.work_item_id=i.native_id
-AND COALESCE(json_extract(c.record_json,'$.current_version_id'),'')<>''
-AND COALESCE(json_extract(c.record_json,'$.landed.version_id'),'')<>json_extract(c.record_json,'$.current_version_id'))`
+AND (c.claim_version_id IS NULL OR c.archive_landed_version_id IS NULL OR (c.claim_version_id<>'' AND c.archive_landed_version_id<>c.claim_version_id)))`
 
 type storageArchiveCandidate struct {
 	scope                nativeScope
@@ -426,34 +425,8 @@ func (s *Service) publishStorageArchive(ctx context.Context, c storageArchiveCan
 		}
 	}
 
-	rows, err = tx.QueryContext(ctx, `SELECT json_object('sequence',sequence,'type',type,'actor',json(actor_json),'recorded_at',recorded_at,'from_state',json_extract(data_json,'$.from_state'),'to_state',json_extract(data_json,'$.to_state'),'attempt_id',json_extract(data_json,'$.run.attempt_id'),'outcome',json_extract(data_json,'$.run.outcome'),'landed_commit',json_extract(data_json,'$.run.finalization.publication.external.head_sha')) FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type IN ('workflow.transitioned','run.started','run.finished') ORDER BY sequence`, c.scope.organization, c.scope.project, c.item)
+	root.Timeline, err = readArchiveTimeline(ctx, tx, c.scope, c.item)
 	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return err
-		}
-		root.Timeline = append(root.Timeline, json.RawMessage(raw))
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
-	}
-	rows, err = tx.QueryContext(ctx, `SELECT json_object('type','change.landed','recorded_at',json_extract(c.record_json,'$.landed.landed_at'),'actor',json_extract(c.record_json,'$.landed.actor'),'landed_commit',json_extract(c.record_json,'$.landed.merge_sha'),'change_id',c.id) FROM change_requests c JOIN change_issue_links l ON l.change_id=c.id WHERE l.organization_id=? AND l.project_id=? AND l.work_item_id=? AND json_extract(c.record_json,'$.landed.merge_sha') IS NOT NULL ORDER BY c.id`, c.scope.organization, c.scope.project, c.item)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return err
-		}
-		root.Timeline = append(root.Timeline, json.RawMessage(raw))
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
 

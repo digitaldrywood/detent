@@ -483,7 +483,7 @@ func TestNativeStorageArchiveTerminalClock(t *testing.T) {
 }
 
 func TestNativeStorageArchiveSafety(t *testing.T) {
-	for _, test := range []string{"unknown terminal time", "active lease", "pending delivery", "pending question"} {
+	for _, test := range []string{"unknown terminal time", "active lease", "pending delivery", "pending question", "unknown execution", "unknown execution lease", "typed active execution"} {
 		t.Run(test, func(t *testing.T) {
 			f := newStorageArchiveFixture(t)
 			issue := f.nativeFixture.create(t, "protected history")
@@ -498,6 +498,20 @@ func TestNativeStorageArchiveSafety(t *testing.T) {
 				}
 			} else {
 				f.transition(t, string(issue.WorkItemID), "Done", f.now.Add(-73*time.Hour))
+			}
+			switch test {
+			case "unknown execution":
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET execution_status=NULL WHERE id=?", record.ID); err != nil {
+					t.Fatal(err)
+				}
+			case "unknown execution lease":
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET execution_lease_id=NULL WHERE id=?", record.ID); err != nil {
+					t.Fatal(err)
+				}
+			case "typed active execution":
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET execution_status='running' WHERE id=?", record.ID); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if test == "pending delivery" {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversation_messages SET delivery='queued' WHERE conversation_id=?", record.ID); err != nil {

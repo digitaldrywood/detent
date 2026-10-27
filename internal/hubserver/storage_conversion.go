@@ -333,16 +333,28 @@ func storageConversionStamp(ctx context.Context, q nativeQueryer, scope nativeSc
 		return "", true, nil
 	}
 	var stamp string
+	var revision, sequence int64
+	var state string
+	var executionStatus, executionLease sql.NullString
 	var safe bool
 	var err error
 	if family.name == "messages" || family.name == "conversation_events" {
-		err = q.QueryRowContext(ctx, `SELECT json_array(c.revision,c.event_seq,c.status,c.execution_json),c.status='settled' AND coalesce(json_extract(c.execution_json,'$.status'),'idle') IN ('idle','completed','interrupted','failed') AND NOT EXISTS(SELECT 1 FROM conversation_messages m WHERE m.conversation_id=c.id AND m.delivery IN ('saved','queued','sending','sent','responding')) AND NOT EXISTS(SELECT 1 FROM conversation_questions q WHERE q.conversation_id=c.id AND q.status IN ('pending','sending','sent')) AND NOT EXISTS(SELECT 1 FROM leases l JOIN issues i ON i.id=l.issue_id WHERE i.organization_id=c.organization_id AND i.project_id=c.project_id AND (i.native_id=c.work_item_id OR i.native_id=c.subject_work_item_id OR l.lease_id=json_extract(c.execution_json,'$.lease_id')) AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?)) AND NOT EXISTS(SELECT 1 FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id WHERE a.organization_id=c.organization_id AND a.project_id=c.project_id AND (a.work_item_id=c.work_item_id OR a.work_item_id=c.subject_work_item_id OR l.lease_id=json_extract(c.execution_json,'$.lease_id')) AND (a.status='running' OR (l.released_at IS NULL AND julianday(l.expires_at)>julianday(?)))) FROM conversations c WHERE c.organization_id=? AND c.project_id=? AND c.id=?`, formatHubTime(now), formatHubTime(now), scope.organization, scope.project, aggregate).Scan(&stamp, &safe)
+		err = q.QueryRowContext(ctx, `SELECT c.revision,c.event_seq,c.status,c.execution_status,c.execution_lease_id,c.status='settled' AND c.execution_status IS NOT NULL AND c.execution_lease_id IS NOT NULL AND c.execution_status IN ('idle','completed','interrupted','failed') AND NOT EXISTS(SELECT 1 FROM conversation_messages m WHERE m.conversation_id=c.id AND m.delivery IN ('saved','queued','sending','sent','responding')) AND NOT EXISTS(SELECT 1 FROM conversation_questions q WHERE q.conversation_id=c.id AND q.status IN ('pending','sending','sent')) AND NOT EXISTS(SELECT 1 FROM leases l JOIN issues i ON i.id=l.issue_id WHERE i.organization_id=c.organization_id AND i.project_id=c.project_id AND (i.native_id=c.work_item_id OR i.native_id=c.subject_work_item_id OR l.lease_id=c.execution_lease_id) AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?)) AND NOT EXISTS(SELECT 1 FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id WHERE a.organization_id=c.organization_id AND a.project_id=c.project_id AND (a.work_item_id=c.work_item_id OR a.work_item_id=c.subject_work_item_id OR l.lease_id=c.execution_lease_id) AND (a.status='running' OR (l.released_at IS NULL AND julianday(l.expires_at)>julianday(?)))) FROM conversations c WHERE c.organization_id=? AND c.project_id=? AND c.id=?`, formatHubTime(now), formatHubTime(now), scope.organization, scope.project, aggregate).Scan(&revision, &sequence, &state, &executionStatus, &executionLease, &safe)
 	} else {
-		err = q.QueryRowContext(ctx, `SELECT json_array(i.revision,i.event_sequence,i.workflow_state_id),NOT EXISTS(SELECT 1 FROM leases l WHERE l.issue_id=i.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?)) AND NOT EXISTS(SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.work_item_id=i.native_id AND a.status='running') FROM issues i WHERE i.organization_id=? AND i.project_id=? AND i.native_id=?`, formatHubTime(now), scope.organization, scope.project, aggregate).Scan(&stamp, &safe)
+		err = q.QueryRowContext(ctx, `SELECT i.revision,i.event_sequence,i.workflow_state_id,NOT EXISTS(SELECT 1 FROM leases l WHERE l.issue_id=i.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?)) AND NOT EXISTS(SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.work_item_id=i.native_id AND a.status='running') FROM issues i WHERE i.organization_id=? AND i.project_id=? AND i.native_id=?`, formatHubTime(now), scope.organization, scope.project, aggregate).Scan(&revision, &sequence, &state, &safe)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
+	if err != nil {
+		return "", false, err
+	}
+	values := []any{revision, sequence, state}
+	if family.name == "messages" || family.name == "conversation_events" {
+		values = append(values, archiveNullValue(executionStatus), archiveNullValue(executionLease))
+	}
+	raw, err := json.Marshal(values)
+	stamp = string(raw)
 	return stamp, safe, err
 }
 

@@ -45,7 +45,7 @@ internal/hubserver/migrations/20261018234500_policy_landing_provenance.sql 2
 internal/hubserver/migrations/20261021130000_hosted_plan_storage.sql 6
 internal/hubserver/migrations/20261021140000_health_intake_signatures.sql 1
 internal/hubserver/migrations/20261021170000_conversation_content.sql 1
-internal/hubserver/native_archive_reader.go 2
+internal/hubserver/native_archive_reader.go 1
 internal/hubserver/native_blockers.go 1
 internal/hubserver/native_board_page.go 7
 internal/hubserver/native_dependency_reasons.go 2
@@ -57,9 +57,7 @@ internal/hubserver/native_pages.go 4
 internal/hubserver/native_projects.go 4
 internal/hubserver/native_recovery.go 26
 internal/hubserver/native_reporter.go 1
-internal/hubserver/native_retention.go 4
 internal/hubserver/native_shipped.go 1
-internal/hubserver/native_storage_archive.go 15
 internal/hubserver/native_work_page.go 2
 internal/hubserver/native_work_search.go 1
 internal/hubserver/onboarding_batch.go 2
@@ -74,11 +72,10 @@ internal/hubserver/operator_analytics_residence.go 4
 internal/hubserver/operator_failure_signatures.go 7
 internal/hubserver/outbox.go 1
 internal/hubserver/policy.go 2
-internal/hubserver/project_deletion.go 1
 internal/hubserver/report_productivity.go 7
 internal/hubserver/report_productivity_rollups.go 17
 internal/hubserver/slack_delivery.go 1
-internal/hubserver/storage_conversion.go 9
+internal/hubserver/storage_conversion.go 4
 internal/hubserver/time_indexes.go 1
 internal/hubserver/usage_cost_report.go 2
 internal/hubserver/usage_costs.go 3
