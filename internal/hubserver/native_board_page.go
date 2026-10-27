@@ -174,6 +174,7 @@ func (s *Service) readBoardIssues(ctx context.Context, scope nativeScope, params
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return page, err
 	}
+	page.ChangeSequence = page.Sequence
 	page.Work, err = readNativeBoardSummary(ctx, tx, scope, params, s.config.now())
 	if err != nil {
 		return page, err

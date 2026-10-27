@@ -1549,6 +1549,31 @@ fail. A run outcome records a worker report, not a verified check or merge grant
 The policy ID is `policy_` followed by its 64-character lowercase SHA-256 digest
 and must equal the approved descriptor pinned to the lease.
 
+### Dashboard change log
+
+The board feed tables also hold dashboard changes for `work_item`, `lane`,
+`activity`, `human_action`, `workspace`, `health` and `action_run`. Each row has
+typed topic, entity ID, entity revision, kind (`upsert` or `delete`), status and
+related ID columns. Existing board payloads remain opaque and board replay
+returns only board deltas. Board projection and lane revisions use their feed
+sequence; other topics use the source entity's revision or event sequence.
+
+Source rows, their feed rows and the project head commit together on the
+serialized writer. A board projection appends only when its refresh commits,
+so its sequence follows any source watermark that preceded that refresh.
+Issue, board, workspace, health, action-run list and runtime reads expose
+`change_sequence` from the same read snapshot as their data. Activity reports
+expose `change_sequences`, keyed by project.
+
+An empty feed has head and floor zero. A replay cursor is valid inclusively
+from floor through head; rows after the cursor are replayed. A bounded replay's
+`next_sequence` names the last returned row, while `sequence` remains the
+snapshot's head. Retention targets the latest 2,048 rows per project and removes
+at most 128 older rows per projection refresh or maintenance pass. The floor
+advances to the last removed sequence. Trimming appends no tombstones; entity
+deletion does. Board maintenance also visits one indexed project over the
+retention limit per pass, including projects with no changed board cards.
+
 ### Health findings
 
 `GET /api/v2/organizations/{organization}/projects/{project}/health/findings`

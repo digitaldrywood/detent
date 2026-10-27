@@ -10,7 +10,7 @@ import (
 
 func FromNativeEvidence(e tracker.NativeRuntimeEvidence) IssueExplanation {
 	issue := e.Issue
-	r := IssueExplanation{Schema: SchemaVersion, Found: true, ObservedAt: e.ObservedAt,
+	r := IssueExplanation{ChangeSequence: e.ChangeSequence, Schema: SchemaVersion, Found: true, ObservedAt: e.ObservedAt,
 		Identity:     Identity{ProjectID: string(issue.ProjectID), IssueID: string(issue.WorkItemID), Identifier: string(issue.ProjectID) + "#" + strconv.Itoa(issue.Number), Number: issue.Number, Title: issue.Title},
 		CurrentLane:  Lane{Name: issue.State, ObservedAt: &issue.UpdatedAt, Freshness: SourceAvailable},
 		Eligibility:  Eligibility{State: EligibilityUnknown, Source: SourceUnavailable, Refusals: []EligibilityDecision{}},

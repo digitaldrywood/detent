@@ -327,7 +327,16 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 	if handled, err := s.archiveView(c, c.Param("item"), "issue", nil); handled {
 		return err
 	}
-	issue, _, err := readNativeIssue(ctx, s.database.reader, scope, c.Param("item"))
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	defer tx.Rollback()
+	watermark, _, err := readDashboardWatermark(ctx, tx, scope)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	issue, _, err := readNativeIssue(ctx, tx, scope, c.Param("item"))
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -339,13 +348,14 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if included {
-		if issue.Change, err = readNativeIssueChange(ctx, s.database.reader, scope, string(issue.WorkItemID)); err != nil {
+		if issue.Change, err = readNativeIssueChange(ctx, tx, scope, string(issue.WorkItemID)); err != nil {
 			return s.nativeAPIError(c, err)
 		}
 		if issue.Change.Number > 0 && issue.Change.URL != "" {
 			issue.PullRequest = &tracker.NativePullRequest{Number: issue.Change.Number, URL: issue.Change.URL}
 		}
 	}
+	issue.ChangeSequence = watermark
 	return c.JSON(http.StatusOK, s.nativeIssueResponse(issue))
 }
 

@@ -238,7 +238,11 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 	}
 	nonExecutableReason := connector.NonExecutableReason(connector.Issue{Title: issue.Title, Description: issue.Body, Labels: issue.Labels})
 	issue = issue.RuntimeReference()
-	e := tracker.NativeRuntimeEvidence{Issue: issue, ObservedAt: now, Selection: "unavailable", Unavailable: []string{"efficiency_receipt"}, Capacity: []tracker.NativeRuntimeCapacity{}}
+	watermark, _, err := readDashboardWatermark(ctx, query, scope)
+	if err != nil {
+		return tracker.NativeRuntimeEvidence{}, err
+	}
+	e := tracker.NativeRuntimeEvidence{ChangeSequence: watermark, Issue: issue, ObservedAt: now, Selection: "unavailable", Unavailable: []string{"efficiency_receipt"}, Capacity: []tracker.NativeRuntimeCapacity{}}
 	sourceRecovery, _, err := readSourceRecoveryView(ctx, query, scope, item)
 	if err != nil {
 		return e, err

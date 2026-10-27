@@ -36,7 +36,8 @@ type workspaceRequest struct {
 
 // workspaceListResponse is the listing shape.
 type workspaceListResponse struct {
-	Workspaces []workspacesession.Session `json:"workspaces"`
+	ChangeSequence int64                      `json:"change_sequence"`
+	Workspaces     []workspacesession.Session `json:"workspaces"`
 }
 
 // workspaceListLimit bounds one listing. The per-organization open cap is 20,
@@ -285,12 +286,12 @@ func (s *Service) deleteWorkspace(c echo.Context) error {
 // presentWorkspace projects a record for one reader, attaching the relay
 // session rows only for an owner or an admin. A reader who is
 // neither sees the workspace and not who has been inside it.
-func (w *workspaceService) presentWorkspace(ctx context.Context, scope nativeScope, record workspaceRecord) workspacesession.Session {
+func (w *workspaceService) presentWorkspace(ctx context.Context, q nativeQueryer, scope nativeScope, record workspaceRecord) workspacesession.Session {
 	resource := record.resource()
 	if !workspaceAuditReadable(scope, record) {
 		return resource
 	}
-	sessions, err := readWorkspaceRelaySessions(ctx, w.server.database.reader, record.ID)
+	sessions, err := readWorkspaceRelaySessions(ctx, q, record.ID)
 	if err != nil {
 		w.logger.Warn("workspace.relay_sessions_unavailable", "workspace_id", record.ID, "error", err)
 		return resource
@@ -370,30 +371,39 @@ func (s *Service) readWorkspaces(ctx context.Context, scope nativeScope, item, s
 	if state != "" && !workspacesession.ValidState(state) {
 		return nil, nativePublicInvalid("state names no workspace state")
 	}
-	item = strings.TrimSpace(item)
-	if item != "" {
-		if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
-			return nil, err
-		}
-	}
-	records, err := listWorkspaceRows(ctx, s.database.reader, scope, item, state, limit)
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
-	response := workspaceListResponse{Workspaces: make([]workspacesession.Session, 0, len(records))}
+	defer tx.Rollback()
+	watermark, _, err := readDashboardWatermark(ctx, tx, scope)
+	if err != nil {
+		return nil, err
+	}
+	item = strings.TrimSpace(item)
+	if item != "" {
+		if _, _, err := readNativeIssue(ctx, tx, scope, item); err != nil {
+			return nil, err
+		}
+	}
+	records, err := listWorkspaceRows(ctx, tx, scope, item, state, limit)
+	if err != nil {
+		return nil, err
+	}
+	response := workspaceListResponse{ChangeSequence: watermark, Workspaces: make([]workspacesession.Session, 0, len(records))}
 	for _, record := range records {
 		if item == "" {
 			// The listing follows the issue's read rule one row at a time, so
 			// a reader who can see some of a project's issues sees exactly
 			// the workspaces on those.
-			if _, _, err := readNativeIssue(ctx, s.database.reader, scope, record.SubjectWorkItemID); err != nil {
+			if _, _, err := readNativeIssue(ctx, tx, scope, record.SubjectWorkItemID); err != nil {
 				if isNativeNotFound(err) {
 					continue
 				}
 				return nil, err
 			}
 		}
-		response.Workspaces = append(response.Workspaces, service.presentWorkspace(ctx, scope, record))
+		response.Workspaces = append(response.Workspaces, service.presentWorkspace(ctx, tx, scope, record))
 	}
 	return json.Marshal(response)
 }
@@ -405,9 +415,21 @@ func (s *Service) readWorkspace(ctx context.Context, scope nativeScope, id strin
 	if err != nil {
 		return nil, err
 	}
-	record, err := service.readWorkspaceForActor(ctx, s.database.reader, scope, id)
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(service.presentWorkspace(ctx, scope, record))
+	defer tx.Rollback()
+	watermark, _, err := readDashboardWatermark(ctx, tx, scope)
+	if err != nil {
+		return nil, err
+	}
+	record, err := service.readWorkspaceForActor(ctx, tx, scope, id)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(struct {
+		workspacesession.Session
+		ChangeSequence int64 `json:"change_sequence"`
+	}{service.presentWorkspace(ctx, tx, scope, record), watermark})
 }

@@ -80,7 +80,7 @@ type nativeIssuePageItem struct {
 // readIssuePageItems returns up to limit+1 items after the cursor and the
 // list total. A first page also returns the whole frozen order, which the
 // caller keeps only when it hands out a continuation cursor.
-func (s *Service) readIssuePageItems(ctx context.Context, query string, args []any, limit int, cursor *nativeCursor, sort, search string) ([]nativeIssuePageItem, []nativeIssuePageItem, int, error) {
+func (s *Service) readIssuePageItems(ctx context.Context, q nativeQueryer, query string, args []any, limit int, cursor *nativeCursor, sort, search string) ([]nativeIssuePageItem, []nativeIssuePageItem, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	position := cursor.Issues
@@ -88,7 +88,7 @@ func (s *Service) readIssuePageItems(ctx context.Context, query string, args []a
 		if cursor.After != "" {
 			return nil, nil, 0, nativePublicInvalid("Work list order changed; restart the query")
 		}
-		projected, err := s.projectIssuePage(ctx, query, args, sort, search)
+		projected, err := s.projectIssuePage(ctx, q, query, args, sort, search)
 		if err != nil {
 			return nil, nil, 0, err
 		}
@@ -113,7 +113,7 @@ func (s *Service) readIssuePageItems(ctx context.Context, query string, args []a
 		return items[start:min(len(items), start+limit+1)], nil, len(items), nil
 	}
 	var exists int
-	err := s.database.reader.QueryRowContext(ctx, "SELECT 1 FROM native_issue_pages WHERE id = ? AND scope = ? AND expires = ?", position.Snapshot, cursor.Scope, cursor.Expires).Scan(&exists)
+	err := q.QueryRowContext(ctx, "SELECT 1 FROM native_issue_pages WHERE id = ? AND scope = ? AND expires = ?", position.Snapshot, cursor.Scope, cursor.Expires).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, 0, nativePublicInvalid("Work list cursor expired; restart the query")
 	}
@@ -134,7 +134,7 @@ FROM native_issue_page_items WHERE page_id = ?`
 	}
 	statement += " ORDER BY lane_rank, state_name, priority_rank, activity_missing, activity_at DESC, identifier LIMIT ?"
 	pageArgs = append(pageArgs, limit+1)
-	rows, err := s.database.reader.QueryContext(ctx, statement, pageArgs...)
+	rows, err := q.QueryContext(ctx, statement, pageArgs...)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -152,7 +152,7 @@ FROM native_issue_page_items WHERE page_id = ?`
 		return nil, nil, 0, err
 	}
 	var total int
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM native_issue_page_items WHERE page_id = ?", position.Snapshot).Scan(&total); err != nil {
+	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM native_issue_page_items WHERE page_id = ?", position.Snapshot).Scan(&total); err != nil {
 		return nil, nil, 0, err
 	}
 	return items, nil, total, nil
@@ -238,7 +238,7 @@ i.project_id || '#' || i.number`
 
 const nativeIssuePageItemColumns = 9
 
-func (s *Service) projectIssuePage(ctx context.Context, query string, args []any, sort, search string) (_ [][]any, resultErr error) {
+func (s *Service) projectIssuePage(ctx context.Context, q nativeQueryer, query string, args []any, sort, search string) (_ [][]any, resultErr error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	selected := nativeIssuePageProjection
@@ -251,7 +251,7 @@ func (s *Service) projectIssuePage(ctx context.Context, query string, args []any
 	} else {
 		selected += ", 0, ''"
 	}
-	rows, err := s.database.reader.QueryContext(ctx, strings.Replace(query, "SELECT i.native_id", selected, 1), args...)
+	rows, err := q.QueryContext(ctx, strings.Replace(query, "SELECT i.native_id", selected, 1), args...)
 	if err != nil {
 		return nil, err
 	}

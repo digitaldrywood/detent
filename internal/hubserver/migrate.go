@@ -173,6 +173,7 @@ func hubGoMigrations(loggers ...*slog.Logger) []*goose.Migration {
 		goose.NewGoMigration(20261024054500, &goose.GoFunc{RunTx: migrateAttemptDispositions}, nil),
 		goose.NewGoMigration(20261024172000, &goose.GoFunc{RunTx: migrateIssueFilterValues}, nil),
 		goose.NewGoMigration(20261025180000, &goose.GoFunc{RunTx: migrateClaimFacts}, nil),
+		goose.NewGoMigration(20261027013142, &goose.GoFunc{RunTx: migrateDashboardChangeLog}, nil),
 	}
 }
 

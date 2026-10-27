@@ -75,7 +75,8 @@ type projectActionRunRequest struct {
 
 // projectActionRunList is the run listing shape.
 type projectActionRunList struct {
-	Items []workspacesession.Run `json:"items"`
+	ChangeSequence int64                  `json:"change_sequence"`
+	Items          []workspacesession.Run `json:"items"`
 }
 
 // projectActionRunReceipt answers a queued run with its id; the run itself is
@@ -568,18 +569,27 @@ func (s *Service) readActions(ctx context.Context, scope nativeScope) (json.RawM
 func (s *Service) readActionRuns(ctx context.Context, scope nativeScope, actionID string, limit int) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	action, err := readProjectAction(ctx, s.database.reader, scope, actionID)
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	watermark, _, err := readDashboardWatermark(ctx, tx, scope)
+	if err != nil {
+		return nil, err
+	}
+	action, err := readProjectAction(ctx, tx, scope, actionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nativeNotFound()
 	}
 	if err != nil {
 		return nil, err
 	}
-	records, err := readProjectActionRuns(ctx, s.database.reader, scope, action.ID, limit)
+	records, err := readProjectActionRuns(ctx, tx, scope, action.ID, limit)
 	if err != nil {
 		return nil, err
 	}
-	response := projectActionRunList{Items: make([]workspacesession.Run, 0, len(records))}
+	response := projectActionRunList{ChangeSequence: watermark, Items: make([]workspacesession.Run, 0, len(records))}
 	for _, record := range records {
 		response.Items = append(response.Items, record.resource())
 	}

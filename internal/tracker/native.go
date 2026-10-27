@@ -91,6 +91,7 @@ type Provenance struct {
 }
 
 type NativeIssue struct {
+	ChangeSequence         int64                `json:"change_sequence,omitempty"`
 	LatestTransitionReason string               `json:"-"`
 	ReleaseDelivery        *ReleaseDelivery     `json:"release_delivery,omitempty"`
 	IssueContract          *issuecontract.State `json:"issue_contract,omitempty" yaml:"issue_contract,omitempty"`
@@ -477,6 +478,7 @@ type EventCompaction struct {
 }
 
 type NativeIssuePage struct {
+	ChangeSequence int64 `json:"change_sequence"`
 	Page[NativeIssue]
 	Total        int                `json:"total"`
 	Work         *NativeWorkSummary `json:"work,omitempty"`

@@ -297,19 +297,29 @@ func (s *Service) readIssuesProjection(ctx context.Context, scope nativeScope, p
 		return tracker.NativeIssuePage{}, nativePublicInvalid("summary cannot include work")
 	}
 
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return tracker.NativeIssuePage{}, err
+	}
+	defer tx.Rollback()
+	watermark, _, err := readDashboardWatermark(ctx, tx, scope)
+	if err != nil {
+		return tracker.NativeIssuePage{}, err
+	}
 	var work *tracker.NativeWorkSummary
 	if workIncluded {
-		work, err = readNativeWorkSummary(ctx, s.database.reader, scope, query, args, limit, s.config.now(), params.Get("completed_window"), searchQuery)
+		work, err = readNativeWorkSummary(ctx, tx, scope, query, args, limit, s.config.now(), params.Get("completed_window"), searchQuery)
 		if err != nil {
 			return tracker.NativeIssuePage{}, err
 		}
 	}
-	items, frozen, total, err := s.readIssuePageItems(ctx, query, args, limit, &cursor, params.Get("sort"), searchQuery)
+	items, frozen, total, err := s.readIssuePageItems(ctx, tx, query, args, limit, &cursor, params.Get("sort"), searchQuery)
 	if err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
 	page := tracker.NativeIssuePage{Page: tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}}}
 	page.Total = total
+	page.ChangeSequence = watermark
 	operational := map[string]tracker.NativeIssue{}
 	if work != nil {
 		for i, issue := range work.Items {
@@ -322,7 +332,7 @@ func (s *Service) readIssuesProjection(ctx context.Context, scope nativeScope, p
 		items = items[:limit]
 	}
 	if picker {
-		page.Items, err = readNativeIssuePickerRows(ctx, s.database.reader, scope, items)
+		page.Items, err = readNativeIssuePickerRows(ctx, tx, scope, items)
 		if err != nil {
 			return tracker.NativeIssuePage{}, err
 		}
@@ -335,7 +345,7 @@ func (s *Service) readIssuesProjection(ctx context.Context, scope nativeScope, p
 		id := item.ID
 		issue, loaded := operational[id]
 		if !loaded {
-			issue, _, err = readNativeIssueProjection(ctx, s.database.reader, scope, id, workIncluded || summary)
+			issue, _, err = readNativeIssueProjection(ctx, tx, scope, id, workIncluded || summary)
 			if err != nil {
 				return tracker.NativeIssuePage{}, err
 			}
@@ -350,7 +360,7 @@ func (s *Service) readIssuesProjection(ctx context.Context, scope nativeScope, p
 			issue = operatortool.NativeListIssue(issue)
 		}
 		if compact {
-			transition, err := latestNativeRuntimeEvent(ctx, s.database.reader, scope, id, "workflow.transitioned", "")
+			transition, err := latestNativeRuntimeEvent(ctx, tx, scope, id, "workflow.transitioned", "")
 			if err != nil {
 				return tracker.NativeIssuePage{}, err
 			}

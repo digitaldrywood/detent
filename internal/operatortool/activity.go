@@ -90,6 +90,7 @@ type ActivityIssueTypical struct {
 }
 
 type ActivityReport struct {
+	ChangeSequences       map[string]int64          `json:"change_sequences"`
 	IssuesPartial         bool                      `json:"issues_partial"`
 	RunningIssues         []ActivityIssue           `json:"running_issues"`
 	FinishedIssues        []ActivityIssue           `json:"finished_issues"`

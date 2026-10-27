@@ -71,6 +71,7 @@ type Query struct {
 }
 
 type IssueExplanation struct {
+	ChangeSequence   int64                          `json:"change_sequence,omitempty"`
 	FailureSignature *FailureSignature              `json:"failure_signature,omitempty"`
 	NativeRuntime    *tracker.NativeRuntimeEvidence `json:"native_runtime,omitempty"`
 	Schema           int                            `json:"schema"`

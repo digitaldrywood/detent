@@ -272,6 +272,7 @@ func TestNativeBoardResumedExecution(t *testing.T) {
 
 func TestNativeBoardProjectionAndReplay(t *testing.T) {
 	t.Parallel()
+	t.Run("dashboard change log", testDashboardChangeLog)
 	f := newDefaultNativeFixture(t, Config{})
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
@@ -1141,7 +1142,9 @@ func TestNativeBoardRefreshSkipsFailingCard(t *testing.T) {
 			}
 			var statements []string
 			ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
-				statements = append(statements, query)
+				if query != nativeBoardRetentionCandidateQuery {
+					statements = append(statements, query)
+				}
 			}})
 			ticks := (test.failures+test.nonexpired+len(issues)+test.attemptsPerTick-1)/test.attemptsPerTick + 2
 			for tick := range ticks {

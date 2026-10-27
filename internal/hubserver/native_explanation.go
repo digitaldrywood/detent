@@ -377,9 +377,10 @@ func boundedNativeExplanation(evidence tracker.NativeRuntimeEvidence, failure *e
 		return result, nil
 	}
 	result.NativeRuntime = &tracker.NativeRuntimeEvidence{
-		Issue:       tracker.NativeIssue{NativeReference: evidence.Issue.NativeReference, State: evidence.Issue.State},
-		ObservedAt:  evidence.ObservedAt,
-		Unavailable: []string{"explanation_evidence_truncated"},
+		ChangeSequence: evidence.ChangeSequence,
+		Issue:          tracker.NativeIssue{NativeReference: evidence.Issue.NativeReference, State: evidence.Issue.State},
+		ObservedAt:     evidence.ObservedAt,
+		Unavailable:    []string{"explanation_evidence_truncated"},
 	}
 	if slices.Contains(evidence.Unavailable, "change_gate_history_truncated") {
 		result.NativeRuntime.Unavailable = append(result.NativeRuntime.Unavailable, "change_gate_history_truncated")

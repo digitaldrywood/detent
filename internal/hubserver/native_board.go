@@ -17,6 +17,7 @@ import (
 )
 
 const nativeBoardReplayLimit = 2048
+const nativeBoardTrimLimit = 128
 
 const nativeBoardCandidateQuery = `SELECT work_item_id,1 FROM (SELECT work_item_id FROM native_board_dirty
 WHERE work_item_id>? ORDER BY work_item_id LIMIT 1)
@@ -25,6 +26,9 @@ WHERE work_item_id>? ORDER BY work_item_id LIMIT 1)`
 
 func (s *Service) maintainNativeBoard(ctx context.Context) {
 	ctx = s.runDetailContext(ctx)
+	if err := s.trimNextDashboardProject(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		s.config.Logger.ErrorContext(ctx, "trim dashboard changes", "error", err)
+	}
 	deadline := s.config.now().Add(analyticsBackfillBudget)
 	for ctx.Err() == nil {
 		now := s.config.now()
@@ -242,30 +246,11 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 	if current != nil {
 		after = string(raw)
 	}
-	result, err := tx.ExecContext(ctx, "INSERT INTO native_board_deltas(organization_id,project_id,previous_json,current_json) VALUES(?,?,?,?)", scope.organization, scope.project, before, after)
+	_, err = tx.ExecContext(ctx, "INSERT INTO native_board_deltas(organization_id,project_id,previous_json,current_json,entity_id,entity_revision,kind) VALUES(?,?,?,?,?,?,?)", scope.organization, scope.project, before, after, id, 0, nativeBoardChangeKind(current))
 	if err != nil {
 		return err
 	}
-	sequence, err := result.LastInsertId()
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO native_board_sequences(organization_id,project_id,sequence) VALUES(?,?,?) ON CONFLICT(organization_id,project_id) DO UPDATE SET sequence=excluded.sequence`, scope.organization, scope.project, sequence); err != nil {
-		return err
-	}
-	var floor sql.NullInt64
-	if err := tx.QueryRowContext(ctx, "SELECT sequence FROM native_board_deltas WHERE organization_id=? AND project_id=? ORDER BY sequence DESC LIMIT 1 OFFSET ?", scope.organization, scope.project, nativeBoardReplayLimit).Scan(&floor); err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if floor.Valid {
-		if _, err := tx.ExecContext(ctx, "DELETE FROM native_board_deltas WHERE organization_id=? AND project_id=? AND sequence<=?", scope.organization, scope.project, floor.Int64); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, "UPDATE native_board_sequences SET replay_floor=MAX(replay_floor,?) WHERE organization_id=? AND project_id=?", floor.Int64, scope.organization, scope.project); err != nil {
-			return err
-		}
-	}
-	return nil
+	return trimDashboardChanges(ctx, tx, scope)
 }
 
 func nativeBoardGrants(ctx context.Context, q nativeQueryer, scope nativeScope) (map[tracker.ProjectID]bool, error) {
@@ -319,7 +304,7 @@ func readNativeBoardFrame(ctx context.Context, q nativeQueryer, scope nativeScop
 		frame.Gap = true
 		return frame, nil
 	}
-	rows, err := q.QueryContext(ctx, "SELECT sequence,previous_json,current_json FROM native_board_deltas WHERE organization_id=? AND project_id=? AND sequence>? ORDER BY sequence LIMIT ?", scope.organization, scope.project, since, nativeBoardReplayLimit)
+	rows, err := q.QueryContext(ctx, "SELECT sequence,previous_json,current_json FROM native_board_deltas WHERE organization_id=? AND project_id=? AND topic='board' AND sequence>? ORDER BY sequence LIMIT ?", scope.organization, scope.project, since, nativeBoardReplayLimit)
 	if err != nil {
 		return frame, err
 	}

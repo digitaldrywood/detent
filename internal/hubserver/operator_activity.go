@@ -92,8 +92,14 @@ func (s *Service) readActivityReport(ctx context.Context, credential apiCredenti
 		return out, err
 	}
 	defer tx.Rollback()
+	out.ChangeSequences = map[string]int64{}
 	for _, id := range projects {
 		scope := nativeScope{organization: tracker.OrganizationID(out.OrganizationID), project: tracker.ProjectID(id)}
+		head, _, err := readDashboardWatermark(ctx, tx, scope)
+		if err != nil {
+			return out, err
+		}
+		out.ChangeSequences[id] = head
 		typical, partial, err := s.readActivityTypicalDurations(ctx, tx, scope, w, r.RunnerID)
 		if err != nil {
 			return out, err

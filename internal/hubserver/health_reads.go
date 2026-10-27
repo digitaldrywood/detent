@@ -14,6 +14,7 @@ import (
 )
 
 type healthFindingsPage struct {
+	ChangeSequence      int64                       `json:"change_sequence"`
 	BaselineUnavailable []healthBaselineUnavailable `json:"baseline_unavailable"`
 	Items               []healthFinding             `json:"items"`
 	NextCursor          string                      `json:"next_cursor,omitempty"`
@@ -67,7 +68,16 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 			return page, nativePublicInvalid("invalid findings cursor")
 		}
 	}
-	if _, err := readNativeProject(ctx, s.database.reader, scope); err != nil {
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return page, err
+	}
+	defer tx.Rollback()
+	page.ChangeSequence, _, err = readDashboardWatermark(ctx, tx, scope)
+	if err != nil {
+		return page, err
+	}
+	if _, err := readNativeProject(ctx, tx, scope); err != nil {
 		return page, err
 	}
 	resolved := state == "resolved"
@@ -80,7 +90,7 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 		args = append(args, visibilityArgs...)
 	}
 	args = append(args, limit+1)
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable,slack_unavailable_at,slack_status_code,
+	rows, err := tx.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable,slack_unavailable_at,slack_status_code,
  (SELECT json_group_array(json_object('project_id',l.project_id,'work_item_id',l.work_item_id))
  FROM health_finding_issues l JOIN issues linked ON linked.native_id=l.work_item_id
  WHERE l.finding_id=health_findings.id AND l.project_id=?
@@ -146,7 +156,7 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 		return page, err
 	}
 	var tick, unavailable string
-	err = s.database.reader.QueryRowContext(ctx, "SELECT last_tick_at,baseline_unavailable_json FROM health_detector_ticks WHERE organization_id=?", scope.organization).Scan(&tick, &unavailable)
+	err = tx.QueryRowContext(ctx, "SELECT last_tick_at,baseline_unavailable_json FROM health_detector_ticks WHERE organization_id=?", scope.organization).Scan(&tick, &unavailable)
 	if errors.Is(err, sql.ErrNoRows) {
 		return page, nil
 	}

@@ -75,6 +75,7 @@ type Service struct {
 	workerDone              chan struct{}
 	boardRefresh            chan struct{}
 	boardRefreshCursor      string
+	boardRetentionScope     nativeScope
 	workerStopOnce          sync.Once
 	reconcileCancel         context.CancelFunc
 	reconcileDone           chan struct{}

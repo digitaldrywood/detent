@@ -332,6 +332,7 @@ type NativeRuntimeAdmission struct {
 }
 
 type NativeRuntimeEvidence struct {
+	ChangeSequence           int64                        `json:"change_sequence"`
 	CurrentVersion           *NativeChangeVersionEvidence `json:"current_version,omitempty"`
 	SourceRecovery           *NativeSourceRecovery        `json:"source_recovery,omitempty"`
 	ValidationAudit          *ValidationAudit             `json:"validation_audit,omitempty"`

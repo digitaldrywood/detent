@@ -57,7 +57,7 @@ func (s *Service) readBulkExport(ctx context.Context, scope nativeScope, params 
 	if err != nil {
 		return page, err
 	}
-	items, frozen, total, err := s.readIssuePageItems(ctx, query, args, limit, &cursor, "", "")
+	items, frozen, total, err := s.readIssuePageItems(ctx, s.database.reader, query, args, limit, &cursor, "", "")
 	if err != nil {
 		return page, err
 	}
