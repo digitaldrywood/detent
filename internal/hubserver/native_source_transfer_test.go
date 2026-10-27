@@ -66,6 +66,11 @@ func TestNativeSourceTransfer(t *testing.T) {
 			}
 			var diagnostics bytes.Buffer
 			f.service.config.Logger = slog.New(slog.NewTextHandler(&diagnostics, nil))
+			t.Cleanup(func() {
+				if t.Failed() {
+					t.Log(diagnostics.String())
+				}
+			})
 			a := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
 			b := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
 			a.redemption.DisplayName, b.redemption.DisplayName = "Source Air", "Destination Mini"

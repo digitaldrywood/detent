@@ -404,7 +404,7 @@ func TestStorageConversionImmutability(t *testing.T) {
 			name    string
 			allowed map[string]bool
 		}{
-			{"change_versions", map[string]bool{"claim_head_sha": true, "gate_github_pull_request": true}},
+			{"change_versions", map[string]bool{"claim_head_sha": true, "gate_github_pull_request": true, "external_url": true}},
 			{"change_evidence", map[string]bool{"claim_review_kind": true, "claim_review_actor": true, "claim_review_decision": true, "claim_review_current": true}},
 			{"change_sources", nil},
 			{"collaboration_events", map[string]bool{
@@ -417,6 +417,9 @@ func TestStorageConversionImmutability(t *testing.T) {
 				"push_head_sha": true, "push_external_effect": true, "push_effect_state": true,
 				"archive_operation": true, "archive_from_state": true, "archive_to_state": true,
 				"archive_attempt_id": true, "archive_outcome": true, "archive_landed_commit": true,
+				"page_projection_ready": true, "actor_kind": true, "actor_principal_id": true, "event_revision": true,
+				"from_state": true, "to_state": true, "reason": true, "run_present": true,
+				"edited_title": true, "edited_body": true,
 			}},
 		} {
 			rows, err := db.reader.QueryContext(t.Context(), "PRAGMA table_info("+table.name+")")

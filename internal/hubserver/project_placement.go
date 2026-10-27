@@ -270,7 +270,7 @@ func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, sco
 		result.Reason = "No approved project policy; compatible Todo demand is unavailable"
 		return result, nil
 	}
-	workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, approval.Policy)
+	workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), approval.Policy)
 	if err != nil {
 		return result, err
 	}

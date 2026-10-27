@@ -21,6 +21,13 @@ func nativeIssueContract(ctx context.Context, q nativeQueryer, scope nativeScope
 	if err != nil {
 		return config.IssueContract{}, err
 	}
+	if approval.Policy.Authored != nil && len(approval.Policy.Authored.Files) > 0 {
+		workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), approval.Policy)
+		if err != nil {
+			return config.IssueContract{}, err
+		}
+		return config.ResolveIssueContract(workflow.SharedPrompt)
+	}
 	return config.ResolvePolicyIssueContract(approval.Policy)
 }
 
@@ -44,7 +51,7 @@ func nativeIssueContractConfig(ctx context.Context, q nativeQueryer, scope nativ
 	if !found {
 		return config.Default(), nil
 	}
-	workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, approval.Policy)
+	workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), approval.Policy)
 	if err != nil {
 		return config.Config{}, policyMismatch(err.Error())
 	}

@@ -192,7 +192,10 @@ func (s *Service) readAnalyticsReport(ctx context.Context, credential apiCredent
 }
 
 func (s *Service) readAnalyticsReportFrom(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow, q nativeQueryer) (nativeAnalyticsReport, error) {
-	ctx = reporterReadContext(ctx, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential})
+	ctx, reporterErr := prepareReporterReadContext(ctx, q, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential})
+	if reporterErr != nil {
+		return nativeAnalyticsReport{}, reporterErr
+	}
 	_, _, pagingErr := analyticsPagingContext(ctx, r.PopulationCursor)
 	if pagingErr != nil {
 		return nativeAnalyticsReport{}, pagingErr

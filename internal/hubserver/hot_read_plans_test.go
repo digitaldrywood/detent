@@ -625,7 +625,7 @@ FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organ
 		{`INSERT INTO change_versions(id,change_id,number,record_json)
 SELECT 'version_'||work_item_id,id,1,json_object('head_sha',json_extract(record_json,'$.landed.head_sha')) FROM change_requests WHERE organization_id=? AND project_id=? AND id LIKE 'change_wi_shaped_%'`,
 			[]any{org, project}},
-		{`INSERT OR REPLACE INTO native_board_items
+		{`INSERT OR REPLACE INTO native_board_items(work_item_id,organization_id,project_id,state,archived,terminal,running,lane_rank,priority_rank,activity_missing,activity_at,identifier,closed_at,expires_at,record_json)
 SELECT i.native_id,i.organization_id,i.project_id,ws.detent_state,0,ws.terminal,0,0,0,0,'',i.project_id||'#'||i.number,
  CASE WHEN ws.terminal=1 THEN strftime('%Y-%m-%dT%H:%M:%S.000000000Z',i.created_at,CASE ws.detent_state WHEN 'Done' THEN '+9000 seconds' ELSE '+1800 seconds' END) ELSE '' END,'','{}'
 FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND i.native_id LIKE 'wi_shaped_%'`,

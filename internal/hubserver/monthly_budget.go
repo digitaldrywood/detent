@@ -122,7 +122,7 @@ func monthlyClaimExposure(ctx context.Context, q nativeQueryer, scope nativeScop
 		exposure.RunnerAPI = true
 		return exposure, nil
 	}
-	workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, approval.Policy)
+	workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), approval.Policy)
 	if err != nil {
 		return exposure, err
 	}

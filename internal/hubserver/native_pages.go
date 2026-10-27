@@ -313,7 +313,7 @@ func (s *Service) readIssuesProjection(ctx context.Context, scope nativeScope, p
 			return tracker.NativeIssuePage{}, err
 		}
 	}
-	items, frozen, total, err := s.readIssuePageItems(ctx, tx, query, args, limit, &cursor, params.Get("sort"), searchQuery)
+	items, frozen, total, err := s.readIssuePageItems(ctx, tx, query, args, limit, &cursor, params.Get("sort"), searchQuery, scope)
 	if err != nil {
 		return tracker.NativeIssuePage{}, err
 	}
@@ -529,8 +529,11 @@ func (s *Service) readHistory(ctx context.Context, scope nativeScope, item strin
 		return tracker.Page[tracker.CollaborationEvent]{}, nativePublicInvalid("Newest history requires the timeline or blockers view")
 	}
 	dataColumn := "data_json"
-	if view == "timeline" {
+	switch view {
+	case "timeline":
 		dataColumn = "CASE WHEN type IN ('run.started','run.checkpointed','run.finished') THEN '{}' ELSE data_json END"
+	case "blockers":
+		dataColumn = "data_json,page_projection_ready,event_revision,from_state,to_state,reason,run_present,run_attempt_id,run_fencing_token"
 	}
 	limit, cursor, key, err := s.readNativePage(ctx, scope, path, params)
 	if err != nil {
@@ -586,29 +589,45 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND `+order+` 
 	for rows.Next() {
 		event := tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "work_item", AggregateID: tracker.NativeWorkItemID(item)}
 		var actor, data, recorded string
-		if err := rows.Scan(&event.ID, &event.AggregateSequence, &event.Type, &event.SchemaVersion, &actor, &data, &recorded); err != nil {
+		var ready, revision, run, fence sql.NullInt64
+		var from, to, reason, attempt sql.NullString
+		targets := []any{&event.ID, &event.AggregateSequence, &event.Type, &event.SchemaVersion, &actor, &data}
+		if view == "blockers" {
+			targets = append(targets, &ready, &revision, &from, &to, &reason, &run, &attempt, &fence)
+		}
+		targets = append(targets, &recorded)
+		if err := rows.Scan(targets...); err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}
 		if err := json.Unmarshal([]byte(actor), &event.Actor); err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}
 		if view == "blockers" {
-			var projection struct {
-				Revision  tracker.Revision `json:"revision,string"`
-				FromState string           `json:"from_state"`
-				ToState   string           `json:"to_state"`
-				Reason    string           `json:"reason"`
-				Run       *struct {
-					AttemptID    string               `json:"attempt_id"`
-					FencingToken tracker.FencingToken `json:"fencing_token,string"`
-				} `json:"run"`
-			}
-			if err := json.Unmarshal([]byte(data), &projection); err != nil {
-				return tracker.Page[tracker.CollaborationEvent]{}, err
-			}
-			event.Data = tracker.CollaborationData{Revision: projection.Revision, FromState: projection.FromState, ToState: projection.ToState, Reason: projection.Reason}
-			if projection.Run != nil {
-				event.Data.Run = &tracker.NativeRunData{AttemptID: projection.Run.AttemptID, FencingToken: projection.Run.FencingToken}
+			if ready.Valid && ready.Int64 == 1 {
+				event.Data = tracker.CollaborationData{Revision: tracker.Revision(revision.Int64), FromState: from.String, ToState: to.String, Reason: reason.String}
+				if run.Int64 == 1 {
+					event.Data.Run = &tracker.NativeRunData{AttemptID: attempt.String, FencingToken: tracker.FencingToken(fence.Int64)}
+				}
+			} else {
+				var legacy struct {
+					Revision tracker.Revision `json:"revision,string"`
+					From     string           `json:"from_state"`
+					To       string           `json:"to_state"`
+					Reason   string           `json:"reason"`
+					Run      *struct {
+						Attempt string               `json:"attempt_id"`
+						Fence   tracker.FencingToken `json:"fencing_token,string"`
+					} `json:"run"`
+				}
+				if strings.HasPrefix(strings.TrimSpace(data), "{") {
+					if err := json.Unmarshal([]byte(data), &legacy); err != nil {
+						return tracker.Page[tracker.CollaborationEvent]{}, err
+					}
+				}
+				event.Data = tracker.CollaborationData{Revision: legacy.Revision, FromState: legacy.From, ToState: legacy.To, Reason: legacy.Reason}
+				if legacy.Run != nil {
+					event.Data.Run = &tracker.NativeRunData{AttemptID: legacy.Run.Attempt, FencingToken: legacy.Run.Fence}
+				}
 			}
 		} else {
 			resolved, err := resolveStorageJSON(ctx, []byte(data))
@@ -756,7 +775,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		return "", nil, err
 	}
 	if createdBy != "" {
-		query += " AND json_extract(i.actor_json, '$.principal_id') = ?"
+		query += " AND " + nativeIssuePrincipal("i") + " = ?"
 		args = append(args, createdBy)
 	}
 	switch params.Get("archived") {
@@ -793,8 +812,8 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		{"type", "i.issue_type = ?"},
 		{"verification", "i.verification_state = ?"},
 		{"state", "ws.detent_state = ?"},
-		{"label", "EXISTS (SELECT 1 FROM json_each(i.labels_json) WHERE value = ?)"},
-		{"assignee", "EXISTS (SELECT 1 FROM json_each(i.assignees_json) WHERE value = ?)"},
+		{"label", "EXISTS (SELECT 1 FROM native_issue_page_filter_values WHERE issue_id=i.id AND kind='label' AND value = ?)"},
+		{"assignee", "EXISTS (SELECT 1 FROM native_issue_page_filter_values WHERE issue_id=i.id AND kind='assignee' AND value = ?)"},
 		{"priority", "EXISTS (SELECT 1 FROM queue_entries q WHERE q.issue_id = i.id AND q.priority_override = ?)"},
 	} {
 		var alternatives []string
@@ -819,7 +838,7 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		query += " AND (number_search.number IS NOT NULL OR search.issue_id IS NOT NULL OR instr(lower(" + text + "), lower(?)) > 0" +
 			" OR instr(lower((SELECT name FROM projects WHERE id = i.project_id) || '#' || i.number), lower(?)) > 0" +
 			" OR instr(lower(i.project_id || '#' || i.number), lower(?)) > 0" +
-			" OR EXISTS (SELECT 1 FROM json_each(i.labels_json) WHERE instr(lower(value), lower(?)) > 0))"
+			" OR EXISTS (SELECT 1 FROM native_issue_page_filter_values WHERE issue_id=i.id AND kind='label' AND instr(lower(value), lower(?)) > 0))"
 		args = append(args, value, value, value, value)
 	}
 

@@ -299,6 +299,7 @@ func TestNativeBulkExport(t *testing.T) {
 		if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET labels_json='[\"export\"]' WHERE native_id=?", id); err != nil {
 			t.Fatal(err)
 		}
+		syncNativeIssueFixtureFacts(t, tx, id)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
@@ -392,6 +393,7 @@ func TestNativeBulkExport(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Done'), labels_json='[\"closed\"]' WHERE native_id=?", f.project.ID, second.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
+	syncNativeIssueFixtureFacts(t, f.service.database.db, second.WorkItemID)
 	for _, test := range []struct {
 		name, query string
 		total       int

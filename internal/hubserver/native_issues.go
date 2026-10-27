@@ -135,18 +135,25 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
 	var sourceNumber int
 	var provenance, closedAt, listChange, pullRequest, issueType, reportContext, verificationState, verifiedBy, verifiedAt sql.NullString
 	var priority sql.NullInt64
+	var actorKind, actorPrincipal sql.NullString
+	var legacyTransitions bool
 	bodyColumn := "i.body"
 	if compact {
 		bodyColumn = "''"
 	}
 	visibility, args := scope.issueVisibilitySQL("i")
+	if scope.credential.HostedRole == "reporter" {
+		visibility = "(" + visibility + " OR (i.actor_principal_id IS NULL AND ?<>''))"
+		args = append(args, scope.actor().PrincipalID)
+	}
 	args = append([]any{scope.organization, scope.project, id}, args...)
 	err := query.QueryRowContext(ctx, `SELECT o.slug, p.slug, i.id, i.native_id, i.organization_id, i.project_id, i.number, i.revision, p.profile,
  i.issue_type, i.report_context_json, i.verification_state, i.verified_by_json, i.verified_at, i.title, `+bodyColumn+`, COALESCE(ws.detent_state, ''), COALESCE(ws.terminal, 0), q.priority_override, i.labels_json, i.assignees_json,
- i.actor_json, `+nativeActorDisplayName("json_extract(i.actor_json, '$.principal_id')", "i.organization_id")+`, i.issue_contract_json, i.provenance_json, i.native_created_at, i.native_updated_at, i.last_activity_at, COALESCE(i.github_node_id, ''),
+ i.actor_json,i.actor_kind,i.actor_principal_id, `+nativeActorDisplayName(nativeIssuePrincipal("i"), "i.organization_id")+`, i.issue_contract_json, i.provenance_json, i.native_created_at, i.native_updated_at, i.last_activity_at, COALESCE(i.github_node_id, ''),
  i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0, i.archived,
  COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(i.github_number, 0), i.url,
  CASE WHEN ws.terminal = 1 THEN `+nativeTerminalEnteredAt+` ELSE NULL END,
+ CASE WHEN ws.terminal=1 THEN EXISTS(SELECT 1 FROM collaboration_events legacy WHERE legacy.organization_id=i.organization_id AND legacy.project_id=i.project_id AND legacy.work_item_id=i.native_id AND legacy.type='workflow.transitioned' AND legacy.page_projection_ready IS NULL) ELSE 0 END,
  (SELECT json_object('branch', CASE WHEN json_extract(c.record_json, '$.landed.version_id') = json_extract(c.record_json, '$.current_version_id') THEN COALESCE(json_extract(c.record_json, '$.landed.base_ref'), '') ELSE '' END,
  'head_sha', CASE WHEN json_extract(c.record_json, '$.landed.version_id') = json_extract(c.record_json, '$.current_version_id') THEN COALESCE(json_extract(c.record_json, '$.landed.merge_sha'), '') ELSE COALESCE(json_extract(v.record_json, '$.head_sha'), '') END,
  'landing_pending', json(CASE WHEN (`+nativePendingLandingClause+`) THEN 'true' ELSE 'false' END))
@@ -167,11 +174,37 @@ LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN queue_entries q ON q.id = (SELECT id FROM queue_entries WHERE issue_id = i.id ORDER BY id LIMIT 1)
 WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visibility+`)`, args...).Scan(
 		&organizationSlug, &projectSlug, &internalID, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile,
-		&issueType, &reportContext, &verificationState, &verifiedBy, &verifiedAt, &issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &displayName, &contractJSON, &provenance, &created, &updated, &activity, &externalID,
+		&issueType, &reportContext, &verificationState, &verifiedBy, &verifiedAt, &issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &actorKind, &actorPrincipal, &displayName, &contractJSON, &provenance, &created, &updated, &activity, &externalID,
 		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies, &issue.Archived,
-		&repositoryOwner, &repositoryName, &sourceNumber, &importedURL, &closedAt, &listChange, &pullRequest)
+		&repositoryOwner, &repositoryName, &sourceNumber, &importedURL, &closedAt, &legacyTransitions, &listChange, &pullRequest)
 	if err != nil {
 		return issue, 0, err
+	}
+	if err := json.Unmarshal([]byte(actor), &issue.Actor); err != nil {
+		return issue, 0, err
+	}
+	if actorKind.Valid {
+		issue.Actor.Kind = actorKind.String
+	}
+	if actorPrincipal.Valid {
+		issue.Actor.PrincipalID = actorPrincipal.String
+	}
+	if !scope.reporterOwns(issue.Actor) {
+		return tracker.NativeIssue{}, 0, sql.ErrNoRows
+	}
+	if !actorPrincipal.Valid {
+		if err := query.QueryRowContext(ctx, "SELECT "+nativeActorDisplayName("?", "?"), scope.organization, issue.Actor.PrincipalID).Scan(&displayName); err != nil {
+			return issue, 0, err
+		}
+	}
+	if legacyTransitions {
+		legacy, err := prepareNativePageQuery(ctx, query, scope, id, "native_transition_facts")
+		if err != nil {
+			return issue, 0, err
+		}
+		if err := legacy.QueryRowContext(ctx, "SELECT "+nativeTerminalEnteredAt+" FROM issues i WHERE i.organization_id=? AND i.project_id=? AND i.native_id=?", scope.organization, scope.project, id).Scan(&closedAt); err != nil {
+			return issue, 0, err
+		}
 	}
 	issue.WebURL = issueBrowserPath(organizationSlug, projectSlug, issue.Number)
 	issue.Type = issueType.String
@@ -215,9 +248,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visi
 	if err := json.Unmarshal([]byte(assignees), &issue.Assignees); err != nil {
 		return issue, 0, err
 	}
-	if err := json.Unmarshal([]byte(actor), &issue.Actor); err != nil {
-		return issue, 0, err
-	}
+
 	issue = scope.reporterIssue(issue)
 	issue.Actor.DisplayName = displayName
 	if provenance.Valid {
@@ -715,6 +746,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, '', '', '', ?, ?, ?, ?, ?, ?, ?
 	if err != nil {
 		return tracker.NativeIssue{}, err
 	}
+	if err := updateIssueActor(ctx, tx, id, issue.Actor); err != nil {
+		return tracker.NativeIssue{}, err
+	}
 	if err := replaceIssueFilterValues(ctx, tx, id, issue.Labels, issue.Assignees); err != nil {
 		return tracker.NativeIssue{}, err
 	}
@@ -819,6 +853,9 @@ func appendNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScope, wor
 		return err
 	}
 
+	if err := updateEventPageFacts(ctx, tx, id, scope.actor(), data); err != nil {
+		return err
+	}
 	landed := data.Run != nil && data.Run.Runtime != nil && data.Run.Runtime.Landing != nil && data.Run.Runtime.Landing.Landed
 	return insertHealthEventTime(ctx, tx, id, string(scope.organization), eventType, landed, now)
 }
@@ -908,6 +945,9 @@ WHERE organization_id = ? AND project_id = ? AND native_id = ?`, issue.Type, ver
 		var id int64
 		if err := tx.QueryRowContext(ctx, "SELECT id FROM issues WHERE organization_id=? AND project_id=? AND native_id=?", scope.organization, scope.project, issue.WorkItemID).Scan(&id); err != nil {
 			return issue, err
+		}
+		if err := updateIssueActor(ctx, tx, id, issue.Actor); err != nil {
+			return tracker.NativeIssue{}, err
 		}
 		if err := replaceIssueFilterValues(ctx, tx, id, issue.Labels, issue.Assignees); err != nil {
 			return issue, err

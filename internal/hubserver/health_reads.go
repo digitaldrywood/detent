@@ -80,6 +80,14 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	if _, err := readNativeProject(ctx, tx, scope); err != nil {
 		return page, err
 	}
+	var query nativeQueryer = tx
+	if scope.credential.HostedRole == "reporter" {
+		prepared, prepareErr := prepareNativePageQuery(ctx, tx, scope, "", "native_issue_actors")
+		if prepareErr != nil {
+			return page, prepareErr
+		}
+		query = prepared
+	}
 	resolved := state == "resolved"
 	visibility := ""
 	args := []any{scope.project, scope.credential.HostedRole, scope.actor().PrincipalID, scope.actor().PrincipalID, scope.organization, state, resolved, scope.project, state, since, since, since, after}
@@ -90,7 +98,7 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 		args = append(args, visibilityArgs...)
 	}
 	args = append(args, limit+1)
-	rows, err := tx.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable,slack_unavailable_at,slack_status_code,
+	rows, err := query.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable,slack_unavailable_at,slack_status_code,
  (SELECT json_group_array(json_object('project_id',l.project_id,'work_item_id',l.work_item_id))
  FROM health_finding_issues l JOIN issues linked ON linked.native_id=l.work_item_id
  WHERE l.finding_id=health_findings.id AND l.project_id=?

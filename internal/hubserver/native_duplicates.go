@@ -73,6 +73,11 @@ func duplicateWindow(scope nativeScope, now time.Time, machine bool) (string, []
 }
 
 func resolveNativeDuplicates(ctx context.Context, query nativeQueryer, scope nativeScope, request tracker.CreateIssue, now time.Time, machine bool) ([]possibleDuplicate, error) {
+	pageQuery, pageErr := prepareNativePageQuery(ctx, query, scope, "", "native_issue_actors", "native_transition_facts")
+	if pageErr != nil {
+		return nil, pageErr
+	}
+	query = pageQuery
 	window, args := duplicateWindow(scope, now, machine)
 	var matches []possibleDuplicate
 	origin, stamped := issueorigin.Parse(request.Body)

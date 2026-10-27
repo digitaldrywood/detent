@@ -141,6 +141,7 @@ ORDER BY e.rowid LIMIT 256`, s.config.Hosted.OrganizationID)
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
+	budget := storageConversionRows
 	for _, event := range events {
 		notice, notify := issueNotice(event)
 		if notify {
@@ -154,18 +155,46 @@ ORDER BY e.rowid LIMIT 256`, s.config.Hosted.OrganizationID)
 					notice.Author = author
 				}
 			}
-			if err := s.queueIssueEmail(ctx, tx, event, event.item, notice); err != nil {
+			var target, after string
+			err := tx.QueryRowContext(ctx, "SELECT recipient_item,recipient_principal FROM issue_notification_cursors WHERE work_item_id=?", event.item).Scan(&target, &after)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
+			items := []string{event.item}
 			if notice.Related {
-				if err := s.queueIssueEmail(ctx, tx, event, string(event.data.RelatedWorkItemID), notice); err != nil {
-					return err
+				items = append(items, string(event.data.RelatedWorkItemID))
+			}
+			for _, item := range items {
+				if target != "" && target != item {
+					continue
 				}
+				next := after
+				more := budget == 0
+				if budget > 0 {
+					var count int
+					next, count, err = s.queueIssueEmail(ctx, tx, event, item, notice, after, budget)
+					if err != nil {
+						return err
+					}
+					budget -= count
+					more = next != ""
+				}
+				if more {
+					if _, err := tx.ExecContext(ctx, `INSERT INTO issue_notification_cursors(work_item_id,sequence,recipient_item,recipient_principal) VALUES (?,0,?,?)
+ON CONFLICT(work_item_id) DO UPDATE SET recipient_item=excluded.recipient_item,recipient_principal=excluded.recipient_principal`, event.item, item, next); err != nil {
+						return err
+					}
+					return tx.Commit()
+				}
+				target, after = "", ""
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO issue_notification_cursors(work_item_id,sequence) VALUES (?,?)
-ON CONFLICT(work_item_id) DO UPDATE SET sequence=excluded.sequence`, event.item, event.sequence); err != nil {
+ON CONFLICT(work_item_id) DO UPDATE SET sequence=excluded.sequence,recipient_item='',recipient_principal=''`, event.item, event.sequence); err != nil {
 			return err
+		}
+		if budget == 0 {
+			break
 		}
 	}
 	return tx.Commit()
@@ -184,22 +213,29 @@ func issueNotice(event issueEmailEvent) (issueEmailNotice, bool) {
 	return issueEmailNotice{}, false
 }
 
-func (s *Service) queueIssueEmail(ctx context.Context, tx *sql.Tx, event issueEmailEvent, item string, notice issueEmailNotice) error {
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT m.user_id, m.principal_id=json_extract(i.actor_json,'$.principal_id') AND json_extract(i.actor_json,'$.kind')='human' FROM issues i JOIN hosted_members m
-ON m.principal_id IN (
- SELECT json_extract(i.actor_json,'$.principal_id') WHERE json_extract(i.actor_json,'$.kind')='human'
- UNION SELECT json_extract(e.actor_json,'$.principal_id') FROM collaboration_events e
- WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id
- AND e.type='comment.created' AND json_extract(e.actor_json,'$.kind')='human'
- AND julianday(e.recorded_at)<=julianday(?) AND (i.native_id<>? OR e.sequence<=?)
-)
-JOIN api_tokens t ON t.id=m.principal_id
-WHERE i.native_id=? AND i.organization_id=? AND m.active=1 AND m.notify_issues=1 AND t.revoked_at IS NULL
-AND (?<>'human' OR m.principal_id<>?)
-AND EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.user_id=m.user_id AND g.organization_id=i.organization_id AND g.project_id=i.project_id)`,
-		formatHubTime(event.at), event.item, event.sequence, item, s.config.Hosted.OrganizationID, event.actor.Kind, event.actor.PrincipalID)
+func (s *Service) queueIssueEmail(ctx context.Context, tx *sql.Tx, event issueEmailEvent, item string, notice issueEmailNotice, after string, limit int) (string, int, error) {
+	participants, next, err := readIssueEmailParticipants(ctx, tx, event, item, s.config.Hosted.OrganizationID, after, limit)
 	if err != nil {
-		return err
+		return "", 0, err
+	}
+	if len(participants) == 0 {
+		return next, len(participants), nil
+	}
+	var values []string
+	var args []any
+	for principal, filer := range participants {
+		values = append(values, "(?,?)")
+		args = append(args, principal, filer)
+	}
+	args = append(args, item, s.config.Hosted.OrganizationID, event.actor.Kind, event.actor.PrincipalID)
+	rows, err := tx.QueryContext(ctx, `WITH recipients(principal_id,filer) AS (VALUES `+strings.Join(values, ",")+`)
+ SELECT DISTINCT m.user_id,r.filer FROM issues i JOIN hosted_members m JOIN recipients r ON r.principal_id=m.principal_id
+ JOIN api_tokens t ON t.id=m.principal_id
+ WHERE i.native_id=? AND i.organization_id=? AND m.active=1 AND m.notify_issues=1 AND t.revoked_at IS NULL
+ AND (?<>'human' OR m.principal_id<>?)
+ AND EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.user_id=m.user_id AND g.organization_id=i.organization_id AND g.project_id=i.project_id)`, args...)
+	if err != nil {
+		return "", 0, err
 	}
 	defer rows.Close()
 	type recipient struct {
@@ -211,32 +247,26 @@ AND EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.user_id=m.user_id AND g
 		var user recipient
 		if err := rows.Scan(&user.user, &user.filer); err != nil {
 			rows.Close()
-			return err
+			return "", 0, err
 		}
 		users = append(users, user)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
+		return "", 0, err
 	}
 	for _, recipient := range users {
 		personal := notice
 		personal.Verify = notice.Verify && recipient.filer && item == event.item
-		raw, err := json.Marshal(personal)
-		if err != nil {
-			return err
-		}
+
 		user := recipient.user
 		if _, err := tx.ExecContext(ctx, `INSERT INTO issue_subscriptions(work_item_id,user_id,token) VALUES (?,?,?) ON CONFLICT(work_item_id,user_id) DO NOTHING`, item, user, newNativeID("unsub")); err != nil {
-			return err
+			return "", 0, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO issue_notification_batches(work_item_id,user_id,due_at,notices_json)
-SELECT work_item_id,user_id,?,json_array(json(?)) FROM issue_subscriptions WHERE work_item_id=? AND user_id=? AND unsubscribed=0
-ON CONFLICT(work_item_id,user_id) DO UPDATE SET notices_json=json_insert(issue_notification_batches.notices_json,'$[#]',json(?))`,
-			formatHubTime(event.at.Add(issueEmailWindow)), string(raw), item, user, string(raw)); err != nil {
-			return err
+		if err := appendIssueEmailNotice(ctx, tx, item, user, formatHubTime(event.at.Add(issueEmailWindow)), personal); err != nil {
+			return "", 0, err
 		}
 	}
-	return nil
+	return next, len(participants), nil
 }
 
 func (s *Service) claimIssueEmail(ctx context.Context, now time.Time) (auth.EmailMessage, bool, error) {

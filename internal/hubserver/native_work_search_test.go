@@ -57,6 +57,7 @@ No safety-critical path is touched; onboarding repository binding and runner che
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body = ?, labels_json = ?, native_created_at = ?, native_updated_at = ? WHERE native_id = ?", body, `["search-fixture","unique-xyz"]`, "2026-10-12T00:00:00Z", "2026-10-13T00:00:00Z", target.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
+	syncNativeIssueFixtureFacts(t, f.service.database.db, target.WorkItemID)
 	for index := range 8 {
 		f.create(t, fmt.Sprintf("Organization names background %d", index))
 		f.create(t, fmt.Sprintf("Names catalog %d", index))

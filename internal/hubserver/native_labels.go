@@ -98,6 +98,13 @@ func (s *Service) listNativeLabels(c echo.Context) error {
 }
 
 func readNativeLabels(ctx context.Context, query nativeQueryer, scope nativeScope) ([]nativeLabel, error) {
+	if scope.credential.HostedRole == "reporter" {
+		pageQuery, pageErr := prepareNativePageQuery(ctx, query, scope, "", "native_issue_actors")
+		if pageErr != nil {
+			return nil, pageErr
+		}
+		query = pageQuery
+	}
 	visibility, args := scope.issueVisibilitySQL("i")
 	args = append([]any{scope.organization, scope.project}, args...)
 	rows, err := query.QueryContext(ctx, `SELECT labels_json FROM issues i WHERE organization_id = ? AND project_id = ? AND (`+visibility+`)`, args...)

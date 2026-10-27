@@ -32,7 +32,7 @@ func TestIssueArchiveViews(t *testing.T) {
 	csrf := cloudassert.CSRFToken("shared-"+owner.identity.Subject, "org_security")
 	for number := 1; number <= 2; number++ {
 		item := string(f.seedIssue(t, number))
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_json=json_object('kind','human','principal_id',?) WHERE native_id=?", reporterPrincipal, item); err != nil {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json=json_object('kind','human','principal_id',?) WHERE native_id=?", reporterPrincipal, item); err != nil {
 			t.Fatal(err)
 		}
 		base := f.base + "/attachment-metadata/archives/" + item

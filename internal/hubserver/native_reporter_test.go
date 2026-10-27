@@ -31,6 +31,7 @@ func TestReporterReadIsolation(t *testing.T) {
 		issues[user] = issue
 	}
 	own, other := issues["reporter"], issues["tester"]
+	operatorSQL(t, v.hostedSecurityFixture, "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL WHERE native_id IN (?,?)", own.WorkItemID, other.WorkItemID)
 	contexts := make(chan context.Context, 1)
 	v.service.echo.POST("/reporter-read-context", func(c echo.Context) error {
 		contexts <- operatortool.BindConnection(c.Request().Context(), "reporter-read", "test")

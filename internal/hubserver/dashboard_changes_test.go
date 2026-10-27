@@ -421,7 +421,7 @@ VALUES('finding_dashboard',?,'dashboard','example','flow','{}','[]',?,?,'attenti
 		var pause, resume sync.Once
 		t.Cleanup(func() { resume.Do(func() { close(release) }); <-finished })
 		ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
-			if strings.HasPrefix(query, "SELECT i.native_id,\n") {
+			if strings.HasPrefix(query, "SELECT sequence,replay_floor FROM native_board_sequences") {
 				pause.Do(func() { close(arrived); <-release })
 			}
 		}})
@@ -440,7 +440,7 @@ VALUES('finding_dashboard',?,'dashboard','example','flow','{}','[]',?,?,'attenti
 		case result := <-results:
 			t.Fatalf("snapshot did not reach its data read: %v", result.err)
 		}
-		if _, err := d.db.ExecContext(t.Context(), "UPDATE issues SET revision=14,title='After snapshot' WHERE native_id=?", issues[0].WorkItemID); err != nil {
+		if _, err := d.db.ExecContext(t.Context(), "UPDATE issues SET revision=14,title='After snapshot',archived=1 WHERE native_id=?", issues[0].WorkItemID); err != nil {
 			t.Fatal(err)
 		}
 		resume.Do(func() { close(release) })

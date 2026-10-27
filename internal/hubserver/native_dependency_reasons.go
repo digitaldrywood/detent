@@ -30,6 +30,13 @@ func readNativeDependencyDetails(ctx context.Context, q nativeQueryer, scope nat
 }
 
 func readNativeDependencyDetailsBatch(ctx context.Context, q nativeQueryer, scope nativeScope, issues []*tracker.NativeIssue) error {
+	if scope.credential.HostedRole == "reporter" {
+		pageQuery, pageErr := prepareNativePageQuery(ctx, q, nativeScope{organization: scope.organization}, "", "native_issue_actors")
+		if pageErr != nil {
+			return pageErr
+		}
+		q = pageQuery
+	}
 	if len(issues) == 0 {
 		return nil
 	}
@@ -232,6 +239,13 @@ func (s *Service) updateNativeDependencyReason(c echo.Context) error {
 }
 
 func readNativeDependencyReference(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.NativeWorkItemID) (*tracker.NativeDependency, error) {
+	if scope.credential.HostedRole == "reporter" {
+		pageQuery, pageErr := prepareNativePageQuery(ctx, q, nativeScope{organization: scope.organization}, "", "native_issue_actors")
+		if pageErr != nil {
+			return nil, pageErr
+		}
+		q = pageQuery
+	}
 	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
 	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
 	condition = "(" + condition + ") AND (" + visibility + ")"

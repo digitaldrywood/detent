@@ -82,6 +82,9 @@ type storageConversionProgress struct {
 func (s *Service) convertLegacyStorage(ctx context.Context, now time.Time) error {
 	ctx, cancel := context.WithTimeout(ctx, backgroundStorageBudget)
 	defer cancel()
+	if err := s.convertIssuePageFacts(ctx); err != nil {
+		return err
+	}
 	if err := s.convertAttemptHotProjections(ctx); err != nil {
 		return err
 	}

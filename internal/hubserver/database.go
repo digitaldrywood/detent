@@ -46,6 +46,7 @@ const readerCachePragma = "cache_size(-8000)"
 const readerConnectionLifetime = time.Hour
 
 type database struct {
+	policies               projectPolicyCache
 	dashboardCommitted     chan struct{}
 	analyticsRetryMu       sync.Mutex
 	analyticsRetryCursor   string

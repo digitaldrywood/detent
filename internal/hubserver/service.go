@@ -123,6 +123,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
+	ctx = database.policyContext(ctx)
 	database.configureRuntimePublication(cfg)
 	if err := database.checkProjectSecretKeys(ctx, cfg.SecretKeys); err != nil {
 		return nil, errors.Join(err, database.Close())
@@ -208,7 +209,7 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 			return nil, errors.Join(err, database.Close())
 		}
 	}
-	e.Use(service.measureRequests, service.changeContentMiddleware, service.runDetailMiddleware)
+	e.Use(service.measureRequests, service.policyCacheMiddleware, service.changeContentMiddleware, service.runDetailMiddleware)
 	service.registerRoutes(e)
 	if service.conversations != nil {
 		if err := service.conversations.start(ctx); err != nil {

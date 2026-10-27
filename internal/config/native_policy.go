@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -183,22 +185,7 @@ func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflo
 		if err != nil {
 			return Workflow{}, err
 		}
-		localPrompt := workflow.machinePrompt
-		if localPrompt == "" && workflow.DefinitionSources != nil && workflow.DefinitionSources.HasLocalWorkflow {
-			local, err := splitProjectWorkflow(workflow.DefinitionSources.LocalWorkflow)
-			if err != nil {
-				return Workflow{}, fmt.Errorf("parse machine workflow instructions: %w", err)
-			}
-			localPrompt = string(normalizeProjectDefinitionPrompt(local.prompt))
-		}
-		workflow.Config = nativeProjectBehavior(shared.Config).apply(workflow.Config)
-		workflow.Prompt, workflow.SharedPrompt, workflow.AgentsPrompt = shared.Prompt, shared.SharedPrompt, shared.AgentsPrompt
-		workflow.Authored, workflow.DefinitionSources, workflow.Definition = shared.Authored, shared.DefinitionSources, shared.Definition
-		workflow.machinePrompt = localPrompt
-		if localPrompt != "" && !strings.HasSuffix(workflow.Prompt, localPrompt) {
-			workflow.Prompt = mergeWorkflowPrompts([]byte(workflow.Prompt), []byte(localPrompt))
-		}
-		return workflow, nil
+		return applyAuthoredNativePolicy(workflow, shared)
 	}
 	if descriptor.Configuration == nil {
 		return workflow, nil
@@ -233,6 +220,25 @@ func ApplyNativePolicy(workflow Workflow, descriptor policy.Descriptor) (Workflo
 			cfg.Runners.Profiles = make(map[string]policy.Requirements)
 		}
 		cfg.Runners.Profiles[descriptor.Profile] = descriptor.Requirements.Normalized()
+	}
+	return workflow, nil
+}
+
+func applyAuthoredNativePolicy(workflow, shared Workflow) (Workflow, error) {
+	localPrompt := workflow.machinePrompt
+	if localPrompt == "" && workflow.DefinitionSources != nil && workflow.DefinitionSources.HasLocalWorkflow {
+		local, err := splitProjectWorkflow(workflow.DefinitionSources.LocalWorkflow)
+		if err != nil {
+			return Workflow{}, fmt.Errorf("parse machine workflow instructions: %w", err)
+		}
+		localPrompt = string(normalizeProjectDefinitionPrompt(local.prompt))
+	}
+	workflow.Config = nativeProjectBehavior(shared.Config).apply(workflow.Config)
+	workflow.Prompt, workflow.SharedPrompt, workflow.AgentsPrompt = shared.Prompt, shared.SharedPrompt, shared.AgentsPrompt
+	workflow.Authored, workflow.DefinitionSources, workflow.Definition = shared.Authored, shared.DefinitionSources, shared.Definition
+	workflow.machinePrompt = localPrompt
+	if localPrompt != "" && !strings.HasSuffix(workflow.Prompt, localPrompt) {
+		workflow.Prompt = mergeWorkflowPrompts([]byte(workflow.Prompt), []byte(localPrompt))
 	}
 	return workflow, nil
 }
@@ -383,4 +389,128 @@ func ResolveSharedPolicy(descriptor policy.Descriptor) (policy.Descriptor, error
 func ValidateSharedPolicy(descriptor policy.Descriptor) error {
 	_, err := ResolveSharedPolicy(descriptor)
 	return err
+}
+
+type ResolvedNativePolicy struct {
+	descriptor policy.Descriptor
+	workflow   Workflow
+	once       sync.Once
+	err        error
+}
+
+func ResolveNativePolicy(descriptor policy.Descriptor) (*ResolvedNativePolicy, error) {
+	if err := descriptor.Validate(); err != nil {
+		return nil, err
+	}
+	descriptor = cloneNativePolicy(descriptor)
+	result := &ResolvedNativePolicy{descriptor: descriptor}
+	if descriptor.Authored != nil && len(descriptor.Authored.Files) > 0 {
+		workflow, resolved, err := resolveAuthoredNativePolicy(descriptor)
+		if err != nil {
+			return nil, err
+		}
+		result.descriptor = resolved
+		result.once.Do(func() {
+			result.workflow, result.err = applyAuthoredNativePolicy(Workflow{Config: Default()}, workflow)
+		})
+		if result.err != nil {
+			return nil, result.err
+		}
+	}
+	return result, nil
+}
+
+func (p *ResolvedNativePolicy) Descriptor() policy.Descriptor {
+	return cloneNativePolicy(p.descriptor)
+}
+
+func (p *ResolvedNativePolicy) Workflow() (Workflow, error) {
+	p.once.Do(func() {
+		p.workflow, p.err = ApplyNativePolicy(Workflow{Config: Default()}, p.descriptor)
+	})
+	if p.err != nil {
+		return Workflow{}, p.err
+	}
+	return cloneNativePolicy(p.workflow), nil
+}
+
+type nativePolicyCloneKey struct {
+	typeOf  reflect.Type
+	pointer uintptr
+}
+
+func cloneNativePolicy[T any](value T) T {
+	return cloneNativePolicyWithPointers(value, make(map[nativePolicyCloneKey]reflect.Value))
+}
+
+func cloneNativePolicyWithPointers[T any](value T, pointers map[nativePolicyCloneKey]reflect.Value) T {
+	var result T
+	reflect.ValueOf(&result).Elem().Set(cloneNativePolicyValue(reflect.ValueOf(value), pointers))
+	return result
+}
+
+func cloneNativePolicyValue(value reflect.Value, pointers map[nativePolicyCloneKey]reflect.Value) reflect.Value {
+	switch value.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Slice, reflect.Map:
+		if value.IsNil() {
+			return value
+		}
+	}
+	switch value.Kind() {
+	case reflect.Pointer:
+		key := nativePolicyCloneKey{typeOf: value.Type(), pointer: value.Pointer()}
+		if result, ok := pointers[key]; ok {
+			return result
+		}
+		result := reflect.New(value.Type().Elem())
+		pointers[key] = result
+		result.Elem().Set(cloneNativePolicyValue(value.Elem(), pointers))
+		return result
+	case reflect.Interface:
+		result := reflect.New(value.Type()).Elem()
+		result.Set(cloneNativePolicyValue(value.Elem(), pointers))
+		return result
+	case reflect.Slice:
+		result := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
+		for i := range value.Len() {
+			result.Index(i).Set(cloneNativePolicyValue(value.Index(i), pointers))
+		}
+		return result
+	case reflect.Map:
+		result := reflect.MakeMapWithSize(value.Type(), value.Len())
+		entries := value.MapRange()
+		for entries.Next() {
+			result.SetMapIndex(entries.Key(), cloneNativePolicyValue(entries.Value(), pointers))
+		}
+		return result
+	case reflect.Struct:
+		result := reflect.New(value.Type()).Elem()
+		result.Set(value)
+		for i := range value.NumField() {
+			if result.Field(i).CanSet() && value.Type().Field(i).IsExported() {
+				result.Field(i).Set(cloneNativePolicyValue(value.Field(i), pointers))
+			}
+		}
+		switch copied := result.Interface().(type) {
+		case Config:
+			copied.configuredFields = maps.Clone(copied.configuredFields)
+			return reflect.ValueOf(copied)
+		case Worker:
+			copied.localDefaults = cloneNativePolicyWithPointers(copied.localDefaults, pointers)
+			return reflect.ValueOf(copied)
+		case Agents:
+			copied.local = cloneNativePolicyWithPointers(copied.local, pointers)
+			return reflect.ValueOf(copied)
+		case AgentBackend:
+			copied.codexOptions = cloneNativePolicyWithPointers(copied.codexOptions, pointers)
+			copied.claudeCodeOptions = cloneNativePolicyWithPointers(copied.claudeCodeOptions, pointers)
+			return reflect.ValueOf(copied)
+		case BackendOptions:
+			copied.node = cloneNativePolicyWithPointers(copied.node, pointers)
+			return reflect.ValueOf(copied)
+		}
+		return result
+	default:
+		return value
+	}
 }
