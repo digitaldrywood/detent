@@ -738,3 +738,13 @@ test("accepts a canonical ID derived from near-maximum multibyte references", ()
     assert.equal(result.status, 0, cliOutput(result));
   }
 });
+
+test("accepts dotfile source fingerprints in candidate coverage", () => {
+  assert.deepEqual(errorsFor([unit({
+    status: "candidate",
+    agent_id: "hunter-1",
+    reviewed_paths: ["src/router.ts"],
+    local_checks: [sourceCheck("hunter-1", { invariant: "Ownership is required.", result: "No check exists." })],
+    result_fingerprints: [".github/scripts/review.js:validateEvidence:prior-rejection"],
+  })]), []);
+});

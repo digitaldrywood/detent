@@ -16,7 +16,7 @@ import (
 )
 
 const BundleCommit = "c1c8a8c1471069fb0e188eeaff69b8e8db6564a8"
-const BundleDigest = "9c550a639c12bacbb1e59b5893c7d86cd03145205b769ac5ab2c45ed7c794c73"
+const BundleDigest = "8a75ce028bbf2a30da35afd722461180ff000012df159a96f72e99f579122ebc"
 
 //go:embed bundle/*
 var bundle embed.FS

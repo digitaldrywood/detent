@@ -79,7 +79,7 @@ const PRIOR_STATUSES = new Set([
   "prior_rejected_claim_changed",
   "none",
 ]);
-const FINGERPRINT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/;
+const FINGERPRINT_PATTERN = /^[.]?[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/;
 const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const WINDOWS_RESERVED_AGENT_ID = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/;
 const VISIBLE_CONTENT = /[^\p{White_Space}\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}]/u;

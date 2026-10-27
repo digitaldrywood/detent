@@ -650,3 +650,11 @@ test("keeps shared helpers aligned with the coverage-ledger validator", () => {
     );
   }
 });
+
+test("accepts dotfile source fingerprints across verdicts", () => {
+  for (const create of [confirmed, needsValidation, rejected]) {
+    const finding = create();
+    finding.fingerprint = ".github/scripts/review.js:validateEvidence:prior-rejection";
+    assert.deepEqual(errorsFor([finding]), []);
+  }
+});
