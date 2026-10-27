@@ -255,6 +255,38 @@ func TestLandingClaimFactsUnknown(t *testing.T) {
 						}
 					})
 				}
+				if unknown {
+					t.Run("transaction projection without resolvable version policy", func(t *testing.T) {
+						tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer tx.Rollback()
+						if err := withMutableClaimFact(t.Context(), tx, "change_versions_immutable", func() error {
+							_, err := tx.ExecContext(t.Context(), `UPDATE change_versions SET policy_revision_id='unrecorded-policy',record_json=json_remove(record_json,'$.policy') WHERE id=?`, version)
+							return err
+						}); err != nil {
+							t.Fatal(err)
+						}
+						if _, _, err := readPendingLandingFact(t.Context(), tx, firstID); !errors.Is(err, errClaimHintStale) {
+							t.Fatalf("landing fact error = %v, want stale claim hint", err)
+						}
+						if _, _, err := readNativeIssueProjection(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(first.WorkItemID), true); !errors.Is(err, errClaimHintStale) {
+							t.Fatalf("execution-facing projection error = %v, want stale claim hint", err)
+						}
+						issue, _, err := readNativeIssueProjection(withDisplayLandingFacts(t.Context()), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(first.WorkItemID), true)
+						if err != nil {
+							t.Fatalf("board display projection: %v", err)
+						}
+						if issue.ListChange != nil && issue.ListChange.LandingPending {
+							t.Fatal("unresolved landing fact reported pending")
+						}
+						prepared := context.WithValue(withDisplayLandingFacts(t.Context()), claimPreparationKey{}, &claimPreparation{})
+						if _, _, err := readNativeIssueProjection(prepared, tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(first.WorkItemID), true); err == nil {
+							t.Fatal("claim-prepared projection resolved an unprepared landing fact")
+						}
+					})
+				}
 				_, pending, err := readPendingLandingFact(t.Context(), f.service.database.reader, firstID)
 				if err != nil {
 					t.Fatal(err)
