@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"gopkg.in/yaml.v3"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -68,9 +69,14 @@ func newHubRunnerRegisterCommandWithServiceName(version, goos string, lookupEnv 
 }
 
 func newHubRunnerRegisterCommandWithCommitReport(version, goos string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error, serviceName func(string) (string, error), commitReport func(context.Context, string, workspace.CommitIdentity) (workspace.CommitReport, error)) *cobra.Command {
+	return newHubRunnerRegisterCommandWithUser(version, goos, lookupEnv, startService, privateLocation, report, ghAuthStatus, serviceName, commitReport, registerRunnerAsUser)
+}
+
+func newHubRunnerRegisterCommandWithUser(version, goos string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error, serviceName func(string) (string, error), commitReport func(context.Context, string, workspace.CommitIdentity) (workspace.CommitReport, error), registerAsUser func(*cobra.Command, string, string, []string) error) *cobra.Command {
 	var hubURL, token, organization, name, configPath, workspaceRoot, isolationTier string
+	var serviceUser string
 	var capacity int
-	var service bool
+	var service, tokenStdin bool
 	cmd := &cobra.Command{
 		Use:   "register",
 		Short: "Register this host as a runner with one command from the Enroll dialog",
@@ -80,12 +86,37 @@ func newHubRunnerRegisterCommandWithCommitReport(version, goos string, lookupEnv
 		Args:         NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if service && startService == nil {
-				return servicepkg.ErrUnsupported
+			if serviceUser != "" && !service {
+				return errors.New("--service-user requires --service")
 			}
-			token = strings.TrimSpace(firstNonBlankString(token, lookupEnv("DETENT_RUNNER_ENROLLMENT_TOKEN")))
+			if tokenStdin {
+				if token != "" {
+					return errors.New("--token cannot be combined with --enrollment-token-stdin")
+				}
+				raw, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), 4097))
+				if err != nil || len(raw) > 4096 {
+					return errors.New("read enrollment token from stdin")
+				}
+				token = strings.TrimSpace(string(raw))
+			} else {
+				token = strings.TrimSpace(firstNonBlankString(token, lookupEnv("DETENT_RUNNER_ENROLLMENT_TOKEN")))
+			}
 			if token == "" {
 				return errors.New("an enrollment token is required: pass --token or set DETENT_RUNNER_ENROLLMENT_TOKEN")
+			}
+			if serviceUser != "" {
+				args := []string{"hub", "runner", "register", "--enrollment-token-stdin"}
+				cmd.Flags().Visit(func(flag *pflag.Flag) {
+					switch flag.Name {
+					case "service-user", "token", "enrollment-token-stdin":
+					default:
+						args = append(args, "--"+flag.Name+"="+flag.Value.String())
+					}
+				})
+				return registerAsUser(cmd, serviceUser, token, args)
+			}
+			if service && startService == nil {
+				return servicepkg.ErrUnsupported
 			}
 			base, org, err := runnerHubTarget(hubURL, organization)
 			if err != nil {
@@ -220,6 +251,11 @@ func newHubRunnerRegisterCommandWithCommitReport(version, goos string, lookupEnv
 	cmd.Flags().StringVar(&configPath, "config", "", "runner configuration path (default: ~/.config/detent-runner/global.yaml)")
 	cmd.Flags().StringVar(&workspaceRoot, "workspace-root", "", "where project checkouts live (default: ~/detent-runner)")
 	cmd.Flags().BoolVar(&service, "service", false, "install and start the runner as a background service")
+	cmd.Flags().StringVar(&serviceUser, "service-user", "", "enroll and install as an existing dedicated macOS/Linux account (requires --service and noninteractive sudo)")
+	cmd.Flags().BoolVar(&tokenStdin, "enrollment-token-stdin", false, "read the enrollment token from standard input")
+	if err := cmd.Flags().MarkHidden("enrollment-token-stdin"); err != nil {
+		panic(err)
+	}
 	return cmd
 }
 

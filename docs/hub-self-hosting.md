@@ -587,6 +587,71 @@ needed. Substitute your Hub URL, organization and project IDs in these examples.
    readiness; correct the reported setup or policy problem and read again.
    Selecting the runner explicitly avoids ambiguity when several runners report.
 
+### Dedicated runner account
+
+On macOS and Linux, use a dedicated standard OS account to keep worker skill,
+MCP and credential discovery separate from your personal account. Create that
+account once per machine, with its own home directory. Do not link its provider
+configuration or credentials to your personal home.
+
+On Linux, an administrator can create the account and keep its systemd user
+manager available after logout:
+
+```sh
+sudo useradd --create-home --shell /bin/bash detent-runner
+sudo loginctl enable-linger detent-runner
+```
+
+On macOS, create a standard account in System Settings, sign into it, and keep
+that login session active. The runner uses that account's LaunchAgent in
+`gui/UID`; it is not a system LaunchDaemon and does not start before login.
+
+Sign into the dedicated account to install its toolchain and provider CLIs.
+Run `gh auth login`, `codex login` and `npx playwright install chromium` there
+as needed, along with any other provider's login. Playwright, npm and Go keep
+their normal caches in that account and share them across its runs. Provider
+authentication stays local to that account; no personal credentials are copied.
+
+Install the Detent binary in a location both accounts can execute, such as
+`/usr/local/bin/detent`. From your administrator account, load the one-use token
+into `DETENT_RUNNER_ENROLLMENT_TOKEN` through private secret storage, authorize
+sudo, and register:
+
+```sh
+sudo -v
+detent hub runner register \
+  --url https://hub.example.com \
+  --organization org_example \
+  --name 'Dedicated runner' \
+  --isolation-tier sandbox \
+  --service --service-user detent-runner
+unset DETENT_RUNNER_ENROLLMENT_TOKEN
+```
+
+`--service-user` requires an existing non-root account and `--service`. It uses
+noninteractive sudo, so your sudo policy must permit switching to that account
+without another password prompt. Registration, identity creation, setup probes
+and service installation all run as the dedicated account. Default config and
+workspace paths are relative to its home; any explicit `--config` and
+`--workspace-root` must also be private paths owned by that account. Enrollment
+passes the token over stdin, never in the delegated command's arguments.
+
+The delegated process starts with a clean environment and the target account's
+`HOME`, `USER` and `LOGNAME`. Its PATH includes that account's `.local/bin`,
+`.npm-global/bin` and `bin`, standard system directories, and `/opt/homebrew/bin`
+on macOS. Linux also selects the account's `/run/user/UID` service bus. Personal
+`CODEX_HOME`, XDG paths, MCP settings, credentials and cache overrides from the
+calling shell are not forwarded. Shell profiles are not loaded. For custom
+toolchain paths or explicit environment overrides, sign into the dedicated
+account and use ordinary `detent hub runner register --service` there.
+
+Workers retain the dedicated account's native home and caches, use isolated
+provider profiles, and discover project skills from the repository's
+`.agents/skills`. Existing single-user installations continue to use their
+current account and disable its personal `.agents/skills` at every Codex launch.
+Service management and logs remain scoped to the account that owns the runner;
+run status, restart and update commands from that account.
+
 ### Credential lapse and re-enrollment
 
 Enrolled credentials last 24 hours from enrollment or renewal. The runner
