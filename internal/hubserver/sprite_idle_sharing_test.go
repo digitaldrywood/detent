@@ -155,6 +155,7 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 		{"opted in shares", true, false, true, true, false, "", http.StatusOK},
 		{"highest ranked fallback", true, false, true, true, false, "", http.StatusConflict},
 		{"own ready work takes precedence", true, true, true, true, false, "", http.StatusConflict},
+		{"shared merging beats own todo", true, true, true, true, false, "", http.StatusOK},
 		{"own budget exhaustion permits sharing", true, true, true, true, false, "own monthly", http.StatusOK},
 		{"grants remain required", true, false, false, true, false, "", http.StatusNotFound},
 		{"target checkout remains required", true, false, true, false, false, "", http.StatusConflict},
@@ -164,7 +165,14 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
-			other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-project")
+			var other nativeFixture
+			var landing landingCapacityFixture
+			if test.name == "shared merging beats own todo" {
+				landing = newLandingCapacityFixture(t, f.service, "other-landings", false)
+				other = landing.nativeFixture
+			} else {
+				other = newNativeFixture(t, f.service, f.project.OrganizationID, "other-project")
+			}
 			for _, project := range []nativeFixture{f, other} {
 				approveHubTestPolicy(t, f.service, project.base+"/policy", hubTestPolicy())
 			}
@@ -210,7 +218,12 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 			if test.ownReady {
 				own = f.create(t, "own ready work")
 			}
-			foreign := other.create(t, "other ready work")
+			var foreign tracker.NativeIssue
+			if landing.service != nil {
+				foreign = landing.ready(t, "reviewed shared landing")
+			} else {
+				foreign = other.create(t, "other ready work")
+			}
 			var rankedIssue tracker.NativeIssue
 			if ranked.service != nil {
 				rankedIssue = ranked.create(t, "highest ranked fallback")
@@ -249,14 +262,14 @@ func TestProjectSpriteIdleSharingClaims(t *testing.T) {
 			if ranked.service != nil {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, ranked.base+"/claims", r.redemption.Credential, providerClaim(r, rankedIssue, "ranked")), http.StatusOK)
 			}
-			if test.ownReady && test.budget != "own monthly" {
+			if test.ownReady && test.budget != "own monthly" && landing.service == nil {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, own, "own")), http.StatusOK)
 			}
 			allocation, err := readProjectSpriteAllocation(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
 			if err != nil || allocation.DesiredCount != 1 || allocation.AllocatedCount != 1 {
 				t.Fatalf("allocation changed: %+v %v", allocation, err)
 			}
-			if test.status == http.StatusOK && !test.managed {
+			if test.status == http.StatusOK && !test.managed && landing.service == nil {
 				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE leases SET released_at=? WHERE machine_id=?`, now, r.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}

@@ -31,6 +31,7 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 		{"invalid contract yields to ready project", 1, false, "missing", "", false},
 		{"invalid contract yields to next candidate", 1, true, "missing", "", false},
 		{"provider page beyond project quota", 50, true, "missing", "", true},
+		{"equal rank quota waits for better priority", claimPreparationLimit/2 + 1, true, "priority quota", "", false},
 		{"provider page hydration exhaustion", 99, true, "hydration", "", true},
 		{"rejected prefix beyond budget in one project", 125, true, "missing", "", false},
 		{"rejected prefix beyond budget across projects", 125, false, "missing", "", false},
@@ -114,6 +115,11 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 			if _, err := preferred.service.database.db.ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=CASE WHEN id=? THEN 1 ELSE 2 END WHERE organization_id=?", preferred.project.ID, preferred.project.OrganizationID); err != nil {
 				t.Fatal(err)
 			}
+			if scenario.contract == "priority quota" {
+				if _, err := preferred.service.database.db.ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=1 WHERE organization_id=?", preferred.project.OrganizationID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			for _, f := range []nativeFixture{preferred, general} {
 				approveHubTestPolicy(t, preferred.service, f.base+"/policy", hubTestPolicy())
 			}
@@ -184,6 +190,11 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 			var generalIssue tracker.NativeIssue
 			if !scenario.providerPage {
 				generalIssue = general.create(t, "available model")
+			}
+			if scenario.contract == "priority quota" {
+				if _, err := preferred.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override=CASE WHEN issue_id IN (SELECT id FROM issues WHERE project_id=?) THEN 0 ELSE 3 END", preferred.project.ID); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if scenario.contract == "" || scenario.providerPage {
 				report := capacityReport(now)
@@ -336,16 +347,20 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 		{"issue priority breaks equal ranks", 2, 1, 0, 0, -time.Hour, time.Hour, "both", false, "", "", false, false, false},
 		{"age breaks remaining ties", 2, 2, 0, 0, time.Hour, -time.Hour, "both", false, "", "", false, false, false},
 		{"reviewed landing then P2 rework then P0 todo", 3, 1, 0, 0, time.Hour, -time.Hour, "both", true, "reviewed", "", true, false, false},
-		{"lower project landing yields to higher project", 3, 1, 1, 0, -time.Hour, time.Hour, "both", false, "reviewed", "", false, false, false},
+		{"lower project landing beats higher project todo", 3, 1, 1, 0, -time.Hour, time.Hour, "both", true, "reviewed", "", false, false, false},
+		{"landings follow project rank", 1, 3, 1, 0, -time.Hour, time.Hour, "both", false, "reviewed", "reviewed", false, false, false},
 		{"landing priority precedes creation", 3, 2, 0, 0, -time.Hour, time.Hour, "both", false, "reviewed", "reviewed", false, false, false},
 		{"landing creation breaks priority ties", 3, 3, 0, 0, -time.Hour, time.Hour, "both", true, "reviewed", "reviewed", false, false, false},
 		{"missing landing version yields to implementation", 1, 3, 0, 0, -time.Hour, time.Hour, "both", false, "missing version", "", false, false, false},
 		{"unreviewed landing yields to implementation", 1, 3, 0, 0, -time.Hour, time.Hour, "both", false, "missing review", "", false, false, false},
 		{"failed landing check yields to implementation", 1, 3, 0, 0, -time.Hour, time.Hour, "both", false, "failed check", "", false, false, false},
 		{"P2 rework beats P0 todo at equal project ranks", 3, 1, 0, 0, time.Hour, -time.Hour, "both", true, "", "", false, true, false},
-		{"lower project rework yields to higher project todo", 1, 3, 1, 0, -time.Hour, time.Hour, "both", false, "", "", false, true, false},
+		{"lower project rework beats higher project todo", 3, 1, 1, 0, -time.Hour, time.Hour, "both", true, "", "", false, true, false},
+		{"rework follows project rank", 1, 3, 1, 0, -time.Hour, time.Hour, "both", false, "", "", false, true, true},
 		{"rework priority precedes creation", 3, 2, 0, 0, -time.Hour, time.Hour, "both", false, "", "", false, true, true},
 		{"rework creation breaks priority ties", 3, 3, 0, 0, -time.Hour, time.Hour, "both", true, "", "", false, true, true},
+		{"lower project in progress beats higher project todo", 3, 1, 1, 0, time.Hour, -time.Hour, "in-progress", true, "", "", false, false, false},
+		{"rework beats higher ranked in progress", 1, 3, 0, 1, -time.Hour, time.Hour, "in-progress", false, "", "", false, false, true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			first := newDefaultNativeFixture(t, Config{})
@@ -403,6 +418,14 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 					}
 				}
 				issue := project.fixture.create(t, "ready")
+				if scenario.allowed == "in-progress" && project.fixture.project.ID == first.project.ID {
+					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET source_name='Active' WHERE project_id=? AND detent_state='In Progress'", first.project.ID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id=?", first.project.ID, issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if project.rework {
 					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Rework') WHERE native_id=?", project.fixture.project.ID, issue.WorkItemID); err != nil {
 						t.Fatal(err)
