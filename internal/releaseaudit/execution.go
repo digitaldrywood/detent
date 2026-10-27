@@ -169,7 +169,8 @@ func (e *execution) acceptHuntLedger(ctx context.Context, assigned, updates json
 	if json.Unmarshal(assigned, &target) != nil || target.ID == "" {
 		return errors.New("release audit assignment has no coverage identity")
 	}
-	var current, patch []json.RawMessage
+	current := []json.RawMessage{}
+	var patch []json.RawMessage
 	if json.Unmarshal(e.state.Ledger, &current) != nil || json.Unmarshal(updates, &patch) != nil {
 		return errors.New("release audit hunt ledger is invalid")
 	}
