@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -232,6 +233,7 @@ func TestAnalyticsRollupFailurePreservesEvent(t *testing.T) {
 				t.Fatal("an unrelated commit retried the failed item")
 			}
 			tc.recover(t, f, scope, string(issue.WorkItemID))
+			drainTestAnalytics(t, f.service)
 			if !analyticsRollupsServed(t, f.service, scope) {
 				t.Fatal("recovered projection stayed on the raw computation")
 			}
@@ -344,6 +346,51 @@ func TestAnalyticsRollupBackfill(t *testing.T) {
 			}
 		})
 	}
+	t.Run("failed partial item does not block backfill", func(t *testing.T) {
+		f := newDefaultNativeFixture(t, Config{})
+		if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+			t.Fatal(err)
+		}
+		failed := f.create(t, "Failed backfill")
+		healthy := f.create(t, "Healthy backfill")
+		d := f.service.database
+		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+		if _, err := d.db.ExecContext(t.Context(), "DELETE FROM analytics_rollup_positions WHERE organization_id=? AND project_id=?", scope.organization, scope.project); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.db.ExecContext(t.Context(), `INSERT INTO analytics_rollup_positions(organization_id,project_id,work_item_id,sequence,failed,refresh_phase) VALUES(?,?,?,0,1,1)`, scope.organization, scope.project, failed.WorkItemID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := d.db.ExecContext(t.Context(), "INSERT OR IGNORE INTO analytics_rollup_backfill VALUES(?,?)", scope.organization, scope.project); err != nil {
+			t.Fatal(err)
+		}
+		complete := false
+		for range analyticsBackfillBatch + 1 {
+			more, err := d.backfillAnalyticsRollups(t.Context(), f.service.config.now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !more {
+				complete = true
+				break
+			}
+		}
+		if !complete {
+			t.Fatal("backfill kept selecting failed partial progress")
+		}
+		for _, test := range []struct {
+			id     tracker.NativeWorkItemID
+			failed int
+		}{{failed.WorkItemID, 1}, {healthy.WorkItemID, 0}} {
+			var got int
+			if err := d.reader.QueryRowContext(t.Context(), "SELECT failed FROM analytics_rollup_positions WHERE work_item_id=?", test.id).Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			if got != test.failed {
+				t.Fatalf("failed=%d want=%d", got, test.failed)
+			}
+		}
+	})
 }
 
 func TestAnalyticsRollupUsageWrites(t *testing.T) {
@@ -1167,8 +1214,17 @@ func TestAnalyticsHourlyRetentionScopes(t *testing.T) {
 				t.Fatal(err)
 			}
 			drainTestAnalytics(t, f.service)
-			if err := f.service.database.compactAnalyticsSamples(t.Context(), now.Add(31*24*time.Hour)); err != nil {
-				t.Fatal(err)
+			for {
+				if err := f.service.database.compactAnalyticsSamples(t.Context(), now.Add(31*24*time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+				var complete bool
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT sample_hour=? AND residence_hour=? FROM analytics_maintenance_cursor WHERE id=1`, int64(math.MinInt64), int64(math.MinInt64)).Scan(&complete); err != nil {
+					t.Fatal(err)
+				}
+				if complete {
+					break
+				}
 			}
 			encoded, err := json.Marshal(items)
 			if err != nil {
@@ -1235,5 +1291,221 @@ func convertTestAnalyticsProjections(t testing.TB, s *Service) {
 		if !more {
 			return
 		}
+	}
+}
+
+func TestAnalyticsRollupResidenceCleanupSourceChange(t *testing.T) {
+	for _, changes := range []int{1, 3} {
+		t.Run(fmt.Sprintf("revision-changes-%d", changes), func(t *testing.T) {
+			start := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+			now := start.Add(100 * time.Hour)
+			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			d := f.service.database
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			tx, err := d.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: "residence cleanup", Body: nativeContractTestBody, State: "Todo"}, start)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := string(issue.WorkItemID)
+			for i := range 2*analyticsDrainWrites + 1 {
+				at := start.Add(time.Duration(i+1) * time.Hour)
+				decision := &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", At: at}
+				if err := appendNativeHistory(t.Context(), tx, scope, id, "scheduler.decision", tracker.CollaborationData{Decision: decision}, at); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			drain := func() bool {
+				t.Helper()
+				var statements int
+				ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(_ string, _ []driver.NamedValue) {
+					if d.db.Stats().InUse > 0 {
+						statements++
+					}
+				}})
+				more, err := d.drainAnalyticsDirty(ctx, now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if statements > 38 {
+					t.Fatalf("writer statements=%d; bound is 38 including progress", statements)
+				}
+				return more
+			}
+			convertTestAnalyticsProjections(t, f.service)
+			for drain() {
+			}
+			tx, err = d.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if err := appendNativeHistory(t.Context(), tx, scope, id, "workflow.transitioned", tracker.CollaborationData{FromState: "In Progress", ToState: "Done"}, start.Add(70*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			convertTestAnalyticsProjections(t, f.service)
+			if !drain() {
+				t.Fatal("residence cleanup completed without paging")
+			}
+			var phase, remaining int
+			var predecessor bool
+			if err := d.reader.QueryRowContext(t.Context(), "SELECT refresh_phase FROM analytics_rollup_positions WHERE work_item_id=?", id).Scan(&phase); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_hourly_rollups WHERE sample_id=? AND metric IN ('residence_hour','residence_edge')", id).Scan(&remaining); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.reader.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM analytics_hourly_rollups WHERE metric='residence_edge' AND dimension=?)", id+":0").Scan(&predecessor); err != nil {
+				t.Fatal(err)
+			}
+			if phase != analyticsDrainResidenceCleanup || remaining <= changes*analyticsDrainWrites || predecessor {
+				t.Fatalf("cleanup setup: phase=%d remaining=%d predecessor=%t", phase, remaining, predecessor)
+			}
+			for range changes {
+				if _, err := d.db.ExecContext(t.Context(), "UPDATE issues SET title=title WHERE native_id=?", id); err != nil {
+					t.Fatal(err)
+				}
+				drain()
+			}
+			for drain() {
+			}
+			var failed bool
+			if err := d.reader.QueryRowContext(t.Context(), "SELECT failed,refresh_phase FROM analytics_rollup_positions WHERE work_item_id=?", id).Scan(&failed, &phase); err != nil {
+				t.Fatal(err)
+			}
+			if failed || phase != analyticsDrainComplete {
+				t.Fatalf("cleanup did not recover: failed=%t phase=%d", failed, phase)
+			}
+			got := readTestRollupRows(t, d.reader, scope)
+			rebuildTestAnalyticsRollups(t, f.service, scope)
+			if want := readTestRollupRows(t, d.reader, scope); !reflect.DeepEqual(got, want) {
+				t.Fatal("rollups after interrupted residence cleanup differ from full refresh")
+			}
+		})
+	}
+}
+
+func TestAnalyticsRollupLargeItemWriterBound(t *testing.T) {
+	f := newUsageHostedFixture(t)
+	d := f.service.database
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
+	var item string
+	if err := d.reader.QueryRowContext(t.Context(), "SELECT work_item_id FROM native_attempts WHERE id='attempt_browser_usage_0_0'").Scan(&item); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := d.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for i := range 257 {
+		id := fmt.Sprintf("bounded_%04d", i)
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) SELECT ?,issue_id,machine_id,?,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at FROM leases WHERE lease_id='lease_browser_usage_0_0'`, id, id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at) SELECT ?,organization_id,project_id,work_item_id,?,(SELECT max(fencing_token)+1 FROM native_attempts),?,1,status,data_json,started_at,updated_at FROM native_attempts WHERE id='attempt_browser_usage_0_0'`, id, id, id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO attempt_usage(attempt_id,organization_id,project_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) SELECT ?,organization_id,project_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at FROM attempt_usage WHERE attempt_id='attempt_browser_usage_0_0' LIMIT 1`, id); err != nil {
+			t.Fatal(err)
+		}
+		if err := appendNativeHistory(t.Context(), tx, scope, item, "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "ready", Source: "native_claim"}}, f.service.config.now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tx.ExecContext(t.Context(), `UPDATE leases SET acquired_at=?,expires_at=?,released_at=? WHERE lease_id='bounded_0000'`, formatHubTime(f.service.config.now().Add(-80*time.Hour)), formatHubTime(f.service.config.now()), formatHubTime(f.service.config.now())); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(t.Context(), `UPDATE leases SET acquired_at=?,expires_at=?,released_at=NULL WHERE lease_id='bounded_0001'`, formatHubTime(f.service.config.now().Add(-time.Hour)), formatHubTime(f.service.config.now().Add(48*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	start := f.service.config.now().Add(-80 * time.Hour)
+	for _, decision := range []tracker.NativeSchedulerDecision{
+		{Outcome: "skipped", Source: "native_provider_capacity", Reason: "capacity", RunnerID: "example-runner", WorkItemRevision: 1, At: start},
+		{Outcome: "claimed", Source: "native_claim", RunnerID: "example-runner", WorkItemRevision: 1, At: f.service.config.now()},
+	} {
+		if err := appendNativeHistory(t.Context(), tx, scope, item, "scheduler.decision", tracker.CollaborationData{Decision: &decision}, decision.At); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	convertTestAnalyticsProjections(t, f.service)
+	var transactions int
+	var changedDuringRead bool
+	drainBounded := func() {
+		for {
+			var before, after int
+			if err := d.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_hourly_rollups WHERE work_item_id=? AND metric IN ('attempt','event')", item).Scan(&before); err != nil {
+				t.Fatal(err)
+			}
+			var writerStatements int
+			traceCtx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+				if d.db.Stats().InUse > 0 {
+					writerStatements++
+				}
+				if !changedDuringRead && strings.Contains(query, "FROM native_attempts a WHERE") {
+					changedDuringRead = true
+					if _, err := d.db.ExecContext(t.Context(), "UPDATE native_attempts SET status='failed' WHERE id='bounded_0000'"); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}})
+			ctx, timing := withWriterTiming(traceCtx)
+			more, err := d.drainAnalyticsDirty(ctx, f.service.config.now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if writerStatements > 38 {
+				t.Fatalf("writer statements=%d; bound is 38 including progress", writerStatements)
+			}
+			transactions += int(timing.txs.Load())
+			if err := d.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_hourly_rollups WHERE work_item_id=? AND metric IN ('attempt','event')", item).Scan(&after); err != nil {
+				t.Fatal(err)
+			}
+			if after-before > 32 {
+				t.Fatalf("one writer transaction projected %d source rows; bound is 32", after-before)
+			}
+			if !more {
+				break
+			}
+		}
+	}
+	drainBounded()
+	later := f.service.config.now().Add(time.Hour)
+	f.service.config.now = func() time.Time { return later }
+	if _, err := d.db.ExecContext(t.Context(), "UPDATE issues SET title=title WHERE native_id=?", item); err != nil {
+		t.Fatal(err)
+	}
+	drainBounded()
+
+	if transactions < 9 {
+		t.Fatalf("large history drained in %d transactions; want multiple bounded pages", transactions)
+	}
+	if !changedDuringRead {
+		t.Fatal("source change during reader preparation was not exercised")
+	}
+	t.Logf("large history completed across %d bounded writer transactions", transactions)
+	got := readTestRollupRows(t, d.reader, scope)
+	rebuildTestAnalyticsRollups(t, f.service, scope)
+	if want := readTestRollupRows(t, d.reader, scope); !reflect.DeepEqual(got, want) {
+		t.Fatal("paged rollups differ from full refresh")
 	}
 }

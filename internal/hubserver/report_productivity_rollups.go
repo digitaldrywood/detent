@@ -23,7 +23,7 @@ type productivityHour struct {
 	worked, reworked, landed int
 }
 
-func refreshProductivitySummary(ctx context.Context, tx *sql.Tx, scope nativeScope, id string) error {
+func refreshProductivitySummary(ctx context.Context, tx projectionQuery, scope nativeScope, id string) error {
 	var created, closed, state, kind, priority, actorRaw, body, labelsRaw string
 	err := tx.QueryRowContext(ctx, `SELECT i.created_at,coalesce(CASE WHEN ws.terminal=1 THEN `+nativeTerminalEnteredAt+` END,''),ws.detent_state,coalesce(i.issue_type,''),coalesce(CAST(q.priority_override AS TEXT),''),i.actor_json,i.body,i.labels_json
  FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id LEFT JOIN queue_entries q ON q.issue_id=i.id
@@ -125,7 +125,13 @@ func refreshProductivitySummary(ctx context.Context, tx *sql.Tx, scope nativeSco
 	if err != nil {
 		return err
 	}
-	for hour, value := range hours {
+	orderedHours := make([]int64, 0, len(hours))
+	for hour := range hours {
+		orderedHours = append(orderedHours, hour)
+	}
+	slices.Sort(orderedHours)
+	for _, hour := range orderedHours {
+		value := hours[hour]
 		if _, err := tx.ExecContext(ctx, `INSERT INTO report_issue_hours VALUES(?,?,?,?,?,?,?,?)`, scope.organization, scope.project, id, hour, value.cost, value.worked, value.reworked, value.landed); err != nil {
 			return err
 		}
@@ -133,7 +139,7 @@ func refreshProductivitySummary(ctx context.Context, tx *sql.Tx, scope nativeSco
 	return nil
 }
 
-func productivityHours(ctx context.Context, tx *sql.Tx, scope nativeScope, id string) (map[int64]*productivityHour, error) {
+func productivityHours(ctx context.Context, tx projectionQuery, scope nativeScope, id string) (map[int64]*productivityHour, error) {
 	hours := map[int64]*productivityHour{}
 	atHour := func(at time.Time) *productivityHour {
 		h := at.UTC().Truncate(time.Hour).Unix()
@@ -183,7 +189,7 @@ func productivityHours(ctx context.Context, tx *sql.Tx, scope nativeScope, id st
 	return hours, nil
 }
 
-func productivityQualityInputs(ctx context.Context, tx *sql.Tx, scope nativeScope, id string) (productivityQuality, error) {
+func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope nativeScope, id string) (productivityQuality, error) {
 	out := productivityQuality{}
 	rows, err := tx.QueryContext(ctx, `SELECT c.id,c.work_item_id,l.record_json,coalesce(json_extract(c.record_json,'$.landed.version_id')=v.id AND json_extract(c.record_json,'$.landed.head_sha')=json_extract(v.record_json,'$.head_sha') AND length(json_extract(c.record_json,'$.landed.merge_sha')) IN (40,64),0) FROM change_requests c JOIN change_versions v ON v.change_id=c.id JOIN quality_landings l ON l.version_id=v.id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=?
  UNION ALL SELECT c.id,c.work_item_id,json_extract(c.record_json,'$.landed'),1 FROM change_requests c JOIN change_versions v ON v.change_id=c.id AND v.id=json_extract(c.record_json,'$.landed.version_id') WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? AND NOT EXISTS(SELECT 1 FROM quality_landings l WHERE l.version_id=v.id) AND json_extract(c.record_json,'$.landed.head_sha')=json_extract(v.record_json,'$.head_sha') AND length(json_extract(c.record_json,'$.landed.merge_sha')) IN (40,64)`, scope.organization, scope.project, id, scope.organization, scope.project, id)
@@ -259,7 +265,7 @@ func productivityQualityInputs(ctx context.Context, tx *sql.Tx, scope nativeScop
 	return out, errors.Join(rows.Err(), rows.Close())
 }
 
-func refreshProductivityRunners(ctx context.Context, tx *sql.Tx, scope nativeScope, id string) error {
+func refreshProductivityRunners(ctx context.Context, tx projectionQuery, scope nativeScope, id string) error {
 	rows, err := tx.QueryContext(ctx, `SELECT r.id,a.started_at,a.updated_at FROM native_attempts a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id JOIN runner_identities r ON r.id=coalesce(lr.runner_id,json_extract(a.data_json,'$.runner_id')) AND r.organization_id=a.organization_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, scope.organization, scope.project, id)
 	if err != nil {
 		return err

@@ -17,7 +17,7 @@ import (
 )
 
 const nativeBoardReplayLimit = 2048
-const nativeBoardTrimLimit = 128
+const nativeBoardTrimLimit = 32
 
 const nativeBoardCandidateQuery = `SELECT work_item_id,1 FROM (SELECT work_item_id FROM native_board_dirty
 WHERE work_item_id>? ORDER BY work_item_id LIMIT 1)
@@ -62,12 +62,40 @@ func (d *database) drainNativeBoardDirtyAfter(ctx context.Context, now time.Time
 	if !refresh {
 		return true, id, nil
 	}
+	snapshot, err := d.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return false, id, err
+	}
+	defer snapshot.Rollback()
+	var revision int64
+	if err := snapshot.QueryRowContext(ctx, `SELECT coalesce((SELECT board_revision FROM derived_refresh_revisions WHERE work_item_id=?),0)`, id).Scan(&revision); err != nil {
+		return false, id, err
+	}
+	plan := &projectionPlan{nativeQueryer: snapshot}
+	if err := refreshNativeBoardCard(ctx, plan, id, now, map[string]changeSummaryPolicy{}); err != nil {
+		return false, id, err
+	}
+	if err := snapshot.Rollback(); err != nil {
+		return false, id, err
+	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, id, err
 	}
 	defer tx.Rollback()
-	if err := refreshNativeBoardCard(ctx, tx, id, now, map[string]changeSummaryPolicy{}); err != nil {
+	var currentRevision int64
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce((SELECT board_revision FROM derived_refresh_revisions WHERE work_item_id=?),0)`, id).Scan(&currentRevision); err != nil {
+		return false, id, err
+	}
+	if revision != currentRevision {
+		return true, id, nil
+	}
+	for _, w := range plan.writes {
+		if _, err := tx.ExecContext(ctx, w.query, w.args...); err != nil {
+			return false, id, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO derived_refresh_revisions(work_item_id,board_revision) VALUES(?,1) ON CONFLICT(work_item_id) DO UPDATE SET board_revision=board_revision+1`, id); err != nil {
 		return false, id, err
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM native_board_dirty WHERE work_item_id=?", id); err != nil {
@@ -121,7 +149,7 @@ ON CONFLICT(organization_id,project_id) DO UPDATE SET sequence=excluded.sequence
 	return err
 }
 
-func refreshNativeBoardCard(ctx context.Context, tx *sql.Tx, id string, now time.Time, policies map[string]changeSummaryPolicy) error {
+func refreshNativeBoardCard(ctx context.Context, tx projectionQuery, id string, now time.Time, policies map[string]changeSummaryPolicy) error {
 	var previous *tracker.NativeBoardCard
 	var oldJSON string
 	err := tx.QueryRowContext(ctx, "SELECT record_json FROM native_board_items WHERE work_item_id=?", id).Scan(&oldJSON)
@@ -250,7 +278,10 @@ FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=?
 	if err != nil {
 		return err
 	}
-	return trimDashboardChanges(ctx, tx, scope)
+	if writer, ok := tx.(*sql.Tx); ok {
+		return trimDashboardChanges(ctx, writer, scope)
+	}
+	return nil
 }
 
 func nativeBoardGrants(ctx context.Context, q nativeQueryer, scope nativeScope) (map[tracker.ProjectID]bool, error) {

@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"time"
@@ -14,8 +13,8 @@ type analyticsSkipSample struct {
 	AtNS           int64
 }
 
-func refreshAnalyticsSkipSamples(ctx context.Context, tx *sql.Tx, scope nativeScope, id string, through int64) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id,recorded_at,coalesce(scheduler_source,''),coalesce(scheduler_reason,'') FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? AND type='scheduler.decision' AND scheduler_outcome='skipped'`, scope.organization, scope.project, id, through)
+func refreshAnalyticsSkipSamples(ctx context.Context, tx projectionQuery, scope nativeScope, id string, through int64, before ...int64) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id,recorded_at,coalesce(scheduler_source,''),coalesce(scheduler_reason,'') FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? AND sequence<=? AND type='scheduler.decision' AND scheduler_outcome='skipped'`, scope.organization, scope.project, id, through, projectionUpper(before))
 	if err != nil {
 		return err
 	}
