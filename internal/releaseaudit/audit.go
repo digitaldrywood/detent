@@ -225,7 +225,7 @@ func (s *Stage) Run(ctx context.Context, request Request) (result Snapshot, retu
 	if err != nil {
 		return result, err
 	}
-	if err := e.updateLedger(ctx, response.Output); err != nil {
+	if err := e.acceptLedger(ctx, response.Output); err != nil {
 		return result, err
 	}
 	for {
@@ -251,7 +251,7 @@ func (s *Stage) Run(ctx context.Context, request Request) (result Snapshot, retu
 			if json.Unmarshal(response.Output, &hunt) != nil {
 				return result, errors.New("release audit hunter returned an invalid envelope")
 			}
-			if err := e.updateLedger(ctx, hunt.Ledger); err != nil {
+			if err := e.acceptLedger(ctx, hunt.Ledger); err != nil {
 				return result, err
 			}
 			for _, candidate := range hunt.Candidates {
@@ -270,7 +270,7 @@ func (s *Stage) Run(ctx context.Context, request Request) (result Snapshot, retu
 		if err != nil {
 			return result, err
 		}
-		if err := e.updateLedger(ctx, response.Output); err != nil {
+		if err := e.acceptLedger(ctx, response.Output); err != nil {
 			return result, err
 		}
 	}
@@ -328,7 +328,7 @@ func (s *Stage) Run(ctx context.Context, request Request) (result Snapshot, retu
 	if err != nil {
 		return result, err
 	}
-	if err := e.updateLedger(ctx, response.Output); err != nil {
+	if err := e.acceptLedger(ctx, response.Output); err != nil {
 		return result, err
 	}
 	if !e.coverageComplete() {

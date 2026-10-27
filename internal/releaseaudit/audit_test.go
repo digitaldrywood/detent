@@ -80,13 +80,16 @@ func (fixtureSandbox) Execute(context.Context, []string, string) (string, error)
 }
 
 type fixtureProvider struct {
-	t         *testing.T
-	root      string
-	verdict   string
-	usage     Usage
-	fail      string
-	priorSeen bool
-	session   int
+	malformedLedger bool
+	repeatMalformed bool
+	corrections     int
+	t               *testing.T
+	root            string
+	verdict         string
+	usage           Usage
+	fail            string
+	priorSeen       bool
+	session         int
 }
 
 func (p *fixtureProvider) Invoke(ctx context.Context, invocation Invocation, observe func(Usage) error) (Response, error) {
@@ -122,6 +125,18 @@ func (p *fixtureProvider) Invoke(ctx context.Context, invocation Invocation, obs
 	switch invocation.Phase {
 	case "recon-ledger":
 		response.Output = fixtureLedger("planned", p.verdict != "")
+		if p.malformedLedger {
+			response.Output = json.RawMessage(strings.Replace(string(response.Output), `"starting_paths":["source.go"]`, `"starting_paths":[]`, 1))
+		}
+	case "ledger-correction":
+		p.corrections++
+		if !strings.Contains(string(invocation.Input), "starting_paths") || !strings.Contains(string(invocation.Input), "must not be empty") {
+			p.t.Fatal("correction omitted validator diagnostics")
+		}
+		response.Output = fixtureLedger("planned", p.verdict != "")
+		if p.repeatMalformed {
+			response.Output = json.RawMessage(strings.Replace(string(response.Output), `"starting_paths":["source.go"]`, `"starting_paths":[]`, 1))
+		}
 	case "hunt":
 		status := "covered"
 		candidates := []Candidate{}
@@ -210,23 +225,28 @@ func TestStageBoundaries(t *testing.T) {
 	t.Parallel()
 	source := pinnedFixture(t)
 	for _, test := range []struct {
-		name, verdict, want, fail string
-		baseCommit                string
-		failPublication           string
-		failCandidatePublication  bool
-		ledgerStatus              string
-		retainedCandidates        bool
-		sandbox                   bool
-		invocations               int
-		usage                     Usage
-		allowance                 Usage
-		repairs, infrastructure   int
+		malformedLedger, repeatMalformed bool
+		corrections                      int
+		name, verdict, want, fail        string
+		baseCommit                       string
+		failPublication                  string
+		failCandidatePublication         bool
+		ledgerStatus                     string
+		retainedCandidates               bool
+		sandbox                          bool
+		invocations                      int
+		usage                            Usage
+		allowance                        Usage
+		repairs, infrastructure          int
 	}{
 		{name: "confirmed", verdict: "confirmed", want: "findings", sandbox: true, repairs: 2},
 		{name: "sandbox unavailable", verdict: "confirmed", want: "needs_validation"},
 		{name: "needs validation", verdict: "needs_validation", want: "needs_validation"},
 		{name: "rejected", verdict: "rejected", want: "clean"},
 		{name: "clean", want: "clean"},
+		{name: "ledger corrected", malformedLedger: true, corrections: 1, want: "clean"},
+		{name: "invalid ledger remains rejected", malformedLedger: true, repeatMalformed: true, corrections: 2, want: "failed", infrastructure: 2},
+		{name: "correction respects allowance", malformedLedger: true, corrections: 1, invocations: 8, want: "incomplete", ledgerStatus: "planned"},
 		{name: "incremental identity retained", want: "clean", baseCommit: strings.Repeat("b", 40)},
 		{name: "invocation allowance", verdict: "confirmed", sandbox: true, invocations: 8, want: "incomplete", ledgerStatus: "planned"},
 		{name: "allowance after confirmed record", verdict: "confirmed", sandbox: true, invocations: 9, want: "incomplete", repairs: 2},
@@ -239,7 +259,7 @@ func TestStageBoundaries(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
-			provider := &fixtureProvider{t: t, root: root, verdict: test.verdict, fail: test.fail, usage: test.usage}
+			provider := &fixtureProvider{t: t, root: root, verdict: test.verdict, fail: test.fail, usage: test.usage, malformedLedger: test.malformedLedger, repeatMalformed: test.repeatMalformed}
 			if provider.usage == (Usage{}) {
 				provider.usage = Usage{Input: 3, Output: 2, Cached: 1}
 			}
@@ -262,7 +282,11 @@ func TestStageBoundaries(t *testing.T) {
 			}
 			for _, run := range []string{"first", "second"} {
 				identity := Identity{ProjectID: "prj_example", Repository: "example-org/example-project", Commit: source.Commit(), ReleaseSeries: "release/v1.0", RunID: run, Attempt: "1", JobID: "audit", RunURL: "https://example.test/runs/" + run}
+				provider.corrections = 0
 				result, err := stage.Run(t.Context(), Request{BaseCommit: test.baseCommit, Identity: identity, Source: source, Scratch: root, Allowance: allowance})
+				if provider.corrections != test.corrections {
+					t.Fatalf("corrections=%d want=%d", provider.corrections, test.corrections)
+				}
 				if result.BaseCommit != test.baseCommit {
 					t.Fatalf("scope base lost: %q", result.BaseCommit)
 				}
