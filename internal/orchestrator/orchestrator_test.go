@@ -2811,7 +2811,20 @@ func runOrchestrator(t *testing.T, orch *orchestrator.Orchestrator) func() {
 func waitForState(t *testing.T, orch *orchestrator.Orchestrator, ready func(orchestrator.State) bool) orchestrator.State {
 	t.Helper()
 
-	return waitForStateWithin(t, orch, time.Second, ready)
+	ctx := testenv.WaitContext(t, t.Context())
+	var state orchestrator.State
+	testenv.WaitUntil(t, ctx, func() error {
+		var err error
+		state, err = orch.State(ctx)
+		if err != nil {
+			return err
+		}
+		if !ready(state) {
+			return fmt.Errorf("awaiting orchestrator state; state=%#v", state)
+		}
+		return nil
+	})
+	return state
 }
 
 func waitForStateWithin(t *testing.T, orch *orchestrator.Orchestrator, timeout time.Duration, ready func(orchestrator.State) bool) orchestrator.State {
@@ -2906,7 +2919,14 @@ func stateRequestsContain(requests [][]string, want []string) bool {
 
 func receiveRunRequest(t *testing.T, requests <-chan orchestrator.RunRequest) orchestrator.RunRequest {
 	t.Helper()
-	return receiveRunRequestWithin(t, requests, time.Second)
+	ctx := testenv.WaitContext(t, t.Context())
+	select {
+	case request := <-requests:
+		return request
+	case <-ctx.Done():
+		t.Fatalf("waiting for runner request: %v", context.Cause(ctx))
+	}
+	return orchestrator.RunRequest{}
 }
 
 func receiveRunRequestWithin(t *testing.T, requests <-chan orchestrator.RunRequest, timeout time.Duration) orchestrator.RunRequest {
@@ -3488,21 +3508,14 @@ func (c *fakeConnector) setCandidatePullRequest(issueID string, pullRequest *con
 func waitForStateUpdate(t *testing.T, tracker *fakeConnector, want stateUpdateCall) {
 	t.Helper()
 
-	deadline := time.After(time.Second)
-	for {
+	testenv.WaitUntil(t, t.Context(), func() error {
 		for _, got := range tracker.stateUpdateCalls() {
 			if got == want {
-				return
+				return nil
 			}
 		}
-
-		select {
-		case <-deadline:
-			t.Fatalf("timed out waiting for state update %#v; got %#v", want, tracker.stateUpdateCalls())
-		default:
-			time.Sleep(time.Millisecond)
-		}
-	}
+		return fmt.Errorf("awaiting state update %#v; got %#v", want, tracker.stateUpdateCalls())
+	})
 }
 
 func waitForWorkflowMetricEvents(t *testing.T, recorder *workflowMetricsRecorder, want int) []store.WorkflowPhaseEvent {
