@@ -2,7 +2,9 @@
 
 The standalone local board is retired. To move an existing board's data to a
 Hub, see the [local board to local Hub migration runbook](hub-local-migration.md)
-for backups, cutover, import prerequisites and rollback.
+for backups, pilot cutover, import prerequisites and rollback before replacing its service.
+For a Hub and runners on one Mac, follow the
+[macOS/launchd guide](#macos-with-launchd).
 
 One customer-controlled macOS or Linux host, one Hub process, and local
 durable storage are the supported deployment described here. Use the released
@@ -672,8 +674,8 @@ confirms absence. It fails closed with `unsupported_capability`,
 `require_versioning: true` additionally requires real version IDs and
 version-pinned reads and deletes. The service never changes bucket settings.
 
-The catalog is private to its service. `detent artifacts ... usage` (logical
-retained and reserved bytes) and `detent artifacts ... backup --output PATH`
+The catalog is private to its service. `detent artifacts --artifact-config PATH usage` (logical
+retained and reserved bytes) and `detent artifacts --artifact-config PATH backup --output PATH`
 refuse to open a running catalog, so stop only the artifact service for them;
 downloads are unavailable meanwhile. A catalog backup does not contain bucket
 bytes: back up provider object versions separately, and keep the newest
