@@ -77,7 +77,7 @@ func (s *Service) projectOnboardingBatch(ctx context.Context, organization track
 			return nil, errors.Join(err, rows.Close())
 		}
 		if current {
-			approval, err = decodeProjectPolicy(raw, approval)
+			approval, err = decodeProjectPolicy(ctx, string(organization)+"/"+string(id), policyID, raw, approval)
 			if err != nil {
 				return nil, errors.Join(err, rows.Close())
 			}

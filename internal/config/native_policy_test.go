@@ -89,6 +89,25 @@ func TestApplyApprovedNativePolicy(t *testing.T) {
 			if !reflect.DeepEqual(applied.Config.Tracker.PriorityMap, cfg.Tracker.PriorityMap) {
 				t.Fatalf("default priority map lost: %+v", applied.Config.Tracker.PriorityMap)
 			}
+			cached, err := ResolveNativePolicy(descriptor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cachedWorkflow, err := cached.Workflow()
+			if err != nil || !reflect.DeepEqual(cachedWorkflow, applied) {
+				t.Fatalf("cached workflow differs from application: %v", err)
+			}
+			cachedWorkflow.Config.Runners.Profiles["approved"] = policy.Requirements{RequiredTags: []string{"changed"}}
+			cachedWorkflow.Config.Tracker.PriorityMap.Map["changed"] = 1
+			copyDescriptor := cached.Descriptor()
+			copyDescriptor.Configuration.Behavior[0] = '!'
+			copyDescriptor.Requirements.RequiredTags[0] = "changed"
+			descriptor.Requirements.RequiredTags[0] = "input changed"
+			again, err := cached.Workflow()
+			if err != nil || !reflect.DeepEqual(again, applied) || cached.Descriptor().Requirements.RequiredTags[0] != "linux" {
+				t.Fatalf("cached policy mutated: %v", err)
+			}
+			descriptor.Requirements.RequiredTags[0] = "linux"
 			resolved, err := ResolvePolicy(applied)
 			if err != nil || resolved.Gates != descriptor.Gates || !reflect.DeepEqual(resolved.Requirements, descriptor.Requirements) {
 				t.Fatalf("approved metadata lost: gates=%+v requirements=%+v error=%v; want gates=%+v requirements=%+v", resolved.Gates, resolved.Requirements, err, descriptor.Gates, descriptor.Requirements)

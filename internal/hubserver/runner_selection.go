@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
@@ -76,7 +75,7 @@ projects:
 		}
 		var resolver *runner.BoardIdentityResolver
 		if project != query.NativeScope.project && len(query.ProviderCandidates) > 0 {
-			workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, approval.Policy)
+			workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(project), approval.Policy)
 			if err != nil {
 				continue projects
 			}

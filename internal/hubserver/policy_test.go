@@ -796,15 +796,139 @@ func TestNativePolicySubmissionConsistency(t *testing.T) {
 	}
 }
 
+func TestProjectPolicyCache(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		count      int
+		otherScope bool
+		otherDB    bool
+		mutate     bool
+	}{
+		{name: "repeated authored policy decodes once", count: 1},
+		{name: "two policies in two projects stay distinct", count: 2, otherScope: true},
+		{name: "same policy in two projects stays scoped", count: 1, otherScope: true},
+		{name: "same policy in two databases stays scoped", count: 1, otherDB: true},
+		{name: "returned maps and slices are isolated", count: 1, mutate: true},
+		{name: "oldest entry evicted at fixed bound", count: projectPolicyCacheLimit + 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			workflow, err := config.ParseProjectDefinition(config.ProjectDefinitionSources{
+				ConfigPath: "detent.yaml", HasConfig: true,
+				Config:       []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\ngate:\n  run: true\n  required_status_checks: []\n"),
+				WorkflowPath: "WORKFLOW.md", Workflow: []byte("Implement the assigned issue.\n"),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			descriptor, err := config.ResolvePolicy(workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decodes := 0
+			decode := func(raw string) (*config.ResolvedNativePolicy, error) {
+				decodes++
+				return decodeResolvedProjectPolicy(raw)
+			}
+			db := &database{policies: projectPolicyCache{decode: decode}}
+			ctx := db.policyContext(t.Context())
+			scope := "organization/project"
+			read := func(ctx context.Context, scope string, descriptor policy.Descriptor) policy.Descriptor {
+				t.Helper()
+				raw, err := json.Marshal(descriptor)
+				if err != nil {
+					t.Fatal(err)
+				}
+				approval, err := decodeProjectPolicy(ctx, scope, descriptor.ID, string(raw), policy.Approval{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return approval.Policy
+			}
+			first := read(ctx, scope, descriptor)
+			applied, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, first)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cached, err := projectPolicyWorkflow(ctx, scope, first)
+			if err != nil || !reflect.DeepEqual(cached, applied) {
+				t.Fatalf("cached authored workflow differs from application: %v", err)
+			}
+			if test.mutate {
+				first.Authored.Files["detent.yaml"] = "changed"
+				first.Configuration.Behavior[0] = '!'
+				first.Workflow.States[0].Transitions = []string{"changed"}
+				cached.Authored.Files["WORKFLOW.md"] = "changed"
+				cached.DefinitionSources.Config[0] = '!'
+				cached.Config.Tracker.ActiveStates[0] = "changed"
+				cached.Config.Tracker.PriorityMap.Map["changed"] = 1
+				*cached.Config.Worker.AllowLocalBinding = true
+				cached.Config = cached.Config.WithWorkerDefaults(config.WorkerDefaults{AllowLocalBinding: new(false)})
+				if !cached.Config.Worker.EffectiveAllowLocalBinding() {
+					t.Fatal("copied workflow lost its project worker setting")
+				}
+			}
+			for i := 1; i < test.count; i++ {
+				if i == projectPolicyCacheLimit {
+					read(ctx, scope, descriptor)
+				}
+				other := hubTestPolicy()
+				other.SourceRevision = fmt.Sprintf("%040x", i)
+				other = other.WithID()
+				otherScope := scope
+				if test.otherScope {
+					otherScope = "organization/other-project"
+				}
+				if got := read(ctx, otherScope, other); !reflect.DeepEqual(got, other) {
+					t.Fatal("policy identities mixed")
+				}
+			}
+			if test.otherScope && test.count == 1 {
+				read(ctx, "organization/other-project", descriptor)
+			}
+			if test.otherDB {
+				other := &database{policies: projectPolicyCache{decode: decode}}
+				read(other.policyContext(t.Context()), scope, descriptor)
+			}
+			if test.count > projectPolicyCacheLimit {
+				if len(db.policies.entries) != projectPolicyCacheLimit {
+					t.Fatalf("cache entries = %d", len(db.policies.entries))
+				}
+				if _, found := db.policies.entries[projectPolicyCacheKey{scope: scope, id: descriptor.ID}]; found {
+					t.Fatal("oldest policy retained past bound")
+				}
+			}
+			if got := read(ctx, scope, descriptor); !reflect.DeepEqual(got, descriptor) {
+				t.Fatal("cached descriptor changed")
+			}
+			again, err := projectPolicyWorkflow(ctx, scope, descriptor)
+			if err != nil || !reflect.DeepEqual(again, applied) {
+				t.Fatalf("cached workflow changed after read: %v", err)
+			}
+			want := test.count
+			if test.otherDB || test.otherScope && test.count == 1 || test.count > projectPolicyCacheLimit {
+				want++
+			}
+			if decodes != want {
+				t.Fatalf("policy decodes = %d, want %d", decodes, want)
+			}
+		})
+	}
+}
+
 func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		approved bool
 		large    bool
+		warm     bool
 	}{
 		{name: "no approval"},
 		{name: "approved", approved: true},
+		{name: "cached approval metadata", approved: true, warm: true},
+		{name: "cached revoked approval", warm: true},
 		{name: "no approval with large observation", large: true},
 		{name: "approved with large observation", approved: true, large: true},
 	} {
@@ -817,8 +941,25 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 				t.Fatal(err)
 			}
 			descriptor := hubTestPolicy()
-			if approved {
+			ctx := f.service.database.policyContext(t.Context())
+			if approved || test.warm {
 				approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+			}
+			if test.warm {
+				if _, err := requireProjectPolicy(ctx, f.service.database.reader, scope); err != nil {
+					t.Fatal(err)
+				}
+				if approved {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE policy_revisions SET approved_by='updated-approver', approved_at='2026-10-27T12:00:00Z' WHERE scope=? AND policy_id=?", scope, descriptor.ID); err != nil {
+						t.Fatal(err)
+					}
+					current, err := requireProjectPolicy(ctx, f.service.database.reader, scope)
+					if err != nil || current.ApprovedBy != "updated-approver" || current.ApprovedAt != "2026-10-27T12:00:00Z" {
+						t.Fatalf("cached approval metadata: %+v, %v", current, err)
+					}
+				} else if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM project_policies WHERE scope=?", scope); err != nil {
+					t.Fatal(err)
+				}
 			}
 			candidate := descriptor
 			candidate.Gates.AutoPromote = true
@@ -840,7 +981,7 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 			worker := f.worker(t, "policy-reader")
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/policy/observed", worker, policy.Observation{Descriptor: candidate}), http.StatusNoContent)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "policy_read_machine", "hostname": "runner", "capacity": 1, "version": "test"}), http.StatusOK)
-			_, err := monthlyClaimExposure(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, "policy_read_machine", false)
+			_, err := monthlyClaimExposure(ctx, f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, "policy_read_machine", false)
 			if approved && err != nil {
 				t.Fatal(err)
 			}
@@ -873,7 +1014,7 @@ func TestProjectPolicyReadsWithoutApproval(t *testing.T) {
 			captured := make(chan context.Context, 1)
 			f.service.echo.GET("/api/v2/organizations/:organization/policy-read-test", func(c echo.Context) error { captured <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, "/api/v2/organizations/"+string(f.project.OrganizationID)+"/policy-read-test", testHubAdminToken, nil), http.StatusOK)
-			ctx := operatortool.BindConnection(<-captured, "policy-read", "policy fixture")
+			ctx = operatortool.BindConnection(<-captured, "policy-read", "policy fixture")
 			executor := hubProjectExecutor{f.service}
 			if err := executor.OpenConnection(ctx); err != nil {
 				t.Fatal(err)

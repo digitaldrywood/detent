@@ -161,7 +161,7 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 		}
 		return nil, err
 	}
-	approved, err := decodeProjectPolicy(configurationJSON, policy.Approval{})
+	approved, err := decodeProjectPolicy(ctx, string(scope.organization)+"/"+string(scope.project), request.PolicyID, configurationJSON, policy.Approval{})
 	if err != nil {
 		return nil, err
 	}

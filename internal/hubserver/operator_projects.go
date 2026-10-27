@@ -76,6 +76,7 @@ func (e hubProjectExecutor) ListTools(ctx context.Context) ([]operatortool.Defin
 	return defs, nil
 }
 func (e hubProjectExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, resultErr error) {
+	ctx = e.service.database.policyContext(ctx)
 	d, known := operatortool.Lookup(call.Name)
 	if !known {
 		return result, operatortool.ErrUnknownTool
