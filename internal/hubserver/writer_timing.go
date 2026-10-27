@@ -183,7 +183,9 @@ func (c *timedConn) startWriterHold(ctx context.Context) writerHold {
 }
 
 func (c *timedConn) endWriterHold(hold *writerHold) {
-	if hold.n == 0 {
+	n := hold.n
+	hold.n = 0
+	if n == 0 {
 		return
 	}
 	elapsed := c.now().Sub(hold.start)
@@ -191,10 +193,10 @@ func (c *timedConn) endWriterHold(hold *writerHold) {
 		return
 	}
 	owner := "unknown"
-	frames := runtime.CallersFrames(hold.pcs[:hold.n])
+	frames := runtime.CallersFrames(hold.pcs[:n])
 	for {
 		frame, more := frames.Next()
-		if !strings.HasSuffix(frame.File, "/writer_timing.go") && !strings.HasPrefix(frame.Function, "database/sql.") {
+		if writerHoldOwnerFrame(frame) {
 			owner = frame.Function
 			break
 		}
@@ -207,6 +209,20 @@ func (c *timedConn) endWriterHold(hold *writerHold) {
 		attrs = append(attrs, "route", hold.route)
 	}
 	c.logger.Warn("hub writer held", attrs...)
+}
+
+func writerHoldOwnerFrame(frame runtime.Frame) bool {
+	if strings.HasSuffix(frame.File, "/writer_timing.go") || strings.HasPrefix(frame.Function, "database/sql.") {
+		return false
+	}
+	switch strings.TrimPrefix(frame.Function, "github.com/digitaldrywood/detent/internal/hubserver.") {
+	case "(*Service).runnerTransaction", "(*Service).runnerAdminTransaction", "(*Service).runnerReadTransaction",
+		"(*Service).hubTransact", "(*conversationService).transact", "(*conversationTurnCoordinator).write",
+		"(*Service).executeNativeMutation", "(*Service).nativeMutation", "(*Service).nativeMutationStatus",
+		"(*Service).commitOutbox", "(*Service).secretMutation":
+		return false
+	}
+	return true
 }
 
 func (t *timedTx) Commit() error {
@@ -287,19 +303,24 @@ func (c *timedConn) QueryContext(ctx context.Context, query string, args []drive
 	}
 	timing := requestTimingFrom(ctx)
 	start := time.Now()
+	holder := c.startWriterHold(ctx)
 	rows, err := queryer.QueryContext(ctx, query, args)
 	timing.statement(start, query, args)
 	if err != nil {
+		if holder.n != 0 {
+			writerTimingFrom(ctx).add(start)
+			c.endWriterHold(&holder)
+		}
 		return rows, err
 	}
 	var committed func()
 	if c.writer && !c.inTx && c.committed != nil {
 		committed = c.notifyCommit
 	}
-	if timing == nil && committed == nil {
+	if timing == nil && holder.n == 0 && committed == nil {
 		return rows, nil
 	}
-	return &timedRows{Rows: rows, timing: timing, committed: committed}, nil
+	return &timedRows{Rows: rows, timing: timing, committed: committed, writer: c, holder: holder, writerTiming: writerTimingFrom(ctx), writerStart: start}, nil
 }
 
 func (c *timedConn) Ping(ctx context.Context) error {

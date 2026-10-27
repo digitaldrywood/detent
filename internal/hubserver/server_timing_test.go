@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http/httptest"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestTimedConnectionsAttributeStatements(t *testing.T) {
@@ -43,6 +46,20 @@ func TestTimedConnectionsAttributeStatements(t *testing.T) {
 		{"writer statement holds the writer", func(ctx context.Context) error {
 			_, err := writer.ExecContext(ctx, "INSERT INTO items(name) VALUES (?)", "item")
 			return err
+		}, 1, 1, false},
+		{"writer query holds until rows close", func(ctx context.Context) error {
+			rows, err := writer.QueryContext(ctx, "UPDATE items SET name = ? RETURNING name", "updated")
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			if writerTimingFrom(ctx).txs.Load() != 0 {
+				return errors.New("writer query counted before rows closed")
+			}
+			if !rows.Next() {
+				return fmt.Errorf("missing returned row: %w", rows.Err())
+			}
+			return rows.Close()
 		}, 1, 1, false},
 		{"reader transaction never counts as writer hold", func(ctx context.Context) error {
 			tx, err := reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -99,6 +116,20 @@ func TestLongWriterHoldLogsOwner(t *testing.T) {
 		{"threshold included", time.Second, "commit", true, true, true},
 		{"below threshold", time.Second - time.Nanosecond, "commit", false, true, false},
 		{"autocommit", 2 * time.Second, "exec", false, true, true},
+		{"runner wrapper", 2 * time.Second, "runner", true, true, true},
+		{"runner admin wrapper", 2 * time.Second, "admin", false, true, true},
+		{"conversation wrapper", 2 * time.Second, "conversation", false, true, true},
+		{"hub wrapper", 2 * time.Second, "hub", false, true, true},
+		{"native mutation wrappers", 2 * time.Second, "native", false, true, true},
+		{"outbox wrapper", 2 * time.Second, "outbox", false, true, true},
+		{"secret wrapper", 2 * time.Second, "secret", false, true, true},
+		{"autocommit query close", 2 * time.Second, "query close", false, true, true},
+		{"autocommit query exhaustion", 2 * time.Second, "query exhaustion", true, true, true},
+		{"autocommit query row", 2 * time.Second, "query row", false, true, true},
+		{"autocommit query error", 2 * time.Second, "query error", false, true, true},
+		{"short autocommit query", time.Second - time.Nanosecond, "query close", false, true, false},
+		{"reader query excluded", 2 * time.Second, "query close", false, false, false},
+		{"transaction query counted once", 2 * time.Second, "transaction query", true, true, true},
 		{"reader excluded", 2 * time.Second, "commit", false, false, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -115,10 +146,11 @@ func TestLongWriterHoldLogsOwner(t *testing.T) {
 			}
 			calls := 0
 			var hold time.Duration
+			queryClosed := false
 			db := sql.OpenDB(timedConnector{driver: base, dsn: ":memory:", writer: test.writer, logger: logger, now: func() time.Time {
 				calls++
 				now := time.Unix(0, 0)
-				if calls > 1 {
+				if calls > 1 && (!strings.HasPrefix(test.action, "query ") || test.action == "query error" || queryClosed) {
 					return now.Add(hold)
 				}
 				return now
@@ -129,6 +161,12 @@ func TestLongWriterHoldLogsOwner(t *testing.T) {
 				t.Fatal(err)
 			}
 			calls, hold = 0, test.hold
+			closeQuery := func() {
+				if output.Len() != 0 {
+					t.Fatalf("logged before query closed: %s", output.String())
+				}
+				queryClosed = true
+			}
 			if test.request {
 				s := &Service{config: Config{Logger: logger}}
 				s.writerStatsAt.Store(time.Now().UnixNano())
@@ -136,13 +174,14 @@ func TestLongWriterHoldLogsOwner(t *testing.T) {
 				c := echo.New().NewContext(request.WithContext(t.Context()), httptest.NewRecorder())
 				c.SetPath("/items/:item")
 				if err := s.timeWriterUse(func(c echo.Context) error {
-					runWriterHoldTest(t, db, c.Request().Context(), test.action)
+					runWriterHoldTest(t, db, c, test.action, closeQuery)
 					return nil
 				})(c); err != nil {
 					t.Fatal(err)
 				}
 			} else {
-				runWriterHoldTest(t, db, t.Context(), test.action)
+				c := echo.New().NewContext(httptest.NewRequestWithContext(t.Context(), "POST", "/items", nil), httptest.NewRecorder())
+				runWriterHoldTest(t, db, c, test.action, closeQuery)
 			}
 			for _, sentinel := range []string{"private-path-sentinel", "private-token-sentinel", "private-body-sentinel", "private-query-sentinel", "private-value-sentinel"} {
 				if strings.Contains(output.String(), sentinel) {
@@ -184,9 +223,111 @@ func TestLongWriterHoldLogsOwner(t *testing.T) {
 	}
 }
 
-func runWriterHoldTest(t *testing.T, db *sql.DB, ctx context.Context, action string) {
+func BenchmarkWriterHoldAcquisition(b *testing.B) {
+	ctx := context.Background()
+	now := time.Unix(0, 0)
+	conn := &timedConn{writer: true, now: func() time.Time { return now }}
+	hold := conn.startWriterHold(ctx)
+	if hold.n == 0 || hold.n > len(hold.pcs) {
+		b.Fatalf("captured frames = %d, capacity = %d", hold.n, len(hold.pcs))
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		hold = conn.startWriterHold(ctx)
+		conn.endWriterHold(&hold)
+	}
+	b.ReportMetric(float64(len(hold.pcs)), "pc_capacity/op")
+}
+
+func runWriterHoldTest(t *testing.T, db *sql.DB, c echo.Context, action string, closeQuery func()) {
 	t.Helper()
+	ctx := c.Request().Context()
 	query := "INSERT INTO items(name) VALUES (? || 'private-query-sentinel')"
+	if strings.HasPrefix(action, "query ") {
+		query += " RETURNING name"
+		if action == "query error" {
+			rows, err := db.QueryContext(ctx, "UPDATE missing_items SET name = ? RETURNING name", "private-value-sentinel")
+			if err == nil {
+				defer rows.Close()
+				t.Fatal("expected query error")
+			}
+			return
+		}
+		if action == "query row" {
+			row := db.QueryRowContext(ctx, query, "private-value-sentinel")
+			closeQuery()
+			var name string
+			if err := row.Scan(&name); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		rows, err := db.QueryContext(ctx, query, "private-value-sentinel")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		if !rows.Next() {
+			t.Fatalf("missing returned row: %v", rows.Err())
+		}
+		closeQuery()
+		if action == "query exhaustion" && rows.Next() {
+			t.Fatal("unexpected second row")
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	service := &Service{database: &database{db: db, now: time.Now}, config: Config{Logger: slog.New(slog.DiscardHandler)}}
+	stop := errors.New("stop wrapper transaction")
+	switch action {
+	case "runner":
+		service.database.now = func() time.Time { return time.Time{} }
+		c.SetPath("/heartbeat")
+		if err := service.runnerTransaction(c, 200, nil); err != nil {
+			t.Fatal(err)
+		}
+		return
+	case "admin":
+		service.database.now = func() time.Time { return time.Time{} }
+		if _, err := service.runnerAdminTransaction(ctx, nativeScope{}, false, nil); !errors.Is(err, ErrInvalidClock) {
+			t.Fatalf("wrapper error = %v", err)
+		}
+		return
+	case "conversation":
+		conversation := &conversationService{server: service, store: newConversationStore(db)}
+		if err := conversation.transact(ctx, func(*sql.Tx, time.Time) error { return stop }); !errors.Is(err, stop) {
+			t.Fatalf("wrapper error = %v", err)
+		}
+		return
+	case "native":
+		if err := service.nativeMutation(c, tracker.Mutation{IdempotencyKey: "example-key"}, struct{}{}, nil); err != nil {
+			t.Fatal(err)
+		}
+		return
+	case "outbox":
+		if _, err := service.commitOutbox(ctx, outboxRecord{}, nil); err == nil {
+			t.Fatal("expected missing repository error")
+		}
+		return
+	case "secret":
+		if err := service.secretMutation(ctx, nativeScope{}, func(*sql.Tx) error { return stop }); !errors.Is(err, stop) {
+			t.Fatalf("wrapper error = %v", err)
+		}
+		return
+	case "hub":
+		if err := service.hubTransact(ctx, func(*sql.Tx, time.Time) error { return stop }); !errors.Is(err, stop) {
+			t.Fatalf("wrapper error = %v", err)
+		}
+		return
+	}
 	if action == "exec" {
 		if _, err := db.ExecContext(ctx, query, "private-value-sentinel"); err != nil {
 			t.Fatal(err)
@@ -198,6 +339,12 @@ func runWriterHoldTest(t *testing.T, db *sql.DB, ctx context.Context, action str
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
+	if action == "transaction query" {
+		var name string
+		if err := tx.QueryRowContext(ctx, query+" RETURNING name", "private-value-sentinel").Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for range 2 {
 		if _, err := tx.ExecContext(ctx, query, "private-value-sentinel"); err != nil {
 			t.Fatal(err)

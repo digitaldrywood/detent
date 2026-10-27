@@ -180,7 +180,11 @@ func (timedJSONSerializer) Serialize(c echo.Context, i any, indent string) error
 type timedRows struct {
 	committed func()
 	driver.Rows
-	timing *requestTiming
+	timing       *requestTiming
+	writer       *timedConn
+	holder       writerHold
+	writerTiming *writerTiming
+	writerStart  time.Time
 }
 
 func (r *timedRows) Next(dest []driver.Value) error {
@@ -198,6 +202,10 @@ func (r *timedRows) Close() error {
 		r.committed = nil
 	}
 	r.timing.addDB(start)
+	if r.holder.n != 0 {
+		r.writerTiming.add(r.writerStart)
+		r.writer.endWriterHold(&r.holder)
+	}
 	return err
 }
 
