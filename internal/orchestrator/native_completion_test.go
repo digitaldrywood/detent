@@ -552,7 +552,8 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "human attention retains lease failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, errors.New("native execution lease lost")), wantState: "In Review"},
 		{name: "human attention retains session failure", states: workflow, finalState: runpkg.FinalStateNeedsHumanAttention, finalMessage: "Approve the migration", runErr: errors.Join(deliveryErr, errors.New("session persistence failed")), wantState: "In Review"},
 		{name: "human attention defers a refused lane write", states: workflow, finalMessage: "May I merge?", updateErr: errors.New("stale fencing token"), wantDeferred: true},
-		{name: "unchanged inspection with typed acceptance ends the work", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, finalMessage: "Inspection verified the requested behavior.\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Done", wantComment: "nothing to review"},
+		{name: "unchanged inspection cannot complete on a provider claim", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, finalMessage: "Inspection verified the requested behavior.\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "In Review", wantComment: "issue acceptance is not recorded"},
+		{name: "NoWorkProduct complete claim without delivery retries implementation", change: &runpkg.NativeChange{BaseSHA: head}, states: unfinishedWorkflow, humanReview: &no, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantSettled: true, wantContinue: true, wantState: "Todo"},
 		{name: "native26 missing acceptance report preserves review", change: &runpkg.NativeChange{BaseSHA: head, HeadSHA: head}, states: workflow, finalMessage: "Full parity remains blocked. No source changes were made or staged.\n\n- Five capabilities remain pending: credit checkout, auto-funding, invitation grants, invitation editing, and resend.\n- Inventory validation fails on 37 uncovered and 13 stale source sites, including Cloud attachments.\n- Focused MCP, operator, and dashboard regressions passed. Hosted tests were blocked by sandbox loopback restrictions.\n- Node 24 make app and the configured true gate passed.\n\nThe native owner needs focused follow-ups for these gaps before final parent conformance can pass.", wantState: "In Review", wantComment: "no valid complete detent-status disposition", roundTrip: true},
 		{name: "empty legacy unchanged report preserves review", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, wantState: "In Review", wantComment: "issue acceptance is not recorded"},
 		{name: "typed unfinished unchanged work preserves review", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, finalMessage: "```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", wantState: "In Review", wantComment: "detent-status in_progress"},
@@ -564,7 +565,7 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 		{name: "instance and external blockers settle without acceptance with disabled review", change: accepted, states: blockedLanding, humanReview: &no, finalMessage: strings.Replace(instanceReport, "human_action: null", "  - ref: '#42'\n    reason: Await dependency\nhuman_action: null", 1), wantSettled: true},
 		{name: "malformed status report cannot accept unchanged work", change: &runpkg.NativeChange{BaseSHA: head}, lifecycle: "settle", states: fourLanes, humanReview: &no, roundTrip: true, finalMessage: "```detent-status\nschema: 99\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantSettled: true, wantContinue: true, wantState: "Todo"},
 		{name: "ordinary code fence cannot accept unchanged work", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, finalMessage: "```text\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "In Review", wantComment: "no valid complete detent-status disposition"},
-		{name: "past incident prose cannot override current typed acceptance", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, finalMessage: "The previous run was blocked; inspection now verifies all acceptance.\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "Done", wantComment: "nothing to review"},
+		{name: "current typed claim still requires delivery evidence", change: &runpkg.NativeChange{BaseSHA: head}, states: workflow, finalMessage: "The previous run was blocked; inspection now verifies all acceptance.\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", wantState: "In Review", wantComment: "issue acceptance is not recorded"},
 		{name: "native26 unfinished reviewed source continues implementation", progressCycles: true, change: accepted, states: unfinishedWorkflow, humanReview: &no, finalMessage: unfinishedReport, wantState: "Rework", wantComment: "implementation remains unfinished", roundTrip: true},
 		{name: "unfinished source continues before native review", progressCycles: true, change: waiting, states: unfinishedWorkflow, finalMessage: unfinishedReport, wantState: "Rework", wantComment: "issue acceptance is not recorded"},
 		{name: "unfinished unchanged turn uses allowed implementation lane", change: &runpkg.NativeChange{BaseSHA: head}, states: unfinishedWorkflow, finalMessage: unfinishedReport, wantState: "Rework", wantComment: "further work"},
@@ -1133,6 +1134,12 @@ func TestNativeChangeRunCompletion(t *testing.T) {
 						t.Fatalf("park named the wrong standing audit findings: %s", park.Recovery.OperatorRemedy)
 					}
 				}
+				if test.wantFindings && (!strings.Contains(state.Retry[issue.ID].Error, "finding-1") || !strings.Contains(state.Retry[issue.ID].Error, "finding-2") || strings.Contains(state.Retry[issue.ID].Error, "old-finding")) {
+					t.Fatalf("retry omitted current rejection evidence: %+v", state.Retry[issue.ID])
+				}
+				if test.auditFindings && (!strings.Contains(state.Retry[issue.ID].Error, "audit-finding-1") || !strings.Contains(state.Retry[issue.ID].Error, "audit-finding-2") || strings.Contains(state.Retry[issue.ID].Error, "resolved-finding")) {
+					t.Fatalf("retry omitted current audit evidence: %+v", state.Retry[issue.ID])
+				}
 				wantTerminal := test.wantTerminal
 				if wantTerminal == "" {
 					wantTerminal = terminalStateForRun(test.runErr, finalState)
@@ -1638,6 +1645,38 @@ func TestNativeCompletionComment(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNativeCompletionNoWorkProductRejection(t *testing.T) {
+	issue := completionTransitionIssue("Rework", "")
+	journey := newNativeLandingJourney(t, issue, "", 200, false, false)
+	head := journey.target.HeadSHA
+	result, err := (FakeRunner{}).Run(t.Context(), RunRequest{Issue: issue, Mode: RunModeImplement})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.FinalMessage = "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
+	result.DiffStats = DiffStats{Status: "clean", HeadSHA: head}
+	result.NativeChange = &runpkg.NativeChange{Changed: true, ChangeID: "change_1", VersionID: "version_1", HeadSHA: head}
+	tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	native := &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: []connector.WorkflowState{{Name: "Rework", Dispatchable: true, Transitions: []string{"Done", "Blocked"}}, {Name: "Done", Terminal: true}, {Name: "Blocked"}}, reviewState: &connector.ChangeReview{Current: true, ChangesRequested: true}}
+	cfg := normalizeConfig(Config{ActiveStates: []string{"Rework"}, TerminalStates: []string{"Done"}})
+	cfg.AutoPromote.HumanReview = new(false)
+	attempts := &recordingWorkAttemptStore{}
+	scheduling := &nativeCompletionScheduling{hubSchedulingSource: &hubSchedulingSource{}}
+	orch := &Orchestrator{cfg: cfg, connector: native, workAttempts: attempts, scheduling: scheduling}
+	state := newState(cfg)
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	state.Running[issue.ID] = Running{Issue: issue, Mode: RunModeImplement, Attempt: 3, WorkAttemptID: 42, Generation: 7, TurnCount: 1, CompletionSourceStart: completionSourceStartRecord{Captured: true, WorkspaceHeadAvailable: true, Fingerprint: completionSourceFingerprint{WorkspaceHead: head}}}
+	state.Claimed[issue.ID] = Claimed{Issue: issue}
+	journey.execution.recovery.ChangeDetail = &tracker.ChangeDetail{Change: tracker.ChangeRequest{ID: "change_1", CurrentVersion: "version_1"}, Reviews: []tracker.ChangeReview{{ID: "review_1", VersionID: "version_1", Decision: "changes_requested", Body: "Preserve concurrent updates"}}}
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now, Request: RunRequest{Mode: RunModeImplement, Execution: journey.execution}, Result: result})
+	if len(state.Blocked) != 0 || len(tick.updates) != 0 || len(state.Claimed) != 0 || len(attempts.completions) != 1 {
+		t.Fatalf("no-change turn lost completion ownership: state=%+v moves=%+v receipts=%+v", state, tick.updates, attempts.completions)
+	}
+	if retry := state.Retry[issue.ID]; len(state.Completed) != 0 || retry.Issue.State != "Rework" || retry.Attempt != 4 || !retry.DueAt.After(now) || result.NativeChange.Landing != nil || !strings.Contains(retry.Error, "Preserve concurrent updates") {
+		t.Fatalf("undelivered source did not resume implementation: retry=%+v completed=%+v", retry, state.Completed)
 	}
 }
 

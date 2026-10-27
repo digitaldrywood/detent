@@ -721,7 +721,23 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 		}, wantKind: LandRefusalNothing},
 		{name: "unpublished checkpoint cannot identify the actual base", integration: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
 			return LandOptions{HeadSHA: f.head, Method: "squash"}
-		}, wantKind: LandRefusalHeadMoved},
+		}, wantKind: LandRefusalNothing},
+		{name: "unchanged reviewed source proves an existing squash", integration: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
+			runGit(t, f.source, "merge", "--squash", f.head)
+			runGit(t, f.source, "commit", "-m", "existing delivery")
+			runGit(t, f.source, "push", "origin", "main")
+			return LandOptions{HeadSHA: f.head, Method: "squash"}
+		}},
+		{name: "unchanged release source verifies its target branch", integration: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
+			runGit(t, f.source, "push", "origin", f.head+":refs/heads/release/v1.2")
+			return LandOptions{HeadSHA: f.head, Method: "squash", TargetBranch: "release/v1.2"}
+		}},
+		{name: "default branch delivery does not prove release delivery", integration: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
+			runGit(t, f.source, "push", "origin", "main:refs/heads/release/v1.2")
+			runGit(t, f.source, "merge", "--ff-only", f.head)
+			runGit(t, f.source, "push", "origin", "main")
+			return LandOptions{HeadSHA: f.head, Method: "squash", TargetBranch: "release/v1.2"}
+		}, wantKind: LandRefusalNothing},
 		{name: "empty published source is not a deliverable", integration: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
 			f.absorb(t)
 			return LandOptions{HeadSHA: strings.TrimSpace(runGit(t, f.source, "rev-parse", "HEAD^")), Method: "squash"}
@@ -783,7 +799,12 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 				result, verifyErr := f.backend.VerifyIntegratedChange(t.Context(), f.info, f.issue, opts, sourceBase, base)
 				err = verifyErr
 				if test.wantKind == "" {
-					if err != nil || result.MergeSHA != before || result.BaseRef != "main" || result.Method != "squash" || f.remoteMain(t) != before || strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD")) != base {
+					target, merge := "main", before
+					if opts.TargetBranch != "" {
+						target = opts.TargetBranch
+						merge = strings.TrimSpace(runGit(t, f.remote, "rev-parse", "refs/heads/"+target))
+					}
+					if err != nil || result.MergeSHA != merge || result.BaseRef != target || result.Method != "squash" || f.remoteMain(t) != before || strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD")) != base {
 						t.Fatalf("integration proof = %+v, error = %v", result, err)
 					}
 					return

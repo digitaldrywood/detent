@@ -170,7 +170,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 	}
 	publicationRefused := !humanReview && change != nil && change.VersionCode == workspace.LandRefusalHeadMoved
 	accepted := reported && report != nil && report.Invalid == nil && report.Status == workpad.StatusComplete && len(report.Blockers) == 0 && report.HumanAction == ""
-	if change == nil && !blocked && !clearedBlockers && (humanReview || accepted || running.DiffStats.Status != "clean" || running.DiffStats.UnpushedCommits > 0) {
+	if change == nil && !blocked && !clearedBlockers && (humanReview || running.DiffStats.Status != "clean" || running.DiffStats.UnpushedCommits > 0) {
 		return false
 	}
 	if change != nil && change.Error != "" {
@@ -219,7 +219,7 @@ func (o *Orchestrator) completeNativeChangeRun(
 		o.recordCompletionUsage(ctx, state, event, issue)
 		return true
 	}
-	needsReview := change != nil && change.VersionError != "" || !changed && !accepted || reported && !accepted
+	needsReview := change != nil && change.VersionError != "" || !changed || reported && !accepted
 	review := cfg.reviewTargetState()
 	if explicitHumanAction(issue) != "" {
 		review = blockedStatusState
@@ -259,6 +259,27 @@ func (o *Orchestrator) completeNativeChangeRun(
 		(reviewChangesRequested || auditRework || validatorRework || implementationRework)
 	if staleRework {
 		unfinished = false
+		retryMessage = nativeCompletionReason(retryMessage, nil, "", change.Validator)
+		retryMessage = nativeCompletionReason(retryMessage, nil, "", change.ImplementationReview)
+		var rejection strings.Builder
+		rejection.WriteString(retryMessage)
+		if change.SecurityAudit != nil {
+			for _, finding := range change.SecurityAudit.Run.Findings {
+				if finding.Status != "resolved" {
+					fmt.Fprintf(&rejection, "\n\n%s %s: %s", finding.ID, finding.Severity, finding.Body)
+				}
+			}
+		}
+		if execution := event.Request.Execution; execution != nil {
+			if detail := execution.Recovery().ChangeDetail; detail != nil && detail.Change.ID == change.ChangeID && detail.Change.CurrentVersion == change.VersionID {
+				for _, review := range detail.Reviews {
+					if review.VersionID == change.VersionID && review.Decision == "changes_requested" {
+						fmt.Fprintf(&rejection, "\n\n%s: %s", review.ID, review.Body)
+					}
+				}
+			}
+		}
+		retryMessage = rejection.String()
 	}
 	if unfinished {
 		if rework, allowed := nativeRetryLane(states, issue.State, cfg.ReworkState); allowed {

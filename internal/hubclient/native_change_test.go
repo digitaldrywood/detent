@@ -568,6 +568,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		conversation            bool
 		land                    bool
 		integrate               bool
+		integrateHead           bool
 		landingRestart          bool
 		reviewDispositions      bool
 		finalMessage            string
@@ -655,6 +656,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		{name: "existing same lease renewal preserves deferred completion", restart: true, restoreRefusal: "renewed", role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), failCreate: true, wantDiagnostic: "change creation unavailable"},
 		{name: "reviewed source lands with its coding lease in the four lane workflow", land: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
 		{name: "reviewed source integrates during finalization", land: true, integrate: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
+		{name: "NativeCompletion no-change reviewed head already delivered", land: true, integrate: true, integrateHead: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
 		{name: "prepared completion restart allows inline landing runtime", landingRestart: true, land: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", checkpointHead: head, source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
 		{name: "validator rework reason survives history and explanation", transitionReason: "validator_rework", wantChange: &runner.NativeChange{BaseSHA: base, HeadSHA: base}, role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "Acceptance criterion is unverified.\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "complete", FinalSummary: "Acceptance criterion is unverified."}},
 		{name: "blocked reason and summary survive attempts API", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), finalMessage: "Source conflicts remain unresolved.\n```detent-status\nschema: 1\nstatus: blocked\nreason_code: merge_conflict\nblockers: []\nhuman_action: null\n```", disposition: &tracker.NativeDisposition{Status: "blocked", ReasonCode: "merge_conflict", FinalSummary: "Source conflicts remain unresolved."}},
@@ -1721,16 +1723,20 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 						t.Fatal(err)
 					}
 					defer release()
-					owner.SetDiffSource(nativeChangeDiff(base))
+					checkpointHead := base
+					if test.integrateHead {
+						checkpointHead = head
+					}
+					owner.SetDiffSource(nativeChangeDiff(checkpointHead))
 					if err := owner.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
 						t.Fatal(err)
 					}
-					if err := owner.Checkpoint(ctx, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "clean", HeadSHA: base, ExternalEffect: "none", EffectState: "none"}); err != nil {
+					if err := owner.Checkpoint(ctx, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "clean", HeadSHA: checkpointHead, ExternalEffect: "none", EffectState: "none"}); err != nil {
 						t.Fatal(err)
 					}
 					integrations := 0
 					owner.SetIntegrationSource(func(_ context.Context, version tracker.ChangeVersion, currentBase string) (workspace.LandResult, error) {
-						if version.HeadSHA != head || currentBase != base {
+						if version.HeadSHA != head || currentBase != checkpointHead {
 							t.Fatalf("integration changed source identity: version=%+v base=%s", version, currentBase)
 						}
 						integrations++
@@ -2566,6 +2572,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		dependencyOnly       bool
 		failedCheck          bool
 		absorbed             bool
+		delivered            string
 		hold                 bool
 		lowScore             bool
 		wantVerdict          string
@@ -2635,6 +2642,9 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "held publication refuses lease on new Runner lease", publication: "lost_create", publicationFault: "lease", rework: true, formal: true},
 		{name: "held publication refuses branch on new Runner lease", publication: "lost_create", publicationFault: "branch", rework: true, formal: true},
 		{name: "absorbed Rework settles the original version on its actual base", absorbed: true, rework: true, land: true, wantState: "Done", wantChanges: 1},
+		{name: "NativeCompletion no-change source already on target", delivered: "ancestor", advanceTarget: true, rework: true, land: true, wantState: "Done", wantChanges: 1},
+		{name: "NativeCompletion no-change reviewed head already delivered", delivered: "exact", rework: true, land: true, wantState: "Done", wantChanges: 1},
+		{name: "NativeCompletion no-change release source already on release", delivered: "release", rework: true, land: true, wantState: "Done", wantChanges: 1},
 		{name: "absorbed SSH Rework settles without a second provider session", absorbed: true, ssh: true, rework: true, land: true, wantState: "Done", wantChanges: 1},
 		{name: "absorbed Rework preserves formal human rejection", absorbed: true, rework: true, formal: true, land: true, wantState: "Human Review", wantChanges: 1},
 		{name: "absorbed Rework preserves a reported human hold", absorbed: true, hold: true, rework: true, land: true, wantState: "Human Review", wantChanges: 1},
@@ -2924,6 +2934,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				t.Fatal(err)
 			}
 			var expected *tracker.ChangeDetail
+			var deliveryHeadRef string
 			var candidate connector.Issue
 			if test.rework && !genuinePublication {
 				info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier})
@@ -2983,6 +2994,11 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatal(err)
 				}
 				current := h.publishCaptured(t, item, change.ID, strings.TrimSpace(string(head)), &capture, old.ID, base)
+				if test.delivered == "release" {
+					deliveryHeadRef = info.Branch
+					nativeChangeGit(t, source, "config", "--add", "url."+remote+".insteadOf", nativeChangeRepository+".git")
+					nativeChangeGit(t, source, "push", "origin", current.HeadSHA+":refs/heads/release/v1.2", current.HeadSHA+":refs/heads/"+info.Branch)
+				}
 				if publicationCI != nil {
 					check := current.Checks[0]
 					if _, err := publicationCI.SubmitChangeCheck(t.Context(), item, change.ID, current.ID, tracker.SubmitChangeCheck{Mutation: nativeMutationKey(), ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: check.CheckRunID, HeadSHA: current.HeadSHA, RunID: current.RunID, PolicyID: current.PolicyID, ConfigDigest: current.Policy.ConfigDigest, WorkflowID: check.WorkflowID, WorkflowSHA256: check.WorkflowSHA256, Source: check.Source, Conclusion: "success", CompletedAt: current.CreatedAt, Evidence: []tracker.ChangeArtifact{{Kind: "test", URI: "s3://fixture/test", SHA256: policy.Digest([]byte("test receipt")), Availability: "available"}}}}); err != nil {
@@ -2990,7 +3006,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					}
 				}
 
-				if test.advanceTarget {
+				if test.advanceTarget || test.delivered == "exact" {
 					nativeChangeGit(t, source, "merge", "--ff-only", current.HeadSHA)
 					nativeChangeGit(t, source, "push", "origin", "main")
 				}
@@ -3166,13 +3182,17 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			if execution == nil {
 				t.Fatal("claimed native issue has no execution lifecycle")
 			}
+			if test.delivered == "release" {
+				current := expected.Versions[len(expected.Versions)-1]
+				execution.(*nativeExecution).claim.recovery.Issue.ReleaseDelivery = &tracker.ReleaseDelivery{ReleasePickInput: tracker.ReleasePickInput{Repository: current.Repository, PRNumber: 7, BaseRef: "release/v1.2", BaseSHA: current.BaseSHA, HeadSHA: current.HeadSHA, HeadRef: deliveryHeadRef, SourceMergeSHA: current.HeadSHA}, ChangeID: expected.Change.ID, VersionID: current.ID}
+			}
 			if test.enrolled {
 				h.connector, err = NewNativeConnector(h.native)
 				if err != nil {
 					t.Fatal(err)
 				}
 			}
-			provider := &committingAgent{finalMessage: test.finalMessage, dependencyOnly: test.dependencyOnly, failedCheck: test.failedCheck, commit: test.commit, dirty: test.dirty, staged: test.staged || genuinePublication, validator: test.validator, lowScore: test.lowScore, complete: test.absorbed || test.summaryFailure, hold: test.hold, inProgress: test.lateConflict}
+			provider := &committingAgent{finalMessage: test.finalMessage, dependencyOnly: test.dependencyOnly, failedCheck: test.failedCheck, commit: test.commit, dirty: test.dirty, staged: test.staged || genuinePublication, validator: test.validator, lowScore: test.lowScore, complete: test.absorbed || test.delivered != "" || test.summaryFailure, hold: test.hold, inProgress: test.lateConflict}
 			if test.sourceFixture != "" {
 				provider.duringTurn = func() {
 					for path, original := range fixtures {
@@ -3223,6 +3243,20 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						t.Fatal(err)
 					}
 					targetHead = strings.TrimSpace(string(head))
+				}
+			}
+			var providerStartHead string
+			if test.delivered != "" {
+				beforeTurn := provider.duringTurn
+				provider.duringTurn = func() {
+					head, err := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "rev-parse", "HEAD").Output()
+					if err != nil {
+						t.Fatal(err)
+					}
+					providerStartHead = strings.TrimSpace(string(head))
+					if beforeTurn != nil {
+						beforeTurn()
+					}
 				}
 			}
 			if test.reconnect {
@@ -3482,12 +3516,18 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				}
 			}
 			var implementationSession atomic.Int64
-			result, err := agent.Run(runCtx, runner.RunRequest{Execution: runExecution, DeferExecutionFinish: test.failVersion || test.summaryFailure, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement, OnUsageUpdate: func(update runner.UsageUpdate) error {
+			request := runner.RunRequest{Execution: runExecution, DeferExecutionFinish: test.failVersion || test.summaryFailure, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement, OnUsageUpdate: func(update runner.UsageUpdate) error {
 				if test.summaryFailure && update.DetentSessionID > 0 {
 					implementationSession.CompareAndSwap(0, update.DetentSessionID)
 				}
 				return nil
-			}})
+			}}
+			var result runner.RunResult
+			if test.delivered != "" {
+				result, err = runNativeCompletionOrchestrator(t, h, agent, request)
+			} else {
+				result, err = agent.Run(runCtx, request)
+			}
 			if test.publication == "head_read" {
 				owner := execution.(*nativeExecution)
 				if !nativeTransportUnavailable(err) || owner.settled || owner.data.Outcome != "" || owner.data.Handoff.UncertainForgeEffect() || owner.publication != nil || forgeCreates != 0 || forgePull != "" {
@@ -4362,8 +4402,15 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			if test.ssh && err == nil {
 				result.NativeChange = execution.(runner.ChangeExecution).NativeChange()
 			}
-			if test.absorbed {
+			if test.absorbed || test.delivered != "" {
 				change := result.NativeChange
+				if test.delivered != "" {
+					head, headErr := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "rev-parse", "HEAD").Output()
+					status, statusErr := exec.CommandContext(t.Context(), "git", "-C", provider.workspace, "status", "--porcelain").Output()
+					if headErr != nil || statusErr != nil || providerStartHead == "" || (test.delivered == "exact" || test.delivered == "release") && strings.TrimSpace(string(head)) != providerStartHead || strings.TrimSpace(string(status)) != "" {
+						t.Fatalf("provider changed preserved source: before=%s after=%s status=%s errors=%v/%v", providerStartHead, head, status, headErr, statusErr)
+					}
+				}
 				if err != nil || change == nil || provider.calls != 1 || change.ChangeID != expected.Change.ID {
 					t.Fatalf("absorbed Rework did not finish once: result=%+v calls=%d error=%v", result, provider.calls, err)
 				}
@@ -4376,7 +4423,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/attempts/"+attempt+"/diff", nil, &stored); err != nil {
 					t.Fatal(err)
 				}
-				if stored.BaseSHA != stored.HeadSHA || len(stored.Files) != 0 {
+				if (test.delivered == "" || test.delivered == "ancestor" || test.delivered == "exact") && (stored.BaseSHA != stored.HeadSHA || len(stored.Files) != 0) {
 					t.Fatalf("absorbed fixture did not finish empty: %+v", stored)
 				}
 				if test.formal || test.hold {
@@ -4389,11 +4436,17 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						t.Fatalf("refusal projection lost existing source provenance: %+v, %v", evidence.Attempt, err)
 					}
 				} else {
-					if change.Landing == nil || !change.Landing.Landed || detail.Change.Landed == nil || detail.Change.Landed.VersionID != expected.Change.CurrentVersion || detail.Change.Landed.MergeSHA != stored.BaseSHA || change.VersionError != "" {
+					merge, target := stored.BaseSHA, "main"
+					if test.delivered == "release" {
+						merge, target = stored.HeadSHA, "release/v1.2"
+					}
+					if change.Landing == nil || !change.Landing.Landed || detail.Change.Landed == nil || detail.Change.Landed.VersionID != expected.Change.CurrentVersion || detail.Change.Landed.MergeSHA != merge || detail.Change.Landed.BaseRef != target || change.VersionError != "" {
 						t.Fatalf("absorbed source lacks authentic landing: change=%+v detail=%+v", change, detail)
 					}
-					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
-						t.Fatal(err)
+					if test.delivered == "" {
+						if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+							t.Fatal(err)
+						}
 					}
 					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 						t.Fatalf("a second release retained authority: %v", err)

@@ -2105,7 +2105,14 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 					if method == "" {
 						method = "squash"
 					}
-					return verifier.VerifyIntegratedChange(ctx, info, workspaceIssue, workspace.LandOptions{HeadSHA: version.HeadSHA, Repository: version.Repository, Method: method}, version.BaseSHA, base)
+					target := ""
+					if d := workspaceIssue.ReleaseDelivery; d != nil {
+						if d.ChangeID != version.ChangeID || d.VersionID != version.ID || d.HeadSHA != version.HeadSHA || d.BaseSHA != version.BaseSHA || d.Repository != version.Repository {
+							return workspace.LandResult{}, errors.New("release association differs from current version")
+						}
+						target = d.BaseRef
+					}
+					return verifier.VerifyIntegratedChange(ctx, info, workspaceIssue, workspace.LandOptions{HeadSHA: version.HeadSHA, Repository: version.Repository, Method: method, TargetBranch: target}, version.BaseSHA, base)
 				})
 			}
 		}

@@ -88,18 +88,25 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 	}
 	e.change = change
 	e.finalizationSource, e.finalizationAttempt = nil, ""
+	detail, err := e.claim.source.client.currentChange(ctx, e.claim.lease.WorkItemID)
+	if err != nil {
+		change.Error = err.Error()
+		return err
+	}
+	if err := e.requireRecoveredSource(detail, diff); err != nil {
+		return err
+	}
+	if delivered, err := e.settleIntegratedChange(ctx, detail, diff, change); err != nil {
+		change.Error = err.Error()
+		return err
+	} else if delivered {
+		e.settled = true
+		return nil
+	}
 	if !change.Changed {
-		detail, err := e.claim.source.client.currentChange(ctx, e.claim.lease.WorkItemID)
-		if err != nil {
-			change.Error = err.Error()
-			return err
-		}
 		if detail.Change.ID == "" {
 			e.settled = true
 			return nil
-		}
-		if err := e.requireRecoveredSource(detail, diff); err != nil {
-			return err
 		}
 		for _, version := range detail.Versions {
 			if version.ID != detail.Change.CurrentVersion {
@@ -118,26 +125,6 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 			change.VersionError = "the final attempt diff does not identify the current Change Request head"
 			if detail.Summary.Status == "stale_policy" {
 				change.VersionCode = "policy_mismatch"
-			} else if detail.Summary.Status == "reviewed" && detail.Change.CurrentLanding() == nil &&
-				diff.BaseSHA == diff.HeadSHA && len(diff.Files) == 0 && e.integrationSource != nil &&
-				e.preparedDisposition != nil && e.preparedDisposition.Status == "complete" && !e.preparedDisposition.Blockers && !e.preparedDisposition.HumanAction {
-				result, err := e.integrationSource(ctx, version, diff.BaseSHA)
-				if err != nil {
-					var refusal *workspace.LandRefusal
-					if !errors.As(err, &refusal) {
-						change.Error = err.Error()
-						return err
-					}
-					change.VersionError += ": " + err.Error()
-				} else {
-					landing := runner.NativeLanding{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
-					if err := e.recordLanding(ctx, landing); err != nil {
-						change.Error = err.Error()
-						return err
-					}
-					change.VersionID, change.Reviewed, change.VersionError = version.ID, true, ""
-					change.Landing = &landing
-				}
 			}
 			e.settled = true
 			return nil
@@ -145,7 +132,6 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 		change.Error = "the final attempt diff does not identify the current Change Request head"
 		return errors.New(change.Error)
 	}
-	var err error
 	for try := range nativeChangeCreateTries {
 		if try > 0 {
 			select {
@@ -177,6 +163,40 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 		return errors.New(change.Error)
 	}
 	return err
+}
+
+func (e *nativeExecution) settleIntegratedChange(ctx context.Context, detail tracker.ChangeDetail, diff tracker.AttemptDiffRequest, change *runner.NativeChange) (bool, error) {
+	if detail.Summary.Status != "reviewed" || detail.Change.CurrentLanding() != nil || e.integrationSource == nil ||
+		e.preparedDisposition != nil && (e.preparedDisposition.Blockers || e.preparedDisposition.HumanAction) {
+		return false, nil
+	}
+	for _, version := range detail.Versions {
+		if version.ID != detail.Change.CurrentVersion || version.PolicyID != e.data.PolicyID ||
+			version.HeadSHA != diff.HeadSHA && (diff.BaseSHA != diff.HeadSHA || len(diff.Files) != 0) {
+			continue
+		}
+		if d := e.claim.recovery.Issue.ReleaseDelivery; d != nil && (d.ChangeID != detail.Change.ID || d.VersionID != version.ID || d.HeadSHA != version.HeadSHA || d.BaseSHA != version.BaseSHA || d.Repository != version.Repository) {
+			return false, errors.New("release association differs from current version")
+		}
+		result, err := e.integrationSource(ctx, version, diff.HeadSHA)
+		if err != nil {
+			var refusal *workspace.LandRefusal
+			if errors.As(err, &refusal) {
+				return false, nil
+			}
+			return false, fmt.Errorf("verify delivered source: %w", err)
+		}
+		landing := runner.NativeLanding{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
+		if err := e.recordLanding(ctx, landing); err != nil {
+			return false, err
+		}
+		e.finalizationSource = &tracker.NativeChangeReference{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}
+		e.finalizationAttempt = version.AttemptID
+		change.Changed, change.ChangeID, change.VersionID = true, detail.Change.ID, version.ID
+		change.BaseSHA, change.HeadSHA, change.Reviewed, change.Landing = version.BaseSHA, version.HeadSHA, true, &landing
+		return true, nil
+	}
+	return false, nil
 }
 
 func (e *nativeExecution) SetIntegrationSource(source func(context.Context, tracker.ChangeVersion, string) (workspace.LandResult, error)) {

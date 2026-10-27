@@ -510,7 +510,11 @@ func (l *LocalGit) VerifyIntegratedChange(ctx context.Context, info Info, issue 
 	if _, err := runGitAt(ctx, normalized.Path, "fetch", "--no-tags", "--no-write-fetch-head", remote, base); err != nil {
 		return LandResult{}, err
 	}
-	for _, ancestry := range [][2]string{{integratedBase, base}, {sourceBase, integratedBase}, {sourceBase, opts.HeadSHA}} {
+	ancestries := [][2]string{{sourceBase, integratedBase}, {sourceBase, opts.HeadSHA}}
+	if integratedBase != opts.HeadSHA {
+		ancestries = append(ancestries, [2]string{integratedBase, base})
+	}
+	for _, ancestry := range ancestries {
 		if _, err := runGitAt(ctx, normalized.Path, "merge-base", "--is-ancestor", ancestry[0], ancestry[1]); err != nil {
 			return LandResult{}, refuse(LandRefusalHeadMoved, "the published source and final base do not identify the integration branch")
 		}
