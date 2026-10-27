@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -579,7 +580,25 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 	}
 	after := reads()
 	for tool, answer := range before {
-		if after[tool] != answer {
+		var previous, current map[string]any
+		if err := json.Unmarshal([]byte(answer), &previous); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(after[tool]), &current); err != nil {
+			t.Fatal(err)
+		}
+		normalizeTestDashboardWatermark(t, previous, current)
+		field := "data"
+		if tool == operatortool.ExplainItem {
+			field = "native_runtime"
+		}
+		previousData, previousOK := previous[field].(map[string]any)
+		currentData, currentOK := current[field].(map[string]any)
+		if !previousOK || !currentOK {
+			t.Fatalf("%s lacks response data", tool)
+		}
+		normalizeTestDashboardWatermark(t, previousData, currentData)
+		if !reflect.DeepEqual(previous, current) {
 			t.Fatalf("%s changed after compaction:\nbefore=%s\nafter=%s", tool, answer, after[tool])
 		}
 	}
