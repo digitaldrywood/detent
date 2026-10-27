@@ -322,24 +322,29 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 		wantFirst                     bool
 		firstLanding, secondLanding   string
 		localWork                     bool
+		firstRework, secondRework     bool
 	}{
-		{"allowlist filters higher priority", 1, 4, 0, 1, -time.Hour, time.Hour, "second", false, "", "", false},
-		{"empty allowlist runs nothing", 1, 4, 0, 1, -time.Hour, time.Hour, "empty", false, "", "", false},
-		{"project rank beats issue priority", 2, 1, 0, 1, -time.Hour, time.Hour, "both", true, "", "", false},
-		{"foreign provider candidate competes", 2, 1, 1, 2, -time.Hour, time.Hour, "provider", true, "", "", false},
-		{"provider claim honors runner rank override", 1, 2, 1, 2, -time.Hour, time.Hour, "provider-override", false, "", "", false},
-		{"project rank breaks priority ties", 2, 2, 0, 1, time.Hour, -time.Hour, "both", true, "", "", false},
-		{"organization runner follows organization rank", 2, 1, 0, 1, -time.Hour, time.Hour, "organization", true, "", "", false},
-		{"runner rank override wins", 1, 2, 0, 1, -time.Hour, time.Hour, "override", false, "", "", false},
-		{"issue priority breaks equal ranks", 2, 1, 0, 0, -time.Hour, time.Hour, "both", false, "", "", false},
-		{"age breaks remaining ties", 2, 2, 0, 0, time.Hour, -time.Hour, "both", false, "", "", false},
-		{"reviewed P2 landing beats P0 and P1 work", 3, 1, 0, 0, time.Hour, -time.Hour, "both", true, "reviewed", "", true},
-		{"lower project landing yields to higher project", 3, 1, 1, 0, -time.Hour, time.Hour, "both", false, "reviewed", "", false},
-		{"landing priority precedes creation", 3, 2, 0, 0, -time.Hour, time.Hour, "both", false, "reviewed", "reviewed", false},
-		{"landing creation breaks priority ties", 3, 3, 0, 0, -time.Hour, time.Hour, "both", true, "reviewed", "reviewed", false},
-		{"missing landing version yields to implementation", 1, 3, 0, 0, -time.Hour, time.Hour, "both", false, "missing version", "", false},
-		{"unreviewed landing yields to implementation", 1, 3, 0, 0, -time.Hour, time.Hour, "both", false, "missing review", "", false},
-		{"failed landing check yields to implementation", 1, 3, 0, 0, -time.Hour, time.Hour, "both", false, "failed check", "", false},
+		{"allowlist filters higher priority", 1, 4, 0, 1, -time.Hour, time.Hour, "second", false, "", "", false, false, false},
+		{"empty allowlist runs nothing", 1, 4, 0, 1, -time.Hour, time.Hour, "empty", false, "", "", false, false, false},
+		{"project rank beats issue priority", 2, 1, 0, 1, -time.Hour, time.Hour, "both", true, "", "", false, false, false},
+		{"foreign provider candidate competes", 2, 1, 1, 2, -time.Hour, time.Hour, "provider", true, "", "", false, false, false},
+		{"provider claim honors runner rank override", 1, 2, 1, 2, -time.Hour, time.Hour, "provider-override", false, "", "", false, false, false},
+		{"project rank breaks priority ties", 2, 2, 0, 1, time.Hour, -time.Hour, "both", true, "", "", false, false, false},
+		{"organization runner follows organization rank", 2, 1, 0, 1, -time.Hour, time.Hour, "organization", true, "", "", false, false, false},
+		{"runner rank override wins", 1, 2, 0, 1, -time.Hour, time.Hour, "override", false, "", "", false, false, false},
+		{"issue priority breaks equal ranks", 2, 1, 0, 0, -time.Hour, time.Hour, "both", false, "", "", false, false, false},
+		{"age breaks remaining ties", 2, 2, 0, 0, time.Hour, -time.Hour, "both", false, "", "", false, false, false},
+		{"reviewed landing then P2 rework then P0 todo", 3, 1, 0, 0, time.Hour, -time.Hour, "both", true, "reviewed", "", true, false, false},
+		{"lower project landing yields to higher project", 3, 1, 1, 0, -time.Hour, time.Hour, "both", false, "reviewed", "", false, false, false},
+		{"landing priority precedes creation", 3, 2, 0, 0, -time.Hour, time.Hour, "both", false, "reviewed", "reviewed", false, false, false},
+		{"landing creation breaks priority ties", 3, 3, 0, 0, -time.Hour, time.Hour, "both", true, "reviewed", "reviewed", false, false, false},
+		{"missing landing version yields to implementation", 1, 3, 0, 0, -time.Hour, time.Hour, "both", false, "missing version", "", false, false, false},
+		{"unreviewed landing yields to implementation", 1, 3, 0, 0, -time.Hour, time.Hour, "both", false, "missing review", "", false, false, false},
+		{"failed landing check yields to implementation", 1, 3, 0, 0, -time.Hour, time.Hour, "both", false, "failed check", "", false, false, false},
+		{"P2 rework beats P0 todo at equal project ranks", 3, 1, 0, 0, time.Hour, -time.Hour, "both", true, "", "", false, true, false},
+		{"lower project rework yields to higher project todo", 1, 3, 1, 0, -time.Hour, time.Hour, "both", false, "", "", false, true, false},
+		{"rework priority precedes creation", 3, 2, 0, 0, -time.Hour, time.Hour, "both", false, "", "", false, true, true},
+		{"rework creation breaks priority ties", 3, 3, 0, 0, -time.Hour, time.Hour, "both", true, "", "", false, true, true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			first := newDefaultNativeFixture(t, Config{})
@@ -374,12 +379,31 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 				priority, rank int
 				age            time.Duration
 				landing        string
+				rework         bool
 			}{
-				{first, scenario.firstPriority, scenario.firstRank, scenario.firstAge, scenario.firstLanding},
-				{second, scenario.secondPriority, scenario.secondRank, scenario.secondAge, scenario.secondLanding},
+				{first, scenario.firstPriority, scenario.firstRank, scenario.firstAge, scenario.firstLanding, scenario.firstRework},
+				{second, scenario.secondPriority, scenario.secondRank, scenario.secondAge, scenario.secondLanding, scenario.secondRework},
 			} {
 				approveHubTestPolicy(t, first.service, project.fixture.base+"/policy", descriptor)
+				if project.rework || (scenario.localWork && project.fixture.project.ID == first.project.ID) {
+					states := append(HostedProjectStates(), tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress"}})
+					raw, err := marshalNative(states)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", raw, project.fixture.project.ID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := first.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,'Rework','Rework',0,1,?,?)", project.fixture.project.ID, formatHubTime(now), formatHubTime(now)); err != nil {
+						t.Fatal(err)
+					}
+				}
 				issue := project.fixture.create(t, "ready")
+				if project.rework {
+					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Rework') WHERE native_id=?", project.fixture.project.ID, issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if project.landing != "" && project.landing != "missing version" {
 					f := project.fixture
 					var principal string
@@ -427,41 +451,40 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 				}
 			}
 			if scenario.localWork {
-				states := append(HostedProjectStates(), tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress"}})
-				raw, err := marshalNative(states)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", raw, first.project.ID); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := first.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,'Rework','Rework',0,1,?,?)", first.project.ID, formatHubTime(now), formatHubTime(now)); err != nil {
-					t.Fatal(err)
-				}
-				for index, state := range []string{"Rework", "Todo"} {
-					issue := first.create(t, state)
-					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state=?) WHERE native_id=?", first.project.ID, state, issue.WorkItemID); err != nil {
+				for _, work := range []struct {
+					state    string
+					priority int
+				}{{"Rework", 2}, {"Todo", 0}} {
+					issue := first.create(t, work.state)
+					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state=?) WHERE native_id=?", first.project.ID, work.state, issue.WorkItemID); err != nil {
 						t.Fatal(err)
 					}
-					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override=? WHERE issue_id=(SELECT id FROM issues WHERE native_id=?)", index, issue.WorkItemID); err != nil {
+					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override=? WHERE issue_id=(SELECT id FROM issues WHERE native_id=?)", work.priority, issue.WorkItemID); err != nil {
 						t.Fatal(err)
 					}
 				}
-				credential := apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin, Runner: runnerauth.Identity{Binding: r.binding}}
-				scope := nativeScope{organization: first.project.OrganizationID, project: first.project.ID, credential: credential}
-				cursor := runnerSelectionCursor{}
-				query := claimCandidateQuery{NativeScope: &scope, Scope: string(first.project.ID), AvailableAt: now, Limit: 1, SelectionCursor: &cursor}
-				for _, want := range []string{"ready", "Rework", "Todo"} {
-					ids, err := nativeCandidateIDs(t.Context(), first.service.database.reader, query, nil, nil, nil, nil, nil, nil, nil)
-					if err != nil || len(ids) != 1 {
-						t.Fatalf("candidate page = %v, error = %v", ids, err)
-					}
-					var title string
-					if err := first.service.database.reader.QueryRowContext(t.Context(), "SELECT title FROM issues WHERE id=?", ids[0]).Scan(&title); err != nil {
-						t.Fatal(err)
-					}
-					if title != want {
-						t.Fatalf("candidate = %s, want %s", title, want)
+				for _, selection := range []struct {
+					credential apiCredential
+					want       []string
+				}{
+					{apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin, Runner: runnerauth.Identity{Binding: r.binding}}, []string{"ready", "Rework", "Todo"}},
+					{apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}, []string{"Todo", "ready", "Rework"}},
+				} {
+					scope := nativeScope{organization: first.project.OrganizationID, project: first.project.ID, credential: selection.credential}
+					cursor := runnerSelectionCursor{}
+					query := claimCandidateQuery{NativeScope: &scope, Scope: string(first.project.ID), AvailableAt: now, Limit: 1, SelectionCursor: &cursor}
+					for _, want := range selection.want {
+						ids, err := nativeCandidateIDs(t.Context(), first.service.database.reader, query, nil, nil, nil, nil, nil, nil, nil)
+						if err != nil || len(ids) != 1 {
+							t.Fatalf("candidate page = %v, error = %v", ids, err)
+						}
+						var title string
+						if err := first.service.database.reader.QueryRowContext(t.Context(), "SELECT title FROM issues WHERE id=?", ids[0]).Scan(&title); err != nil {
+							t.Fatal(err)
+						}
+						if title != want {
+							t.Fatalf("candidate = %s, want %s", title, want)
+						}
 					}
 				}
 			}
