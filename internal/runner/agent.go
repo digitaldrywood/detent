@@ -1639,7 +1639,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	nativeLanding = nativeLanding && mode == RunModeMerge
 	if nativeLanding {
 		identity := NativeLandingIdentity(r.now())
-		defer func() { returnValue.RuntimeIdentity = identity }()
+		defer func() {
+			if !returnValue.TurnStarted {
+				returnValue.RuntimeIdentity = identity
+			}
+		}()
 		req.ResumeState = store.AgentResumeState{}
 		req.RetryMode = RetryModeFresh
 	}
@@ -1822,6 +1826,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if nativeLanding {
 		if cleaner, ok := runWorkspace.(workspace.LandingWorkspaceCleaner); ok {
 			defer func() {
+				if returnValue.NativeChange != nil && returnValue.NativeChange.MergeResolution {
+					returnValue.landingCleanup = func(ctx context.Context) error { return cleaner.CleanupLanding(ctx, info, workspaceIssue) }
+					return
+				}
 				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.afterRunTimeout)
 				defer cancel()
 				if err := cleaner.CleanupLanding(cleanupCtx, info, workspaceIssue); err != nil {
@@ -1858,6 +1866,25 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	if nativeLanding {
 		afterRunPending = false
 		result, err := r.landNativeChange(ctx, req, landing, runWorkspace, info, workspaceIssue, workerGitHub, &landingTarget)
+		if result.NativeChange != nil && result.NativeChange.MergeResolution {
+			workspaceIssue.BaseRef = result.NativeChange.BaseSHA
+			if diffs, ok := req.Execution.(DiffExecution); ok {
+				diffs.SetDiffSource(r.attemptDiffSource(ctx, info, workspaceIssue))
+			}
+			if repository, ok := req.Execution.(RepositoryExecution); ok {
+				repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
+			}
+			if source, ok := req.Execution.(ChangeSourceExecution); ok {
+				source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+					return workspace.CaptureChangeSource(ctx, info.Path, base, head)
+				})
+			}
+			if artifacts, ok := req.Execution.(ArtifactExecution); ok {
+				if err := artifacts.PrepareArtifacts(ctx, info.Path); err != nil {
+					return result, err
+				}
+			}
+		}
 		if afterErr := r.afterExecution(ctx, req, runWorkspace, info, workspaceIssue, agentResumeFromState(req.ResumeState), false); afterErr != nil && err == nil {
 			err = afterErr
 		}

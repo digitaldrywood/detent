@@ -258,6 +258,10 @@ type LandingExecution interface {
 	RecordLanding(context.Context, NativeLanding) error
 }
 
+type MergeResolutionExecution interface {
+	PrepareMergeResolution() error
+}
+
 // RepositoryExecution is an Execution that publishes the finished run's
 // commits as an immutable Change Request version, which names the repository
 // the commits live in. The runner installs the checkout's https remote once
@@ -559,6 +563,14 @@ func (r *Runner) runExecution(ctx context.Context, req RunRequest) (RunResult, e
 			runErr = fmt.Errorf("%w: read the review conversations that refused landing: %w", ErrReviewConversationsUnavailable, err)
 		}
 		result.ReviewConversationsCleared = cleared
+	}
+	if runErr == nil && result.landingCleanup != nil && result.NativeChange != nil && result.NativeChange.VersionID != "" && result.NativeChange.Error == "" && result.NativeChange.VersionError == "" {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(guarded), r.afterRunTimeout)
+		if err := result.landingCleanup(cleanupCtx); err != nil {
+			r.logger.Warn("landing workspace left behind", "issue_id", req.Issue.ID, "error", err)
+		}
+		cancel()
+		result.landingCleanup = nil
 	}
 	return result, runErr
 }

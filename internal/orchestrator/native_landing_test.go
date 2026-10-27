@@ -27,10 +27,6 @@ import (
 )
 
 func TestNativeLandingRunCompletion(t *testing.T) {
-	if testing.Short() {
-		t.Skip("git subprocess integration")
-	}
-
 	hosted := []connector.WorkflowState{
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Blocked", "Human Review", "Merging", "Done"}},
@@ -125,6 +121,9 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		{name: "an opted out refusal prefers Human Review over Blocked", landing: refused, hubState: "Merging", states: workflow, noHumanReview: true, optout: true, wantState: "Rework", wantComment: "was not landed", wantMoves: 1},
 		{name: "red barrier retains Merging without Rework", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Waiting: true, Refusal: "waiting for rolling barrier repair"}, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "direct capacity wait retains source and automatic merge retry", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Waiting: true, Refusal: "Project landing capacity is full"}, hubState: "In Progress", states: []connector.WorkflowState{{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}}, {Name: "Done", Terminal: true}}, noHumanReview: true, wantLandingWait: true, codingLane: true},
+		{name: "rebase conflict dispatches bounded merge resolution", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Path: "merge_resolution_pending", RefusalKind: workspace.LandRefusalConflict, Refusal: "rebasing the reviewed head conflicts: feature.txt"}, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
+		{name: "batch member conflict retains the existing landing retry", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Path: "batch_member", RefusalKind: workspace.LandRefusalConflict, Refusal: "batch member conflicts: feature.txt"}, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
+		{name: "failed merge resolution returns to implementation with conflict files", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Path: "merge_resolution_failed", RefusalKind: workspace.LandRefusalConflict, Refusal: "merge resolution did not complete; conflict files: feature.txt", ConflictFiles: []string{"feature.txt"}}, hubState: "Merging", states: workflow, noHumanReview: true, wantState: "Rework", wantComment: "feature.txt", wantMoves: 1},
 		{name: "pending configured CI retains the existing landing retry", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, Refusal: "waiting for Full CI", CI: &tracker.NativeLandingCIReceipt{HeadSHA: head, State: "pending", Triggered: true}}, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "unproven conflict retains landing retry without coding rework", landing: &waiting, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
 		{name: "target advance after a green gate stays in landing", baseMoves: 1, mergeStatus: http.StatusOK, currentBase: true, hubState: "Merging", states: workflow, noHumanReview: true, wantLandingWait: true},
@@ -333,7 +332,11 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &metadata); err != nil {
 					t.Fatal(err)
 				}
-				if metadata["native_landed"] != false || metadata["native_version_id"] != unproven.VersionID || metadata["native_head_sha"] != landingHead || metadata["native_landing_refusal"] != map[bool]any{true: nil, false: workspace.LandRefusalBaseMoved}[test.landing.CI != nil || test.landing.Waiting] || metadata["forge_wait"] != nil || metadata["native_merge_sha"] != nil {
+				var wantRefusal any
+				if test.landing.RefusalKind != "" {
+					wantRefusal = test.landing.RefusalKind
+				}
+				if metadata["native_landed"] != false || metadata["native_version_id"] != unproven.VersionID || metadata["native_head_sha"] != landingHead || metadata["native_landing_refusal"] != wantRefusal || metadata["forge_wait"] != nil || metadata["native_merge_sha"] != nil {
 					t.Fatalf("continuation lost immutable reviewed identity: %#v", metadata)
 				}
 				if test.landing.BaseSHA != "" && metadata["native_base_sha"] != test.landing.BaseSHA {
@@ -489,6 +492,18 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			}
 			if metadata["native_landed"] != test.landing.Landed || metadata["native_version_id"] != test.landing.VersionID || metadata["native_change_id"] != test.landing.ChangeID {
 				t.Fatalf("landing identity = %#v", metadata)
+			}
+			if len(test.landing.ConflictFiles) > 0 {
+				wantFiles := make([]any, len(test.landing.ConflictFiles))
+				for i, file := range test.landing.ConflictFiles {
+					wantFiles[i] = file
+				}
+				if !reflect.DeepEqual(metadata["native_conflict_files"], wantFiles) {
+					t.Fatalf("conflict files lost from completion: %#v", metadata)
+				}
+			}
+			if test.landing.Path == "merge_resolution_failed" && orch.dispatchMode(t.Context(), &state, retry.Issue) != runpkg.RunModeImplement {
+				t.Fatalf("failed merge resolution did not return to implementation: %#v", retry)
 			}
 			if journey != nil && metadata["native_head_sha"] != landingHead {
 				t.Fatalf("protection refusal lost reviewed head: %#v", metadata)

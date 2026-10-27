@@ -371,7 +371,7 @@ func (e *nativeExecution) StartLanding(ctx context.Context, localAttempt int64, 
 }
 
 func (e *nativeExecution) ObserveLanding(ctx context.Context, landing runner.NativeLanding) error {
-	return e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{HeartbeatAt: time.Now().UTC(), Landing: &tracker.NativeLandingReceipt{SecurityAudit: landing.SecurityAudit, Pipeline: landing.Pipeline, PipelineDropped: landing.PipelineDropped, Waiting: landing.Waiting, Path: landing.Path, Packages: landing.Packages, CI: landing.CI, Gate: landing.Gate, ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA, BaseSHA: landing.BaseSHA, Landed: landing.Landed, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Rebased: landing.Rebased, RefusalKind: landing.RefusalKind, Refusal: landing.RefusalKind, GateFailed: landing.GateFailed, ObservedAt: time.Now().UTC()}})
+	return e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{HeartbeatAt: time.Now().UTC(), Landing: &tracker.NativeLandingReceipt{ConflictFiles: landing.ConflictFiles, SecurityAudit: landing.SecurityAudit, Pipeline: landing.Pipeline, PipelineDropped: landing.PipelineDropped, Waiting: landing.Waiting, Path: landing.Path, Packages: landing.Packages, CI: landing.CI, Gate: landing.Gate, ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA, BaseSHA: landing.BaseSHA, Landed: landing.Landed, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Rebased: landing.Rebased, RefusalKind: landing.RefusalKind, Refusal: landing.RefusalKind, GateFailed: landing.GateFailed, ObservedAt: time.Now().UTC()}})
 }
 
 func (e *nativeExecution) FlushRuntime(ctx context.Context) error {

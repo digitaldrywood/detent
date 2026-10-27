@@ -91,6 +91,59 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		return nil
 	}
 	options.Authorize = authorizeLanding
+	if target.MergeResolution && !target.GitHubPullRequest {
+		resolver, canResolve := backend.(workspace.LandingConflictResolver)
+		publication, canPublish := req.Execution.(MergeResolutionExecution)
+		if canResolve && canPublish {
+			resolved, turn, resolveErr := r.resolveNativeLanding(ctx, req, resolver, info, issue, options)
+			defer func() {
+				runResult.Tokens = turn.Tokens
+				runResult.Model, runResult.TokenUSD, runResult.RateLimits = turn.Model, turn.TokenUSD, turn.RateLimits
+				runResult.BillingMode, runResult.ReportedCostMicros, runResult.CostSource, runResult.Compute = turn.BillingMode, turn.ReportedCostMicros, turn.CostSource, turn.Compute
+				runResult.TurnStarted, runResult.TurnCount = turn.TurnStarted, turn.TurnCount
+				runResult.TurnStartRefused, runResult.budgetProjection = turn.TurnStartRefused, turn.budgetProjection
+				if !turn.RuntimeIdentity.IsZero() {
+					runResult.RuntimeIdentity = turn.RuntimeIdentity
+				}
+			}()
+			if turn.BudgetRefusal != nil {
+				return turn, nil
+			}
+			if resolveErr != nil {
+				if ctx.Err() != nil || IsCapacityError(resolveErr) || !turn.TurnStarted {
+					return turn, resolveErr
+				}
+				refused := r.refusedLanding(req, target, workspace.LandRefusalConflict, "merge resolution did not complete; conflict files: "+strings.Join(resolved.ConflictFiles, ", ")+": "+resolveErr.Error())
+				refused.NativeLanding.Path = "merge_resolution_failed"
+				refused.NativeLanding.ConflictFiles = resolved.ConflictFiles
+				if resolved.Gate.Command != "" {
+					refused.NativeLanding.Gate = &resolved.Gate
+					refused.NativeLanding.GateFailed = resolved.Gate.ExitCode != 0
+				}
+				return refused, nil
+			}
+			if !resolved.Unchanged {
+				if err := publication.PrepareMergeResolution(); err != nil {
+					return turn, err
+				}
+				if recorder, ok := req.Execution.(SourceValidationExecution); ok && resolved.Gate.Command != "" {
+					if err := recorder.RecordSourceValidation(ctx, resolved.Gate); err != nil {
+						return turn, err
+					}
+				}
+				turn.FinalState = FinalStateCompleted
+				turn.FinalMessage = "Merge resolution changed the reviewed diff; publish the resolved source for review."
+				turn.NativeChange = &NativeChange{MergeResolution: true, Changed: true, BaseSHA: resolved.BaseSHA, HeadSHA: resolved.HeadSHA}
+				return turn, nil
+			}
+			options.Resolution = &resolved
+		} else {
+			refused := r.refusedLanding(req, target, workspace.LandRefusalConflict, "bounded merge resolution is unavailable; conflict files: "+strings.Join(target.ConflictFiles, ", "))
+			refused.NativeLanding.ConflictFiles = target.ConflictFiles
+			refused.NativeLanding.Path = "merge_resolution_failed"
+			return refused, nil
+		}
+	}
 	if target.SecurityAudit && !target.GitHubPullRequest {
 		options.SecurityAuditRequired = true
 		options.SecurityAudit = func(ctx context.Context, diff workspace.FileDiffs) (*tracker.SecurityAuditReview, error) {
@@ -225,7 +278,9 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 				}
 				r.logWorkerEvent(req.Issue, "worker_native_landing_refused",
 					telemetry.WorkAttemptIDKey, req.WorkAttemptID, "change", target.ChangeID, "version", target.VersionID, "kind", refusal.Kind, "reason", refusal.Reason)
-				return r.refusedLanding(req, target, refusal.Kind, refusal.Reason), nil
+				refused := r.refusedLanding(req, target, refusal.Kind, refusal.Reason)
+				refused.NativeLanding.ConflictFiles = refusal.ConflictFiles
+				return refused, nil
 			}
 			return RunResult{WorkspaceBranch: info.Branch, NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA}}, err
 		}
@@ -233,6 +288,9 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 			telemetry.WorkAttemptIDKey, req.WorkAttemptID, "change", target.ChangeID, "version", target.VersionID, "merge_sha", result.MergeSHA, "error", err.Error())
 	}
 	landed := NativeLanding{SecurityAudit: result.SecurityAudit, Pipeline: result.Pipeline, PipelineDropped: result.PipelineDropped, Path: result.Path, Packages: result.Packages, CI: result.CI, ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA, BaseSHA: result.BaseBefore, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
+	if options.Resolution != nil {
+		landed.ConflictFiles = options.Resolution.ConflictFiles
+	}
 	if result.Gate.Command != "" {
 		landed.Gate = &result.Gate
 	}

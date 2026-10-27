@@ -49,7 +49,8 @@ func (o *Orchestrator) completeNativeChangeRun(
 	recoveryRequired := errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired)
 	preProvider := !event.Result.TurnStarted && running.TurnCount == 0 && !running.WorkProductPushed && running.Tokens.TotalTokens == 0 && event.Result.Tokens.TotalTokens == 0
 	recoveryRefusal := recoveryRequired && preProvider && running.Cancellation == nil && !errors.Is(event.Err, context.Canceled) && !errors.Is(event.Err, context.DeadlineExceeded)
-	if mergeWorkerIssue(running.Issue) || mode != "" && mode != runpkg.RunModeImplement && (mode != runpkg.RunModePlan || !recoveryRefusal) {
+	mergeResolution := change != nil && change.MergeResolution && mode == runpkg.RunModeMerge
+	if !mergeResolution && (mergeWorkerIssue(running.Issue) || mode != "" && mode != runpkg.RunModeImplement && (mode != runpkg.RunModePlan || !recoveryRefusal)) {
 		return false
 	}
 	if finalState == "" {

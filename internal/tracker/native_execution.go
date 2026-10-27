@@ -196,6 +196,7 @@ type NativeLandingCIReceipt struct {
 }
 
 type NativeLandingReceipt struct {
+	ConflictFiles   []string                `json:"conflict_files,omitempty"`
 	SecurityAudit   *SecurityAuditReview    `json:"security_audit,omitempty"`
 	Pipeline        []gate.PipelineTiming   `json:"pipeline,omitempty"`
 	PipelineDropped int                     `json:"pipeline_dropped,omitempty"`

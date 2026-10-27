@@ -537,6 +537,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 	base := nativeChangeFixtureHead("a")
 	head := nativeChangeFixtureHead("c")
 	for _, test := range []struct {
+		mergeResolution         bool
 		name                    string
 		transitionReason        string
 		role                    string
@@ -597,6 +598,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		// finish; the last one is current and carries the run's head.
 		wantVersions int
 	}{
+		{name: "MergeResolution publishes changed source for independent review", mergeResolution: true, existing: true, published: nativeChangeFixtureHead("d"), reviewer: true, retainSource: true, role: runner.RoleMerge, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{MergeResolution: true, Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 2},
 		{name: "fixing Rework binds recorded review dispositions to its published version", reviewDispositions: true, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1, disposition: &tracker.NativeDisposition{Status: "complete"}, finalMessage: "```detent-status\nschema: 1\nstatus: complete\nreview_dispositions: [{thread_id: T1, disposition: fixed, evidence: regression passes}]\nblockers: []\nhuman_action: null\n```"},
 		{name: "required PR reopens landed history with a new PR", requiredPR: true, publicationLanded: true, publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 3},
 		{name: "required PR recovers historical confirmed push after stale forge read", requiredPR: true, publicationRecovery: true, publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed"},
@@ -997,6 +999,12 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if test.mergeResolution {
+				rules := tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}
+				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), Policy: rules}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.existing {
 				earlier, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Earlier change"})
 				if err != nil {
@@ -1073,9 +1081,19 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					h.repolicy(t)
 				}
 			}
-			if test.reviewer && !test.requiredPR {
+			if test.reviewer && !test.requiredPR && !test.mergeResolution {
 				rules := tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}
 				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), Policy: rules}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.mergeResolution {
+				stored := h.changes(t, issue.ID)
+				detail, err := h.admin.Change(t.Context(), item, stored[0].ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.admin.ReviewChange(t.Context(), item, detail.Change.ID, detail.Change.CurrentVersion, tracker.ReviewChange{Mutation: nativeMutationKey(), ExpectedVersionID: detail.Change.CurrentVersion, Decision: "approved", Body: "Approved original source"}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1101,6 +1119,11 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			if test.source != nil {
 				execution.(runner.DiffExecution).SetDiffSource(test.source)
 			}
+			if test.mergeResolution {
+				if _, err := execution.(runner.ChangeSourceExecution).RecoverChangeSource(guarded); err != nil {
+					t.Fatal(err)
+				}
+			}
 			var retainedCapture tracker.ChangeSourceCapture
 			if test.retainSource {
 				retainedCapture = nativeChangeSourceFixture(t.Context(), t, base, head)
@@ -1114,6 +1137,36 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: test.role, Backend: "codex", Model: "test"}); err != nil {
 				t.Fatal(err)
 			}
+			if test.mergeResolution {
+				if err := execution.(runner.MergeResolutionExecution).PrepareMergeResolution(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.mergeResolution {
+				owner := execution.(*nativeExecution)
+				previous := owner.recoveredSource
+				refusal := runner.NativeLanding{ChangeID: previous.ChangeID, VersionID: previous.VersionID, HeadSHA: previous.HeadSHA, RefusalKind: workspace.LandRefusalConflict, Refusal: "conflicting files: feature.txt", ConflictFiles: []string{"feature.txt"}, Path: "merge_resolution_pending"}
+				if err := owner.ObserveLanding(guarded, refusal); err != nil {
+					t.Fatal(err)
+				}
+				if err := owner.FlushRuntime(guarded); err != nil {
+					t.Fatal(err)
+				}
+				target, err := owner.LandingTarget(guarded)
+				if err != nil || !target.MergeResolution || target.HeadSHA != previous.HeadSHA {
+					t.Fatalf("conflict retry lost reviewed target: %#v, %v", target, err)
+				}
+				detail, err := h.admin.Change(t.Context(), item, previous.ChangeID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, version := range detail.Versions {
+					if version.ID == previous.VersionID && (version.Landing == nil || !reflect.DeepEqual(version.Landing.ConflictFiles, refusal.ConflictFiles)) {
+						t.Fatalf("conflict files were not retained: %#v", version.Landing)
+					}
+				}
+			}
+
 			if test.publicationRefused {
 				if err := execution.(runner.LandingRuntimeExecution).ObserveLanding(guarded, runner.NativeLanding{ChangeID: refusedPublication.ChangeID, VersionID: refusedPublication.ID, HeadSHA: refusedPublication.HeadSHA, RefusalKind: workspace.LandRefusalProtected}); err != nil {
 					t.Fatal(err)

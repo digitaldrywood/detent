@@ -37,8 +37,10 @@ func (e *nativeExecution) LandingTarget(ctx context.Context) (runner.NativeLandi
 			target.Validation = version.Validation
 			target.ReviewDispositions = version.ReviewDispositions
 			if version.Landing != nil {
+				target.ConflictFiles = version.Landing.ConflictFiles
 				target.CI = version.Landing.CI
 				target.RebaseRequired = version.Landing.RefusalKind == "conflict"
+				target.MergeResolution = version.Landing.RefusalKind == "conflict" && version.Landing.Path == "merge_resolution_pending"
 			}
 			if version.Policy.Gates.MergeMethod != "" {
 				target.Method = version.Policy.Gates.MergeMethod
@@ -80,7 +82,7 @@ func (e *nativeExecution) recordLanding(ctx context.Context, landing runner.Nati
 	if !landing.Landed {
 		return errors.New("only a landed version is recorded")
 	}
-	receipt := &tracker.NativeLandingReceipt{SecurityAudit: landing.SecurityAudit, Pipeline: landing.Pipeline, PipelineDropped: landing.PipelineDropped, Path: landing.Path, Packages: landing.Packages, ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA, BaseSHA: landing.BaseSHA, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Gate: landing.Gate, Landed: true, Rebased: landing.Rebased}
+	receipt := &tracker.NativeLandingReceipt{ConflictFiles: landing.ConflictFiles, SecurityAudit: landing.SecurityAudit, Pipeline: landing.Pipeline, PipelineDropped: landing.PipelineDropped, Path: landing.Path, Packages: landing.Packages, ChangeID: landing.ChangeID, VersionID: landing.VersionID, HeadSHA: landing.HeadSHA, BaseSHA: landing.BaseSHA, MergeSHA: landing.MergeSHA, BaseRef: landing.BaseRef, Method: landing.Method, Gate: landing.Gate, Landed: true, Rebased: landing.Rebased}
 	_, err := e.claim.source.client.LandChangeVersion(ctx, e.claim.lease.WorkItemID, landing.ChangeID, landing.VersionID, tracker.LandChangeVersion{
 		Mutation: tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":landing", LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
 		Receipt:  receipt,

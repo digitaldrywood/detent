@@ -862,12 +862,14 @@ type RunResult struct {
 	budgetProjection           *dispatchBudgetProjection
 	terminalFailure            *tracker.NativeTerminalFailure
 	reusedDispositionAttemptID string
+	landingCleanup             func(context.Context) error
 }
 
 // NativeLandingTarget is the reviewed version a landing run puts on the
 // base branch: the Change Request, the version, its head, and the merge
 // method the approved policy names.
 type NativeLandingTarget struct {
+	ConflictFiles      []string
 	ReviewDispositions []tracker.ReviewDisposition
 	ReviewPending      bool
 	SourceMergeSHA     string
@@ -876,6 +878,7 @@ type NativeLandingTarget struct {
 	SecurityAudit      bool
 	Validation         *gate.CommandResult
 	RebaseRequired     bool
+	MergeResolution    bool
 	CI                 *tracker.NativeLandingCIReceipt
 	SourceIssues       []tracker.ExternalReference
 	External           *tracker.ChangeExternalReference
@@ -893,6 +896,7 @@ type NativeLandingTarget struct {
 // commit the base branch advanced to; a refused one carries the refusal kind
 // and the reason, and the base branch is unchanged.
 type NativeLanding struct {
+	ConflictFiles   []string
 	SecurityAudit   *tracker.SecurityAuditReview
 	Pipeline        []gate.PipelineTiming `json:"pipeline,omitempty"`
 	PipelineDropped int                   `json:"pipeline_dropped,omitempty"`
@@ -923,6 +927,7 @@ func (l NativeLanding) RequiresRework() bool {
 // native item has no pull request; the runner opens the Change Request under
 // the run's lease and reports it here, and the orchestrator moves the item.
 type NativeChange struct {
+	MergeResolution            bool
 	ReusedDispositionAttemptID string
 	SecurityAudit              *tracker.SecurityAuditReview
 	ImplementationReview       *gate.ValidatorResult

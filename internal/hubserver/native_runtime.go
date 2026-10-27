@@ -93,6 +93,14 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 		r.Activity = &profile
 	}
 	if l := r.Landing; l != nil {
+		if len(l.ConflictFiles) > 1024 {
+			return nativeRejection(nativePublicInvalid("Too many landing conflict files"), "runtime_validation", "data.runtime.landing")
+		}
+		for _, path := range l.ConflictFiles {
+			if len(path) == 0 || len(path) > 4096 || strings.ContainsRune(path, 0) {
+				return nativeRejection(nativePublicInvalid("Invalid landing conflict file"), "runtime_validation", "data.runtime.landing")
+			}
+		}
 		if len(l.Pipeline) > 1024 || l.PipelineDropped < 0 {
 			return nativeRejection(nativePublicInvalid("Invalid landing timing population"), "runtime_validation", "data.runtime.landing")
 		}
@@ -102,7 +110,7 @@ func validateNativeRuntime(r *tracker.NativeRuntimeObservation) error {
 			}
 		}
 		l.Pipeline = gate.PublicPipeline(l.Pipeline)
-		if l.Path != "" && !slices.Contains([]string{"clean_push", "batch_member", "rebase_short_validation", "rebase_push"}, l.Path) || len(l.Packages) > 1024 {
+		if l.Path != "" && !slices.Contains([]string{"clean_push", "batch_member", "rebase_short_validation", "rebase_push", "merge_resolution_pending", "merge_resolution", "merge_resolution_failed"}, l.Path) || len(l.Packages) > 1024 {
 			return nativeRejection(nativePublicInvalid("Invalid landing validation scope"), "runtime_validation", "data.runtime.landing")
 		}
 		if l.Refusal != "" && l.Refusal != l.RefusalKind || l.FromState != "" || l.TargetState != "" {

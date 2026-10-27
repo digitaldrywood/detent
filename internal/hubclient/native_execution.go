@@ -88,6 +88,7 @@ type nativeExecution struct {
 	retainedSource  *tracker.ChangeSourceCapture
 	sourceRequired  bool
 	recoveredSource *tracker.NativeChangeReference
+	mergeResolution bool
 }
 
 func (e *nativeExecution) RetainCompletion() {

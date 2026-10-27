@@ -15,6 +15,7 @@ import (
 )
 
 type nativeCompletionState struct {
+	MergeResolution          bool                           `json:"merge_resolution,omitempty"`
 	Observations             []tracker.NativeRunEvent       `json:"observations,omitempty"`
 	Publication              *tracker.NativePRPublication   `json:"publication,omitempty"`
 	Lease                    tracker.NativeLease            `json:"lease"`
@@ -46,7 +47,7 @@ func (e *nativeExecution) CompletionState() json.RawMessage {
 		WorktreeState: e.worktreeState, WorktreeHead: e.worktreeHead,
 		Repository: e.repository, ConversationContinuation: e.conversationContinuation,
 		SourceRequired: e.sourceRequired, RetainedSource: e.retainedSource,
-		RecoveredSource: e.recoveredSource,
+		RecoveredSource: e.recoveredSource, MergeResolution: e.mergeResolution,
 		PreparedOutcome: e.preparedOutcome, PreparedMessage: e.preparedMessage,
 		PreparedDisposition:  e.preparedDisposition,
 		PreparedFinalization: e.preparedFinalization(), PreparedFailure: e.preparedFailure,
@@ -167,8 +168,8 @@ func (s *Scheduler) RestoreCompletion(ctx context.Context, request orchestrator.
 		lastDiff: state.Diff, storedSeq: state.StoredSeq,
 		worktreeState: state.WorktreeState, worktreeHead: state.WorktreeHead,
 		sourceRequired: state.SourceRequired, retainedSource: state.RetainedSource,
-		recoveredSource: state.RecoveredSource,
-		repository:      state.Repository, conversationContinuation: state.ConversationContinuation,
+		recoveredSource: state.RecoveredSource, mergeResolution: state.MergeResolution,
+		repository: state.Repository, conversationContinuation: state.ConversationContinuation,
 		role: state.Data.Identity.Role, preparedOutcome: state.PreparedOutcome,
 		preparedMessage: state.PreparedMessage, preparedDisposition: state.PreparedDisposition,
 		preparedFailure: state.Data.TerminalFailure,

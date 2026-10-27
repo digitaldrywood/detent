@@ -32,7 +32,17 @@ func (e *nativeExecution) ownsIssueCompletion() bool {
 }
 
 func (e *nativeExecution) ownsChangeCompletion() bool {
-	return e.ownsIssueCompletion() && e.worktreeState != "dirty" && (e.preparedDisposition == nil || e.preparedDisposition.Status != "blocked")
+	return (e.ownsIssueCompletion() || e.mergeResolution) && e.worktreeState != "dirty" && (e.preparedDisposition == nil || e.preparedDisposition.Status != "blocked")
+}
+
+func (e *nativeExecution) PrepareMergeResolution() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.role != runner.RoleMerge || e.recoveredSource == nil {
+		return errors.New("merge resolution requires recovered reviewed source")
+	}
+	e.mergeResolution = true
+	return nil
 }
 
 func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int64) (diagnosticErr error) {
@@ -72,8 +82,9 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 		return errors.New("the attempt diff does not match the final checkpoint head")
 	}
 	change := &runner.NativeChange{
-		Changed: diff.HeadSHA != "" && diff.HeadSHA != diff.BaseSHA && len(diff.Files) > 0,
-		BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, Files: len(diff.Files),
+		MergeResolution: e.mergeResolution,
+		Changed:         diff.HeadSHA != "" && diff.HeadSHA != diff.BaseSHA && len(diff.Files) > 0,
+		BaseSHA:         diff.BaseSHA, HeadSHA: diff.HeadSHA, Files: len(diff.Files),
 	}
 	e.change = change
 	e.finalizationSource, e.finalizationAttempt = nil, ""
