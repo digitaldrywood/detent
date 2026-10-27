@@ -826,7 +826,7 @@ func TestHostedSecuritySSEAudit(t *testing.T) {
 			user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", actor)
 			reader := openHostedTestStream(t, f, user, "")
 			kind, _ := readHostedEvent(t, reader)
-			if kind != "activity" {
+			if kind != "lane" {
 				t.Fatalf("initial event = %q", kind)
 			}
 			var count, attributed int
