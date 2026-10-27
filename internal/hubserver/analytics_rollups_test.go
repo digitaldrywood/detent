@@ -279,9 +279,17 @@ func TestAnalyticsRollupBackfill(t *testing.T) {
 	}
 	batches := 0
 	for {
-		more, err := f.service.database.backfillAnalyticsRollups(t.Context(), f.service.config.now())
+		ctx, timing := withWriterTiming(t.Context())
+		more, err := f.service.database.backfillAnalyticsRollups(ctx, f.service.config.now())
 		if err != nil {
 			t.Fatal(err)
+		}
+		wantWrites := int64(0)
+		if more {
+			wantWrites = 1
+		}
+		if got := timing.txs.Load(); got != wantWrites {
+			t.Fatalf("backfill writer transactions=%d want=%d more=%t", got, wantWrites, more)
 		}
 		if !more {
 			break
@@ -298,6 +306,43 @@ func TestAnalyticsRollupBackfill(t *testing.T) {
 		if got := readTestRollupRows(t, f.service.database.reader, project); !reflect.DeepEqual(want[i], got) {
 			t.Fatalf("backfill differs from rebuild\nwant=%v\ngot=%v", want[i], got)
 		}
+	}
+	for _, test := range []struct {
+		name       string
+		run        func(context.Context) error
+		wantWrites int64
+	}{
+		{"conversion", f.service.database.convertAnalyticsProjections, 0},
+		{"reset conversion cursor", func(ctx context.Context) error {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE analytics_maintenance_cursor SET projection_rowid=1 WHERE id=1"); err != nil {
+				return err
+			}
+			if err := f.service.database.convertAnalyticsProjections(ctx); err != nil {
+				return err
+			}
+			var cursor int64
+			if err := f.service.database.reader.QueryRowContext(ctx, "SELECT projection_rowid FROM analytics_maintenance_cursor WHERE id=1").Scan(&cursor); err != nil {
+				return err
+			}
+			if cursor != 0 {
+				return fmt.Errorf("conversion cursor=%d want=0", cursor)
+			}
+			return nil
+		}, 1},
+		{"empty dirty queue", func(ctx context.Context) error {
+			_, err := f.service.database.drainAnalyticsDirty(ctx, f.service.config.now())
+			return err
+		}, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, timing := withWriterTiming(t.Context())
+			if err := test.run(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if got := timing.txs.Load(); got != test.wantWrites {
+				t.Fatalf("analytics writer operations=%d want=%d", got, test.wantWrites)
+			}
+		})
 	}
 }
 

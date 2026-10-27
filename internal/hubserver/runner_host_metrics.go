@@ -17,8 +17,8 @@ import (
 
 const maxHostSegments = 128
 
-func validHostSummary(s hostmetrics.Summary, now time.Time) bool {
-	if s.Hour.IsZero() || !s.Hour.Equal(s.Hour.UTC().Truncate(time.Hour)) || s.Hour.After(now.UTC().Truncate(time.Hour)) || s.SegmentID.IsZero() || s.SegmentID.After(now) || s.SampleCount == 0 || s.SampleCount > 120 || s.LogicalCores <= 0 || s.LogicalCores > 65536 {
+func validHostSummary(s hostmetrics.Summary) bool {
+	if s.Hour.IsZero() || !s.Hour.Equal(s.Hour.UTC().Truncate(time.Hour)) || s.SegmentID.IsZero() || s.SampleCount == 0 || s.SampleCount > 120 || s.LogicalCores <= 0 || s.LogicalCores > 65536 {
 		return false
 	}
 	for _, count := range []uint64{s.MemorySampleCount, s.SwapSampleCount, s.PSISomeSampleCount, s.PSIFullSampleCount, s.PressureSampleCount, s.CPUSampleCount, s.LoadSampleCount, s.DiskSampleCount} {
@@ -96,7 +96,7 @@ func mergeHostSummary(a, b hostmetrics.Summary) (hostmetrics.Summary, bool) {
 	return a, true
 }
 
-func (s *Service) mergeRunnerHostMetrics(ctx context.Context, tx *sql.Tx, scope nativeScope, raw json.RawMessage, now time.Time) []hostmetrics.Acknowledgment {
+func prepareRunnerHostMetrics(raw json.RawMessage) []hostmetrics.Summary {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -105,10 +105,25 @@ func (s *Service) mergeRunnerHostMetrics(ctx context.Context, tx *sql.Tx, scope 
 		slog.Default().Warn("runner host summaries dropped", "reason", "invalid batch")
 		return nil
 	}
-	acknowledged := make([]hostmetrics.Acknowledgment, 0, len(segments))
+	summaries := make([]hostmetrics.Summary, 0, len(segments))
 	for _, segment := range segments {
 		var summary hostmetrics.Summary
-		if len(segment) > 1024 || json.Unmarshal(segment, &summary) != nil || !validHostSummary(summary, now) {
+		if len(segment) > 1024 || json.Unmarshal(segment, &summary) != nil || !validHostSummary(summary) {
+			slog.Default().Warn("runner host summary dropped", "reason", "invalid summary")
+			continue
+		}
+		summaries = append(summaries, summary)
+	}
+	return summaries
+}
+
+func (s *Service) mergeRunnerHostMetrics(ctx context.Context, tx *sql.Tx, scope nativeScope, summaries []hostmetrics.Summary, now time.Time) []hostmetrics.Acknowledgment {
+	if summaries == nil {
+		return nil
+	}
+	acknowledged := make([]hostmetrics.Acknowledgment, 0, len(summaries))
+	for _, summary := range summaries {
+		if summary.Hour.After(now.UTC().Truncate(time.Hour)) || summary.SegmentID.After(now) {
 			slog.Default().Warn("runner host summary dropped", "reason", "invalid summary")
 			continue
 		}

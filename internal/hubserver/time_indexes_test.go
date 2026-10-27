@@ -90,4 +90,15 @@ func TestPortableTimeIndexMigration(t *testing.T) {
 	if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM hosted_audit_times),(SELECT complete FROM time_index_progress WHERE owner='audit'),(SELECT count(*) FROM sqlite_schema WHERE name IN ('hosted_audit_retention_idx','health_decision_window','health_landing_window'))`).Scan(&audit, &complete, &old); err != nil || audit != commandReceiptPruneBatch+1 || complete != 1 || old != 0 {
 		t.Fatalf("resumed population audit=%d complete=%d old indexes=%d err=%v", audit, complete, old, err)
 	}
+	for _, owner := range []string{"health", "audit"} {
+		t.Run("completed/"+owner, func(t *testing.T) {
+			ctx, timing := withWriterTiming(t.Context())
+			if err := f.service.database.populateTimeIndex(ctx, owner); err != nil {
+				t.Fatal(err)
+			}
+			if got := timing.txs.Load(); got != 0 {
+				t.Fatalf("completed index began %d writer transactions", got)
+			}
+		})
+	}
 }
