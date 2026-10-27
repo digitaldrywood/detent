@@ -211,6 +211,7 @@ func TestStageBoundaries(t *testing.T) {
 	source := pinnedFixture(t)
 	for _, test := range []struct {
 		name, verdict, want, fail string
+		baseCommit                string
 		failPublication           string
 		failCandidatePublication  bool
 		ledgerStatus              string
@@ -226,6 +227,7 @@ func TestStageBoundaries(t *testing.T) {
 		{name: "needs validation", verdict: "needs_validation", want: "needs_validation"},
 		{name: "rejected", verdict: "rejected", want: "clean"},
 		{name: "clean", want: "clean"},
+		{name: "incremental identity retained", want: "clean", baseCommit: strings.Repeat("b", 40)},
 		{name: "invocation allowance", verdict: "confirmed", sandbox: true, invocations: 8, want: "incomplete", ledgerStatus: "planned"},
 		{name: "allowance after confirmed record", verdict: "confirmed", sandbox: true, invocations: 9, want: "incomplete", repairs: 2},
 		{name: "allowance during verification", verdict: "confirmed", sandbox: true, allowance: Usage{Input: 25, Output: 100, Cached: 25}, want: "incomplete", ledgerStatus: "candidate", retainedCandidates: true},
@@ -260,7 +262,10 @@ func TestStageBoundaries(t *testing.T) {
 			}
 			for _, run := range []string{"first", "second"} {
 				identity := Identity{ProjectID: "prj_example", Repository: "example-org/example-project", Commit: source.Commit(), ReleaseSeries: "release/v1.0", RunID: run, Attempt: "1", JobID: "audit", RunURL: "https://example.test/runs/" + run}
-				result, err := stage.Run(t.Context(), Request{Identity: identity, Source: source, Scratch: root, Allowance: allowance})
+				result, err := stage.Run(t.Context(), Request{BaseCommit: test.baseCommit, Identity: identity, Source: source, Scratch: root, Allowance: allowance})
+				if result.BaseCommit != test.baseCommit {
+					t.Fatalf("scope base lost: %q", result.BaseCommit)
+				}
 				if result.Status != test.want {
 					t.Fatalf("status=%s want=%s err=%v", result.Status, test.want, err)
 				}
@@ -346,6 +351,73 @@ func TestConfirmationUsesCurrentCandidateExecution(t *testing.T) {
 			}
 			if record.Verdict != test.want {
 				t.Fatalf("verdict=%s want=%s", record.Verdict, test.want)
+			}
+		})
+	}
+}
+
+func TestLedgerCanonicalOrderPreservesUnitsAndRejectsDuplicates(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	if err := os.Mkdir(filepath.Join(directory, "bundle"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareBundle(filepath.Join(directory, "bundle")); err != nil {
+		t.Fatal(err)
+	}
+	e := &execution{directory: directory, stage: &Stage{records: &memoryRecords{}}, state: Snapshot{Status: "incomplete", Ledger: json.RawMessage("[]")}}
+	var first []json.RawMessage
+	if err := json.Unmarshal(fixtureLedger("planned", false), &first); err != nil {
+		t.Fatal(err)
+	}
+	second := json.RawMessage(strings.ReplaceAll(strings.ReplaceAll(string(first[0]), "route", "zroute"), "Route", "Zroute"))
+	raw, err := json.Marshal([]json.RawMessage{second, first[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.updateLedger(t.Context(), raw); err != nil {
+		t.Fatal(err)
+	}
+	var actual []map[string]any
+	if err := json.Unmarshal(e.state.Ledger, &actual); err != nil {
+		t.Fatal(err)
+	}
+	if len(actual) != 2 || actual[0]["coverage_id"] != fixtureCoverage || actual[1]["coverage_id"] != "zroute::owner::api::access-control" {
+		t.Fatalf("ledger order or units changed: %s", e.state.Ledger)
+	}
+	for _, unit := range actual {
+		if unit["status"] != "planned" || len(unit["local_checks"].([]any)) != 0 {
+			t.Fatalf("canonical ordering changed review claims: %v", unit)
+		}
+	}
+	duplicate, err := json.Marshal([]json.RawMessage{first[0], first[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.updateLedger(t.Context(), duplicate); err == nil {
+		t.Fatal("duplicate coverage identity accepted")
+	}
+	if err := e.updateLedger(t.Context(), fixtureLedger("planned", false)); err == nil {
+		t.Fatal("canonical serialization dropped prior coverage")
+	}
+}
+
+func TestScopedCoverageRequiresCompleteInScopeEvidence(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, base, ledger string
+		want               bool
+	}{
+		{"full review cannot exclude", "", `[{"status":"covered"},{"status":"out_of_scope"}]`, false},
+		{"incremental review retains exclusions", strings.Repeat("b", 40), `[{"status":"covered"},{"status":"out_of_scope"}]`, true},
+		{"cannot exclude everything", strings.Repeat("b", 40), `[{"status":"out_of_scope"}]`, false},
+		{"planned unit incomplete", strings.Repeat("b", 40), `[{"status":"planned"},{"status":"out_of_scope"}]`, false},
+		{"unresolved excluded finding", strings.Repeat("b", 40), `[{"status":"covered"},{"status":"out_of_scope","result_fingerprints":["unresolved"]}]`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &execution{request: Request{BaseCommit: tc.base}, state: Snapshot{Ledger: json.RawMessage(tc.ledger)}}
+			if got := e.coverageComplete(); got != tc.want {
+				t.Fatalf("coverageComplete()=%v want %v", got, tc.want)
 			}
 		})
 	}
