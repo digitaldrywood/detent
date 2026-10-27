@@ -194,7 +194,7 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 				version = f.publish(t, "retained-version", historical.ID, true)
 			}
 			automatic := func(id, verdict string, source bool, bytes int) tracker.ChangeReview {
-				result := &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Submitted: true, Verdict: verdict, Commands: []gate.CommandResult{{Command: "make check-land", Output: strings.Repeat("x", bytes)}}}
+				result := &gate.ValidatorResult{SessionID: 42, VersionID: version.ID, Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, Submitted: true, Verdict: verdict, Attribution: "unknown", Commands: []gate.CommandResult{{Command: "make check-land", Output: strings.Repeat("x", bytes), Attribution: "unknown"}}}
 				review := tracker.ChangeReview{ID: id, VersionID: version.ID, Decision: "approved", Actor: tracker.Actor{Kind: "runner", PrincipalID: "worker"}, CreatedAt: version.CreatedAt}
 				if source {
 					review.ImplementationReview = result
