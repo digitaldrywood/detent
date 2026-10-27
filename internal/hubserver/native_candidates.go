@@ -128,7 +128,7 @@ func nativeCandidateIDs(ctx context.Context, tx nativeQueryer, query claimCandid
 	}
 	laneOrder := "CASE WHEN lower(trim(ws.detent_state)) = 'merging' THEN 0 ELSE 1 END"
 	if query.NativeScope.credential.Runner.Valid() {
-		laneOrder = "CASE lower(trim(ws.detent_state)) WHEN 'merging' THEN 0 WHEN 'rework' THEN 1 ELSE 2 END"
+		laneOrder = "CASE lower(trim(ws.detent_state)) WHEN 'merging' THEN 0 WHEN 'rework' THEN 1 WHEN 'in progress' THEN 2 ELSE 3 END"
 	}
 	statement := strings.Join([]string{`WITH candidates AS NOT MATERIALIZED (
 SELECT i.id, `, projectRank, ` AS project_rank,
@@ -219,7 +219,7 @@ WHERE i.organization_id = `,
 	statement += `)`
 	order := "priority, aging_boost, landing, project_rank, created, identifier, id"
 	if query.NativeScope.credential.Runner.Valid() {
-		order = "project_rank, landing, priority, aging_boost, created, identifier, id"
+		order = "landing, project_rank, priority, aging_boost, created, identifier, id"
 	}
 	baseArgs := args
 	readPage := func(after tracker.WorkItemID, limit int, anchor bool) ([]tracker.WorkItemID, tracker.WorkItemID, int, error) {
