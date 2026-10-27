@@ -714,6 +714,10 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var retained = item
 			decodeHubResponse(t, response, &retained)
+			if retained.ChangeSequence < item.ChangeSequence {
+				t.Fatal("apply regressed project change sequence")
+			}
+			item.ChangeSequence = retained.ChangeSequence
 			if !reflect.DeepEqual(retained, item) {
 				t.Fatalf("apply remapped or edited work item: %+v -> %+v", item, retained)
 			}

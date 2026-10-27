@@ -306,6 +306,10 @@ func TestNativeMachineDefectOccurrences(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var historical tracker.NativeIssue
 			decodeHubResponse(t, response, &historical)
+			if historical.ChangeSequence < historicalBefore.ChangeSequence {
+				t.Fatal("scheduled report regressed project change sequence")
+			}
+			historicalBefore.ChangeSequence = historical.ChangeSequence
 			if !reflect.DeepEqual(historical, historicalBefore) {
 				t.Fatalf("scheduled report changed terminal history: %#v, want %#v", historical, historicalBefore)
 			}

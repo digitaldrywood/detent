@@ -1032,6 +1032,27 @@ func TestNativeBoardDependentChangesReachBlockerStream(t *testing.T) {
 	}
 }
 
+func normalizeTestDashboardWatermark(t *testing.T, before, after map[string]any) {
+	t.Helper()
+	if before == nil || after == nil {
+		t.Fatal("dashboard snapshot is not an object")
+	}
+	previous, existed := before["change_sequence"]
+	current, exists := after["change_sequence"]
+	if existed != exists {
+		t.Fatal("dashboard change sequence availability changed")
+	}
+	if !existed {
+		return
+	}
+	previousSequence, previousOK := previous.(float64)
+	currentSequence, currentOK := current.(float64)
+	if !previousOK || !currentOK || currentSequence < previousSequence {
+		t.Fatalf("dashboard change sequence regressed: %v -> %v", previous, current)
+	}
+	after["change_sequence"] = previous
+}
+
 func drainTestNativeBoard(t *testing.T, service *Service) {
 	t.Helper()
 	var cursor string
