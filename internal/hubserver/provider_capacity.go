@@ -193,6 +193,12 @@ LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id`
 	}
 	defer rows.Close()
 	snapshot.groups = map[string][]scopedProviderAccount{}
+	type landingUsageRow struct {
+		raw                                sql.NullString
+		expiry, session, runnerID, project string
+		machine                            tracker.MachineID
+	}
+	var landingRows []landingUsageRow
 	leaseCount := 0
 	for rows.Next() {
 		leaseCount++
@@ -200,19 +206,28 @@ LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id`
 			snapshot.truncated = true
 			break
 		}
-		var raw sql.NullString
-		var expiry, session, runnerID, project string
-		var machine tracker.MachineID
-		var reservation providercapacity.Reservation
-		if err := rows.Scan(&raw, &expiry, &session, &machine, &runnerID, &project); err != nil {
+		var value landingUsageRow
+		if err := rows.Scan(&value.raw, &value.expiry, &value.session, &value.machine, &value.runnerID, &value.project); err != nil {
 			return snapshot, err
 		}
-		if !raw.Valid {
+		if !value.raw.Valid {
 			continue
 		}
-		if explanationRead(ctx) && strings.HasPrefix(session, "landing/") {
+		if explanationRead(ctx) && strings.HasPrefix(value.session, "landing/") {
 			snapshot.truncated = true
 		}
+		landingRows = append(landingRows, value)
+	}
+	if err := rows.Err(); err != nil {
+		return snapshot, err
+	}
+	if err := rows.Close(); err != nil {
+		return snapshot, err
+	}
+	for _, value := range landingRows {
+		var reservation providercapacity.Reservation
+		raw, expiry, session, machine, runnerID, project := value.raw, value.expiry, value.session, value.machine, value.runnerID, value.project
+
 		end, err := parseTimeValue(expiry)
 		if err != nil {
 			return snapshot, err
@@ -221,6 +236,10 @@ LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id`
 			continue
 		}
 		if err := json.Unmarshal([]byte(raw.String), &reservation); err != nil {
+			return snapshot, err
+		}
+		project, err = resolveLandingProject(ctx, query, project, false)
+		if err != nil {
 			return snapshot, err
 		}
 		if reservation.Backend == "git" && reservation.Role == "merge" {

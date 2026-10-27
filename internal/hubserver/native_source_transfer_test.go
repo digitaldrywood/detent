@@ -195,6 +195,48 @@ func TestNativeSourceTransfer(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(replacement.ID)+"/release", a.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: replacement.FencingToken, Reason: "completed"}), http.StatusNoContent)
 			}
 			if test.acknowledged {
+				if !test.replacement {
+					for _, release := range []struct {
+						name, payload  string
+						missing, stale bool
+					}{
+						{name: "missing release", missing: true},
+						{name: "other fence", stale: true},
+						{name: "absent reason", payload: `{}`},
+						{name: "null reason", payload: `{"reason":null}`},
+						{name: "private reason", payload: `{"reason":"private release details"}`},
+					} {
+						t.Run(release.name, func(t *testing.T) {
+							tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+							if err != nil {
+								t.Fatal(err)
+							}
+							defer tx.Rollback()
+							data := event.Data
+							if release.missing {
+								data.LeaseID = "missing-lease"
+							}
+							if release.stale {
+								data.FencingToken++
+							}
+							if release.payload != "" {
+								if err := withMutableClaimFact(t.Context(), tx, "work_events_no_update", func() error {
+									_, err := tx.ExecContext(t.Context(), `UPDATE work_events SET payload_json=? WHERE kind='lease_released' AND fencing_token=?`, release.payload, lease.FencingToken)
+									return err
+								}); err != nil {
+									t.Fatal(err)
+								}
+							}
+							failure, err := leaseReleaseFailure(t.Context(), tx, data, clock.Now())
+							if err != nil {
+								t.Fatal(err)
+							}
+							if failure.Error != "attempt lease was released before the attempt finished; release reason unavailable (lease expired, replaced or its runner was revoked)" || failure.ErrorClass != "lease_released" || failure.Stage != "lease_release" || !failure.ObservedAt.Equal(clock.Now()) {
+								t.Fatalf("missing release cause changed: %+v", failure)
+							}
+						})
+					}
+				}
 				ack := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: "terminated"}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{AttemptID: event.Data.AttemptID, RunID: event.Data.RunID, LeaseID: lease.ID, FencingToken: lease.FencingToken, PolicyID: event.Data.PolicyID, Identity: event.Data.Identity, Sequence: event.Data.Sequence + 1, Outcome: "cancelled"}}
 				for _, invalid := range []string{"fence", "owner", "success", "evidence"} {
 					stale := ack

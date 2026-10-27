@@ -55,6 +55,13 @@ WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, query.WorkItemID
 	} else if !dispatchable {
 		snapshot.StateExclusion = fmt.Sprintf("Native workflow state %s is not dispatchable", issue.State)
 	}
+	if kind == "" {
+		legacy, err := readUnknownAnsweredClaim(ctx, q, query.WorkItemID)
+		if err != nil {
+			return snapshot, err
+		}
+		kind, attemptID = legacy.Kind, legacy.AttemptID
+	}
 	if kind != "" {
 		snapshot.AnsweredExclusion = &tracker.NativeAnsweredExclusion{Kind: kind, AttemptID: attemptID}
 	}
@@ -286,7 +293,7 @@ WHERE i.organization_id = `,
 
 const nativeCandidateCompletionEvidence = `
  SELECT page.id, page.priority, page.aging_boost, page.landing, page.created, page.identifier, ` + notAlreadyAnsweredClause + `, i.project_id,
- COALESCE(a.data_json, '{}') AS completion_evidence
+ COALESCE(a.data_json, '{}') AS completion_evidence, COALESCE(a.checkpoint_json,'null'), a.claim_facts_known
  FROM page JOIN issues i ON i.id = page.id
  JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
  JOIN workflow_states ws ON ws.id = i.workflow_state_id
@@ -308,8 +315,9 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 	var position runnerSelectionCursor
 	for rows.Next() {
 		var unanswered bool
-		var project, runRaw string
-		if err := rows.Scan(&last, &position.Priority, &position.Aging, &position.Landing, &position.Created, &position.Identifier, &unanswered, &project, &runRaw); err != nil {
+		var project, runRaw, checkpointRaw string
+		var known sql.NullInt64
+		if err := rows.Scan(&last, &position.Priority, &position.Aging, &position.Landing, &position.Created, &position.Identifier, &unanswered, &project, &runRaw, &checkpointRaw, &known); err != nil {
 			return nil, 0, 0, err
 		}
 		scanned++
@@ -320,6 +328,15 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 		var run tracker.NativeRunData
 		if err := json.Unmarshal([]byte(runRaw), &run); err != nil {
 			return nil, 0, 0, err
+		}
+		if !known.Valid && run.AttemptID != "" {
+			var checkpoint *tracker.NativeCheckpoint
+			if err := json.Unmarshal([]byte(checkpointRaw), &checkpoint); err != nil {
+				return nil, 0, 0, err
+			}
+			if answeredClaimKind(run, checkpoint) != "" {
+				continue
+			}
 		}
 		if run.Disposition == nil {
 			if err := decodeRunDetail(ctx, q, runRaw, &run); err != nil {

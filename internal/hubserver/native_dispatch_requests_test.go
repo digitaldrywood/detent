@@ -313,7 +313,7 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 			revision := f.reload(t).Revision
 			f.finish(t, test.disposition)
 			if test.accepted {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.runtime.completion.acceptance_recorded', json('true')) WHERE id = ?`, f.attempt); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET acceptance_recorded=1,data_json = json_set(data_json, '$.runtime.completion.acceptance_recorded', json('true')) WHERE id = ?`, f.attempt); err != nil {
 					t.Fatal(err)
 				}
 			}

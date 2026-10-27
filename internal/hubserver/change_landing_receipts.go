@@ -108,6 +108,9 @@ func persistAttemptLanding(ctx context.Context, tx *sql.Tx, attempt string, rece
 		data.Runtime = &tracker.NativeRuntimeObservation{}
 	}
 	data.Runtime.Landing = &receipt
+	if err := updateAttemptClaimFacts(ctx, tx, attempt, data); err != nil {
+		return err
+	}
 	if err := updateAttemptHotProjection(ctx, tx, attempt, status, data); err != nil {
 		return err
 	}

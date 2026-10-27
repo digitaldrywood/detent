@@ -90,6 +90,12 @@ WHERE l.machine_id IN (` + placeholders(len(machines)) + `) AND l.released_at IS
 	projects := make(map[string]map[tracker.ProjectID]int)
 	hostSlots := make(map[string]bool)
 	runnerSlots := make(map[string]bool)
+	type landingUsageRow struct {
+		machine                                      tracker.MachineID
+		runner, expiry, session, lease, batchProject string
+		project                                      tracker.ProjectID
+	}
+	var landingRows []landingUsageRow
 	leaseCount := 0
 	for rows.Next() {
 		leaseCount++
@@ -97,16 +103,26 @@ WHERE l.machine_id IN (` + placeholders(len(machines)) + `) AND l.released_at IS
 			truncated = true
 			break
 		}
-		var machine tracker.MachineID
-		var runner, expiry, session, lease, batchProject string
-		var project tracker.ProjectID
-		if err := rows.Scan(&machine, &runner, &expiry, &session, &lease, &project, &batchProject); err != nil {
+		var value landingUsageRow
+		if err := rows.Scan(&value.machine, &value.runner, &value.expiry, &value.session, &value.lease, &value.project, &value.batchProject); err != nil {
 			return nil, false, err
 		}
-		if explanationRead(ctx) && strings.HasPrefix(session, "landing/") {
+		if explanationRead(ctx) && strings.HasPrefix(value.session, "landing/") {
 			truncated = true
 		}
+		landingRows = append(landingRows, value)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, false, err
+	}
+	for _, value := range landingRows {
+		machine, runner, expiry, session, lease, project, batchProject := value.machine, value.runner, value.expiry, value.session, value.lease, value.project, value.batchProject
+
 		end, err := parseTimeValue(expiry)
+		if err != nil {
+			return nil, false, err
+		}
+		batchProject, err = resolveLandingProject(ctx, query, batchProject, false)
 		if err != nil {
 			return nil, false, err
 		}
@@ -131,9 +147,6 @@ WHERE l.machine_id IN (` + placeholders(len(machines)) + `) AND l.released_at IS
 				runnerSlots[runner+"/"+key] = true
 			}
 		}
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, false, err
 	}
 	var provider providerCapacitySnapshot
 	for _, r := range runners {

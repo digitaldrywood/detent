@@ -363,7 +363,7 @@ func TestStorageConversionImmutability(t *testing.T) {
 	db := f.service.database
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	ctx := f.service.contentContext(t.Context())
-	raw := `{"actor":{"principal_id":"reviewer"},"decision":"approved","source":{"bytes":8192},"output":"` + strings.Repeat("x", 8192) + `"}`
+	raw := `{"policy":{"gates":{"github_pull_request":false}},"actor":{"principal_id":"reviewer"},"decision":"approved","source":{"bytes":8192},"output":"` + strings.Repeat("x", 8192) + `"}`
 	for i := range 2 {
 		issue := f.nativeFixture.create(t, fmt.Sprintf("immutable history %d", i))
 		change, version := fmt.Sprintf("conversion-change-%d", i), fmt.Sprintf("conversion-version-%d", i)
@@ -404,7 +404,7 @@ func TestStorageConversionImmutability(t *testing.T) {
 			name    string
 			allowed map[string]bool
 		}{
-			{"change_versions", nil},
+			{"change_versions", map[string]bool{"claim_head_sha": true, "gate_github_pull_request": true}},
 			{"change_evidence", map[string]bool{"claim_review_kind": true, "claim_review_actor": true, "claim_review_decision": true, "claim_review_current": true}},
 			{"change_sources", nil},
 			{"collaboration_events", map[string]bool{
@@ -412,6 +412,9 @@ func TestStorageConversionImmutability(t *testing.T) {
 				"analytics_recorded_ns": true, "analytics_from_state": true, "analytics_to_state": true,
 				"analytics_attempt_id": true, "analytics_skip_key": true, "analytics_projection_version": true,
 				"query_metadata_version": true, "run_attempt_id": true, "activity_spans_present": true,
+				"claim_attempt_id": true, "run_id": true, "run_lease_id": true, "run_fencing_token": true,
+				"run_sequence": true, "run_policy_id": true, "push_change_id": true, "push_version_id": true,
+				"push_head_sha": true, "push_external_effect": true, "push_effect_state": true,
 			}},
 		} {
 			rows, err := db.reader.QueryContext(t.Context(), "PRAGMA table_info("+table.name+")")

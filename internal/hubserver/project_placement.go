@@ -76,20 +76,42 @@ func readPlacementSpriteUsage(ctx context.Context, q nativeQueryer, scope native
 	}
 	defer rows.Close()
 	groups := map[string]bool{}
+
+	type landingUsageRow struct {
+		machine                         tracker.MachineID
+		session, lease, runner, project string
+		name                            *string
+		hostname                        string
+		legacy                          sql.NullString
+	}
+	var landingRows []landingUsageRow
 	for rows.Next() {
-		var machine tracker.MachineID
-		var session, lease, runner, project string
-		var name *string
-		var hostname string
-		var legacy sql.NullString
-		if err := rows.Scan(&machine, &session, &lease, &runner, &project, &name, &hostname, &legacy); err != nil {
+		var value landingUsageRow
+		if err := rows.Scan(&value.machine, &value.session, &value.lease, &value.runner, &value.project, &value.name, &value.hostname, &value.legacy); err != nil {
 			return 0, err
 		}
-		facts, err := resolveMachineSpriteFacts(machineSpriteFacts{Name: name}, legacy)
+		landingRows = append(landingRows, value)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	for _, value := range landingRows {
+
+		machine, session, lease, runner, project := value.machine, value.session, value.lease, value.runner, value.project
+
+		project, err = resolveLandingProject(ctx, q, project, false)
 		if err != nil {
 			return 0, err
 		}
-		if facts.Name != nil && *facts.Name == hostname {
+		facts, err := resolveMachineSpriteFacts(machineSpriteFacts{Name: value.name}, value.legacy)
+		if err != nil {
+			return 0, err
+		}
+		if facts.Name != nil && *facts.Name == value.hostname {
 			groups[landingLeaseCapacityKey(machine, project, session, runner, lease)] = true
 		}
 	}

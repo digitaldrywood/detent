@@ -447,7 +447,11 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 				if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_issue_links(change_id,organization_id,project_id,work_item_id) VALUES(?,?,?,?)", change.ID, scope.organization, scope.project, issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,1,'{}')", change.CurrentVersion, change.ID); err != nil {
+				versionRaw, err := marshalNative(tracker.ChangeVersion{ID: change.CurrentVersion, ChangeID: change.ID, Policy: hubTestPolicy()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,1,?)", change.CurrentVersion, change.ID, versionRaw); err != nil {
 					t.Fatal(err)
 				}
 			}

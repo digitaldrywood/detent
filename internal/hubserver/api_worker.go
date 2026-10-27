@@ -791,9 +791,9 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 }
 
 const nativeAnsweredClassification = `CASE
- WHEN COALESCE(json_extract(answered.data_json, '$.disposition.human_action'), 0) <> 0 THEN 'human_action'
- WHEN COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') = 'permission_wait' THEN 'permission_wait'
- WHEN COALESCE(json_extract(answered.data_json, '$.runtime.completion.acceptance_recorded'), 0) = 1 THEN 'recorded_acceptance'
+ WHEN answered.disposition_human_action <> 0 THEN 'human_action'
+ WHEN answered.disposition_reason_code = 'permission_wait' THEN 'permission_wait'
+ WHEN answered.acceptance_recorded = 1 THEN 'recorded_acceptance'
  ELSE '' END`
 
 const nativeAnsweredAttemptFrom = `FROM native_attempts answered
@@ -801,15 +801,16 @@ const nativeAnsweredAttemptFrom = `FROM native_attempts answered
    AND answered.project_id = i.project_id
    AND answered.work_item_id = i.native_id
    AND answered.status = 'succeeded'
+   AND answered.claim_facts_known=1
    AND (` + nativeAnsweredClassification + `) <> ''
-   AND NOT (json_type(answered.data_json, '$.disposition') IS NULL
-     AND COALESCE(json_extract(answered.checkpoint_json, '$.external_effect'), '') IN ('git_push', 'pr_create'))
-   AND NOT (COALESCE(json_extract(answered.data_json, '$.disposition.status'), '') = 'in_progress'
-     AND COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 1) = 0
-     AND COALESCE(json_extract(answered.data_json, '$.disposition.human_action'), 1) = 0
-     AND COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') = '')
-   AND NOT (COALESCE(json_extract(answered.checkpoint_json, '$.external_effect'), '') IN ('git_push', 'pr_create')
-     AND COALESCE(json_extract(answered.checkpoint_json, '$.effect_state'), '') IN ('pending', 'ambiguous'))
+   AND NOT (answered.disposition_present=0
+     AND answered.checkpoint_external_effect IN ('git_push', 'pr_create'))
+   AND NOT (answered.disposition_status = 'in_progress'
+     AND answered.disposition_blockers = 0
+     AND answered.disposition_human_action = 0
+     AND answered.disposition_reason_code = '')
+   AND NOT (answered.checkpoint_external_effect IN ('git_push', 'pr_create')
+     AND answered.checkpoint_effect_state IN ('pending', 'ambiguous'))
    AND answered.work_item_revision >= i.revision
    AND answered.dispatch_generation >= i.dispatch_generation
    AND answered.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest

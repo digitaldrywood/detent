@@ -329,7 +329,7 @@ func (s *Service) landChange(c echo.Context) error {
 		if err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE change_requests SET record_json = ?, claim_version_id = ?, claim_head_sha = ? WHERE id = ?", raw, version.ID, version.HeadSHA, change.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE change_requests SET record_json = ?, claim_version_id = ?, claim_head_sha = ?, landed_version_id=? WHERE id = ?", raw, version.ID, version.HeadSHA, change.Landed.VersionID, change.ID); err != nil {
 			return nil, err
 		}
 		if err := recordPolicyLandingProvenance(ctx, tx, string(scope.organization)+"/"+string(scope.project), 0, validationRepository(version.Repository), request.MergeSHA, policyLanding{ChangeID: change.ID}); err != nil {
@@ -434,8 +434,8 @@ func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nati
 		return false, false, 0, err
 	}
 	if !strings.EqualFold(strings.TrimSpace(state), "Merging") {
-		var pending bool
-		if err := query.QueryRowContext(ctx, `SELECT (`+nativePendingLandingClause+`) FROM issues i `+nativeLandingCapacityJoins+` WHERE i.id=?`, id).Scan(&pending); err != nil {
+		_, pending, err := readPendingLandingFact(ctx, query, id)
+		if err != nil {
 			return false, false, 0, err
 		}
 		if !pending {

@@ -266,44 +266,51 @@ ORDER BY a.fencing_token DESC LIMIT 1`, changeID, version.ID).Scan(&raw)
 // evidence cannot cause a scan of older attempts. Checkpoints remain available
 // after event compaction and after the recorder replaces its latest handoff.
 const versionPublicationPushSQL = `WITH checkpoint AS (
- SELECT data_json FROM collaboration_events
- WHERE organization_id=? AND project_id=? AND work_item_id=?
- AND type='run.checkpointed'
- AND json_extract(data_json,'$.run.handoff.external_effect')='git_push'
- AND json_extract(data_json,'$.run.handoff.effect_state')='confirmed'
- AND json_extract(data_json,'$.run.handoff.change.change_id')=?
- AND json_extract(data_json,'$.run.handoff.change.version_id')=?
- AND json_extract(data_json,'$.run.handoff.change.head_sha')=?
+ SELECT * FROM collaboration_events
+ WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='run.checkpointed' AND claim_attempt_id IS NOT NULL
+ AND push_external_effect='git_push' AND push_effect_state='confirmed'
+ AND push_change_id=? AND push_version_id=? AND push_head_sha=?
  ORDER BY sequence DESC LIMIT 1
 )
-SELECT json_extract(e.data_json,'$.run') FROM checkpoint e
-JOIN native_attempts a ON a.id=json_extract(e.data_json,'$.run.attempt_id')
+SELECT e.data_json FROM checkpoint e
+JOIN native_attempts a ON a.id=e.claim_attempt_id
  AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?
- AND a.run_id=json_extract(e.data_json,'$.run.run_id')
- AND a.lease_id=json_extract(e.data_json,'$.run.lease_id')
- AND a.fencing_token=json_extract(e.data_json,'$.run.fencing_token')
- AND json_extract(a.data_json,'$.policy_id')=json_extract(e.data_json,'$.run.policy_id')
-JOIN native_attempt_events ae ON ae.attempt_id=a.id AND ae.sequence=json_extract(e.data_json,'$.run.sequence')
+ AND a.run_id=e.run_id AND a.lease_id=e.run_lease_id AND a.fencing_token=e.run_fencing_token
+ AND a.policy_id=e.run_policy_id
+JOIN native_attempt_events ae ON ae.attempt_id=a.id AND ae.sequence=e.run_sequence
 JOIN leases l ON l.lease_id=a.lease_id AND l.fencing_token=a.fencing_token
 JOIN issues i ON i.id=l.issue_id AND i.organization_id=a.organization_id AND i.project_id=a.project_id AND i.native_id=a.work_item_id
 JOIN lease_policies p ON p.lease_id=a.lease_id AND p.scope=a.organization_id || '/' || a.project_id
- AND p.policy_id=json_extract(e.data_json,'$.run.policy_id')`
+ AND p.policy_id=e.run_policy_id`
 
 func resolveVersionPublicationPush(ctx context.Context, query nativeQueryer, scope nativeScope, item string, version tracker.ChangeVersion) (tracker.ChangePublicationPush, bool, error) {
 	if version.External != nil || version.AttemptID == "" || !version.Policy.Gates.GitHubPullRequest || version.Landing != nil && version.Landing.Landed {
 		return tracker.ChangePublicationPush{}, false, nil
 	}
-	var raw string
-	err := query.QueryRowContext(ctx, versionPublicationPushSQL, scope.organization, scope.project, item, version.ChangeID, version.ID, version.HeadSHA, scope.organization, scope.project, item).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return tracker.ChangePublicationPush{}, false, nil
-	}
+	run, handled, err := legacyPublicationPush(ctx, query, scope, item, version)
 	if err != nil {
 		return tracker.ChangePublicationPush{}, false, err
 	}
-	var run tracker.NativeRunData
-	if err := decodeRunDetail(ctx, query, raw, &run); err != nil {
-		return tracker.ChangePublicationPush{}, false, err
+	if handled && run == nil {
+		return tracker.ChangePublicationPush{}, false, nil
+	}
+	if !handled {
+		var raw string
+		err := query.QueryRowContext(ctx, versionPublicationPushSQL, scope.organization, scope.project, item, version.ChangeID, version.ID, version.HeadSHA, scope.organization, scope.project, item).Scan(&raw)
+		if errors.Is(err, sql.ErrNoRows) {
+			return tracker.ChangePublicationPush{}, false, nil
+		}
+		if err != nil {
+			return tracker.ChangePublicationPush{}, false, err
+		}
+		var data tracker.CollaborationData
+		if err := decodeRunHistory(ctx, query, raw, &data); err != nil {
+			return tracker.ChangePublicationPush{}, false, err
+		}
+		run = data.Run
+	}
+	if run == nil {
+		return tracker.ChangePublicationPush{}, false, nil
 	}
 	ref := tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
 	checkpoint := run.Handoff
@@ -680,7 +687,7 @@ func (s *Service) createChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO change_requests (id, organization_id, project_id, work_item_id, record_json, claim_version_id, claim_head_sha) VALUES (?, ?, ?, ?, ?, '', '')", change.ID, scope.organization, scope.project, change.WorkItemID, raw); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO change_requests (id, organization_id, project_id, work_item_id, record_json, claim_version_id, claim_head_sha,landed_version_id) VALUES (?, ?, ?, ?, ?, '', '', '')", change.ID, scope.organization, scope.project, change.WorkItemID, raw); err != nil {
 		return nil, err
 	}
 	for _, id := range change.LinkedIssues {

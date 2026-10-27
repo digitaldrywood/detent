@@ -245,6 +245,11 @@ func (s *Service) checkReleasePickDelivery(ctx context.Context, tx *sql.Tx, scop
 		if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM issues i WHERE i.id = ? AND EXISTS (SELECT 1 "+nativeAnsweredAttemptFrom+"))", issueID).Scan(&answered); err != nil {
 			return err
 		}
+		legacy, err := readUnknownAnsweredClaim(ctx, tx, issueID)
+		if err != nil {
+			return err
+		}
+		answered = answered || legacy.Kind != ""
 		if answered {
 			return nativePublicInvalid("Delivery retains an unanswered attempt hold")
 		}

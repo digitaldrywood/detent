@@ -142,13 +142,35 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope `+nativeLandingCapacityJoin
 		return r, err
 	}
 	defer rows.Close()
+
+	type landingUsageRow struct {
+		expiry, runner, raw, approved, session, batchProject string
+		lease                                                runnerauth.RunnerLease
+	}
+	var landingRows []landingUsageRow
 	for rows.Next() {
-		var expiry, runner, raw, approved, session, batchProject string
-		var lease runnerauth.RunnerLease
-		if err := rows.Scan(&expiry, &runner, &lease.ID, &lease.FencingToken, &lease.WorkItemID, &lease.Title, &lease.ProjectID, &raw, &approved, &session, &batchProject); err != nil {
+		var value landingUsageRow
+		if err := rows.Scan(&value.expiry, &value.runner, &value.lease.ID, &value.lease.FencingToken, &value.lease.WorkItemID, &value.lease.Title, &value.lease.ProjectID, &value.raw, &value.approved, &value.session, &value.batchProject); err != nil {
 			return r, err
 		}
+		landingRows = append(landingRows, value)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return r, err
+	}
+	if err := rows.Close(); err != nil {
+		return r, err
+	}
+	for _, value := range landingRows {
+
+		expiry, runner, lease, raw, approved, session, batchProject := value.expiry, value.runner, value.lease, value.raw, value.approved, value.session, value.batchProject
+
 		end, err := parseTimeValue(expiry)
+		if err != nil {
+			return r, err
+		}
+		batchProject, err = resolveLandingProject(ctx, db, batchProject, false)
 		if err != nil {
 			return r, err
 		}

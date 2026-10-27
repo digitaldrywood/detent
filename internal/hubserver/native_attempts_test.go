@@ -175,12 +175,23 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusConflict)
 		})
 	}
-	response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts", worker, nil)
-	requireNativeStatus(t, response, http.StatusOK)
-	var attempts tracker.Page[tracker.NativeAttempt]
-	decodeHubResponse(t, response, &attempts)
-	if len(attempts.Items) != 1 || attempts.Items[0].Sequence != 3 || attempts.Items[0].Status != "succeeded" || attempts.Items[0].Checkpoint == nil || attempts.Items[0].Checkpoint.WorktreeState != "dirty" || attempts.Items[0].MachineID != lease.MachineID || attempts.Items[0].SessionID != lease.SessionID {
-		t.Fatalf("attempt projection = %#v", attempts)
+	var full tracker.Page[tracker.NativeAttempt]
+	for _, view := range []string{"", "blockers", "recorded_blockers"} {
+		response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?"+url.Values{"view": {view}}.Encode(), worker, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		var attempts tracker.Page[tracker.NativeAttempt]
+		decodeHubResponse(t, response, &attempts)
+		if len(attempts.Items) != 1 || attempts.Items[0].Sequence != 3 || attempts.Items[0].Status != "succeeded" || attempts.Items[0].Checkpoint == nil || attempts.Items[0].Checkpoint.WorktreeState != "dirty" || attempts.Items[0].MachineID != lease.MachineID || attempts.Items[0].SessionID != lease.SessionID {
+			t.Fatalf("view=%q attempt projection = %#v", view, attempts)
+		}
+		if attempts.Items[0].Runtime != nil || attempts.Items[0].RuntimeFreshness != "unavailable" {
+			t.Fatalf("view=%q fabricated runtime evidence: %+v", view, attempts.Items[0])
+		}
+		if view == "" {
+			full = attempts
+		} else if !reflect.DeepEqual(attempts, full) {
+			t.Fatalf("view=%q changed attempt without runtime", view)
+		}
 	}
 	var count int
 	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE type LIKE 'run.%'").Scan(&count); err != nil || count != 3 {
@@ -665,7 +676,7 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 		fences = append(fences, lease.FencingToken)
 	}
 	var full []tracker.NativeAttempt
-	for _, view := range []string{"", "blockers"} {
+	for _, view := range []string{"", "blockers", "recorded_blockers"} {
 		t.Run("view="+view, func(t *testing.T) {
 			params := url.Values{"limit": {"100"}}
 			if view != "" {
@@ -677,7 +688,7 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 				response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?"+params.Encode(), worker, nil)
 				requireNativeStatus(t, response, http.StatusOK)
 				budget := 1 << 20
-				if view == "blockers" {
+				if view != "" {
 					budget = operatortool.WorkHistoryPageBytes
 				}
 				if response.Body.Len() > budget {
@@ -691,8 +702,8 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 					if attempt.Status != "succeeded" || attempt.Identity == nil || attempt.WorkItemRevision != issue.Revision || attempt.StartedAt.IsZero() || attempt.Disposition == nil || !attempt.Disposition.HumanAction || len(attempt.Disposition.FinalSummary) != workpad.MaxFinalSummaryBytes || !reflect.DeepEqual(attempt.Checkpoint, nativeTestCheckpoint()) {
 						t.Fatalf("lost authority/checkpoint at fence %d", attempt.FencingToken)
 					}
-					if view == "blockers" {
-						if attempt.Runtime != nil {
+					if view != "" {
+						if attempt.Runtime != nil || attempt.RuntimeFreshness != "unavailable" {
 							t.Fatal("blocker projection included runtime")
 						}
 					} else {
@@ -733,6 +744,9 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 				t.Fatalf("pages=%d, fences=%v, want=%v", pages, seen, fences)
 			}
 		})
+	}
+	if full == nil {
+		t.Fatal("full attempt view returned no records")
 	}
 	ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
 	for _, transport := range []string{"stdio", "http"} {

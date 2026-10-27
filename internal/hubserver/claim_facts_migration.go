@@ -42,12 +42,21 @@ func (d *database) populateClaimFacts(ctx context.Context) error {
 }
 
 func (d *database) populateClaimFact(ctx context.Context) (bool, error) {
+	write, err := prepareLegacyAdmissionFact(ctx, d.reader)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
-	changed, err := projectLegacyClaimFact(ctx, tx)
+	changed := write != nil
+	if write != nil {
+		err = write(tx)
+	} else {
+		changed, err = projectLegacyClaimFact(ctx, tx)
+	}
 	if err != nil {
 		return false, err
 	}

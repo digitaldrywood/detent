@@ -756,7 +756,7 @@ func TestNativeReleaseDeliveryMachineAdmission(t *testing.T) {
 				decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.itemPath, f.token, nil), &f.delivery)
 			}
 			if name == "changed source" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_requests SET record_json=json_set(record_json,'$.current_version_id','changed-version') WHERE id=?", f.change.ID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_requests SET record_json=json_set(record_json,'$.current_version_id','changed-version'),claim_version_id='changed-version',claim_head_sha='' WHERE id=?", f.change.ID); err != nil {
 					t.Fatal(err)
 				}
 			}

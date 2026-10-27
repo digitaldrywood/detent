@@ -16,6 +16,7 @@ type claimPreparationKey struct{}
 type claimWriterKey struct{}
 
 type claimPreparation struct {
+	landings      map[string]preparedLandingFact
 	versions      map[string]preparedClaimVersion
 	checkpoints   map[string]preparedClaimCheckpoint
 	details       map[string]preparedClaimDetail

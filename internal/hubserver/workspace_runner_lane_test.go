@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -84,14 +85,15 @@ func newWorkspaceLaneFixture(t *testing.T) *workspaceLaneFixture {
 		t.Fatal(err)
 	}
 	f.source = laneSourceRepository(t)
+	logger := slog.New(slog.NewTextHandler(t.Output(), nil))
 	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{
-		Root: filepath.Join(laneShortTempDir(t), "worktrees"), SourceRoot: f.source, AutoBranch: true, Logger: discardLogger(),
+		Root: filepath.Join(laneShortTempDir(t), "worktrees"), SourceRoot: f.source, AutoBranch: true, Logger: logger,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.lane, err = workspacerunner.NewLane(workspacerunner.LaneConfig{
-		Claimer: claimer, Hub: native, Logger: discardLogger(), Poll: 50 * time.Millisecond,
+		Claimer: claimer, Hub: native, Logger: logger, Poll: 50 * time.Millisecond,
 		Worktree: &workspacerunner.GitWorktree{Backend: backend, ProjectID: string(f.project.ID), Resolve: claimer.RunIdentifier},
 		Support:  support, Shell: "/bin/sh", Hostname: "runner-host",
 		Reporter: laneActionReporter{native: native},

@@ -466,7 +466,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`, data.AttemptID, scope.org
 			return false, false, err
 		}
 	}
-	if err := updateAttemptDisposition(ctx, tx, data.AttemptID, data); err != nil {
+	if err := updateAttemptClaimFacts(ctx, tx, data.AttemptID, data); err != nil {
 		return false, false, err
 	}
 	if err := writeAttemptUsageFacts(ctx, tx, data.AttemptID, data); err != nil {
@@ -853,13 +853,22 @@ func readNativeAttemptRecord(ctx context.Context, q nativeQueryer, scope nativeS
 
 func leaseReleaseFailure(ctx context.Context, tx nativeQueryer, data tracker.NativeRunData, now time.Time) (tracker.NativeTerminalFailure, error) {
 	var reason sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT json_extract(e.payload_json,'$.reason') FROM work_events e JOIN leases l ON l.issue_id=e.issue_id AND l.fencing_token=e.fencing_token
+	err := tx.QueryRowContext(ctx, `SELECT e.payload_json FROM work_events e JOIN leases l ON l.issue_id=e.issue_id AND l.fencing_token=e.fencing_token
 WHERE l.lease_id=? AND l.fencing_token=? AND e.kind='lease_released' ORDER BY e.id DESC LIMIT 1`, data.LeaseID, data.FencingToken).Scan(&reason)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return tracker.NativeTerminalFailure{}, fmt.Errorf("read attempt lease release reason: %w", err)
 	}
 	failure := tracker.NativeTerminalFailure{ErrorClass: "lease_released", Stage: "lease_release", ObservedAt: now.UTC(),
 		Error: "attempt lease was released before the attempt finished; release reason unavailable (lease expired, replaced or its runner was revoked)"}
+	if reason.Valid {
+		var payload struct {
+			Reason string `json:"reason"`
+		}
+		if err := json.Unmarshal([]byte(reason.String), &payload); err != nil {
+			return tracker.NativeTerminalFailure{}, err
+		}
+		reason.String = payload.Reason
+	}
 	if reason.Valid && validExecutionName(reason.String) {
 		failure.Error = "attempt lease was released before the attempt finished; release reason: " + reason.String
 	}

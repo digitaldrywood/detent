@@ -307,7 +307,7 @@ func preserveCutoverPolicy(ctx context.Context, tx *sql.Tx, scope nativeScope) e
 	if conflicts != 0 {
 		return nativePublicInvalid("Native and repository policy approvals differ; reconcile trusted approvals before cutover")
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at) SELECT ?, r.policy_id, r.metadata_json, r.approved_by, r.approved_at FROM policy_revisions r JOIN project_policies p ON p.scope = r.scope AND p.policy_id = r.policy_id WHERE p.scope = ? ON CONFLICT DO NOTHING`, native, legacy)
+	_, err = tx.ExecContext(ctx, `INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at,gate_github_pull_request) SELECT ?, r.policy_id, r.metadata_json, r.approved_by, r.approved_at,r.gate_github_pull_request FROM policy_revisions r JOIN project_policies p ON p.scope = r.scope AND p.policy_id = r.policy_id WHERE p.scope = ? ON CONFLICT DO NOTHING`, native, legacy)
 	if err != nil {
 		return err
 	}

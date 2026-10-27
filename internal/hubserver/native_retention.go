@@ -23,7 +23,9 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 		run  func(context.Context) error
 	}{
 		{"populate conversation query metadata", s.convertConversationQueryMetadata},
-		{"populate claim facts", s.database.populateClaimFacts},
+		{"populate claim facts", func(ctx context.Context) error {
+			return s.database.populateClaimFacts(s.contentContext(ctx))
+		}},
 		{"populate runner facts", func(ctx context.Context) error {
 			return s.database.populateRunnerFacts(s.runDetailContext(s.contentContext(ctx)))
 		}},

@@ -3,12 +3,11 @@ db/queries/worker_generations.sql 1
 internal/hubserver/account_commands.go 4
 internal/hubserver/analytics_capacity_rollups.go 8
 internal/hubserver/analytics_residence_rollups.go 11
-internal/hubserver/api_worker.go 11
 internal/hubserver/app_ui.go 2
 internal/hubserver/artifacts.go 3
 internal/hubserver/attempt_diff_bodies.go 2
 internal/hubserver/change_quality.go 3
-internal/hubserver/changes.go 20
+internal/hubserver/changes.go 6
 internal/hubserver/chat_usage.go 2
 internal/hubserver/conversation_attachments.go 1
 internal/hubserver/conversation_coordinator_tools.go 5
@@ -47,7 +46,6 @@ internal/hubserver/migrations/20261021130000_hosted_plan_storage.sql 6
 internal/hubserver/migrations/20261021140000_health_intake_signatures.sql 1
 internal/hubserver/migrations/20261021170000_conversation_content.sql 1
 internal/hubserver/native_archive_reader.go 2
-internal/hubserver/native_attempts.go 1
 internal/hubserver/native_blockers.go 1
 internal/hubserver/native_board_page.go 7
 internal/hubserver/native_dependency_reasons.go 2
@@ -55,7 +53,6 @@ internal/hubserver/native_dispatch_wait.go 1
 internal/hubserver/native_issue_change.go 1
 internal/hubserver/native_issue_pages.go 2
 internal/hubserver/native_issues.go 13
-internal/hubserver/native_landing_capacity.go 13
 internal/hubserver/native_pages.go 4
 internal/hubserver/native_projects.go 4
 internal/hubserver/native_recovery.go 26
