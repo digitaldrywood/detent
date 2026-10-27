@@ -180,8 +180,8 @@ func (e *execution) updateLedger(ctx context.Context, ledger json.RawMessage) er
 		ordered[i] = orderedUnit{identity.ID, raw}
 	}
 	slices.SortStableFunc(ordered, func(a, b orderedUnit) int { return strings.Compare(a.id, b.id) })
-	for i, unit := range ordered {
-		units[i] = unit.raw
+	for i := range units {
+		units[i] = ordered[i].raw
 	}
 	var err error
 	ledger, err = json.Marshal(units)
