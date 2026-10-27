@@ -31,7 +31,7 @@ if name == "make":
     else:
         os.execv(os.environ["PROBE_MAKE"], ["make"] + args)
 if name == "python3":
-    if args[:1] == ["-m"]:
+    if args[:1] == ["-m"] or args == ["scripts/check-runner-enrollment-docs.py"]:
         sys.exit(0)
     os.execv(os.environ["PROBE_PYTHON"], ["python3"] + args)
 if name == "playwright":
@@ -48,9 +48,6 @@ if name == "git":
         sys.exit(int(Path("app-changed").exists()))
     elif args[0] == "rev-parse":
         print("head")
-    sys.exit(0)
-if args[:1] == ["run"] and "--help" in args:
-    print("Usage:\n  detent hub runner [command]\n\nAvailable Commands:\n  enroll      Redeem one enrollment token\n  init        Generate a host identity\n  register    Register this host as a runner\n  renew       Refresh the host credential\n  rotate      Refresh the host credential\n")
     sys.exit(0)
 if args[:1] == ["env"]:
     print({"GOHOSTOS": "fixture", "GOHOSTARCH": "fixture", "GOVERSION": "fixture"}[args[1]])
@@ -153,10 +150,10 @@ class LandingGateTest(unittest.TestCase):
             with self.subTest(target=target, budget=budget, failure=failure, changed=changed), tempfile.TemporaryDirectory(prefix="npm-nilaway-", dir=scratch) as directory:
                 root = Path(directory)
                 (root / "scripts").mkdir()
-                for name in ("Makefile", ".golangci-version", "go.mod", "scripts/check-land.sh", "scripts/check-evidence.sh", "scripts/check-browser.sh", "scripts/test-workspace.sh", "scripts/cover-packages.sh", "scripts/race-packages.sh", "scripts/check-runner-enrollment-docs.py", "docs/hub-self-hosting.md", "internal/cli/hub_runner_register.go"):
+                for name in ("Makefile", ".golangci-version", "go.mod", "scripts/check-land.sh", "scripts/check-evidence.sh", "scripts/check-browser.sh", "scripts/test-workspace.sh", "scripts/cover-packages.sh", "scripts/race-packages.sh"):
                     (root / name).parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(ROOT / name, root / name)
-                for name in ("go", "git", "lint"):
+                for name in ("go", "git", "lint", "python3"):
                     path = root / name
                     path.write_text(TOOL)
                     path.chmod(0o700)
