@@ -154,6 +154,7 @@ func (s *Service) teamThreadOperation(ctx context.Context, name string, in teamT
 		return nil, err
 	}
 	scope.project = tracker.ProjectID(thread.ProjectID)
+	scope.actionItem = thread.IssueID
 	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: required, Action: name, ProjectID: thread.ProjectID}); err != nil {
 		return nil, err
 	}
@@ -199,14 +200,25 @@ func scanTeamThread(row interface{ Scan(...any) error }) (t teamThread, err erro
 
 func (s *Service) teamVisibility(scope nativeScope) (string, []any) {
 	condition, args := scope.credential.projectGrantSQL("t.organization_id", "t.project_id")
-	return "(t.scope='general' OR (" + condition + "))", args
+	issueCondition, issueArgs := teamIssueVisibility(scope)
+	return "(t.scope='general' OR ((" + condition + ") AND " + issueCondition + "))", append(args, issueArgs...)
+}
+
+func teamIssueVisibility(scope nativeScope) (string, []any) {
+	condition, args := scope.issueVisibilitySQL("i")
+	return "(t.scope<>'issue' OR EXISTS(SELECT 1 FROM issues i WHERE i.organization_id=t.organization_id AND i.project_id=t.project_id AND i.native_id=t.work_item_id AND (" + condition + ")))", args
 }
 
 func (s *Service) readTeamThread(ctx context.Context, scope nativeScope, id string) (teamThread, error) {
 	condition, args := s.teamVisibility(scope)
 	principal := operatorIdentity(scope.credential, string(scope.organization)).PrincipalID
 	args = append([]any{principal, scope.organization, id}, args...)
-	t, err := scanTeamThread(s.database.reader.QueryRowContext(ctx, "SELECT "+teamThreadColumns+" FROM team_threads t LEFT JOIN team_thread_reads r ON r.thread_id=t.id AND r.principal_id=? WHERE t.organization_id=? AND t.id=? AND "+condition, args...))
+	statement := "SELECT " + teamThreadColumns + " FROM team_threads t LEFT JOIN team_thread_reads r ON r.thread_id=t.id AND r.principal_id=? WHERE t.organization_id=? AND t.id=? AND " + condition
+	query, err := prepareNativePageStatement(ctx, s.database.reader, scope, "", statement)
+	if err != nil {
+		return teamThread{}, err
+	}
+	t, err := scanTeamThread(query.QueryRowContext(ctx, statement, args...))
 	if errors.Is(err, sql.ErrNoRows) {
 		return t, nativeNotFound()
 	}
@@ -260,7 +272,11 @@ func (s *Service) listTeamThreads(ctx context.Context, scope nativeScope, in tea
 	limit := threadLimit(in.Limit)
 	query.WriteString(" ORDER BY t.updated_at DESC,t.id DESC LIMIT ?")
 	args = append(args, limit+1)
-	rows, err := s.database.reader.QueryContext(ctx, query.String(), args...)
+	reader, err := prepareNativePageStatement(ctx, s.database.reader, scope, "", query.String())
+	if err != nil {
+		return out, err
+	}
+	rows, err := reader.QueryContext(ctx, query.String(), args...)
 	if err != nil {
 		return out, fmt.Errorf("list threads: %w", err)
 	}
@@ -293,6 +309,11 @@ func (s *Service) listTeamThreads(ctx context.Context, scope nativeScope, in tea
 }
 
 func (s *Service) fillTeamThread(ctx context.Context, scope nativeScope, t *teamThread) error {
+	if t.IssueID != "" {
+		if err := s.authorizeTeamReference(ctx, scope, teamReference{Kind: "issue", ID: t.IssueID, ProjectID: t.ProjectID}); err != nil {
+			return err
+		}
+	}
 	rows, err := s.database.reader.QueryContext(ctx, "SELECT principal_id,display_name,client_name FROM team_thread_participants WHERE thread_id=? ORDER BY principal_id,client_name LIMIT 20", t.ID)
 	if err != nil {
 		return fmt.Errorf("read thread participants: %w", err)
@@ -436,8 +457,14 @@ func (s *Service) createTeamThread(ctx context.Context, scope nativeScope, in te
 		return empty, threadInvalid()
 	}
 	scope.project = tracker.ProjectID(in.ProjectID)
+	scope.actionItem = in.IssueID
 	if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeWrite, Action: "create_thread", ProjectID: in.ProjectID}); err != nil {
 		return empty, err
+	}
+	if in.IssueID != "" {
+		if err := s.authorizeTeamReference(ctx, scope, teamReference{Kind: "issue", ID: in.IssueID, ProjectID: in.ProjectID}); err != nil {
+			return empty, err
+		}
 	}
 	refs, err := s.validateTeamReferences(ctx, scope, in.References)
 	if err != nil {

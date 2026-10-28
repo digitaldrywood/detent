@@ -81,7 +81,7 @@ func TestTeamThreadUnreadSummaryBoundsHistoryWork(t *testing.T) {
 	var pageLimits []string
 	ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, args []driver.NamedValue) {
 		statements = append(statements, query)
-		if strings.Contains(query, "FROM (SELECT id,scope,project_id,post_count FROM team_threads") {
+		if strings.Contains(query, "FROM (SELECT id,scope,project_id,post_count,work_item_id FROM team_threads") {
 			pageLimits = append(pageLimits, fmt.Sprint(args[4].Value))
 		}
 	}})
@@ -90,7 +90,7 @@ func TestTeamThreadUnreadSummaryBoundsHistoryWork(t *testing.T) {
 	}
 	pages := 0
 	for _, query := range statements {
-		if strings.Contains(query, "FROM (SELECT id,scope,project_id,post_count FROM team_threads") {
+		if strings.Contains(query, "FROM (SELECT id,scope,project_id,post_count,work_item_id FROM team_threads") {
 			pages++
 		}
 	}
@@ -228,7 +228,7 @@ func TestTeamThreadUnreadScopeChurnCannotAmplifyWork(t *testing.T) {
 				read(f, subsets[i%len(subsets)], true)
 				interrupted := false
 				ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, args []driver.NamedValue) {
-					if strings.Contains(query, "FROM (SELECT id,scope,project_id,post_count FROM team_threads") && args[5].Value == principal {
+					if strings.Contains(query, "FROM (SELECT id,scope,project_id,post_count,work_item_id FROM team_threads") && args[5].Value == principal {
 						read(f, subsets[(i+1)%len(subsets)], true)
 						interrupted = true
 					}
