@@ -158,8 +158,13 @@ func TestHostedEventsHealthFinding(t *testing.T) {
 	user := f.user(t, "member", "member", "member@example.test", "read", "")
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	finding := newHealthFinding("dead_man", "flow", "project", string(f.project), "No landings", "Check admission", []string{string(f.project)}, healthEvidence{})
-	write := func(at time.Time, findings []healthFinding) {
+	scope := nativeScope{organization: "org_security", project: f.project}
+	write := func(at time.Time, findings []healthFinding) int64 {
 		t.Helper()
+		previous, _, err := readDashboardWatermark(t.Context(), f.service.database.reader, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
 		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
@@ -171,12 +176,20 @@ func TestHostedEventsHealthFinding(t *testing.T) {
 		if err := tx.Commit(); err != nil {
 			t.Fatal(err)
 		}
+		return previous
 	}
-	write(now, []healthFinding{finding})
+	previous := write(now, []healthFinding{finding})
 	scanner := openHostedTestStream(t, f, user, "")
-	for _, at := range []time.Time{now, now.Add(time.Minute)} {
-		if at != now {
-			write(at, nil)
+	var findingID string
+	for _, state := range []struct {
+		at     time.Time
+		status string
+	}{
+		{now, "attention"},
+		{now.Add(time.Minute), "resolved"},
+	} {
+		if state.at != now {
+			previous = write(state.at, nil)
 		}
 		for {
 			kind, data := readHostedEvent(t, scanner)
@@ -184,9 +197,16 @@ func TestHostedEventsHealthFinding(t *testing.T) {
 				continue
 			}
 			var change dashboardChange
-			if err := json.Unmarshal([]byte(data), &change); err != nil || change.Topic != "health" || (at != now && change.Status != "resolved") {
+			if err := json.Unmarshal([]byte(data), &change); err != nil || change.Topic != "health" {
 				t.Fatalf("finding frame = %q %q: %v", kind, data, err)
 			}
+			if change.Sequence <= previous {
+				continue
+			}
+			if change.Status != state.status || change.EntityID == "" || (findingID != "" && change.EntityID != findingID) {
+				t.Fatalf("finding change = %+v, want %s for %q", change, state.status, findingID)
+			}
+			findingID = change.EntityID
 			break
 		}
 	}
