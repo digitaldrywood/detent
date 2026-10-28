@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func TestStopRunReapsDescendantThatSurvivesParentCancellation(t *testing.T) {
@@ -27,13 +27,21 @@ func TestStopRunReapsDescendantThatSurvivesParentCancellation(t *testing.T) {
 		t.Skip("process lifecycle integration")
 	}
 
-	issue := testIssue("issue-stop-process-group", "digitaldrywood/detent#1453", "In Progress")
+	descendantInput, releaseDescendant, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = descendantInput.Close()
+		_ = releaseDescendant.Close()
+	})
+	issue := testIssue("issue-stop-process-group", "example-org/example-project#1453", "In Progress")
 	tracker := newFakeConnector(issue)
 	processStore := &operatorStopProcessStore{}
 	runner := &operatorStopDescendantRunner{
 		processStore:       processStore,
 		sessionID:          1453,
-		pidPath:            filepath.Join(t.TempDir(), "descendant.pid"),
+		descendantInput:    descendantInput,
 		started:            make(chan procgroup.Identity, 1),
 		descendantSurvived: make(chan int, 1),
 	}
@@ -65,11 +73,13 @@ func TestStopRunReapsDescendantThatSurvivesParentCancellation(t *testing.T) {
 				select {
 				case descendantPID := <-runner.descendantSurvived:
 					beforeTermination <- descendantPID
-				case <-time.After(time.Second):
-					return "", errors.New("parent cancellation did not leave a surviving descendant")
+				case <-ctx.Done():
+					return "", ctx.Err()
 				}
 				<-allowTermination
-				return procgroup.Terminate(ctx, identity, grace)
+				reapCtx, cancel := context.WithCancel(ctx)
+				cancel()
+				return procgroup.Terminate(reapCtx, identity, grace)
 			},
 		},
 	)
@@ -83,9 +93,18 @@ func TestStopRunReapsDescendantThatSurvivesParentCancellation(t *testing.T) {
 	t.Cleanup(func() {
 		_ = procgroup.Cleanup(identity.GroupID)
 	})
-	state := waitForOperatorStopState(t, orch, func(state orchestrator.State) bool {
+	var state orchestrator.State
+	testenv.WaitUntil(t, t.Context(), func() error {
+		var err error
+		state, err = orch.State(t.Context())
+		if err != nil {
+			return err
+		}
 		running := state.Running[issue.ID]
-		return running.DetentSessionID == runner.sessionID && running.WorkerProcess.PID == identity.PID
+		if running.DetentSessionID != runner.sessionID || running.WorkerProcess.PID != identity.PID {
+			return errors.New("worker process identity is not yet recorded")
+		}
+		return nil
 	})
 	running := state.Running[issue.ID]
 	result, err := orch.StopRun(t.Context(), orchestrator.StopRunRequest{
@@ -103,13 +122,21 @@ func TestStopRunReapsDescendantThatSurvivesParentCancellation(t *testing.T) {
 		t.Fatalf("descendant %d exited before process-group termination", descendantPID)
 	}
 	releaseTermination()
-	waitForOperatorStopState(t, orch, func(state orchestrator.State) bool {
-		_, stillRunning := state.Running[issue.ID]
-		return !stillRunning
+	testenv.WaitUntil(t, t.Context(), func() error {
+		state, err := orch.State(t.Context())
+		if err != nil {
+			return err
+		}
+		if _, stillRunning := state.Running[issue.ID]; stillRunning {
+			return errors.New("stopped worker is still running")
+		}
+		return nil
 	})
-	waitForOperatorStopProcessExit(t, descendantPID)
+	if operatorStopProcessRunning(t.Context(), descendantPID) {
+		t.Fatalf("descendant %d is still alive after process-group termination", descendantPID)
+	}
 	reaped := processStore.reapedSnapshot()
-	if len(reaped) != 1 || reaped[0].sessionID != runner.sessionID || reaped[0].reap.Outcome != store.WorkerProcessOutcomeTerminated {
+	if len(reaped) != 1 || reaped[0].sessionID != runner.sessionID || reaped[0].reap.Outcome != store.WorkerProcessOutcomeKilled || reaped[0].reap.Reason != "operator_stopped" || reaped[0].reap.ReapedAt.IsZero() {
 		t.Fatalf("reaped worker processes = %#v", reaped)
 	}
 }
@@ -331,26 +358,35 @@ func testStopRunRetriesWorkerReapAfterSessionCompletion(t *testing.T) {
 type operatorStopDescendantRunner struct {
 	processStore       *operatorStopProcessStore
 	sessionID          int64
-	pidPath            string
+	descendantInput    *os.File
 	started            chan procgroup.Identity
 	descendantSurvived chan int
 }
 
 func (r *operatorStopDescendantRunner) Run(ctx context.Context, request orchestrator.RunRequest) (orchestrator.RunResult, error) {
-	script := "sleep 30 >/dev/null 2>&1 & printf '%s\\n' \"$!\" > " + operatorStopShellQuote(r.pidPath) + "; wait"
+	readyReader, readyWriter, err := os.Pipe()
+	if err != nil {
+		return orchestrator.RunResult{}, err
+	}
+	defer readyReader.Close()
+	defer readyWriter.Close()
+	script := `sh -c 'trap "" TERM; printf "%s\n" "$$"; read -r release <&3' & wait`
 	cmd := exec.CommandContext(context.Background(), "sh", "-c", script)
+	cmd.Stdout = readyWriter
+	cmd.ExtraFiles = []*os.File{r.descendantInput}
 	procgroup.Configure(ctx, cmd)
 	if err := cmd.Start(); err != nil {
 		return orchestrator.RunResult{}, err
 	}
+	_ = readyWriter.Close()
 	identity, err := procgroup.Inspect(cmd)
 	if err != nil {
 		_ = procgroup.Cleanup(procgroup.GroupID(cmd))
 		_ = cmd.Wait()
 		return orchestrator.RunResult{}, err
 	}
-	descendantPID, err := readOperatorStopPID(r.pidPath, time.Second)
-	if err != nil {
+	var descendantPID int
+	if _, err := fmt.Fscan(readyReader, &descendantPID); err != nil {
 		_ = procgroup.Cleanup(identity.GroupID)
 		_ = cmd.Wait()
 		return orchestrator.RunResult{}, err
@@ -448,33 +484,6 @@ func (s *operatorStopProcessStore) reapedSnapshot() []operatorStopProcessReap {
 	return append([]operatorStopProcessReap(nil), s.reaped...)
 }
 
-func readOperatorStopPID(path string, timeout time.Duration) (int, error) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		raw, err := os.ReadFile(path)
-		if err == nil {
-			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(raw)))
-			if parseErr == nil && pid > 0 {
-				return pid, nil
-			}
-		}
-		time.Sleep(time.Millisecond)
-	}
-	return 0, fmt.Errorf("timed out waiting for descendant PID at %s", path)
-}
-
-func waitForOperatorStopProcessExit(t *testing.T, pid int) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if !operatorStopProcessRunning(t.Context(), pid) {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatalf("process %d is still alive", pid)
-}
-
 func operatorStopProcessRunning(ctx context.Context, pid int) bool {
 	if pid <= 0 {
 		return false
@@ -489,8 +498,4 @@ func operatorStopProcessRunning(ctx context.Context, pid int) bool {
 func operatorStopProcessStateRunning(state string) bool {
 	state = strings.TrimSpace(state)
 	return state != "" && !strings.HasPrefix(state, "Z")
-}
-
-func operatorStopShellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
