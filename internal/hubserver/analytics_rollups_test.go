@@ -134,6 +134,26 @@ func TestAnalyticsRollupIncremental(t *testing.T) {
 		if err != nil || count != 1 {
 			t.Fatalf("project %s count=%d err=%v", project.ID, count, err)
 		}
+		scope := nativeScope{organization: project.OrganizationID, project: project.ID}
+		if !analyticsRollupsServed(t, f.service, scope) {
+			t.Fatal("completed rollups are unavailable")
+		}
+		projectTestChangeColumns(t, f.service)
+		for _, query := range []string{
+			`DELETE FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='event'`,
+			`UPDATE collaboration_events SET analytics_projection_version=NULL,from_state=NULL WHERE organization_id=? AND project_id=? AND type='workflow.transitioned'`,
+		} {
+			if _, err := f.service.database.db.ExecContext(t.Context(), query, scope.organization, scope.project); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if analyticsRollupsServed(t, f.service, scope) {
+			t.Error("source events missing projections were hidden by rollups")
+		}
+		pending, err := analyticsChangeColumnsPending(t.Context(), analyticsRollupReader{f.service.database.reader}, scope)
+		if err != nil || !pending {
+			t.Errorf("source transitions missing Change columns: pending=%v error=%v", pending, err)
+		}
 	}
 }
 

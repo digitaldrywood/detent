@@ -434,7 +434,7 @@ func rollupRepeatedReadViolations(statement string, plan []explainedPlanLine) []
 var windowedRollupReads = []struct{ name, fragment, index, bound string }{
 	{"usage rows", "FROM analytics_attempt_usage u LEFT JOIN analytics_native_attempts a ON a.id = u.attempt_id", "analytics_usage_window", ">?"},
 	{"attempts in window", "julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND (?=''", "analytics_attempt_started", ""},
-	{"failed attempts in window", "WHERE metric='attempt' AND failed_at IS NOT NULL", "analytics_attempt_failed", ">?"},
+	{"failed attempts in window", "WHERE r.metric='attempt' AND r.failed_at IS NOT NULL", "analytics_attempt_failed", ">?"},
 	{"residence transitions", "type='workflow.transitioned' AND julianday(recorded_at)>=julianday(?)", "analytics_event_order", ">?"},
 }
 
@@ -456,6 +456,9 @@ func TestAnalyticsRollupReportPlans(t *testing.T) {
 	} {
 		t.Run(tenant.name, func(t *testing.T) {
 			f := newUsageHostedFixture(t)
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
 			scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
 			tenant.seed(t, f.service, scope)
 			projectTestChangeColumns(t, f.service)

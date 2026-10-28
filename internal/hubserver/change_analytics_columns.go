@@ -14,6 +14,9 @@ import (
 )
 
 func analyticsChangeColumnsPending(ctx context.Context, q nativeQueryer, scope nativeScope) (bool, error) {
+	if rollup, ok := q.(analyticsRollupReader); ok {
+		q = rollup.nativeQueryer
+	}
 	var pending bool
 	err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_requests c WHERE c.organization_id=? AND c.project_id=? AND c.created_at IS NULL)
  OR EXISTS (SELECT 1 FROM change_versions v JOIN change_requests c ON c.id=v.change_id WHERE c.organization_id=? AND c.project_id=? AND v.head_sha IS NULL)
