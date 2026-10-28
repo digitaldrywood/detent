@@ -160,11 +160,11 @@ test-fast: generate-docs
 
 # Hub server tests split into slices balanced by measured time; slice 4 catches every other name.
 HUB_SLICE_1 := -run '^Test[BDEFILNQTUV]'
-HUB_SLICE_2 := -run '^Test[MP]'
+HUB_SLICE_2 := -run '^Test(M|P|Heartbeat)'
 HUB_SLICE_3 := -run '^Test[CGS]'
 HUB_SLICE_4 := -skip '^Test[ABCDEFGHILMNPQSTUV]'
 HUB_SLICE_5 := -run '^Test[A]'
-HUB_SLICE_6 := -run '^TestH'
+HUB_SLICE_6 := -run '^TestH' -skip '^TestHeartbeat'
 
 # RACE_SHARD=i/n races one balanced slice of the packages outside the hub server; RACE_SHARD=hub-N races hub server slice N.
 RACE_SHARD ?=
