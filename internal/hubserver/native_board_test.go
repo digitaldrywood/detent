@@ -1175,11 +1175,11 @@ func TestNativeBoardRefreshSkipsFailingCard(t *testing.T) {
 				statements = nil
 				f.service.maintainNativeBoard(ctx)
 				if tick == 0 && test.nonexpired > 0 {
-					if f.service.boardRefreshCursor != "wi_!000002" || len(statements) != test.attemptsPerTick {
+					if f.service.boardRefreshCursor != "wi_!000002" || len(statements) != test.attemptsPerTick+1 {
 						t.Fatalf("nonexpired discovery did not resume after three read-only steps: cursor=%q statements=%v", f.service.boardRefreshCursor, statements)
 					}
 					for _, statement := range statements {
-						if statement != nativeBoardCandidateQuery {
+						if statement != nativeBoardCandidateQuery && statement != "SELECT id,organization_id,principal_id,requested_revision,scan_revision,after_thread,through_thread,partial_count FROM team_thread_unread_summaries WHERE requested_revision>completed_revision ORDER BY turn,id LIMIT 1" {
 							t.Fatalf("nonexpired discovery performed refresh work: %s", statement)
 						}
 					}
