@@ -58,6 +58,302 @@ func nativeTestCheckpoint() *tracker.NativeCheckpoint {
 	return &tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "dirty", ExternalEffect: "none", EffectState: "none"}
 }
 
+func nativeAttemptListingFixture(t *testing.T, count, bodyBytes int) (nativeFixture, tracker.NativeIssue, []tracker.NativeRunData) {
+	t.Helper()
+	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	issue := f.create(t, "attempt listing")
+	worker := f.worker(t, "listing worker")
+	lease := claimNativeAttempt(t, f, worker, "listing-machine", "listing-session", issue.WorkItemID)
+	start := nativeStartedEvent(lease)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, start), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+	var records []tracker.NativeRunData
+	for index := range count {
+		data := start.Data
+		data.CompletionBody = strings.Repeat("x", bodyBytes)
+		if index > 0 {
+			data.LeaseID = tracker.LeaseID(fmt.Sprintf("lease_listing_%d", index))
+			result, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO leases
+ (lease_id, issue_id, machine_id, session_id, expires_at, acquired_at, renewed_at, released_at, created_at, updated_at)
+ SELECT ?, issue_id, machine_id, ?, expires_at, acquired_at, renewed_at, released_at, created_at, updated_at FROM leases WHERE lease_id = ?`, data.LeaseID, fmt.Sprintf("listing-session-%d", index), lease.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fence, err := result.LastInsertId()
+			if err != nil {
+				t.Fatal(err)
+			}
+			data.FencingToken = tracker.FencingToken(fence)
+			data.AttemptID = fmt.Sprintf("attempt_listing_%d", index)
+			data.RunID = fmt.Sprintf("run_listing_%d", index)
+		}
+		encoded, err := json.Marshal(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 {
+			_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = ? WHERE id = ?`, string(encoded), data.AttemptID)
+		} else {
+			_, err = f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_attempts
+ (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, checkpoint_json, artifact_ids_json, started_at, updated_at, work_item_revision, dispatch_generation)
+ SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status, ?, checkpoint_json, artifact_ids_json, started_at, updated_at, work_item_revision, dispatch_generation FROM native_attempts WHERE id = ?`, data.AttemptID, data.LeaseID, data.FencingToken, data.RunID, string(encoded), start.Data.AttemptID)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		records = append(records, data)
+	}
+	return f, issue, records
+}
+
+func TestNativeAttemptsSkipUnusedHydration(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		limit     int
+		bodyBytes int
+		corrupt   int
+		want      int
+	}{
+		{"count lookahead", 1, 0, 1, 1},
+		{"after byte boundary", 100, 400 << 10, 3, 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f, issue, records := nativeAttemptListingFixture(t, 4, test.bodyBytes)
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = '{"attempt_id":42}' WHERE id = ?`, records[test.corrupt].AttemptID); err != nil {
+				t.Fatal(err)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/attempts?limit="+strconv.Itoa(test.limit), f.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page tracker.Page[tracker.NativeAttempt]
+			decodeHubResponse(t, response, &page)
+			if len(page.Items) != test.want || page.NextCursor == "" {
+				t.Fatalf("items=%d cursor=%q, want %d and continuation", len(page.Items), page.NextCursor, test.want)
+			}
+		})
+	}
+}
+
+func legacyNativeAttemptPage(attempts []tracker.NativeAttempt, limit, budget int, cursor nativeCursor, key []byte, view string) (tracker.Page[tracker.NativeAttempt], error) {
+	page := tracker.Page[tracker.NativeAttempt]{Items: []tracker.NativeAttempt{}}
+	hasMore := false
+	for _, attempt := range attempts {
+		if len(page.Items) == limit {
+			hasMore = true
+			break
+		}
+		next := cursor
+		next.After = strconv.FormatInt(int64(attempt.FencingToken), 10)
+		candidate := tracker.Page[tracker.NativeAttempt]{Items: append(page.Items, attempt)}
+		var err error
+		candidate.NextCursor, err = encodeNativeCursor(next, key)
+		if err != nil {
+			return page, err
+		}
+		encoded, err := json.Marshal(candidate)
+		if err != nil {
+			return page, err
+		}
+		if len(encoded)+1 > budget && len(page.Items) == 0 && view != "" {
+			candidate.Items[0] = nativeAttemptAuthorityProjection(attempt)
+			encoded, err = json.Marshal(candidate)
+			if err != nil {
+				return page, err
+			}
+		}
+		if len(encoded)+1 > budget {
+			if len(page.Items) == 0 {
+				return tracker.Page[tracker.NativeAttempt]{}, &nativeError{Code: "attempt_record_too_large", status: http.StatusUnprocessableEntity}
+			}
+			hasMore = true
+			break
+		}
+		page.Items = candidate.Items
+		cursor = next
+	}
+	if hasMore {
+		var err error
+		page.NextCursor, err = encodeNativeCursor(cursor, key)
+		if err != nil {
+			return page, err
+		}
+	}
+	return page, nil
+}
+
+func TestNativeAttemptPageByteBoundaryEquivalence(t *testing.T) {
+	f, issue, records := nativeAttemptListingFixture(t, 5, 0)
+	scope := nativeScope{organization: issue.OrganizationID, project: issue.ProjectID}
+	path := f.base + "/work-items/" + string(issue.WorkItemID) + "/attempts"
+	base, err := f.service.readAttempts(t.Context(), scope, string(issue.WorkItemID), url.Values{"limit": {"100"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, view := range []string{"", "blockers", "recorded_blockers"} {
+		for _, direction := range []string{"oldest", "newest"} {
+			params := url.Values{"view": {view}, "direction": {direction}}
+			_, cursor, key, err := f.service.readNativePage(t.Context(), scope, path, params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			budget := 1 << 20
+			if view != "" {
+				budget = operatortool.WorkHistoryPageBytes
+			}
+			ordered := append([]tracker.NativeAttempt(nil), base.Items...)
+			if direction == "newest" {
+				for left, right := 0, len(ordered)-1; left < right; left, right = left+1, right-1 {
+					ordered[left], ordered[right] = ordered[right], ordered[left]
+				}
+			}
+			next := cursor
+			next.After = strconv.FormatInt(int64(ordered[0].FencingToken), 10)
+			nextCursor, err := encodeNativeCursor(next, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			first := ordered[0]
+			first.CompletionBody = "x"
+			one, err := json.Marshal(tracker.Page[tracker.NativeAttempt]{Items: []tracker.NativeAttempt{first}, NextCursor: nextCursor})
+			if err != nil {
+				t.Fatal(err)
+			}
+			exact := budget - len(one)
+			for _, size := range []int{0, 1000, exact - 1, exact, exact + 1, budget + 1} {
+				body := strings.Repeat("x", size)
+				for _, record := range records {
+					record.CompletionBody = body
+					encoded, err := json.Marshal(record)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = ? WHERE id = ?`, string(encoded), record.AttemptID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for index := range ordered {
+					ordered[index].CompletionBody = body
+				}
+				for _, limit := range []int{1, 2, 5, 100} {
+					t.Run(fmt.Sprintf("%s/%s/bytes=%d/limit=%d", view, direction, size, limit), func(t *testing.T) {
+						params := url.Values{"view": {view}, "direction": {direction}}
+						params.Set("limit", strconv.Itoa(limit))
+						remaining := ordered
+						current := cursor
+						for {
+							want, wantErr := legacyNativeAttemptPage(remaining, limit, budget, current, key, view)
+							got, err := f.service.readNativeAttemptPage(t.Context(), scope, string(issue.WorkItemID), params, json.Marshal)
+							if wantErr != nil {
+								var oversized *nativeError
+								if !errors.As(err, &oversized) || oversized.Code != "attempt_record_too_large" || oversized.status != http.StatusUnprocessableEntity {
+									t.Fatalf("error=%v, want oversized record", err)
+								}
+								break
+							}
+							if err != nil || !reflect.DeepEqual(got.Page, want) {
+								t.Fatalf("page mismatch: items=%d want=%d error=%v", len(got.Items), len(want.Items), err)
+							}
+							encoded, err := json.Marshal(want)
+							if err != nil || !bytes.Equal(got.encoded, append(encoded, '\n')) || len(got.encoded) > budget {
+								t.Fatalf("response encoding differs: bytes=%d error=%v", len(got.encoded), err)
+							}
+							if want.NextCursor == "" {
+								break
+							}
+							if len(want.Items) == 0 {
+								t.Fatal("cursor did not advance")
+							}
+							remaining = remaining[len(want.Items):]
+							current.After = strconv.FormatInt(int64(want.Items[len(want.Items)-1].FencingToken), 10)
+							params.Set("cursor", want.NextCursor)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestNativeAttemptPageEncodesEachReturnedRecordOnce(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		bodyBytes  int
+		limit      int
+		want       int
+		considered int
+	}{
+		{"count limit", 0, 2, 2, 2},
+		{"byte limit", 400 << 10, 100, 2, 3},
+		{"last page", 1000, 100, 5, 5},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f, issue, _ := nativeAttemptListingFixture(t, 5, test.bodyBytes)
+			counts := map[string]int{}
+			marshal := func(value any) ([]byte, error) {
+				attempt, ok := value.(tracker.NativeAttempt)
+				if !ok {
+					t.Fatalf("encoded growing page prefix: %T", value)
+				}
+				counts[attempt.AttemptID]++
+				return json.Marshal(attempt)
+			}
+			got, err := f.service.readNativeAttemptPage(t.Context(), nativeScope{organization: issue.OrganizationID, project: issue.ProjectID}, string(issue.WorkItemID), url.Values{"limit": {strconv.Itoa(test.limit)}}, marshal)
+			if err != nil || len(got.Items) != test.want || len(counts) != test.considered {
+				t.Fatalf("items=%d encodes=%v error=%v", len(got.Items), counts, err)
+			}
+			for id, count := range counts {
+				if count != 1 {
+					t.Fatalf("attempt %s encoded %d times", id, count)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkNativeAttemptPageEncoding(b *testing.B) {
+	for _, count := range []int{20, 100} {
+		attempts := make([]tracker.NativeAttempt, count)
+		for index := range attempts {
+			attempts[index] = tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{AttemptID: fmt.Sprintf("attempt_%d", index), FencingToken: tracker.FencingToken(index + 1), CompletionBody: strings.Repeat("x", 6000)}}
+		}
+		cursor := nativeCursor{Version: 2, Scope: "example", Expires: 1800000000}
+		key := []byte("example-cursor-key")
+		b.Run(fmt.Sprintf("prefix/%d", count), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				page, err := legacyNativeAttemptPage(attempts, count, 1<<20, cursor, key, "")
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := json.Marshal(page); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run(fmt.Sprintf("incremental/%d", count), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				page := nativeAttemptPage{encoded: []byte(`{"items":[`)}
+				for _, attempt := range attempts {
+					next := cursor
+					next.After = strconv.FormatInt(int64(attempt.FencingToken), 10)
+					nextCursor, err := encodeNativeCursor(next, key)
+					if err != nil {
+						b.Fatal(err)
+					}
+					encoded, err := json.Marshal(attempt)
+					if err != nil || page.candidateBytes(encoded, nextCursor) > 1<<20 {
+						b.Fatalf("unexpected page overflow or error: %v", err)
+					}
+					page.appendAttempt(attempt, encoded)
+				}
+				page.finish()
+			}
+		})
+	}
+}
+
 func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 	t.Parallel()
 	f := newDefaultNativeFixture(t, Config{})
