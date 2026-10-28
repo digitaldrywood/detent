@@ -378,6 +378,9 @@ func TestNativeWorkDateFilters(t *testing.T) {
 
 func TestNativeWorkSearchRanking(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "search-ranking")
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	body := f.create(t, "Separate symptom")
 	title := f.create(t, "Repository association deadlocks")
 	partial := f.create(t, "Repository association")
@@ -389,10 +392,15 @@ func TestNativeWorkSearchRanking(t *testing.T) {
 	}
 	want := []tracker.NativeWorkItemID{title.WorkItemID, body.WorkItemID, partial.WorkItemID}
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	for _, mode := range []string{"issues", "duplicates"} {
+	for _, mode := range []string{"issues", "duplicates", "rebuilding issues"} {
 		t.Run(mode, func(t *testing.T) {
 			var got []tracker.NativeWorkItemID
-			if mode == "issues" {
+			if mode == "rebuilding issues" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts; UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode != "duplicates" {
 				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?"+url.Values{"q": {"repos associ deadlock"}}.Encode(), f.token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
 				var page tracker.NativeIssuePage
@@ -604,6 +612,19 @@ func TestNativeWorkSearchScopeRefresh(t *testing.T) {
 			if err := requireNativeSearchIndex(t.Context(), f.service.database.reader, scope); !errors.Is(err, operatortool.ErrServiceUnavailable) {
 				t.Fatalf("dirty scope err=%v", err)
 			}
+			page, err := f.service.readIssues(t.Context(), scope, url.Values{"q": {"narwhal"}, "archived": {test.archived}})
+			if err != nil || len(page.Items) != 1 || page.Items[0].WorkItemID != issue.WorkItemID {
+				t.Fatalf("search during scope refresh: items=%v err=%v", page.Items, err)
+			}
+			previous := scope
+			params := url.Values{"q": {"narwhal"}}
+			if test.name == "reporter" {
+				previous.sourceActor = &tracker.Actor{Kind: "human", PrincipalID: "owner"}
+			}
+			hidden, err := f.service.readIssues(t.Context(), previous, params)
+			if err != nil || len(hidden.Items) != 0 {
+				t.Fatalf("stale scope leaked during refresh: items=%v err=%v", hidden.Items, err)
+			}
 			for range 5 {
 				more, err := f.service.database.backfillNativeSearch(t.Context())
 				if err != nil {
@@ -710,5 +731,59 @@ FROM issues WHERE native_id = ?`, issue.WorkItemID); err != nil {
 
 	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO native_work_fts(native_work_fts, rank) VALUES ('integrity-check', 1)"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNativeWorkSearchProjectRebuild(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "rebuilding-search")
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	target := f.create(t, "Distinct narwhal")
+	indexed := newNativeFixture(t, f.service, f.project.OrganizationID, "indexed-search")
+	other := indexed.create(t, "Indexed narwhal")
+	empty := newNativeFixture(t, f.service, f.project.OrganizationID, "empty-search")
+	if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts WHERE rowid IN (SELECT d.id*2 FROM native_work_documents d JOIN issues i ON i.id=d.issue_id WHERE i.native_id=? UNION ALL SELECT d.id*2+1 FROM native_work_documents d JOIN issues i ON i.id=d.issue_id WHERE i.native_id=?);
+ UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`, target.WorkItemID, target.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, base, token, query string
+		want                     tracker.NativeWorkItemID
+	}{
+		{"rebuilding project", f.base, f.token, "narwhal", target.WorkItemID},
+		{"number during rebuild", f.base, f.token, strconv.Itoa(target.Number), target.WorkItemID},
+		{"already indexed project", indexed.base, indexed.token, "narwhal", other.WorkItemID},
+		{"empty project", empty.base, empty.token, "narwhal", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := performHubAPIRequest(t, f.service, http.MethodGet, test.base+"/work-items?q="+url.QueryEscape(test.query), test.token, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var page tracker.NativeIssuePage
+			decodeHubResponse(t, response, &page)
+			if test.want == "" {
+				if len(page.Items) != 0 {
+					t.Fatalf("empty project returned %v", page.Items)
+				}
+				return
+			}
+			if len(page.Items) != 1 || page.Items[0].WorkItemID != test.want {
+				t.Fatalf("items=%v want %s", page.Items, test.want)
+			}
+		})
+	}
+	for _, fixture := range []nativeFixture{indexed, empty} {
+		scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
+		if err := requireNativeSearchIndex(t.Context(), f.service.database.reader, scope); err != nil {
+			t.Errorf("unaffected project %s: %v", fixture.project.ID, err)
+		}
+		matches, err := resolveNativeDuplicates(t.Context(), f.service.database.reader, scope, tracker.CreateIssue{Title: "Indexed narwhal"}, f.service.config.now(), false)
+		want := 0
+		if fixture.project.ID == indexed.project.ID {
+			want = 1
+		}
+		if err != nil || len(matches) != want {
+			t.Errorf("unaffected duplicate search project=%s matches=%v err=%v", fixture.project.ID, matches, err)
+		}
 	}
 }

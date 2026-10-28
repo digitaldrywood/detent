@@ -48,12 +48,20 @@ func nativeSearchText(content, scope string) string {
 	return indexed.String()
 }
 
-func requireNativeSearchIndex(ctx context.Context, q nativeQueryer, scope nativeScope) error {
-	var pending bool
-	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM native_work_search_rebuild WHERE through_id<last_id)
+func nativeSearchIndexPending(scope nativeScope) (string, []any) {
+	return `EXISTS(SELECT 1 FROM native_work_search_rebuild r
+ WHERE r.through_id<r.last_id AND EXISTS(SELECT 1 FROM issues i CROSS JOIN native_work_documents d
+ WHERE i.organization_id=? AND i.project_id=? AND d.issue_id=i.id AND d.id>r.through_id AND d.id<=r.last_id
+ AND NOT EXISTS(SELECT 1 FROM native_work_scoped_fts WHERE rowid=d.id*2)))
  OR EXISTS(SELECT 1 FROM native_work_search_dirty WHERE organization_id=? AND project_id=?)
- OR (? AND EXISTS(SELECT 1 FROM issues WHERE organization_id=? AND project_id=? AND actor_principal_id IS NULL))`, scope.organization, scope.project, scope.credential.HostedRole == "reporter", scope.organization, scope.project).Scan(&pending)
-	if err != nil {
+ OR (? AND EXISTS(SELECT 1 FROM issues WHERE organization_id=? AND project_id=? AND actor_principal_id IS NULL))`,
+		[]any{scope.organization, scope.project, scope.organization, scope.project, scope.credential.HostedRole == "reporter", scope.organization, scope.project}
+}
+
+func requireNativeSearchIndex(ctx context.Context, q nativeQueryer, scope nativeScope) error {
+	predicate, args := nativeSearchIndexPending(scope)
+	var pending bool
+	if err := q.QueryRowContext(ctx, "SELECT "+predicate, args...).Scan(&pending); err != nil {
 		return fmt.Errorf("read search index progress: %w", err)
 	}
 	if pending {

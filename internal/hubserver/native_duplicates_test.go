@@ -642,11 +642,14 @@ func TestNativeDuplicateMCP(t *testing.T) {
 	for _, test := range []struct {
 		name, transport string
 		failBrowserPath bool
+		rebuilding      bool
 	}{
-		{"stdio", "stdio", false},
-		{"http", "http", false},
-		{"stdio post-commit failure", "stdio", true},
-		{"http post-commit failure", "http", true},
+		{"stdio", "stdio", false, false},
+		{"http", "http", false, false},
+		{"stdio post-commit failure", "stdio", true, false},
+		{"http post-commit failure", "http", true, false},
+		{"stdio rebuilding", "stdio", false, true},
+		{"http rebuilding", "http", false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "duplicate-mcp")
@@ -685,6 +688,20 @@ func TestNativeDuplicateMCP(t *testing.T) {
 			}
 			args := map[string]any{"request_id": "mcp-duplicate", "title": first.Title, "description": "Private submitted description" + issueContractTestSections, "state": "Todo"}
 			args["project_id"] = f.project.ID
+			if test.rebuilding {
+				if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts; UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
+					t.Fatal(err)
+				}
+				raw := call("file_issue", args)
+				var filed tracker.NativeIssue
+				if err := json.Unmarshal(raw, &filed); err != nil || filed.WorkItemID == "" {
+					t.Fatalf("filing during rebuild: %s err=%v", raw, err)
+				}
+				return
+			}
 			for _, test := range []struct{ name, state, body, message string }{
 				{"unlinked Triage", "Triage", "Description" + issueContractTestSections, "Triage is reserved for linked GitHub issue intake"},
 				{"unknown lane", "Unknown", "Description" + issueContractTestSections, "Workflow state does not exist"},
@@ -929,5 +946,88 @@ func TestNativeMachineDuplicateCommentCandidate(t *testing.T) {
 	search, err := prepareNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), true)
 	if err != nil || len(search.matches) != 1 || search.matches[0].WorkItemID != owner.WorkItemID {
 		t.Fatalf("search=%+v err=%v", search, err)
+	}
+}
+
+func TestNativeDuplicatesIncompleteIndex(t *testing.T) {
+	for _, state := range []string{"rebuild", "dirty"} {
+		t.Run(state, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			body := issueorigin.Stamp("Matching diagnostic", issueorigin.Origin{Kind: "worker", Fingerprint: "search-rebuild"})
+			first := f.create(t, "Repository association deadlocks")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", body, first.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=1 WHERE id=?", f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			request := tracker.CreateIssue{Title: first.Title, Body: body}
+			for _, machine := range []bool{false, true} {
+				search, err := prepareNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), machine)
+				if err != nil || len(search.matches) != 1 {
+					t.Fatalf("complete index machine=%v search=%v err=%v", machine, search, err)
+				}
+			}
+			if state == "rebuild" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts;
+UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_work_search_dirty(issue_id,organization_id,project_id) SELECT id,organization_id,project_id FROM issues WHERE native_id=?`, first.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			prepared := map[bool]*nativeDuplicateSearch{}
+			for _, machine := range []bool{false, true} {
+				search, err := prepareNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), machine)
+				if err != nil || len(search.matches) != 0 {
+					t.Fatalf("incomplete index machine=%v search=%v err=%v", machine, search, err)
+				}
+				prepared[machine] = search
+			}
+			for _, machine := range []bool{false, true} {
+				t.Run(strconv.FormatBool(machine), func(t *testing.T) {
+					for _, mode := range []string{"reader", "transaction", "prepared transaction"} {
+						scope := scope
+						if mode == "prepared transaction" {
+							scope.duplicateSearch = prepared[machine]
+						}
+						var matches []possibleDuplicate
+						var err error
+						if mode != "reader" {
+							tx, beginErr := f.service.database.db.BeginTx(t.Context(), nil)
+							if beginErr != nil {
+								t.Fatal(beginErr)
+							}
+							defer tx.Rollback()
+							matches, err = resolveNativeDuplicatesTx(t.Context(), tx, scope, request, f.service.config.now(), machine)
+							if rollbackErr := tx.Rollback(); rollbackErr != nil {
+								t.Fatal(rollbackErr)
+							}
+						} else {
+							matches, err = resolveNativeDuplicates(t.Context(), f.service.database.reader, scope, request, f.service.config.now(), machine)
+						}
+						if err != nil || len(matches) != 0 {
+							t.Errorf("mode=%s matches=%v err=%v", mode, matches, err)
+						}
+					}
+				})
+			}
+			request.IdempotencyKey = "machine-file-during-rebuild"
+			request.Body += issueContractTestSections
+			request.State = "Todo"
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", f.token, request)
+			requireNativeStatus(t, response, http.StatusOK)
+			var filed tracker.NativeIssue
+			decodeHubResponse(t, response, &filed)
+			if filed.WorkItemID == "" || filed.WorkItemID == first.WorkItemID {
+				t.Fatalf("incomplete index reused a duplicate: %s", response.Body.String())
+			}
+		})
 	}
 }
