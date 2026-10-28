@@ -18,7 +18,9 @@ WHERE r.organization_id=? AND r.project_id=? AND r.metric='attempt'
 AND r.updated_at>=?
 ORDER BY r.updated_at,r.started_at LIMIT ?`
 
-const diagnosticsFailuresQuery = `SELECT r.status,r.data_json,r.work_item_id,r.failed_at,r.started_at,r.updated_at
+const diagnosticsFailuresQuery = `SELECT r.status,r.data_json,r.work_item_id,r.failed_at,r.started_at,r.updated_at,
+(SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=r.organization_id AND u.project_id=r.project_id AND u.attempt_id=r.dimension),
+(SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=r.organization_id AND u.project_id=r.project_id AND u.attempt_id=r.dimension)
 FROM analytics_hourly_rollups r INDEXED BY analytics_attempt_failed
 WHERE r.organization_id=? AND r.project_id=? AND r.metric='attempt' AND r.failed_at IS NOT NULL
 AND r.failed_day>=julianday(?) AND r.failed_day<julianday(?)
@@ -158,7 +160,10 @@ ORDER BY r.updated_at,r.started_at LIMIT ?`
 func readDiagnosticsRefusals(ctx context.Context, q nativeQueryer, scope nativeScope, request operatortool.AnalyticsRequest, out *nativeAnalyticsProject) error {
 	statement := diagnosticsFailuresQuery
 	if _, projected := q.(analyticsRollupReader); !projected {
-		statement = `SELECT r.status,r.data_json,r.work_item_id,r.report_failed_at,r.started_at,r.updated_at FROM report_attempts r
+		statement = `SELECT r.status,r.data_json,r.work_item_id,r.report_failed_at,r.started_at,r.updated_at,
+(SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=r.organization_id AND u.project_id=r.project_id AND u.attempt_id=r.id),
+(SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=r.organization_id AND u.project_id=r.project_id AND u.attempt_id=r.id)
+FROM report_attempts r
 WHERE r.organization_id=? AND r.project_id=? AND r.report_failed_at IS NOT NULL AND r.report_failed_at>=? AND r.report_failed_at<?
 ORDER BY r.report_failed_at DESC,r.id DESC LIMIT ?`
 	}
@@ -181,7 +186,7 @@ ORDER BY r.report_failed_at DESC,r.id DESC LIMIT ?`
 		observed++
 		var status, raw, at, started, updated string
 		var failure nativeFailure
-		if err := rows.Scan(&status, &raw, &failure.workItem, &at, &started, &updated); err != nil {
+		if err := rows.Scan(&status, &raw, &failure.workItem, &at, &started, &updated, &failure.cost, &failure.tokens); err != nil {
 			return err
 		}
 		var payload struct {

@@ -3,7 +3,9 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -110,8 +112,8 @@ SELECT ?,?,?,'attempt',?||x,1,?,?,?,?,julianday(?),1,'failed','example-item' FRO
 	}
 
 	for _, query := range recorded.queries {
-		if strings.Contains(query, "sum(u.cost_estimate)") || strings.Contains(query, "sum(u.input+u.output)") || strings.Contains(query, "a.data_json") {
-			t.Fatalf("diagnostics fetched full attempt details or failure usage: %s", query)
+		if strings.Contains(query, "a.data_json") {
+			t.Fatalf("diagnostics fetched full attempt details: %s", query)
 		}
 	}
 	if project.AttemptsObserved != maxAnalyticsPopulation || !project.Partial || len(project.FailureSignatures.Items) != 1 || project.FailureSignatures.Items[0].Count != maxAnalyticsPopulation {
@@ -168,5 +170,117 @@ SELECT ?,?,0,'attempt','candidate-'||x,1,'{"runtime":{"phases":[{"name":"impleme
 				}
 			})
 		}
+	}
+}
+
+func TestDiagnosticsRefusalPageByteParity(t *testing.T) {
+	f := newUsageHostedFixture(t)
+	now := f.service.config.now().UTC().Truncate(time.Hour)
+	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
+	w := operatortool.AnalyticsWindow{From: now.Add(-24 * time.Hour), To: now, Bucket: time.Hour}
+	signatures := make([]nativeFailureSignature, 0, 51)
+	for i := range 50 {
+		example := fmt.Sprintf("failure %c%c ", 'g'+i/20, 'g'+i%20) + strings.Repeat("z", 501)
+		signatures = append(signatures, nativeFailureSignature{Signature: example[:256], Example: example[:512], Class: "attempt", Count: 1, WorkItems: []string{fmt.Sprintf("item-%d", i)}, WorkItemsCount: 1, FirstSeen: now.Add(-time.Hour), LastSeen: now.Add(-time.Hour), Cost: 123456789.125, Tokens: 999999999999, SlotMinutes: 60})
+	}
+	signatures = append(signatures, nativeFailureSignature{Signature: "landing refused: conflict", Example: "landing refused: conflict", Class: "merge", Count: 1, WorkItems: []string{"conflict-item"}, WorkItemsCount: 1, FirstSeen: now.Add(-time.Hour), LastSeen: now.Add(-time.Hour), Cost: 123456789.125, Tokens: 999999999999, SlotMinutes: 60})
+	size := 2
+	for _, signature := range signatures {
+		raw, err := json.Marshal(signature)
+		if err != nil {
+			t.Fatal(err)
+		}
+		size += len(raw) + 1
+	}
+	padding := operatortool.WorkListPageBytes + 1 - size
+	if padding < 0 {
+		t.Fatalf("fixture already exceeds byte limit: %d", size)
+	}
+	for i := range 50 {
+		signatures[i].WorkItems[0] += strings.Repeat("z", padding/50)
+		if i < padding%50 {
+			signatures[i].WorkItems[0] += "z"
+		}
+	}
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(t.Context(), `DELETE FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric IN ('attempt','usage')`, scope.organization, scope.project); err != nil {
+		t.Fatal(err)
+	}
+	for i, signature := range signatures {
+		attempt := fmt.Sprintf("boundary-%d", i)
+		payload := tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: signature.Example}}
+		if signature.Class == "merge" {
+			payload = tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "conflict"}}}
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,started_at,updated_at,failed_at,failed_day,status,work_item_id,projection_version)
+VALUES(?,?,0,'attempt',?,1,?,?,?,?,julianday(?),'failed',?,1)`, scope.organization, scope.project, attempt, string(raw), formatHubTime(now.Add(-2*time.Hour)), formatHubTime(signature.LastSeen), formatHubTime(signature.LastSeen), formatHubTime(signature.LastSeen), signature.WorkItems[0]); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,attempt_id,period,provider,model,input,output,projection_version)
+VALUES(?,?,0,'usage',?,?,'{}',?,?,'provider','model',?,0,1)`, scope.organization, scope.project, attempt, signature.Cost, attempt, formatHubTime(signature.LastSeen), signature.Tokens); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct {
+		name                 string
+		offset, limit, count int
+		trim                 int
+	}{
+		{"byte clipped before refusal", 0, 100, 50, 0},
+		{"exact byte limit includes refusal", 0, 100, 51, 1},
+		{"below byte limit includes refusal", 0, 100, 51, 2},
+		{"row clipped before refusal", 0, 50, 50, 0},
+		{"refusal on next page", 50, 100, 1, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			expected := append([]nativeFailureSignature(nil), signatures...)
+			firstItem := signatures[0].WorkItems[0]
+			expected[0].WorkItems = []string{firstItem[:len(firstItem)-test.trim]}
+			if _, err := tx.ExecContext(t.Context(), `UPDATE analytics_hourly_rollups SET work_item_id=? WHERE organization_id=? AND project_id=? AND metric='attempt' AND dimension='boundary-0'`, expected[0].WorkItems[0], scope.organization, scope.project); err != nil {
+				t.Fatal(err)
+			}
+			q := analyticsRollupReader{tx}
+			qPrepared, err := prepareReportsQuery(t.Context(), q, scope, "report_attempts")
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := nativeAnalyticsProject{Window: w}
+			if err := readDiagnosticsRefusals(t.Context(), qPrepared, scope, operatortool.AnalyticsRequest{RowOffset: test.offset, Limit: test.limit}, &out); err != nil {
+				t.Fatal(err)
+			}
+			want := nativeFailureSignaturePage(expected, test.offset, test.limit)
+			if len(want.Items) != test.count {
+				t.Fatalf("fixture page count=%d, want %d", len(want.Items), test.count)
+			}
+			if len(out.FailureSignatures.Items) != test.count {
+				t.Fatalf("page contains %d signatures, want %d", len(out.FailureSignatures.Items), test.count)
+			}
+			if !reflect.DeepEqual(want, out.FailureSignatures) {
+				t.Fatal("failure page differs from existing pagination")
+			}
+			out.ProjectID = string(scope.project)
+			baseline := out
+			baseline.FailureSignatures = want
+			reports := make([]diagnosticsReport, 0, 2)
+			for _, project := range []nativeAnalyticsProject{baseline, out} {
+				report, err := f.service.readHostedDiagnosticsFrom(t.Context(), nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []nativeAnalyticsProject{project}}, qPrepared)
+				if err != nil {
+					t.Fatal(err)
+				}
+				reports = append(reports, report)
+			}
+			assertAnalyticsJSONEqual(t, reports[0], reports[1])
+			if out.Partial {
+				t.Fatal("byte or row pagination changed population partial")
+			}
+		})
 	}
 }
