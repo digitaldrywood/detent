@@ -47,9 +47,9 @@ if [ -n "${CI_RELEASE_BRANCH:-}" ]; then
     ["preflight", "Invariant Gate", "Lint", "Verify build and vet", "Generated sources",
      "Cloud client", "Security", "GoReleaser Snapshot", "Installer Smoke (ubuntu-latest)",
      (range(1;6) | "Verify race (\(.)/5)"),
-     (range(1;5) | "Verify race (hub \(.)/4)"),
+     (range(1;6) | "Verify race (hub \(.)/5)"),
      (range(1;5) | "Test Coverage (\(.)/4)"),
-     (range(1;5) | "Test Coverage (hub \(.)/4)"),
+     (range(1;6) | "Test Coverage (hub \(.)/5)"),
      (range(1;4) | "Browser Visual (\(.)/3)"),
      (("darwin", "linux", "windows") as $os | ("amd64", "arm64") | "Release prebuild (\($os)/\(.))")]
     - map(.name) | .[]
