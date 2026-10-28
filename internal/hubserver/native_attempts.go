@@ -577,25 +577,61 @@ func (s *Service) listNativeAttempts(c echo.Context) error {
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	page, err := s.readAttempts(ctx, scope, c.Param("item"), params)
+	result, err := s.readNativeAttemptPage(ctx, scope, c.Param("item"), params, json.Marshal)
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, page)
+	return c.JSONBlob(http.StatusOK, result.encoded)
+}
+
+type nativeAttemptPage struct {
+	tracker.Page[tracker.NativeAttempt]
+	encoded []byte
+}
+
+func (p nativeAttemptPage) candidateBytes(encoded []byte, cursor string) int {
+	separator := 0
+	if len(p.Items) > 0 {
+		separator = 1
+	}
+	return len(p.encoded) + separator + len(encoded) + len(`],"next_cursor":"`) + len(cursor) + len("\"}\n")
+}
+
+func (p *nativeAttemptPage) appendAttempt(attempt tracker.NativeAttempt, encoded []byte) {
+	if len(p.Items) > 0 {
+		p.encoded = append(p.encoded, ',')
+	}
+	p.encoded = append(p.encoded, encoded...)
+	p.Items = append(p.Items, attempt)
+}
+
+func (p *nativeAttemptPage) finish() {
+	p.encoded = append(p.encoded, ']')
+	if p.NextCursor != "" {
+		p.encoded = append(p.encoded, `,"next_cursor":"`...)
+		p.encoded = append(p.encoded, p.NextCursor...)
+		p.encoded = append(p.encoded, '"')
+	}
+	p.encoded = append(p.encoded, '}', '\n')
 }
 
 func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item string, params url.Values) (tracker.Page[tracker.NativeAttempt], error) {
+	result, err := s.readNativeAttemptPage(ctx, scope, item, params, json.Marshal)
+	return result.Page, err
+}
+
+func (s *Service) readNativeAttemptPage(ctx context.Context, scope nativeScope, item string, params url.Values, marshal func(any) ([]byte, error)) (nativeAttemptPage, error) {
 	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	path := "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "/attempts"
 
 	if err := validateNativeQuery(params, "view", "direction"); err != nil {
-		return tracker.Page[tracker.NativeAttempt]{}, err
+		return nativeAttemptPage{}, err
 	}
 	view := params.Get("view")
 	if view != "" && view != "blockers" && view != "recorded_blockers" {
-		return tracker.Page[tracker.NativeAttempt]{}, nativePublicInvalid("view supports blockers or recorded_blockers")
+		return nativeAttemptPage{}, nativePublicInvalid("view supports blockers or recorded_blockers")
 	}
 	budget := 1 << 20
 	if view != "" {
@@ -603,19 +639,19 @@ func (s *Service) readAttempts(ctx context.Context, scope nativeScope, item stri
 	}
 	limit, cursor, key, err := s.readNativePage(ctx, scope, path, params)
 	if err != nil {
-		return tracker.Page[tracker.NativeAttempt]{}, err
+		return nativeAttemptPage{}, err
 	}
 
 	if _, _, err := readNativeIssueProjection(ctx, s.database.reader, scope, item, true); err != nil {
-		return tracker.Page[tracker.NativeAttempt]{}, err
+		return nativeAttemptPage{}, err
 	}
 	_, after, err := nativePageOrder(params, "a.fencing_token", cursor.After)
 	if err != nil {
-		return tracker.Page[tracker.NativeAttempt]{}, err
+		return nativeAttemptPage{}, err
 	}
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return tracker.Page[tracker.NativeAttempt]{}, err
+		return nativeAttemptPage{}, err
 	}
 	defer tx.Rollback()
 	query := `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
@@ -628,76 +664,72 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fe
 	}
 	rows, err := tx.QueryContext(ctx, query, scope.organization, scope.project, item, after, limit+1)
 	if err != nil {
-		return tracker.Page[tracker.NativeAttempt]{}, err
+		return nativeAttemptPage{}, err
 	}
 	defer rows.Close()
-	var attempts []tracker.NativeAttempt
+	result := nativeAttemptPage{Page: tracker.Page[tracker.NativeAttempt]{Items: []tracker.NativeAttempt{}}, encoded: []byte(`{"items":[`)}
+	hasMore := false
 	for rows.Next() {
+		if len(result.Items) == limit {
+			hasMore = true
+			break
+		}
 		attempt, err := scanNativeAttempt(ctx, tx, rows, s.config.now())
 		if err != nil {
-			return tracker.Page[tracker.NativeAttempt]{}, err
+			return nativeAttemptPage{}, err
 		}
 		if view != "" {
 			attempt.Runtime = nil
 			attempt.RuntimeFreshness = "unavailable"
 		}
-		attempts = append(attempts, attempt)
-	}
-	if err := rows.Err(); err != nil {
-		return tracker.Page[tracker.NativeAttempt]{}, err
-	}
-	if err := rows.Close(); err != nil {
-		return tracker.Page[tracker.NativeAttempt]{}, err
-	}
-	page := tracker.Page[tracker.NativeAttempt]{Items: []tracker.NativeAttempt{}}
-	hasMore := false
-	for _, attempt := range attempts {
-		if len(page.Items) == limit {
-			hasMore = true
-			break
-		}
 		if view != "recorded_blockers" {
 			if err := readAttachmentEvidence(ctx, tx, scope, item, &attempt.NativeRunData); err != nil {
-				return tracker.Page[tracker.NativeAttempt]{}, err
+				return nativeAttemptPage{}, err
 			}
 		}
 		attempt.Identity = nativeAttemptDisplayIdentity(attempt)
 		attempt.Runtime = attempt.Runtime.WithoutActivitySpans()
 		next := cursor
 		next.After = strconv.FormatInt(int64(attempt.FencingToken), 10)
-		candidate := tracker.Page[tracker.NativeAttempt]{Items: append(page.Items, attempt)}
-		candidate.NextCursor, err = encodeNativeCursor(next, key)
+		nextCursor, err := encodeNativeCursor(next, key)
 		if err != nil {
-			return tracker.Page[tracker.NativeAttempt]{}, err
+			return nativeAttemptPage{}, err
 		}
-		encoded, err := json.Marshal(candidate)
+		encoded, err := marshal(attempt)
 		if err != nil {
-			return tracker.Page[tracker.NativeAttempt]{}, err
+			return nativeAttemptPage{}, err
 		}
-		if len(encoded)+1 > budget && len(page.Items) == 0 && view != "" {
-			candidate.Items[0] = nativeAttemptAuthorityProjection(attempt)
-			encoded, err = json.Marshal(candidate)
+		if result.candidateBytes(encoded, nextCursor) > budget && len(result.Items) == 0 && view != "" {
+			attempt = nativeAttemptAuthorityProjection(attempt)
+			encoded, err = marshal(attempt)
 			if err != nil {
-				return tracker.Page[tracker.NativeAttempt]{}, err
+				return nativeAttemptPage{}, err
 			}
 		}
-		if len(encoded)+1 > budget {
-			if len(page.Items) == 0 {
-				return tracker.Page[tracker.NativeAttempt]{}, &nativeError{Code: "attempt_record_too_large", Message: fmt.Sprintf("Work item %s attempt %s exceeds the %d-byte page limit", item, attempt.AttemptID, budget), status: http.StatusUnprocessableEntity, publicMessage: true}
+		if result.candidateBytes(encoded, nextCursor) > budget {
+			if len(result.Items) == 0 {
+				return nativeAttemptPage{}, &nativeError{Code: "attempt_record_too_large", Message: fmt.Sprintf("Work item %s attempt %s exceeds the %d-byte page limit", item, attempt.AttemptID, budget), status: http.StatusUnprocessableEntity, publicMessage: true}
 			}
 			hasMore = true
 			break
 		}
-		page.Items = candidate.Items
+		result.appendAttempt(attempt, encoded)
 		cursor = next
 	}
+	if err := rows.Err(); err != nil {
+		return nativeAttemptPage{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return nativeAttemptPage{}, err
+	}
 	if hasMore {
-		page.NextCursor, err = encodeNativeCursor(cursor, key)
+		result.NextCursor, err = encodeNativeCursor(cursor, key)
 		if err != nil {
-			return tracker.Page[tracker.NativeAttempt]{}, err
+			return nativeAttemptPage{}, err
 		}
 	}
-	return page, nil
+	result.finish()
+	return result, nil
 }
 
 func nativeAttemptAuthorityProjection(attempt tracker.NativeAttempt) tracker.NativeAttempt {
