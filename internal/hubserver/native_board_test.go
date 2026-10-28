@@ -981,15 +981,16 @@ func TestNativeBoardPolicyRefreshIsolatesProjects(t *testing.T) {
 func TestNativeBoardDependentChangesReachBlockerStream(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t)
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	user := f.user(t, "dependency-viewer", "member", "viewer@example.test", "write", "")
 	created := f.request(t, user, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "dependent"}, Title: "Dependent", Body: issueContractTestSections, State: "Todo"})
 	requireNativeStatus(t, created, http.StatusOK)
 	var issue tracker.NativeIssue
 	decodeHubResponse(t, created, &issue)
 	dependent, blocker := issue.WorkItemID, f.seedIssue(t, 2)
-	if err := f.service.hubTransact(t.Context(), func(*sql.Tx, time.Time) error { return nil }); err != nil {
-		t.Fatal(err)
-	}
+	drainTestNativeBoard(t, f.service)
 	response := f.request(t, user, http.MethodGet, f.base+"/work-items?include=board", nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	var page tracker.NativeIssuePage
@@ -1009,6 +1010,7 @@ func TestNativeBoardDependentChangesReachBlockerStream(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			requireNativeStatus(t, f.request(t, user, http.MethodPost, f.base+"/work-items/"+string(dependent)+test.path, test.body), http.StatusOK)
+			drainTestNativeBoard(t, f.service)
 			for {
 				frame := readHostedBoardFrame(t, stream)
 				if frame.Gap {
