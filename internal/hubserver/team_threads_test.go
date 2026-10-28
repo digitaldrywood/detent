@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -538,6 +539,317 @@ func TestTeamThreadGeneralMembershipAndRetries(t *testing.T) {
 			f.service.Handler().ServeHTTP(response, request)
 			if response.Code < 400 || response.Code >= 500 || body.read > maxAPIRequestBodyBytes+64<<10 {
 				t.Fatalf("oversized thread post status=%d read=%d, want client error within the body limit", response.Code, body.read)
+			}
+		})
+	}
+}
+
+func TestTeamThreadAuthorizationRoutes(t *testing.T) {
+	for _, role := range []string{"owner", "admin", "member", "reporter", "viewer", "removed", "ungranted", "read_only"} {
+		t.Run(role, func(t *testing.T) {
+			v := newVerificationFixture(t)
+			if err := v.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			owner := v.user(t, "thread-owner", "owner", "thread-owner@example.test", "write", "")
+			viewer := v.users["reporter"]
+			if role != "reporter" {
+				memberRole := role
+				if role == "removed" || role == "ungranted" || role == "read_only" {
+					memberRole = "member"
+				}
+				viewer = v.user(t, "thread-viewer", memberRole, "thread-viewer@example.test", "", "")
+				if role != "ungranted" {
+					v.grant(t, viewer, role != "read_only", false)
+				}
+			}
+			if role == "removed" {
+				operatorSQL(t, v.hostedSecurityFixture, "UPDATE hosted_members SET active=0 WHERE user_id=?", viewer.identity.Subject)
+				if err := v.provider.RevokeMembership(t.Context(), "membership_"+viewer.identity.Subject); err != nil {
+					t.Fatal(err)
+				}
+			}
+			base := "/api/v2/organizations/org_security/threads"
+			type target struct {
+				name   string
+				thread teamThread
+				input  teamThreadInput
+			}
+			var targets []target
+			for _, name := range []string{"general", "project", "own", "other"} {
+				input := teamThreadInput{Scope: name, Title: "sentinel-preview-" + name}
+				if name == "project" {
+					input.ProjectID = string(v.project)
+				}
+				if name == "own" || name == "other" {
+					filer := "reporter"
+					if name == "other" {
+						filer = "tester"
+					}
+					r := v.request(t, v.users[filer], http.MethodPost, v.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: name}, Type: "bug", Title: "parent-" + name, Body: reporterBugSections})
+					requireNativeStatus(t, r, http.StatusOK)
+					var issue tracker.NativeIssue
+					decodeHubResponse(t, r, &issue)
+					input.Scope, input.IssueID = "issue", string(issue.WorkItemID)
+				}
+				r := v.request(t, owner, http.MethodPost, base, input)
+				requireNativeStatus(t, r, http.StatusCreated)
+				var thread teamThread
+				decodeHubResponse(t, r, &thread)
+				requireNativeStatus(t, v.request(t, owner, http.MethodPost, base+"/"+thread.ID+"/posts", teamThreadInput{Kind: "finding", Body: "preview-" + name}), http.StatusCreated)
+				targets = append(targets, target{name, thread, input})
+			}
+			if role == "reporter" {
+				operatorSQL(t, v.hostedSecurityFixture, "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL WHERE native_id IN (?,?)", targets[2].input.IssueID, targets[3].input.IssueID)
+			}
+			readable := func(name string) bool {
+				return role != "removed" && (role != "ungranted" || name == "general") && (role != "reporter" || name != "other")
+			}
+			call := func(t *testing.T, transport, operation, method, path string, input teamThreadInput) (json.RawMessage, bool) {
+				t.Helper()
+				if transport == "http" {
+					var body any
+					if method != http.MethodGet {
+						body = input
+					}
+					r := v.request(t, viewer, method, path, body)
+					return r.Body.Bytes(), r.Code >= 200 && r.Code < 300
+				}
+				payload, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": operation, "arguments": input, "_meta": json.RawMessage(fleetProtocolMeta)}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				r := v.serve(t, hostedSharedRequest{user: &viewer, method: http.MethodPost, target: "/api/v2/organizations/org_security/mcp", csrf: cloudassert.CSRFToken("shared-"+viewer.identity.Subject, "org_security"), body: string(payload), headers: map[string]string{"Mcp-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": operation}})
+				var envelope struct {
+					Result struct {
+						IsError bool `json:"isError"`
+						Content struct {
+							Data json.RawMessage `json:"data"`
+						} `json:"structuredContent"`
+					} `json:"result"`
+					Error json.RawMessage `json:"error"`
+				}
+				if err := json.Unmarshal(r.Body.Bytes(), &envelope); err != nil {
+					t.Fatal(err)
+				}
+				ok := r.Code == http.StatusOK && !envelope.Result.IsError && len(envelope.Error) == 0 && len(envelope.Result.Content.Data) > 0
+				if !ok {
+					return r.Body.Bytes(), false
+				}
+				return envelope.Result.Content.Data, true
+			}
+			t.Run("unread", func(t *testing.T) {
+				path := base + "/unread"
+				if role != "ungranted" {
+					path += "?project_id=" + string(v.project)
+				}
+				r := v.request(t, viewer, http.MethodGet, path, nil)
+				if role == "removed" {
+					if r.Code < 400 {
+						t.Fatalf("removed member read unread count: %s", r.Body.String())
+					}
+					return
+				}
+				requireNativeStatus(t, r, http.StatusOK)
+				if err := v.service.maintainTeamUnread(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				r = v.request(t, viewer, http.MethodGet, path, nil)
+				requireNativeStatus(t, r, http.StatusOK)
+				var summary teamUnreadSummary
+				decodeHubResponse(t, r, &summary)
+				want := int64(4)
+				if role == "reporter" {
+					want = 3
+				} else if role == "ungranted" {
+					want = 1
+				}
+				if summary.Pending || summary.Count == nil || *summary.Count != want {
+					t.Fatalf("unread includes inaccessible threads: %+v, want %d", summary, want)
+				}
+				if role == "ungranted" {
+					r = v.request(t, viewer, http.MethodGet, base+"/unread?project_id="+string(v.project), nil)
+					if r.Code < 400 {
+						t.Fatalf("ungranted project unread accessible: %s", r.Body.String())
+					}
+				}
+			})
+			for _, transport := range []string{"http", "mcp"} {
+				t.Run(transport, func(t *testing.T) {
+					for _, search := range []string{"", "sentinel", "preview"} {
+						t.Run("list_"+search, func(t *testing.T) {
+							raw, ok := call(t, transport, "list_threads", http.MethodGet, base+"?search="+search, teamThreadInput{Search: search})
+							if role == "removed" {
+								if ok {
+									t.Fatalf("removed member listed threads: %s", raw)
+								}
+								return
+							}
+							if !ok {
+								t.Fatalf("list failed: %s", raw)
+							}
+							var page teamThreadPage
+							if err := json.Unmarshal(raw, &page); err != nil {
+								t.Fatal(err)
+							}
+							for _, target := range targets {
+								found := false
+								for _, thread := range page.Threads {
+									found = found || thread.ID == target.thread.ID
+									if thread.ID == target.thread.ID && thread.Preview != "preview-"+target.name {
+										t.Errorf("missing readable preview: %+v", thread)
+									}
+								}
+								if found != readable(target.name) {
+									t.Errorf("%s visible=%t, want %t: %s", target.name, found, readable(target.name), raw)
+								}
+								if !readable(target.name) {
+									for _, secret := range []string{target.thread.ID, target.thread.Title, target.input.IssueID, "preview-" + target.name} {
+										if secret != "" && strings.Contains(string(raw), secret) {
+											t.Errorf("list leaked %q", secret)
+										}
+									}
+								}
+							}
+						})
+					}
+					t.Run("issue_filter", func(t *testing.T) {
+						other := targets[3]
+						raw, ok := call(t, transport, "list_threads", http.MethodGet, base+"?issue_id="+other.input.IssueID, teamThreadInput{IssueID: other.input.IssueID})
+						if role == "removed" {
+							if ok {
+								t.Fatalf("removed member listed issue threads: %s", raw)
+							}
+							return
+						}
+						if !ok {
+							t.Fatalf("issue filter failed: %s", raw)
+						}
+						var page teamThreadPage
+						if err := json.Unmarshal(raw, &page); err != nil {
+							t.Fatal(err)
+						}
+						if (len(page.Threads) > 0) != readable("other") {
+							t.Errorf("issue filter bypassed visibility: %s", raw)
+						}
+					})
+					if role == "reporter" {
+						t.Run("pagination", func(t *testing.T) {
+							cursor := ""
+							seen := map[string]bool{}
+							for range 20 {
+								raw, ok := call(t, transport, "list_threads", http.MethodGet, base+"?limit=1&cursor="+cursor, teamThreadInput{Limit: 1, Cursor: cursor})
+								if !ok {
+									t.Fatalf("page failed: %s", raw)
+								}
+								var page teamThreadPage
+								if err := json.Unmarshal(raw, &page); err != nil {
+									t.Fatal(err)
+								}
+								for _, thread := range page.Threads {
+									if seen[thread.ID] || thread.IssueID == targets[3].input.IssueID {
+										t.Fatalf("page duplicated or exposed hidden thread: %s", raw)
+									}
+									seen[thread.ID] = true
+								}
+								cursor = page.NextCursor
+								if cursor == "" {
+									break
+								}
+							}
+							for _, target := range targets[:3] {
+								if !seen[target.thread.ID] {
+									t.Errorf("hidden thread displaced readable page for %s", target.name)
+								}
+							}
+						})
+					}
+					for _, target := range targets {
+						for _, route := range []struct {
+							operation, method, suffix string
+							input                     teamThreadInput
+						}{
+							{"get_thread", http.MethodGet, "/" + target.thread.ID, teamThreadInput{ThreadID: target.thread.ID}},
+							{"create_thread", http.MethodPost, "", target.input},
+							{"post_to_thread", http.MethodPost, "/" + target.thread.ID + "/posts", teamThreadInput{ThreadID: target.thread.ID, Kind: "note", Body: "preview-" + target.name}},
+							{"resolve_thread", http.MethodPatch, "/" + target.thread.ID, teamThreadInput{ThreadID: target.thread.ID, Status: "resolved"}},
+						} {
+							t.Run(target.name+"_"+route.operation, func(t *testing.T) {
+								raw, ok := call(t, transport, route.operation, route.method, base+route.suffix, route.input)
+								want := readable(target.name) && (route.operation == "get_thread" || role != "viewer" && (role != "read_only" || target.name == "general"))
+								if ok != want {
+									t.Fatalf("allowed=%t, want %t: %s", ok, want, raw)
+								}
+								if !want {
+									for _, secret := range []string{target.thread.ID, target.thread.Title, target.input.IssueID, "preview-" + target.name} {
+										if secret != "" && strings.Contains(string(raw), secret) {
+											t.Errorf("denied route leaked %q", secret)
+										}
+									}
+								} else if route.operation == "get_thread" {
+									var read teamThreadRead
+									if err := json.Unmarshal(raw, &read); err != nil {
+										t.Fatal(err)
+									}
+									if len(read.Posts) == 0 || !strings.Contains(read.Posts[0].Body, "preview-"+target.name) || read.Thread.IssueID != target.input.IssueID {
+										t.Errorf("readable thread lost content: %s", raw)
+									}
+									if target.input.IssueID != "" && (read.Thread.IssueNumber == 0 || len(read.Thread.References) != 1 || read.Thread.References[0].ID != target.input.IssueID) {
+										t.Errorf("readable parent reference missing: %s", raw)
+									}
+								}
+							})
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestTeamThreadUnreadRoleDowngrade(t *testing.T) {
+	v := newVerificationFixture(t)
+	if err := v.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	viewer := v.users["reporter"]
+	base := "/api/v2/organizations/org_security/threads"
+	for _, filer := range []string{"reporter", "tester"} {
+		r := v.request(t, v.users[filer], http.MethodPost, v.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: filer}, Type: "bug", Title: "Private report", Body: reporterBugSections})
+		requireNativeStatus(t, r, http.StatusOK)
+		var issue tracker.NativeIssue
+		decodeHubResponse(t, r, &issue)
+		r = v.request(t, v.users["member"], http.MethodPost, base, teamThreadInput{Scope: "issue", IssueID: string(issue.WorkItemID), Title: "Private thread"})
+		requireNativeStatus(t, r, http.StatusCreated)
+		var thread teamThread
+		decodeHubResponse(t, r, &thread)
+		requireNativeStatus(t, v.request(t, v.users["member"], http.MethodPost, base+"/"+thread.ID+"/posts", teamThreadInput{Kind: "note", Body: "Private preview"}), http.StatusCreated)
+	}
+	read := func() teamUnreadSummary {
+		t.Helper()
+		r := v.request(t, viewer, http.MethodGet, base+"/unread?project_id="+string(v.project), nil)
+		requireNativeStatus(t, r, http.StatusOK)
+		var summary teamUnreadSummary
+		decodeHubResponse(t, r, &summary)
+		return summary
+	}
+	for _, tc := range []struct {
+		role string
+		want int64
+	}{{"member", 2}, {"reporter", 1}, {"viewer", 2}, {"reporter", 1}} {
+		t.Run(tc.role, func(t *testing.T) {
+			operatorSQL(t, v.hostedSecurityFixture, "UPDATE hosted_members SET role=? WHERE user_id=?", tc.role, viewer.identity.Subject)
+			if err := v.provider.SetMembershipRole(t.Context(), "membership_"+viewer.identity.Subject, tc.role); err != nil {
+				t.Fatal(err)
+			}
+			if summary := read(); !summary.Pending || summary.Count != nil {
+				t.Errorf("role change reused broader cached count: %+v", summary)
+			}
+			if err := v.service.maintainTeamUnread(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if summary := read(); summary.Pending || summary.Count == nil || *summary.Count != tc.want {
+				t.Errorf("wrong visibility after role change: %+v, want %d", summary, tc.want)
 			}
 		})
 	}
