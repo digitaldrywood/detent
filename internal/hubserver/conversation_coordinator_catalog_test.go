@@ -33,9 +33,18 @@ func TestCoordinatorCatalogMatchesOperatorCatalog(t *testing.T) {
 			first := string(f.seedIssue(t, 1))
 			second := string(f.seedIssue(t, 2))
 			tools, ctx := coordinatorViewerTools(t, f, record, user)
-			want, err := f.service.coordinatorCatalog(ctx)
+			want, err := (hostedOperatorExecutor{service: f.service}).ListTools(ctx)
 			if err != nil {
 				t.Fatal(err)
+			}
+			excluded := map[string]bool{
+				string(chat.ActionStopRun): true, string(chat.ActionFileIssue): true, string(chat.ActionSetPriority): true,
+				operatortool.ActionResult: true, operatortool.ConnectionInfo: true,
+				"get_operator_chat": true, "post_operator_chat": true,
+				"post_conversation_command": true, "stream_conversation_events": true,
+			}
+			for _, tool := range tools.tools() {
+				excluded[tool.Name] = true
 			}
 			result, err := tools.handle(t.Context(), runner.AgentToolCall{Name: coordinatorToolFindTools, Arguments: json.RawMessage(`{}`)})
 			if err != nil || !result.Success {
@@ -52,7 +61,9 @@ func TestCoordinatorCatalogMatchesOperatorCatalog(t *testing.T) {
 				got = append(got, entry.Name)
 			}
 			for _, definition := range want {
-				expected = append(expected, definition.Name)
+				if !excluded[definition.Name] {
+					expected = append(expected, definition.Name)
+				}
 			}
 			if !slices.Equal(got, expected) || len(got) == 0 {
 				t.Fatalf("chat catalog diverged from the operator catalog:\n got %v\nwant %v", got, expected)
