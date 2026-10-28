@@ -992,35 +992,6 @@ func TestNativeMergeQueueWorkerHandoff(t *testing.T) {
 	}
 }
 
-func TestNativeMergeQueueOutcomes(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct{ name, state, ci, want string }{
-		{"queued checks failing", "OPEN", "failure", ""},
-		{"queue merged", "MERGED", "success", "Done"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			issue := nativeMergeQueueTestIssue(2460, tt.ci)
-			issue.PullRequest.State = tt.state
-			issue.PullRequest.MergeQueueEntry = &connector.PullRequestMergeQueueEntry{ID: "entry"}
-			cfg := nativeMergeQueueTestConfig(Config{ActiveStates: []string{"Merging", "Rework"}, TerminalStates: []string{"Done"}})
-			tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}}}
-			orch := &Orchestrator{cfg: cfg, connector: tracker}
-			state := newState(cfg)
-			orch.reconcileStaleMergingPullRequestIssues(t.Context(), &state, []connector.Issue{issue}, time.Now())
-			if tt.want == "" {
-				if len(tracker.updates) != 0 {
-					t.Fatalf("updates=%v", tracker.updates)
-				}
-			} else if len(tracker.updates) != 1 || tracker.updates[0].state != tt.want {
-				t.Fatalf("updates=%v want %s", tracker.updates, tt.want)
-			}
-			if len(tracker.dequeued) != 0 || len(tracker.merges) != 0 {
-				t.Fatal("programmatic queue mutation")
-			}
-		})
-	}
-}
-
 func TestNativeMergeQueueRetainsEntryAcrossConfigurationChanges(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -1047,36 +1018,6 @@ func TestNativeMergeQueueRetainsEntryAcrossConfigurationChanges(t *testing.T) {
 			}
 			if got := orch.mergeWorkerDispatchCandidates(&state, queued, now); len(got) != 0 {
 				t.Fatal("configuration enabled worker fallback")
-			}
-		})
-	}
-}
-
-func TestNativeMergeQueueUnadmittedFailureReconciles(t *testing.T) {
-	t.Parallel()
-	for _, queued := range []bool{false, true} {
-		t.Run(fmt.Sprintf("queued=%t", queued), func(t *testing.T) {
-			issue := nativeMergeQueueTestIssue(2462, "failure")
-			cfg := nativeMergeQueueTestConfig(Config{MergeFastPathEnabled: true, ActiveStates: []string{"Merging", "Rework"}})
-			tracker := &nativeMergeQueueConnector{autoPromoteTickMergeConnector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}}}
-			orch := &Orchestrator{cfg: cfg, connector: tracker}
-			state := newState(cfg)
-			now := time.Now()
-			state.nativeMergeQueueRepos[nativeMergeQueueRepositoryKey(issue)] = nativeMergeQueueRepository{Available: true, CheckedAt: now}
-			if queued {
-				tracker.entries = map[string]connector.PullRequestMergeQueueEntry{issue.ID: {ID: "entry"}}
-			}
-			issues := orch.delegateNativeMergeQueueIssues(t.Context(), &state, []connector.Issue{issue}, now)
-			orch.reconcileStaleMergingPullRequestIssues(t.Context(), &state, issues, now.Add(time.Second))
-			if queued {
-				if len(tracker.updates) != 0 {
-					t.Fatalf("queued PR transitioned: %v", tracker.updates)
-				}
-			} else if len(tracker.updates) != 1 || tracker.updates[0].state != "Rework" {
-				t.Fatalf("unadmitted failure updates=%v, want Rework", tracker.updates)
-			}
-			if len(tracker.enqueued) != 0 || len(tracker.merges) != 0 || len(tracker.dequeued) != 0 {
-				t.Fatal("unexpected queue or merge mutation")
 			}
 		})
 	}

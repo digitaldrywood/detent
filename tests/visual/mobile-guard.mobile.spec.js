@@ -9,16 +9,6 @@ const portraitViewports = [
   { width: 414, height: 896 },
 ];
 const landscapeViewport = { width: 844, height: 390 };
-const onboardingScenarios = [
-  "onboarding-tracker-choice",
-  "onboarding-github-credentials",
-  "onboarding-project-selection",
-  "onboarding-agent-config",
-  "onboarding-write-summary",
-  "onboarding-validation-errors",
-  "onboarding-write-exists",
-  "onboarding-write-success",
-];
 const routes = [
   {
     name: "board",
@@ -88,12 +78,7 @@ const routes = [
     scenario: "diagnostics-rate-limit-pressure",
     waitSelector: "#snapshot",
   },
-  ...onboardingScenarios.map((scenario) => ({
-    name: scenario,
-    path: "/onboarding",
-    scenario,
-    waitSelector: "#onboarding-step",
-  })),
+
 ];
 
 let runtime;
@@ -130,13 +115,11 @@ test("every route keeps a usable landscape shell", async ({ page }) => {
     await test.step(route.name, async () => {
       await openRoute(page, route);
       await expectNoHorizontalScroll(page);
-      if (!route.name.startsWith("onboarding")) {
-        await expect(page.locator("#app-sidebar")).toBeVisible();
-        await expect(
-          page.getByRole("group", { name: "Density" }),
-        ).toBeVisible();
-        await expect(page.locator("main")).toBeVisible();
-      }
+      await expect(page.locator("#app-sidebar")).toBeVisible();
+      await expect(
+        page.getByRole("group", { name: "Density" }),
+      ).toBeVisible();
+      await expect(page.locator("main")).toBeVisible();
     });
   }
 });

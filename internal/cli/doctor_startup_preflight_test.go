@@ -131,7 +131,7 @@ func TestRunDoctorStartupPreflightExplainsMappedNativeMigration(t *testing.T) {
 				global.Projects[0].IntakeConfigured = true
 				global.Projects[0].Intake = intake.Config{Sources: []intake.Source{{Name: "errors", Kind: intake.KindWebhook, Secret: "test-secret", Creates: intake.Creates{Status: "Backlog"}}}}
 			}
-			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: github\n  project_slug: PVT_test\n  repository: acme/alpha\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"))
+			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n  project_slug: PVT_test\n  repository: acme/alpha\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -173,7 +173,7 @@ func TestStartupPreflightDoesNotRetryCredentials(t *testing.T) {
 		t.Run(map[bool]string{false: "failed command", true: "empty credential"}[empty], func(t *testing.T) {
 			dir := t.TempDir()
 			workflow := filepath.Join(dir, "WORKFLOW.md")
-			if err := os.WriteFile(workflow, []byte("---\ntracker:\n  kind: github\n  project_slug: PVT_test\n---\nPrompt\n"), 0600); err != nil {
+			if err := os.WriteFile(workflow, []byte("---\ntracker:\n  kind: hub_native\n  project_slug: PVT_test\n---\nPrompt\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			configPath := filepath.Join(dir, "global.yaml")

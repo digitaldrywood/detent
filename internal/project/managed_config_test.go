@@ -35,7 +35,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	writeWorkflow := func(path, prompt string) {
 		t.Helper()
-		content := "---\ntracker:\n  kind: github\n  github_status_source: label\n  repository: example-org/example-project\n  api_key: fixture-token\n---\n" + prompt + "\n"
+		content := "---\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\n  api_key: fixture-token\n---\n" + prompt + "\n"
 		if err := os.WriteFile(path+".tmp", []byte(content), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -47,7 +47,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			root := initWorkflowSourceRepo(t)
 			workflowPath := filepath.Join(root, "WORKFLOW.md")
-			writeWorkflow(workflowPath, "Private workflow instructions")
+			writeWorkflow(workflowPath, "Shared workflow instructions")
 			commitWorkflowSourceRepo(t, root, "initial workflow")
 			hookReload := strings.HasPrefix(scenario, "apply policy hooks")
 			binding := strings.HasPrefix(scenario, "binding")
@@ -56,10 +56,10 @@ func TestManagedProjectConfiguration(t *testing.T) {
 			sharedPolicy := strings.HasPrefix(scenario, "native policy")
 			otherRoot := root
 			if binding || policyOverlay {
-				if err := os.WriteFile(workflowPath, []byte("Private workflow instructions\n"), 0600); err != nil {
+				if err := os.WriteFile(workflowPath, []byte("Shared workflow instructions\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(filepath.Join(root, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: github\n  github_status_source: label\n  repository: example-org/example-project\n  api_key: fixture-token\n"), 0600); err != nil {
+				if err := os.WriteFile(filepath.Join(root, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/example-project\n  api_key: fixture-token\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
 				runWorkflowSourceGit(t, root, "add", "detent.yaml")
@@ -142,7 +142,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					t.Fatal(err)
 				}
 				runWorkflowSourceGit(t, root, "add", "WORKFLOW.md")
-				raw := "schema: 1\ntracker:\n  kind: github\n  repository: example/project\n  github_status_source: label\n  api_key: fixture-token\nschedule_ownership:\n  enabled: false\n"
+				raw := "schema: 1\ntracker:\n  kind: hub_native\n  repository: example/project\n  github_status_source: label\n  api_key: fixture-token\nschedule_ownership:\n  enabled: false\n"
 				if err := os.WriteFile(filepath.Join(root, "detent.yaml"), []byte(raw), 0600); err != nil {
 					t.Fatal(err)
 				}
@@ -174,7 +174,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					}
 				}
 			}
-			scheduling := &managedConfigScheduling{policyTestScheduling: policyTestScheduling{approved: map[string]policy.Descriptor{}}, native: native, resolveApproved: hookReload}
+			scheduling := &managedConfigScheduling{policyTestScheduling: policyTestScheduling{approved: map[string]policy.Descriptor{}}, resolveApproved: hookReload}
 			worker := &managedConfigRunner{started: make(chan orchestrator.RunRequest, 1)}
 			probe := &managedConfigHookAgent{}
 			writeHook := func(marker string) {
@@ -263,10 +263,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, private := range []string{root, cfg.APIToken, "private-worker-credential", "Private workflow instructions", "WORKFLOW.md"} {
-				if native && private == "WORKFLOW.md" {
-					continue
-				}
+			for _, private := range []string{root, cfg.APIToken, "private-worker-credential"} {
 				if strings.Contains(string(raw), private) {
 					t.Fatalf("private provenance in %s", raw)
 				}
@@ -785,7 +782,6 @@ func TestManagedProjectConfiguration(t *testing.T) {
 type managedConfigScheduling struct {
 	policyTestScheduling
 	mu              sync.Mutex
-	native          bool
 	dispatchPolicy  string
 	dispatched      bool
 	resolveApproved bool
@@ -793,7 +789,7 @@ type managedConfigScheduling struct {
 }
 
 func (s *managedConfigScheduling) ConnectorForProject(id string) (connector.Connector, bool) {
-	return fakehub.New(fakehub.Config{}), s.native && id == "selected"
+	return fakehub.New(fakehub.Config{}), id == "selected" || id == "unrelated"
 }
 
 func (s *managedConfigScheduling) ResolveProjectWorkflow(_ context.Context, id string, workflow workflowconfig.Workflow, _ *policy.RepositorySource) (workflowconfig.Workflow, error) {

@@ -239,12 +239,6 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			fetched,
 			autoPromoted.transitioned,
 		)
-		timing.step("operator_restore_stuck_merging")
-		fetched = filterReconciledTickIssues(
-			state,
-			fetched,
-			o.operatorRestoreStuckMerging(ctx, state, fetched.status, now),
-		)
 		timing.step("operator_merge_wedged_pull_requests")
 		fetched = filterReconciledTickIssues(
 			state,

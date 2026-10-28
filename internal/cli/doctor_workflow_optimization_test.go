@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,10 +21,12 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestDoctorWorkflowOptimizationReportsRetroStatus(t *testing.T) {
@@ -391,6 +395,87 @@ func TestDoctorWorkflowImprovementProposalsUsesCapturedLessonThreshold(t *testin
 	}
 }
 
+func TestDoctorWorkflowOptimizationCreatesNativeProposalIssues(t *testing.T) {
+	t.Setenv("DETENT_DOCTOR_PROPOSAL_TEST_TOKEN", "fixture-token")
+	createdProjects := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer fixture-token" {
+			t.Error("missing scoped Hub credential")
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		prefix := "/api/v2/organizations/org_example/projects/"
+		path, ok := strings.CutPrefix(r.URL.Path, prefix)
+		if !ok {
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		projectID, suffix, _ := strings.Cut(path, "/")
+		if projectID != "prj_alpha" && projectID != "prj_beta" {
+			t.Errorf("unexpected project %s", projectID)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && suffix == "":
+			_ = json.NewEncoder(w).Encode(tracker.NativeProject{ID: tracker.ProjectID(projectID), Profile: "native", States: []tracker.NativeState{{Name: "Backlog"}}})
+		case r.Method == http.MethodGet && suffix == "work-items":
+			_ = json.NewEncoder(w).Encode(tracker.Page[tracker.NativeIssue]{Items: []tracker.NativeIssue{}})
+		case r.Method == http.MethodPost && suffix == "work-items":
+			var draft tracker.CreateIssue
+			if err := json.NewDecoder(r.Body).Decode(&draft); err != nil {
+				t.Error(err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			origin, machine := issueorigin.Parse(draft.Body)
+			if !machine || origin.Kind != "doctor" || origin.Fingerprint == "" {
+				t.Errorf("missing doctor provenance: %+v", origin)
+			}
+			createdProjects <- projectID
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(tracker.NativeIssue{NativeReference: tracker.NativeReference{WorkItemID: tracker.NativeWorkItemID("wi_" + projectID), ProjectID: tracker.ProjectID(projectID)}, Title: draft.Title, Body: draft.Body, State: "Backlog"})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	global := globalconfig.Config{Client: globalconfig.HubClient{URL: server.URL, OrganizationID: "org_example", TokenEnvironment: "DETENT_DOCTOR_PROPOSAL_TEST_TOKEN", NativeProjects: map[string]string{"alpha": "prj_alpha", "beta": "prj_beta", "invalid": "other"}}}
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	for _, projectID := range []string{"alpha", "beta"} {
+		proposal := doctorWorkflowFinalizeProposal(doctorWorkflowImprovementProposal{ProjectID: projectID, SignalKind: "doctor_finding", Pattern: "repeated-failure", Count: 2, Title: "Improve workflow", Detail: "Repeated workflow failure", SuggestedChange: "Review the workflow"})
+		deps := doctorDeps{proposalLaneWriter: func(_ context.Context, selected string, _ workflowconfig.Config, connection connector.Connector, issue connector.Issue, target string) error {
+			if selected != projectID || connection.Name() != workflowconfig.TrackerHubNative || issue.State != "Backlog" || target != "Backlog" {
+				t.Errorf("incorrect proposal authority: %s %s %+v %s", selected, connection.Name(), issue, target)
+			}
+			return nil
+		}}
+		created, err := createDoctorWorkflowImprovementProposalIssues(t.Context(), global, projectID, cfg, deps, []doctorWorkflowImprovementProposal{proposal})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(created) != 1 || created[0].IssueID != "wi_prj_"+projectID || created[0].ProjectID != projectID {
+			t.Fatalf("proposal result = %+v", created)
+		}
+		if got := <-createdProjects; got != "prj_"+projectID {
+			t.Fatalf("created in %s", got)
+		}
+	}
+	for _, projectID := range []string{"unmapped", "invalid"} {
+		if _, err := defaultDoctorProposalConnector(global, projectID, cfg); err == nil {
+			t.Fatalf("invalid project mapping %s was accepted", projectID)
+		}
+	}
+	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	if _, err := defaultDoctorProposalConnector(global, "alpha", cfg); err == nil {
+		t.Fatal("retired tracker was accepted")
+	}
+}
+
 func TestDoctorWorkflowOptimizationCreatesProposalIssuesWithFakeHub(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
@@ -414,13 +499,13 @@ func TestDoctorWorkflowOptimizationCreatesProposalIssuesWithFakeHub(t *testing.T
 	deps := successfulDoctorDeps()
 	deps.loadWorkflow = func(path string) (workflowconfig.Workflow, error) {
 		workflow, err := workflowconfig.LoadWorkflow(path)
-		workflow.Config.Tracker.Kind = workflowconfig.TrackerGitHub
+		workflow.Config.Tracker.Kind = workflowconfig.TrackerHubNative
 		workflow.Config.Tracker.APIKey = "fixture-token"
 		workflow.Config.Tracker.Repository = "example-org/example-project"
 		workflow.Config.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
 		return workflow, err
 	}
-	deps.proposalConnector = func(workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
+	deps.proposalConnector = func(globalconfig.Config, string, workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
 		return fakehub.New(fakehub.Config{Stateful: true}), nil
 	}
 	report, err := doctorWorkflowOptimization(ctx, db, paths.db, global, deps, "", doctorWorkflowOptimizationOptions{
@@ -448,7 +533,7 @@ func TestDoctorWorkflowOptimizationContinuesWhenProposalStateUpdateBlocked(t *te
 
 	ctx := context.Background()
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Tracker.APIKey = "fixture-token"
 	cfg.Tracker.ProjectSlug = "fixture-project"
 	cfg.Tracker.Repository = "example-org/example-project"
@@ -467,11 +552,11 @@ func TestDoctorWorkflowOptimizationContinuesWhenProposalStateUpdateBlocked(t *te
 		Connector: fakehub.New(fakehub.Config{Stateful: true}),
 	}
 	deps := successfulDoctorDeps()
-	deps.proposalConnector = func(workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
+	deps.proposalConnector = func(globalconfig.Config, string, workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
 		return projectConnector, nil
 	}
 
-	created, err := createDoctorWorkflowImprovementProposalIssues(ctx, "detent", cfg, deps, []doctorWorkflowImprovementProposal{proposal})
+	created, err := createDoctorWorkflowImprovementProposalIssues(ctx, globalconfig.Config{}, "detent", cfg, deps, []doctorWorkflowImprovementProposal{proposal})
 	if err != nil {
 		t.Fatalf("createDoctorWorkflowImprovementProposalIssues() error = %v", err)
 	}
@@ -488,7 +573,7 @@ func TestDoctorWorkflowOptimizationReusesProposalIssueOutsideBacklog(t *testing.
 
 	ctx := context.Background()
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Tracker.APIKey = "fixture-token"
 	cfg.Tracker.ProjectSlug = "fixture-project"
 	cfg.Tracker.Repository = "example-org/example-project"
@@ -509,7 +594,7 @@ func TestDoctorWorkflowOptimizationReusesProposalIssueOutsideBacklog(t *testing.
 	}
 	var events []fakehub.Event
 	deps := successfulDoctorDeps()
-	deps.proposalConnector = func(workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
+	deps.proposalConnector = func(globalconfig.Config, string, workflowconfig.Config) (doctorWorkflowProposalConnector, error) {
 		return fakehub.New(fakehub.Config{
 			Issues:    []connector.Issue{existing},
 			Stateful:  true,
@@ -517,7 +602,7 @@ func TestDoctorWorkflowOptimizationReusesProposalIssueOutsideBacklog(t *testing.
 		}), nil
 	}
 
-	created, err := createDoctorWorkflowImprovementProposalIssues(ctx, "detent", cfg, deps, []doctorWorkflowImprovementProposal{proposal})
+	created, err := createDoctorWorkflowImprovementProposalIssues(ctx, globalconfig.Config{}, "detent", cfg, deps, []doctorWorkflowImprovementProposal{proposal})
 	if err != nil {
 		t.Fatalf("createDoctorWorkflowImprovementProposalIssues() error = %v", err)
 	}
@@ -892,7 +977,7 @@ func TestDoctorWorkflowReviewFlowTelemetryRespectsCurrentWorkflowBoundary(t *tes
 			workflowPath := filepath.Join(dir, "WORKFLOW.md")
 			if err := os.WriteFile(workflowPath, []byte(`---
 tracker:
-  kind: github
+  kind: hub_native
   api_key: fixture-token
   project_slug: fixture-project
   repository: example-org/example-project
@@ -1348,7 +1433,7 @@ func TestDoctorWorkflowOptimizationFlagsPinBehindObservedDefault(t *testing.T) {
 	defaultWorkflow := filepath.Join(dir, "DEFAULT_WORKFLOW.md")
 	if err := os.WriteFile(pinnedWorkflow, []byte(`---
 tracker:
-  kind: github
+  kind: hub_native
   api_key: fixture-token
   project_slug: fixture-project
   repository: example-org/example-project
@@ -1367,7 +1452,7 @@ Prompt
 	}
 	if err := os.WriteFile(defaultWorkflow, []byte(`---
 tracker:
-  kind: github
+  kind: hub_native
   api_key: fixture-token
   project_slug: fixture-project
   repository: example-org/example-project
@@ -1671,7 +1756,7 @@ func TestDoctorWorkflowOptimizationEmptyModelTelemetryRespectsBackendCommandMode
 
 	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
 tracker:
-  kind: github
+  kind: hub_native
   api_key: fixture-token
   project_slug: fixture-project
   repository: example-org/example-project
@@ -1715,7 +1800,7 @@ func TestDoctorWorkflowOptimizationEmptyModelTelemetryHasNoHardcodedModelPatch(t
 
 	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
 tracker:
-  kind: github
+  kind: hub_native
   api_key: fixture-token
   project_slug: fixture-project
   repository: example-org/example-project
@@ -1851,7 +1936,7 @@ func TestDoctorWorkflowDefaultRouteModelConfigSources(t *testing.T) {
 			name: "route model",
 			raw: `---
 tracker:
-  kind: github
+  kind: hub_native
   api_key: fixture-token
   project_slug: fixture-project
   repository: example-org/example-project
@@ -1876,7 +1961,7 @@ Prompt
 			name: "backend command config model",
 			raw: `---
 tracker:
-  kind: github
+  kind: hub_native
   api_key: fixture-token
   project_slug: fixture-project
   repository: example-org/example-project
@@ -1900,7 +1985,7 @@ Prompt
 			name: "backend command config model with issue field overrides",
 			raw: `---
 tracker:
-  kind: github
+  kind: hub_native
   api_key: fixture-token
   project_slug: fixture-project
   repository: example-org/example-project
@@ -1925,7 +2010,7 @@ Prompt
 			name: "route model field",
 			raw: `---
 tracker:
-  kind: github
+  kind: hub_native
   api_key: fixture-token
   project_slug: fixture-project
   repository: example-org/example-project
@@ -1949,7 +2034,7 @@ Prompt
 			name: "no model source",
 			raw: `---
 tracker:
-  kind: github
+  kind: hub_native
   api_key: fixture-token
   project_slug: fixture-project
   repository: example-org/example-project
@@ -2007,7 +2092,7 @@ func TestDoctorWorkflowOptimizationUsesRuntimeGitHubToken(t *testing.T) {
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
 	if err := os.WriteFile(workflowPath, []byte(`---
 tracker:
-  kind: github
+  kind: hub_native
   github_status_source: label
   repository: example-org/example-project
 ---

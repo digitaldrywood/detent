@@ -253,8 +253,7 @@ func TestRunnerGitHubAuthNextSteps(t *testing.T) {
 		wantCheck  bool
 		wantSteps  []string
 	}{
-		{name: "GitHub signed in", definition: "tracker:\n  kind: github\n", wantCheck: true},
-		{name: "GitHub signed out", definition: "tracker:\n  kind: github\n", authErr: errors.New("private auth output"), wantCheck: true, wantSteps: []string{"Project affected needs GitHub authentication: run gh auth login"}},
+		{name: "native PR landing signed in", definition: "tracker:\n  kind: hub_native\ndeliverable:\n  github_pull_request: true\n", wantCheck: true},
 		{name: "native PR landing signed out", definition: "tracker:\n  kind: hub_native\ndeliverable:\n  github_pull_request: true\n", authErr: errors.New("signed out"), wantCheck: true, wantSteps: []string{"Project affected needs GitHub authentication: run gh auth login"}},
 		{name: "native Git landing", definition: "tracker:\n  kind: hub_native\n"},
 		{name: "checkout not cloned", missing: true},
@@ -1025,7 +1024,7 @@ func TestHubRunnerRegisterReportsBeforeService(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(workdir, "WORKFLOW.md"), []byte("Work the issue.\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(workdir, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: github\n"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(workdir, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: hub_native\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			runDoctorWorkflowSourceGit(t, workdir, "config", "url."+workdir+".insteadOf", "git@github.com:acme/orders.git")

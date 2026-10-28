@@ -278,7 +278,7 @@ type doctorDeps struct {
 	workflowSourcePolicy doctorWorkflowSourcePolicyFunc
 	scheduleOwnership    doctorScheduleOwnershipProbe
 	autoPromoteConnector func(workflowconfig.Config) (doctorAutoPromoteConnector, error)
-	proposalConnector    func(workflowconfig.Config) (doctorWorkflowProposalConnector, error)
+	proposalConnector    func(globalconfig.Config, string, workflowconfig.Config) (doctorWorkflowProposalConnector, error)
 	proposalLaneWriter   func(context.Context, string, workflowconfig.Config, connector.Connector, connector.Issue, string) error
 	modelProbe           func(context.Context, doctorRouteModelProbeRequest) error
 	modelCatalogProbe    func(context.Context, workflowconfig.AgentBackend) (int, error)
@@ -1382,7 +1382,6 @@ func defaultDoctorDeps() doctorDeps {
 		workflowSourcePolicy: defaultDoctorWorkflowSourcePolicy,
 		scheduleOwnership:    defaultDoctorScheduleOwnership,
 		autoPromoteConnector: defaultDoctorAutoPromoteConnector,
-		proposalConnector:    defaultDoctorProposalConnector,
 		modelProbe:           defaultDoctorRouteModelProbe,
 		modelCatalogProbe:    defaultDoctorBackendModelCatalogProbe,
 		executable:           os.Executable,

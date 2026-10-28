@@ -186,7 +186,7 @@ func TestHubPolicyInspectRejectsMappedNativeUnsupportedWork(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
 			workflowPath := filepath.Join(root, "WORKFLOW.md")
-			raw := "---\ntracker:\n  kind: github\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"
+			raw := "---\ntracker:\n  kind: hub_native\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"
 			if err := os.WriteFile(workflowPath, []byte(raw), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -216,7 +216,7 @@ func TestHubPolicyInspectUsesNativeStartupTracker(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	workflowPath := filepath.Join(root, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\n---\nPrompt\n"), 0o600); err != nil {
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\n---\nPrompt\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(root, "global.yaml")

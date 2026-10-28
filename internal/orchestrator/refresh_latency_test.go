@@ -3,19 +3,14 @@ package orchestrator
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
-	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -272,99 +267,36 @@ func TestDispatchCandidateStatusBeforeMaintenance(t *testing.T) {
 }
 
 func TestRetiredParkReferenceCohort(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
 	for _, mode := range []string{"id-only", "inline", "fresh", "expired", "missing", "failure", "partial failure", "independent failure", "independent forbidden", "discovery failure", "missing identity", "human", "budget", "reserve", "cancelled"} {
 		t.Run(mode, func(t *testing.T) {
-			paths := map[string]int{}
-			graphQLRequests := 0
-			var requestMu sync.Mutex
 			independentFailure := mode == "independent failure" || mode == "independent forbidden"
-			closed := independentFailure
 			readRecovered := false
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requestMu.Lock()
-				defer requestMu.Unlock()
-				w.Header().Set("Content-Type", "application/json")
-				if r.Method == http.MethodPost && r.URL.Path == "/graphql" {
-					var request struct {
-						Query string
-					}
-					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-						t.Error(err)
-						w.WriteHeader(http.StatusBadRequest)
-						return
-					}
-					if !strings.HasPrefix(request.Query, "query DetentGitHubCandidateHydration(") || !strings.Contains(request.Query, "blockedBy(") {
-						t.Errorf("unexpected authority query %s", request.Query)
-						w.WriteHeader(http.StatusBadRequest)
-						return
-					}
-					graphQLRequests++
-					fmt.Fprint(w, `{"errors":[{"message":"Field 'blockedBy' doesn't exist on type 'Issue'"}]}`)
-					return
+			tracker := &phaseReferenceConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}
+			tracker.resolve = func(ctx context.Context, refs []string) ([]connector.Issue, error) {
+				if err := ctx.Err(); err != nil {
+					return nil, err
 				}
-				paths[r.URL.Path]++
-				if mode == "reserve" {
-					w.Header().Set("X-RateLimit-Limit", "5000")
-					w.Header().Set("X-RateLimit-Remaining", "1")
-					w.Header().Set("X-RateLimit-Resource", "core")
-					w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+				if mode == "failure" && !readRecovered || mode == "budget" || mode == "discovery failure" {
+					return nil, errors.New("reference lookup unavailable")
 				}
-				switch {
-				case strings.Contains(r.URL.Path, "/dependencies/blocked_by"), strings.HasSuffix(r.URL.Path, "/pulls"):
-					if mode == "discovery failure" && strings.HasSuffix(r.URL.Path, "/pulls") {
-						w.WriteHeader(http.StatusInternalServerError)
-						fmt.Fprint(w, `{"message":"unavailable"}`)
-						return
+				var issues []connector.Issue
+				for _, ref := range refs {
+					if mode == "missing" || (mode == "partial failure" || independentFailure || mode == "missing identity") && ref == "owner/repo#2" {
+						continue
 					}
-					fmt.Fprint(w, `[]`)
-				case strings.Contains(r.URL.Path, "/issues/"):
-					if mode == "missing identity" && strings.HasSuffix(r.URL.Path, "/issues/2") {
-						fmt.Fprint(w, `{}`)
-						return
+					closed := independentFailure || mode == "human"
+					issue := connector.Issue{ID: ref, Identifier: ref, State: "In Progress", Closed: closed}
+					if closed {
+						issue.State = "Done"
 					}
-					if mode == "failure" && !readRecovered || (mode == "partial failure" || independentFailure) && strings.HasSuffix(r.URL.Path, "/issues/2") {
-						status := http.StatusInternalServerError
-						if mode == "independent forbidden" {
-							status = http.StatusForbidden
-						}
-						w.WriteHeader(status)
-						fmt.Fprint(w, `{"message":"unavailable"}`)
-						return
-					}
-					if mode == "missing" {
-						w.WriteHeader(http.StatusNotFound)
-						fmt.Fprint(w, `{"message":"not found"}`)
-						return
-					}
-					number := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
-					state := "open"
-					if closed || mode == "human" {
-						state = "closed"
-					}
-					labels := `[{"name":"detent:in-progress"}]`
 					if mode == "human" {
-						labels = `[{"name":"human-owned"}]`
+						issue.Labels = []string{"human-owned"}
 					}
-					fmt.Fprintf(w, `{"node_id":%q,"number":%s,"state":%q,"body":"fresh body","html_url":%q,"labels":%s}`, r.URL.Path, number, state, "https://github.com/"+strings.TrimPrefix(r.URL.Path, "/repos/"), labels)
-				default:
-					t.Errorf("unexpected authority read %s", r.URL.Path)
-					w.WriteHeader(http.StatusNotFound)
+					issues = append(issues, issue)
 				}
-			}))
-			t.Cleanup(server.Close)
-			cap := 50
-			if mode == "budget" {
-				cap = 2
+				return issues, nil
 			}
-			github, err := githubconnector.NewConnector(githubconnector.Config{Endpoint: server.URL + "/graphql", APIKey: "cohort-" + t.TempDir(), HTTPClient: server.Client(), Repository: "owner/repo", GitHubStatusSource: githubconnector.GitHubStatusSourceLabel, RESTFanoutMaxRequests: cap, RESTMinRemainingReserve: 2})
-			if err != nil {
-				t.Fatal(err)
-			}
-			tracker := &phaseReferenceConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}, resolver: github}
+
 			cfg := normalizeConfig(Config{TerminalStates: []string{"Done"}})
 			var evidenceLog bytes.Buffer
 			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewJSONHandler(&evidenceLog, nil))}
@@ -385,8 +317,8 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 						t.Fatalf("ID-only phase authority changed: %+v", evidence)
 					}
 				}
-				if len(tracker.fetchIdentifiers) != 0 || len(paths) != 0 || graphQLRequests != 0 {
-					t.Fatalf("inline authority read remote: %v %v, GraphQL requests %d", tracker.fetchIdentifiers, paths, graphQLRequests)
+				if len(tracker.fetchIdentifiers) != 0 {
+					t.Fatalf("inline authority queried references: %v", tracker.fetchIdentifiers)
 				}
 				return
 			}
@@ -440,9 +372,7 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 				}
 			}
 			if mode == "failure" {
-				requestMu.Lock()
 				readRecovered = true
-				requestMu.Unlock()
 				later := orch.recoverBlockedIssues(ctx, &state, roots[:1], time.Now())
 				if _, recovered := later[roots[0].ID]; recovered {
 					t.Fatal("successful read released an unfinished dependency")
@@ -481,10 +411,10 @@ func TestRetiredParkReferenceCohort(t *testing.T) {
 
 type phaseReferenceConnector struct {
 	*autoPromoteTickConnector
-	resolver connector.IssueReferenceResolver
+	resolve func(context.Context, []string) ([]connector.Issue, error)
 }
 
 func (c *phaseReferenceConnector) FetchIssueStatesByIdentifiers(ctx context.Context, refs []string) ([]connector.Issue, error) {
 	c.fetchIdentifiers = append(c.fetchIdentifiers, append([]string(nil), refs...))
-	return c.resolver.FetchIssueStatesByIdentifiers(ctx, refs)
+	return c.resolve(ctx, refs)
 }

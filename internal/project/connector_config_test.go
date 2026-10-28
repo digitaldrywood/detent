@@ -78,15 +78,20 @@ func TestTrackerStateMapConvertsWorkflowMap(t *testing.T) {
 	}
 }
 
-func TestWorkflowConfigWithGitHubTokenSupportsScheduleOwnership(t *testing.T) {
+func TestWorkflowConfigWithGitHubTokenSupportsIntegrations(t *testing.T) {
 	t.Parallel()
-	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
-	cfg.ScheduleOwnership.Enabled = true
-
-	got := workflowConfigWithGitHubToken(cfg, "runtime-token")
-	if got.Tracker.APIKey != "runtime-token" {
-		t.Fatalf("Tracker.APIKey = %q, want runtime-token", got.Tracker.APIKey)
+	for _, integration := range []string{"schedule ownership", "release"} {
+		t.Run(integration, func(t *testing.T) {
+			t.Parallel()
+			cfg := workflowconfig.Default()
+			cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+			cfg.ScheduleOwnership.Enabled = integration == "schedule ownership"
+			cfg.Release.Enabled = integration == "release"
+			got := workflowConfigWithGitHubToken(cfg, "runtime-token")
+			if got.Tracker.APIKey != "runtime-token" {
+				t.Fatalf("Tracker.APIKey = %q, want runtime-token", got.Tracker.APIKey)
+			}
+		})
 	}
 }
 

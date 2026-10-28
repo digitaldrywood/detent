@@ -22,7 +22,7 @@ func TestManagerReconcileHotAppliesGlobalRateWindowPacing(t *testing.T) {
 	manager, err := projectfixture.NewManager(project.ManagerConfig{Projects: []globalconfig.Project{initial}}, project.ManagerDependencies{
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
 			created++
-			workflow := workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerGitHub), SourceHash: policy.Digest([]byte("approved workflow"))}
+			workflow := workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerHubNative), SourceHash: policy.Digest([]byte("approved workflow"))}
 			workflow.Definition.Revision = strings.Repeat("a", 40)
 			approved, err := project.ResolvePolicy(cfg, workflow)
 			if err != nil {

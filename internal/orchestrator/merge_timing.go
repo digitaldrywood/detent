@@ -21,12 +21,6 @@ type mergeSlotAcquisition struct {
 	at      time.Time
 }
 
-func (o *Orchestrator) recordMergeQueueEntries(state *State, issues []connector.Issue, now time.Time, source string) {
-	for _, issue := range issuesInStates(issues, []string{autoPromoteMergingState}) {
-		o.recordMergeQueueEntered(state, issue, now, source)
-	}
-}
-
 func (o *Orchestrator) recordMergeQueueEntered(state *State, issue connector.Issue, now time.Time, source string) MergeTiming {
 	if state == nil || !mergeWorkerIssue(issue) {
 		return MergeTiming{}
