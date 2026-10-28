@@ -491,7 +491,7 @@ func TestHealthFindingResolutionOwnership(t *testing.T) {
 				if _, err := writeHealthEvaluation(t.Context(), tx, scope.organization, now.Add(62*time.Minute), []healthFinding{finding}); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := reportHealthFindings(t.Context(), tx, scope.organization, now.Add(62*time.Minute)); err != nil {
+				if _, err := reportHealthFindings(t.Context(), tx, scope.organization, now.Add(62*time.Minute), nil); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -831,18 +831,10 @@ func TestHealthFindingIssueRollback(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), "CREATE TRIGGER fail_health_reporting BEFORE INSERT ON "+test.table+" BEGIN SELECT RAISE(ABORT,'fixture reporting failure'); END"); err != nil {
 				t.Fatal(err)
 			}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
 			finding.Severity = "watch"
-			err = f.service.commitHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now.Add(time.Minute), []healthFinding{finding})
+			err := f.service.commitHealthEvaluation(t.Context(), f.project.OrganizationID, now.Add(time.Minute), []healthFinding{finding}, nil)
 			if err == nil || !strings.Contains(err.Error(), "fixture reporting failure") {
 				t.Fatalf("report error = %v", err)
-			}
-			if err := tx.Rollback(); err != nil {
-				t.Fatal(err)
 			}
 			want := 0
 			if test.existing {

@@ -131,9 +131,7 @@ func refreshProductivitySummary(ctx context.Context, tx projectionQuery, scope n
 	}
 	orderedHours := make([]hourRow, 0, len(hours))
 	for hour, value := range hours {
-		if value != nil {
-			orderedHours = append(orderedHours, hourRow{hour, *value})
-		}
+		orderedHours = append(orderedHours, hourRow{hour, value})
 	}
 	slices.SortFunc(orderedHours, func(a, b hourRow) int { return cmp.Compare(a.hour, b.hour) })
 	for _, row := range orderedHours {
@@ -145,14 +143,10 @@ func refreshProductivitySummary(ctx context.Context, tx projectionQuery, scope n
 	return nil
 }
 
-func productivityHours(ctx context.Context, tx projectionQuery, scope nativeScope, id string) (map[int64]*productivityHour, error) {
-	hours := map[int64]*productivityHour{}
-	atHour := func(at time.Time) *productivityHour {
-		h := at.UTC().Truncate(time.Hour).Unix()
-		if hours[h] == nil {
-			hours[h] = &productivityHour{}
-		}
-		return hours[h]
+func productivityHours(ctx context.Context, tx projectionQuery, scope nativeScope, id string) (map[int64]productivityHour, error) {
+	hours := map[int64]productivityHour{}
+	atHour := func(at time.Time) int64 {
+		return at.UTC().Truncate(time.Hour).Unix()
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT unixepoch(u.period)/3600*3600,sum(u.cost_estimate) FROM native_attempts a CROSS JOIN attempt_usage u ON +u.organization_id=a.organization_id AND +u.project_id=a.project_id AND u.attempt_id=a.id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? GROUP BY 1`, scope.organization, scope.project, id)
 	if err != nil {
@@ -166,7 +160,10 @@ func productivityHours(ctx context.Context, tx projectionQuery, scope nativeScop
 			rows.Close()
 			return nil, err
 		}
-		atHour(time.Unix(h, 0)).cost = cost
+		hour := atHour(time.Unix(h, 0))
+		value := hours[hour]
+		value.cost = cost
+		hours[hour] = value
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err
@@ -177,20 +174,27 @@ func productivityHours(ctx context.Context, tx projectionQuery, scope nativeScop
 	}
 	for _, landing := range inputs.landings {
 		h := atHour(landing.Landing.LandedAt)
-		h.worked = 1
+		value := hours[h]
+		value.worked = 1
+		hours[h] = value
 	}
 	for _, landing := range inputs.currentLandings {
-		atHour(landing.Landing.LandedAt).landed++
+		h := atHour(landing.Landing.LandedAt)
+		value := hours[h]
+		value.landed++
+		hours[h] = value
 	}
 	for _, event := range inputs.events {
 		h := atHour(event.At)
+		value := hours[h]
 		returned := (event.Kind == "changes_requested" || event.Data.ToState == "Rework") && qualityReturnedBeforeLanding(inputs.landings, event)
 		if returned && (event.Kind == "changes_requested" || classifyReworkReason(event.Data.FromState, event.Data.ReasonDetail).Kind != reportKindInfrastructure) {
-			h.reworked = 1
+			value.reworked = 1
 		}
 		if returned || event.Kind == "worked" || event.Data.ToState == "In Progress" || event.Data.ToState == "Human Review" || event.Data.ToState == "Merging" {
-			h.worked = 1
+			value.worked = 1
 		}
+		hours[h] = value
 	}
 	return hours, nil
 }

@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/healthnotify"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -1634,6 +1635,7 @@ func defaultGitWorkTree(ctx context.Context, path string) error {
 
 	cmd := exec.CommandContext(commandCtx, "git", "rev-parse", "--is-inside-work-tree")
 	cmd.Dir = path
+	procgroup.Configure(commandCtx, cmd)
 	output, err := cmd.CombinedOutput()
 	if commandCtx.Err() != nil {
 		return commandCtx.Err()

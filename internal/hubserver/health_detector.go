@@ -82,28 +82,11 @@ func (s *Service) evaluateOrganizationHealth(ctx context.Context, organization t
 	if err != nil {
 		return err
 	}
-	unavailable := snapshot.BaselineUnavailable
-	if unavailable == nil {
-		unavailable = []healthBaselineUnavailable{}
-	}
-	raw, err := json.Marshal(unavailable)
-	if err != nil {
-		return err
-	}
 	findings := evaluateHealth(now, snapshot)
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO health_detector_ticks(organization_id,last_tick_at,baseline_unavailable_json) VALUES(?,?,?)
- ON CONFLICT(organization_id) DO UPDATE SET baseline_unavailable_json=excluded.baseline_unavailable_json`, organization, formatHubTime(now), string(raw)); err != nil {
-		return err
-	}
 	if s.requestMetrics != nil && organization == s.requestMetrics.organization {
 		findings = append(findings, s.requestMetrics.findings(now)...)
 	}
-	return s.commitHealthEvaluation(ctx, tx, organization, now, findings)
+	return s.commitHealthEvaluation(ctx, organization, now, findings, snapshot.BaselineUnavailable)
 }
 
 func (s *Service) readHealthSnapshot(ctx context.Context, organization tracker.OrganizationID, now time.Time) (healthSnapshot, error) {
@@ -166,6 +149,9 @@ func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker
 			_, err = tx.ExecContext(ctx, `UPDATE health_findings SET last_seen_at=?,resolved_at=NULL,projects_json=?,severity=?,summary=?,next_action=?,evidence_json=? WHERE id=? AND organization_id=?`, formatHubTime(now), string(projects), f.Severity, f.Summary, f.NextAction, string(evidence), id, organization)
 		}
 		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE health_findings SET projects_projected=1 WHERE id=?`, id); err != nil {
 			return nil, err
 		}
 	}

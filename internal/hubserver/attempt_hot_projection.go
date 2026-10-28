@@ -58,16 +58,21 @@ func updateAttemptHotProjection(ctx context.Context, tx *sql.Tx, id, status stri
 	if f := data.Finalization; f != nil {
 		settled, changed, versionID = f.Settled, f.Changed, f.VersionID
 	}
+	var dispositionReason, dispositionStatus string
+	var dispositionHumanAction bool
+	if data.Disposition != nil {
+		dispositionReason, dispositionStatus, dispositionHumanAction = data.Disposition.ReasonCode, data.Disposition.Status, data.Disposition.HumanAction
+	}
 	var local int64
 	if data.Runtime != nil {
 		local = data.Runtime.LocalAttemptID
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE native_attempts SET hot_projection_version=1,session_id=?,local_attempt_id=?,heartbeat_at=?,health_failure_signature=?,health_recovery_reason=?,health_instance_failure=?,health_landing=?,health_landed=?,health_conflict=?,health_landing_at=?,health_landing_key=?,failure_stage=?,finalization_settled=?,finalization_changed=?,finalization_version_id=?,health_updated_day=julianday(updated_at),health_landing_day=julianday(?) WHERE id=?`, a.Session, local, heartbeat, a.Signature, a.Recovery, a.InstanceSetupFailure, a.Landing, a.Landed, a.Conflict, landingAt, a.LandingKey, a.Stage, settled, changed, versionID, landingAt, id)
+	_, err := tx.ExecContext(ctx, `UPDATE native_attempts SET hot_projection_version=1,session_id=?,local_attempt_id=?,heartbeat_at=?,health_failure_signature=?,health_recovery_reason=?,health_instance_failure=?,health_landing=?,health_landed=?,health_conflict=?,health_landing_at=?,health_landing_key=?,failure_stage=?,finalization_settled=?,finalization_changed=?,finalization_version_id=?,health_disposition_reason=?,disposition_status=?,disposition_human_action=?,health_updated_day=julianday(updated_at),health_landing_day=julianday(?) WHERE id=?`, a.Session, local, heartbeat, a.Signature, a.Recovery, a.InstanceSetupFailure, a.Landing, a.Landed, a.Conflict, landingAt, a.LandingKey, a.Stage, settled, changed, versionID, dispositionReason, dispositionStatus, dispositionHumanAction, landingAt, id)
 	return err
 }
 
 func (s *Service) convertAttemptHotProjections(ctx context.Context) error {
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT id FROM native_attempts WHERE hot_projection_version=0 ORDER BY id LIMIT ?`, storageConversionRows)
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT id FROM native_attempts WHERE hot_projection_version=0 OR health_disposition_reason IS NULL ORDER BY id LIMIT ?`, storageConversionRows)
 	if err != nil {
 		return err
 	}
@@ -94,7 +99,7 @@ func (s *Service) convertAttemptHotProjections(ctx context.Context) error {
 
 func (s *Service) convertAttemptHotProjection(ctx context.Context, id string) error {
 	var raw, status string
-	err := s.database.reader.QueryRowContext(ctx, "SELECT data_json,status FROM native_attempts WHERE id=? AND hot_projection_version=0", id).Scan(&raw, &status)
+	err := s.database.reader.QueryRowContext(ctx, "SELECT data_json,status FROM native_attempts WHERE id=? AND (hot_projection_version=0 OR health_disposition_reason IS NULL)", id).Scan(&raw, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -111,7 +116,7 @@ func (s *Service) convertAttemptHotProjection(ctx context.Context, id string) er
 	}
 	defer tx.Rollback()
 	var unchanged bool
-	err = tx.QueryRowContext(ctx, "SELECT data_json=? AND status=? AND hot_projection_version=0 FROM native_attempts WHERE id=?", raw, status, id).Scan(&unchanged)
+	err = tx.QueryRowContext(ctx, "SELECT data_json=? AND status=? AND (hot_projection_version=0 OR health_disposition_reason IS NULL) FROM native_attempts WHERE id=?", raw, status, id).Scan(&unchanged)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}

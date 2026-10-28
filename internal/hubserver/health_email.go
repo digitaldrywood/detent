@@ -47,12 +47,32 @@ func healthEmailText(value string) string {
 	}), maxFailureExampleLength)
 }
 
-func (s *Service) commitHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, now time.Time, findings []healthFinding) error {
+func (s *Service) commitHealthEvaluation(ctx context.Context, organization tracker.OrganizationID, now time.Time, findings []healthFinding, unavailable []healthBaselineUnavailable) error {
+	cancellations, err := readHealthCancellations(ctx, s.database.reader, organization)
+	if err != nil {
+		return err
+	}
+	if unavailable == nil {
+		unavailable = []healthBaselineUnavailable{}
+	}
+	raw, err := json.Marshal(unavailable)
+	if err != nil {
+		return err
+	}
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO health_detector_ticks(organization_id,last_tick_at,baseline_unavailable_json) VALUES(?,?,?)
+ ON CONFLICT(organization_id) DO UPDATE SET baseline_unavailable_json=excluded.baseline_unavailable_json`, organization, formatHubTime(now), string(raw)); err != nil {
+		return err
+	}
 	transitions, err := writeHealthEvaluation(ctx, tx, organization, now, findings)
 	if err != nil {
 		return err
 	}
-	issues, err := reportHealthFindings(ctx, tx, organization, now)
+	issues, err := reportHealthFindings(ctx, tx, organization, now, cancellations)
 	if err != nil {
 		return err
 	}

@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"slices"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func readHealthScheduled(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) (healthScheduledValidation, error) {
@@ -20,7 +22,7 @@ func readHealthScheduled(ctx context.Context, q nativeQueryer, scope nativeScope
 	var first, green string
 	if err := q.QueryRowContext(ctx, `SELECT
  coalesce((SELECT recorded_at FROM scheduled_validation_reports WHERE organization_id=? AND project_id=? AND julianday(recorded_at)<=julianday(?) ORDER BY julianday(recorded_at),recorded_at LIMIT 1),''),
- coalesce((SELECT recorded_at FROM scheduled_validation_reports WHERE organization_id=? AND project_id=? AND julianday(recorded_at)<=julianday(?) AND json_extract(record_json,'$.conclusion')='success' ORDER BY julianday(recorded_at) DESC,recorded_at DESC LIMIT 1),'')`, scope.organization, scope.project, formatHubTime(now), scope.organization, scope.project, formatHubTime(now)).Scan(&first, &green); err != nil {
+ coalesce((SELECT recorded_at FROM scheduled_validation_reports WHERE organization_id=? AND project_id=? AND julianday(recorded_at)<=julianday(?) AND conclusion='success' ORDER BY julianday(recorded_at) DESC,recorded_at DESC LIMIT 1),'')`, scope.organization, scope.project, formatHubTime(now), scope.organization, scope.project, formatHubTime(now)).Scan(&first, &green); err != nil {
 		return out, err
 	}
 	if first != "" {
@@ -34,19 +36,26 @@ func readHealthScheduled(ctx context.Context, q nativeQueryer, scope nativeScope
 		}
 	}
 	rows, err := q.QueryContext(ctx, `WITH observed AS (
- SELECT record_json,recorded_at,run_id,run_attempt FROM scheduled_validation_reports WHERE organization_id=? AND project_id=? AND julianday(recorded_at)<=julianday(?)
- ), latest AS (SELECT record_json,recorded_at FROM observed ORDER BY julianday(recorded_at) DESC,run_id DESC,run_attempt DESC LIMIT 21),
- failures AS (SELECT record_json,recorded_at FROM observed WHERE json_extract(record_json,'$.conclusion')='failure' ORDER BY julianday(recorded_at) DESC,run_id DESC,run_attempt DESC LIMIT 2)
- SELECT record_json,recorded_at FROM latest UNION ALL SELECT record_json,recorded_at FROM failures`, scope.organization, scope.project, formatHubTime(now))
+ SELECT record_json,recorded_at,run_id,run_attempt,conclusion FROM scheduled_validation_reports WHERE organization_id=? AND project_id=? AND julianday(recorded_at)<=julianday(?)
+ ), latest AS (SELECT record_json,recorded_at,conclusion FROM observed ORDER BY julianday(recorded_at) DESC,run_id DESC,run_attempt DESC LIMIT 21),
+ failures AS (SELECT record_json,recorded_at,conclusion FROM observed WHERE conclusion='failure' ORDER BY julianday(recorded_at) DESC,run_id DESC,run_attempt DESC LIMIT 2)
+ SELECT record_json,recorded_at,conclusion FROM latest UNION ALL SELECT record_json,recorded_at,conclusion FROM failures
+ UNION ALL SELECT record_json,recorded_at,conclusion FROM (SELECT record_json,recorded_at,conclusion FROM observed WHERE conclusion IS NULL LIMIT ?)`, scope.organization, scope.project, formatHubTime(now), healthReadLimit+1)
 	if err != nil {
 		return out, err
 	}
 	defer rows.Close()
 	reports := map[string]scheduledValidationRecord{}
 	persisted := map[string]bool{}
+	count := 0
 	for rows.Next() {
+		count++
+		if count > healthReadLimit {
+			return out, errHealthReadLimit
+		}
 		var raw, at string
-		if err := rows.Scan(&raw, &at); err != nil {
+		var conclusion sql.NullString
+		if err := rows.Scan(&raw, &at, &conclusion); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -54,6 +63,9 @@ func readHealthScheduled(ctx context.Context, q nativeQueryer, scope nativeScope
 		if err := json.Unmarshal([]byte(raw), &report); err != nil {
 			rows.Close()
 			return out, err
+		}
+		if conclusion.Valid {
+			report.Conclusion = conclusion.String
 		}
 		recorded, err := parseTimeValue(at)
 		if err != nil {
@@ -70,22 +82,34 @@ func readHealthScheduled(ctx context.Context, q nativeQueryer, scope nativeScope
 	if err := rows.Close(); err != nil {
 		return out, err
 	}
-	rows, err = q.QueryContext(ctx, `WITH history AS (
- SELECT body,created_at AS at FROM issues WHERE organization_id=? AND project_id=? AND instr(body,'detent-checks')>0 AND json_extract(actor_json,'$.kind')!='runner'
- UNION ALL SELECT body,created_at FROM native_comments WHERE organization_id=? AND project_id=? AND (instr(body,'detent-checks')>0 OR body LIKE 'Scheduled full validation passed for development commit %') AND json_extract(actor_json,'$.kind')!='runner'
- ), observed AS (SELECT body,at FROM history WHERE julianday(at)<=julianday(?)),
- latest AS (SELECT body,at FROM observed ORDER BY julianday(at) DESC LIMIT 40),
- first AS (SELECT body,at FROM observed ORDER BY julianday(at) LIMIT 1),
- green AS (SELECT body,at FROM observed WHERE body LIKE 'Scheduled full validation passed for development commit %' ORDER BY julianday(at) DESC LIMIT 1)
- SELECT body,at FROM latest UNION ALL SELECT body,at FROM first UNION ALL SELECT body,at FROM green`, scope.organization, scope.project, scope.organization, scope.project, formatHubTime(now))
+	rows, err = q.QueryContext(ctx, `SELECT body,at,actor_kind,actor_json FROM (
+ SELECT body,created_at AS at,actor_kind,actor_json FROM issues WHERE organization_id=? AND project_id=? AND instr(body,'detent-checks')>0 AND (actor_kind IS NULL OR actor_kind!='runner')
+ UNION ALL SELECT body,created_at,actor_kind,actor_json FROM native_comments WHERE organization_id=? AND project_id=? AND (instr(body,'detent-checks')>0 OR body LIKE 'Scheduled full validation passed for development commit %') AND (actor_kind IS NULL OR actor_kind!='runner')
+ ) WHERE julianday(at)<=julianday(?) ORDER BY julianday(at) DESC LIMIT ?`, scope.organization, scope.project, scope.organization, scope.project, formatHubTime(now), healthReadLimit+1)
 	if err != nil {
 		return out, err
 	}
 	defer rows.Close()
+	count = 0
 	for rows.Next() {
-		var body, at string
-		if err := rows.Scan(&body, &at); err != nil {
+		count++
+		if count > healthReadLimit {
+			return out, errHealthReadLimit
+		}
+		var body, at, rawActor string
+		var actorKind sql.NullString
+		if err := rows.Scan(&body, &at, &actorKind, &rawActor); err != nil {
 			return out, err
+		}
+		if !actorKind.Valid {
+			var actor tracker.Actor
+			if err := json.Unmarshal([]byte(rawActor), &actor); err != nil {
+				return out, err
+			}
+			actorKind.String = actor.Kind
+		}
+		if actorKind.String == "runner" {
+			continue
 		}
 		recorded, err := parseTimeValue(at)
 		if err != nil {

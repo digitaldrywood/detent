@@ -38,8 +38,8 @@ func (s *Service) recordScheduledValidation(ctx context.Context, scope nativeSco
 		if err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO scheduled_validation_reports (organization_id,project_id,repository,run_id,run_attempt,record_json,recorded_at)
- VALUES (?,?,?,?,?,?,?) ON CONFLICT (organization_id,project_id,repository,run_id,run_attempt) DO NOTHING`, scope.organization, scope.project, report.Repository, report.RunID, report.RunAttempt, string(raw), formatHubTime(now)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO scheduled_validation_reports (organization_id,project_id,repository,run_id,run_attempt,record_json,recorded_at,conclusion)
+ VALUES (?,?,?,?,?,?,?,?) ON CONFLICT (organization_id,project_id,repository,run_id,run_attempt) DO NOTHING`, scope.organization, scope.project, report.Repository, report.RunID, report.RunAttempt, string(raw), formatHubTime(now), report.Conclusion); err != nil {
 			return nil, err
 		}
 		var retained, at string

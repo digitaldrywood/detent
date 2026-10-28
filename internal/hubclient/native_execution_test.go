@@ -93,8 +93,8 @@ func TestRetiredControllerRenewsClaimsWithoutReportingOldBuild(t *testing.T) {
 	issue := h.createInProgress(t, "Finish the active attempt")
 	h.claim(t, issue.ID)
 	source := h.scheduler.nativeProject("local")
-	if source == nil {
-		t.Fatal("local native project is required")
+	if source == nil || source.client == nil {
+		t.Fatal("missing native project source")
 	}
 	transport := h.native.client.httpClient.Transport
 	var reports atomic.Int64

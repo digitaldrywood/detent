@@ -870,6 +870,9 @@ func appendNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScope, wor
 	if err := updateEventPageFacts(ctx, tx, id, scope.actor(), data); err != nil {
 		return err
 	}
+	if err := updateHealthEventProjection(ctx, tx, id, scope.actor(), data); err != nil {
+		return err
+	}
 	landed := data.Run != nil && data.Run.Runtime != nil && data.Run.Runtime.Landing != nil && data.Run.Runtime.Landing.Landed
 	return insertHealthEventTime(ctx, tx, id, string(scope.organization), eventType, landed, now)
 }

@@ -102,6 +102,34 @@ func TestHotAttemptProjectionCompatibility(t *testing.T) {
 					if !reflect.DeepEqual(got, want) {
 						t.Fatalf("%s: typed=%+v legacy=%+v", f.project.ID, got, want)
 					}
+					if stage == "converted" {
+						tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET data_json='{}' WHERE project_id=?`, f.project.ID); err != nil {
+							tx.Rollback()
+							t.Fatal(err)
+						}
+						for _, read := range []struct {
+							name string
+							run  func() ([]healthRateAttempt, error)
+						}{
+							{"typed", func() ([]healthRateAttempt, error) { return readHealthRateAttempts(t.Context(), tx, scope, window) }},
+							{"mixed", func() ([]healthRateAttempt, error) {
+								return readLegacyHealthRateAttempts(t.Context(), tx, scope, window)
+							}},
+						} {
+							observed, readErr := read.run()
+							if readErr != nil || !reflect.DeepEqual(observed, want) {
+								tx.Rollback()
+								t.Fatalf("%s %s reads opaque attempt fields: got=%+v want=%+v err=%v", f.project.ID, read.name, observed, want, readErr)
+							}
+						}
+						if err := tx.Rollback(); err != nil {
+							t.Fatal(err)
+						}
+					}
 				}
 				matches, err := readLocalAttemptMatches(t.Context(), f.service.database.reader, scope, string(projectItems[string(f.project.ID)]), 42)
 

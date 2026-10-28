@@ -448,8 +448,8 @@ func TestControllerAdoptionProcess(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	restart := ControllerRestartRequest()
-	if restart == nil {
-		t.Fatal("controller restart connection is required")
+	if restart == nil || restart.control == nil {
+		t.Fatal("missing controller restart connection")
 	}
 	defer restart.control.close()
 	if filepath.Base(os.Args[0]) == "stalled" {

@@ -27,12 +27,7 @@ import (
 
 func applyTestHealth(t *testing.T, f nativeFixture, now time.Time, findings []healthFinding) {
 	t.Helper()
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	if err := f.service.commitHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now, findings); err != nil {
+	if err := f.service.commitHealthEvaluation(t.Context(), f.project.OrganizationID, now, findings, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -472,7 +467,12 @@ func TestHealthSnapshotRecordedCyclesAndLandings(t *testing.T) {
 		}
 		var before [][]healthTimeEvent
 		var beforeFindings [][]healthFinding
-		for _, phase := range []string{"legacy", "populated"} {
+		for _, phase := range []string{"legacy", "projected", "populated"} {
+			if phase == "projected" {
+				if err := f.service.convertHealthProjections(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if phase == "populated" {
 				if err := f.service.database.populateTimeIndexes(t.Context()); err != nil {
 					t.Fatal(err)
@@ -513,7 +513,7 @@ func TestHealthSnapshotRecordedCyclesAndLandings(t *testing.T) {
 					beforeFindings = append(beforeFindings, findings)
 				} else {
 					if !reflect.DeepEqual(before[i], events) {
-						t.Fatalf("%s changed health events", phase)
+						t.Fatalf("%s changed health events: before=%+v after=%+v", phase, before[i], events)
 					}
 					if !reflect.DeepEqual(beforeFindings[i], findings) {
 						t.Fatalf("%s changed health findings: before=%+v after=%+v", phase, beforeFindings[i], findings)
@@ -631,15 +631,55 @@ func TestHealthSnapshotCurrentWaitAndLimitAuthority(t *testing.T) {
 		supersede bool
 		limit     bool
 		action    bool
+		typed     bool
 		want      string
 	}{
 		{name: "permission action still authoritative", want: "unanswered_human_wait"},
+		{name: "typed permission action still authoritative", typed: true, want: "unanswered_human_wait"},
 		{name: "human action transition precedes final attempt update", action: true, want: "unanswered_human_wait"},
 		{name: "new human revision supersedes attempt", supersede: true},
 		{name: "lifetime transition remains current", limit: true, want: ""},
 		{name: "recovered lifetime transition", want: ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			if test.typed {
+				if err := f.service.convertAttemptHotProjection(t.Context(), "attempt-health"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json='{}' WHERE id='attempt-health'`); err != nil {
+					t.Fatal(err)
+				}
+				for _, query := range []string{
+					`UPDATE collaboration_events SET actor_kind='human' WHERE work_item_id=? AND type='workflow.transitioned'`,
+					`UPDATE collaboration_events SET transition_reason='user_requested' WHERE work_item_id=? AND type='workflow.transitioned'`,
+					`UPDATE collaboration_events SET transition_revision=0 WHERE work_item_id=? AND type='workflow.transitioned'`,
+					`UPDATE native_attempts SET disposition_status='complete' WHERE work_item_id=?`,
+					`UPDATE native_attempts SET disposition_human_action=0,health_disposition_reason='user_requested' WHERE work_item_id=?`,
+				} {
+					tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := tx.ExecContext(t.Context(), query, item.WorkItemID); err != nil {
+						tx.Rollback()
+						t.Fatal(err)
+					}
+					snapshot := healthSnapshot{}
+					readErr := readHealthCurrentWaits(t.Context(), tx, f.project.OrganizationID, now, &snapshot)
+					if err := tx.Rollback(); err != nil {
+						t.Fatal(err)
+					}
+					if readErr != nil || len(snapshot.Waits) != 0 {
+						t.Fatalf("typed authority filter %s: waits=%+v err=%v", query, snapshot.Waits, readErr)
+					}
+				}
+				defer func() {
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=? WHERE id='attempt-health'`, string(raw)); err != nil {
+						t.Fatal(err)
+					}
+					appendTestHealthEvent(t, f, item, "workflow.transitioned", tracker.CollaborationData{Revision: item.Revision, Reason: "worker_progress"}, at)
+				}()
+			}
 			if test.action {
 				defer func() {
 					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=?,updated_at=? WHERE id='attempt-health'", string(raw), formatHubTime(at)); err != nil {
@@ -762,14 +802,20 @@ func TestHealthSnapshotConversationQuestions(t *testing.T) {
 func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name       string
-		projects   bool
-		nonsignal  bool
-		candidates int
+		name          string
+		projects      bool
+		nonsignal     bool
+		incomplete    bool
+		laterSignal   string
+		candidates    int
+		cancellations bool
 	}{
 		{name: "project bound", projects: true},
 		{name: "event bound"},
+		{name: "legacy cancellation bound", cancellations: true},
 		{name: "ordinary runtime traffic is excluded", nonsignal: true},
+		{name: "unknown runtime traffic before refusal", nonsignal: true, incomplete: true, laterSignal: "scheduler.decision"},
+		{name: "unknown runtime traffic before landing", nonsignal: true, incomplete: true, laterSignal: "run.finished"},
 		{name: "candidate pages", candidates: 101},
 		{name: "candidate bound", candidates: healthReadLimit + 1},
 	} {
@@ -777,6 +823,9 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 			t.Parallel()
 			f := newNativeFixture(t, nil, "", "bounded-health")
 			f.service.stopHealthDetector()
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
 			addHealthBacklog(t, f)
 			item := f.create(t, "bounded")
 			now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
@@ -811,6 +860,9 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 				if test.nonsignal {
 					kind = "run.observed"
 				}
+				if test.cancellations {
+					kind = "workflow.transitioned"
+				}
 				_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?) INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) SELECT 'health-event-'||x,?,?,?,x+100,?,1,'{"kind":"runner","principal_id":"health-test"}','{}',? FROM n`, healthReadLimit+1, f.project.OrganizationID, f.project.ID, item.WorkItemID, kind, formatHubTime(now))
 				if err != nil {
 					t.Fatal(err)
@@ -819,8 +871,23 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			err := f.service.evaluateOrganizationHealth(t.Context(), f.project.OrganizationID, now.Add(time.Minute))
-			success := test.nonsignal || test.candidates > 0 && test.candidates <= healthReadLimit
+			if test.incomplete {
+				data := tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped", Reason: "runner_capacity_full", Source: "native_claim", RunnerID: "runner_example"}}
+				if test.laterSignal != "scheduler.decision" {
+					data = tracker.CollaborationData{Run: &tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{Landed: true, ObservedAt: now.Add(30 * time.Second)}}}}
+				}
+				appendTestHealthEvent(t, f, item, test.laterSignal, data, now.Add(30*time.Second))
+				if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM time_index_progress WHERE owner='health'`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var err error
+			if test.cancellations {
+				err = f.service.commitHealthEvaluation(t.Context(), f.project.OrganizationID, now.Add(time.Minute), nil, nil)
+			} else {
+				err = f.service.evaluateOrganizationHealth(t.Context(), f.project.OrganizationID, now.Add(time.Minute))
+			}
+			success := test.nonsignal && !test.incomplete || test.candidates > 0 && test.candidates <= healthReadLimit
 			if success && err != nil || !success && !errors.Is(err, errHealthReadLimit) {
 				t.Fatalf("error=%v", err)
 			}
@@ -882,19 +949,39 @@ func TestHealthSnapshotRefreshObservation(t *testing.T) {
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}
-			snapshot, err := readHealthSnapshot(t.Context(), f.service.database.db, f.project.OrganizationID, now)
-			if err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE machines SET admission_facts_ready=NULL WHERE id=?`, r.binding.MachineID); err != nil {
 				t.Fatal(err)
 			}
-			findings := evaluateHealth(now, snapshot)
-			active := false
-			for _, finding := range findings {
-				if finding.Signal == "scheduler_loop_behind" {
-					active = true
-				}
+			if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM runner_admission_observations WHERE runner_id=?`, r.binding.RunnerID); err != nil {
+				t.Fatal(err)
 			}
-			if active != test.want {
-				t.Fatalf("active=%v snapshot=%+v", active, snapshot)
+			var previous healthSnapshot
+			for _, phase := range []string{"legacy", "typed"} {
+				if phase == "typed" {
+					if err := f.service.database.populateRunnerFacts(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+				}
+				snapshot, err := readHealthSnapshot(t.Context(), f.service.database.db, f.project.OrganizationID, now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if phase == "legacy" {
+					previous = snapshot
+				} else if !reflect.DeepEqual(previous, snapshot) {
+					t.Fatalf("refresh projection changed snapshot: before=%+v after=%+v", previous, snapshot)
+				}
+
+				findings := evaluateHealth(now, snapshot)
+				active := false
+				for _, finding := range findings {
+					if finding.Signal == "scheduler_loop_behind" {
+						active = true
+					}
+				}
+				if active != test.want {
+					t.Fatalf("active=%v snapshot=%+v", active, snapshot)
+				}
 			}
 		})
 	}

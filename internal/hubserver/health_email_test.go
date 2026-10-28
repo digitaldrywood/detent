@@ -80,11 +80,11 @@ func TestHealthFindingEmails(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				tx, err := h.service.database.db.BeginTx(t.Context(), nil)
-				if err != nil {
-					t.Fatal(err)
-				}
 				if test.legacy {
+					tx, err := h.service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
 					_, err = writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now.Add(-time.Minute), []healthFinding{finding})
 					if err != nil {
 						t.Fatal(err)
@@ -93,12 +93,9 @@ func TestHealthFindingEmails(t *testing.T) {
 						t.Fatal(err)
 					}
 				} else {
-					err = h.service.commitHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now, []healthFinding{finding})
+					err := h.service.commitHealthEvaluation(t.Context(), f.project.OrganizationID, now, []healthFinding{finding}, nil)
 					if err == nil {
 						t.Error("finding transaction succeeded")
-					}
-					if err := tx.Rollback(); err != nil {
-						t.Fatal(err)
 					}
 					var count int
 					if err := h.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM health_findings").Scan(&count); err != nil {
@@ -132,12 +129,7 @@ func TestHealthFindingEmails(t *testing.T) {
 						active = append(active, finding)
 					}
 					before := len(messages)
-					tx, err := h.service.database.db.BeginTx(t.Context(), nil)
-					if err != nil {
-						t.Fatal(err)
-					}
-					defer tx.Rollback()
-					err = h.service.commitHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now.Add(step.offset), active)
+					err := h.service.commitHealthEvaluation(t.Context(), f.project.OrganizationID, now.Add(step.offset), active, nil)
 					want := step.emails
 					if test.legacy {
 						want -= 2

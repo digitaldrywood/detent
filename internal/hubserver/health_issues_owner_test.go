@@ -148,7 +148,7 @@ func TestHealthFindingOpenOwner(t *testing.T) {
 							defer tx.Rollback()
 							_, err = writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now, findings)
 							if err == nil {
-								_, err = reportHealthFindings(t.Context(), tx, f.project.OrganizationID, now)
+								_, err = reportHealthFindings(t.Context(), tx, f.project.OrganizationID, now, nil)
 							}
 							if err == nil {
 								err = tx.Commit()

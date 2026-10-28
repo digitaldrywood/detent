@@ -409,6 +409,10 @@ func TestStorageConversionImmutability(t *testing.T) {
 			{"change_sources", nil},
 			{"collaboration_events", map[string]bool{
 				"scheduler_outcome": true, "scheduler_reason": true, "scheduler_source": true, "scheduler_runner_id": true,
+				"health_projected": true, "scheduler_present": true, "scheduler_at": true, "scheduler_revision": true,
+				"transition_from": true, "transition_to": true,
+				"transition_reason": true, "transition_detail": true, "transition_revision": true,
+				"event_landed": true, "event_landing_at": true,
 				"analytics_recorded_ns": true, "analytics_from_state": true, "analytics_to_state": true,
 				"analytics_attempt_id": true, "analytics_skip_key": true, "analytics_projection_version": true,
 				"query_metadata_version": true, "run_attempt_id": true, "activity_spans_present": true,

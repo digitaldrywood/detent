@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -89,43 +90,61 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 		query = prepared
 	}
 	resolved := state == "resolved"
+	args := []any{scope.organization, state, resolved, scope.project, state, since, since, since, after}
+
 	visibility := ""
-	args := []any{scope.project, scope.credential.HostedRole, scope.actor().PrincipalID, scope.actor().PrincipalID, scope.organization, state, resolved, scope.project, state, since, since, since, after}
 	if scope.credential.HostedRole == "reporter" {
 		condition, visibilityArgs := scope.issueVisibilitySQL("i")
 		visibility = " AND EXISTS(SELECT 1 FROM health_finding_issues fi JOIN issues i ON i.native_id=fi.work_item_id WHERE fi.finding_id=health_findings.id AND i.organization_id=? AND i.project_id=? AND (" + condition + "))"
 		args = append(args, scope.organization, scope.project)
 		args = append(args, visibilityArgs...)
 	}
-	args = append(args, limit+1)
-	rows, err := query.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable,slack_unavailable_at,slack_status_code,
- (SELECT json_group_array(json_object('project_id',l.project_id,'work_item_id',l.work_item_id))
- FROM health_finding_issues l JOIN issues linked ON linked.native_id=l.work_item_id
- WHERE l.finding_id=health_findings.id AND l.project_id=?
- AND (?<>'reporter' OR (COALESCE(json_extract(linked.actor_json,'$.principal_id'),'')=? AND ?<>''))) FROM health_findings
- WHERE organization_id=? AND (?='all' OR (resolved_at IS NOT NULL)=?) AND EXISTS(SELECT 1 FROM json_each(projects_json) WHERE value=?)
+	args = append(args, healthReadLimit+1)
+	rows, err := query.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable,slack_unavailable_at,slack_status_code,projects_json,projects_projected FROM health_findings
+ WHERE organization_id=? AND (?='all' OR (resolved_at IS NOT NULL)=?) AND (projects_projected IS NULL OR EXISTS(SELECT 1 FROM health_finding_projects fp WHERE fp.finding_id=health_findings.id AND fp.project_id=?))
  AND ((?='all' AND resolved_at IS NULL) OR ?='' OR julianday(last_seen_at)>=julianday(?) OR julianday(resolved_at)>=julianday(?)) AND rowid>?`+visibility+` ORDER BY rowid LIMIT ?`, args...)
 	if err != nil {
 		return page, err
 	}
 	defer rows.Close()
 	var last int64
+	count := 0
 	for rows.Next() {
 		var f healthFinding
 		var rowid int64
 		var subject, opened, seen, evidence string
 		var ended, slackFailed sql.NullString
 		var slackStatus sql.NullInt64
-		var links string
-		if err := rows.Scan(&rowid, &f.ID, &f.Fingerprint, &f.Signal, &f.Class, &subject, &opened, &seen, &ended, &f.Severity, &f.Summary, &f.NextAction, &evidence, &f.EmailUnavailable, &slackFailed, &slackStatus, &links); err != nil {
+		var projects string
+		var projected sql.NullInt64
+		if err := rows.Scan(&rowid, &f.ID, &f.Fingerprint, &f.Signal, &f.Class, &subject, &opened, &seen, &ended, &f.Severity, &f.Summary, &f.NextAction, &evidence, &f.EmailUnavailable, &slackFailed, &slackStatus, &projects, &projected); err != nil {
 			return page, err
 		}
-		if err := json.Unmarshal([]byte(links), &f.Issues); err != nil {
+		count++
+		if count > healthReadLimit {
+			return page, errHealthReadLimit
+		}
+		if !projected.Valid {
+			var ids []string
+			if err := json.Unmarshal([]byte(projects), &ids); err != nil {
+				return page, err
+			}
+			if !slices.Contains(ids, string(scope.project)) {
+				continue
+			}
+		}
+		links, err := readHealthFindingLinks(ctx, query, scope, f.ID)
+		if err != nil {
 			return page, err
 		}
-		if len(f.Issues) != 0 {
+		f.Issues = links
+		if scope.credential.HostedRole == "reporter" && len(links) == 0 {
+			continue
+		}
+		if len(links) > 0 {
 			f.FiledBy = "health_detector"
 		}
+
 		if len(page.Items) == limit {
 			page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(last, 10)))
 			break

@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -271,19 +272,18 @@ func readHealthTimeEvents(ctx context.Context, q nativeQueryer, organization tra
 	if err := q.QueryRowContext(ctx, `SELECT coalesce((SELECT complete FROM time_index_progress WHERE owner='health'),0)`).Scan(&complete); err != nil {
 		return nil, err
 	}
-	query := `SELECT id,project_id,work_item_id,type,projection,recorded_at FROM (
- SELECT id,project_id,work_item_id,type,json_object('decision',json_extract(data_json,'$.decision')) AS projection,recorded_at,julianday(recorded_at) AS event_order
- FROM collaboration_events WHERE organization_id=? AND type='scheduler.decision'
- AND julianday(recorded_at)>=julianday(?)-1.0/86400 AND julianday(recorded_at)<=julianday(?)+1.0/86400
- UNION ALL
- SELECT id,project_id,work_item_id,type,json_object('run',json_object('runtime',json_object('landing',json_extract(data_json,'$.run.runtime.landing')))),recorded_at,julianday(recorded_at)
- FROM collaboration_events WHERE organization_id=? AND type IN ('run.finished','run.observed') AND json_extract(data_json,'$.run.runtime.landing.landed')=1
- AND julianday(recorded_at)>=julianday(?)-1.0/86400 AND julianday(recorded_at)<=julianday(?)+1.0/86400
- ) ORDER BY event_order,id LIMIT ?`
-	args := []any{organization, formatHubTime(now.Add(-healthInstanceWindow)), formatHubTime(now), organization, formatHubTime(now.Add(-healthHistoryWindow)), formatHubTime(now), healthReadLimit + 1}
+	query := `SELECT id,project_id,work_item_id,type,
+ CASE WHEN health_projected IS NULL THEN data_json ELSE '{}' END,recorded_at,
+ scheduler_outcome,scheduler_reason,scheduler_source,scheduler_runner_id,event_landed,event_landing_at,health_projected,scheduler_present,scheduler_at,scheduler_revision
+ FROM collaboration_events WHERE organization_id=? AND
+ ((type='scheduler.decision' AND julianday(recorded_at)>=julianday(?)-1.0/86400) OR
+ (type IN ('run.finished','run.observed') AND (event_landed=1 OR health_projected IS NULL) AND julianday(recorded_at)>=julianday(?)-1.0/86400))
+ AND julianday(recorded_at)<=julianday(?)+1.0/86400 ORDER BY julianday(recorded_at),id LIMIT ?`
+	args := []any{organization, formatHubTime(now.Add(-healthInstanceWindow)), formatHubTime(now.Add(-healthHistoryWindow)), formatHubTime(now), healthReadLimit + 1}
 	if complete {
 		query = `SELECT e.id,e.project_id,e.work_item_id,t.type,
- CASE t.type WHEN 'scheduler.decision' THEN json_object('decision',json_extract(e.data_json,'$.decision')) ELSE json_object('run',json_object('runtime',json_object('landing',json_extract(e.data_json,'$.run.runtime.landing')))) END,e.recorded_at
+ CASE WHEN e.health_projected IS NULL THEN e.data_json ELSE '{}' END,e.recorded_at,
+ e.scheduler_outcome,e.scheduler_reason,e.scheduler_source,e.scheduler_runner_id,e.event_landed,e.event_landing_at,e.health_projected,e.scheduler_present,e.scheduler_at,e.scheduler_revision
  FROM (
  SELECT event_id,type,recorded_at_ns FROM health_event_times WHERE organization_id=? AND type='scheduler.decision' AND recorded_at_ns>=? AND recorded_at_ns<=?
  UNION ALL
@@ -299,15 +299,59 @@ func readHealthTimeEvents(ctx context.Context, q nativeQueryer, organization tra
 	var events []healthTimeEvent
 	count := 0
 	for rows.Next() {
-		var e healthTimeEvent
-		var at string
-		if err := rows.Scan(&e.id, &e.project, &e.item, &e.kind, &e.raw, &at); err != nil {
-			return nil, err
-		}
 		count++
 		if count > healthReadLimit {
 			return nil, errHealthReadLimit
 		}
+		var e healthTimeEvent
+		var at, raw string
+		var outcome, reason, source, runner, landingAt sql.NullString
+		var landed, present sql.NullBool
+		var decisionAt sql.NullString
+		var decisionRevision sql.NullInt64
+		var projected sql.NullInt64
+		if err := rows.Scan(&e.id, &e.project, &e.item, &e.kind, &raw, &at, &outcome, &reason, &source, &runner, &landed, &landingAt, &projected, &present, &decisionAt, &decisionRevision); err != nil {
+			return nil, err
+		}
+		var data tracker.CollaborationData
+		if !projected.Valid {
+			if err := json.Unmarshal([]byte(raw), &data); err != nil {
+				return nil, err
+			}
+		} else if e.kind == "scheduler.decision" && present.Bool {
+			data.Decision = &tracker.NativeSchedulerDecision{Outcome: outcome.String, Reason: reason.String, Source: source.String, RunnerID: runner.String, WorkItemRevision: tracker.Revision(decisionRevision.Int64)}
+			if decisionAt.String != "" {
+				data.Decision.At, err = parseTimeValue(decisionAt.String)
+				if err != nil {
+					return nil, err
+				}
+			}
+
+		} else if landed.Bool {
+			landing := &tracker.NativeLandingReceipt{Landed: true}
+			if landingAt.String != "" {
+				landing.ObservedAt, err = parseTimeValue(landingAt.String)
+				if err != nil {
+					return nil, err
+				}
+			}
+			data.Run = &tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: landing}}
+		}
+		if e.kind != "scheduler.decision" && (data.Run == nil || data.Run.Runtime == nil || data.Run.Runtime.Landing == nil || !data.Run.Runtime.Landing.Landed) {
+			continue
+		}
+		projection := tracker.CollaborationData{}
+		if e.kind == "scheduler.decision" {
+			projection.Decision = data.Decision
+		}
+		if e.kind != "scheduler.decision" && data.Run != nil && data.Run.Runtime != nil {
+			projection.Run = &tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{Landing: data.Run.Runtime.Landing}}
+		}
+		encoded, err := json.Marshal(projection)
+		if err != nil {
+			return nil, err
+		}
+		e.raw = string(encoded)
 		e.at, err = parseTimeValue(at)
 		if err != nil {
 			return nil, err
@@ -409,9 +453,11 @@ func readHealthEvents(ctx context.Context, q nativeQueryer, organization tracker
 }
 
 func readHealthCurrentWaits(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, now time.Time, snapshot *healthSnapshot) error {
-	rows, err := q.QueryContext(ctx, `SELECT i.native_id,i.project_id,coalesce(a.id,''),coalesce(a.updated_at,''),json_object('disposition',json_extract(a.data_json,'$.disposition')),coalesce(ws.detent_state,''),
- coalesce(e.id,''),coalesce(json_extract(e.data_json,'$.reason'),''),coalesce(json_extract(e.data_json,'$.reason_detail'),''),coalesce(json_extract(e.actor_json,'$.kind'),''),coalesce(e.recorded_at,''),
- coalesce(a.status='succeeded' AND json_extract(e.actor_json,'$.kind')='runner' AND json_extract(e.data_json,'$.reason')='worker_progress' AND CAST(json_extract(e.data_json,'$.revision') AS INTEGER)=i.revision AND julianday(e.recorded_at)>=julianday(a.updated_at),0)
+	rows, err := q.QueryContext(ctx, `SELECT i.native_id,i.project_id,coalesce(a.id,''),coalesce(a.updated_at,''),CASE WHEN a.health_disposition_reason IS NULL THEN coalesce(a.data_json,'{}') ELSE '{}' END,coalesce(ws.detent_state,''),
+ coalesce(e.id,''),coalesce(e.transition_reason,''),coalesce(e.transition_detail,''),coalesce(e.actor_kind,''),coalesce(e.recorded_at,''),
+ coalesce(a.status='succeeded' AND e.actor_kind='runner' AND e.transition_reason='worker_progress' AND e.transition_revision=i.revision AND julianday(e.recorded_at)>=julianday(a.updated_at),0),
+ coalesce(a.disposition_status,''),coalesce(a.disposition_human_action,0),a.health_disposition_reason,
+ CASE WHEN e.health_projected IS NULL THEN coalesce(e.data_json,'{}') ELSE '{}' END, CASE WHEN e.health_projected IS NULL THEN coalesce(e.actor_json,'{}') ELSE '{}' END,e.health_projected,coalesce(a.status,''),i.revision
  FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id
  LEFT JOIN native_attempts a ON a.id=(SELECT latest.id FROM native_attempts latest WHERE latest.organization_id=i.organization_id AND latest.project_id=i.project_id AND latest.work_item_id=i.native_id ORDER BY latest.fencing_token DESC LIMIT 1)
  LEFT JOIN collaboration_events e ON e.id=(SELECT latest.id FROM collaboration_events latest WHERE latest.organization_id=i.organization_id AND latest.work_item_id=i.native_id AND latest.type='workflow.transitioned' ORDER BY latest.sequence DESC LIMIT 1)
@@ -423,13 +469,40 @@ func readHealthCurrentWaits(ctx context.Context, q nativeQueryer, organization t
 	count := 0
 	for rows.Next() {
 		var item, project, attempt, at, raw, state, event, reason, detail, actor, recorded string
-		var authoritative bool
-		if err := rows.Scan(&item, &project, &attempt, &at, &raw, &state, &event, &reason, &detail, &actor, &recorded, &authoritative); err != nil {
+		var authoritative, humanAction bool
+		var dispositionStatus, eventRaw, actorRaw, status string
+		var dispositionReason sql.NullString
+		var eventProjected sql.NullInt64
+		var revision tracker.Revision
+		if err := rows.Scan(&item, &project, &attempt, &at, &raw, &state, &event, &reason, &detail, &actor, &recorded, &authoritative, &dispositionStatus, &humanAction, &dispositionReason, &eventRaw, &actorRaw, &eventProjected, &status, &revision); err != nil {
 			return err
 		}
 		count++
 		if count > healthReadLimit {
 			return errHealthReadLimit
+		}
+		if !eventProjected.Valid {
+			var data tracker.CollaborationData
+			var eventActor tracker.Actor
+			if err := json.Unmarshal([]byte(eventRaw), &data); err != nil {
+				return err
+			}
+			if err := json.Unmarshal([]byte(actorRaw), &eventActor); err != nil {
+				return err
+			}
+			reason, detail, actor = data.Reason, data.ReasonDetail, eventActor.Kind
+			authoritative = status == "succeeded" && actor == "runner" && reason == "worker_progress" && data.Revision == revision
+			if authoritative {
+				eventAt, err := parseTimeValue(recorded)
+				if err != nil {
+					return err
+				}
+				attemptAt, err := parseTimeValue(at)
+				if err != nil {
+					return err
+				}
+				authoritative = !eventAt.Before(attemptAt)
+			}
 		}
 		detail = strings.ReplaceAll(strings.TrimSpace(detail), " ", "_")
 		if actor == "runner" && (detail == permissionWaitTransitionReason || detail == "human_action") {
@@ -443,6 +516,9 @@ func readHealthCurrentWaits(ctx context.Context, q nativeQueryer, organization t
 		var data tracker.NativeRunData
 		if err := json.Unmarshal([]byte(raw), &data); err != nil {
 			return err
+		}
+		if dispositionReason.Valid {
+			data.Disposition = &tracker.NativeDisposition{Status: dispositionStatus, HumanAction: humanAction, ReasonCode: dispositionReason.String}
 		}
 		if data.Disposition == nil || data.Disposition.Status != "blocked" || !authoritative || !data.Disposition.HumanAction && data.Disposition.ReasonCode != "permission_wait" {
 			continue

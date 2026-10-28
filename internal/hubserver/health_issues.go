@@ -85,7 +85,7 @@ func healthIssueDigest(f healthFinding) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
-func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, now time.Time) ([]tracker.NativeIssue, error) {
+func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, now time.Time, cancellations map[string]healthCancellation) ([]tracker.NativeIssue, error) {
 	type occurrence struct {
 		finding          healthFinding
 		project          tracker.ProjectID
@@ -99,7 +99,7 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 	rows, err := tx.QueryContext(ctx, `SELECT f.id,f.fingerprint,f.signal,f.class,f.subject_json,f.opened_at,f.last_seen_at,f.resolved_at,f.severity,f.summary,f.next_action,f.evidence_json,
  p.id,COALESCE(l.work_item_id,''),COALESCE(l.reported_evidence_digest,''),l.reported_resolved_at,COALESCE(l.intake_fingerprint,'')
  FROM health_findings f JOIN projects p ON p.organization_id=f.organization_id AND p.deleted_at IS NULL AND p.profile='native'
- AND (EXISTS(SELECT 1 FROM json_each(f.projects_json) WHERE value=p.id) OR EXISTS(SELECT 1 FROM health_finding_issues WHERE finding_id=f.id AND project_id=p.id))
+ AND (EXISTS(SELECT 1 FROM health_finding_projects fp WHERE fp.finding_id=f.id AND fp.project_id=p.id) OR EXISTS(SELECT 1 FROM health_finding_issues WHERE finding_id=f.id AND project_id=p.id))
  LEFT JOIN health_finding_issues l ON l.finding_id=f.id AND l.project_id=p.id
  WHERE f.organization_id=? AND f.class='instance'
  AND (f.resolved_at IS NULL OR (l.work_item_id IS NOT NULL AND l.reported_resolved_at IS NOT f.resolved_at))
@@ -222,7 +222,7 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 			if request.State == "" {
 				continue
 			}
-			issue, err := reportHealthIssue(ctx, tx, scope, request, o.finding.Subject, o.finding.OpenedAt, now)
+			issue, err := reportHealthIssue(ctx, tx, scope, request, o.finding.Subject, o.finding.OpenedAt, now, cancellations)
 			if err != nil {
 				return nil, err
 			}
@@ -243,7 +243,7 @@ func reportHealthFindings(ctx context.Context, tx *sql.Tx, organization tracker.
 	return created, nil
 }
 
-func reportHealthIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, subject healthSubject, opened, now time.Time) (tracker.NativeIssue, error) {
+func reportHealthIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.CreateIssue, subject healthSubject, opened, now time.Time, cancellations map[string]healthCancellation) (tracker.NativeIssue, error) {
 	search, err := prepareNativeDuplicates(ctx, tx, scope, request, now, true)
 	if err != nil {
 		return tracker.NativeIssue{}, err
@@ -278,14 +278,31 @@ func reportHealthIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, reque
 	if err != nil || !issue.Terminal || issue.State != "Cancelled" || issue.Actor != scope.actor() {
 		return issue, err
 	}
-	var newEpisode bool
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT
- json_extract(actor_json,'$.kind')='integration' AND json_extract(actor_json,'$.principal_id')='health_detector'
- AND json_extract(data_json,'$.from_state')='Backlog' AND json_extract(data_json,'$.to_state')='Cancelled'
- AND julianday(recorded_at)<julianday(?)
+	var id, actorRaw, dataRaw string
+	var projected sql.NullInt64
+	var automatic sql.NullBool
+	var before bool
+	err = tx.QueryRowContext(ctx, `SELECT id,health_projected,
+ actor_kind='integration' AND actor_principal_id='health_detector'
+ AND transition_from='Backlog' AND transition_to='Cancelled',
+ julianday(recorded_at)<julianday(?),
+ CASE WHEN health_projected IS NULL THEN actor_json ELSE '{}' END,
+ CASE WHEN health_projected IS NULL THEN data_json ELSE '{}' END
  FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='workflow.transitioned'
- ORDER BY sequence DESC LIMIT 1),0)`, formatHubTime(opened), scope.organization, scope.project, issue.WorkItemID).Scan(&newEpisode); err != nil {
+ ORDER BY sequence DESC LIMIT 1`, formatHubTime(opened), scope.organization, scope.project, issue.WorkItemID).Scan(&id, &projected, &automatic, &before, &actorRaw, &dataRaw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return issue, nil
+	}
+	if err != nil {
 		return tracker.NativeIssue{}, err
+	}
+	newEpisode := automatic.Valid && automatic.Bool && before
+	if !projected.Valid {
+		fact, ok := cancellations[id]
+		if !ok || fact.actorRaw != actorRaw || fact.dataRaw != dataRaw {
+			return tracker.NativeIssue{}, errors.New("health cancellation observation changed")
+		}
+		newEpisode = fact.automatic && before
 	}
 	if newEpisode {
 		return createNativeIssue(ctx, tx, scope, request, now, true)
@@ -314,8 +331,8 @@ func resolveHealthIssues(ctx context.Context, tx *sql.Tx, organization tracker.O
  WHERE other.work_item_id=i.native_id AND (f.class<>'instance' OR f.resolved_at IS NULL
  OR julianday(f.resolved_at)>=julianday(?) OR julianday(f.last_seen_at)>=julianday(?)))
  AND NOT EXISTS(SELECT 1 FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.work_item_id=i.native_id
- AND e.type='workflow.transitioned' AND json_extract(e.actor_json,'$.kind')='human'
- AND json_extract(e.data_json,'$.from_state')='Backlog' AND json_extract(e.data_json,'$.to_state')<>'Backlog')
+ AND e.type='workflow.transitioned' AND (e.health_projected IS NULL OR (e.actor_kind='human'
+ AND e.transition_from='Backlog' AND e.transition_to<>'Backlog')))
  ORDER BY i.native_id LIMIT ?`, organization, formatHubTime(now.Add(-healthReopenWindow)), formatHubTime(now.Add(-healthReopenWindow)), healthReadLimit+1)
 	if err != nil {
 		return err

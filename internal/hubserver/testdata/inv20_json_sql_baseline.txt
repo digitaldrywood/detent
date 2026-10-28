@@ -15,11 +15,6 @@ internal/hubserver/conversation_service.go 1
 internal/hubserver/conversation_store.go 2
 internal/hubserver/health_detector.go 1
 internal/hubserver/health_email.go 1
-internal/hubserver/health_issues.go 8
-internal/hubserver/health_rate_snapshot.go 7
-internal/hubserver/health_reads.go 4
-internal/hubserver/health_scheduled.go 4
-internal/hubserver/health_snapshot.go 21
 internal/hubserver/hosted_admin.go 2
 internal/hubserver/hosted_auth.go 1
 internal/hubserver/hosted_context.go 1
@@ -55,7 +50,6 @@ internal/hubserver/report_productivity.go 7
 internal/hubserver/report_productivity_rollups.go 17
 internal/hubserver/slack_delivery.go 1
 internal/hubserver/storage_conversion.go 4
-internal/hubserver/time_indexes.go 1
 internal/hubserver/usage_cost_report.go 2
 internal/hubserver/usage_costs.go 1
 internal/hubserver/validation_evidence.go 2

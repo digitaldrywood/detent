@@ -107,19 +107,39 @@ func TestHealthIntakeSignatures(t *testing.T) {
 				if test.name == "overlapping signatures" {
 					index := slices.IndexFunc(page.Items, func(finding healthFinding) bool { return len(finding.Issues) == 2 })
 					visible := page.Items[index].Issues[0].WorkItemID
-					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json='{"kind":"human","principal_id":"reporter"}' WHERE native_id=?`, visible); err != nil {
+					for _, actorProjection := range []string{
+						`UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json='{"kind":"human","principal_id":"reporter"}' WHERE native_id=?`,
+						`UPDATE issues SET actor_kind='human',actor_principal_id='reporter',actor_json='{"kind":"runner","principal_id":"someone_else"}' WHERE native_id=?`,
+					} {
+						if _, err := f.service.database.db.ExecContext(t.Context(), actorProjection, visible); err != nil {
+							t.Fatal(err)
+						}
+						scope.credential.HostedRole = "reporter"
+						scope.sourceActor = &tracker.Actor{Kind: "human", PrincipalID: "reporter"}
+						reporterPage, err := f.service.readHealthFindings(t.Context(), scope, "open", "", "", 100)
+						if err != nil || len(reporterPage.Items) == 0 {
+							t.Fatalf("reporter findings = %+v, %v", reporterPage, err)
+						}
+						for _, finding := range reporterPage.Items {
+							if len(finding.Issues) != 1 || finding.Issues[0].WorkItemID != visible {
+								t.Fatalf("reporter received hidden issue links: %+v", finding.Issues)
+							}
+						}
+					}
+					tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
 						t.Fatal(err)
 					}
-					scope.credential.HostedRole = "reporter"
-					scope.sourceActor = &tracker.Actor{Kind: "human", PrincipalID: "reporter"}
-					reporterPage, err := f.service.readHealthFindings(t.Context(), scope, "open", "", "", 100)
-					if err != nil || len(reporterPage.Items) == 0 {
-						t.Fatalf("reporter findings = %+v, %v", reporterPage, err)
+					if _, err := tx.ExecContext(t.Context(), `UPDATE issues SET actor_principal_id=NULL WHERE native_id=?`, visible); err != nil {
+						tx.Rollback()
+						t.Fatal(err)
 					}
-					for _, finding := range reporterPage.Items {
-						if len(finding.Issues) != 1 || finding.Issues[0].WorkItemID != visible {
-							t.Fatalf("reporter received hidden issue links: %+v", finding.Issues)
-						}
+					links, readErr := readHealthFindingLinks(t.Context(), tx, scope, page.Items[index].ID)
+					if err := tx.Rollback(); err != nil {
+						t.Fatal(err)
+					}
+					if readErr != nil || len(links) != 0 {
+						t.Fatalf("unknown principal authorized reporter: links=%+v err=%v", links, readErr)
 					}
 				}
 			}
@@ -240,15 +260,21 @@ func TestHealthFindingOccurrenceDeduplication(t *testing.T) {
 func TestHealthIntakeLegacyResolution(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name       string
-		age        time.Duration
-		unresolved bool
-		move       bool
-		returnMove bool
-		legacy     bool
-		recurrence string
-		want       string
+		name                   string
+		age                    time.Duration
+		unresolved             bool
+		move                   bool
+		returnMove             bool
+		unknown                bool
+		typed                  bool
+		legacy                 bool
+		recurrence             string
+		cancellationProjection string
+		keepCancelled          bool
+		want                   string
 	}{
+		{name: "typed human transition cannot cancel", age: time.Hour + time.Minute, typed: true, want: "Backlog"},
+		{name: "unknown transition cannot cancel", age: time.Hour + time.Minute, unknown: true, want: "Backlog"},
 		{name: "all resolved", age: time.Hour + time.Minute, want: "Cancelled"},
 		{name: "quiet window", age: time.Hour - time.Second, want: "Backlog"},
 		{name: "exact window", age: time.Hour, want: "Backlog"},
@@ -257,6 +283,12 @@ func TestHealthIntakeLegacyResolution(t *testing.T) {
 		{name: "human returned to Backlog", age: time.Hour + time.Minute, move: true, returnMove: true, want: "Backlog"},
 		{name: "legacy link", age: time.Hour + time.Minute, legacy: true, want: "Cancelled"},
 		{name: "new item after automatic cancellation", age: time.Hour + time.Minute, recurrence: "work_three", want: "Cancelled"},
+		{name: "recurrence before cancellation backfill", age: time.Hour + time.Minute, recurrence: "work_one", cancellationProjection: "unknown", want: "Cancelled"},
+		{name: "recurrence after cancellation backfill", age: time.Hour + time.Minute, recurrence: "work_one", cancellationProjection: "backfilled", want: "Cancelled"},
+		{name: "unknown human cancellation stays terminal", age: time.Hour + time.Minute, recurrence: "work_one", cancellationProjection: "human", keepCancelled: true, want: "Cancelled"},
+		{name: "unknown cancellation without authority stays terminal", age: time.Hour + time.Minute, recurrence: "work_one", cancellationProjection: "empty", keepCancelled: true, want: "Cancelled"},
+		{name: "changed cancellation observation rolls back", age: time.Hour + time.Minute, recurrence: "work_one", cancellationProjection: "changed", want: "Cancelled"},
+		{name: "typed cancellation overrides opaque actor", age: time.Hour + time.Minute, recurrence: "work_one", cancellationProjection: "typed", keepCancelled: true, want: "Cancelled"},
 		{name: "same item after automatic cancellation", age: time.Hour + time.Minute, recurrence: "work_one", want: "Cancelled"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -338,6 +370,27 @@ func TestHealthIntakeLegacyResolution(t *testing.T) {
 					requireNativeStatus(t, response, http.StatusOK)
 				}
 			}
+			if test.unknown || test.typed {
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				if err := appendNativeHistory(t.Context(), tx, scope, item, "workflow.transitioned", tracker.CollaborationData{FromState: "Backlog", ToState: "Backlog", Reason: "user_requested"}, now); err != nil {
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+				query := `UPDATE collaboration_events SET health_projected=NULL WHERE work_item_id=? AND type='workflow.transitioned'`
+				if test.typed {
+					query = `UPDATE collaboration_events SET actor_kind='human',transition_from='Backlog',transition_to='Todo' WHERE work_item_id=? AND type='workflow.transitioned'`
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), query, item); err != nil {
+					t.Fatal(err)
+				}
+			}
+
 			var active []healthFinding
 			if test.unresolved {
 				active = findings[1:]
@@ -372,9 +425,86 @@ func TestHealthIntakeLegacyResolution(t *testing.T) {
 			}
 			if test.recurrence != "" {
 				previous := issue
+				if test.cancellationProjection != "" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE collaboration_events SET health_projected=NULL,actor_kind=NULL,actor_principal_id=NULL,transition_from=NULL,transition_to=NULL WHERE work_item_id=? AND type='workflow.transitioned'`, item); err != nil {
+						t.Fatal(err)
+					}
+					if test.cancellationProjection == "human" || test.cancellationProjection == "empty" {
+						tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer tx.Rollback()
+						actor := tracker.Actor{Kind: "human", PrincipalID: "example_user"}
+						data := tracker.CollaborationData{FromState: "Backlog", ToState: "Cancelled"}
+						if test.cancellationProjection == "empty" {
+							actor, data = tracker.Actor{}, tracker.CollaborationData{}
+						}
+						actorScope := scope
+						actorScope.sourceActor = &actor
+						if err := appendNativeHistory(t.Context(), tx, actorScope, item, "workflow.transitioned", data, now); err != nil {
+							t.Fatal(err)
+						}
+						if _, err := tx.ExecContext(t.Context(), `UPDATE collaboration_events SET health_projected=NULL,actor_kind=NULL,actor_principal_id=NULL,transition_from=NULL,transition_to=NULL WHERE work_item_id=? AND type='workflow.transitioned'`, item); err != nil {
+							t.Fatal(err)
+						}
+						if err := tx.Commit(); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if test.cancellationProjection == "typed" {
+						if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE collaboration_events SET health_projected=1,actor_kind='human',actor_principal_id='example_user',transition_from='Backlog',transition_to='Cancelled' WHERE work_item_id=? AND type='workflow.transitioned'`, item); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if test.cancellationProjection == "backfilled" {
+						if err := f.service.convertHealthProjections(t.Context()); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
 				recurredAt := resolvedAt.Add(test.age + time.Minute)
 				finding := newHealthFinding("retry_storm", "instance", "work_item", test.recurrence, "Repeated failure.", "Inspect attempts.", []string{string(f.project.ID)}, healthEvidence{Signatures: []string{"protocol failure"}, AttemptIDs: []string{"attempt_recurred"}})
+				if test.cancellationProjection == "changed" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER change_health_cancellation AFTER UPDATE ON health_detector_ticks BEGIN
+ INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at)
+ SELECT id||'_changed',organization_id,project_id,work_item_id,sequence+1,type,schema_version,'{}','{}',recorded_at FROM collaboration_events WHERE type='workflow.transitioned' ORDER BY sequence DESC LIMIT 1;
+ END`); err != nil {
+						t.Fatal(err)
+					}
+					err := f.service.commitHealthEvaluation(t.Context(), f.project.OrganizationID, recurredAt, []healthFinding{finding}, nil)
+					if err == nil || !strings.Contains(err.Error(), "health cancellation observation changed") {
+						t.Fatalf("changed observation authorized recurrence: %v", err)
+					}
+					var open int
+					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM health_findings WHERE resolved_at IS NULL`).Scan(&open); err != nil || open != 0 {
+						t.Fatalf("failed observation committed findings: open=%d err=%v", open, err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), `DROP TRIGGER change_health_cancellation`); err != nil {
+						t.Fatal(err)
+					}
+				}
 				applyTestHealth(t, f, recurredAt, []healthFinding{finding})
+				if test.keepCancelled {
+					if err := f.service.convertHealthProjections(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+					applyTestHealth(t, f, recurredAt.Add(time.Minute), []healthFinding{finding})
+					var open int
+					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.project_id=? AND ws.terminal=0`, f.project.ID).Scan(&open); err != nil || open != 0 {
+						t.Fatalf("unknown cancellation authorized episode: open=%d err=%v", open, err)
+					}
+					return
+				}
+				if test.cancellationProjection != "" {
+					var open int
+					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.project_id=? AND ws.terminal=0`, f.project.ID).Scan(&open); err != nil || open != 1 {
+						t.Fatalf("recurrence was lost before another observation: open=%d err=%v", open, err)
+					}
+					if err := f.service.convertHealthProjections(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+				}
 				applyTestHealth(t, f, recurredAt.Add(time.Minute), []healthFinding{finding})
 				origin, ok := issueorigin.Parse(previous.Body)
 				if !ok {

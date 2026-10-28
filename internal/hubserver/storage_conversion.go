@@ -94,7 +94,7 @@ func (s *Service) convertLegacyStorage(ctx context.Context, now time.Time) error
 	if err := s.convertNativeBoardRanks(ctx); err != nil {
 		return err
 	}
-	if err := s.convertSchedulerDecisions(ctx); err != nil {
+	if err := s.convertHealthProjections(ctx); err != nil {
 		return err
 	}
 	if err := s.convertRunnerBoardProjections(ctx); err != nil {

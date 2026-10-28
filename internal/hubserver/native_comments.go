@@ -77,7 +77,7 @@ func insertNativeComment(ctx context.Context, tx *sql.Tx, scope nativeScope, iss
 	if comment.Provenance != nil {
 		sourceKey = comment.Provenance.Provider + ":" + comment.Provenance.ExternalID
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO native_comments (id, organization_id, project_id, work_item_id, revision, sequence, body, actor_json, provenance_json, source_key, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)", comment.ID, scope.organization, scope.project, issue.WorkItemID, comment.Sequence, comment.Body, actor, encodedProvenance, sourceKey, formatHubTime(now), formatHubTime(now))
+	_, err = tx.ExecContext(ctx, "INSERT INTO native_comments (id, organization_id, project_id, work_item_id, revision, sequence, body, actor_json, provenance_json, source_key, created_at, updated_at, actor_kind) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)", comment.ID, scope.organization, scope.project, issue.WorkItemID, comment.Sequence, comment.Body, actor, encodedProvenance, sourceKey, formatHubTime(now), formatHubTime(now), comment.Actor.Kind)
 	if err != nil {
 		return comment, err
 	}
