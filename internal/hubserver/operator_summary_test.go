@@ -114,10 +114,20 @@ func TestOperatorWorkListOversizedFirstItem(t *testing.T) {
 				if err := json.Unmarshal(raw, &envelope); err != nil {
 					t.Fatal(err)
 				}
+				if envelope.Data.Total != len(issues) {
+					t.Fatalf("bounded page total=%d want=%d", envelope.Data.Total, len(issues))
+				}
 				projections := []any{envelope.Data.Page}
 				if work := envelope.Data.Work; work != nil {
 					if len(work.Items) == 0 {
 						t.Fatal("oversized work summary lost its first item")
+					}
+					var total int
+					for _, lane := range work.Lanes {
+						total += lane.Total
+					}
+					if total != len(issues) {
+						t.Fatalf("bounded work total=%d want=%d", total, len(issues))
 					}
 					projections = append(projections, tracker.Page[operatortool.NativeItem]{Items: work.Items})
 				}

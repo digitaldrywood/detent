@@ -83,6 +83,14 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				drainTestNativeBoard(t, f.service)
+				for _, fixture := range []nativeFixture{f, other} {
+					scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
+					population, err := readNativeClosedPopulation(t.Context(), f.service.database.reader, scope, "", nil, now.Add(-24*time.Hour), now)
+					if err != nil || len(population.Shipped) != 0 {
+						t.Fatalf("missing closure population=%+v err=%v", population, err)
+					}
+				}
 				if err := f.service.archiveClosedNativeIssues(t.Context(), now); err != nil {
 					t.Fatal(err)
 				}
@@ -108,7 +116,25 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 				}
 			}
 			before = unknown()
+			drainTestNativeBoard(t, f.service)
 			for _, fixture := range []nativeFixture{f, other} {
+				scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
+				population, err := readNativeClosedPopulation(t.Context(), f.service.database.reader, scope, "", nil, now.Add(-24*time.Hour), now)
+				if err != nil || len(population.Shipped) != 2 || population.Cancelled != 0 {
+					t.Fatalf("closed population=%+v err=%v", population, err)
+				}
+				for _, shipped := range population.Shipped {
+					if want, ok := closed[tracker.NativeWorkItemID(shipped.ID)]; !ok || !shipped.ClosedAt.Equal(want) {
+						t.Fatalf("shipped issue=%+v want=%v", shipped, want)
+					}
+				}
+				board, err := readNativeBoardSummary(t.Context(), f.service.database.reader, scope, nil, now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if board.Completed != 2 || board.Cancelled != 0 {
+					t.Fatalf("board shipped=%d cancelled=%d", board.Completed, board.Cancelled)
+				}
 				ctx := changeOperatorContext(t, f.service, f.token, string(fixture.project.OrganizationID))
 				call := hostedContextProtocol(t, f.service, ctx, "http")
 				for _, include := range []string{"default", "summary", "work"} {
@@ -138,7 +164,6 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 					})
 				}
 				params := url.Values{"sort": {"closed"}, "limit": {"2"}}
-				scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
 				page, err := f.service.readIssues(t.Context(), scope, params)
 				if err != nil || len(page.Items) != 2 {
 					t.Fatalf("closed page=%+v err=%v", page, err)
