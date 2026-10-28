@@ -194,7 +194,7 @@ jobs:
     secrets: inherit
 
   production:
-    needs: [release, staging]
+    needs: release
     uses: ./.github/workflows/deploy-production.yml
     with:
       version: ${{ needs.release.outputs.version }}
