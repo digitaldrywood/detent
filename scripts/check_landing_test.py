@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -13,6 +14,7 @@ TOOL = "#!" + sys.executable + r'''
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -29,8 +31,10 @@ if (name == "go" and args[:1] == [os.environ.get("FAIL_STAGE")]) or (name == "go
     sys.exit(17)
 if name == "python3" and os.environ.get("FAIL_STAGE") == "nilaway":
     sys.exit(17)
-if name == "go" and args[:1] == ["test"] and os.environ.get("FAIL_HUB_PATTERN") in args:
+if name == "go" and args[:1] == ["test"] and "-list" not in args and os.environ.get("FAIL_HUB_PATTERN") and "-run" in args and re.search(args[args.index("-run") + 1], os.environ["FAIL_HUB_PATTERN"]):
     sys.exit(17)
+if name == "python3" and args[:1] == ["scripts/test-landing-hub.py"]:
+    sys.exit(subprocess.run([sys.executable, *args]).returncode)
 if name == "make" and any(target in args for target in ("test-landing-hub", "nilaway-changed")):
     sys.exit(subprocess.run([os.environ["REAL_MAKE"], *args]).returncode)
 if name == "go" and args[:1] == ["test"] and os.environ.get("RUN_GO_TESTS"):
@@ -63,7 +67,7 @@ class LandingGateTest(unittest.TestCase):
         self.git("config", "user.email", "fixture@example.test")
         self.git("config", "commit.gpgsign", "false")
         (self.root / "scripts").mkdir()
-        for name in ("check-landing.sh", "check-evidence.sh"):
+        for name in ("check-landing.sh", "check-evidence.sh", "test-landing-hub.py"):
             shutil.copy2(ROOT / "scripts" / name, self.root / "scripts" / name)
         for name in ("Makefile", ".golangci-version"):
             shutil.copy2(ROOT / name, self.root / name)
@@ -166,10 +170,11 @@ class LandingGateTest(unittest.TestCase):
                     self.assertEqual(receipt["exit_code"], 0)
                 for call in trace:
                     if call["tool"] == "go":
-                        self.assertEqual(call["budget"], "1")
+                        full_test = call["args"][0] == "test" and "-short" not in call["args"]
+                        self.assertEqual(call["budget"], budget if full_test else "1")
                         if call["args"][0] in ("build", "test"):
                             package_procs = int(call["args"][call["args"].index("-p") + 1])
-                            self.assertEqual(package_procs, int(budget))
+                            self.assertEqual(package_procs, 1 if full_test else int(budget))
                             self.assertLessEqual(package_procs * int(call["budget"]), int(budget))
                     elif call["tool"] == "golangci-lint":
                         self.assertEqual(call["budget"], budget)
@@ -201,6 +206,7 @@ class LandingGateTest(unittest.TestCase):
         hub = self.root / "internal/hubserver"
         hub.mkdir(parents=True)
         (hub / "source.go").write_text("package hubserver\n")
+        names = [*"ABCDEFGHIJKLM", "NativeA", "NativeZ", "Normalize", *"OPQRSTUVWXYZ"]
         (hub / "source_test.go").write_text(
             'package hubserver\nimport ("os"; "testing")\n' + "\n".join(
                 f'func Test{letter}(t *testing.T) {{\n'
@@ -208,43 +214,48 @@ class LandingGateTest(unittest.TestCase):
                 'f, err := os.OpenFile("../../.git/test-names", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)\n'
                 'if err != nil { t.Fatal(err) }; defer f.Close()\n'
                 f'if _, err := f.WriteString("{letter}\\n"); err != nil {{ t.Fatal(err) }}\n}}'
-                for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                for letter in names
             )
         )
         self.commit()
-        for index, path in enumerate(("internal/hubserver/source.go", "go.mod", "lib/source.go", "internal/hubserver/source.go")):
+        for index, path in enumerate(("internal/hubserver/source.go", "go.mod", "lib/source.go", "internal/hubserver/source.go", "internal/hubserver/source.go")):
             with self.subTest(path=path, index=index):
                 self.git("update-ref", "refs/remotes/origin/develop", self.git("rev-parse", "HEAD").strip())
                 with (self.root / path).open("a") as stream:
                     stream.write("\n" if path == "go.mod" else f"const Value{index} = {index}\n")
                 self.commit()
                 self.env["RUN_GO_TESTS"] = "1"
-                if index == 3:
-                    self.env["FAIL_HUB_PATTERN"] = "^Test[HMP]"
+                if index >= 3:
+                    self.env["FAIL_HUB_PATTERN"] = "TestH" if index == 3 else "TestB"
                 (self.root / ".git/test-names").write_text("")
                 result = self.run_gate()
-                self.assertEqual(result.returncode, 2 if index == 3 else 0, result.stdout + result.stderr)
-                tests = [call for call in self.trace() if call["tool"] == "go" and call["args"][0] == "test"]
+                self.assertEqual(result.returncode, 2 if index >= 3 else 0, result.stdout + result.stderr)
+                tests = [call for call in self.trace() if call["tool"] == "go" and call["args"][0] == "test" and "-list" not in call["args"]]
                 hub_tests = [call for call in tests if "./internal/hubserver" in call["args"]]
                 if path == "lib/source.go":
                     self.assertEqual(len(hub_tests), 1)
                     self.assertIn("-short", hub_tests[0]["args"])
                     self.assertNotIn("test-landing-hub", result.stdout)
                 else:
-                    self.assertEqual(len(hub_tests), 2 if index == 3 else 5)
-                    for call in hub_tests:
+                    self.assertEqual(len(hub_tests), {3: 3, 4: 2}.get(index, 6))
+                    for test_index, call in enumerate(hub_tests):
                         self.assertNotIn("-short", call["args"])
                         self.assertIn("-timeout=10m", call["args"])
-                        self.assertEqual(call["budget"], "1")
-                        self.assertEqual(call["args"][call["args"].index("-p") + 1], "2")
+                        self.assertEqual(call["budget"], "1" if test_index < 2 else "2")
+                        self.assertEqual(call["args"][call["args"].index("-p") + 1], "1")
                         self.assertFalse(call["token"])
-                    if index != 3:
-                        self.assertEqual(sorted((self.root / ".git/test-names").read_text().splitlines()), list("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+                        pattern = call["args"][call["args"].index("-run") + 1]
+                        self.assertLessEqual(sum(bool(re.search(pattern, "Test" + name)) for name in names), 10)
+                    if index < 3:
+                        self.assertEqual(sorted((self.root / ".git/test-names").read_text().splitlines()), sorted(names))
                         for number in range(1, 6):
                             self.assertIn(f'"scope":"unit-full-hub-{number}"', result.stdout)
                     else:
                         self.assertNotIn("nilaway-changed", result.stdout)
-                        self.assertIn('"scope":"unit-full-hub-2"', result.stdout)
+                        if index == 3:
+                            self.assertIn('"scope":"unit-full-hub-2"', result.stdout)
+                        else:
+                            self.assertNotIn('"scope":"unit-full-hub-2"', result.stdout)
                         self.assertIn('"exit_code":17', result.stdout)
 
     def test_fixture_changes_select_tests_without_lint(self):

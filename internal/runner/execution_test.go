@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/store/storetest"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -608,7 +609,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			ctx := t.Context()
-			db, err := store.Open(ctx, store.Config{Path: filepath.Join(t.TempDir(), "sessions.db")})
+			db, err := store.Open(ctx, store.Config{Path: storetest.NewDatabasePath(t)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1198,7 +1199,7 @@ func TestNativeStartupRecoveryTracksActualProviderTurn(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			startedTurn := test.startedTurn
 			ctx := t.Context()
-			db, err := store.Open(ctx, store.Config{Path: filepath.Join(t.TempDir(), "sessions.db")})
+			db, err := store.Open(ctx, store.Config{Path: storetest.NewDatabasePath(t)})
 			if err != nil {
 				t.Fatal(err)
 			}
