@@ -266,3 +266,23 @@ func TestImportBatchCompletesDiscussionPages(t *testing.T) {
 		})
 	}
 }
+
+func TestScheduledRangeRequiresCompleteAncestry(t *testing.T) {
+	for _, test := range []struct {
+		name, body string
+		count      int
+	}{
+		{"complete", `{"status":"ahead","total_commits":2,"commits":[{"sha":"first"},{"sha":"second"}]}`, 2},
+		{"truncated", `{"status":"ahead","total_commits":101,"commits":[{"sha":"first"}]}`, 0},
+		{"diverged", `{"status":"diverged","total_commits":1,"commits":[{"sha":"first"}]}`, 0},
+		{"same head", `{"status":"identical","total_commits":0,"commits":[]}`, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &scriptedRESTClient{t: t, steps: []restStep{{method: http.MethodGet, path: "/repos/example-org/example-project/compare/base...head?per_page=100", response: json.RawMessage(test.body)}}}
+			page, err := NewImporter(client).FetchImportPage(t.Context(), hubserver.GitHubImportRequest{Repository: "example-org/example-project", Stage: "scheduled-range", CompareBase: "base", CompareHead: "head"})
+			if err != nil || len(page.Commits) != test.count {
+				t.Fatalf("commits=%v error=%v", page.Commits, err)
+			}
+		})
+	}
+}

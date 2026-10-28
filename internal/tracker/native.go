@@ -257,10 +257,16 @@ type Mutation struct {
 	FencingToken   FencingToken `json:"fencing_token,string,omitempty"`
 }
 
+type ScheduledFailure struct {
+	PreviousGreenSHA string                 `json:"previous_green_sha"`
+	Evidence         gate.ScheduledEvidence `json:"evidence"`
+}
+
 type CreateIssue struct {
 	Mutation
 	ChallengeToken      string                          `json:"challenge_token,omitempty"`
 	NotDuplicateOf      []int                           `json:"not_duplicate_of,omitempty"`
+	ScheduledFailure    *ScheduledFailure               `json:"scheduled_failure,omitempty"`
 	ScheduledValidation *gate.ScheduledValidationReport `json:"scheduled_validation,omitempty"`
 	GitHubIssueURL      string                          `json:"github_issue_url,omitempty"`
 	Type                string                          `json:"type,omitempty"`

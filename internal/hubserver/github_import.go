@@ -35,6 +35,8 @@ type GitHubImport struct {
 }
 
 type GitHubImportRequest struct {
+	CompareBase       string
+	CompareHead       string
 	Discovery         *tracker.GitHubDiscovery
 	Scheduled         *gate.ScheduledEvidence
 	ScheduledWorkflow string
@@ -58,6 +60,7 @@ type GitHubImportRecord struct {
 }
 
 type GitHubImportPage struct {
+	Commits       []string
 	BatchPage     *tracker.GitHubDiscoveryPage
 	Scheduled     *gate.ScheduledEvidence
 	RetryAt       time.Time

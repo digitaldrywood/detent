@@ -168,6 +168,9 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 	if cloud, ok := destination.(*cloudDestination); ok {
 		series = cloud.releaseSeries(getenv)
 	}
+	if cloud, ok := destination.(*cloudDestination); ok && series == "" {
+		cloud.previousGreen = previousGreenJobs(ctx, gh, getenv, jobs)
+	}
 	for i, j := range jobs {
 		if (j.Name == "Finalize scheduled validation" && j.Conclusion != "failure") || j.Conclusion == "success" {
 			continue
@@ -306,4 +309,58 @@ func fileProblem(ctx context.Context, gh ghCommand, repository string, issues ma
 	}
 	issues[fingerprint] = created.Number
 	return nil
+}
+
+func previousGreenJobs(ctx context.Context, gh ghCommand, getenv func(string) string, jobs []job) map[string]string {
+	result := map[string]string{}
+	wanted := map[string]bool{}
+	for _, j := range jobs {
+		if j.Conclusion != "success" {
+			wanted[j.Name] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return result
+	}
+	var runs struct {
+		Runs []struct {
+			ID             int64  `json:"id"`
+			SHA            string `json:"head_sha"`
+			Event          string `json:"event"`
+			HeadRepository struct {
+				Name string `json:"full_name"`
+			} `json:"head_repository"`
+		} `json:"workflow_runs"`
+	}
+	output, err := gh(ctx, "", "api", "repos/"+getenv("GITHUB_REPOSITORY")+"/actions/workflows/ci.yml/runs?branch=develop&status=completed&per_page=100")
+	if err != nil || json.Unmarshal(output, &runs) != nil {
+		return result
+	}
+	current, err := strconv.ParseInt(getenv("GITHUB_RUN_ID"), 10, 64)
+	if err != nil {
+		return result
+	}
+	for _, run := range runs.Runs {
+		if run.ID >= current || len(run.SHA) != 40 || (run.Event != "schedule" && run.Event != "workflow_dispatch") || !strings.EqualFold(run.HeadRepository.Name, getenv("GITHUB_REPOSITORY")) {
+			continue
+		}
+		var page struct {
+			Total int   `json:"total_count"`
+			Jobs  []job `json:"jobs"`
+		}
+		output, err := gh(ctx, "", "api", fmt.Sprintf("repos/%s/actions/runs/%d/jobs?per_page=100", getenv("GITHUB_REPOSITORY"), run.ID))
+		if err != nil || json.Unmarshal(output, &page) != nil || page.Total != len(page.Jobs) {
+			return result
+		}
+		for _, j := range page.Jobs {
+			if wanted[j.Name] && j.Conclusion == "success" {
+				result[j.Name] = run.SHA
+				delete(wanted, j.Name)
+			}
+		}
+		if len(wanted) == 0 {
+			break
+		}
+	}
+	return result
 }

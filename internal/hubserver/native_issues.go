@@ -1243,3 +1243,20 @@ func (s *Service) changeNativeDependency(c echo.Context) error {
 	}
 	return c.JSONBlob(http.StatusOK, result)
 }
+
+func returnScheduledFailureToWorkflow(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, now time.Time) error {
+	if issue.State != "Done" {
+		return nil
+	}
+	project, err := readNativeProject(ctx, tx, scope)
+	if err != nil {
+		return err
+	}
+	if err := validateNativeWorkflowTransition(project.States, issue.State, "Rework", scope.credential.Scope); err != nil {
+		return err
+	}
+	from := issue.State
+	issue.State = "Rework"
+	_, err = persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: issue.State, Reason: string(gate.ReasonValidatorRework)}, now)
+	return err
+}

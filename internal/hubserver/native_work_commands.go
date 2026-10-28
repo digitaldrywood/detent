@@ -21,6 +21,9 @@ import (
 )
 
 func (s *Service) createNativeIssueCommand(ctx context.Context, scope nativeScope, request tracker.CreateIssue) (json.RawMessage, error) {
+	if request.ScheduledFailure != nil {
+		return s.attributeScheduledFailure(ctx, scope, request)
+	}
 	if request.ScheduledValidation != nil {
 		scope.action = ""
 		return s.recordScheduledValidation(ctx, scope, request)

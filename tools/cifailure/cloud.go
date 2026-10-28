@@ -32,12 +32,13 @@ type cloudIssue struct {
 }
 
 type cloudDestination struct {
-	command      cloudCommand
-	project      string
-	organization string
-	issues       []*cloudIssue
-	evidence     io.Writer
-	scannedAll   bool
+	command       cloudCommand
+	project       string
+	organization  string
+	issues        []*cloudIssue
+	evidence      io.Writer
+	scannedAll    bool
+	previousGreen map[string]string
 }
 
 func reportingDestination(_ context.Context, getenv func(string) string) (issueDestination, error) {
@@ -180,7 +181,22 @@ func occurrenceKey(getenv func(string) string, j job, fingerprint string) string
 
 func occurrenceMarker(key string) string { return "<!-- detent-scheduled-occurrence:" + key + " -->" }
 
-func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body, key string, labels []string, _ bool) error {
+func (c *cloudDestination) file(ctx context.Context, fingerprint, summary, body, key string, labels []string, sourceFailure bool) error {
+	if sourceFailure && stabilizationScope(body) == "" && !slices.Contains(labels, "ci-infrastructure-failure") {
+		evidence := gate.ParseScheduledEvidence(body)
+		if len(evidence) == 1 && c.previousGreen[evidence[0].JobName] != "" {
+			var result struct {
+				Attributed bool `json:"attributed"`
+			}
+			args := map[string]any{"project_id": c.project, "request_id": "scheduled-attribution-" + key, "body": body + "\n\n" + occurrenceMarker(key), "scheduled_failure": tracker.ScheduledFailure{PreviousGreenSHA: c.previousGreen[evidence[0].JobName], Evidence: evidence[0]}}
+			if err := c.publish(ctx, "attribute_scheduled_failure", args, &result); err != nil {
+				return err
+			}
+			if result.Attributed {
+				return nil
+			}
+		}
+	}
 	if err := c.scan(ctx, map[string]any{"fingerprint": fingerprint}); err != nil {
 		return err
 	}
