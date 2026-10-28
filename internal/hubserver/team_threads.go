@@ -363,7 +363,20 @@ ORDER BY x.kind,x.target_id LIMIT 20`)
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read thread references: %w", err)
 	}
-	return out, nil
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close thread references: %w", err)
+	}
+	visible := out[:0]
+	for _, ref := range out {
+		if err := s.authorizeTeamReference(ctx, scope, ref); err != nil {
+			if errors.Is(err, sql.ErrNoRows) || isNativeNotFound(err) {
+				continue
+			}
+			return nil, err
+		}
+		visible = append(visible, ref)
+	}
+	return visible, nil
 }
 
 func (s *Service) threadAuthor(scope nativeScope, ctx context.Context) (principal, name, actingFor, client string) {
@@ -500,9 +513,7 @@ func (s *Service) validateTeamReferences(ctx context.Context, scope nativeScope,
 			}
 			return nil, fmt.Errorf("read thread reference: %w", err)
 		}
-		check := scope
-		check.project = tracker.ProjectID(r.ProjectID)
-		if err := s.requireHostedProject(ctx, s.database.reader, check, false); err != nil {
+		if err := s.authorizeTeamReference(ctx, scope, r); err != nil {
 			return nil, err
 		}
 		if !seen[r.Kind+":"+r.ID] {
@@ -511,6 +522,32 @@ func (s *Service) validateTeamReferences(ctx context.Context, scope nativeScope,
 		}
 	}
 	return out, nil
+}
+
+func (s *Service) authorizeTeamReference(ctx context.Context, scope nativeScope, ref teamReference) error {
+	scope.project = tracker.ProjectID(ref.ProjectID)
+	if err := s.requireHostedProject(ctx, s.database.reader, scope, false); err != nil {
+		return err
+	}
+	var err error
+	switch ref.Kind {
+	case "attachment":
+		_, err = readCloudAttachmentMetadata(ctx, s.database.reader, scope, ref.ID)
+	case "issue":
+		err = requireReporterItem(ctx, s.database.reader, scope, ref.ID)
+	case "change":
+		var item string
+		err = s.database.reader.QueryRowContext(ctx, "SELECT work_item_id FROM change_requests WHERE organization_id=? AND project_id=? AND id=?", scope.organization, scope.project, ref.ID).Scan(&item)
+		if err == nil {
+			err = requireReporterItem(ctx, s.database.reader, scope, item)
+		}
+	default:
+		return threadInvalid()
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return nativeNotFound()
+	}
+	return err
 }
 
 func insertTeamReferences(ctx context.Context, tx *sql.Tx, id string, seq int64, refs []teamReference) error {
