@@ -739,6 +739,7 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 	if err := f.service.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
+	projectTestChangeColumns(t, f.service)
 	drainTestAnalytics(t, f.service)
 	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE analytics_hourly_rollups SET data_json=json_set(data_json,'$.completion_body',?) WHERE organization_id=? AND project_id=? AND metric='attempt'`, strings.Repeat("legacy payload", 2048), scope.organization, scope.project); err != nil {
 		t.Fatal(err)
