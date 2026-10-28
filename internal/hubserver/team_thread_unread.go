@@ -167,14 +167,22 @@ func (s *Service) maintainTeamUnread(ctx context.Context) error {
 }
 
 func (d *database) advanceTeamUnread(ctx context.Context) (bool, int, error) {
-	var id, organization, principal, reporter, after, through string
+	var id, organization, principal, after, through string
 	var requested, scan, partial int64
-	err := d.reader.QueryRowContext(ctx, `SELECT id,organization_id,principal_id,reporter_principal,requested_revision,scan_revision,after_thread,through_thread,partial_count FROM team_thread_unread_summaries WHERE requested_revision>completed_revision ORDER BY turn,id LIMIT 1`).Scan(&id, &organization, &principal, &reporter, &requested, &scan, &after, &through, &partial)
+	err := d.reader.QueryRowContext(ctx, `SELECT id,organization_id,principal_id,requested_revision,scan_revision,after_thread,through_thread,partial_count FROM team_thread_unread_summaries WHERE requested_revision>completed_revision ORDER BY turn,id LIMIT 1`).Scan(&id, &organization, &principal, &requested, &scan, &after, &through, &partial)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, 0, nil
 	}
 	if err != nil {
 		return false, 0, fmt.Errorf("next unread summary: %w", err)
+	}
+	var reporter string
+	err = d.reader.QueryRowContext(ctx, "SELECT reporter_principal FROM team_thread_unread_summaries WHERE id=? AND requested_revision=? AND scan_revision=? AND after_thread=?", id, requested, scan, after).Scan(&reporter)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, 0, nil
+	}
+	if err != nil {
+		return false, 0, fmt.Errorf("read unread authority: %w", err)
 	}
 	originalScan, originalAfter := scan, after
 	if scan == 0 {
