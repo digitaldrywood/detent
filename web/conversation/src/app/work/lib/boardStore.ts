@@ -277,11 +277,7 @@ export class BoardRead {
             metadata.delete(id);
             this.read(false, targets);
           },
-          refresh: () => {
-            this.dirtyProjects.add(id);
-            if (this.controller !== null) { this.pending = true; return; }
-            this.read(false, new Set([id]));
-          },
+          refresh: () => this.refresh(id),
         });
         this.queries.set(id, query);
       }
@@ -510,6 +506,12 @@ export class BoardRead {
     this.read(false);
   };
 
+  private refresh(projectId: string): void {
+    this.dirtyProjects.add(projectId);
+    if (this.controller !== null) { this.pending = true; return; }
+    this.read(false, new Set([projectId]));
+  }
+
   start = (): void => {
     if (this.controller === null) this.reload();
   };
@@ -679,7 +681,7 @@ export class BoardRead {
   confirm(issue: NativeIssue): void {
     if (!this.scope.includes(issue.project_id)) return;
     if (this.view.q.length > 0) {
-      this.reload();
+      this.refresh(issue.project_id);
       return;
     }
     this.entries = this.entries.map((entry) => {
@@ -693,6 +695,7 @@ export class BoardRead {
     if (!this.state.resolved) return;
     this.publish({ ...this.build(this.entries, this.state.asOf!), refreshing: this.state.refreshing });
     this.persist();
+    this.refresh(issue.project_id);
   }
 
   applyItem = (item: WorkItemView): void => {
