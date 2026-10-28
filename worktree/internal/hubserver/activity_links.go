@@ -1,0 +1,114 @@
+package hubserver
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+func readActivityWorkspaces(ctx context.Context, q nativeQueryer, organization string, a operatortool.ActivityAttempt) ([]string, error) {
+	rows, err := q.QueryContext(ctx, `SELECT id FROM workspace_sessions WHERE organization_id=? AND project_id=? AND subject_work_item_id=? AND attempt_id=? AND state IN ('requested','starting','ready','idle') ORDER BY id LIMIT ?`, organization, a.ProjectID, a.WorkItemID, a.AttemptID, changeLegacyReadLimit+1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		if len(ids) == changeLegacyReadLimit {
+			return nil, errChangeColumnsIncomplete
+		}
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+const activityLatestChangeQuery = `SELECT id,activity_created_at FROM change_requests WHERE organization_id=? AND project_id=? AND work_item_id=? AND activity_current_version_id IS NOT NULL ORDER BY activity_created_at DESC,id DESC LIMIT 1`
+
+func readActivityChangeLink(ctx context.Context, q nativeQueryer, organization string, a *operatortool.ActivityAttempt) error {
+	if a.ChangeID == "" {
+		var latest string
+		var at float64
+		err := q.QueryRowContext(ctx, activityLatestChangeQuery, organization, a.ProjectID, a.WorkItemID).Scan(&latest, &at)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		rows, err := q.QueryContext(ctx, `SELECT id,record_json FROM change_requests WHERE organization_id=? AND project_id=? AND work_item_id=? AND activity_current_version_id IS NULL LIMIT ?`, organization, a.ProjectID, a.WorkItemID, activityIssueHistoryLimit+1)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		count := 0
+		for rows.Next() {
+			count++
+			if count > activityIssueHistoryLimit {
+				return errHubOperatorUnavailable
+			}
+			var id, raw string
+			if err := rows.Scan(&id, &raw); err != nil {
+				rows.Close()
+				return err
+			}
+			var c tracker.ChangeRequest
+			if err := json.Unmarshal([]byte(raw), &c); err != nil {
+				rows.Close()
+				return err
+			}
+			day := float64(c.CreatedAt.Round(time.Millisecond).UnixMilli())/86400000 + 2440587.5
+			if latest == "" || day > at || day == at && id > latest {
+				latest, at = id, day
+			}
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return err
+		}
+		a.ChangeID = latest
+	}
+	if a.ChangeID == "" || a.PullRequestURL != "" {
+		return nil
+	}
+	var version sql.NullString
+	var raw string
+	err := q.QueryRowContext(ctx, `SELECT activity_current_version_id,CASE WHEN activity_current_version_id IS NULL THEN record_json ELSE '' END FROM change_requests WHERE id=? AND organization_id=? AND project_id=?`, a.ChangeID, organization, a.ProjectID).Scan(&version, &raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !version.Valid {
+		var c tracker.ChangeRequest
+		if err := json.Unmarshal([]byte(raw), &c); err != nil {
+			return err
+		}
+		version.String = c.CurrentVersion
+	}
+	var url sql.NullString
+	err = q.QueryRowContext(ctx, `SELECT activity_external_url,CASE WHEN activity_external_url IS NULL THEN record_json ELSE '' END FROM change_versions WHERE id=? AND change_id=?`, version.String, a.ChangeID).Scan(&url, &raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if url.Valid {
+		a.PullRequestURL = url.String
+		return nil
+	}
+	var v tracker.ChangeVersion
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		return err
+	}
+	if v.External != nil {
+		a.PullRequestURL = v.External.URL
+	}
+	return nil
+}

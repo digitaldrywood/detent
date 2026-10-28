@@ -1,0 +1,232 @@
+package hubserver
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"regexp"
+	"strings"
+
+	"github.com/digitaldrywood/detent/internal/tracker"
+)
+
+var githubMigrationURL = regexp.MustCompile(`https://github\.com/[^\s<>()\[\]]+`)
+
+func githubMigrationSourceURL(body string) string {
+	var candidate string
+	section := false
+	for line := range strings.SplitSeq(body, "\n") {
+		label := strings.TrimLeft(strings.TrimSpace(line), "#*- ")
+		if strings.HasPrefix(strings.ToLower(label), "migration context") {
+			rest := strings.TrimSpace(label[len("migration context"):])
+			if rest == "" || strings.HasPrefix(rest, ":") || rest == "**" {
+				section = strings.HasPrefix(strings.TrimSpace(line), "#")
+			} else {
+				continue
+			}
+		} else if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			section = false
+			continue
+		} else if !section {
+			continue
+		}
+		for _, raw := range githubMigrationURL.FindAllString(line, -1) {
+			canonical, _, _, err := tracker.ParseGitHubIssueURL(strings.TrimRight(raw, "`*.,;"))
+			if err != nil {
+				continue
+			}
+			if candidate != "" && candidate != canonical {
+				return ""
+			}
+			candidate = canonical
+		}
+	}
+	return candidate
+}
+
+func migrateGitHubIssueReferences(ctx context.Context, tx *sql.Tx, logger *slog.Logger) (err error) {
+	var typed bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pragma_table_info('issues') WHERE name='provenance_provider')`).Scan(&typed); err != nil {
+		return err
+	}
+	fields := "i.provenance_json,NULL,NULL"
+	predicate := "i.provenance_json IS NOT NULL OR i.github_node_id IS NOT NULL"
+	if typed {
+		fields = "CASE WHEN i.provenance_provider IS NULL OR i.provenance_external_id IS NULL THEN i.provenance_json END,i.provenance_provider,i.provenance_external_id"
+		predicate = "i.provenance_provider='github' OR i.provenance_provider IS NULL OR i.github_node_id IS NOT NULL"
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT i.native_id, i.project_id, i.body, i.url,
+COALESCE(i.github_number, 0), COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''),
+COALESCE(i.github_node_id, ''), COALESCE(l.source_url, ''), `+fields+`
+FROM issues i LEFT JOIN repositories r ON r.id = i.repository_id
+LEFT JOIN linked_issue_sources l ON l.work_item_id = i.native_id
+WHERE `+predicate+` ORDER BY i.project_id, i.native_id`)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	type item struct {
+		id, project, body, url, owner, repository, nodeID, linkedURL string
+		number                                                       int
+	}
+	var items []item
+	for rows.Next() {
+		var value item
+		var raw, provider, external sql.NullString
+		if err := rows.Scan(&value.id, &value.project, &value.body, &value.url, &value.number, &value.owner, &value.repository, &value.nodeID, &value.linkedURL, &raw, &provider, &external); err != nil {
+			return err
+		}
+		var provenance *tracker.Provenance
+		if raw.Valid {
+			if err := json.Unmarshal([]byte(raw.String), &provenance); err != nil {
+				return err
+			}
+		}
+		if !provider.Valid {
+			provider.String = provenanceProvider(provenance)
+		}
+		if !external.Valid {
+			external.String = provenanceExternalID(provenance)
+		}
+		if provider.String != "github" && value.nodeID == "" {
+			continue
+		}
+		if external.String != "" {
+			value.nodeID = external.String
+		}
+		refs := nativeSourceReferences(value.nodeID, value.owner, value.repository, value.number, value.linkedURL, value.url, &tracker.Provenance{Provider: "github", ExternalID: value.nodeID})
+		if refs[len(refs)-1].Number == 0 {
+			items = append(items, value)
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	resolved := 0
+	for _, value := range items {
+		urls, err := importedGitHubIssueURLs(ctx, tx, value.project, value.id, value.nodeID)
+		if err != nil {
+			return fmt.Errorf("read GitHub source for %s: %w", value.id, err)
+		}
+		urls = append(urls, value.url, value.linkedURL, githubMigrationSourceURL(value.body))
+		var reference tracker.ExternalReference
+		conflict := false
+		for _, raw := range urls {
+			next := tracker.GitHubIssueSourceReference(value.nodeID, raw)
+			if next.URL == "" {
+				continue
+			}
+			if reference.URL != "" && reference.URL != next.URL {
+				conflict = true
+			}
+			reference = next
+		}
+		if value.number > 0 && reference.Number != value.number {
+			conflict = true
+		}
+		if value.owner != "" && value.repository != "" && !strings.EqualFold(value.owner+"/"+value.repository, reference.Repository) {
+			conflict = true
+		}
+		if reference.URL == "" || conflict {
+			logger.WarnContext(ctx, "GitHub issue reference remains unresolved", "project_id", value.project, "work_item_id", value.id, "node_id", value.nodeID, "conflicting_sources", conflict)
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE issues SET url = ?, github_number = ? WHERE native_id = ?", reference.URL, reference.Number, value.id); err != nil {
+			return fmt.Errorf("backfill GitHub source for %s: %w", value.id, err)
+		}
+		resolved++
+	}
+	logger.InfoContext(ctx, "Backfilled imported GitHub issue references", "resolved", resolved, "unresolved", len(items)-resolved)
+	return nil
+}
+
+func importedGitHubIssueURLs(ctx context.Context, tx *sql.Tx, project, item, nodeID string) (urls []string, err error) {
+	rows, err := tx.QueryContext(ctx, `SELECT r.record_json FROM github_import_records r
+JOIN github_imports g ON g.id = r.import_id
+WHERE g.project_id = ? AND g.work_item_id = ? AND r.kind = 'issue'
+`, project, item)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	var records []string
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		records = append(records, raw)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	history, err := importedNativeIssueVersions(ctx, tx, project, item)
+	if err != nil {
+		return nil, err
+	}
+	records = append(records, history...)
+	for _, raw := range records {
+		var record struct {
+			Body       string             `json:"body"`
+			Provenance tracker.Provenance `json:"provenance"`
+			Data       struct {
+				NodeID  string `json:"node_id"`
+				URL     string `json:"url"`
+				HTMLURL string `json:"html_url"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(raw), &record); err != nil {
+			return nil, err
+		}
+		if record.Provenance.ExternalID != "" && record.Provenance.ExternalID != nodeID || record.Data.NodeID != "" && record.Data.NodeID != nodeID {
+			continue
+		}
+		urls = append(urls, record.Data.HTMLURL, record.Data.URL, githubMigrationSourceURL(record.Body))
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	return urls, nil
+}
+
+func importedNativeIssueVersions(ctx context.Context, tx *sql.Tx, project, item string) ([]string, error) {
+	var encoded bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pragma_table_info('collaboration_versions') WHERE name='encoding')").Scan(&encoded); err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT organization_id, revision, record_json FROM collaboration_versions WHERE project_id=? AND work_item_id=? AND record_id=? ORDER BY revision", project, item, item)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type version struct {
+		organization, raw string
+		revision          int64
+	}
+	var versions []version
+	for rows.Next() {
+		var value version
+		if err := rows.Scan(&value.organization, &value.revision, &value.raw); err != nil {
+			return nil, err
+		}
+		versions = append(versions, value)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	records := make([]string, 0, len(versions))
+	for _, version := range versions {
+		raw := []byte(version.raw)
+		if encoded {
+			raw, err = reconstructNativeVersion(ctx, tx, version.organization, project, item, item, version.revision)
+			if err != nil {
+				return nil, err
+			}
+		}
+		records = append(records, string(raw))
+	}
+	return records, nil
+}

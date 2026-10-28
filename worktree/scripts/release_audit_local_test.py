@@ -1,0 +1,102 @@
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+
+class ReleaseAuditLocalTest(unittest.TestCase):
+    def test_verdict_publication(self):
+        source = Path(__file__).resolve().parent
+        finding = {"severity": "p1", "file": "example.go", "line": 1, "summary": "Confirmed injection"}
+        for name, message, codex_exit, state, suite in (
+            ("pass", {"verdict": "pass", "findings": []}, 0, "success", "success"),
+            ("suite absent", {"verdict": "pass", "findings": []}, 0, "success", "absent"),
+            ("suite superseded", {"verdict": "pass", "findings": []}, 0, "success", "superseded"),
+            ("suite wrong SHA", {"verdict": "pass", "findings": []}, 0, "success", "wrong-sha"),
+            ("fail", {"verdict": "fail", "findings": [finding]}, 0, "failure", "success"),
+            ("inconsistent", {"verdict": "pass", "findings": [finding]}, 0, None, "success"),
+            ("malformed", "not json", 0, None, "success"),
+            ("multiple objects", '{}\n{}', 0, None, "success"),
+            ("provider failure", {"verdict": "pass", "findings": []}, 1, None, "success"),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                repo = root / "repo"
+                repo.mkdir()
+                env = {"PATH": os.environ["PATH"], "HOME": str(root), "TMPDIR": str(root), "GIT_CONFIG_NOSYSTEM": "1"}
+
+                def git(*args):
+                    return subprocess.check_output(["git", *args], cwd=repo, env=env, text=True, stderr=subprocess.DEVNULL).strip()
+
+                git("init")
+                git("config", "user.name", "Example")
+                git("config", "user.email", "example@example.test")
+                (repo / "example.go").write_text("package example\n")
+                git("add", ".")
+                git("commit", "-m", "base")
+                base = git("rev-parse", "HEAD")
+                git("branch", "release/v1.9")
+                git("branch", "release/v1.2")
+                (repo / "example.go").write_text("package example\n\nvar Value = 1\n")
+                git("commit", "-am", "head")
+                head = git("rev-parse", "HEAD")
+                git("branch", "release/v1.10")
+                git("branch", "release/v2.0")
+                git("remote", "add", "origin", str(repo))
+                scripts = repo / "scripts"
+                scripts.mkdir()
+                for filename in ("release-audit-local.sh", "release-audit-prompt.md"):
+                    shutil.copyfile(source / filename, scripts / filename)
+                binaries = root / "bin"
+                binaries.mkdir()
+                calls = root / "calls"
+                (binaries / "gh").write_text(
+                    '#!/usr/bin/env python3\n'
+                    'import json, os, sys\n'
+                    'args = sys.argv[1:]\n'
+                    'with open(os.environ["CALLS"], "a") as f: f.write(json.dumps(args) + "\\n")\n'
+                    'if args[:2] == ["repo", "view"]: print("example-org/example-project")\n'
+                    'elif any("/status?" in a for a in args):\n'
+                    '    statuses = [] if os.environ["SUITE"] == "absent" else [{"context": "scheduled-full-ci", "state": "success", "id": 1}]\n'
+                    '    if os.environ["SUITE"] == "superseded": statuses.append({"context": "scheduled-full-ci", "state": "failure", "id": 2})\n'
+                    '    print(json.dumps([{"sha": "other" if os.environ["SUITE"] == "wrong-sha" else os.environ["HEAD"], "statuses": statuses}]))\n'
+                    'elif any("/workflows/ci.yml/runs?" in a for a in args): print("123")\n'
+                    'elif any("/runs/123/jobs?" in a for a in args): print("456")\n'
+                )
+                (binaries / "codex").write_text(
+                    '#!/usr/bin/env python3\n'
+                    'import os, pathlib, sys\n'
+                    'a = sys.argv[1:]\n'
+                    'assert a[0] == "exec" and a[a.index("--sandbox") + 1] == "read-only"\n'
+                    'assert "-m" not in a and sys.stdin.read() == ""\n'
+                    'assert os.environ["BASE"] in a[-1] and os.environ["HEAD"] in a[-1]\n'
+                    'pathlib.Path(a[a.index("-o") + 1]).write_text(os.environ["MESSAGE"])\n'
+                    'sys.exit(int(os.environ["CODEX_EXIT"]))\n'
+                )
+                for binary in binaries.iterdir():
+                    binary.chmod(0o755)
+                env.update(PATH=str(binaries) + os.pathsep + env["PATH"], CALLS=str(calls), BASE=base, HEAD=head,
+                           MESSAGE=json.dumps(message) if isinstance(message, dict) else message, CODEX_EXIT=str(codex_exit), SUITE=suite)
+                result = subprocess.run(["bash", str(scripts / "release-audit-local.sh"), "release/v1.10"], cwd=repo, env=env, text=True, capture_output=True)
+                self.assertEqual(result.returncode == 0, state == "success", result.stdout + result.stderr)
+                requests = [json.loads(line) for line in calls.read_text().splitlines()]
+                posts = [args for args in requests if "POST" in args]
+                self.assertEqual(len(posts), int(state is not None), result.stdout + result.stderr)
+                if state:
+                    self.assertIn(f"repos/example-org/example-project/statuses/{head}", posts[0])
+                    self.assertIn(f"state={state}", posts[0])
+                    self.assertIn("context=release-security-audit", posts[0])
+                    retained = list((repo / "tmp").glob("release-audit.*/findings.json"))
+                    self.assertEqual(json.loads(retained[0].read_text()), message)
+                reruns = [args for args in requests if args[:2] == ["run", "rerun"]]
+                self.assertEqual(reruns, [["run", "rerun", "123", "--job", "456", "--repo", "example-org/example-project"]] if state == "success" and suite == "success" else [])
+                if state == "success" and suite != "success":
+                    self.assertIn("Waiting for the suite", result.stdout)
+                self.assertEqual(git("worktree", "list", "--porcelain").count("worktree "), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

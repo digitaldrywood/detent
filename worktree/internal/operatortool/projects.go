@@ -1,0 +1,479 @@
+package operatortool
+
+import (
+	"encoding/json"
+	"fmt"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/onboarding"
+	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/projecticon"
+	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/usagecost"
+)
+
+const ProjectIconArgumentBytes = 350 * 1024
+
+func ArgumentByteLimit(name string) int {
+	if name == "set_project_icon" || name == "set_organization_logo" {
+		return ProjectIconArgumentBytes
+	}
+	return MaxArgumentBytes
+}
+
+const (
+	GetSpritePool                 = "get_sprite_pool"
+	UpdateSpritePool              = "update_sprite_pool"
+	GetProjectSpriteAllocation    = "get_project_sprite_allocation"
+	UpdateProjectSpriteAllocation = "update_project_sprite_allocation"
+)
+
+// ProjectRequest keeps business retry identity separate from protocol IDs and
+// authority. Input is a concrete application input, never an operation proxy.
+type ProjectRequest[T any] struct {
+	ProjectID string `json:"project_id"`
+	RequestID string `json:"request_id"`
+	Input     T      `json:"input"`
+}
+type ProjectReadRequest struct {
+	ProjectID        string `json:"project_id,omitempty"`
+	ImportID         string `json:"import_id,omitempty"`
+	RepositoryPolicy bool   `json:"repository_policy,omitempty"`
+	Limit            int    `json:"limit,omitempty"`
+	After            string `json:"after,omitempty"`
+}
+type ProjectCreateInput struct {
+	Name                string                `json:"name"`
+	States              []tracker.NativeState `json:"states"`
+	RequireDependencies *bool                 `json:"require_dependencies,omitempty"`
+}
+type HostedProjectCreateInput struct {
+	States      *[]tracker.NativeState `json:"states,omitempty"`
+	Name        string                 `json:"name"`
+	GrantAccess bool                   `json:"grant_access"`
+}
+type OnboardingInput struct {
+	Progress onboarding.Progress `json:"progress"`
+}
+type SpriteUsageInput struct {
+	Observations []usagecost.Observation `json:"observations"`
+}
+type SpritePoolInput struct {
+	ShareIdleCapacity *bool             `json:"share_idle_capacity,omitempty"`
+	Placement         *policy.Placement `json:"placement,omitempty"`
+	Bootstrap         *string           `json:"bootstrap,omitempty"`
+	IsolationTier     *string           `json:"isolation_tier,omitempty"`
+	MinRunners        int               `json:"min_runners"`
+	MaxRunners        int               `json:"max_runners"`
+	IdleSeconds       int               `json:"idle_seconds,omitempty"`
+	Revision          int64             `json:"revision"`
+}
+type SpriteAllocationInput struct {
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+	DesiredCount     int              `json:"desired_count"`
+}
+type RenameProjectInput struct {
+	Name             string           `json:"name"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+}
+type RenameProjectArguments struct {
+	OrganizationID   string           `json:"organization_id"`
+	ProjectID        string           `json:"project_id"`
+	Name             string           `json:"name"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+	RequestID        string           `json:"request_id"`
+}
+type SetOrganizationLogoInput struct {
+	Content          []byte           `json:"content_base64,omitempty"`
+	Remove           bool             `json:"remove,omitempty"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+}
+type SetOrganizationLogoArguments struct {
+	OrganizationID   string           `json:"organization_id"`
+	Content          []byte           `json:"content_base64,omitempty"`
+	Remove           bool             `json:"remove,omitempty"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+	RequestID        string           `json:"request_id"`
+}
+type SetProjectIconInput struct {
+	Icon             projecticon.Icon `json:"icon"`
+	Content          []byte           `json:"content_base64,omitempty"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+}
+type SetProjectIconArguments struct {
+	OrganizationID   string           `json:"organization_id"`
+	ProjectID        string           `json:"project_id"`
+	Icon             projecticon.Icon `json:"icon"`
+	Content          []byte           `json:"content_base64,omitempty"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+	RequestID        string           `json:"request_id"`
+}
+type IntegrationInput struct {
+	DuplicateChallenge *bool                  `json:"duplicate_challenge,omitempty"`
+	WorkflowMarkdown   *string                `json:"workflow_markdown,omitempty"`
+	States             *[]tracker.NativeState `json:"states,omitempty"`
+	ExpectedRevision   tracker.Revision       `json:"expected_revision,string"`
+	Intake             string                 `json:"intake,omitempty"`
+	Projection         string                 `json:"projection"`
+	RepositoryEnabled  bool                   `json:"repository_enabled"`
+}
+type RepositoryInput struct {
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+	Repository       string           `json:"repository"`
+	Source           string           `json:"source,omitempty"`
+}
+type ImportStartInput struct {
+	IssueNumber      int              `json:"issue_number"`
+	Restart          bool             `json:"restart"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+}
+type ImportAdvanceInput struct {
+	ImportID         string           `json:"import_id"`
+	ExpectedRevision tracker.Revision `json:"expected_revision,string"`
+}
+type GitHubBatchInput struct {
+	LabelLanes    map[string]string `json:"label_lanes,omitempty"`
+	Revision      int64             `json:"revision"`
+	Action        string            `json:"action"`
+	RunnerID      string            `json:"runner_id"`
+	Labels        []string          `json:"labels,omitempty"`
+	IncludeClosed bool              `json:"include_closed"`
+	Numbers       []int             `json:"numbers,omitempty"`
+	Destination   string            `json:"destination"`
+	AllowDispatch bool              `json:"allow_dispatch"`
+}
+type CutoverInput struct {
+	ClosedState    string                `json:"closed_state"`
+	DryRun         bool                  `json:"dry_run"`
+	Checkpoint     string                `json:"checkpoint"`
+	AcceptPartial  bool                  `json:"accept_partial"`
+	CloseSource    bool                  `json:"close_source"`
+	DestinationURL string                `json:"destination_url"`
+	States         []tracker.NativeState `json:"states"`
+	InitialState   string                `json:"initial_state"`
+}
+
+type PolicyApprovalInput struct {
+	ExpectedID       string            `json:"expected_policy_id"`
+	ObservedPolicyID string            `json:"observed_policy_id,omitempty"`
+	Policy           policy.Descriptor `json:"policy,omitempty,omitzero"`
+	RepositoryPolicy bool              `json:"repository_policy,omitempty"`
+}
+
+type PolicyRevokeInput struct {
+	RepositoryPolicy bool   `json:"repository_policy,omitempty"`
+	ExpectedID       string `json:"expected_policy_id"`
+}
+type SummaryInput struct {
+	ItemID string `json:"item_id"`
+	Body   string `json:"body"`
+}
+
+// ProjectCatalog includes only named, typed operations. Browser setup tools
+// return navigation and requirements without accepting credentials or file paths.
+func ProjectCatalog() []Definition {
+	reads := []string{"list_projects", "get_native_project", "get_onboarding", "get_project_integration", "get_cutover_receipt", "get_git_hub_import", "list_git_hub_import_records", "get_git_hub_batch", "get_project_policy", "project_secret_metadata", "repository_freshness", "project_settings", "project_setup", "demo_setup_scenarios", GetSpritePool, GetProjectSpriteAllocation}
+	out := make([]Definition, 0, len(reads)+14)
+	for _, name := range reads {
+		schema := projectSchema(reflect.TypeFor[ProjectReadRequest]())
+		required := []string{"project_id"}
+		if name == "list_projects" || name == "project_setup" || name == "demo_setup_scenarios" || name == GetSpritePool {
+			required = []string{}
+		}
+		if name == "get_git_hub_import" || name == "list_git_hub_import_records" {
+			required = append(required, "import_id")
+		}
+		schema["required"] = required
+		raw, err := json.Marshal(schema)
+		if err != nil {
+			panic(err)
+		}
+		description := "Read authorized project application data: " + strings.ReplaceAll(name, "_", " ") + ". Setup returns the existing browser flow and requirements."
+		switch name {
+		case GetSpritePool:
+			description = "Read the organization Sprite pool shown in Settings: settings and revision, members with status, placement decision and runner setup. Pass project_id to read it through a project grant; omit it for an organization-wide read."
+		case GetProjectSpriteAllocation:
+			description = "Read the project's Sprite allocation: desired and allocated member counts, shortfall, provisioning failures and revision."
+		}
+		if name == "get_project_policy" {
+			description = "Read the complete approved policy and approval provenance. History contains compact apply identities, definition digests and provenance, bounded by rows and serialized bytes; pass history_next as after for the next page."
+		}
+		out = append(out, Definition{Name: name, Description: description, InputSchema: raw, Annotations: Annotations{ReadOnly: true, Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}})
+	}
+	out = append(out,
+		Definition{Name: "monthly_usage_costs", Description: "Read UTC monthly infrastructure cost totals and coverage. Project totals are a breakdown of organization totals, never an additional charge.", InputSchema: json.RawMessage(`{"type":"object","properties":{"project_id":{"type":"string","maxLength":256},"month":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}$"},"scope":{"type":"string","enum":["project","organization"]}},"additionalProperties":false}`), Annotations: Annotations{ReadOnly: true, Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}},
+		projectWrite[ProjectCreateInput]("create_native_project", false, false),
+		projectWrite[HostedProjectCreateInput]("create_hosted_project", true, false),
+		projectWrite[OnboardingInput]("save_onboarding", false, false),
+		projectWrite[IntegrationInput]("update_project_integration", true, true),
+		renameProjectDefinition(),
+		setProjectIconDefinition(),
+		setOrganizationLogoDefinition(),
+		projectWrite[RepositoryInput]("bind_native_repository", true, true),
+		projectWrite[ImportStartInput]("start_git_hub_import", true, true),
+		projectWrite[ImportAdvanceInput]("advance_git_hub_import", false, true),
+		projectWrite[GitHubBatchInput]("command_git_hub_batch", true, true),
+		projectWrite[CutoverInput]("cutover_project", true, true),
+		projectWrite[PolicyApprovalInput]("approve_project_policy", true, false),
+		projectWrite[PolicyRevokeInput]("revoke_project_policy", true, false),
+		projectWrite[SummaryInput]("project_native_summary", true, true),
+		projectWrite[struct{}]("remove_project_secret", true, false),
+		projectWrite[SpriteUsageInput]("import_sprite_usage", false, false),
+		projectWrite[SpritePoolInput](UpdateSpritePool, true, true),
+		projectWrite[SpriteAllocationInput](UpdateProjectSpriteAllocation, true, true),
+	)
+	return append(out, ModelSelectionCatalog()...)
+}
+func projectWrite[T any](name string, destructive, openWorld bool) Definition {
+	schema := projectSchema(reflect.TypeFor[ProjectRequest[T]]())
+	schema["required"] = []string{"project_id", "request_id", "input"}
+	if name == "approve_project_policy" {
+		input := schemaObject(schemaObject(schema["properties"])["input"])
+		input["oneOf"] = []map[string]any{{"required": []string{"policy"}}, {"required": []string{"observed_policy_id"}}}
+		descriptor := schemaObject(schemaObject(input["properties"])["policy"])
+		descriptor["description"] = "Alternatively to observed_policy_id, the complete selected_policy object returned by local_project_configuration, unchanged. Preserve every returned field, including authored, profile, configuration, workflow and gates.human_review when present; policy_id covers the descriptor's identity inputs. Do not reconstruct a subset or recompute policy_id. Authorized approval executes directly."
+		schemaObject(schemaObject(input["properties"])["observed_policy_id"])["description"] = "Approve the stored observed_policies[].policy.policy_id returned by get_onboarding without echoing the descriptor or authored files. Supply expected_policy_id for the current approval and omit policy. Current administrator authority is required."
+	}
+	if name == "import_sprite_usage" {
+		input := schemaObject(schemaObject(schema["properties"])["input"])
+		observations := schemaObject(schemaObject(input["properties"])["observations"])
+		observations["minItems"], observations["maxItems"] = 1, 128
+		properties := schemaObject(schemaObject(observations["items"])["properties"])
+		properties["quantity"] = map[string]any{"type": []string{"number", "null"}, "minimum": 0}
+		properties["amount_micros"] = map[string]any{"type": []string{"integer", "null"}, "minimum": -1e15, "maximum": 1e15}
+		properties["unit_price_micros"] = map[string]any{"type": []string{"integer", "null"}, "minimum": 0, "maximum": 1e15}
+		for _, field := range []string{"rate_source", "evidence_source", "resource_name"} {
+			properties[field] = map[string]any{"type": "string", "maxLength": 512}
+		}
+	}
+	if name == "create_native_project" || name == "create_hosted_project" || name == UpdateSpritePool {
+		schema["required"] = []string{"request_id", "input"}
+	}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		panic(err)
+	}
+	description := "Use the shared dashboard application command: " + strings.ReplaceAll(name, "_", " ") + ". Current scoped authority is required; request_id is the business retry key."
+	switch name {
+	case UpdateSpritePool:
+		description += " Saves the organization Sprite pool settings from Settings at the read revision; the pool then creates or retires Sprites toward min_runners and max_runners. Owner or admin authority is required; project_id is optional."
+	case UpdateProjectSpriteAllocation:
+		description += " Sets the project's desired Sprite count at expected_revision; the organization pool must be configured first. Owner or admin authority is required."
+	}
+	return Definition{Name: name, Description: description, InputSchema: raw, Annotations: Annotations{Destructive: destructive, Idempotent: true, OpenWorld: openWorld}, Meta: ToolMetadata{Toolset: "projects"}}
+}
+
+func projectSchema(t reflect.Type) map[string]any {
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == reflect.TypeFor[[]byte]() {
+		return map[string]any{"type": "string", "contentEncoding": "base64", "maxLength": 349528}
+	}
+	if t == reflect.TypeFor[json.RawMessage]() {
+		return map[string]any{}
+	}
+	if t == reflect.TypeFor[time.Time]() {
+		return map[string]any{"type": "string", "format": "date-time", "maxLength": 64}
+	}
+	switch t.Kind() {
+	case reflect.Struct:
+		props := map[string]any{}
+		required := []string{}
+		for i := range t.NumField() {
+			f := t.Field(i)
+			tag := strings.Split(f.Tag.Get("json"), ",")
+			if tag[0] == "-" || tag[0] == "" {
+				continue
+			}
+			child := projectSchema(f.Type)
+			if len(tag) > 1 && tag[1] == "string" {
+				child = map[string]any{"type": "string", "maxLength": 20, "pattern": "^[0-9]+$"}
+			}
+			if f.Type.Kind() == reflect.String {
+				child["maxLength"] = projectStringLimit(tag[0])
+			}
+			if f.Type.Kind() == reflect.Map && f.Type.Elem().Kind() == reflect.String {
+				child["additionalProperties"] = map[string]any{"type": "string", "maxLength": projectStringLimit(tag[0])}
+			}
+			if tag[0] == "limit" {
+				child["minimum"], child["maximum"] = 1, 200
+			}
+			props[tag[0]] = child
+			if !strings.Contains(f.Tag.Get("json"), ",omitempty") {
+				required = append(required, tag[0])
+			}
+		}
+		return map[string]any{"type": "object", "properties": props, "required": required, "additionalProperties": false}
+	case reflect.Map:
+		return map[string]any{"type": "object", "maxProperties": 200, "propertyNames": map[string]any{"maxLength": 256}, "additionalProperties": projectSchema(t.Elem())}
+	case reflect.Slice:
+		return map[string]any{"type": "array", "maxItems": 200, "items": projectSchema(t.Elem())}
+	case reflect.Bool:
+		return map[string]any{"type": "boolean"}
+	case reflect.Int, reflect.Int64:
+		return map[string]any{"type": "integer", "minimum": 0, "maximum": 2147483647}
+	case reflect.Float64:
+		return map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1e9}
+	default:
+		return map[string]any{"type": "string", "maxLength": 256}
+	}
+}
+
+// DecodeProjectArguments applies bounds before application services or approval
+// are reached, including recursive fields that JSON schema cannot enforce alone.
+func DecodeProjectArguments(raw json.RawMessage, target any) error {
+	limit := MaxArgumentBytes
+	switch target.(type) {
+	case *SetProjectIconArguments, *ProjectRequest[SetProjectIconInput], *SetOrganizationLogoArguments, *ProjectRequest[SetOrganizationLogoInput]:
+		limit = ProjectIconArgumentBytes
+	}
+	if _, ok := target.(*ProjectRequest[IntegrationInput]); ok {
+		limit += 6 * 128 * 1024
+	}
+	if err := decodeArgumentsWithLimit(raw, target, limit); err != nil {
+		return err
+	}
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return invalidArgument("arguments", "must be valid JSON")
+	}
+	var bounded func(any, string, reflect.Type) error
+	bounded = func(v any, key string, t reflect.Type) error {
+		if t.Kind() == reflect.Pointer {
+			if v == nil && (key == "quantity" || key == "amount_micros" || key == "unit_price_micros") {
+				return nil
+			}
+			t = t.Elem()
+		}
+		if t == reflect.TypeFor[[]byte]() {
+			text, ok := v.(string)
+			if !ok || len(text) > 349528 {
+				return invalidArgument(key, "must be base64 content of at most 256 KiB")
+			}
+			return nil
+		}
+		if t == reflect.TypeFor[json.RawMessage]() {
+			return nil
+		}
+		switch x := v.(type) {
+		case string:
+			maximum := projectStringLimit(key)
+			if len(x) > maximum {
+				return invalidArgument(key, fmt.Sprintf("must not exceed %d bytes", maximum))
+			}
+		case []any:
+			if len(x) > 200 {
+				return invalidArgument(key, "must contain at most 200 items")
+			}
+			for _, item := range x {
+				if err := bounded(item, key, t.Elem()); err != nil {
+					return err
+				}
+			}
+		case map[string]any:
+			if t.Kind() == reflect.Map {
+				if len(x) > 200 {
+					return invalidArgument(key, "must contain at most 200 properties")
+				}
+				for name, item := range x {
+					if len(name) > 256 {
+						return invalidArgument(key, "property names must not exceed 256 bytes")
+					}
+					if err := bounded(item, key, t.Elem()); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			for i := range t.NumField() {
+				field := t.Field(i)
+				name := strings.Split(field.Tag.Get("json"), ",")[0]
+				if item, present := x[name]; present {
+					if err := bounded(item, name, field.Type); err != nil {
+						return err
+					}
+				}
+			}
+		case float64:
+			minimum, maximum := float64(0), float64(2147483647)
+			switch key {
+			case "amount_micros":
+				minimum, maximum = -1e15, 1e15
+			case "unit_price_micros", "quantity":
+				maximum = 1e15
+			case "limit":
+				minimum, maximum = 1, 200
+			}
+			if x < minimum || x > maximum {
+				return invalidArgument(key, fmt.Sprintf("must be between %g and %g", minimum, maximum))
+			}
+		case nil:
+			return invalidArgument(key, "must not be null")
+		}
+		return nil
+	}
+	return bounded(value, "arguments", reflect.TypeOf(target))
+}
+
+func projectStringLimit(key string) int {
+	switch key {
+	case "workflow_markdown":
+		return 128 * 1024
+	case "rate_source", "evidence_source", "resource_name":
+		return 512
+	case "prompt", "shared_prompt", "agents_prompt", "files", "bootstrap":
+		return MaxArgumentBytes
+	case "source":
+		return 1024
+	case "request_id":
+		return 128
+	case "body":
+		return 32768
+	case "reason":
+		return 1120
+	case "destination_url":
+		return 2048
+	}
+	return 256
+}
+
+func schemaObject(value any) map[string]any {
+	object, ok := value.(map[string]any)
+	if !ok {
+		panic("generated schema is not an object")
+	}
+	return object
+}
+
+func renameProjectDefinition() Definition {
+	schema := projectSchema(reflect.TypeFor[RenameProjectArguments]())
+	schema["required"] = []string{"organization_id", "project_id", "name", "expected_revision", "request_id"}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		panic(err)
+	}
+	return Definition{Name: "rename_project", Description: "Rename a native project display name with project-admin authority and an expected revision. The slug is preserved. request_id is the idempotency key.", InputSchema: raw, Annotations: Annotations{Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}}
+}
+
+func setProjectIconDefinition() Definition {
+	schema := projectSchema(reflect.TypeFor[SetProjectIconArguments]())
+	schema["required"] = []string{"organization_id", "project_id", "icon", "expected_revision", "request_id"}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		panic(err)
+	}
+	return Definition{Name: "set_project_icon", Description: "Choose a project icon (automatic, Lucide name and color, single emoji, or PNG/JPEG/WebP content_base64). Requires project-admin authority and the current integration expected_revision. Uploaded images are validated and re-encoded. request_id is the idempotency key.", InputSchema: raw, Annotations: Annotations{Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}}
+}
+
+func setOrganizationLogoDefinition() Definition {
+	schema := projectSchema(reflect.TypeFor[SetOrganizationLogoArguments]())
+	schema["required"] = []string{"organization_id", "expected_revision", "request_id"}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		panic(err)
+	}
+	return Definition{Name: "set_organization_logo", Description: "Upload a validated PNG/JPEG/WebP organization logo or remove it. Requires organization manage authority and the current logo expected_revision. request_id is the idempotency key.", InputSchema: raw, Annotations: Annotations{Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}}
+}
