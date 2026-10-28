@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -45,6 +46,18 @@ func (d *database) populateClaimFact(ctx context.Context) (bool, error) {
 	write, err := prepareLegacyAdmissionFact(ctx, d.reader)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, err
+	}
+	if write == nil {
+		var pending bool
+		if err := d.reader.QueryRowContext(ctx, `SELECT
+EXISTS(SELECT 1 FROM change_requests WHERE claim_version_id IS NULL OR claim_head_sha IS NULL)
+OR EXISTS(SELECT 1 FROM native_attempts WHERE checkpoint_preserves_source IS NULL)
+OR EXISTS(SELECT 1 FROM change_evidence WHERE kind='review' AND claim_review_current IS NULL)`).Scan(&pending); err != nil {
+			return false, fmt.Errorf("read pending claim facts: %w", err)
+		}
+		if !pending {
+			return false, nil
+		}
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {

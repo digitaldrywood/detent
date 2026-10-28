@@ -15,13 +15,16 @@ const (
 	commandReceiptRetention  = 24 * time.Hour
 	commandReceiptPruneBatch = 5000
 	hostedAuditRetention     = 30 * 24 * time.Hour
+	nativeCleanupInterval    = time.Hour
 )
 
-func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) error {
-	stages := []struct {
-		name string
-		run  func(context.Context) error
-	}{
+type nativeRetentionStage struct {
+	name string
+	run  func(context.Context) error
+}
+
+func (s *Service) maintainNativeBackfills(ctx context.Context) error {
+	return s.runNativeRetentionStages(ctx, []nativeRetentionStage{
 		{"populate conversation query metadata", s.convertConversationQueryMetadata},
 		{"populate claim facts", func(ctx context.Context) error {
 			return s.database.populateClaimFacts(s.contentContext(ctx))
@@ -32,15 +35,29 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 		{"populate archive facts", s.database.populateArchiveFacts},
 		{"populate hosted import fields", s.database.populateHostedImportFields},
 		{"populate time indexes", s.database.populateTimeIndexes},
+	})
+}
+
+func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) error {
+	backfillErr := s.maintainNativeBackfills(ctx)
+	cleanupErr := s.runNativeRetentionStages(ctx, []nativeRetentionStage{
 		{"expire native records", func(ctx context.Context) error { return s.expireNativeRecords(ctx, now) }},
 		{"archive closed issues", func(ctx context.Context) error { return s.archiveClosedNativeIssues(ctx, now) }},
 		{"compact retained events", func(ctx context.Context) error { return s.compactRetainedEvents(ctx, now) }},
 		{"compact analytics samples", func(ctx context.Context) error { return s.database.compactAnalyticsSamples(ctx, now) }},
 		{"reclaim storage", s.database.reclaimStorage},
+	})
+	return errors.Join(backfillErr, cleanupErr)
+}
+
+func (s *Service) runNativeRetentionStages(ctx context.Context, stages []nativeRetentionStage) error {
+	withTimeout := s.config.retentionTimeout
+	if withTimeout == nil {
+		withTimeout = context.WithTimeout
 	}
 	var failures []error
 	for _, stage := range stages {
-		stageCtx, cancel := context.WithTimeout(ctx, backgroundStorageBudget)
+		stageCtx, cancel := withTimeout(ctx, backgroundStorageBudget)
 		err := stage.run(stageCtx)
 		cancel()
 		if err != nil {

@@ -93,6 +93,7 @@ type Config struct {
 	validateDatabaseFilesystem func(string) error
 	listen                     func(context.Context, string, string) (net.Listener, error)
 	now                        func() time.Time
+	retentionTimeout           func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	jitter                     func() float64
 	newLeaseID                 func() string
 	newTokenID                 func() string

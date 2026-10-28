@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTenantStorageReclaim(t *testing.T) {
@@ -24,7 +25,14 @@ func TestTenantStorageReclaim(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			s := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")})
+			now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+			s := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
+			if err := s.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.stopGitHubReconciliation(); err != nil {
+				t.Fatal(err)
+			}
 			d := s.database
 			var logs bytes.Buffer
 			d.logger = slog.New(slog.NewJSONHandler(&logs, nil))
@@ -73,9 +81,8 @@ INSERT INTO reclaim_payload SELECT id,zeroblob(4096) FROM ids`, test.rows); err 
 			if test.rows > 8 && before <= storageReclaimThreshold+storageReclaimPages {
 				t.Fatalf("fixture has only %d free pages", before)
 			}
-			if err := s.maintainNativeRetention(t.Context(), s.config.now()); err != nil {
-				t.Fatal(err)
-			}
+			now = now.Add(time.Hour)
+			s.maintainGitHubWebhooks(t.Context())
 			if err := d.reader.QueryRowContext(t.Context(), "PRAGMA freelist_count").Scan(&after); err != nil {
 				t.Fatal(err)
 			}

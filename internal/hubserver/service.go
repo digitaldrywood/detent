@@ -77,6 +77,7 @@ type Service struct {
 	boardRefresh            chan struct{}
 	boardRefreshCursor      string
 	boardRetentionScope     nativeScope
+	lastNativeCleanup       time.Time
 	githubBatchCursor       tracker.ProjectID
 	workerStopOnce          sync.Once
 	reconcileCancel         context.CancelFunc
@@ -546,8 +547,15 @@ func (s *Service) maintainGitHubWebhooks(ctx context.Context) {
 		s.config.Logger.Warn("purge GitHub webhook payloads", "error", err)
 	}
 	s.maintainSpritePools(ctx)
-	if err := s.maintainNativeRetention(ctx, now); err != nil && !errors.Is(err, context.Canceled) {
-		s.config.Logger.Warn("maintain native retention", "error", err)
+	var retentionErr error
+	if s.lastNativeCleanup.IsZero() || now.Sub(s.lastNativeCleanup) >= nativeCleanupInterval {
+		s.lastNativeCleanup = now
+		retentionErr = s.maintainNativeRetention(ctx, now)
+	} else {
+		retentionErr = s.maintainNativeBackfills(ctx)
+	}
+	if retentionErr != nil && !errors.Is(retentionErr, context.Canceled) {
+		s.config.Logger.Warn("maintain native retention", "error", retentionErr)
 	}
 }
 

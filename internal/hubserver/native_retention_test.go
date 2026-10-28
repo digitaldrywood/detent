@@ -23,7 +23,7 @@ import (
 
 func TestNativeRetention(t *testing.T) {
 	t.Run("claim reviews retain each reviewer across historical backfill", func(t *testing.T) {
-		f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}))
+		f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), retentionTimeout: frozenRetentionTimeout}))
 		if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 			t.Fatal(err)
 		}
@@ -123,7 +123,7 @@ func TestNativeRetention(t *testing.T) {
 	})
 
 	t.Run("claim facts resume from durable unknown rows", func(t *testing.T) {
-		f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}))
+		f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), retentionTimeout: frozenRetentionTimeout}))
 		if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 			t.Fatal(err)
 		}
@@ -211,7 +211,7 @@ func TestNativeRetention(t *testing.T) {
 	})
 	t.Run("command receipts and storage accounting", func(t *testing.T) {
 		now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
-		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, retentionTimeout: frozenRetentionTimeout})
 		issue := f.create(t, "receipts")
 		var actor string
 		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id FROM api_tokens LIMIT 1").Scan(&actor); err != nil {
@@ -278,7 +278,7 @@ func TestNativeRetention(t *testing.T) {
 	})
 	t.Run("duplicate challenges", func(t *testing.T) {
 		now := time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC)
-		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, retentionTimeout: frozenRetentionTimeout})
 		other := newNativeFixture(t, f.service, f.project.OrganizationID, "other-challenges")
 		for _, project := range []tracker.NativeProject{f.project, other.project} {
 			for _, test := range []struct {
@@ -315,7 +315,7 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 	})
 	t.Run("hourly host history", func(t *testing.T) {
 		now := time.Now().UTC().Truncate(time.Hour).Add(30 * time.Minute)
-		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+		f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, retentionTimeout: frozenRetentionTimeout})
 		r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
 		r.enroll(t)
 		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
@@ -393,7 +393,7 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			now := time.Now().UTC()
-			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, retentionTimeout: frozenRetentionTimeout})
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 			issue := f.create(t, "retention")
 			if test.lease {
