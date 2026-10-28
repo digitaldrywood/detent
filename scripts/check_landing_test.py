@@ -13,10 +13,13 @@ TOOL = "#!" + sys.executable + r'''
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 
 name = Path(sys.argv[0]).name
 args = sys.argv[1:]
+if name == "python3" and args[:1] == ["-"]:
+    os.execv(sys.executable, [sys.executable, *args])
 if name == "go" and args[:1] == ["env"]:
     print("fixture")
     sys.exit(0)
@@ -24,6 +27,14 @@ with Path(".git/trace").open("a") as stream:
     stream.write(json.dumps({"tool": name, "args": args, "budget": os.environ.get("GOMAXPROCS"), "token": "DETENT_API_TOKEN" in os.environ}) + "\n")
 if (name == "go" and args[:1] == [os.environ.get("FAIL_STAGE")]) or (name == "golangci-lint" and os.environ.get("FAIL_STAGE") == "lint"):
     sys.exit(17)
+if name == "python3" and os.environ.get("FAIL_STAGE") == "nilaway":
+    sys.exit(17)
+if name == "go" and args[:1] == ["test"] and os.environ.get("FAIL_HUB_PATTERN") in args:
+    sys.exit(17)
+if name == "make" and any(target in args for target in ("test-landing-hub", "nilaway-changed")):
+    sys.exit(subprocess.run([os.environ["REAL_MAKE"], *args]).returncode)
+if name == "go" and args[:1] == ["test"] and os.environ.get("RUN_GO_TESTS"):
+    sys.exit(subprocess.run([os.environ["REAL_GO"], *args]).returncode)
 if name == "go" and args[:1] == ["list"]:
     for directory, imports, test_imports in (
         ("lib", [], []),
@@ -31,6 +42,7 @@ if name == "go" and args[:1] == ["list"]:
         ("integration", [], ["example.test/app"]),
         ("unrelated", [], []),
         ("removed", [], []),
+        ("internal/hubserver", ["example.test/lib"], []),
     ):
         if not list(Path(directory).glob("*.go")):
             continue
@@ -39,7 +51,7 @@ if name == "go" and args[:1] == ["list"]:
 
 
 @unittest.skipIf(os.name == "nt", "landing gate requires a POSIX shell")
-class ShortLandingGateTest(unittest.TestCase):
+class LandingGateTest(unittest.TestCase):
     def setUp(self):
         scratch = next((os.environ[key] for key in ("TMPDIR", "TMP", "TEMP") if os.environ.get(key)), None)
         self.assertIsNotNone(scratch, "a supplied scratch directory is required")
@@ -53,6 +65,8 @@ class ShortLandingGateTest(unittest.TestCase):
         (self.root / "scripts").mkdir()
         for name in ("check-landing.sh", "check-evidence.sh"):
             shutil.copy2(ROOT / "scripts" / name, self.root / "scripts" / name)
+        for name in ("Makefile", ".golangci-version"):
+            shutil.copy2(ROOT / name, self.root / name)
         (self.root / "go.mod").write_text("module example.test\n\ngo 1.26\n")
         for directory in ("lib", "app", "integration", "unrelated", "removed"):
             (self.root / directory).mkdir()
@@ -65,11 +79,11 @@ class ShortLandingGateTest(unittest.TestCase):
         self.git("update-ref", "refs/remotes/origin/develop", self.base)
         binaries = self.root / ".git/bin"
         binaries.mkdir()
-        for name in ("go", "make", "golangci-lint"):
+        for name in ("go", "make", "golangci-lint", "python3"):
             tool = binaries / name
             tool.write_text(TOOL)
             tool.chmod(0o755)
-        self.env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"], DETENT_API_TOKEN="fixture-token")
+        self.env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"], DETENT_API_TOKEN="fixture-token", REAL_GO=shutil.which("go"), REAL_MAKE=shutil.which("make"))
         self.linter = str(binaries / "golangci-lint")
 
     def git(self, *args):
@@ -87,14 +101,36 @@ class ShortLandingGateTest(unittest.TestCase):
         path = self.root / ".git/trace"
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
+    def test_non_short_failure_blocks_only_a_directly_changed_package(self):
+        for directory, expected in (("lib", 1), ("app", 0)):
+            with self.subTest(directory=directory):
+                target = self.root / directory / "failure_test.go"
+                target.write_text(
+                    f'package {directory}\nimport "testing"\n'
+                    'func TestFullFailure(t *testing.T) {\n'
+                    'if testing.Short() { t.Skip("full suite") }\n'
+                    't.Fatal("non-short regression executed")\n}\n'
+                )
+                self.commit()
+                self.git("update-ref", "refs/remotes/origin/develop", self.git("rev-parse", "HEAD").strip())
+                (self.root / "lib/source.go").write_text(f'package lib\nconst Value = "{directory}"\n')
+                self.commit()
+                self.env["RUN_GO_TESTS"] = "1"
+                result = self.run_gate()
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                if expected:
+                    self.assertIn("non-short regression executed", result.stdout)
+                target.unlink()
+
     def test_changed_package_includes_transitive_and_test_dependents(self):
         cases = (
-            ("test only", ("lib/source_test.go",), ["./lib"], "1"),
-            ("production", ("lib/source.go",), ["./app", "./integration", "./lib"], "4"),
-            ("mixed", ("lib/source.go", "lib/source_test.go"), ["./app", "./integration", "./lib"], "7"),
-            ("separate test and production", ("lib/source_test.go", "unrelated/source.go"), ["./lib", "./unrelated"], "2"),
+            ("test only", ("lib/source_test.go",), ["./lib"], [], "1"),
+            ("production", ("lib/source.go",), ["./lib"], ["./app", "./integration"], "4"),
+            ("mixed", ("lib/source.go", "lib/source_test.go"), ["./lib"], ["./app", "./integration"], "7"),
+            ("direct dependent", ("lib/source.go", "app/source_test.go"), ["./app", "./lib"], ["./integration"], "2"),
+            ("separate test and production", ("lib/source_test.go", "unrelated/source.go"), ["./lib", "./unrelated"], [], "2"),
         )
-        for index, (name, paths, expected, budget) in enumerate(cases):
+        for index, (name, paths, full, short, budget) in enumerate(cases):
             with self.subTest(name=name):
                 self.base = self.git("rev-parse", "HEAD").strip()
                 self.git("update-ref", "refs/remotes/origin/develop", self.base)
@@ -106,10 +142,28 @@ class ShortLandingGateTest(unittest.TestCase):
                 result = self.run_gate(budget=budget)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 trace = self.trace()
-                self.assertEqual([(call["tool"], call["args"][0]) for call in trace], [("make", "-j1"), ("go", "build"), ("go", "list"), ("go", "test"), ("make", "-j1"), ("golangci-lint", "run")])
-                test = trace[3]
-                self.assertEqual([arg for arg in test["args"] if arg.startswith("./")], expected)
-                self.assertFalse(test["token"])
+                self.assertEqual([(call["tool"], call["args"][0]) for call in trace], [("make", "-j1"), ("go", "build"), ("go", "list"), ("go", "test")] + ([("go", "test")] if short else []) + [("make", "-j1"), ("python3", "scripts/nilaway-changed.py"), ("make", "-j1"), ("golangci-lint", "run")])
+                tests = [call for call in trace if call["tool"] == "go" and call["args"][0] == "test"]
+                self.assertEqual([arg for arg in tests[0]["args"] if arg.startswith("./")], full)
+                self.assertNotIn("-short", tests[0]["args"])
+                if short:
+                    self.assertEqual([arg for arg in tests[1]["args"] if arg.startswith("./")], short)
+                    self.assertIn("-short", tests[1]["args"])
+                for test in tests:
+                    self.assertFalse(test["token"])
+                    self.assertIn("-timeout=10m", test["args"])
+                nilaway = next(call for call in trace if "nilaway-changed" in call["args"])
+                self.assertIn("NILAWAY_PACKAGES=" + " ".join(sorted(full + short)), nilaway["args"])
+                self.assertFalse(nilaway["token"])
+                audit = next(call for call in trace if call["tool"] == "python3")
+                self.assertEqual(audit["args"][3:], sorted(full + short))
+                self.assertFalse(audit["token"])
+                receipts = [json.loads(line.removeprefix("detent-check-evidence: ")) for line in result.stdout.splitlines() if line.startswith("detent-check-evidence: ")]
+                self.assertEqual([receipt["scope"] for receipt in receipts], ["assets", "build", "unit-full"] + (["unit-short"] if short else []) + ["nilaway", "lint"])
+                for receipt in receipts:
+                    self.assertEqual(receipt["head_sha"], self.git("rev-parse", "HEAD").strip())
+                    self.assertEqual(receipt["tree_sha"], self.git("rev-parse", "HEAD^{tree}").strip())
+                    self.assertEqual(receipt["exit_code"], 0)
                 for call in trace:
                     if call["tool"] == "go":
                         self.assertEqual(call["budget"], "1")
@@ -122,8 +176,8 @@ class ShortLandingGateTest(unittest.TestCase):
                         self.assertIn("--concurrency=" + budget, call["args"])
                     else:
                         self.assertEqual(call["budget"], "1")
-                        self.assertIn("TEST_PROCS=" + budget, call["args"])
-                self.assertIn("-timeout=10m", test["args"])
+                        if call["tool"] == "make":
+                            self.assertIn("TEST_PROCS=" + budget, call["args"])
                 self.assertEqual([arg for arg in trace[-1]["args"] if arg.startswith("./")], sorted({"./" + str(Path(path).parent) for path in paths}))
                 self.assertIn("--new-from-rev=" + self.base, trace[-1]["args"])
                 self.assertIn("assets", trace[0]["args"])
@@ -137,10 +191,61 @@ class ShortLandingGateTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         trace = self.trace()
         test = next(call for call in trace if call["args"][0] == "test")
+        self.assertNotIn("-short", test["args"])
         self.assertEqual(test["args"][-5:], ["./app", "./integration", "./lib", "./removed", "./unrelated"])
         self.assertEqual(trace[-1]["tool"], "golangci-lint")
         self.assertEqual(trace[-1]["args"][-5:], test["args"][-5:])
         self.assertFalse(any(arg.startswith("--new-from-rev") for arg in trace[-1]["args"]))
+
+    def test_hub_uses_existing_slices_only_for_full_tests(self):
+        hub = self.root / "internal/hubserver"
+        hub.mkdir(parents=True)
+        (hub / "source.go").write_text("package hubserver\n")
+        (hub / "source_test.go").write_text(
+            'package hubserver\nimport ("os"; "testing")\n' + "\n".join(
+                f'func Test{letter}(t *testing.T) {{\n'
+                'if testing.Short() { t.Skip("full suite") }\n'
+                'f, err := os.OpenFile("../../.git/test-names", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)\n'
+                'if err != nil { t.Fatal(err) }; defer f.Close()\n'
+                f'if _, err := f.WriteString("{letter}\\n"); err != nil {{ t.Fatal(err) }}\n}}'
+                for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            )
+        )
+        self.commit()
+        for index, path in enumerate(("internal/hubserver/source.go", "go.mod", "lib/source.go", "internal/hubserver/source.go")):
+            with self.subTest(path=path, index=index):
+                self.git("update-ref", "refs/remotes/origin/develop", self.git("rev-parse", "HEAD").strip())
+                with (self.root / path).open("a") as stream:
+                    stream.write("\n" if path == "go.mod" else f"const Value{index} = {index}\n")
+                self.commit()
+                self.env["RUN_GO_TESTS"] = "1"
+                if index == 3:
+                    self.env["FAIL_HUB_PATTERN"] = "^Test[HMP]"
+                (self.root / ".git/test-names").write_text("")
+                result = self.run_gate()
+                self.assertEqual(result.returncode, 2 if index == 3 else 0, result.stdout + result.stderr)
+                tests = [call for call in self.trace() if call["tool"] == "go" and call["args"][0] == "test"]
+                hub_tests = [call for call in tests if "./internal/hubserver" in call["args"]]
+                if path == "lib/source.go":
+                    self.assertEqual(len(hub_tests), 1)
+                    self.assertIn("-short", hub_tests[0]["args"])
+                    self.assertNotIn("test-landing-hub", result.stdout)
+                else:
+                    self.assertEqual(len(hub_tests), 2 if index == 3 else 5)
+                    for call in hub_tests:
+                        self.assertNotIn("-short", call["args"])
+                        self.assertIn("-timeout=10m", call["args"])
+                        self.assertEqual(call["budget"], "1")
+                        self.assertEqual(call["args"][call["args"].index("-p") + 1], "2")
+                        self.assertFalse(call["token"])
+                    if index != 3:
+                        self.assertEqual(sorted((self.root / ".git/test-names").read_text().splitlines()), list("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+                        for number in range(1, 6):
+                            self.assertIn(f'"scope":"unit-full-hub-{number}"', result.stdout)
+                    else:
+                        self.assertNotIn("nilaway-changed", result.stdout)
+                        self.assertIn('"scope":"unit-full-hub-2"', result.stdout)
+                        self.assertIn('"exit_code":17', result.stdout)
 
     def test_fixture_changes_select_tests_without_lint(self):
         for path in ("lib/testdata/fixture.json", "lib/data.txt"):
@@ -150,8 +255,11 @@ class ShortLandingGateTest(unittest.TestCase):
                 result = self.run_gate()
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 trace = self.trace()
-                test = next(call for call in trace if call["args"][0] == "test")
-                self.assertEqual(test["args"][-3:], ["./app", "./integration", "./lib"])
+                tests = [call for call in trace if call["args"][0] == "test"]
+                self.assertEqual(tests[0]["args"][-1:], ["./lib"])
+                self.assertNotIn("-short", tests[0]["args"])
+                self.assertEqual(tests[1]["args"][-2:], ["./app", "./integration"])
+                self.assertIn("-short", tests[1]["args"])
                 self.assertFalse(any(call["tool"] == "golangci-lint" for call in trace))
 
     def test_deleted_package_is_not_executed(self):
@@ -162,7 +270,7 @@ class ShortLandingGateTest(unittest.TestCase):
         self.assertFalse(any(call["args"][0] == "test" or call["tool"] == "golangci-lint" for call in self.trace()))
 
     def test_failures_stop_the_gate(self):
-        for stage in ("build", "list", "test", "lint"):
+        for stage in ("build", "list", "test", "nilaway", "lint"):
             with self.subTest(stage=stage):
                 (self.root / "lib/source.go").write_text("package lib\nconst Value = 1\n")
                 if stage == "build":
@@ -170,7 +278,7 @@ class ShortLandingGateTest(unittest.TestCase):
                 self.env["FAIL_STAGE"] = stage
                 result = self.run_gate()
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertEqual(result.returncode, 1 if stage == "list" else 17)
+                self.assertEqual(result.returncode, {"list": 1, "nilaway": 2}.get(stage, 17))
                 self.assertEqual(any(call["tool"] == "golangci-lint" for call in self.trace()), stage == "lint")
 
     def test_invalid_base_or_budget_runs_no_commands(self):
