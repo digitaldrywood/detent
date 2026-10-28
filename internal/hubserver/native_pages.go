@@ -384,11 +384,14 @@ func (s *Service) readIssuesProjection(ctx context.Context, scope nativeScope, p
 				return tracker.NativeIssuePage{}, encodeErr
 			}
 			if len(raw) > operatortool.WorkListPageBytes {
-				if len(page.Items) == 0 {
-					return tracker.NativeIssuePage{}, operatortool.ErrReadUnavailable
+				if len(page.Items) > 0 {
+					hasMore = true
+					break
 				}
-				hasMore = true
-				break
+				issue, err = operatortool.BoundNativeListIssue(issue)
+				if err != nil {
+					return tracker.NativeIssuePage{}, err
+				}
 			}
 		}
 		page.Items = append(page.Items, issue)

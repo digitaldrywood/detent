@@ -516,6 +516,65 @@ func NativeListIssue(issue tracker.NativeIssue) tracker.NativeIssue {
 	issue.Provenance = nil
 	issue.ExternalReferences = nil
 	issue.Change = nil
-	issue.OmittedFields = []string{"body", "linked_source", "provenance", "external_references", "change"}
+	issue.OmittedFields = slices.Clone(issue.OmittedFields)
+	for _, field := range []string{"body", "linked_source", "provenance", "external_references", "change"} {
+		if !slices.Contains(issue.OmittedFields, field) {
+			issue.OmittedFields = append(issue.OmittedFields, field)
+		}
+	}
 	return issue
+}
+
+func BoundNativeListIssue(issue tracker.NativeIssue) (tracker.NativeIssue, error) {
+	issue = NativeListIssue(issue)
+	raw, err := json.Marshal(issue)
+	if err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	fields["latest_transition_reason"], err = json.Marshal(issue.LatestTransitionReason)
+	if err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	var names []string
+	for name := range fields {
+		if !slices.Contains([]string{"organization_id", "project_id", "work_item_id", "number", "revision", "profile", "omitted_fields"}, name) {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	slices.SortStableFunc(names, func(a, b string) int { return len(fields[b]) - len(fields[a]) })
+	for index := 0; ; index++ {
+		fields["omitted_fields"], err = json.Marshal(issue.OmittedFields)
+		if err != nil {
+			return tracker.NativeIssue{}, err
+		}
+		raw, err = json.Marshal(fields)
+		if err != nil {
+			return tracker.NativeIssue{}, err
+		}
+		if len(raw) <= WorkListPageBytes/4 {
+			var bounded tracker.NativeIssue
+			if err := json.Unmarshal(raw, &bounded); err != nil {
+				return tracker.NativeIssue{}, err
+			}
+			if reason, ok := fields["latest_transition_reason"]; ok {
+				if err := json.Unmarshal(reason, &bounded.LatestTransitionReason); err != nil {
+					return tracker.NativeIssue{}, err
+				}
+			}
+			return bounded, nil
+		}
+		if index == len(names) {
+			return tracker.NativeIssue{}, ErrResultTooLarge
+		}
+		name := names[index]
+		delete(fields, name)
+		if !slices.Contains(issue.OmittedFields, name) {
+			issue.OmittedFields = append(issue.OmittedFields, name)
+		}
+	}
 }
