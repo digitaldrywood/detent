@@ -363,7 +363,7 @@ func TestStorageConversionImmutability(t *testing.T) {
 	db := f.service.database
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	ctx := f.service.contentContext(t.Context())
-	raw := `{"policy":{"gates":{"github_pull_request":false}},"actor":{"principal_id":"reviewer"},"decision":"approved","source":{"bytes":8192},"output":"` + strings.Repeat("x", 8192) + `"}`
+	raw := `{"policy_id":"legacy-policy","head_sha":"legacy-head","policy":{"gates":{"github_pull_request":false}},"actor":{"principal_id":"reviewer"},"decision":"approved","source":{"bytes":8192},"output":"` + strings.Repeat("x", 8192) + `"}`
 	for i := range 2 {
 		issue := f.nativeFixture.create(t, fmt.Sprintf("immutable history %d", i))
 		change, version := fmt.Sprintf("conversion-change-%d", i), fmt.Sprintf("conversion-version-%d", i)
@@ -520,6 +520,19 @@ func TestStorageConversionImmutability(t *testing.T) {
 	}
 	assertImmutable()
 	before := storageSchemaVersion(t, db.reader)
+	if err := f.service.populateChangeColumns(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 2 {
+		var policy, head, stored string
+		if err := db.reader.QueryRowContext(t.Context(), `SELECT policy_revision_id,head_sha,record_json FROM change_versions WHERE id=?`, fmt.Sprintf("conversion-version-%d", i)).Scan(&policy, &head, &stored); err != nil {
+			t.Fatal(err)
+		}
+		if policy != "legacy-policy" || head != "legacy-head" || stored != raw {
+			t.Fatalf("version %d backfill changed content or missed typed columns: policy=%q head=%q", i, policy, head)
+		}
+	}
+	assertImmutable()
 	if err := db.populateClaimFacts(t.Context()); err != nil {
 		t.Fatal(err)
 	}

@@ -539,13 +539,11 @@ VALUES (?,'org_security',?,?,json_object('landed',json_object('version_id',?,'he
 					t.Fatal(err)
 				}
 			}
-			if err := rebuildAnalyticsRollups(t.Context(), tx, nativeScope{organization: "org_security", project: f.project}, f.service.config.now()); err != nil {
-				t.Fatal(err)
-			}
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}
 			projectTestChangeColumns(t, f.service)
+			rebuildTestAnalyticsRollups(t, f.service, nativeScope{organization: "org_security", project: f.project})
 			identity := operatortool.Identity{PrincipalID: user.identity.Subject, OrganizationID: "org_security", CredentialID: "test"}
 			ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
 				return operatortool.Authority{Identity: identity, Check: func(context.Context, operatortool.Requirement) error { return nil }}, nil
