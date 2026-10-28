@@ -27,6 +27,9 @@ func activityRunPhases(data tracker.NativeRunData) ([]tracker.NativePhase, int) 
 }
 
 func updateActivityAttemptProjection(ctx context.Context, tx *sql.Tx, id string, data tracker.NativeRunData, checkpoint *tracker.NativeCheckpoint) error {
+	if err := updateReportAttemptProjection(ctx, tx, id, data); err != nil {
+		return err
+	}
 	phases, dropped := activityRunPhases(data)
 	var role, executionRole, phase, change, url string
 	if data.Runtime != nil {
@@ -120,6 +123,7 @@ func (s *Service) convertActivityProjections(ctx context.Context) error {
 		convert   func(context.Context, string) error
 	}{
 		{`SELECT id FROM native_attempts WHERE activity_projection_version IS NULL ORDER BY id LIMIT ?`, s.convertActivityAttempt},
+		{`SELECT id FROM native_attempts WHERE report_projection_version IS NULL ORDER BY id LIMIT ?`, s.convertActivityAttempt},
 		{`SELECT CAST(id AS TEXT) FROM issues WHERE activity_actor_principal_id IS NULL ORDER BY id LIMIT ?`, s.convertActivityActor},
 		{`SELECT id FROM change_requests WHERE activity_current_version_id IS NULL ORDER BY id LIMIT ?`, s.convertActivityChange},
 		{`SELECT id FROM change_versions WHERE activity_external_url IS NULL ORDER BY id LIMIT ?`, s.convertActivityVersion},
@@ -146,7 +150,7 @@ func (s *Service) convertActivityProjections(ctx context.Context) error {
 func (s *Service) convertActivityAttempt(ctx context.Context, id string) error {
 	var raw, status string
 	var checkpoint sql.NullString
-	err := s.database.reader.QueryRowContext(ctx, `SELECT data_json,status,checkpoint_json FROM native_attempts WHERE id=? AND activity_projection_version IS NULL`, id).Scan(&raw, &status, &checkpoint)
+	err := s.database.reader.QueryRowContext(ctx, `SELECT data_json,status,checkpoint_json FROM native_attempts WHERE id=? AND (activity_projection_version IS NULL OR report_projection_version IS NULL)`, id).Scan(&raw, &status, &checkpoint)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -171,7 +175,7 @@ func (s *Service) convertActivityAttempt(ctx context.Context, id string) error {
 	}
 	defer tx.Rollback()
 	var unchanged bool
-	err = tx.QueryRowContext(ctx, `SELECT data_json=? AND status=? AND checkpoint_json IS ? AND activity_projection_version IS NULL FROM native_attempts WHERE id=?`, raw, status, checkpoint, id).Scan(&unchanged)
+	err = tx.QueryRowContext(ctx, `SELECT data_json=? AND status=? AND checkpoint_json IS ? AND (activity_projection_version IS NULL OR report_projection_version IS NULL) FROM native_attempts WHERE id=?`, raw, status, checkpoint, id).Scan(&unchanged)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}

@@ -226,6 +226,10 @@ func (s *Service) readAnalyticsReportFrom(ctx context.Context, credential apiCre
 		if err != nil {
 			return report, err
 		}
+		projectQ, err = prepareReportsQuery(projectCtx, projectQ, scope, "report_attempts", "report_events")
+		if err != nil {
+			return report, err
+		}
 		value, err := readNativeAnalytics(projectCtx, projectQ, scope, r, w)
 		if err != nil {
 			return report, err
@@ -300,6 +304,10 @@ func nativeAnalyticsBucketIndex(at time.Time, w operatortool.AnalyticsWindow) in
 }
 
 func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (nativeAnalyticsProject, error) {
+	q, prepareErr := prepareReportsQuery(ctx, q, scope, "report_attempts", "report_events")
+	if prepareErr != nil {
+		return nativeAnalyticsProject{}, prepareErr
+	}
 	ctx, paging, pagingErr := analyticsPagingContext(ctx, r.PopulationCursor)
 	if pagingErr != nil {
 		return nativeAnalyticsProject{}, pagingErr
@@ -505,6 +513,10 @@ ORDER BY c.landed_at,c.id LIMIT ? OFFSET ?`, append([]any{scope.organization, sc
 }
 
 func projectNativeAnalyticsSkips(ctx context.Context, q nativeQueryer, scope nativeScope, out *nativeAnalyticsProject) error {
+	q, prepareErr := prepareReportsQuery(ctx, q, scope, "report_events")
+	if prepareErr != nil {
+		return prepareErr
+	}
 	if _, rolledUp := q.(analyticsRollupReader); rolledUp {
 		compacted, err := analyticsSkipSamplesCompacted(ctx, q, scope, out.Window.From)
 		if err != nil {
@@ -524,12 +536,12 @@ func projectNativeAnalyticsSkips(ctx context.Context, q nativeQueryer, scope nat
 	var rows *analyticsRows
 	var err error
 	if _, projected := q.(analyticsRollupReader); projected {
-		rows, err = queryAnalyticsPopulation(ctx, q, "decisions", `SELECT json_extract(data_json,'$.Source'),json_extract(data_json,'$.Reason'),json_extract(data_json,'$.At') FROM analytics_hourly_rollups INDEXED BY analytics_skip_order WHERE organization_id=? AND project_id=? AND metric='skip_sample' AND json_extract(data_json,'$.AtNS')>=? AND json_extract(data_json,'$.AtNS')<? ORDER BY json_extract(data_json,'$.At'),dimension LIMIT ? OFFSET ?`, scope.organization, scope.project, out.Window.From.UnixNano(), out.Window.To.UnixNano())
+		rows, err = queryAnalyticsPopulation(ctx, q, "decisions", `SELECT skip_source,skip_reason,sample_at FROM analytics_hourly_rollups INDEXED BY analytics_skip_order WHERE organization_id=? AND project_id=? AND metric='skip_sample' AND sample_ns>=? AND sample_ns<? ORDER BY sample_at,dimension LIMIT ? OFFSET ?`, scope.organization, scope.project, out.Window.From.UnixNano(), out.Window.To.UnixNano())
 	} else {
 		visibility, args := reportsIssueClause(ctx, "work_item_id")
 		args = append([]any{scope.organization, scope.project, formatHubTime(out.Window.From), formatHubTime(out.Window.To)}, args...)
-		rows, err = queryAnalyticsPopulation(ctx, q, "decisions", `SELECT coalesce(json_extract(data_json,'$.decision.source'),''), coalesce(json_extract(data_json,'$.decision.reason'),''), recorded_at
-FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND json_extract(data_json,'$.decision.outcome')='skipped'
+		rows, err = queryAnalyticsPopulation(ctx, q, "decisions", `SELECT coalesce(scheduler_source,''), coalesce(scheduler_reason,''), recorded_at
+FROM report_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND scheduler_outcome='skipped'
 AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)`+visibility+` ORDER BY recorded_at,id LIMIT ? OFFSET ?`, args...)
 	}
 	if err != nil {

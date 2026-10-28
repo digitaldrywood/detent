@@ -640,5 +640,17 @@ FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organ
 		}
 	}
 	projectTestChangeColumns(t, s)
+	for {
+		if err := s.convertIssuePageFacts(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		var pending bool
+		if err := s.database.reader.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM issues WHERE actor_principal_id IS NULL OR page_filters_ready IS NULL)").Scan(&pending); err != nil {
+			t.Fatal(err)
+		}
+		if !pending {
+			break
+		}
+	}
 	rebuildTestAnalyticsRollups(t, s, scope)
 }

@@ -45,6 +45,7 @@ func updateBoardFilterFacts(ctx context.Context, tx nativeExecer, card tracker.N
 
 type nativePageFact struct {
 	name, columns, known string
+	knownArgs            []any
 	values               [][]any
 	override             bool
 }
@@ -59,12 +60,13 @@ type nativePageQuery struct {
 func (q *nativePageQuery) statement(query string, args []any) (string, []any) {
 	var clauses []string
 	var bindings []any
-	for _, name := range []string{"native_issue_actors", "native_transition_facts", "native_workflow_ranks", "native_board_filter_facts", "native_board_filter_values", "native_issue_page_filter_values"} {
+	for _, name := range []string{"native_issue_actors", "native_transition_facts", "native_workflow_ranks", "native_board_filter_facts", "native_board_filter_values", "native_issue_page_filter_values", "report_attempts", "report_events"} {
 		f, ok := q.facts[name]
 		if !ok || len(f.values) == 0 && !f.override || !strings.Contains(query, name) {
 			continue
 		}
 		var values []string
+		bindings = append(bindings, f.knownArgs...)
 		for _, row := range f.values {
 			values = append(values, "("+strings.TrimSuffix(strings.Repeat("?,", len(row)), ",")+")")
 			bindings = append(bindings, row...)
@@ -73,7 +75,11 @@ func (q *nativePageQuery) statement(query string, args []any) (string, []any) {
 		if len(values) > 0 {
 			selection += " UNION ALL SELECT * FROM (VALUES " + strings.Join(values, ",") + ")"
 		}
-		clauses = append(clauses, name+"("+f.columns+") AS ("+selection+")")
+		materialization := ""
+		if name == "report_attempts" || name == "report_events" {
+			materialization = "NOT MATERIALIZED "
+		}
+		clauses = append(clauses, name+"("+f.columns+") AS "+materialization+"("+selection+")")
 	}
 	if len(clauses) == 0 {
 		return query, args
@@ -127,6 +133,9 @@ func prepareNativePageQuery(ctx context.Context, q nativeQueryer, scope nativeSc
 }
 
 func readLegacyPageFact(ctx context.Context, q nativeQueryer, scope nativeScope, item, family string) (nativePageFact, error) {
+	if family == "report_attempts" || family == "report_events" {
+		return readLegacyReportFact(ctx, q, scope, family)
+	}
 	if family == "native_issue_page_filter_values" || family == "native_board_filter_values" {
 		return readLegacyPageFilterValues(ctx, q, scope, item, family)
 	}
@@ -265,7 +274,7 @@ func decodePageEvent(raw string, data *tracker.CollaborationData) error {
 
 func prepareNativePageStatement(ctx context.Context, q nativeQueryer, scope nativeScope, item, statement string) (nativeQueryer, error) {
 	var families []string
-	for _, name := range []string{"native_issue_actors", "native_transition_facts", "native_workflow_ranks", "native_board_filter_facts", "native_board_filter_values", "native_issue_page_filter_values"} {
+	for _, name := range []string{"native_issue_actors", "native_transition_facts", "native_workflow_ranks", "native_board_filter_facts", "native_board_filter_values", "native_issue_page_filter_values", "report_attempts", "report_events"} {
 		if strings.Contains(statement, name) {
 			families = append(families, name)
 		}

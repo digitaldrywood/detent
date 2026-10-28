@@ -152,30 +152,27 @@ func nativeFailureClass(f tracker.NativeTerminalFailure) string {
 	return "attempt"
 }
 
-// analyticsRollupFailures reads failed attempts from their rollups, whose
-// failed_at the projection records with the same rule as the raw read, in
-// failure order from the analytics_attempt_failed index.
 const analyticsRollupFailures = `SELECT a.id,a.work_item_id,a.status,a.started_at,a.updated_at,a.failed_at,
 a.data_json,
 (SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id),
 (SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id)
-FROM (SELECT organization_id,project_id,dimension AS id,work_item_id AS work_item_id,lease_id AS lease_id,status AS status,
-started_at AS started_at,updated_at AS updated_at,data_json,failed_at,failed_day
-FROM analytics_hourly_rollups WHERE metric='attempt' AND failed_at IS NOT NULL) a WHERE a.organization_id=? AND a.project_id=?`
+FROM (SELECT r.organization_id,r.project_id,r.dimension AS id,r.work_item_id,r.lease_id,r.status,
+r.started_at,r.updated_at,r.data_json,r.failed_at,r.failed_day,n.runner_id,n.role,n.report_requested_model,n.report_resolved_model
+FROM analytics_hourly_rollups r CROSS JOIN report_attempts n ON n.id=r.dimension AND n.organization_id=r.organization_id AND n.project_id=r.project_id WHERE r.metric='attempt' AND r.failed_at IS NOT NULL) a WHERE a.organization_id=? AND a.project_id=?`
 
 func readNativeFailures(ctx context.Context, q nativeQueryer, scope nativeScope, item string, w *operatortool.AnalyticsWindow) ([]nativeFailure, bool, error) {
-	query := `WITH failures AS (
-SELECT a.*, CASE WHEN (json_extract(data_json,'$.runtime.landing.refusal_kind') IN ('conflict','base_protected') AND coalesce(json_extract(data_json,'$.runtime.landing.landed'),0)=0) OR coalesce(json_extract(data_json,'$.runtime.landing.gate_failed'),0)=1
-THEN coalesce(nullif(json_extract(data_json,'$.runtime.landing.observed_at'),'0001-01-01T00:00:00Z'),updated_at) ELSE updated_at END AS failed_at
-FROM native_attempts a WHERE organization_id=? AND project_id=?
-AND (status IN ('failed','interrupted') OR json_extract(data_json,'$.runtime.landing.refusal_kind') IN ('conflict','base_protected') OR coalesce(json_extract(data_json,'$.runtime.landing.gate_failed'),0)=1))
-SELECT a.id,a.work_item_id,a.status,a.started_at,a.updated_at,a.failed_at,
-json_remove(a.data_json,'$.runtime.phases'),
+	q, err := prepareReportsQuery(ctx, q, scope, "report_attempts")
+	if err != nil {
+		return nil, false, err
+	}
+	query := `SELECT a.id,a.work_item_id,a.status,a.started_at,a.updated_at,a.report_failed_at,
+a.data_json,
 (SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id),
 (SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id)
-FROM failures a WHERE 1=1`
-	failedAt := "julianday(a.failed_at)"
-	if _, projected := q.(analyticsRollupReader); projected {
+FROM report_attempts a WHERE a.organization_id=? AND a.project_id=? AND a.report_failed_at IS NOT NULL`
+	failedAt := "a.report_failed_at"
+	_, projected := q.(analyticsRollupReader)
+	if projected {
 		query, failedAt = analyticsRollupFailures, "a.failed_day"
 	}
 	args := []any{scope.organization, scope.project}
@@ -184,8 +181,13 @@ FROM failures a WHERE 1=1`
 		args = append(args, item)
 	}
 	if w != nil {
-		query += " AND " + failedAt + ">=julianday(?) AND " + failedAt + "<julianday(?)"
-		args = append(args, formatHubTime(w.From), formatHubTime(w.To))
+		if projected {
+			query += " AND " + failedAt + ">=julianday(?) AND " + failedAt + "<julianday(?)"
+			args = append(args, formatHubTime(w.From), formatHubTime(w.To))
+		} else {
+			query += " AND " + failedAt + ">=? AND " + failedAt + "<?"
+			args = append(args, changeColumnTime(w.From), changeColumnTime(w.To))
+		}
 	}
 	scoped, scopedArgs, err := reportsScopedClause(ctx, "a")
 	if err != nil {

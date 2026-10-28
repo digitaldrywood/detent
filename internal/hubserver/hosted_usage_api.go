@@ -303,6 +303,20 @@ func readUsageRows(ctx context.Context, database nativeQueryer, organization str
 	if err != nil {
 		return nil, err
 	}
+	attemptSource := "native_attempts"
+	if ownership, filtered := reportsScopeFrom(ctx); filtered {
+		scope := nativeScope{organization: tracker.OrganizationID(organization)}
+		if len(projects) == 1 {
+			scope.project = tracker.ProjectID(projects[0])
+		}
+		database, err = prepareReportsQuery(ctx, database, scope, "report_attempts")
+		if err != nil {
+			return nil, err
+		}
+		if ownership.attempts.attempts() {
+			attemptSource = "report_attempts"
+		}
+	}
 	projectClause, projectArg := "u.project_id IN (SELECT value FROM json_each(?))", any(encoded)
 	if len(projects) == 1 {
 		projectClause, projectArg = "u.project_id = ?", projects[0]
@@ -310,7 +324,7 @@ func readUsageRows(ctx context.Context, database nativeQueryer, organization str
 	query := `SELECT u.attempt_id, u.period, u.provider, u.model, u.input, u.cached_input, u.output, u.cost_estimate, u.currency,
  coalesce(r.id, ''), coalesce(r.display_name, ''), coalesce(a.started_at, ''), coalesce(a.updated_at, '')
 FROM attempt_usage u
-LEFT JOIN native_attempts a ON a.id = u.attempt_id
+LEFT JOIN ` + attemptSource + ` a ON a.id = u.attempt_id
 LEFT JOIN lease_runners lr ON lr.lease_id = a.lease_id
 LEFT JOIN runner_identities r ON r.id = lr.runner_id AND r.organization_id = u.organization_id
 WHERE u.organization_id = ? AND u.period >= ? AND u.period <= ?

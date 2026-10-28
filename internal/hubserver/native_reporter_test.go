@@ -395,7 +395,7 @@ func TestReporterAggregateReads(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		operatorSQL(t, v.hostedSecurityFixture, "UPDATE issues SET labels_json=? WHERE native_id=?", string(labels), item.WorkItemID)
+		operatorSQL(t, v.hostedSecurityFixture, "UPDATE issues SET page_filters_ready=NULL,labels_json=? WHERE native_id=?", string(labels), item.WorkItemID)
 		key := fmt.Sprintf("reporter-attempt-%d", index)
 		lease, err := v.service.database.db.ExecContext(t.Context(), "INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) SELECT ?,id,'reporter-fixture',?,?,?,?,?,?,? FROM issues WHERE native_id=?", key, key, formatHubTime(now), formatHubTime(now.Add(-time.Minute)), formatHubTime(now), formatHubTime(now), formatHubTime(now.Add(-time.Minute)), formatHubTime(now), item.WorkItemID)
 		if err != nil {

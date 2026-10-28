@@ -115,7 +115,7 @@ func TestReportsShippedPopulation(t *testing.T) {
 		}
 	}
 	for prefix, owner := range map[string]string{"attempt_browser_usage_1_%": ids["reclosed"], "attempt_browser_usage_2_%": ids["cancelled"]} {
-		if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET work_item_id=? WHERE id LIKE ?", owner, prefix); err != nil {
+		if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,work_item_id=? WHERE id LIKE ?", owner, prefix); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -128,7 +128,7 @@ func TestReportsShippedPopulation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET status='failed',started_at=?,updated_at=? WHERE id='attempt_browser_usage_2_1'", formatHubTime(priorAt.Add(-time.Hour)), formatHubTime(priorAt)); err != nil {
+	if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,status='failed',started_at=?,updated_at=? WHERE id='attempt_browser_usage_2_1'", formatHubTime(priorAt.Add(-time.Hour)), formatHubTime(priorAt)); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.service.database.commit(t.Context(), tx); err != nil {
@@ -277,7 +277,7 @@ func TestReportsFirstTryHistory(t *testing.T) {
 		{name: "unknown earlier merge cannot imply first try", role: "merge"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_remove(data_json,'$.runtime')"); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,data_json=json_remove(data_json,'$.runtime')"); err != nil {
 				t.Fatal(err)
 			}
 			for _, entry := range []struct {
@@ -289,7 +289,7 @@ func TestReportsFirstTryHistory(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET started_at=?,data_json=json_set(data_json,'$.runtime.identity.role',?,'$.runtime.landing',json(?)) WHERE id=?`, formatHubTime(entry.at), entry.role, string(raw), entry.id); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET report_projection_version=NULL,started_at=?,data_json=json_set(data_json,'$.runtime.identity.role',?,'$.runtime.landing',json(?)) WHERE id=?`, formatHubTime(entry.at), entry.role, string(raw), entry.id); err != nil {
 					t.Fatal(err)
 				}
 			}

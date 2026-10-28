@@ -290,6 +290,9 @@ func TestOrganizationProductivity(t *testing.T) {
 					project = projects[0]
 					wantKind, wantID, wantName = "people", "person_one", ""
 				}
+				if err := updateReportAttemptProjection(t.Context(), tx, "attempt_final_"+id, tracker.NativeRunData{}); err != nil {
+					t.Fatal(err)
+				}
 				if err := refreshProductivitySummary(t.Context(), tx, nativeScope{organization: org, project: project}, id); err != nil {
 					t.Fatal(err)
 				}
@@ -367,6 +370,11 @@ func TestProductivityRunnerIntervals(t *testing.T) {
 			exec(`INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) SELECT ?, (SELECT id FROM issues WHERE native_id=?),machine_id,?,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at FROM leases WHERE lease_id='lease_browser_usage_0_0'`, lease, id, lease)
 			exec(`INSERT INTO lease_runners(lease_id,runner_id) SELECT ?,runner_id FROM lease_runners WHERE lease_id='lease_browser_usage_0_0'`, lease)
 			exec(`INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at) VALUES(?,?,?,?,?,(SELECT max(fencing_token)+1 FROM native_attempts),?,?,'succeeded','{}',?,?)`, "attempt_"+lease, org, f.project, id, lease, "run_"+id, j+1, formatHubTime(span.from), formatHubTime(span.to))
+		}
+		for j := range intervals {
+			if err := updateActivityAttemptProjection(t.Context(), tx, fmt.Sprintf("attempt_lease_interval_%d_%d", i, j), tracker.NativeRunData{}, nil); err != nil {
+				t.Fatal(err)
+			}
 		}
 		for range 2 {
 			if err := refreshProductivitySummary(t.Context(), tx, nativeScope{organization: org, project: tracker.ProjectID(f.project)}, id); err != nil {

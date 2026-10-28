@@ -161,6 +161,10 @@ type analyticsQualityInputs struct {
 }
 
 func loadAnalyticsQualityInputs(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) (analyticsQualityInputs, error) {
+	q, prepareErr := prepareReportsQuery(ctx, q, scope, "report_attempts", "report_events")
+	if prepareErr != nil {
+		return analyticsQualityInputs{}, prepareErr
+	}
 	landings, err := readQualityLandings(ctx, q, scope, w)
 	if err != nil {
 		return analyticsQualityInputs{}, err
@@ -289,12 +293,14 @@ WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND e.escap
 			events = append(events, qualityHistoryEvent{ID: review.ID, Item: item, Kind: "changes_requested", VersionID: review.VersionID, At: review.CreatedAt})
 		}
 	}
-	role := "coalesce(json_extract(data_json,'$.runtime.identity.role'),json_extract(data_json,'$.identity.role'))"
+	role := "coalesce(nullif(role,''),execution_role)"
+	workedSource := analyticsAttemptsInStartedOrder(q)
 	if _, projected := q.(analyticsRollupReader); projected {
 		role = "attempt_role"
+		workedSource = "(SELECT organization_id,project_id,dimension AS id,work_item_id,started_at,attempt_role FROM analytics_hourly_rollups INDEXED BY analytics_attempt_started WHERE metric='attempt')"
 	}
 	workedIssues, workedArgs := reportsIssueClause(ctx, "work_item_id")
-	rows, err = queryAnalyticsPopulation(ctx, q, "quality_worked", `SELECT work_item_id,started_at FROM `+analyticsAttemptsInStartedOrder(q)+` a WHERE organization_id=? AND project_id=? AND `+role+` IN ('code','rework') AND julianday(started_at)>=julianday(?) AND julianday(started_at)<julianday(?) AND started_at>=? AND started_at<?`+workedIssues+` ORDER BY started_at,id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, changeColumnTime(w.From), changeColumnTime(w.To), w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly)}, workedArgs...)...)
+	rows, err = queryAnalyticsPopulation(ctx, q, "quality_worked", `SELECT work_item_id,started_at FROM `+workedSource+` a WHERE organization_id=? AND project_id=? AND `+role+` IN ('code','rework') AND julianday(started_at)>=julianday(?) AND julianday(started_at)<julianday(?) AND started_at>=? AND started_at<?`+workedIssues+` ORDER BY started_at,id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, changeColumnTime(w.From), changeColumnTime(w.To), w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly)}, workedArgs...)...)
 	if err != nil {
 		return analyticsQualityInputs{}, err
 	}

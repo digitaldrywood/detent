@@ -342,6 +342,11 @@ func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAna
 	if err != nil {
 		return out, err
 	}
+	q, err = prepareReportsQuery(ctx, q, scope, "report_attempts", "report_events")
+	if err != nil {
+		return out, err
+	}
+
 	states, err := analyticsResidenceStates(ctx, q, scope)
 	if err != nil {
 		return out, err
@@ -762,7 +767,11 @@ func (s *Service) readReportsPrior(ctx context.Context, q nativeQueryer, scope n
 	if err != nil {
 		return err
 	}
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND a.updated_at>=? AND a.updated_at<? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND julianday(a.updated_at)<julianday(?)`+scoped, append([]any{scope.organization, scope.project, prior.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), prior.To.UTC().Add(48 * time.Hour).Format(time.DateOnly), formatHubTime(prior.To), formatHubTime(prior.From), formatHubTime(prior.To)}, scopedArgs...)...).Scan(&attempts); err != nil {
+	attemptSource := "native_attempts"
+	if ownership, ok := reportsScopeFrom(ctx); ok && ownership.attempts.attempts() {
+		attemptSource = analyticsAttemptsInStartedOrder(q)
+	}
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM `+attemptSource+` a WHERE a.organization_id=? AND a.project_id=? AND a.updated_at>=? AND a.updated_at<? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND julianday(a.updated_at)<julianday(?)`+scoped, append([]any{scope.organization, scope.project, prior.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), prior.To.UTC().Add(48 * time.Hour).Format(time.DateOnly), formatHubTime(prior.To), formatHubTime(prior.From), formatHubTime(prior.To)}, scopedArgs...)...).Scan(&attempts); err != nil {
 		return fmt.Errorf("read prior attempts: %w", err)
 	}
 	failures, partial, err := readNativeFailures(ctx, q, scope, "", &prior)
@@ -840,6 +849,10 @@ func (s *Service) reportsFirstTryCounts(ctx context.Context, q nativeQueryer, sc
 // landing receipts of the merge attempts its work item started by the time
 // it landed, in start order.
 func readLandingAttemptReceipts(ctx context.Context, q nativeQueryer, scope nativeScope, landings []nativeAnalyticsLanding) ([][]string, error) {
+	q, prepareErr := prepareReportsQuery(ctx, q, scope, "report_attempts")
+	if prepareErr != nil {
+		return nil, prepareErr
+	}
 	type landed struct {
 		WorkItemID string `json:"work_item_id"`
 		LandedAt   string `json:"landed_at"`
@@ -852,9 +865,9 @@ func readLandingAttemptReceipts(ctx context.Context, q nativeQueryer, scope nati
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT l.key,a.started_at,a.id,coalesce(json_extract(a.data_json,'$.runtime.landing'),'null') FROM json_each(?) l
-CROSS JOIN native_attempts a ON a.organization_id=? AND a.project_id=? AND a.work_item_id=json_extract(l.value,'$.work_item_id') AND julianday(+a.started_at)<=julianday(json_extract(l.value,'$.landed_at'))
-AND (json_extract(a.data_json,'$.runtime.identity.role')='merge' OR json_extract(a.data_json,'$.runtime.landing') IS NOT NULL)`, encoded, scope.organization, scope.project)
+	rows, err := q.QueryContext(ctx, `SELECT l.key,a.started_at,a.id,a.data_json FROM json_each(?) l
+CROSS JOIN report_attempts a ON a.organization_id=? AND a.project_id=? AND a.work_item_id=json_extract(l.value,'$.work_item_id') AND julianday(+a.started_at)<=julianday(json_extract(l.value,'$.landed_at'))
+AND (a.role='merge' OR a.has_landing_receipt=1)`, encoded, scope.organization, scope.project)
 	if err != nil {
 		return nil, err
 	}
@@ -865,6 +878,18 @@ AND (json_extract(a.data_json,'$.runtime.identity.role')='merge' OR json_extract
 		var landing int
 		var r receipt
 		if err := rows.Scan(&landing, &r.started, &r.id, &r.raw); err != nil {
+			return nil, err
+		}
+		var data tracker.NativeRunData
+		if err := decodeActivityRun(ctx, q, r.raw, &data); err != nil {
+			return nil, err
+		}
+		var landingReceipt *tracker.NativeLandingReceipt
+		if data.Runtime != nil {
+			landingReceipt = data.Runtime.Landing
+		}
+		r.raw, err = marshalNative(landingReceipt)
+		if err != nil {
 			return nil, err
 		}
 		found[landing] = append(found[landing], r)

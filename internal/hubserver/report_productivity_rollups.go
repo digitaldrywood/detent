@@ -29,6 +29,12 @@ func requireProductivityChangeColumns(ctx context.Context, query nativeQueryer, 
 	if err != nil {
 		return err
 	}
+	if !pending {
+		err = query.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND report_projection_version IS NULL) OR EXISTS(SELECT 1 FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='completion' AND projection_version IS NULL)`, scope.organization, scope.project, id, scope.organization, scope.project).Scan(&pending)
+		if err != nil {
+			return err
+		}
+	}
 	if pending {
 		return errChangeColumnsIncomplete
 	}
@@ -98,7 +104,7 @@ func refreshProductivitySummary(ctx context.Context, tx projectionQuery, scope n
 	}
 	var cycle any
 	var sampleRaw string
-	err = tx.QueryRowContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='completion' AND json_extract(data_json,'$.ID')=? ORDER BY hour DESC LIMIT 1`, scope.organization, scope.project, id).Scan(&sampleRaw)
+	err = tx.QueryRowContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='completion' AND sample_id=? ORDER BY hour DESC LIMIT 1`, scope.organization, scope.project, id).Scan(&sampleRaw)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -246,7 +252,7 @@ func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope na
 		return out, err
 	}
 	rows, err = tx.QueryContext(ctx, `SELECT type,recorded_at,data_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='workflow.transitioned'
- UNION ALL SELECT 'worked',started_at,'{}' FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND coalesce(json_extract(data_json,'$.runtime.identity.role'),json_extract(data_json,'$.identity.role')) IN ('code','rework')`, scope.organization, scope.project, id, scope.organization, scope.project, id)
+ UNION ALL SELECT 'worked',started_at,'{}' FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND coalesce(nullif(role,''),execution_role) IN ('code','rework')`, scope.organization, scope.project, id, scope.organization, scope.project, id)
 	if err != nil {
 		return out, err
 	}
@@ -294,7 +300,7 @@ func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope na
 }
 
 func refreshProductivityRunners(ctx context.Context, tx projectionQuery, scope nativeScope, id string) error {
-	rows, err := tx.QueryContext(ctx, `SELECT r.id,a.started_at,a.updated_at FROM native_attempts a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id JOIN runner_identities r ON r.id=coalesce(lr.runner_id,json_extract(a.data_json,'$.runner_id')) AND r.organization_id=a.organization_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, scope.organization, scope.project, id)
+	rows, err := tx.QueryContext(ctx, `SELECT r.id,a.started_at,a.updated_at FROM native_attempts a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id JOIN runner_identities r ON r.id=coalesce(lr.runner_id,a.runner_id) AND r.organization_id=a.organization_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, scope.organization, scope.project, id)
 	if err != nil {
 		return err
 	}

@@ -276,6 +276,7 @@ func TestAnalyticsEventProjectionUnknown(t *testing.T) {
 			data tracker.CollaborationData
 		}{
 			{"workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}},
+			{"workflow.transitioned", tracker.CollaborationData{FromState: "In Progress", ToState: "Merging"}},
 			{"scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped", Source: "native_claim", Reason: refusal, RunnerID: "runner"}}},
 			{"run.started", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt-" + string(issue.WorkItemID)}}},
 		} {
@@ -295,6 +296,27 @@ func TestAnalyticsEventProjectionUnknown(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		window := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now.Add(time.Hour), Bucket: time.Hour}
+		verifyReports := func(source, reason string) {
+			t.Helper()
+			out := nativeAnalyticsProject{Window: window}
+			if err := projectNativeAnalyticsSkips(t.Context(), f.service.database.reader, scope, &out); err != nil {
+				t.Fatal(err)
+			}
+			if out.DecisionsObserved != 1 || len(out.SkipReasons) != 1 || out.SkipReasons[0].Source != source || out.SkipReasons[0].Reason != reason {
+				t.Fatalf("typed scheduler refusal lost: %+v", out.SkipReasons)
+			}
+			landings := []nativeAnalyticsLanding{{WorkItemID: issue.WorkItemID, Landing: tracker.ChangeLanding{LandedAt: now.Add(10 * time.Minute)}}}
+			waits, err := diagnosticsMergeWaits(t.Context(), f.service.database.reader, scope, landings)
+			if err != nil || len(waits) != 1 || waits[0] != 600 {
+				t.Fatalf("typed merge entry lost: waits=%v error=%v", waits, err)
+			}
+		}
+		verifyReports("native_claim", refusal)
+		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE collaboration_events SET scheduler_source='typed-source',scheduler_reason='typed-reason' WHERE organization_id=? AND project_id=? AND type='scheduler.decision'`, scope.organization, scope.project); err != nil {
+			t.Fatal(err)
+		}
+		verifyReports("typed-source", "typed-reason")
 		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE collaboration_events SET analytics_projection_version=NULL,analytics_from_state=NULL,analytics_to_state=NULL,analytics_attempt_id=NULL,analytics_skip_key=NULL,analytics_recorded_ns=NULL,scheduler_outcome=NULL,scheduler_source='',scheduler_reason='',scheduler_runner_id='' WHERE organization_id=? AND project_id=?`, scope.organization, scope.project); err != nil {
 			t.Fatal(err)
 		}
@@ -302,6 +324,7 @@ func TestAnalyticsEventProjectionUnknown(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(unknown, want) {
 			t.Fatalf("unknown events changed residence: got=%v want=%v error=%v", unknown, want, err)
 		}
+		verifyReports("native_claim", refusal)
 		if err := f.service.convertSchedulerDecisions(t.Context()); err != nil {
 			t.Fatal(err)
 		}
@@ -320,6 +343,7 @@ func TestAnalyticsEventProjectionUnknown(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(got, want) {
 			t.Fatalf("backfilled events changed residence: got=%v want=%v error=%v", got, want, err)
 		}
+		verifyReports("native_claim", refusal)
 	}
 }
 

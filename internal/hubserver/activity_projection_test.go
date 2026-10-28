@@ -251,71 +251,88 @@ func TestActivityProjectionCompatibility(t *testing.T) {
 }
 
 func TestActivityBackfillBoundAndTransactions(t *testing.T) {
-	first := newNativeFixture(t, nil, "", "activity-backfill")
-	if err := first.service.stopGitHubWebhookMaintenance(); err != nil {
-		t.Fatal(err)
-	}
-	second := newNativeFixture(t, first.service, first.project.OrganizationID, "activity-backfill-other")
-	now := first.service.config.now().UTC()
-	for _, f := range []nativeFixture{first, second} {
-		issue := f.create(t, "Example legacy activity")
-		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-		tx, err := first.service.database.db.BeginTx(t.Context(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		machine := "activity-" + string(f.project.ID)
-		if _, err := tx.ExecContext(t.Context(), `INSERT INTO machines(id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES(?,'example-runner',1,'test',?,?,?)`, machine, formatHubTime(now), formatHubTime(now), formatHubTime(now)); err != nil {
-			t.Fatal(err)
-		}
-		for range storageConversionRows/2 + 1 {
-			seedHealthRateAttempt(t, tx, scope, issue, machine, "succeeded", tracker.NativeRunData{Identity: &tracker.NativeExecutionIdentity{Role: "code"}}, now, -1)
-		}
-		if err := tx.Commit(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var stop string
-	if err := first.service.database.reader.QueryRowContext(t.Context(), `SELECT id FROM native_attempts ORDER BY id LIMIT 1 OFFSET 1`).Scan(&stop); err != nil {
-		t.Fatal(err)
-	}
-	trigger := fmt.Sprintf(`CREATE TRIGGER activity_conversion_failure BEFORE UPDATE OF activity_projection_version ON native_attempts WHEN NEW.id='%s' BEGIN SELECT RAISE(ABORT,'conversion interrupted'); END`, stop)
-	if _, err := first.service.database.db.ExecContext(t.Context(), trigger); err != nil {
-		t.Fatal(err)
-	}
-	if err := first.service.convertActivityProjections(t.Context()); err == nil {
-		t.Fatal("expected interrupted conversion")
-	}
-	count := func() int {
-		t.Helper()
-		var n int
-		if err := first.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM native_attempts WHERE activity_projection_version=1`).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
-	}
-	if got := count(); got != 1 {
-		t.Fatalf("first item must commit independently: %d", got)
-	}
-	if _, err := first.service.database.db.ExecContext(t.Context(), `DROP TRIGGER activity_conversion_failure`); err != nil {
-		t.Fatal(err)
-	}
-	if err := first.service.convertActivityProjections(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if got := count(); got != 1+storageConversionRows {
-		t.Fatalf("tick exceeded or missed fixed budget: %d", got)
-	}
-	if err := first.service.convertActivityProjections(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if got := count(); got != 2*(storageConversionRows/2+1) {
-		t.Fatalf("backfill did not complete: %d", got)
-	}
-	for _, f := range []nativeFixture{first, second} {
-		var n int
-		if err := first.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM native_attempts WHERE project_id=? AND activity_projection_version=1`, f.project.ID).Scan(&n); err != nil || n != storageConversionRows/2+1 {
-			t.Fatalf("project rows=%d err=%v", n, err)
-		}
+	for _, reportsOnly := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reportsOnly=%t", reportsOnly), func(t *testing.T) {
+			first := newNativeFixture(t, nil, "", "activity-backfill")
+			if err := first.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			second := newNativeFixture(t, first.service, first.project.OrganizationID, "activity-backfill-other")
+			now := first.service.config.now().UTC()
+			for _, f := range []nativeFixture{first, second} {
+				issue := f.create(t, "Example legacy activity")
+				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+				tx, err := first.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				machine := "activity-" + string(f.project.ID)
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO machines(id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES(?,'example-runner',1,'test',?,?,?)`, machine, formatHubTime(now), formatHubTime(now), formatHubTime(now)); err != nil {
+					t.Fatal(err)
+				}
+				for range storageConversionRows/2 + 1 {
+					data := tracker.NativeRunData{Identity: &tracker.NativeExecutionIdentity{Role: "code"}}
+					id := seedHealthRateAttempt(t, tx, scope, issue, machine, "succeeded", data, now, -1)
+					if reportsOnly {
+						if err := updateActivityAttemptProjection(t.Context(), tx, id, data, nil); err != nil {
+							t.Fatal(err)
+						}
+						if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL WHERE id=?", id); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var stop string
+			if err := first.service.database.reader.QueryRowContext(t.Context(), `SELECT id FROM native_attempts ORDER BY id LIMIT 1 OFFSET 1`).Scan(&stop); err != nil {
+				t.Fatal(err)
+			}
+			trigger := fmt.Sprintf(`CREATE TRIGGER activity_conversion_failure BEFORE UPDATE OF report_projection_version ON native_attempts WHEN NEW.id='%s' BEGIN SELECT RAISE(ABORT,'conversion interrupted'); END`, stop)
+			if _, err := first.service.database.db.ExecContext(t.Context(), trigger); err != nil {
+				t.Fatal(err)
+			}
+			if err := first.service.convertActivityProjections(t.Context()); err == nil {
+				t.Fatal("expected interrupted conversion")
+			}
+			count := func() int {
+				t.Helper()
+				var n int
+				if err := first.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM native_attempts WHERE activity_projection_version=1 AND report_projection_version=1`).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				var partial int
+				if err := first.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM native_attempts WHERE report_projection_version=1 AND activity_projection_version IS NULL`).Scan(&partial); err != nil || partial != 0 {
+					t.Fatalf("attempt and report projections committed separately: rows=%d error=%v", partial, err)
+				}
+				return n
+			}
+			if got := count(); got != 1 {
+				t.Fatalf("first item must commit independently: %d", got)
+			}
+			if _, err := first.service.database.db.ExecContext(t.Context(), `DROP TRIGGER activity_conversion_failure`); err != nil {
+				t.Fatal(err)
+			}
+			if err := first.service.convertActivityProjections(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if got := count(); got != 1+storageConversionRows {
+				t.Fatalf("tick exceeded or missed fixed budget: %d", got)
+			}
+			if err := first.service.convertActivityProjections(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if got := count(); got != 2*(storageConversionRows/2+1) {
+				t.Fatalf("backfill did not complete: %d", got)
+			}
+			for _, f := range []nativeFixture{first, second} {
+				var n int
+				if err := first.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM native_attempts WHERE project_id=? AND activity_projection_version=1 AND report_projection_version=1`, f.project.ID).Scan(&n); err != nil || n != storageConversionRows/2+1 {
+					t.Fatalf("project rows=%d err=%v", n, err)
+				}
+			}
+		})
 	}
 }

@@ -744,11 +744,11 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime',json(?)) WHERE id=?", string(raw), start.Data.AttemptID); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,data_json=json_set(data_json,'$.runtime',json(?)) WHERE id=?", string(raw), start.Data.AttemptID); err != nil {
 				t.Fatal(err)
 			}
 			if test.malformedPhases {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime.phases',?) WHERE id=?", "malformed", start.Data.AttemptID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,data_json=json_set(data_json,'$.runtime.phases',?) WHERE id=?", "malformed", start.Data.AttemptID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -797,7 +797,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime',json(?)) WHERE id=?", string(raw), start.Data.AttemptID); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,data_json=json_set(data_json,'$.runtime',json(?)) WHERE id=?", string(raw), start.Data.AttemptID); err != nil {
 		t.Fatal(err)
 	}
 	tx, err = f.service.database.db.BeginTx(t.Context(), nil)
