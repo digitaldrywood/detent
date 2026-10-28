@@ -160,10 +160,11 @@ test-fast: generate-docs
 
 # Hub server tests split into slices balanced by measured time; slice 4 catches every other name.
 HUB_SLICE_1 := -run '^Test[BDEFILNQTUV]'
-HUB_SLICE_2 := -run '^Test[HMP]'
+HUB_SLICE_2 := -run '^Test[MP]'
 HUB_SLICE_3 := -run '^Test[CGS]'
 HUB_SLICE_4 := -skip '^Test[ABCDEFGHILMNPQSTUV]'
-HUB_SLICE_5 := -run '^TestA'
+HUB_SLICE_5 := -run '^Test[A]'
+HUB_SLICE_6 := -run '^TestH'
 
 # RACE_SHARD=i/n races one balanced slice of the packages outside the hub server; RACE_SHARD=hub-N races hub server slice N.
 RACE_SHARD ?=
@@ -193,7 +194,7 @@ test-cover:
 else
 test-cover:
 	@mkdir -p tmp
-	@rm -f tmp/workspace-cover.raw.out tmp/rest-cover.raw.out tmp/web-cover.raw.out tmp/hub-{1,2,3,4,5}-cover.raw.out tmp/hub-cover.raw.out tmp/packages-cover.raw.out
+	@rm -f tmp/workspace-cover.raw.out tmp/rest-cover.raw.out tmp/web-cover.raw.out tmp/hub-{1,2,3,4,5,6}-cover.raw.out tmp/hub-cover.raw.out tmp/packages-cover.raw.out
 	@if [ "$(firstword $(subst /, ,$(COVER_SHARD)))" = 1 ]; then \
 		bash scripts/test-workspace.sh -coverprofile tmp/workspace-cover.raw.out -output tmp/workspace-cover-evidence; \
 	fi
@@ -211,7 +212,8 @@ test-cover:
 		$(GO_TEST) -coverprofile=tmp/hub-3-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_3); \
 		$(GO_TEST) -coverprofile=tmp/hub-4-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_4); \
 		$(GO_TEST) -coverprofile=tmp/hub-5-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_5); \
-		go run ./tools/covermerge -union tmp/hub-1-cover.raw.out tmp/hub-2-cover.raw.out tmp/hub-3-cover.raw.out tmp/hub-4-cover.raw.out tmp/hub-5-cover.raw.out > tmp/hub-cover.raw.out; \
+		$(GO_TEST) -coverprofile=tmp/hub-6-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_6); \
+		go run ./tools/covermerge -union tmp/hub-1-cover.raw.out tmp/hub-2-cover.raw.out tmp/hub-3-cover.raw.out tmp/hub-4-cover.raw.out tmp/hub-5-cover.raw.out tmp/hub-6-cover.raw.out > tmp/hub-cover.raw.out; \
 		profiles=tmp/hub-cover.raw.out; \
 	fi; \
 	if [ -n "$$remaining" ]; then \
