@@ -1,7 +1,9 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -473,17 +476,53 @@ func TestTeamThreadPaginationAndReferences(t *testing.T) {
 	ref := operatortool.ThreadReference{Kind: "issue", ID: string(issue.WorkItemID)}
 	r = performHubAPIRequest(t, f.service, http.MethodPost, threadBase(f)+"/"+first.ID+"/posts", f.token, teamThreadInput{Kind: "finding", Body: "Linked finding", References: []operatortool.ThreadReference{ref}})
 	requireNativeStatus(t, r, 201)
+	f.service.stopHealthDetector()
+	f.service.outbox.stop()
 	for _, tc := range []struct {
+		name  string
 		token string
 		want  int
-	}{{f.token, 1}, {second.token, 0}} {
-		r = performHubAPIRequest(t, f.service, http.MethodGet, threadBase(f)+"/"+first.ID, tc.token, nil)
-		requireNativeStatus(t, r, 200)
-		var read teamThreadRead
-		decodeHubResponse(t, r, &read)
-		if len(read.Posts) != 1 || len(read.Posts[0].References) != tc.want {
-			t.Fatalf("reference access=%+v", read)
-		}
+	}{{"visible reference", f.token, 1}, {"hidden reference", second.token, 0}} {
+		t.Run("single reader/"+tc.name, func(t *testing.T) {
+			reader := f.service.database.reader
+			reader.SetMaxOpenConns(1)
+			defer reader.SetMaxOpenConns(readerConnections)
+			waits := reader.Stats().WaitCount
+			ctx, cancel := context.WithCancel(t.Context())
+			request := newHubAPIRequest(t, http.MethodGet, threadBase(f)+"/"+first.ID, tc.token, nil).WithContext(ctx)
+			response := httptest.NewRecorder()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				f.service.Handler().ServeHTTP(response, request)
+			}()
+			defer func() {
+				cancel()
+				<-done
+			}()
+			testenv.WaitUntil(t, t.Context(), func() error {
+				select {
+				case <-done:
+					return nil
+				default:
+				}
+				if reader.Stats().WaitCount > waits {
+					return nil
+				}
+				return errors.New("thread read has not completed")
+			})
+			select {
+			case <-done:
+			default:
+				t.Fatal("thread read requested another reader connection while holding the only connection")
+			}
+			requireNativeStatus(t, response, 200)
+			var read teamThreadRead
+			decodeHubResponse(t, response, &read)
+			if len(read.Posts) != 1 || len(read.Posts[0].References) != tc.want {
+				t.Fatalf("reference access=%+v", read)
+			}
+		})
 	}
 	r = performHubAPIRequest(t, f.service, http.MethodPost, threadBase(f)+"/"+first.ID+"/posts", second.token, teamThreadInput{Kind: "note", Body: "Not authorized to link", References: []operatortool.ThreadReference{ref}})
 	if r.Code != 404 {
