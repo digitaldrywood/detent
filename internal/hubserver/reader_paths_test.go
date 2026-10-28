@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -167,6 +168,7 @@ func TestReadOnlyGETsNeverAcquireWriter(t *testing.T) {
 			"/projects", "/project-rank", "/members", "/fleet", "/plan", "/billing", "/secrets/" + flySpritesToken,
 			"/monthly-budget", "/model-selection", "/integrations/slack",
 			"/sprite-pool", "/work-view-preference", "/work-views",
+			"/work-board?project=" + f.project + "&state=" + url.QueryEscape(`{"view":"board","tab":"active","sort":"default","completedWindow":"24h"}`),
 			"/issue-notification-preference", "/daily-summary-preference",
 			"/projects/" + f.project + "/work-view-preference",
 			"/activity?project=" + f.project,

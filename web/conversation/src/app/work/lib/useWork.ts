@@ -33,7 +33,7 @@ export interface BoardState extends BoardData {
   readonly live: boolean;
 }
 
-export function useBoard(projectId: string | null, view: WorkViewState, projectIds?: readonly string[]): BoardState & {
+export function useBoard(projectId: string | null, view: WorkViewState, projectIds?: readonly string[], aggregate = false): BoardState & {
   readonly reload: () => void;
   readonly loadMore: () => void;
   readonly loadBacklog: () => void;
@@ -43,7 +43,7 @@ export function useBoard(projectId: string | null, view: WorkViewState, projectI
   const http = useWorkHttp();
   const runnerNames = useRunnerNames();
   const readProject = projectIds === undefined ? projectId : projectIds.length === 1 ? projectIds[0]! : null;
-  const store = getBoardRead(client, http, readProject, view, projectIds);
+  const store = getBoardRead(client, http, readProject, view, projectIds, aggregate);
   const streamScope = store.scope;
   const streamKey = JSON.stringify([store.owner, streamScope]);
   const snapshot = React.useSyncExternalStore(store.subscribe, store.snapshot, store.snapshot);

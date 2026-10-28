@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-vi.mock("../../src/app/client.ts", () => ({ useClient: () => ({ bootstrap: { projects: [{ id: "project_one", name: "Example project" }] } }) }));
+vi.mock("../../src/app/client.ts", () => ({ useClient: () => ({ bootstrap: { projects: [{ id: "project_one", name: "Example project" }, { id: "project_two", name: "Second project" }] } }) }));
+vi.mock("../../src/app/components/ProjectGlyph.tsx", () => ({ ProjectGlyph: () => null }));
 import React from "react";
 import {
   cleanup,
@@ -18,6 +19,7 @@ import {
 } from "../../src/app/work/lib/savedViews.tsx";
 import {
   SavedViewControls,
+  SaveViewDialog,
   ViewActions,
   ViewsPage,
 } from "../../src/app/work/SavedViews.tsx";
@@ -64,7 +66,7 @@ const view: SavedView = {
   can_edit: true,
   name: "Closed bugs",
   scope: "personal",
-  project_id: "project_one",
+  project_id: "project_one", project_ids: ["project_one"],
   favorite: true,
   state,
 };
@@ -129,6 +131,46 @@ afterEach(() => {
 });
 
 describe("Saved Work views", () => {
+  it.each([
+    { ids: [], focus: null, opens: "All 2 projects", names: ["Example project", "Second project"] },
+    { ids: ["project_one"], focus: "project_one", opens: "Example project", names: ["Example project"] },
+    { ids: ["project_one", "project_two"], focus: "project_two", opens: "Second project", names: ["Example project", "Second project"] },
+    { ids: ["project_one", "project_two"], focus: null, opens: "All 2 projects", names: ["Example project", "Second project"], selectedLanes: ["Todo"] },
+  ])("saves the working set $ids opening on $opens", async ({ ids, focus, opens, names, selectedLanes }) => {
+    const user = userEvent.setup();
+    const savedState = { ...state, lanes: selectedLanes ?? null };
+    const lanes = [{ id: "todo", name: "Todo", terminal: false, dispatchable: true, category: "unstarted" }, { id: "backlog", name: "Backlog", terminal: false, dispatchable: false, category: "backlog" }, { id: "done", name: "Done", terminal: true, dispatchable: false, category: "completed" }];
+    mount(<SaveViewDialog state={savedState} projectId={focus} projectIds={ids} lanes={lanes} onClose={() => {}} onSaved={() => {}} />);
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("Opens on").nextElementSibling?.textContent).toBe(opens);
+    const chips = within(dialog).getByLabelText("Projects");
+    for (const name of names) expect(within(chips).getByText(name)).toBeTruthy();
+    if (ids.length === 1) expect(within(chips).queryByText("Second project")).toBeNull();
+    expect(within(dialog).getByRole("checkbox", { name: "Pin to Favorites" }).getAttribute("aria-checked")).toBe("true");
+    expect(within(dialog).getByText("Sort").nextElementSibling?.textContent).toBe("Closed");
+    expect(within(dialog).getByText("Filters").nextElementSibling?.textContent).toBe("Label: bug · Including archived");
+    expect(within(dialog).getByText("Layout").nextElementSibling?.textContent).toBe(selectedLanes ? "List · Lanes 1/2" : "List · Lanes 2/2");
+    await user.type(within(dialog).getByRole("textbox", { name: "Name" }), "Project setup");
+    await user.click(within(dialog).getByRole("button", { name: "Save view" }));
+    await waitFor(() => expect(fixture.http.saveView).toHaveBeenCalledWith(expect.objectContaining({ project_ids: ids, project_id: focus, state: savedState, favorite: true }), undefined));
+  });
+
+  it("updates a view with the current working set, focus and toolbar settings", async () => {
+    fixture.http.listSavedViews.mockResolvedValue({ views: [view] });
+    const setup = { project_ids: ["project_one", "project_two"], project_id: "project_two", state: { ...state, sort: "title" as const, lanes: ["Todo"], collapsed: ["Done"] } };
+    function Current(): React.ReactElement {
+      const saved = useSavedViews();
+      const publish = saved?.setCurrentSetup;
+      React.useLayoutEffect(() => publish?.(setup), [publish]);
+      return <Actions />;
+    }
+    mount(<Current />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Actions for Closed bugs" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Update with current setup" }));
+    await waitFor(() => expect(fixture.http.saveView).toHaveBeenCalledWith({ ...view, ...setup }, view.id));
+  });
+
   it("saves the complete current state, defaults to favorites and personal, and opens the new view", async () => {
     const user = userEvent.setup();
     mount(<Controls />);
@@ -138,7 +180,7 @@ describe("Saved Work views", () => {
     const dialog = screen.getByRole("dialog");
     expect(
       within(dialog)
-        .getByRole("switch", { name: "Add to Favorites" })
+        .getByRole("checkbox", { name: "Pin to Favorites" })
         .getAttribute("aria-checked"),
     ).toBe("true");
     expect(
@@ -146,7 +188,7 @@ describe("Saved Work views", () => {
         .getByRole("switch", { name: "Share with organization" })
         .getAttribute("aria-checked"),
     ).toBe("false");
-    expect(within(dialog).getByText(/Completed: 7 days/)).toBeTruthy();
+    expect(within(dialog).getByText("Completed").nextElementSibling?.textContent).toBe("7 days");
     await user.type(
       within(dialog).getByRole("textbox", { name: "Name" }),
       "Closed bugs",
@@ -159,7 +201,7 @@ describe("Saved Work views", () => {
         {
           name: "Closed bugs",
           scope: "personal",
-          project_id: "project_one",
+          project_id: "project_one", project_ids: ["project_one"],
           favorite: true,
           state,
         },
@@ -171,7 +213,7 @@ describe("Saved Work views", () => {
     });
   });
 
-  it("hides Save as view for defaults and matching saved states", async () => {
+  it("allows saving default settings and hides only matching saved setups", async () => {
     fixture.http.listSavedViews.mockResolvedValue({ views: [view] });
     mount(
       <>
@@ -180,7 +222,7 @@ describe("Saved Work views", () => {
       </>,
     );
     await waitFor(() => expect(fixture.http.listSavedViews).toHaveBeenCalled());
-    expect(screen.queryByRole("button", { name: "Save as view" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Save as view" })).toHaveLength(1);
   });
 
   it("resets edits, saves edits in place and saves a changed view as new", async () => {
@@ -218,7 +260,7 @@ describe("Saved Work views", () => {
   it.each([
     "Rename",
     "Duplicate",
-    "Remove from Favorites",
+    "Unpin from Favorites",
     "Share with organization",
     "Delete view",
   ])("runs the %s menu action", async (action) => {
@@ -246,7 +288,7 @@ describe("Saved Work views", () => {
       await waitFor(() =>
         expect(fixture.http.deleteView).toHaveBeenCalledWith("view_one"),
       );
-    } else if (action === "Remove from Favorites") {
+    } else if (action === "Unpin from Favorites") {
       await waitFor(() =>
         expect(fixture.http.favoriteView).toHaveBeenCalledWith(
           "view_one",
@@ -308,7 +350,7 @@ describe("Saved Work views", () => {
           id: "view_two",
           name: "Team work",
           scope: "organization",
-          project_id: null,
+          project_id: null, project_ids: [],
         },
       ],
     });

@@ -65,6 +65,7 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 		e.PUT(path, s.workViewPreference, session)
 		e.DELETE(path, s.workViewPreference, session)
 	}
+	e.GET(hostedOrganizationBase+"/work-board", s.workBoard, session)
 	e.GET(hostedOrganizationBase+"/work-views", s.savedWorkViews, session)
 	e.POST(hostedOrganizationBase+"/work-views", s.savedWorkViews, session)
 	e.GET(hostedOrganizationBase+"/work-views/:view", s.savedWorkViews, session)

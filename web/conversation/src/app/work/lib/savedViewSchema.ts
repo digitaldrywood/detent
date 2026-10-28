@@ -31,8 +31,11 @@ export const SavedWorkView = Schema.Struct({
   name: Schema.String,
   scope: Schema.Literals(["personal", "organization"]),
   project_id: Schema.NullOr(Schema.String),
+  project_ids: Schema.Array(Schema.String),
   favorite: Schema.Boolean,
   state: SavedWorkState,
 });
 export type SavedView = typeof SavedWorkView.Type;
 export type SavedViewInput = Omit<SavedView, "id" | "owner_id" | "can_edit">;
+
+export type SavedViewSetup = Pick<SavedViewInput, "project_id" | "project_ids" | "state">;

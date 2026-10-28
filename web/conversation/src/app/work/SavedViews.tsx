@@ -7,38 +7,46 @@ import { WorkspacePageContainer } from "../../components/WorkspacePageContainer.
 import { WorkTopBar } from "./components/WorkTopBar.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { useSavedViews, savedViewPath, type SavedView } from "./lib/savedViews.tsx";
-import { isDefaultViewState, serializeViewState, type WorkViewState } from "./lib/viewState.ts";
+import { serializeViewState, type WorkViewState } from "./lib/viewState.ts";
 import { SaveViewDialog, ViewActions, ViewSummary } from "./SavedViewActions.tsx";
 import { WorkBoard } from "./WorkBoard.tsx";
+import { useUiStateStore, setSidebarProjectWorkingSetKeys, setSidebarProjectScopeKey } from "../../uiStateStore.ts";
+import { sidebarProjectScopeKey } from "../adapters/shell.ts";
 import { usePageTitle } from "../pageTitle.ts";
+import type { Lane } from "./lib/model.ts";
 
 export { SaveViewDialog, ViewActions, ViewSummary } from "./SavedViewActions.tsx";
 
 export function SavedViewControls({
   state,
   projectId,
+  lanes,
   active,
   onChange,
 }: {
   state: WorkViewState;
   projectId: string | null;
+  lanes?: readonly Lane[];
   active?: SavedView;
   onChange: (state: WorkViewState) => void;
 }): React.ReactElement | null {
   const saved = useSavedViews();
+  const client = useClient();
   const navigate = useNavigate();
   const [dialog, setDialog] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   if (!saved || saved.loading || saved.error) return null;
+  const projectIds = saved.currentSetup?.project_ids ?? (projectId === null ? [] : [projectId]);
   const query = serializeViewState(state);
   const edited =
-    active !== undefined && query !== serializeViewState(active.state);
+    active !== undefined && (query !== serializeViewState(active.state) || active.project_id !== projectId ||
+      JSON.stringify([...active.project_ids].sort()) !== JSON.stringify([...projectIds].sort()));
   const canCreate =
-    !isDefaultViewState(state) &&
     !saved.views.some(
       (view) =>
         view.project_id === projectId &&
+        JSON.stringify([...view.project_ids].sort()) === JSON.stringify([...projectIds].sort()) &&
         serializeViewState(view.state) === query,
     );
   const save = async () => {
@@ -46,7 +54,7 @@ export function SavedViewControls({
     setBusy(true);
     setError(null);
     try {
-      await saved.save({ ...active, state }, active.id);
+      await saved.save({ ...active, project_id: projectId, project_ids: projectIds, state }, active.id);
     } catch {
       setError("The view could not be saved. Try again.");
     } finally {
@@ -63,7 +71,13 @@ export function SavedViewControls({
               <Button
                 variant="ghost"
                 size="xs"
-                onClick={() => onChange(active.state)}
+                onClick={() => {
+                  const projects = client.bootstrap.projects;
+                  const keys = projects.filter((project) => active.project_ids.includes(project.id)).map(sidebarProjectScopeKey);
+                  const focus = projects.find((project) => project.id === active.project_id);
+                  useUiStateStore.setState((current) => setSidebarProjectScopeKey(setSidebarProjectWorkingSetKeys(current, keys), focus ? sidebarProjectScopeKey(focus) : null));
+                  onChange(active.state);
+                }}
               >
                 Reset
               </Button>
@@ -105,6 +119,8 @@ export function SavedViewControls({
         <SaveViewDialog
           state={state}
           projectId={projectId}
+          projectIds={projectIds}
+          lanes={lanes}
           onClose={() => setDialog(false)}
           onSaved={(view) => {
             void navigate({ to: savedViewPath(view) });
@@ -171,9 +187,7 @@ export function ViewsPage(): React.ReactElement {
                             ? "Organization"
                             : "Personal"}{" "}
                           ·{" "}
-                          {view.project_id === null
-                            ? "All projects"
-                            : client.bootstrap.projects.find((project) => project.id === view.project_id)?.name ?? "Project"}
+                          {view.project_ids.length === 0 ? "All projects" : view.project_ids.map((id) => client.bootstrap.projects.find((project) => project.id === id)?.name ?? "Project").join(", ")}
                         </p>
                         <div className="mt-2">
                           <ViewSummary state={view.state} />
@@ -194,7 +208,11 @@ export function ViewsPage(): React.ReactElement {
 export function SavedViewPage(): React.ReactElement {
   const { viewId } = useParams({ from: "/work/views/$viewId" });
   const saved = useSavedViews();
+  const shell = useShell();
   const view = saved?.views.find((view) => view.id === viewId);
+  const scope = view ? JSON.stringify([view.id, view.project_ids, view.project_id]) : null;
+  const [restored, setRestored] = React.useState<string | null>(null);
+  React.useLayoutEffect(() => setRestored(scope), [scope]);
   if (saved?.loading)
     return (
       <p role="status" className="p-5 text-sm text-muted-foreground">
@@ -210,7 +228,8 @@ export function SavedViewPage(): React.ReactElement {
         </Button>
       </div>
     );
+  if (restored !== scope) return <p role="status" className="p-5 text-sm text-muted-foreground">Loading view…</p>;
   return (
-    <WorkBoard key={view.id} projectId={view.project_id} savedView={view} />
+    <WorkBoard key={view.id} projectId={shell.projectId || null} savedView={view} />
   );
 }

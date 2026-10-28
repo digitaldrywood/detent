@@ -21,12 +21,13 @@ beforeEach(() => { resetSidebarState(); savedViews.value = null; });
 
 describe("the sidebar's Work navigation", () => {
   it("opens pinned views, marks the active favorite and keeps unpinned views in Views", async () => {
-    const view: SavedView = { id: "view_one", name: "Active bugs", owner_id: "alice", can_edit: true, project_id: null, scope: "personal", favorite: true, state: DEFAULT_VIEW_STATE };
+    const view: SavedView = { id: "view_one", name: "Active bugs", owner_id: "alice", can_edit: true, project_id: null, project_ids: ["proj_alpha", "proj_beta"], scope: "personal", favorite: true, state: DEFAULT_VIEW_STATE };
     savedViews.value = { views: [view, { ...view, id: "view_two", name: "Unpinned", favorite: false }] };
     const onNavigate = vi.fn();
     await renderSidebar({ navigation: { activePath: "/work/views/view_one", onNavigate } });
     const favorite = screen.getByRole("button", { name: "Active bugs" });
     expect(favorite.getAttribute("aria-current")).toBe("page");
+    expect(favorite.textContent).toBe("Active bugs2");
     expect(screen.getByTestId("nav-work").getAttribute("aria-current")).toBeNull();
     expect(screen.queryByRole("button", { name: "Unpinned" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Favorites" }));

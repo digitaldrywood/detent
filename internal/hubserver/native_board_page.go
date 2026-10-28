@@ -102,7 +102,7 @@ func readNativeBoardSummary(ctx context.Context, q nativeQueryer, scope nativeSc
 		return nil, err
 	}
 	summary := &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{}, Lanes: []tracker.NativeWorkLane{}, AsOf: now}
-	filtered := scope.credential.HostedRole == "reporter" || strings.TrimSpace(params.Get("created_by")) != "" || strings.TrimSpace(params.Get("q")) != "" || len(params["type"])+len(params["verification"])+len(params["label"])+len(params["assignee"])+len(params["priority"]) > 0
+	filtered := scope.credential.HostedRole == "reporter" || params.Get("completed_from") != "" || params.Get("completed_to") != "" || strings.TrimSpace(params.Get("created_by")) != "" || strings.TrimSpace(params.Get("q")) != "" || len(params["type"])+len(params["verification"])+len(params["label"])+len(params["assignee"])+len(params["priority"]) > 0
 	statement := "SELECT b.state,count(*),sum(b.running) FROM native_board_items b WHERE " + where + " GROUP BY b.state"
 	if !filtered {
 		statement = "SELECT state,total,running FROM native_board_counts b WHERE " + where + " AND total>0"

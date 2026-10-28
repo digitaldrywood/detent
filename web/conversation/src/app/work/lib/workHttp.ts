@@ -1,3 +1,5 @@
+import { LoadedSchema, type Loaded } from "./boardSchema.ts";
+import type { WorkViewState } from "./viewState.ts";
 import { ArchiveUnavailable } from "../../../runtime/archiveDecode.ts";
 import { invalidateArchiveAccess, resolveArchivedResponse } from "../../../runtime/archive.ts";
 import { SavedWorkView, type SavedView, type SavedViewInput } from "./savedViewSchema.ts";
@@ -38,6 +40,7 @@ import {
   NativeIssue,
   NativeLabelList,
   NativeProject,
+  priorityValue,
   PullRequestActionAccepted,
   RelayTicket,
   REVISION_CONFLICT,
@@ -163,6 +166,7 @@ export interface ListWorkItemsInput {
 }
 
 export interface WorkHttp {
+  readonly readBoard: (projectIds: readonly string[], state: WorkViewState, signal?: AbortSignal) => Promise<readonly Loaded[]>;
   readonly getSourceRecovery: (projectId: string, itemId: string) => Promise<SourceRecovery>;
   readonly transferSource: (input: { projectId: string; itemId: string; key: string; expectedRevision: string; versionId: string; destinationRunnerId: string }) => Promise<SourceRecovery>;
   readonly listSavedViews: (signal?: AbortSignal) => Promise<{ readonly views: readonly SavedView[] }>;
@@ -600,6 +604,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
   return {
     origin: options.origin,
     apiBase: options.apiBase,
+    readBoard: (projectIds, state, signal) => send(Schema.Array(LoadedSchema), "GET", url(`${options.apiBase}/work-board`, { project: projectIds, state: JSON.stringify({ ...state, priority: state.priority.map((name) => String(priorityValue(name) ?? name)) }) }), undefined, signal),
     listSavedViews: async (signal) => {
       const schema = Schema.Struct({ views: Schema.Array(SavedWorkView), next_cursor: Schema.optional(Schema.String) });
       const views: SavedView[] = [];

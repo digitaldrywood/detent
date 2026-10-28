@@ -272,6 +272,53 @@ describe("the conversation shell", () => {
     }
   });
 
+  it("opens a multi-project view with its focus and toolbar settings and switches focus without new loads", async () => {
+    const requests: URL[] = [];
+    const fetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(new URL(String(input)));
+      return fetch(input, init);
+    });
+    const setup = { ...DEFAULT_VIEW_STATE, view: "list", tab: "all", sort: "title", completedWindow: "7d", lanes: ["Todo"], collapsed: ["Done"] };
+    const { router } = await mountApp({ path: "/work/views/view_1", seed: async (origin) => {
+      await fetch(`${origin}/api/v2/organizations/org_mock/work-views`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Team setup", project_ids: ["proj_alpha", "proj_beta"], project_id: "proj_beta", scope: "personal", favorite: true, state: setup }),
+      });
+    } });
+    const rows = () => within(screen.getByRole("list", { name: "Project working set" }));
+    await waitFor(() => expect(rows().getByRole("button", { name: "beta" }).getAttribute("aria-pressed")).toBe("true"));
+    expect(rows().getByRole("button", { name: "alpha" })).toBeTruthy();
+    expect(screen.getByLabelText("Filter threads by project").textContent).toContain("2 of");
+    expect(await screen.findByRole("table")).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "List" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("button", { name: /Sort Title/ })).toBeTruthy();
+    expect(screen.getAllByText("Team setup").length).toBeGreaterThan(1);
+    const boardRequests = () => requests.filter((url) => url.pathname.endsWith("/work-items") && url.searchParams.get("include") === "board").length;
+    const loaded = requests.filter((url) => url.pathname.endsWith("/work-board")).length;
+    expect(loaded).toBe(1);
+    expect(boardRequests()).toBe(0);
+    const betaRows = within(screen.getByRole("table")).getAllByRole("row").length;
+    for (const name of ["All", "alpha", "beta"]) {
+      fireEvent.click(rows().getByRole("button", { name }));
+      await waitFor(() => expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(name === "All" ? "2 projects" : name));
+      expect(router.state.location.pathname).toBe("/work/views/view_1");
+      expect(boardRequests()).toBe(0);
+      expect(requests.filter((url) => url.pathname.endsWith("/work-board")).length).toBe(loaded);
+      if (name === "All") expect(within(screen.getByRole("table")).getAllByRole("row").length).toBeGreaterThan(betaRows);
+    }
+    await act(async () => { await router.navigate({ to: "/chat" }); });
+    await act(async () => { await router.navigate({ to: "/work/views/view_1" }); });
+    expect(await screen.findByRole("table")).toBeTruthy();
+    await waitFor(() => expect(requests.filter((url) => url.pathname.endsWith("/work-board")).length).toBe(loaded + 1));
+    expect(boardRequests()).toBe(0);
+    fireEvent.click(within(screen.getByRole("region", { name: "Favorites" })).getByRole("button", { name: "Actions for Team setup" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Duplicate" }));
+    expect(screen.getByText("Opens on").nextElementSibling?.textContent).toBe("beta");
+    expect(screen.getByText("Layout").nextElementSibling?.textContent).toBe("List · Lanes Todo");
+    expect(screen.getByText("Collapsed").nextElementSibling?.textContent).toBe("Done");
+  });
+
   it.each([false, true])("restores saved-view project scope throughout the shell (direct entry: %s)", async (direct) => {
     const savedViews = holdResponse("GET", "/api/v2/organizations/org_mock/work-views");
     const { router } = await mountApp({
@@ -288,7 +335,7 @@ describe("the conversation shell", () => {
         for (const [name, project_id] of [["Beta saved view", "proj_beta"], ["All saved view", null]]) {
           await fetch(`${base}/work-views`, {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, project_id, scope: "personal", favorite: true, state: DEFAULT_VIEW_STATE }),
+            body: JSON.stringify({ name, project_id, project_ids: project_id === null ? [] : [project_id], scope: "personal", favorite: true, state: DEFAULT_VIEW_STATE }),
           });
         }
       },

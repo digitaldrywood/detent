@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -123,12 +124,21 @@ func TestLocalAppAuthentication(t *testing.T) {
 		}
 		for _, token := range []string{testHubAdminToken, other.Token} {
 			request(token, http.MethodPut, base+"/work-view-preference", `{"query":"view=list"}`)
-			view := savedWorkView{Name: "Example view", Scope: "personal", ProjectID: new(string(f.project.ID)), Favorite: true, State: savedWorkState{View: "board", Tab: "active", Sort: "updated", CompletedWindow: "24h"}}
+			view := savedWorkView{Name: "Example view", Scope: "personal", ProjectID: new(string(f.project.ID)), ProjectIDs: []string{string(f.project.ID)}, Favorite: true, State: savedWorkState{View: "board", Tab: "active", Sort: "updated", CompletedWindow: "24h"}}
 			encoded, err := json.Marshal(view)
 			if err != nil {
 				t.Fatal(err)
 			}
 			request(token, http.MethodPost, base+"/work-views", string(encoded))
+			setup, err := json.Marshal(view.State)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var board []workBoardProject
+			decodeHubResponse(t, request(token, http.MethodGet, base+"/work-board?project="+url.QueryEscape(string(f.project.ID))+"&state="+url.QueryEscape(string(setup)), ""), &board)
+			if len(board) != 1 || board[0].Project.ID != f.project.ID {
+				t.Fatalf("board=%+v", board)
+			}
 		}
 		project := request(testHubAdminToken, http.MethodPost, base+"/projects", `{"name":"Browser project","grant_access":true,"idempotency_key":"browser-project"}`)
 		var created tracker.NativeProject

@@ -1,5 +1,5 @@
 import { SavedViewControls } from "./SavedViews.tsx";
-import type { SavedView } from "./lib/savedViews.tsx";
+import { useSavedViews, type SavedView } from "./lib/savedViews.tsx";
 // Moving a card is optimistic and conflict-aware. The card lands in the new
 // lane immediately, the transition goes to the hub with the revision the card
 // was rendered from, and a `409` puts the card back where it was, reloads, and
@@ -103,11 +103,16 @@ export function WorkBoard({ projectId, savedView }: { projectId: string | null; 
   const workingProjects = React.useMemo(() => client.bootstrap.projects
     .filter((entry) => workingSetKeys.includes(sidebarProjectScopeKey(entry)))
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" })), [client.bootstrap.projects, workingSetKeys]);
-  const workingIds = React.useMemo(() => savedView === undefined && workingProjects.length > 0 &&
+  const workingIds = React.useMemo(() => workingProjects.length > 0 &&
     (projectId === null || workingProjects.some((entry) => entry.id === projectId))
-    ? workingProjects.map((entry) => entry.id) : undefined, [workingProjects, projectId, savedView]);
+    ? workingProjects.map((entry) => entry.id) : undefined, [workingProjects, projectId]);
   const [view, setView] = useViewState(workingIds === undefined ? projectId : null, savedView);
-  const board = useBoard(projectId, view, workingIds);
+  const board = useBoard(projectId, view, workingIds, savedView !== undefined);
+  const setCurrentSetup = useSavedViews()?.setCurrentSetup;
+  React.useLayoutEffect(() => {
+    setCurrentSetup?.({ project_id: projectId, project_ids: workingIds ?? (projectId === null ? [] : [projectId]), state: view });
+  }, [setCurrentSetup, projectId, workingIds, view]);
+  React.useEffect(() => () => setCurrentSetup?.(null), [setCurrentSetup]);
   usePublishProjectCounts(board.projectCounts);
   const currentView = React.useRef(view);
   currentView.current = view;
@@ -304,8 +309,8 @@ export function WorkBoard({ projectId, savedView }: { projectId: string | null; 
 
   const topBar = (
     <WorkTopBar
-      context="Work"
-      title={savedView?.name ?? scopeName}
+      context={savedView?.name ?? "Work"}
+      title={scopeName}
       titleTooltip={projectId === null && workingIds !== undefined ? workingProjects.map((entry) => entry.name).join(", ") : scopeName}
       scopeGroup={projectId === null && workingIds !== undefined}
       completed={noProjects ? null : (
@@ -401,7 +406,7 @@ export function WorkBoard({ projectId, savedView }: { projectId: string | null; 
       {board.workflows.length > 0 ? <WorkToolbar
         view={view}
         savedViewActive={savedView !== undefined}
-        savedControls={<SavedViewControls state={view} projectId={projectId} active={savedView} onChange={setView} />}
+        savedControls={<SavedViewControls state={view} projectId={projectId} lanes={board.lanes} active={savedView} onChange={setView} />}
         onChange={setView}
         lanes={board.lanes}
         totals={board.totals?.lanes}

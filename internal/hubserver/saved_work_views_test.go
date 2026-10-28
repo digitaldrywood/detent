@@ -2,13 +2,18 @@ package hubserver
 
 import (
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/pressly/goose/v3"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestSavedWorkViews(t *testing.T) {
@@ -20,7 +25,11 @@ func TestSavedWorkViews(t *testing.T) {
 	state := savedWorkState{View: "list", Tab: "closed", Q: "a search", Sort: "updated", CompletedWindow: "7d", CompletedFrom: "2026-10-26T11:00:00Z", CompletedTo: "2026-10-27T11:00:00Z", Archived: true, CreatedBy: "me", State: []string{"Done"}, Type: []string{"bug"}, Label: []string{"label-a", "label-b"}, Assignee: []string{"alice", "bob"}, Priority: []string{"1", "2"}, Lanes: []string{}, Collapsed: []string{"Todo", "Backlog"}}
 	create := func(user hostedSecurityUser, name, scope string, project *string) savedWorkView {
 		t.Helper()
-		response := f.request(t, user, http.MethodPost, base, savedWorkView{Name: name, Scope: scope, ProjectID: project, Favorite: true, State: state})
+		ids := []string{}
+		if project != nil {
+			ids = append(ids, *project)
+		}
+		response := f.request(t, user, http.MethodPost, base, savedWorkView{ProjectIDs: ids, Name: name, Scope: scope, ProjectID: project, Favorite: true, State: state})
 		requireNativeStatus(t, response, http.StatusOK)
 		var v savedWorkView
 		decodeHubResponse(t, response, &v)
@@ -83,7 +92,7 @@ func TestSavedWorkViews(t *testing.T) {
 	if got := list(bob); len(got) != 2 {
 		t.Fatalf("grantless shared list = %+v", got)
 	}
-	requireNativeStatus(t, f.request(t, bob, http.MethodPost, base, savedWorkView{Name: "Denied", Scope: "personal", ProjectID: &project, State: state}), http.StatusNotFound)
+	requireNativeStatus(t, f.request(t, bob, http.MethodPost, base, savedWorkView{ProjectIDs: []string{project}, Name: "Denied", Scope: "personal", ProjectID: &project, State: state}), http.StatusNotFound)
 	provider := newHostedSecurityProvider()
 	second := hostedSecurityFixture{provider: provider, service: openTestService(t, Config{
 		DatabasePath: hostedTestDatabasePath(t), GitHubDisabled: true,
@@ -91,7 +100,7 @@ func TestSavedWorkViews(t *testing.T) {
 	})}
 	charlie := second.user(t, "charlie", "member", "charlie@example.test", "", "")
 	secondBase := "/api/v2/organizations/org_other/work-views"
-	response = second.request(t, charlie, http.MethodPost, secondBase, savedWorkView{Name: "Other organization", Scope: "organization", State: state})
+	response = second.request(t, charlie, http.MethodPost, secondBase, savedWorkView{ProjectIDs: []string{}, Name: "Other organization", Scope: "organization", State: state})
 	requireNativeStatus(t, response, http.StatusOK)
 	var secondView savedWorkView
 	decodeHubResponse(t, response, &secondView)
@@ -135,17 +144,24 @@ func TestSavedWorkViewValidation(t *testing.T) {
 	}{
 		{"empty name", func(v *savedWorkView) { v.Name = " " }},
 		{"long name", func(v *savedWorkView) { v.Name = strings.Repeat("x", 121) }},
+		{"missing working set", func(v *savedWorkView) { v.ProjectIDs = nil }},
+		{"duplicate project", func(v *savedWorkView) { v.ProjectIDs = []string{"one", "one"} }},
+		{"empty project", func(v *savedWorkView) { v.ProjectIDs = []string{""} }},
+		{"focus outside working set", func(v *savedWorkView) { v.ProjectID = new("outside") }},
+		{"oversized working set", func(v *savedWorkView) { v.ProjectIDs = make([]string, 101) }},
 		{"invalid scope", func(v *savedWorkView) { v.Scope = "public" }},
 		{"invalid layout", func(v *savedWorkView) { v.State.View = "grid" }},
 		{"invalid tab", func(v *savedWorkView) { v.State.Tab = "other" }},
 		{"invalid sort", func(v *savedWorkView) { v.State.Sort = "other" }},
 		{"invalid window", func(v *savedWorkView) { v.State.CompletedWindow = "forever" }},
+		{"invalid completed from", func(v *savedWorkView) { v.State.CompletedFrom = "invalid" }},
+		{"invalid completed to", func(v *savedWorkView) { v.State.CompletedTo = "invalid" }},
 		{"invalid author", func(v *savedWorkView) { v.State.CreatedBy = "other" }},
 		{"oversized search", func(v *savedWorkView) { v.State.Q = strings.Repeat("x", 8193) }},
 		{"oversized selection", func(v *savedWorkView) { v.State.Label = make([]string, 257) }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			v := savedWorkView{Name: "View", Scope: "personal", State: savedWorkState{View: "board", Tab: "active", Sort: "default", CompletedWindow: "24h"}}
+			v := savedWorkView{ProjectIDs: []string{}, Name: "View", Scope: "personal", State: savedWorkState{View: "board", Tab: "active", Sort: "default", CompletedWindow: "24h"}}
 			test.change(&v)
 			requireNativeStatus(t, f.request(t, user, http.MethodPost, "/api/v2/organizations/org_security/work-views", v), http.StatusUnprocessableEntity)
 		})
@@ -164,7 +180,7 @@ func TestSavedWorkViewBounds(t *testing.T) {
 			alice := f.user(t, "alice", "member", "alice@example.test", "read", "")
 			bob := f.user(t, "bob", "member", "bob@example.test", "read", "")
 			base := "/api/v2/organizations/org_security/work-views"
-			view := savedWorkView{Name: "View", Scope: "organization", State: savedWorkState{View: "board", Tab: "active", Sort: "default", CompletedWindow: "24h"}}
+			view := savedWorkView{ProjectIDs: []string{}, Name: "View", Scope: "organization", State: savedWorkState{View: "board", Tab: "active", Sort: "default", CompletedWindow: "24h"}}
 			if test.large {
 				view.State.Label = make([]string, 24)
 				for i := range view.State.Label {
@@ -247,7 +263,7 @@ func TestSavedWorkViewBounds(t *testing.T) {
 				state.Tab = "active"
 				state.Sort = "default"
 				state.CompletedWindow = "24h"
-				response := f.request(t, alice, http.MethodPost, "/api/v2/organizations/org_security/work-views", savedWorkView{Name: "View", Scope: "organization", State: state})
+				response := f.request(t, alice, http.MethodPost, "/api/v2/organizations/org_security/work-views", savedWorkView{ProjectIDs: []string{}, Name: "View", Scope: "organization", State: state})
 				if response.Code != http.StatusUnprocessableEntity {
 					t.Fatalf("oversized view status=%d, want 422", response.Code)
 				}
@@ -265,7 +281,7 @@ func TestSavedWorkViewQuotas(t *testing.T) {
 		users[i] = f.user(t, name, "member", name+"@example.test", "read", "")
 	}
 	base := "/api/v2/organizations/org_security/work-views"
-	view := savedWorkView{Name: "View", Scope: "organization", State: savedWorkState{View: "board", Tab: "active", Sort: "default", CompletedWindow: "24h"}}
+	view := savedWorkView{ProjectIDs: []string{}, Name: "View", Scope: "organization", State: savedWorkState{View: "board", Tab: "active", Sort: "default", CompletedWindow: "24h"}}
 	first := make([]savedWorkView, 4)
 	for i := range 4 {
 		for j := range 50 {
@@ -337,6 +353,123 @@ func TestSavedWorkViewStorageScopes(t *testing.T) {
 			if err != nil || !view.CanEdit || view.Name != id {
 				t.Fatalf("view %s=%+v err=%v", id, view, err)
 			}
+		}
+	}
+}
+
+func TestSavedWorkViewWorkingSets(t *testing.T) {
+	t.Parallel()
+	f := newHostedSecurityFixture(t)
+	alice := f.user(t, "alice", "member", "alice@example.test", "read", "")
+	bob := f.user(t, "bob", "member", "bob@example.test", "read", "")
+	project := string(f.project)
+	second := "prj_second"
+	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) SELECT ?,organization_id,'Second project',profile,states_json,created_at FROM projects WHERE id=?`, second, project); err != nil {
+		t.Fatal(err)
+	}
+	secondFixture := f
+	secondFixture.project = tracker.ProjectID(second)
+	secondFixture.grant(t, alice, false, false)
+	base := "/api/v2/organizations/org_security/work-views"
+	siblingResponse := f.request(t, alice, http.MethodPost, base, savedWorkView{Name: "Sibling", Scope: "personal", ProjectIDs: []string{second}, ProjectID: &second, State: savedWorkState{View: "board", Tab: "active", Sort: "default", CompletedWindow: "24h"}})
+	requireNativeStatus(t, siblingResponse, http.StatusOK)
+	var sibling savedWorkView
+	decodeHubResponse(t, siblingResponse, &sibling)
+	for _, test := range []struct {
+		name  string
+		ids   []string
+		focus *string
+	}{
+		{"all", []string{}, nil},
+		{"single", []string{project}, &project},
+		{"multi focused", []string{second, project}, &second},
+		{"multi all", []string{project, second}, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := savedWorkView{Name: test.name, Scope: "organization", ProjectIDs: test.ids, ProjectID: test.focus, Favorite: true, State: savedWorkState{View: "list", Tab: "all", Sort: "title", CompletedWindow: "7d", Label: []string{"bug"}, Lanes: []string{"Todo"}, Collapsed: []string{"Done"}}}
+			response := f.request(t, alice, http.MethodPost, base, input)
+			requireNativeStatus(t, response, http.StatusOK)
+			var created savedWorkView
+			decodeHubResponse(t, response, &created)
+			if !slices.Equal(created.ProjectIDs, test.ids) || !reflect.DeepEqual(created.ProjectID, test.focus) {
+				t.Fatalf("created scope=%+v", created)
+			}
+			response = f.request(t, alice, http.MethodGet, base+"/"+created.ID, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var read savedWorkView
+			decodeHubResponse(t, response, &read)
+			if !reflect.DeepEqual(read, created) {
+				t.Fatalf("read=%+v want=%+v", read, created)
+			}
+			if len(test.ids) > 1 {
+				requireNativeStatus(t, f.request(t, bob, http.MethodGet, base+"/"+created.ID, nil), http.StatusNotFound)
+				requireNativeStatus(t, f.request(t, bob, http.MethodPost, base, input), http.StatusNotFound)
+				response = f.request(t, bob, http.MethodGet, base, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var page savedWorkViewsPage
+				decodeHubResponse(t, response, &page)
+				if len(page.Views) != 0 {
+					t.Fatalf("inaccessible views listed: %+v", page.Views)
+				}
+			}
+			created.ProjectIDs = []string{second}
+			created.ProjectID = &second
+			created.State.Sort = "updated"
+			response = f.request(t, alice, http.MethodPut, base+"/"+created.ID, created)
+			requireNativeStatus(t, response, http.StatusOK)
+			decodeHubResponse(t, response, &read)
+			if !slices.Equal(read.ProjectIDs, []string{second}) || read.ProjectID == nil || *read.ProjectID != second || read.State.Sort != "updated" || !slices.Equal(read.State.Label, []string{"bug"}) || !read.Favorite {
+				t.Fatalf("updated=%+v", read)
+			}
+			requireNativeStatus(t, f.request(t, alice, http.MethodDelete, base+"/"+created.ID, nil), http.StatusNoContent)
+			requireNativeStatus(t, f.request(t, alice, http.MethodGet, base+"/"+created.ID, nil), http.StatusNotFound)
+			var count int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM hosted_work_view_projects WHERE view_id=?`, created.ID).Scan(&count); err != nil || count != 0 {
+				t.Fatalf("membership cleanup count=%d err=%v", count, err)
+			}
+			requireNativeStatus(t, f.request(t, alice, http.MethodGet, base+"/"+sibling.ID, nil), http.StatusOK)
+		})
+	}
+}
+
+func TestSavedWorkViewProjectsMigration(t *testing.T) {
+	t.Parallel()
+	f := newHostedSecurityFixture(t)
+	user := f.user(t, "alice", "member", "alice@example.test", "read", "")
+	migrations, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := goose.NewProvider(goose.DialectSQLite3, f.service.database.db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(hubSchemaTable), goose.WithSlog(discardLogger()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = provider.DownTo(t.Context(), 20261028050852); err != nil {
+		t.Fatal(err)
+	}
+	project := string(f.project)
+	for i, test := range []struct {
+		id      string
+		project *string
+	}{{"view_single", &project}, {"view_all", nil}} {
+		if _, err = f.service.database.db.ExecContext(t.Context(), `INSERT INTO hosted_work_views(id,organization_id,owner_id,name,scope,project_id,layout,tab,search,sort,completed_window,archived,created_by,all_lanes,owner_slot,organization_slot) VALUES(?,'org_security',?,?,'personal',?,'list','all','','title','7d',0,'',1,?,?)`, test.id, user.identity.Subject, test.id, test.project, i, i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = provider.Up(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		id    string
+		ids   []string
+		focus *string
+	}{{"view_single", []string{project}, &project}, {"view_all", []string{}, nil}} {
+		view, err := f.service.readSavedWorkView(t.Context(), "org_security", user.identity.Subject, test.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(view.ProjectIDs, test.ids) || !reflect.DeepEqual(view.ProjectID, test.focus) || view.State.View != "list" || view.State.Sort != "title" || view.State.Lanes != nil {
+			t.Fatalf("migrated=%+v", view)
 		}
 	}
 }

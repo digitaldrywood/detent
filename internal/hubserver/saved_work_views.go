@@ -51,14 +51,15 @@ type savedWorkState struct {
 }
 
 type savedWorkView struct {
-	CanEdit   bool           `json:"can_edit"`
-	ID        string         `json:"id"`
-	OwnerID   string         `json:"owner_id"`
-	Name      string         `json:"name"`
-	Scope     string         `json:"scope"`
-	ProjectID *string        `json:"project_id"`
-	Favorite  bool           `json:"favorite"`
-	State     savedWorkState `json:"state"`
+	CanEdit    bool           `json:"can_edit"`
+	ID         string         `json:"id"`
+	OwnerID    string         `json:"owner_id"`
+	Name       string         `json:"name"`
+	Scope      string         `json:"scope"`
+	ProjectID  *string        `json:"project_id"`
+	ProjectIDs []string       `json:"project_ids"`
+	Favorite   bool           `json:"favorite"`
+	State      savedWorkState `json:"state"`
 }
 
 func (s *Service) savedWorkViews(c echo.Context) error {
@@ -158,8 +159,8 @@ func (s *Service) savedWorkViews(c echo.Context) error {
 	if !validSavedWorkView(v) {
 		return s.nativeAPIError(c, nativePublicInvalid("The view name, scope or display state is invalid"))
 	}
-	if v.ProjectID != nil {
-		scope := nativeScope{organization: tracker.OrganizationID(org), project: tracker.ProjectID(*v.ProjectID), credential: credential}
+	for _, projectID := range v.ProjectIDs {
+		scope := nativeScope{organization: tracker.OrganizationID(org), project: tracker.ProjectID(projectID), credential: credential}
 		if err := s.requireHostedProject(readCtx, s.database.reader, scope, false); err != nil {
 			return s.nativeAPIError(c, err)
 		}
@@ -208,6 +209,17 @@ func (s *Service) savedWorkViews(c echo.Context) error {
 		}
 	}
 	if err == nil {
+		_, err = tx.ExecContext(ctx, `DELETE FROM hosted_work_view_projects WHERE view_id=?`, id)
+	}
+	if err == nil {
+		for position, projectID := range v.ProjectIDs {
+			_, err = tx.ExecContext(ctx, `INSERT INTO hosted_work_view_projects(view_id,project_id,position) VALUES(?,?,?)`, id, projectID, position)
+			if err != nil {
+				break
+			}
+		}
+	}
+	if err == nil {
 		err = s.setSavedWorkFavorite(ctx, tx, id, user, v.Favorite)
 	}
 	if err == nil {
@@ -235,6 +247,16 @@ func validSavedWorkView(v savedWorkView) bool {
 				return false
 			}
 		}
+	}
+	if v.ProjectIDs == nil || len(v.ProjectIDs) > 100 || (v.ProjectID != nil && !slices.Contains(v.ProjectIDs, *v.ProjectID)) {
+		return false
+	}
+	seen := make(map[string]bool, len(v.ProjectIDs))
+	for _, id := range v.ProjectIDs {
+		if id == "" || len(id) > 512 || seen[id] {
+			return false
+		}
+		seen[id] = true
 	}
 	if len(v.Name) == 0 || utf8.RuneCountInString(v.Name) > 120 || !slices.Contains([]string{"personal", "organization"}, v.Scope) || (v.ProjectID != nil && *v.ProjectID == "") {
 		return false
@@ -266,10 +288,28 @@ func (s *Service) readSavedWorkView(ctx context.Context, org, user, id string) (
 		return v, err
 	}
 	defer tx.Rollback()
-	err = tx.QueryRowContext(ctx, `SELECT id,owner_id,name,scope,project_id,layout, tab, search, sort, completed_window,completed_from,completed_to, archived, created_by,all_lanes,EXISTS(SELECT 1 FROM hosted_work_view_favorites f WHERE f.view_id=v.id AND f.user_id=?) FROM hosted_work_views v WHERE id=? AND organization_id=? AND (owner_id=? OR scope='organization') AND (? OR project_id IS NULL OR EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=v.organization_id AND g.project_id=v.project_id AND g.user_id=?))`, user, id, org, user, s.config.Hosted == nil, user).Scan(&v.ID, &v.OwnerID, &v.Name, &v.Scope, &v.ProjectID, &v.State.View, &v.State.Tab, &v.State.Q, &v.State.Sort, &v.State.CompletedWindow, &v.State.CompletedFrom, &v.State.CompletedTo, &v.State.Archived, &v.State.CreatedBy, &allLanes, &v.Favorite)
+	err = tx.QueryRowContext(ctx, `SELECT id,owner_id,name,scope,project_id,layout, tab, search, sort, completed_window,completed_from,completed_to, archived, created_by,all_lanes,EXISTS(SELECT 1 FROM hosted_work_view_favorites f WHERE f.view_id=v.id AND f.user_id=?) FROM hosted_work_views v WHERE id=? AND organization_id=? AND (owner_id=? OR scope='organization') AND (? OR NOT EXISTS(SELECT 1 FROM hosted_work_view_projects p WHERE p.view_id=v.id AND NOT EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=v.organization_id AND g.project_id=p.project_id AND g.user_id=?)))`, user, id, org, user, s.config.Hosted == nil, user).Scan(&v.ID, &v.OwnerID, &v.Name, &v.Scope, &v.ProjectID, &v.State.View, &v.State.Tab, &v.State.Q, &v.State.Sort, &v.State.CompletedWindow, &v.State.CompletedFrom, &v.State.CompletedTo, &v.State.Archived, &v.State.CreatedBy, &allLanes, &v.Favorite)
 	if errors.Is(err, sql.ErrNoRows) {
 		return v, nativeNotFound()
 	}
+	if err != nil {
+		return v, err
+	}
+	v.ProjectIDs = []string{}
+	projectRows, err := tx.QueryContext(ctx, `SELECT project_id FROM hosted_work_view_projects WHERE view_id=? ORDER BY position`, id)
+	if err != nil {
+		return v, err
+	}
+	defer projectRows.Close()
+	for projectRows.Next() {
+		var projectID string
+		if err := projectRows.Scan(&projectID); err != nil {
+			return v, err
+		}
+		v.ProjectIDs = append(v.ProjectIDs, projectID)
+	}
+	err = projectRows.Err()
+	projectRows.Close()
 	if err != nil {
 		return v, err
 	}
@@ -324,7 +364,7 @@ func (s *Service) setSavedWorkFavorite(ctx context.Context, db nativeExecer, id,
 }
 
 func (s *Service) savedWorkViewIDs(ctx context.Context, org, user, cursor string) ([]string, error) {
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT id FROM hosted_work_views v WHERE organization_id=? AND id>? AND (owner_id=? OR scope='organization') AND (? OR project_id IS NULL OR EXISTS (SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=v.organization_id AND g.project_id=v.project_id AND g.user_id=?)) ORDER BY id LIMIT ?`, org, cursor, user, s.config.Hosted == nil, user, maxSavedWorkViewsPageSize+1)
+	rows, err := s.database.reader.QueryContext(ctx, `SELECT id FROM hosted_work_views v WHERE organization_id=? AND id>? AND (owner_id=? OR scope='organization') AND (? OR NOT EXISTS(SELECT 1 FROM hosted_work_view_projects p WHERE p.view_id=v.id AND NOT EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=v.organization_id AND g.project_id=p.project_id AND g.user_id=?))) ORDER BY id LIMIT ?`, org, cursor, user, s.config.Hosted == nil, user, maxSavedWorkViewsPageSize+1)
 	if err != nil {
 		return nil, err
 	}

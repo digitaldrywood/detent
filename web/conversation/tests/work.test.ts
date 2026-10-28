@@ -14,7 +14,7 @@ import itemFixture from "../src/contracts/fixtures/work-item.json";
 import { NativeAttempt, NativeBoardCard, NativeIssue } from "../src/contracts/work.ts";
 import { toAttemptView, toBoardCardView, toWorkItemView, transitionsFrom } from "../src/app/work/lib/fromWire.ts";
 import { boardStats, searchItems, sortItems, type WorkItemView } from "../src/app/work/lib/model.ts";
-import type { WorkSort } from "../src/app/work/lib/viewState.ts";
+import { DEFAULT_VIEW_STATE, type WorkSort } from "../src/app/work/lib/viewState.ts";
 import { moveItem } from "../src/app/work/lib/useWork.ts";
 import {
   makeWorkHttp,
@@ -114,6 +114,27 @@ describe("listing work items", () => {
   it("carries the revision as a string, not a number", async () => {
     const page = await http.listWorkItems({ projectId: PROJECT, limit: 1 });
     expect(typeof page.items[0]!.revision).toBe("string");
+  });
+});
+
+describe("working-set board reads", () => {
+  it("reads both projects in one request and preserves named priority filters", async () => {
+    const ids = ["proj_beta", "proj_alpha"];
+    const expected = await Promise.all(ids.map((projectId) => http.listWorkItems({ projectId, includeBoard: true, priority: ["1"], limit: 100 })));
+    const requests: URL[] = [];
+    const client = makeWorkHttp({ origin: hub.url, apiBase: "/api/v2/organizations/org_mock", csrfToken: "csrf", fetch: (target, init) => {
+      requests.push(new URL(target));
+      return fetch(target, init);
+    } });
+    const result = await client.readBoard(ids, { ...DEFAULT_VIEW_STATE, view: "list", tab: "all", priority: ["High"] });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.pathname).toBe("/api/v2/organizations/org_mock/work-board");
+    expect(requests[0]!.searchParams.getAll("project")).toEqual(ids);
+    expect(result.map((entry) => entry.project.project_id)).toEqual(ids);
+    expect(result.flatMap((entry) => entry.issues).length).toBeGreaterThan(0);
+    for (const [index, entry] of result.entries()) {
+      expect(entry.issues.map((issue) => issue.work_item_id)).toEqual(expected[index]!.items.map((issue) => issue.work_item_id));
+    }
   });
 });
 
@@ -602,7 +623,7 @@ describe("attempt reasoning effort", () => {
 describe("saved view pagination", () => {
   it("loads every page with the abort signal and keeps name ordering", async () => {
     const state = { view: "board", tab: "active", q: "", sort: "default", completedWindow: "24h", state: [], type: [], label: [], assignee: [], priority: [], lanes: null, collapsed: [] };
-    const view = { id: "view_a", name: "Zulu", owner_id: "member", can_edit: true, scope: "personal", project_id: null, favorite: true, state };
+    const view = { id: "view_a", name: "Zulu", owner_id: "member", can_edit: true, scope: "personal", project_id: null, project_ids: [], favorite: true, state };
     const second = { ...view, id: "view_b", name: "Alpha" };
     const fetchPage = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ views: [view], next_cursor: "view_a" })))

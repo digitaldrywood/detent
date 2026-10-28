@@ -1,4 +1,4 @@
-import { CircleDashedIcon, BookmarkIcon, LayoutListIcon } from "lucide-react";
+import { CircleDashedIcon, BookmarkIcon, Grid2X2Icon } from "lucide-react";
 import { ThreadsSidebarBadge } from "../threads/ThreadBadge.tsx";
 import { ViewActions } from "../work/SavedViewActions.tsx";
 import { useSavedViews, savedViewPath } from "../work/lib/savedViews.tsx";
@@ -7,7 +7,6 @@ import {
   MessageSquareIcon,
   CircleAlertIcon,
   TriangleAlertIcon,
-  UsersIcon,
   BookOpenIcon,
   ChartNoAxesColumnIcon,
   ChevronDownIcon,
@@ -247,15 +246,22 @@ export function SidebarDestinations(): React.ReactElement | null {
           />
           {favoritesExpanded ? (
             <SidebarMenu className="gap-px">
+              <NavRow
+                testId="nav-views"
+                icon={<BookmarkIcon />}
+                label="Views"
+                active={navigation.activePath === "/work/views"}
+                onClick={() => navigate("/work/views")}
+              />
               {saved.views.filter((view) => view.favorite).map((view) => (
                 <NavRow
                   key={view.id}
                   testId={`favorite-${view.id}`}
-                  icon={view.state.view === "board" ? <KanbanIcon /> : <LayoutListIcon />}
+                  icon={<Grid2X2Icon />}
                   label={view.name}
                   active={navigation.activePath === savedViewPath(view)}
                   onClick={() => navigate(savedViewPath(view))}
-                  trailing={view.scope === "organization" && navigation.activePath !== savedViewPath(view) ? <UsersIcon aria-label="Shared with organization" /> : undefined}
+                  trailing={<span aria-hidden className="text-xs text-sidebar-muted-foreground sm:absolute sm:right-2 sm:group-hover/menu-item:invisible sm:group-focus-within/menu-item:invisible sm:group-has-[[data-popup-open]]/menu-item:invisible">{view.project_ids.length || data?.projects.length || 0}</span>}
                   action={
                     <ViewActions
                       view={view}
@@ -268,13 +274,6 @@ export function SidebarDestinations(): React.ReactElement | null {
                   }
                 />
               ))}
-              <NavRow
-                testId="nav-views"
-                icon={<BookmarkIcon />}
-                label="Views"
-                active={navigation.activePath === "/work/views"}
-                onClick={() => navigate("/work/views")}
-              />
             </SidebarMenu>
           ) : null}
         </section>

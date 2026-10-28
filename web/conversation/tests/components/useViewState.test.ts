@@ -41,7 +41,7 @@ describe("Hub Work view preferences", () => {
   it("restores a saved view and edits it without reading or overwriting default preferences", async () => {
     vi.useFakeTimers();
     const saved = { id: "view_one", name: "Saved", owner_id: "alice", can_edit: true, scope: "personal" as const,
-      project_id: "project", favorite: true, state: parseViewState("view=list&tab=closed&archived=true&lanes=&collapsed=&label=bug&completed=7d") };
+      project_id: "project", project_ids: ["project"], favorite: true, state: parseViewState("view=list&tab=closed&archived=true&lanes=&collapsed=&label=bug&completed=7d") };
     const { result, rerender } = renderHook(() => useViewState("project", saved));
     expect(result.current[0]).toEqual(saved.state);
     act(() => { result.current[1](DEFAULT_VIEW_STATE); });

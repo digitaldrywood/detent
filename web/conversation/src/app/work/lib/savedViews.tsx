@@ -1,9 +1,12 @@
 import React from "react";
-import type { SavedView, SavedViewInput } from "./savedViewSchema.ts";
-export type { SavedView, SavedViewInput } from "./savedViewSchema.ts";
+import type { SavedView, SavedViewInput, SavedViewSetup } from "./savedViewSchema.ts";
+export type { SavedView, SavedViewInput, SavedViewSetup } from "./savedViewSchema.ts";
+import { serializeViewState } from "./viewState.ts";
 import { useWorkHttp } from "./useWork.ts";
 
 interface SavedViews {
+  readonly currentSetup: SavedViewSetup | null;
+  readonly setCurrentSetup: (setup: SavedViewSetup | null) => void;
   readonly views: readonly SavedView[];
   readonly loading: boolean;
   readonly error: string | null;
@@ -26,6 +29,11 @@ export function SavedViewsProvider({
   children: React.ReactNode;
 }): React.ReactElement {
   const http = useWorkHttp();
+  const [currentSetup, updateSetup] = React.useState<SavedViewSetup | null>(null);
+  const setCurrentSetup = React.useCallback((next: SavedViewSetup | null) => updateSetup((current) =>
+    current !== null && next !== null && current.project_id === next.project_id &&
+    JSON.stringify(current.project_ids) === JSON.stringify(next.project_ids) &&
+    serializeViewState(current.state) === serializeViewState(next.state) ? current : next), []);
   const [views, setViews] = React.useState<readonly SavedView[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -53,6 +61,8 @@ export function SavedViewsProvider({
     return () => controller.abort();
   }, [http, generation]);
   const value: SavedViews = {
+    currentSetup,
+    setCurrentSetup,
     views,
     loading,
     error,

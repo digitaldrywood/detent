@@ -191,12 +191,22 @@ function ShellBody(): React.ReactElement {
     useUiStateStore.setState((state) => activateSidebarProjectScope(state, scopeAccount));
   }, [scopeAccount]);
   const focusedProjectId = projects.find((project) => sidebarProjectScopeKey(project) === focusKey)?.id ?? "";
-  const isWorkBoard = activePath === "/work" || activePath.startsWith("/work/p/");
+  const isWorkBoard = activePath === "/work" || activePath.startsWith("/work/p/") || savedView !== undefined;
   const [projectScopePath, setProjectScopePath] = React.useState<string | null>(null);
   const enteringWorkBoard = isWorkBoard && projectScopePath !== routePath;
   const workBoardPath = isWorkBoard ? routePath : null;
   const savedProjectId = savedView === undefined ? undefined : savedView.project_id ?? "";
-  const requestedProject = routePath === "/chat" || (isWorkBoard && !enteringWorkBoard)
+  const savedScope = savedView === undefined ? null : JSON.stringify([savedView.id, savedView.project_ids, savedView.project_id]);
+  const [restoredSavedScope, setRestoredSavedScope] = React.useState<string | null>(null);
+  React.useLayoutEffect(() => {
+    if (scopeAccountKey !== scopeAccount || savedScope === null) return;
+    setRestoredSavedScope(savedScope);
+    const [, ids, focus] = JSON.parse(savedScope) as [string, string[], string | null];
+    const keys = projects.filter((project) => ids.includes(project.id)).map(sidebarProjectScopeKey);
+    const focused = projects.find((project) => project.id === focus);
+    useUiStateStore.setState((state) => setSidebarProjectScopeKey(setSidebarProjectWorkingSetKeys(state, keys), focused ? sidebarProjectScopeKey(focused) : null));
+  }, [savedScope, projects, scopeAccountKey, scopeAccount]);
+  const requestedProject = routePath === "/chat" || (isWorkBoard && !enteringWorkBoard && (savedScope === null || restoredSavedScope === savedScope))
     ? focusedProjectId
     : params.project ?? params.projectId ?? context.resolvedProjectId ?? savedProjectId ?? ((activePath === "/work" || activePath === "/chat") ? focusedProjectId : selectedProjectId);
   const projectId = client.account?.projects.find((project) => project.id === requestedProject || project.slug === requestedProject)?.id ?? requestedProject;
@@ -208,7 +218,7 @@ function ShellBody(): React.ReactElement {
     const project = projects.find((candidate) => candidate.id === projectId);
     useUiStateStore.setState((state) => {
       const key = project === undefined ? null : sidebarProjectScopeKey(project);
-      return setSidebarProjectScopeKey(savedView === undefined ? state : setSidebarProjectWorkingSetKeys(state, key === null ? [] : [key]), key);
+      return setSidebarProjectScopeKey(state, key);
     });
   }, [projectId, projects, workBoardPath, scopeAccount, scopeAccountKey, savedView]);
   // The copied `components/Sidebar.tsx` owns its search box and searches its

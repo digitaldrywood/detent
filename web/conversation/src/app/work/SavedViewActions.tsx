@@ -1,10 +1,11 @@
 import React from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { CopyIcon, MoreHorizontalIcon, PencilIcon, StarIcon, TrashIcon, UsersIcon } from "lucide-react";
+import { RefreshCwIcon, CopyIcon, MoreHorizontalIcon, PencilIcon, StarIcon, TrashIcon, UsersIcon } from "lucide-react";
 import { useClient } from "../client.ts";
 import { useIsMobile } from "../../hooks/useMediaQuery.ts";
 import { Button } from "../../components/ui/button.tsx";
 import { Input } from "../../components/ui/input.tsx";
+import { Checkbox } from "../../components/ui/checkbox.tsx";
 import { Switch } from "../../components/ui/switch.tsx";
 import {
   AlertDialog, AlertDialogPopup, AlertDialogHeader, AlertDialogTitle,
@@ -16,10 +17,12 @@ import {
 } from "../../components/ui/dialog.tsx";
 import { Menu, MenuTrigger, MenuPopup, MenuItem, MenuSeparator } from "../../components/ui/menu.tsx";
 import { Pill } from "./components/Pill.tsx";
+import { ProjectGlyph } from "../components/ProjectGlyph.tsx";
+import type { Lane } from "./lib/model.ts";
 import { cn } from "../../lib/utils.ts";
 import { useSavedViews, savedViewPath, type SavedView } from "./lib/savedViews.tsx";
 import {
-  effectiveSort, SORT_LABELS, COMPLETED_WINDOW_LABELS, FILTER_KEYS,
+  effectiveSort, laneVisible, SORT_LABELS, COMPLETED_WINDOW_LABELS, FILTER_KEYS,
   FILTER_LABELS, type WorkViewState,
 } from "./lib/viewState.ts";
 
@@ -35,9 +38,7 @@ export function ViewSummary({
     `${state.tab} tab`,
     `Sort: ${SORT_LABELS[effectiveSort(state)]}`,
     `Completed: ${COMPLETED_WINDOW_LABELS[state.completedWindow]}`,
-    ...(state.lanes === null
-      ? []
-      : [`Lanes: ${state.lanes.join(", ") || "none"}`]),
+    `Lanes: ${state.lanes === null ? "All" : state.lanes.join(", ") || "none"}`,
     ...(state.collapsed.length
       ? [`Collapsed: ${state.collapsed.join(", ")}`]
       : []),
@@ -63,6 +64,8 @@ export function ViewSummary({
 export function SaveViewDialog({
   state,
   projectId,
+  projectIds,
+  lanes,
   source,
   rename = false,
   onClose,
@@ -70,6 +73,8 @@ export function SaveViewDialog({
 }: {
   state: WorkViewState;
   projectId: string | null;
+  projectIds: readonly string[];
+  lanes?: readonly Lane[];
   source?: SavedView;
   rename?: boolean;
   onClose: () => void;
@@ -78,6 +83,18 @@ export function SaveViewDialog({
   const saved = useSavedViews();
   const client = useClient();
   const formId = React.useId();
+  const projects = client.bootstrap.projects.filter((project) => projectIds.length === 0 || projectIds.includes(project.id));
+  const focusedProject = projects.find((project) => project.id === projectId);
+  const filters = [
+    ...FILTER_KEYS.filter((key) => state[key].length).map((key) => `${FILTER_LABELS[key]}: ${state[key].join(", ")}`),
+    ...(state.q ? [`Search: ${state.q}`] : []),
+    ...(state.createdBy === "me" ? ["Filed by me"] : []),
+    ...(state.archived ? ["Including archived"] : []),
+  ];
+  const boardLanes = lanes?.filter((lane) => !lane.terminal);
+  const laneSummary = boardLanes === undefined
+    ? state.lanes === null ? "All" : state.lanes.join(", ") || "none"
+    : `${boardLanes.filter((lane) => laneVisible(state, lane)).length}/${boardLanes.length}`;
   const [name, setName] = React.useState(
     source ? (rename ? source.name : `${source.name} copy`) : "",
   );
@@ -99,6 +116,7 @@ export function SaveViewDialog({
         {
           name: name.trim(),
           project_id: projectId,
+          project_ids: projectIds,
           scope: shared ? "organization" : "personal",
           favorite,
           state,
@@ -119,17 +137,17 @@ export function SaveViewDialog({
         if (!open && !busy) onClose();
       }}
     >
-      <DialogPopup className="sm:max-w-lg" showCloseButton={false}>
+      <DialogPopup className="sm:max-w-md" showCloseButton={false}>
         <DialogHeader>
-          <DialogTitle>{rename ? "Rename view" : "Save view"}</DialogTitle>
-          {rename ? null : <DialogDescription>
-            Keeps the current layout, filters, sort and lanes under a name. The board and list stay as they are.
+          <DialogTitle>{rename ? "Rename view" : "Save as view"}</DialogTitle>
+          {rename ? null : <DialogDescription className="sr-only">
+            Keep this project setup, filters and display under a name.
           </DialogDescription>}
         </DialogHeader>
         <DialogPanel>
           <form
             id={formId}
-            className="space-y-5"
+            className="space-y-4"
             onSubmit={(event) => {
               void submit(event);
             }}
@@ -146,26 +164,43 @@ export function SaveViewDialog({
               />
             </label>
             {rename ? null : (
-              <div className="space-y-2">
-                <p className="text-sm font-medium">This view keeps</p>
-                <ViewSummary state={state} pills />
-                <p className="text-xs text-muted-foreground">
-                  {projectId === null ? "All projects" : "Current project"}
-                </p>
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Projects</p>
+                  <div className="flex flex-wrap gap-1.5" aria-label="Projects">
+                    {projects.map((project) => <Pill key={project.id} tone="mute"><ProjectGlyph projectId={project.id} projectName={project.name} className="size-3.5 shrink-0" />{project.name}</Pill>)}
+                    {projectIds.length === 0 ? <span className="text-xs text-muted-foreground">All projects</span> : null}
+                  </div>
+                </div>
+                <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+                  <dt className="text-muted-foreground">Opens on</dt>
+                  <dd>{focusedProject?.name ?? `All ${projects.length} projects`}</dd>
+                  <dt className="text-muted-foreground">Filters</dt>
+                  <dd className="break-words">{filters.join(" · ") || "None"}</dd>
+                  <dt className="text-muted-foreground">Sort</dt>
+                  <dd>{SORT_LABELS[effectiveSort(state)]}</dd>
+                  <dt className="text-muted-foreground">Layout</dt>
+                  <dd>{state.view === "board" ? "Board" : "List"} · Lanes {laneSummary}</dd>
+                  {state.collapsed.length ? <><dt className="text-muted-foreground">Collapsed</dt><dd>{state.collapsed.join(", ")}</dd></> : null}
+                  {state.tab !== "active" ? <><dt className="text-muted-foreground">Tab</dt><dd>{state.tab}</dd></> : null}
+                  {state.completedWindow !== "24h" || state.completedFrom || state.completedTo ? <>
+                    <dt className="text-muted-foreground">Completed</dt>
+                    <dd>{state.completedFrom || state.completedTo ? `${state.completedFrom || "Any time"} – ${state.completedTo || "Now"}` : COMPLETED_WINDOW_LABELS[state.completedWindow]}</dd>
+                  </> : null}
+                </dl>
               </div>
             )}
             {rename ? null : <>
               <div className="flex items-start justify-between gap-4 text-sm">
-                <div className="space-y-1">
-                  <label htmlFor={`${formId}-favorite`} className="font-medium">Add to Favorites</label>
-                  <p id={`${formId}-favorite-help`} className="text-muted-foreground">Shows the view in the sidebar under Favorites.</p>
-                </div>
-                <Switch id={`${formId}-favorite`} aria-describedby={`${formId}-favorite-help`} checked={favorite} onCheckedChange={setFavorite} />
+                <label className="flex items-center gap-2">
+                  <Checkbox checked={favorite} onCheckedChange={setFavorite} />
+                  Pin to Favorites
+                </label>
               </div>
               <div className="flex items-start justify-between gap-4 text-sm">
                 <div className="space-y-1">
                   <label htmlFor={`${formId}-shared`} className="font-medium">Share with organization</label>
-                  <p id={`${formId}-shared-help`} className="text-muted-foreground">Everyone in {client.bootstrap.organization?.name ?? "the organization"} can open it. Only you can change or delete it.</p>
+                  <p id={`${formId}-shared-help`} className="sr-only">Everyone in {client.bootstrap.organization?.name ?? "the organization"} can open it. Only you can change or delete it.</p>
                 </div>
                 <Switch id={`${formId}-shared`} aria-describedby={`${formId}-shared-help`} checked={shared} onCheckedChange={setShared} />
               </div>
@@ -199,7 +234,6 @@ export function ViewActions({
   view,
   onDeleted,
   sidebar = false,
-  active = false,
 }: {
   view: SavedView;
   onDeleted?: () => void;
@@ -234,12 +268,16 @@ export function ViewActions({
         <MenuTrigger
           aria-label={`Actions for ${view.name}`}
           disabled={busy}
-          className={sidebar ? cn("absolute top-1 right-1 inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-sm text-sidebar-muted-foreground outline-none ring-ring hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 data-[popup-open]:opacity-100 sm:group-hover/menu-item:opacity-100 sm:group-focus-within/menu-item:opacity-100", !active && "sm:opacity-0") : undefined}
+          className={sidebar ? cn("absolute top-1 right-1 inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-sm text-sidebar-muted-foreground outline-none ring-ring hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 data-[popup-open]:opacity-100 sm:group-hover/menu-item:opacity-100 sm:group-focus-within/menu-item:opacity-100", "sm:opacity-0") : undefined}
           render={sidebar ? undefined : <Button variant="ghost" size="icon-sm" />}
         >
           <MoreHorizontalIcon className={sidebar ? "size-3.5" : undefined} />
         </MenuTrigger>
-        <MenuPopup align="end" className={isMobile ? "w-60" : "w-52"}>
+        <MenuPopup align="end" className={isMobile ? "w-60" : "w-64"}>
+          {owner ? <MenuItem density={density} disabled={saved?.currentSetup == null} onClick={() => {
+            const setup = saved?.currentSetup;
+            if (setup) void run(() => saved.save({ ...view, ...setup }, view.id));
+          }}><RefreshCwIcon />Update with current setup</MenuItem> : null}
           {owner ? (
             <MenuItem density={density} onClick={() => setDialog("rename")}><PencilIcon />Rename</MenuItem>
           ) : null}
@@ -251,7 +289,7 @@ export function ViewActions({
             }}
           >
             <StarIcon />
-            {view.favorite ? "Remove from Favorites" : "Add to Favorites"}
+            {view.favorite ? "Unpin from Favorites" : "Add to Favorites"}
           </MenuItem>
           {owner ? (
             <MenuItem
@@ -300,6 +338,7 @@ export function ViewActions({
         <SaveViewDialog
           state={view.state}
           projectId={view.project_id}
+          projectIds={view.project_ids}
           source={view}
           rename={dialog === "rename"}
           onClose={() => setDialog(null)}

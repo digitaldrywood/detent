@@ -1,7 +1,8 @@
 import * as Schema from "effect/Schema";
+import { LoadedSchema, type Loaded } from "./boardSchema.ts";
 import { subscribeProjectQuery } from "./projectEvents.ts";
 
-import { NativeIssue, NativeProject, NativeWorkSummary, priorityValue, NativeBoardCard, NativeBoardFrame, type NativeShippedWindow } from "../../../contracts/work.ts";
+import { NativeIssue, NativeProject, priorityValue, NativeBoardCard, NativeBoardFrame, type NativeShippedWindow } from "../../../contracts/work.ts";
 import { authorizeQueryCache, clearQueryCache, invalidateQueries } from "../../lib/queryCache.ts";
 import { BOARD_CACHE_LIMIT, BOARD_CACHE_VERSION, readBoardDisk, updateBoardDisk } from "./boardDisk.ts";
 import { toBoardCardView, toLanes, toProjectView, toWorkItemView } from "./fromWire.ts";
@@ -38,20 +39,6 @@ const EMPTY: BoardData = {
   labels: [], assignees: [], priorities: [], truncated: false, enriched: 0, asOf: null,
 };
 
-const LoadedSchema = Schema.Struct({
-  project: NativeProject,
-  issues: Schema.Array(NativeIssue),
-  cards: Schema.optional(Schema.Array(NativeBoardCard)),
-  sequence: Schema.optional(Schema.Number),
-  grantVersion: Schema.optional(Schema.String),
-  work: Schema.optional(NativeWorkSummary),
-  nextCursor: Schema.optional(Schema.String),
-  pageCount: Schema.Number,
-  backlogCursor: Schema.optional(Schema.String),
-  backlogPageCount: Schema.Number,
-  backlogTotal: Schema.Number,
-});
-type Loaded = typeof LoadedSchema.Type;
 
 async function pooled<A, B>(inputs: readonly A[], work: (input: A) => Promise<B>): Promise<B[]> {
   const results: B[] = new Array(inputs.length);
@@ -163,7 +150,7 @@ function normalized(view: WorkViewState): WorkViewState {
     assignee: values(view.assignee), priority: values(view.priority), lanes: view.lanes === null ? null : values(view.lanes) };
 }
 
-export function getBoardRead(client: BoardAccount, http: WorkHttp, projectId: string | null, input: WorkViewState, projectIds?: readonly string[]): BoardRead {
+export function getBoardRead(client: BoardAccount, http: WorkHttp, projectId: string | null, input: WorkViewState, projectIds?: readonly string[], aggregate = false): BoardRead {
   const owner = boardAccountKey(client);
   authorizeBoardCache(owner);
   const accessible = client.bootstrap.projects.map((project) => project.id).sort();
@@ -171,7 +158,7 @@ export function getBoardRead(client: BoardAccount, http: WorkHttp, projectId: st
     ? (projectId === null ? accessible : accessible.includes(projectId) ? [projectId] : [])
     : [...new Set(projectIds)].filter((id) => accessible.includes(id)).sort();
   const view = normalized(input);
-  const key = JSON.stringify([owner, projectId, scope, view.q, view.state, view.type, view.label, view.assignee,
+  const key = JSON.stringify([owner, projectId, scope, aggregate, view.q, view.state, view.type, view.label, view.assignee,
     view.priority.map((name) => String(priorityValue(name) ?? name)).sort(), view.archived === true, view.completedWindow, view.completedFrom, view.completedTo,
     view.createdBy, view.view, view.view === "list" ? view.tab : view.lanes, effectiveSort(view) === "closed"]);
   let board = boards.get(key);
@@ -182,7 +169,7 @@ export function getBoardRead(client: BoardAccount, http: WorkHttp, projectId: st
   }
   board = new BoardRead(owner, key, http, projectId, scope, view, client.bootstrap.actor?.principal_id,
     new Map(client.bootstrap.projects.flatMap((project) => project.states === undefined ||
-      project.states.some((state) => typeof state.terminal !== "boolean") ? [] : [[project.id, project.states as readonly LaneState[]] as const])));
+      project.states.some((state) => typeof state.terminal !== "boolean") ? [] : [[project.id, project.states as readonly LaneState[]] as const])), aggregate);
   boards.set(key, board);
   for (const [oldKey, old] of boards) {
     if (boards.size <= BOARD_CACHE_LIMIT) break;
@@ -218,7 +205,7 @@ export class BoardRead {
 
   constructor(readonly owner: string, readonly key: string, readonly http: WorkHttp,
     readonly projectId: string | null, readonly scope: readonly string[], readonly view: WorkViewState,
-    private readonly principalId?: string, private readonly hints: ReadonlyMap<string, readonly LaneState[]> = new Map()) {
+    private readonly principalId?: string, private readonly hints: ReadonlyMap<string, readonly LaneState[]> = new Map(), private readonly aggregate = false) {
     this.facetKey = JSON.stringify([owner, scope, view.archived === true]);
     if (scope.length === 0) this.state = { ...EMPTY, loading: false, resolved: true };
     else {
@@ -543,11 +530,13 @@ export class BoardRead {
     if (!this.state.resolved) void this.restore(generation);
     void (async () => {
       try {
+        const initial = this.aggregate && !continuing
+          ? new Map((await this.http.readBoard(this.scope, this.view, signal)).map((entry) => [entry.project.project_id, entry])) : undefined;
         const loaded = await pooled(this.scope, async (id) => {
           if (!continuing && prior.length === 0 && this.entries.length > 0) prior = this.entries;
           const previous = prior.find((entry) => entry.project.project_id === id);
           if (targets !== undefined && !targets.has(id) && previous !== undefined) return previous;
-          const entry = await this.loadProject(id, signal, previous, continuing);
+          const entry = initial?.get(id) ?? await this.loadProject(id, signal, previous, continuing);
           const issues = entry.issues;
           let changed = false;
           const previousItems = new Map(this.entries.flatMap((entry) => entry.issues).map((issue) => [issue.work_item_id, issue]));
