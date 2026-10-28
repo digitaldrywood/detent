@@ -20,3 +20,13 @@ func tryCacheLock(file *os.File, shared bool) error {
 	}
 	return err
 }
+
+func cacheEntryPinned(root *os.Root, name string) (bool, error) {
+	file, err := root.Open(name)
+	if err != nil {
+		return false, err
+	}
+	var info windows.ByHandleFileInformation
+	err = windows.GetFileInformationByHandle(windows.Handle(file.Fd()), &info)
+	return info.NumberOfLinks > 1, errors.Join(err, file.Close())
+}

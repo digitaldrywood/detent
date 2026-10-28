@@ -24,7 +24,7 @@ type runnerBuildCache struct {
 var errNativeBuildCache = errors.New("runner uses the native Go build cache")
 
 func newRunnerBuildCache(ctx context.Context, cfg BootConfig) (*runnerBuildCache, error) {
-	if !cfg.Global.Client.Configured() || cfg.Global.Client.IdentityFile == "" || runtimeStoreIsMemory(runtimeStorePath(cfg)) || os.Getenv("GOCACHE") != "" {
+	if !cfg.Global.Client.Configured() || cfg.Global.Client.IdentityFile == "" || runtimeStoreIsMemory(runtimeStorePath(cfg)) || os.Getenv("GOCACHE") != "" || os.Getenv("GOCACHEPROG") != "" {
 		return nil, errNativeBuildCache
 	}
 	paths, err := toolcache.Resolve(ctx)

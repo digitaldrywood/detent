@@ -56,11 +56,19 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 			if err := os.WriteFile(output, make([]byte, 2000), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			pin := filepath.Join(t.TempDir(), "active-output")
+			if err := os.Link(output, pin); err != nil {
+				t.Fatal(err)
+			}
 			warm := filepath.Join(root, "00", strings.Repeat("d", 64)+"-d")
 			if err := os.WriteFile(warm, []byte("warm output"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Chtimes(warm, time.Now().Add(time.Hour), time.Now().Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			warmPin := filepath.Join(t.TempDir(), "active-warm-output")
+			if err := os.Link(warm, warmPin); err != nil {
 				t.Fatal(err)
 			}
 			candidate := scheduler.ProjectCandidate{ID: "example-project"}
@@ -122,8 +130,8 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 					if err != nil {
 						t.Fatalf("maintenance with %d active consumers did not yield: %v", active, err)
 					}
-					if report := managed.observe(); report == nil || !report.Deferred {
-						t.Fatalf("busy maintenance reported success: %+v", report)
+					if report := managed.observe(); report == nil || report.Deferred || report.SizeEvictedBytes != 0 {
+						t.Fatalf("busy maintenance did not retain pinned output: %#v", report)
 					}
 					if data, err := os.ReadFile(output); err != nil || len(data) != 2000 {
 						t.Fatalf("active cache changed: bytes=%d err=%v", len(data), err)
@@ -135,8 +143,16 @@ func TestRunnerBuildCacheMaintenanceResumesDispatch(t *testing.T) {
 						if err := release(); err != nil {
 							t.Fatal(err)
 						}
-					} else if err := secondRelease(); err != nil {
-						t.Fatal(err)
+					} else {
+						if err := secondRelease(); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Remove(pin); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Remove(warmPin); err != nil {
+							t.Fatal(err)
+						}
 					}
 					continue
 				}

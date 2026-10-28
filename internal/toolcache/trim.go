@@ -205,6 +205,18 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 		if current.IsDir() != candidate.directory || !current.IsDir() && !current.Mode().IsRegular() || !current.ModTime().Equal(candidate.modified) {
 			continue
 		}
+		if managed && !candidate.directory {
+			pinned, err := cacheEntryPinned(cache, candidate.name)
+			if os.IsNotExist(err) {
+				continue
+			}
+			if err != nil {
+				return reclaimed, err
+			}
+			if pinned {
+				continue
+			}
+		}
 		if candidate.directory {
 			err = cache.RemoveAll(candidate.name)
 		} else {

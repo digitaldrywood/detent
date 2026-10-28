@@ -15,9 +15,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/service"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == toolcache.ProgramArgument {
+		if err := toolcache.RunProgram(os.Getenv("GOCACHE"), os.TempDir(), os.Stdin, os.Stdout); err != nil {
+			slog.Error("managed Go cache program failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == cli.SSHProbeArgument {
 		fmt.Fprintln(os.Stdout, runnerpkg.SSHProtocolVersion)
 		return

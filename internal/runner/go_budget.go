@@ -10,12 +10,12 @@ import (
 )
 
 func (r *Runner) withGoBudget(ctx context.Context, workspacePath string, environment procgroup.Environment) procgroup.Environment {
-	if root := toolcache.ManagedBuildFromContext(ctx); root != "" {
+	if variables := toolcache.ManagedEnvironment(ctx); len(variables) > 0 {
 		environment.Variables = maps.Clone(environment.Variables)
 		if environment.Variables == nil {
 			environment.Variables = make(map[string]string)
 		}
-		environment.Variables["GOCACHE"] = root
+		maps.Copy(environment.Variables, variables)
 	}
 	if strings.TrimSpace(workspacePath) == "" {
 		return environment

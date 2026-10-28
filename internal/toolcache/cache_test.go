@@ -613,6 +613,11 @@ func TestManagedCacheConsumerLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer secondRelease()
+	legacyConsumer, err := cache.lock(t.Context(), "consumers", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer legacyConsumer.Close()
 	canceled, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, _, err := cache.Use(canceled); !errors.Is(err, context.Canceled) {
@@ -682,6 +687,9 @@ func TestManagedCacheConsumerLifetime(t *testing.T) {
 		t.Fatalf("busy maintenance retained admission: %v", err)
 	}
 	if err := errors.Join(thirdRelease(), secondRelease(), release()); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacyConsumer.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := cache.Maintain(canceled, Policy{MaxBytes: 1024}, time.Now()); !errors.Is(err, context.Canceled) {

@@ -513,8 +513,8 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 	cmd.Env = hookEnv(info, issue, l.hooks.StripGitHubTokens)
 	l.applyValidationGoBudget(ctx, cmd)
 	cmd.WaitDelay = workspaceCommandWaitDelay
-	if cache := toolcache.ManagedBuildFromContext(ctx); cache != "" {
-		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: map[string]string{"GOCACHE": cache}})
+	if variables := toolcache.ManagedEnvironment(ctx); len(variables) > 0 {
+		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: variables})
 	}
 	procgroup.SetTempDir(cmd, scratch)
 	procgroup.Configure(ctx, cmd)

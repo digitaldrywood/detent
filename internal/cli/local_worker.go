@@ -170,8 +170,8 @@ func (r *sshRunner) runLocalWorkerLaunch(ctx context.Context, request runnerpkg.
 		cancel()
 		return result, err
 	}
-	if cacheRoot := toolcache.ManagedBuildFromContext(cacheCtx); cacheRoot != "" {
-		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: map[string]string{"GOCACHE": cacheRoot}})
+	if variables := toolcache.ManagedEnvironment(cacheCtx); len(variables) > 0 {
+		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: variables})
 	}
 	procgroup.SetTempDir(cmd, scratch)
 	procgroup.Configure(processCtx, cmd)

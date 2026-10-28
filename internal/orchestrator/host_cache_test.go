@@ -106,9 +106,13 @@ func TestHostCacheReclaimsBeforeTrackerCleanup(t *testing.T) {
 				t.Fatal(err)
 			}
 			release := func() error { return nil }
+			pin := filepath.Join(t.TempDir(), "active-output")
 			if busy {
 				_, release, err = cache.Use(t.Context())
 				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Link(entry, pin); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -181,6 +185,11 @@ func TestHostCacheReclaimsBeforeTrackerCleanup(t *testing.T) {
 			finishTestWorkspaceCleanup(t, o, &state)
 			if err := release(); err != nil {
 				t.Fatal(err)
+			}
+			if busy {
+				if err := os.Remove(pin); err != nil {
+					t.Fatal(err)
+				}
 			}
 			o.startWorkspaceCleanup(t.Context(), &state, now.Add(time.Second))
 			<-tracker.entered
