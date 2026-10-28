@@ -123,6 +123,11 @@ func (s *Service) convertConversationPayload(ctx context.Context, scope nativeSc
 	if err := metadata.write(ctx, tx, family.table(), "rowid=?", row); err != nil {
 		return err
 	}
+	if family.name == "messages" {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_tool_revisions(conversation_id,message_id,revision,text,tool,item_id,status,content_attachment_id,conversion_state) SELECT conversation_id,id,revision,'',coalesce(tool_name,''),coalesce(tool_item_id,''),coalesce(tool_status,''),content_attachment_id,2 FROM conversation_messages WHERE rowid=? AND kind='tool' AND actor_kind='coordinator'`, row); err != nil {
+			return fmt.Errorf("preserve converted tool revision: %w", err)
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE storage_conversion_progress SET cursor_rowid=?,converted_rows=converted_rows+1,reclaimed_bytes=reclaimed_bytes+?,complete=NOT EXISTS(SELECT 1 FROM `+family.table()+` WHERE conversation_id=? AND `+family.pending()+`),updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=?`, row, max(0, len(original)+len(actor)-4), id, formatHubTime(now), scope.organization, scope.project, family.name, id); err != nil {
 		return err
 	}
