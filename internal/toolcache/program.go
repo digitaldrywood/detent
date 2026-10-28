@@ -38,9 +38,10 @@ type cacheResponse struct {
 }
 
 type cacheProgram struct {
-	cache *os.Root
-	pins  string
-	link  func(string, string) error
+	cache  *os.Root
+	pins   string
+	link   func(string, string) error
+	rename func(string, string) error
 }
 
 func RunProgram(root string, scratch string, input io.Reader, output io.Writer) (err error) {
@@ -104,7 +105,7 @@ func newCacheProgram(root string, scratch string) (*cacheProgram, error) {
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("create cache pins: %w", err), cache.Close())
 	}
-	return &cacheProgram{cache: cache, pins: pins, link: os.Link}, nil
+	return &cacheProgram{cache: cache, pins: pins, link: os.Link, rename: cache.Rename}, nil
 }
 
 func (p *cacheProgram) close() error {
@@ -131,7 +132,7 @@ func (p *cacheProgram) get(action []byte) cacheResponse {
 	if n, err := fmt.Sscanf(string(data), "v1 %x %x %d %d\n", &storedAction, &output, &size, &stamp); err != nil || n != 4 || !bytes.Equal(action, storedAction) || len(output) != sha256.Size || size < 0 {
 		return miss
 	}
-	path, err := p.pin(cacheName(output, "d"), size)
+	path, err := p.pin(cacheName(output, "d"), size, nil)
 	if err != nil {
 		return miss
 	}
@@ -144,7 +145,7 @@ func (p *cacheProgram) get(action []byte) cacheResponse {
 	return cacheResponse{OutputID: output, Size: size, DiskPath: path}
 }
 
-func (p *cacheProgram) pin(name string, size int64) (path string, err error) {
+func (p *cacheProgram) pin(name string, size int64, file *os.File) (path string, err error) {
 	base, _, _ := strings.Cut(filepath.Base(name), ".")
 	path = filepath.Join(p.pins, base)
 	defer func() {
@@ -157,11 +158,13 @@ func (p *cacheProgram) pin(name string, size int64) (path string, err error) {
 	if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() && info.Size() == size {
 		return path, touchCachePin(path, info)
 	}
-	file, err := p.cache.Open(name)
-	if err != nil {
-		return "", err
+	if file == nil {
+		file, err = p.cache.Open(name)
+		if err != nil {
+			return "", err
+		}
+		defer func() { err = errors.Join(err, file.Close()) }()
 	}
-	defer func() { err = errors.Join(err, file.Close()) }()
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Size() != size {
 		return "", errors.Join(errors.New("cache output incomplete"), err)
@@ -174,6 +177,9 @@ func (p *cacheProgram) pin(name string, size int64) (path string, err error) {
 		if err := os.Remove(path); err != nil {
 			return "", err
 		}
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", err
 	}
 	copy, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -206,10 +212,11 @@ func (p *cacheProgram) put(request cacheRequest, reader *bufio.Reader) (response
 		return response, err
 	}
 	staged := name + "." + rand.Text()
-	file, err := p.cache.OpenFile(staged, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := p.cache.OpenFile(staged, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return response, err
 	}
+	defer func() { err = errors.Join(err, file.Close()) }()
 	defer func() {
 		if removeErr := p.cache.Remove(staged); removeErr != nil && !os.IsNotExist(removeErr) {
 			err = errors.Join(err, removeErr)
@@ -241,17 +248,21 @@ func (p *cacheProgram) put(request cacheRequest, reader *bufio.Reader) (response
 			}
 		}
 	}
-	if err := errors.Join(writeErr, file.Close()); err != nil {
-		return response, err
+	if writeErr != nil {
+		return response, writeErr
 	}
 	if written != request.BodySize || !bytes.Equal(hash.Sum(nil), request.OutputID) {
 		return response, errors.New("cache body does not match output ID and size")
 	}
-	path, err := p.pin(staged, request.BodySize)
+	path, err := p.pin(staged, request.BodySize, file)
 	if err != nil {
 		return response, err
 	}
-	if err := p.cache.Rename(staged, name); err != nil {
+	response = cacheResponse{DiskPath: path}
+	if err := p.rename(staged, name); err != nil {
+		if os.IsNotExist(err) {
+			return response, nil
+		}
 		return response, err
 	}
 	index := cacheName(request.ActionID, "a")
@@ -259,12 +270,17 @@ func (p *cacheProgram) put(request cacheRequest, reader *bufio.Reader) (response
 		return response, err
 	}
 	stagedIndex := index + "." + rand.Text()
+	defer func() {
+		if removeErr := p.cache.Remove(stagedIndex); removeErr != nil && !os.IsNotExist(removeErr) {
+			err = errors.Join(err, removeErr)
+		}
+	}()
 	data := fmt.Sprintf("v1 %x %x %20d %20d\n", request.ActionID, request.OutputID, request.BodySize, time.Now().UnixNano())
 	if err := p.cache.WriteFile(stagedIndex, []byte(data), 0o600); err != nil {
 		return response, err
 	}
-	if err := p.cache.Rename(stagedIndex, index); err != nil {
-		return response, errors.Join(err, p.cache.Remove(stagedIndex))
+	if err := p.rename(stagedIndex, index); err != nil && !os.IsNotExist(err) {
+		return response, err
 	}
-	return cacheResponse{DiskPath: path}, nil
+	return response, nil
 }

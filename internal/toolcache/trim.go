@@ -58,6 +58,7 @@ func (p Policy) NormalizedForCapacity(capacity uint64) Policy {
 }
 
 var cacheEntryName = regexp.MustCompile(`^[0-9a-f]{64}-[ad]$`)
+var cacheStagingName = regexp.MustCompile(`^[0-9a-f]{64}-[ad]\.[A-Z2-7]{26}$`)
 var cacheShardName = regexp.MustCompile(`^[0-9a-f]{2}$`)
 
 func Trim(ctx context.Context, root string, policy Policy, now time.Time) (int64, error) {
@@ -128,7 +129,7 @@ func trim(ctx context.Context, root string, policy Policy, now time.Time, report
 		if walkErr != nil {
 			return walkErr
 		}
-		candidate := path.Dir(path.Dir(name)) == "." && cacheShardName.MatchString(path.Base(path.Dir(name))) && cacheEntryName.MatchString(entry.Name())
+		candidate := path.Dir(path.Dir(name)) == "." && cacheShardName.MatchString(path.Base(path.Dir(name))) && (cacheEntryName.MatchString(entry.Name()) || managed && !entry.IsDir() && cacheStagingName.MatchString(entry.Name()))
 		if entry.IsDir() {
 			if name == "." || path.Dir(name) == "." && cacheShardName.MatchString(entry.Name()) {
 				return nil
