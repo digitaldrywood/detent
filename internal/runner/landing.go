@@ -41,6 +41,21 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		}
 	}
 	target, err := landing.LandingTarget(ctx)
+	landingStarted := false
+	startLanding := func() error {
+		if runtime, ok := req.Execution.(LandingRuntimeExecution); ok && !landingStarted {
+			if err := runtime.StartLanding(ctx, req.WorkAttemptID, req.Generation); err != nil {
+				return err
+			}
+			landingStarted = true
+		}
+		return nil
+	}
+	defer func() {
+		if !runResult.TurnStarted && (target.MergeResolution || prepared != nil && prepared.MergeResolution) {
+			runErr = errors.Join(runErr, startLanding())
+		}
+	}()
 	if err != nil {
 		if errors.Is(err, ErrLandingNotReviewed) {
 			return r.refusedLanding(req, target, workspace.LandRefusalNothing, err.Error()), nil
@@ -97,6 +112,11 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 		publication, canPublish := req.Execution.(MergeResolutionExecution)
 		if canResolve && canPublish {
 			resolved, turn, resolveErr := r.resolveNativeLanding(ctx, req, resolver, info, issue, options)
+			if !turn.TurnStarted {
+				if err := startLanding(); err != nil {
+					return turn, err
+				}
+			}
 			defer func() {
 				runResult.Tokens = turn.Tokens
 				runResult.Model, runResult.TokenUSD, runResult.RateLimits = turn.Model, turn.TokenUSD, turn.RateLimits
@@ -136,6 +156,9 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 				turn.FinalMessage = "Merge resolution changed the reviewed diff; publish the resolved source for review."
 				turn.NativeChange = &NativeChange{MergeResolution: true, Changed: true, BaseSHA: resolved.BaseSHA, HeadSHA: resolved.HeadSHA}
 				return turn, nil
+			}
+			if err := startLanding(); err != nil {
+				return turn, err
 			}
 			options.Resolution = &resolved
 		} else {

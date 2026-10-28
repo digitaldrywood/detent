@@ -177,16 +177,31 @@ func (e *nativeExecution) settleIntegratedChange(ctx context.Context, detail tra
 		if d := e.claim.recovery.Issue.ReleaseDelivery; d != nil && (d.ChangeID != detail.Change.ID || d.VersionID != version.ID || d.HeadSHA != version.HeadSHA || d.BaseSHA != version.BaseSHA || d.Repository != version.Repository) {
 			return false, errors.New("release association differs from current version")
 		}
-		if version.Policy.Gates.SecurityAudit && !version.Policy.Gates.GitHubPullRequest && e.claim.recovery.Issue.ReleaseDelivery == nil {
-			return false, nil
-		}
 		result, err := e.integrationSource(ctx, version, diff.HeadSHA)
 		if err != nil {
 			var refusal *workspace.LandRefusal
 			if errors.As(err, &refusal) {
-				return false, nil
+				if change.Changed || diff.HeadSHA == version.HeadSHA {
+					return false, nil
+				}
+				landing := &runner.NativeLanding{
+					ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA,
+					BaseSHA: refusal.BaseSHA, BaseRef: refusal.TargetBranch,
+					RefusalKind: refusal.Kind, Refusal: refusal.Reason, ConflictFiles: refusal.ConflictFiles,
+				}
+				if refusal.Kind == workspace.LandRefusalConflict {
+					landing.Path, landing.Waiting = "merge_resolution_pending", true
+				}
+				e.finalizationSource = &tracker.NativeChangeReference{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}
+				e.finalizationAttempt = version.AttemptID
+				change.Changed, change.ChangeID, change.VersionID = true, detail.Change.ID, version.ID
+				change.BaseSHA, change.HeadSHA, change.Reviewed, change.Landing = version.BaseSHA, version.HeadSHA, true, landing
+				return true, nil
 			}
 			return false, fmt.Errorf("verify delivered source: %w", err)
+		}
+		if version.Policy.Gates.SecurityAudit && !version.Policy.Gates.GitHubPullRequest && e.claim.recovery.Issue.ReleaseDelivery == nil {
+			return false, nil
 		}
 		landing := runner.NativeLanding{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
 		if err := e.recordLanding(ctx, landing); err != nil {
