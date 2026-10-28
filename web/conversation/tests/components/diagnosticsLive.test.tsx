@@ -450,3 +450,16 @@ it("clears subscription risk at reset", () => {
   const panel = within(screen.getByRole("region", { name: "Capacity right now" }));
   expect(panel.getByRole("meter").getAttribute("aria-label")).toBe("five hour · 85% used · Stale");
 });
+
+it("renders runner capacity while the diagnostics report is pending", async () => {
+  let release!: (value: ReturnType<typeof decodeDiagnostics>) => void;
+  mocks.api.diagnostics.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+  pendingBarriers.push(() => release(decodeDiagnostics(report)));
+  mocks.api.fleet.mockResolvedValue({ runners });
+  render(<DiagnosticsRoute />, { wrapper: ({ children }) => <HealthFindingsProvider projects={mocks.bootstrap.projects}>{children}</HealthFindingsProvider> });
+  await screen.findByText("Capacity right now");
+  expect(screen.getByText("Example desktop")).toBeTruthy();
+  expect(screen.getByLabelText("Loading diagnostics")).toBeTruthy();
+  await act(async () => release(decodeDiagnostics(report)));
+  expect(screen.queryByLabelText("Loading diagnostics")).toBeNull();
+});

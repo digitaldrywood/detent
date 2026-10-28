@@ -26,7 +26,7 @@ import {
 } from "../../contracts/diagnostics.ts";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { getQueryData, scopeOf, setQueryData, useQuery } from "../lib/queryCache.ts";
-import { DIAGNOSTICS_STALE_MS, diagnosticsKey, readDiagnostics } from "./diagnosticsQuery.ts";
+import { DIAGNOSTICS_STALE_MS, diagnosticsKey, readDiagnostics, diagnosticsFleetKey, readDiagnosticsFleet, diagnosticsUpdatesKey, readDiagnosticsUpdates } from "./diagnosticsQuery.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import { useHealthFindings } from "./healthFindings.tsx";
 import { CapacityChart } from "./CapacityChart.tsx";
@@ -78,6 +78,8 @@ export function DiagnosticsRoute(): React.ReactElement {
   const projectsKey = projects.join(",");
   const reportQuery = useQuery(diagnosticsKey(api, range), readDiagnostics(api, range),
     { staleTime: DIAGNOSTICS_STALE_MS, keepPreviousIn: String(scopeOf(api)) });
+  const fleetQuery = useQuery(diagnosticsFleetKey(api), readDiagnosticsFleet(api), { staleTime: DIAGNOSTICS_STALE_MS });
+  const updatesQuery = useQuery(diagnosticsUpdatesKey(api), readDiagnosticsUpdates(api), { staleTime: DIAGNOSTICS_STALE_MS });
   const findingsKey = React.useMemo(() => ["diagnostics-findings", scopeOf(api), projectsKey] as const, [api, projectsKey]);
   const [findings, setFindings] = useState<{ readonly key: typeof findingsKey; readonly value: FindingsState }>(() =>
     ({ key: findingsKey, value: getQueryData<FindingsState>(findingsKey) ?? EMPTY_FINDINGS }));
@@ -102,9 +104,9 @@ export function DiagnosticsRoute(): React.ReactElement {
   }, [sharedFindings.read, sharedFindings.error, findingsKey, projects]);
 
   const state = {
-    report: reportQuery.data?.report ?? null,
-    runners: reportQuery.data?.runners ?? null,
-    appUpdates: reportQuery.data?.appUpdates ?? null,
+    report: reportQuery.data ?? null,
+    runners: fleetQuery.data ?? null,
+    appUpdates: updatesQuery.data ?? null,
     ...findingsState,
     pending: reportQuery.pending,
     error: reportQuery.error !== null && reportQuery.data === undefined ? "Diagnostics are temporarily unavailable." : null,
@@ -121,6 +123,8 @@ export function DiagnosticsRoute(): React.ReactElement {
       onRangeChange={setRange}
       onRefresh={() => {
         void reportQuery.refresh();
+        void fleetQuery.refresh();
+        void updatesQuery.refresh();
         sharedFindings.refresh();
       }}
       onAsk={(finding) => {
@@ -250,6 +254,7 @@ export function DiagnosticsView({
       </WorkspacePageHeader>
       <ScrollArea className="min-h-0 flex-1">
         <WorkspacePageContainer width="wide">
+          {runners !== null ? <CapacityPanel runners={runners} appUpdates={appUpdates} /> : !pending ? <Section title="Capacity right now"><Unavailable>Runner capacity is unavailable. Refresh to try again.</Unavailable></Section> : null}
           {pending ? (
             <div
               aria-label="Loading diagnostics"
@@ -261,7 +266,6 @@ export function DiagnosticsView({
             </div>
           ) : (
             <>
-              {runners === null ? <Section title="Capacity right now"><Unavailable>Runner capacity is unavailable. Refresh to try again.</Unavailable></Section> : <CapacityPanel runners={runners} appUpdates={appUpdates} />}
               <Section title="Needs attention">
                 {findingsError ? <Unavailable>{findingsError}</Unavailable> : null}
                 {problems.length > 0 ? <div className="divide-y divide-border">

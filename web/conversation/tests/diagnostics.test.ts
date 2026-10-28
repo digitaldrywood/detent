@@ -6,7 +6,7 @@ import {
   findingDestination,
   orderedFindings,
 } from "../src/contracts/diagnostics.ts";
-import { readDiagnostics } from "../src/app/diagnostics/diagnosticsQuery.ts";
+import { readDiagnostics, readDiagnosticsFleet, readDiagnosticsUpdates } from "../src/app/diagnostics/diagnosticsQuery.ts";
 import fleetProduction from "../../../internal/hubserver/testdata/fleet-production.json";
 import { decodeFleet } from "../src/contracts/account.ts";
 import emptyFleet from "../src/contracts/fixtures/account-fleet-empty.json";
@@ -47,7 +47,7 @@ describe("diagnostics read", () => {
           return Response.json(payload);
         },
       });
-      const result = await readDiagnostics(api, "24h")();
+      const result = { report: await readDiagnostics(api, "24h")(), runners: await readDiagnosticsFleet(api)() };
       expect(result.runners).toBeNull();
       expect(result.report).toEqual(decodeDiagnostics(fixture));
       expect(error).toHaveBeenCalledTimes(1);
@@ -72,7 +72,7 @@ describe("diagnostics read", () => {
         return Response.json(url.includes("/fleet") ? emptyFleet : fixture);
       },
     });
-    const read = await readDiagnostics(api, "24h")();
+    const read = { report: await readDiagnostics(api, "24h")(), runners: await readDiagnosticsFleet(api)(), appUpdates: await readDiagnosticsUpdates(api)() };
     expect(requests).toContain("/app/updates");
     expect(read.appUpdates).toEqual(status === 200 ? updatesFixture : null);
     expect(read.report).toEqual(decodeDiagnostics(fixture));
