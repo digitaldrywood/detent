@@ -2,10 +2,12 @@ package hubserver
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,7 +34,11 @@ type batchFixture struct {
 
 func newBatchFixture(t *testing.T) *batchFixture {
 	t.Helper()
-	f := linkedFixture(t)
+	return newBatchFixtureForProject(t, linkedFixture(t))
+}
+
+func newBatchFixtureForProject(t *testing.T, f nativeFixture) *batchFixture {
+	t.Helper()
 	f.service.config.ImportBackend = nil
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE repositories SET github_owner='example-org', github_name='example-project' WHERE github_node_id='R_repo'"); err != nil {
 		t.Fatal(err)
@@ -502,11 +508,17 @@ func TestGitHubBatchSkipsLinkedAndLegacyImportedIdentity(t *testing.T) {
 func TestGitHubBatchHonorsFirstRunIntakeWithoutAnotherSourceRead(t *testing.T) {
 	t.Parallel()
 	f := newBatchFixture(t)
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	f.preview(t, false)
 	f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Todo", AllowDispatch: true}, http.StatusOK)
 	item := f.batch.Items[0]
 	r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/source-intake", testHubAdminToken, tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "first-run-intake"}, Snapshot: batchSnapshot(12)})
 	requireNativeStatus(t, r, http.StatusOK)
+	if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	if task := f.heartbeat(t); task != nil {
 		t.Fatalf("one-time hydration already complete; task=%#v", task)
 	}
@@ -515,6 +527,59 @@ func TestGitHubBatchHonorsFirstRunIntakeWithoutAnotherSourceRead(t *testing.T) {
 	decodeHubResponse(t, r, &view)
 	if view.Batch.Status != "finished" || view.Batch.Items[0].Status != "completed" {
 		t.Fatalf("batch did not retain existing completion: %#v", view)
+	}
+}
+
+func TestHeartbeatDoesNotReconcileGitHubBatchItems(t *testing.T) {
+	t.Parallel()
+	for _, hydrated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("hydrated=%t", hydrated), func(t *testing.T) {
+			t.Parallel()
+			f := newBatchFixture(t)
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			f.preview(t, false)
+			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Todo", AllowDispatch: true}, http.StatusOK)
+			if hydrated {
+				r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.batch.Items[0].WorkItemID)+"/source-intake", testHubAdminToken, tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "first-run-intake"}, Snapshot: batchSnapshot(12)})
+				requireNativeStatus(t, r, http.StatusOK)
+			}
+			f.service.tokenUseWork.Wait()
+			var statements []string
+			timing := &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+				statements = append(statements, query)
+			}}
+			now := f.service.config.now().Add(time.Minute)
+			f.service.config.now = func() time.Time { return now }
+			f.service.database.now = f.service.config.now
+			request := newHubAPIRequest(t, http.MethodPost, f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{"version": "test", "capacity": 2})
+			response := httptest.NewRecorder()
+			f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(t.Context(), timing)))
+			requireNativeStatus(t, response, http.StatusOK)
+			for _, query := range statements {
+				if strings.Contains(query, "linked_issue_sources") || strings.Contains(query, "INSERT INTO onboarding_issue_intake") || strings.Contains(query, "UPDATE onboarding_issue_intake") {
+					t.Errorf("heartbeat performed batch item work: %s", query)
+				}
+			}
+			var capacity int
+			var heartbeat string
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT reported_capacity,last_heartbeat_at FROM runner_identities WHERE id=?", f.runner.binding.RunnerID).Scan(&capacity, &heartbeat); err != nil {
+				t.Fatal(err)
+			}
+			if capacity != 2 || heartbeat != formatHubTime(now) {
+				t.Fatalf("capacity=%d heartbeat=%s want capacity=2 heartbeat=%s", capacity, heartbeat, formatHubTime(now))
+			}
+			batch, err := readGitHubBatch(t.Context(), f.service.database.reader, nativeScope{project: f.project.ID})
+			if err != nil || batch == nil || batch.Revision != f.batch.Revision || batch.Items[0].Status != "pending" {
+				t.Fatalf("heartbeat changed batch: %+v error=%v", batch, err)
+			}
+			var snapshot runnerauth.RoutingSnapshot
+			decodeHubResponse(t, response, &snapshot)
+			if snapshot.GitHubIntake == nil || snapshot.GitHubIntake.Item.Number != 12 {
+				t.Fatalf("pending runner task lost: %+v", snapshot.GitHubIntake)
+			}
+		})
 	}
 }
 
@@ -988,6 +1053,173 @@ func TestGitHubBatchMaintenanceTraversal(t *testing.T) {
 			batch, err = readGitHubBatch(t.Context(), d.reader, scope)
 			if err != nil || batch == nil || batch.Status != "preview" || reads != 2 {
 				t.Fatalf("re-enabled project did not progress after wrap: batch=%+v reads=%d error=%v", batch, reads, err)
+			}
+		})
+	}
+}
+
+func TestGitHubBatchMaintenanceReconcilesRunnerProjects(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ backend, legacy bool }{{}, {backend: true}, {legacy: true}} {
+		t.Run(fmt.Sprintf("backend=%t/legacy=%t", test.backend, test.legacy), func(t *testing.T) {
+			t.Parallel()
+			first := newBatchFixture(t)
+			if err := first.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			second := newBatchFixtureForProject(t, newNativeFixture(t, first.service, first.project.OrganizationID, "second-batch"))
+			fixtures := []*batchFixture{first, second}
+			for _, f := range fixtures {
+				f.preview(t, false)
+				f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 13}, Destination: "Todo", AllowDispatch: true}, http.StatusOK)
+				r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.batch.Items[0].WorkItemID)+"/source-intake", testHubAdminToken, tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "first-run-intake"}, Snapshot: batchSnapshot(12)})
+				requireNativeStatus(t, r, http.StatusOK)
+				if test.legacy {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE onboarding_issue_intake SET batch_status=NULL WHERE project_id=?", f.project.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if test.backend {
+				first.service.config.ImportBackend = scheduledContractImporter(func(context.Context, GitHubImportRequest) (GitHubImportPage, error) {
+					t.Error("runner-owned batch used the Hub import transport")
+					return GitHubImportPage{}, nil
+				})
+			}
+			d := first.service.database
+			for index := range githubBatchMaintenanceLimit {
+				project := fmt.Sprintf("batch-prefix-%03d", index)
+				if _, err := d.db.ExecContext(t.Context(), `INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) SELECT ?,organization_id,?,profile,states_json,created_at FROM projects WHERE id=?`, project, project, first.project.ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := d.db.ExecContext(t.Context(), `INSERT INTO onboarding_issue_intake(project_id,request_json,hub_owned,batch_status) VALUES(?,'{"status":"importing"}',0,'importing')`, project); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for tick := range 2 {
+				var probes, writes int
+				ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+					if strings.Contains(query, "FROM linked_issue_sources") {
+						if d.db.Stats().InUse != 0 {
+							t.Error("completion probe held the writer")
+						}
+						probes++
+					}
+					if strings.HasPrefix(query, "UPDATE onboarding_issue_intake") {
+						writes++
+					}
+				}})
+				if err := first.service.maintainGitHubBatches(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if probes != tick*4 || writes != tick*2 {
+					t.Fatalf("tick=%d probes=%d writes=%d want probes=%d writes=%d", tick, probes, writes, tick*4, tick*2)
+				}
+				for _, f := range fixtures {
+					batch, err := readGitHubBatch(t.Context(), d.reader, nativeScope{project: f.project.ID})
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := "pending"
+					if tick == 1 {
+						want = "completed"
+					}
+					if batch.Items[0].Status != want || batch.Items[1].Status != "pending" || batch.Status != "importing" {
+						t.Fatalf("tick=%d project=%s batch=%+v", tick, f.project.ID, batch)
+					}
+				}
+			}
+			for _, f := range fixtures {
+				r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.batch.Items[1].WorkItemID)+"/source-intake", testHubAdminToken, tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "second-run-intake"}, Snapshot: batchSnapshot(13)})
+				requireNativeStatus(t, r, http.StatusOK)
+			}
+			if err := first.service.maintainGitHubBatches(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if err := first.service.maintainGitHubBatches(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range fixtures {
+				batch, err := readGitHubBatch(t.Context(), d.reader, nativeScope{project: f.project.ID})
+				if err != nil || batch == nil || batch.Status != "finished" || batch.Items[1].Status != "completed" {
+					t.Fatalf("project=%s did not finish: batch=%+v error=%v", f.project.ID, batch, err)
+				}
+				if task := f.heartbeat(t); task != nil {
+					t.Fatalf("completed batch delivered task: %+v", task)
+				}
+			}
+		})
+	}
+}
+
+func TestGitHubBatchMaintenanceItemBudgetAndConcurrentResult(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		items      int
+		concurrent bool
+	}{{name: "item budget", items: githubBatchMaintenanceLimit + 1}, {name: "concurrent result", items: 2, concurrent: true}} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newBatchFixture(t)
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			f.command(t, tracker.GitHubBatchCommand{Action: "discover"}, http.StatusOK)
+			var numbers []int
+			for start := 1; start <= test.items; start += 100 {
+				page := tracker.GitHubDiscoveryPage{Total: test.items}
+				for number := start; number <= min(start+99, test.items); number++ {
+					page.Issues = append(page.Issues, previewIssue(number, false))
+					numbers = append(numbers, number)
+				}
+				if start+100 <= test.items {
+					page.NextCursor = strconv.Itoa(start + 100)
+				}
+				if start > 1 {
+					f.command(t, tracker.GitHubBatchCommand{Action: "more"}, http.StatusOK)
+				}
+				f.report(t, tracker.GitHubBatchResult{Page: &page}, http.StatusOK)
+			}
+			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: numbers}, http.StatusOK)
+			d := f.service.database
+			if _, err := d.db.ExecContext(t.Context(), "UPDATE linked_issue_sources SET snapshot_json='{}' WHERE work_item_id IN (SELECT native_id FROM issues WHERE project_id=?)", f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			probes, writes := 0, 0
+			ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+				if strings.Contains(query, "FROM linked_issue_sources") {
+					probes++
+					if test.concurrent && probes == 1 {
+						f.report(t, tracker.GitHubBatchResult{Number: 2, Error: "Source unavailable"}, http.StatusOK)
+					}
+				}
+				if strings.HasPrefix(query, "UPDATE onboarding_issue_intake") {
+					writes++
+				}
+			}})
+			if err := f.service.maintainGitHubBatches(ctx); err != nil {
+				t.Fatal(err)
+			}
+			batch, err := readGitHubBatch(t.Context(), d.reader, nativeScope{project: f.project.ID})
+			if err != nil || batch == nil {
+				t.Fatalf("read batch: %v", err)
+			}
+			if test.concurrent {
+				if probes != 1 || batch.Revision != f.batch.Revision || batch.Items[1].Status != "failed" || batch.Items[1].Error != "Source unavailable" {
+					t.Fatalf("overwrote concurrent result: probes=%d batch=%+v", probes, batch)
+				}
+			} else {
+				if probes != githubBatchMaintenanceLimit || writes != githubBatchMaintenanceLimit || batch.Revision != f.batch.Revision+githubBatchMaintenanceLimit || batch.Items[test.items-1].Status != "pending" {
+					t.Fatalf("exceeded item budget: probes=%d writes=%d batch=%+v", probes, writes, batch)
+				}
+			}
+			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			batch, err = readGitHubBatch(t.Context(), d.reader, nativeScope{project: f.project.ID})
+			if err != nil || batch == nil || batch.Status != "finished" {
+				t.Fatalf("next tick did not finish: batch=%+v error=%v", batch, err)
 			}
 		})
 	}

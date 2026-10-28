@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -17,16 +18,14 @@ const githubBatchMaintenanceLimit = 100
 func (s *Service) maintainGitHubBatches(ctx context.Context) error {
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
-	if s.config.ImportBackend == nil {
-		return nil
-	}
 	rows, err := s.database.reader.QueryContext(readCtx, `SELECT p.organization_id,p.id,b.hub_owned,b.batch_status,CASE WHEN b.hub_owned IS NULL OR b.batch_status IS NULL THEN b.request_json END FROM onboarding_issue_intake b JOIN projects p ON p.id=b.project_id
- WHERE p.deleted_at IS NULL AND b.project_id>? AND (b.hub_owned=1 OR b.hub_owned IS NULL) AND (b.batch_status IN ('discovering','importing') OR b.batch_status IS NULL) ORDER BY b.project_id LIMIT ?`, s.githubBatchCursor, githubBatchMaintenanceLimit)
+ WHERE p.deleted_at IS NULL AND b.project_id>? AND (b.batch_status IN ('discovering','importing') OR b.batch_status IS NULL) ORDER BY b.project_id LIMIT ?`, s.githubBatchCursor, githubBatchMaintenanceLimit)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	var scopes []nativeScope
+	var runnerScopes []nativeScope
 	var failures []error
 	visited := 0
 	for rows.Next() {
@@ -52,7 +51,9 @@ func (s *Service) maintainGitHubBatches(ctx context.Context) error {
 				status.String = batch.Status
 			}
 		}
-		if owned.Bool && (status.String == "discovering" || status.String == "importing") {
+		if !owned.Bool && status.String == "importing" {
+			runnerScopes = append(runnerScopes, scope)
+		} else if s.config.ImportBackend != nil && owned.Bool && (status.String == "discovering" || status.String == "importing") {
 			scopes = append(scopes, scope)
 		}
 	}
@@ -62,12 +63,82 @@ func (s *Service) maintainGitHubBatches(ctx context.Context) error {
 	if visited < githubBatchMaintenanceLimit {
 		s.githubBatchCursor = ""
 	}
+	for _, scope := range runnerScopes {
+		if err := s.completeRunnerGitHubBatch(ctx, scope); err != nil {
+			failures = append(failures, err)
+		}
+	}
 	for _, scope := range scopes {
 		if err := s.advanceGitHubBatch(ctx, scope); err != nil {
 			failures = append(failures, err)
 		}
 	}
 	return errors.Join(failures...)
+}
+
+func (s *Service) completeRunnerGitHubBatch(ctx context.Context, scope nativeScope) error {
+	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+	var raw string
+	err := s.database.reader.QueryRowContext(readCtx, "SELECT request_json FROM onboarding_issue_intake WHERE project_id=?", scope.project).Scan(&raw)
+	cancelRead()
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("read runner intake batch: %w", err)
+	}
+	var batch tracker.GitHubBatch
+	if err := json.Unmarshal([]byte(raw), &batch); err != nil {
+		return fmt.Errorf("decode runner intake batch: %w", err)
+	}
+	if batch.HubOwned || batch.Status != "importing" {
+		return nil
+	}
+	visited := 0
+	for i, item := range batch.Items {
+		if item.Status != "pending" {
+			continue
+		}
+		if visited == githubBatchMaintenanceLimit {
+			break
+		}
+		visited++
+		if item.WorkItemID == "" {
+			continue
+		}
+		var complete bool
+		readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
+		err := s.database.reader.QueryRowContext(readCtx, "SELECT snapshot_json IS NOT NULL FROM linked_issue_sources WHERE work_item_id=?", item.WorkItemID).Scan(&complete)
+		cancelRead()
+		if err != nil {
+			return fmt.Errorf("read intake completion: %w", err)
+		}
+		if !complete {
+			continue
+		}
+		batch.Items[i].Status = "completed"
+		if !batchHasPending(&batch) {
+			batch.Status = "finished"
+		}
+		batch.Revision++
+		next, err := marshalNative(batch)
+		if err != nil {
+			return fmt.Errorf("encode runner intake batch: %w", err)
+		}
+		result, err := s.database.db.ExecContext(ctx, `UPDATE onboarding_issue_intake SET request_json=?,hub_owned=?,batch_status=? WHERE project_id=? AND request_json=?`, next, batch.HubOwned, batch.Status, scope.project, raw)
+		if err != nil {
+			return fmt.Errorf("complete runner intake item: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read intake completion result: %w", err)
+		}
+		if changed == 0 {
+			return nil
+		}
+		raw = next
+	}
+	return nil
 }
 
 func (s *Service) advanceGitHubBatch(ctx context.Context, scope nativeScope) error {

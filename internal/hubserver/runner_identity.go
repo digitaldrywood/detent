@@ -443,10 +443,6 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 			if err := updateRunnerProblems(ctx, tx, scope, request.Problems, request.ProtocolMajor, request.SettingsRejected, now); err != nil {
 				return nil, err
 			}
-			step("github_batch_completion")
-			if err := prepareGitHubBatchTask(ctx, tx, scope); err != nil {
-				return nil, err
-			}
 			return runnerCommittedResponse(func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 				snapshot, err := readRunnerRoutingSnapshot(ctx, tx, scope.organization, scope.credential.Runner.RunnerID, now)
 				if err != nil {

@@ -434,17 +434,6 @@ func githubBatchTask(scope nativeScope, batch *tracker.GitHubBatch) (*tracker.Gi
 	return &tracker.GitHubBatchTask{ProjectID: scope.project, BatchID: batch.ID, Revision: batch.Revision, Item: &previews[0], Items: previews}, nil
 }
 
-func prepareGitHubBatchTask(ctx context.Context, tx *sql.Tx, scope nativeScope) error {
-	batch, err := readGitHubBatch(ctx, tx, scope)
-	if err != nil || batch == nil {
-		return err
-	}
-	if batch.HubOwned || batch.RunnerID != scope.credential.Runner.RunnerID || batch.Status != "importing" {
-		return nil
-	}
-	return completeGitHubBatchItems(ctx, tx, scope, batch)
-}
-
 func nextGitHubBatchTask(ctx context.Context, tx *sql.Tx, scope nativeScope, batch *tracker.GitHubBatch) (*tracker.GitHubBatchTask, error) {
 	if batch.Status != "discovering" {
 		if err := completeGitHubBatchItems(ctx, tx, scope, batch); err != nil {
