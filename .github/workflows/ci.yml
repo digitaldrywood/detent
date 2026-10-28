@@ -259,11 +259,12 @@ jobs:
           - {name: 3/5, key: race-3, shard: 3/5}
           - {name: 4/5, key: race-4, shard: 4/5}
           - {name: 5/5, key: race-5, shard: 5/5}
-          - {name: hub 1/5, key: race-hub-1, shard: hub-1}
-          - {name: hub 2/5, key: race-hub-2, shard: hub-2}
-          - {name: hub 3/5, key: race-hub-3, shard: hub-3}
-          - {name: hub 4/5, key: race-hub-4, shard: hub-4}
-          - {name: hub 5/5, key: race-hub-5, shard: hub-5}
+          - {name: hub 1/6, key: race-hub-1, shard: hub-1}
+          - {name: hub 2/6, key: race-hub-2, shard: hub-2}
+          - {name: hub 3/6, key: race-hub-3, shard: hub-3}
+          - {name: hub 4/6, key: race-hub-4, shard: hub-4}
+          - {name: hub 5/6, key: race-hub-5, shard: hub-5}
+          - {name: hub 6/6, key: race-hub-6, shard: hub-6}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -295,11 +296,12 @@ jobs:
           - {name: 2/4, key: 2, shard: 2/4}
           - {name: 3/4, key: 3, shard: 3/4}
           - {name: 4/4, key: 4, shard: 4/4}
-          - {name: hub 1/5, key: hub-1, shard: hub-1}
-          - {name: hub 2/5, key: hub-2, shard: hub-2}
-          - {name: hub 3/5, key: hub-3, shard: hub-3}
-          - {name: hub 4/5, key: hub-4, shard: hub-4}
-          - {name: hub 5/5, key: hub-5, shard: hub-5}
+          - {name: hub 1/6, key: hub-1, shard: hub-1}
+          - {name: hub 2/6, key: hub-2, shard: hub-2}
+          - {name: hub 3/6, key: hub-3, shard: hub-3}
+          - {name: hub 4/6, key: hub-4, shard: hub-4}
+          - {name: hub 5/6, key: hub-5, shard: hub-5}
+          - {name: hub 6/6, key: hub-6, shard: hub-6}
     steps:
       - uses: actions/checkout@v5
         with:
