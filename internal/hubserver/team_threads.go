@@ -678,6 +678,7 @@ func (s *Service) getTeamThread(ctx context.Context, scope nativeScope, t teamTh
 	defer rows.Close()
 	cursor := after
 	bytes := 0
+	posts := make([]teamPost, 0, threadLimit(in.Limit))
 	for rows.Next() {
 		var p teamPost
 		if err := rows.Scan(&p.Sequence, &p.Author, &p.Name, &p.ActingFor, &p.Client, &p.Kind, &p.Body, &p.CreatedAt); err != nil {
@@ -687,6 +688,15 @@ func (s *Service) getTeamThread(ctx context.Context, scope nativeScope, t teamTh
 			break
 		}
 		bytes += len(p.Body)
+		posts = append(posts, p)
+	}
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	if err := rows.Close(); err != nil {
+		return out, fmt.Errorf("close thread posts: %w", err)
+	}
+	for _, p := range posts {
 		p.References, err = s.readTeamReferences(ctx, scope, t.ID, p.Sequence)
 		if err != nil {
 			return out, err
@@ -701,9 +711,6 @@ func (s *Service) getTeamThread(ctx context.Context, scope nativeScope, t teamTh
 			break
 		}
 		cursor = p.Sequence
-	}
-	if err := rows.Err(); err != nil {
-		return out, err
 	}
 	out.Cursor = strconv.FormatInt(cursor, 10)
 	out.HasMore = cursor < t.PostCount
