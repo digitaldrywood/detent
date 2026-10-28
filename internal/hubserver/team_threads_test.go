@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -445,6 +446,27 @@ func TestTeamThreadGeneralMembershipAndRetries(t *testing.T) {
 			if len(read.Posts) != 1 || read.Thread.PostCount != 1 {
 				t.Fatalf("post retry duplicated content: %+v", read)
 			}
+			body := &countingReader{reader: strings.NewReader(`{"kind":"note","key":"oversized","body":"` + strings.Repeat("x", 4*maxAPIRequestBodyBytes) + `"}`)}
+			request := httptest.NewRequest(http.MethodPost, base+"/"+first.ID+"/posts", body)
+			request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
+			request.Header.Set("X-CSRF-Token", hostedCSRF(user.token))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			f.service.Handler().ServeHTTP(response, request)
+			if response.Code < 400 || response.Code >= 500 || body.read > maxAPIRequestBodyBytes+64<<10 {
+				t.Fatalf("oversized thread post status=%d read=%d, want client error within the body limit", response.Code, body.read)
+			}
 		})
 	}
+}
+
+type countingReader struct {
+	reader io.Reader
+	read   int
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.read += n
+	return n, err
 }

@@ -111,7 +111,7 @@ func (s *Service) registerTeamThreadRoutes(e *echo.Echo) {
 					}
 					in.Limit = n
 				}
-			} else if err := c.Bind(&in); err != nil {
+			} else if err := decodeAPIJSON(c, &in); err != nil {
 				return s.nativeAPIError(c, threadInvalid())
 			}
 			in.ThreadID = c.Param("thread")
