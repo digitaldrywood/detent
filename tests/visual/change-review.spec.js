@@ -38,7 +38,11 @@ test.beforeEach(async ({ page, request }) => {
   await request.post(`${url}/fixture/reset`);
   let resolveContent;
   const contentRequested = new Promise(resolve => { resolveContent = resolve; });
-  await page.route('**/*content=1', route => resolveContent(route), { times: 1 });
+  await page.route('**/*content=1', route => {
+    if (!resolveContent) return route.continue();
+    resolveContent(route);
+    resolveContent = null;
+  });
   await page.goto(url);
   const content = await contentRequested;
   try {
