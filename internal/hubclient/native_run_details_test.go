@@ -156,11 +156,13 @@ func TestNativeObservationDetailBatches(t *testing.T) {
 		observations     int
 		checkpoint, fail bool
 		heartbeat        bool
+		timing           bool
 	}{
-		{"checkpoint", 2, true, false, false},
-		{"bounded observation batch", 8, false, false, false},
-		{"failed boundary retains replay", 2, true, true, false},
-		{"heartbeat flushes partial batch", 2, false, false, true},
+		{"checkpoint", 2, true, false, false, false},
+		{"bounded observation batch", 8, false, false, false, false},
+		{"failed boundary retains replay", 2, true, true, false, false},
+		{"failed boundary retains replay after finalization timing", 2, true, true, false, true},
+		{"heartbeat flushes partial batch", 2, false, false, true, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Now()
@@ -209,6 +211,9 @@ func TestNativeObservationDetailBatches(t *testing.T) {
 					if err == nil || execution.pending == nil || len(execution.observations) != 2 {
 						t.Fatal("failed upload discarded the pending batch")
 					}
+					if test.timing {
+						execution.RecordPipelineTiming((gate.CommandResult{Command: "go test ./internal/example", StartedAt: now, FinishedAt: now.Add(time.Second)}).PipelineTiming("finalization"))
+					}
 					if err := execution.flush(t.Context()); err != nil {
 						t.Fatal(err)
 					}
@@ -254,6 +259,19 @@ func TestNativeObservationDetailBatches(t *testing.T) {
 			}
 			if len(execution.observations) != 0 || execution.pending != nil {
 				t.Fatal("accepted boundary retained a pending batch")
+			}
+			if test.timing {
+				execution.storedSeq = execution.data.Sequence + 1
+				if err := execution.append(t.Context(), "run.checkpointed", "", &tracker.NativeCheckpoint{Resume: "fresh_checkout"}); err != nil {
+					t.Fatal(err)
+				}
+				var next tracker.NativeRunEvent
+				if err := json.Unmarshal(requests[len(requests)-1], &next); err != nil {
+					t.Fatal(err)
+				}
+				if next.Data.Sequence != batch.Data.Sequence+1 || next.Data.Runtime == nil || len(next.Data.Runtime.Pipeline) != 1 || next.Data.Runtime.Pipeline[0].Stage != "finalization" {
+					t.Fatal("replay lost finalization timing from the next event")
+				}
 			}
 		})
 	}

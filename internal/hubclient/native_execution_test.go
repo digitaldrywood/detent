@@ -144,6 +144,9 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 		unavailable    bool
 		superseded     bool
 		releaseOutage  bool
+		conflict       bool
+		unreleased     bool
+		preProvider    bool
 	}{
 		{name: "worker stopped"},
 		{name: "cleanup failure", cleanupFailure: true},
@@ -152,6 +155,9 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 		{name: "superseded lease preserves its successor", controller: true, superseded: true},
 		{name: "prepared completion without publisher", controller: true, prepared: true},
 		{name: "prepared completion settles after claim loss", controller: true, prepared: true, retained: true},
+		{name: "released completion reconciles a conflicting pending event", controller: true, prepared: true, retained: true, conflict: true},
+		{name: "released setup reconciles a conflicting pending event", controller: true, prepared: true, retained: true, conflict: true, preProvider: true},
+		{name: "conflicting pending event preserves an unreleased lease", controller: true, prepared: true, retained: true, conflict: true, unreleased: true},
 		{name: "terminal item with unavailable settlement", controller: true, prepared: true, retained: true, terminal: true, unavailable: true},
 		{name: "expired lease with unavailable settlement", controller: true, prepared: true, retained: true, expired: true, unavailable: true},
 	} {
@@ -160,7 +166,23 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 			issue := h.createInProgress(t, "Claim cleanup")
 			h.claim(t, issue.ID)
 			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
-			if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+			if test.preProvider {
+				at := time.Now().UTC()
+				if err := e.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 2, Phase: "completed", HeartbeatAt: at}); err != nil {
+					t.Fatal(err)
+				}
+				if err := e.PrepareFinish(t.Context(), "failed", "", &tracker.NativeTerminalFailure{Error: "setup failure", ErrorClass: "workspace_hook", ObservedAt: at}); err != nil {
+					t.Fatal(err)
+				}
+				transport := &executionTransport{next: h.native.client.httpClient.Transport}
+				h.native.client.httpClient.Transport = transport
+				t.Cleanup(func() { h.native.client.httpClient.Transport = transport.next })
+				transport.drop.Store(true)
+				if err := e.Finish(t.Context(), "failed"); err == nil || e.pending == nil {
+					t.Fatal("setup failure did not retain its lost acknowledgment")
+				}
+				e.pending.Data.Runtime.Pipeline = []gate.PipelineTiming{(gate.CommandResult{Command: "go test ./internal/example", StartedAt: at, FinishedAt: at.Add(time.Second)}).PipelineTiming("finalization")}
+			} else if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
 				t.Fatal(err)
 			}
 			closed := false
@@ -182,8 +204,10 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 				if test.retained {
 					e.RetainCompletion()
 				}
-				if err := h.native.Release(t.Context(), e.claim.lease, "cancelled"); err != nil {
-					t.Fatal(err)
+				if !test.unreleased {
+					if err := h.native.Release(t.Context(), e.claim.lease, "cancelled"); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			var successor tracker.NativeLease
@@ -265,6 +289,53 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 				if len(h.scheduler.nativeClaims) != 1 {
 					t.Fatal("claim loss discarded the prepared completion publisher")
 				}
+				if test.conflict && !test.preProvider {
+					data := e.data
+					data.Sequence++
+					e.pending = &tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: "run.observed", SchemaVersion: 1, Data: data}
+					original := h.native.client.httpClient.Transport
+					h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+						if strings.HasSuffix(request.URL.Path, "/events") {
+							raw, err := io.ReadAll(request.Body)
+							if err != nil {
+								return nil, err
+							}
+							request.Body = io.NopCloser(strings.NewReader(string(raw)))
+							var event tracker.NativeRunEvent
+							if err := json.Unmarshal(raw, &event); err != nil {
+								return nil, err
+							}
+							if event.Type == "run.observed" {
+								return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"idempotency_conflict","message":"different content"}`)), Request: request}, nil
+							}
+						}
+						return original.RoundTrip(request)
+					})
+					t.Cleanup(func() { h.native.client.httpClient.Transport = original })
+					if test.unreleased {
+						closed = false
+						if err := e.KeepWorker(func(context.Context) error { closed = true; return nil }, nil); err != nil {
+							t.Fatal(err)
+						}
+						t.Cleanup(func() {
+							ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Second)
+							defer cancel()
+							if err := e.CloseWorkers(ctx); err != nil {
+								t.Error(err)
+							}
+						})
+						if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); hubErrorCode(err) != "idempotency_conflict" {
+							t.Fatalf("unresolved publication = %v", err)
+						}
+						if _, err := h.native.ValidateLease(t.Context(), e.claim.lease); err != nil || len(h.scheduler.nativeClaims) != 1 || e.pending == nil {
+							t.Fatalf("conflict discarded current authority: %v", err)
+						}
+						if closed || !e.hasWorkers() {
+							t.Fatal("unreleased completion closed its source publisher")
+						}
+						return
+					}
+				}
 				if test.unavailable {
 					transport := &executionTransport{next: h.native.client.httpClient.Transport}
 					h.native.client.httpClient.Transport = transport
@@ -308,6 +379,12 @@ func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
 			wantStatus := "cancelled"
 			if test.prepared && !test.retained {
 				wantStatus = "interrupted"
+			}
+			if test.preProvider {
+				wantStatus = "failed"
+				if evidence.Attempt.Identity != nil || evidence.Attempt.TerminalFailure == nil || evidence.Attempt.TerminalFailure.ErrorClass != "workspace_hook" {
+					t.Fatal("released setup lost its original pre-provider failure")
+				}
 			}
 			if evidence.Attempt.ClaimReleasedAt == nil || evidence.Attempt.Status != wantStatus {
 				t.Fatalf("stopped worker retained its Hub lease: lease=%+v attempt=%+v", evidence.CurrentLease, evidence.Attempt)
@@ -390,6 +467,8 @@ func exerciseNativeExecution(t *testing.T, scheduler *Scheduler, native *NativeC
 				if err != nil || execution.(*nativeExecution).pending == nil {
 					t.Fatalf("checkpoint lost pending acknowledgment: %v", err)
 				}
+				at := scheduler.now()
+				execution.(*nativeExecution).RecordPipelineTiming((gate.CommandResult{Command: "go test ./internal/example", StartedAt: at, FinishedAt: at.Add(time.Second)}).PipelineTiming("finalization"))
 			} else if err == nil {
 				t.Fatal("acknowledgment loss was not injected")
 			}
@@ -418,6 +497,9 @@ func exerciseNativeExecution(t *testing.T, scheduler *Scheduler, native *NativeC
 	}
 	if len(recovery.Attempts) != 1 || recovery.Attempts[0].Sequence != 3 || recovery.Attempts[0].Status != "succeeded" || recovery.Attempts[0].Checkpoint.WorktreeState != "dirty" {
 		t.Fatalf("retries duplicated/lost progress: %#v", recovery.Attempts)
+	}
+	if runtime := recovery.Attempts[0].Runtime; runtime == nil || len(runtime.Pipeline) != 1 || runtime.Pipeline[0].Stage != "finalization" {
+		t.Fatal("completion lost timing recorded after the checkpoint acknowledgment was lost")
 	}
 	// One diff per event that references it -- the checkpoint at sequence 2
 	// and the finish at sequence 3 -- and none for run.started. A retried
@@ -1047,9 +1129,14 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 				if operation == "lost_release" {
 					endpoint = "release"
 				}
-				if strings.HasSuffix(request.URL.Path, "/"+endpoint) {
+				attemptRead := operation == "release_finish_lost" && request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/attempts/")
+				if strings.HasSuffix(request.URL.Path, "/"+endpoint) || attemptRead {
 					scheduler.mu.Lock()
 					claim := scheduler.nativeClaims[id]
+					payload = lease
+					if attemptRead {
+						payload = tracker.NativeAttempt{NativeRunData: claim.execution.data}
+					}
 					claim.lease = next
 					if operation == "lost_release" {
 						claim.lost = false
@@ -1060,7 +1147,6 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 					scheduler.nativeClaims[id] = claim
 					scheduler.claims[id] = nativeTrackerLease(next)
 					scheduler.mu.Unlock()
-					payload = lease
 				}
 				body, err := json.Marshal(payload)
 				if err != nil {

@@ -398,18 +398,20 @@ func (e *nativeExecution) RecordPipelineTiming(timing gate.PipelineTiming) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.data.Runtime == nil {
-		e.data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: e.scheduler.now().UTC()}
+	observation := tracker.NativeRuntimeObservation{Phase: "implementation", HeartbeatAt: e.scheduler.now().UTC()}
+	if e.data.Runtime != nil {
+		observation = *e.data.Runtime
 	}
-	for _, previous := range e.data.Runtime.Pipeline {
+	for _, previous := range observation.Pipeline {
 		if previous.ReceiptID == timing.ReceiptID {
 			return
 		}
 	}
-	if len(e.data.Runtime.Pipeline) < 1024 {
-		e.data.Runtime.Pipeline = append(e.data.Runtime.Pipeline, timing.Public())
+	if len(observation.Pipeline) < 1024 {
+		observation.Pipeline = append(slices.Clone(observation.Pipeline), timing.Public())
 	} else {
-		e.data.Runtime.PipelineDropped++
+		observation.PipelineDropped++
 	}
+	e.data.Runtime = &observation
 	e.runtimeDirty = true
 }

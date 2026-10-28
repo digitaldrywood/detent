@@ -747,6 +747,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 	e.mu.Unlock()
 	var finishErr error
 	var rejection *nativeCompletionRejection
+	var releasedAttempt *tracker.NativeAttempt
 	if outcome != "" && !finished {
 		if publicationUnavailable && expectedState != "" {
 			issue, err := e.claim.source.client.Issue(ctx, e.claim.lease.WorkItemID)
@@ -766,49 +767,64 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 			if errors.As(finishErr, &rejection) {
 				finishErr = nil
 			} else {
-				if !claimLost(finishErr) && !errors.Is(finishErr, orchestrator.ErrSchedulingClaimLost) {
-					return finishErr
+				if claimLost(finishErr) || errors.Is(finishErr, orchestrator.ErrSchedulingClaimLost) {
+					finishErr = errors.Join(runner.ErrExecutionAuthorityUnavailable, finishErr)
 				}
-				finishErr = errors.Join(runner.ErrExecutionAuthorityUnavailable, finishErr)
 			}
 		}
 	}
+	if err := func() error {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if failure := e.data.TerminalFailure; failure != nil && failure.Stage == "event_publication" {
+			rejection = &nativeCompletionRejection{failure: *failure}
+		}
+		if (finishErr != nil || interrupted) && rejection == nil {
+			path, err := nativeItemPath(e.claim.lease.WorkItemID)
+			if err != nil {
+				return errors.Join(finishErr, err)
+			}
+			var attempt tracker.NativeAttempt
+			if err := e.claim.source.client.client.request(ctx, http.MethodGet, e.claim.source.client.base()+path+"/attempts/"+e.data.AttemptID, nil, &attempt); err != nil {
+				return errors.Join(finishErr, err)
+			}
+			identityMatches := attempt.Identity == nil && e.data.Identity == nil
+			if attempt.Identity != nil && e.data.Identity != nil {
+				identityMatches = *attempt.Identity == *e.data.Identity
+			}
+			if attempt.LeaseID != e.claim.lease.ID || attempt.FencingToken != e.claim.lease.FencingToken || attempt.RunID != e.data.RunID || attempt.PolicyID != e.data.PolicyID || attempt.AttemptID != e.data.AttemptID || !identityMatches {
+				return errors.Join(finishErr, runner.ErrExecutionAuthorityUnavailable)
+			}
+			if attempt.ClaimReleasedAt != nil {
+				releasedAttempt = &attempt
+				return nil
+			}
+		}
+		return finishErr
+	}(); err != nil {
+		return err
+	}
 	if err := e.CloseWorkers(ctx); err != nil {
-		return errors.Join(finishErr, err)
+		return err
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if failure := e.data.TerminalFailure; failure != nil && failure.Stage == "event_publication" {
-		rejection = &nativeCompletionRejection{failure: *failure}
-	}
-	if e.data.Identity != nil && (finishErr != nil || interrupted) && rejection == nil {
-		path, err := nativeItemPath(e.claim.lease.WorkItemID)
-		if err != nil {
-			return errors.Join(finishErr, err)
-		}
-		var attempt tracker.NativeAttempt
-		if err := e.claim.source.client.client.request(ctx, http.MethodGet, e.claim.source.client.base()+path+"/attempts/"+e.data.AttemptID, nil, &attempt); err != nil {
-			return errors.Join(finishErr, err)
-		}
-		if attempt.LeaseID != e.claim.lease.ID || attempt.FencingToken != e.claim.lease.FencingToken || attempt.RunID != e.data.RunID || attempt.PolicyID != e.data.PolicyID || attempt.AttemptID != e.data.AttemptID || attempt.Identity == nil || attempt.Identity.Role != e.data.Identity.Role || attempt.Identity.Backend != e.data.Identity.Backend {
-			return errors.Join(finishErr, runner.ErrExecutionAuthorityUnavailable)
-		}
-		if attempt.ClaimReleasedAt != nil {
-			if attempt.Outcome == "" || attempt.Outcome == "interrupted" {
-				if err := cancelNativeReleasedAttempt(ctx, e.claim.source.client, e.claim.lease.WorkItemID, attempt); err != nil {
-					return errors.Join(finishErr, err)
-				}
-				attempt.Sequence++
-				attempt.Outcome = "cancelled"
+	if releasedAttempt != nil {
+		attempt := *releasedAttempt
+		if attempt.Outcome == "" || attempt.Outcome == "interrupted" {
+			if err := cancelNativeReleasedAttempt(ctx, e.claim.source.client, e.claim.lease.WorkItemID, attempt); err != nil {
+				return errors.Join(finishErr, err)
 			}
-			attempt.Identity = e.data.Identity
-			if attempt.Handoff == nil {
-				attempt.Handoff = attempt.Checkpoint
-			}
-			e.data, e.pending = attempt.NativeRunData, nil
-			e.preparedOutcome = attempt.Outcome
-			finishErr = nil
+			attempt.Sequence++
+			attempt.Outcome = "cancelled"
 		}
+		attempt.Identity = e.data.Identity
+		if attempt.Handoff == nil {
+			attempt.Handoff = attempt.Checkpoint
+		}
+		e.data, e.pending = attempt.NativeRunData, nil
+		e.preparedOutcome = attempt.Outcome
+		finishErr = nil
 	}
 	data := e.data
 	finalization := data.Finalization
@@ -1032,6 +1048,7 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 		return e.executionError(ctx, err)
 	}
 	checkpoint := e.data.Handoff
+	runtime := e.data.Runtime
 	e.data = e.pending.Data
 	if e.data.Runtime != nil {
 		e.runtimePublishedAt = e.data.Runtime.HeartbeatAt
@@ -1042,6 +1059,16 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	e.pending = nil
 	e.observations = nil
 	e.runtimeDirty = false
+	if runtime != nil && runtime != e.data.Runtime {
+		if e.data.Runtime == nil {
+			e.data.Runtime = runtime
+		} else {
+			observation := *e.data.Runtime
+			observation.Pipeline, observation.PipelineDropped = gate.MergePipeline(observation.Pipeline, runtime.Pipeline, max(observation.PipelineDropped, runtime.PipelineDropped))
+			e.data.Runtime = &observation
+		}
+		e.runtimeDirty = true
+	}
 	return nil
 }
 
