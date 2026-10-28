@@ -28,7 +28,7 @@ type storageConversionFamily struct {
 
 var storageConversionFamilies = []storageConversionFamily{
 	{name: "runs", update: "UPDATE collaboration_events SET data_json=? WHERE rowid=?", column: "data_json", from: "collaboration_events r", where: "r.type IN ('run.started','run.checkpointed','run.observed','run.finished')", aggregate: "r.work_item_id"},
-	{name: "attempts", update: "UPDATE native_attempts SET data_json=? WHERE rowid=?", column: "data_json", from: "native_attempts r", where: "1", aggregate: "r.work_item_id"},
+	{name: "attempts", update: "UPDATE native_attempts SET data_json=?,analytics_revision=analytics_revision+1 WHERE rowid=?", column: "data_json", from: "native_attempts r", where: "1", aggregate: "r.work_item_id"},
 	{name: "analytics", update: "UPDATE analytics_hourly_rollups SET data_json=? WHERE rowid=?", column: "data_json", from: "analytics_hourly_rollups r", where: "r.metric='attempt'", aggregate: "''"},
 	{name: "conversation_events", update: "UPDATE conversation_events SET body_json=? WHERE rowid=?", column: "body_json", from: "conversation_events r JOIN conversations c ON c.id=r.conversation_id", where: "r.type IN ('message.accepted','message.updated')", aggregate: "r.conversation_id"},
 	{name: "messages", column: "", from: "conversation_messages r JOIN conversations c ON c.id=r.conversation_id", where: "r.content_attachment_id=''", aggregate: "r.conversation_id"},

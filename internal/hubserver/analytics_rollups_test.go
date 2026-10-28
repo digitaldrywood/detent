@@ -929,6 +929,89 @@ func TestAnalyticsAttemptProjectionFields(t *testing.T) {
 	}
 }
 
+func TestAnalyticsAttemptRevision(t *testing.T) {
+	f := newUsageHostedFixture(t)
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	d := f.service.database
+	ids, err := nativePageIDs(t.Context(), d.reader, "SELECT id FROM native_attempts ORDER BY id LIMIT 2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("attempt fixtures=%d, want 2", len(ids))
+	}
+	for _, id := range ids {
+		for _, test := range []struct{ name, update string }{
+			{"activity projection", "activity_projection_version=1"},
+			{"usage projection", "input_tokens=input_tokens+1"},
+			{"runtime projection", "runtime_generation=coalesce(runtime_generation,0)+1"},
+			{"unchanged payload", "data_json=data_json"},
+			{"unchanged status", "status=status"},
+			{"unchanged timestamp", "updated_at=updated_at"},
+		} {
+			t.Run(id+"/"+test.name, func(t *testing.T) {
+				tx, err := d.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				var before, after int64
+				if err := tx.QueryRowContext(t.Context(), "SELECT analytics_revision FROM native_attempts WHERE id=?", id).Scan(&before); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET "+test.update+" WHERE id=?", id); err != nil {
+					t.Fatal(err)
+				}
+				if err := tx.QueryRowContext(t.Context(), "SELECT analytics_revision FROM native_attempts WHERE id=?", id).Scan(&after); err != nil {
+					t.Fatal(err)
+				}
+				if after != before {
+					t.Fatalf("unrelated update advanced analytics revision from %d to %d", before, after)
+				}
+			})
+		}
+		t.Run(id+"/landing receipt", func(t *testing.T) {
+			tx, err := d.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			var before, after int64
+			var timestamp, updated string
+			if err := tx.QueryRowContext(t.Context(), "SELECT analytics_revision,updated_at FROM native_attempts WHERE id=?", id).Scan(&before, &timestamp); err != nil {
+				t.Fatal(err)
+			}
+			receipt := tracker.NativeLandingReceipt{GateFailed: true, ObservedAt: f.service.config.now()}
+			if err := persistAttemptLanding(t.Context(), tx, id, receipt); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.QueryRowContext(t.Context(), "SELECT analytics_revision,updated_at FROM native_attempts WHERE id=?", id).Scan(&after, &updated); err != nil {
+				t.Fatal(err)
+			}
+			if after != before+1 || updated != timestamp {
+				t.Fatalf("landing revision %d -> %d, timestamp %q -> %q", before, after, timestamp, updated)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			drainTestAnalytics(t, f.service)
+			var raw string
+			if err := d.reader.QueryRowContext(t.Context(), "SELECT data_json FROM analytics_hourly_rollups WHERE metric='attempt' AND dimension=?", id).Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			var projected analyticsAttemptProjection
+			if err := json.Unmarshal([]byte(raw), &projected); err != nil {
+				t.Fatal(err)
+			}
+			if projected.Runtime.Landing == nil || !projected.Runtime.Landing.GateFailed || !projected.Runtime.Landing.ObservedAt.Equal(receipt.ObservedAt) {
+				t.Fatal("landing receipt with unchanged timestamp was not projected")
+			}
+		})
+	}
+}
+
 func TestAnalyticsHourlyRetentionScopes(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	now := start.Add(3 * time.Hour)
@@ -1463,7 +1546,7 @@ func TestAnalyticsRollupLargeItemWriterBound(t *testing.T) {
 				}
 				if !changedDuringRead && strings.Contains(query, "FROM native_attempts a WHERE") {
 					changedDuringRead = true
-					if _, err := d.db.ExecContext(t.Context(), "UPDATE native_attempts SET status='failed' WHERE id='bounded_0000'"); err != nil {
+					if _, err := d.db.ExecContext(t.Context(), "UPDATE native_attempts SET status='failed',analytics_revision=analytics_revision+1 WHERE id='bounded_0000'"); err != nil {
 						t.Fatal(err)
 					}
 				}

@@ -112,6 +112,38 @@ func BenchmarkAnalyticsRollupAppend(b *testing.B) {
 	}
 }
 
+func BenchmarkAnalyticsProjectionApply(b *testing.B) {
+	f := benchmarkAnalyticsFixture(b, 0)
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		b.Fatal(err)
+	}
+	d := f.service.database
+	var id string
+	if err := d.reader.QueryRowContext(b.Context(), "SELECT native_id FROM issues WHERE organization_id=? AND project_id=?", f.project.OrganizationID, f.project.ID).Scan(&id); err != nil {
+		b.Fatal(err)
+	}
+	for _, prepared := range []bool{false, true} {
+		b.Run(fmt.Sprintf("prepared=%t", prepared), func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				tx, err := d.db.BeginTx(b.Context(), nil)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if prepared {
+					_, err = d.analytics.exec(b.Context(), tx, analyticsIssuesRefresh, f.project.OrganizationID, f.project.ID, id)
+				} else {
+					_, err = tx.ExecContext(b.Context(), analyticsIssuesRefresh, f.project.OrganizationID, f.project.ID, id)
+				}
+				rollbackErr := tx.Rollback()
+				if err != nil || rollbackErr != nil {
+					b.Fatalf("apply projection: %v; rollback: %v", err, rollbackErr)
+				}
+			}
+		})
+	}
+}
+
 func benchmarkAnalyticsFixture(b *testing.B, events int) nativeFixture {
 	b.Helper()
 	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
