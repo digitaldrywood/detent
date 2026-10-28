@@ -55,7 +55,7 @@ func TestNativePrepareReviewAcrossAttempts(t *testing.T) {
 			change := first.NativeChange()
 			original, err := h.admin.Change(t.Context(), item, change.ChangeID)
 			if err != nil || len(original.Versions) != 1 {
-				t.Fatalf("first publication: %+v, %v", original, err)
+				t.Fatalf("first publication: change=%+v detail=%+v error=%v", change, original, err)
 			}
 			finish := "succeeded"
 			if outcome == "audit publication failed" {

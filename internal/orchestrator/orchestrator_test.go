@@ -1520,9 +1520,18 @@ func TestRunSchedulesRetryAfterRunnerError(t *testing.T) {
 	stop := runOrchestrator(t, orch)
 	defer stop()
 
-	state := waitForState(t, orch, func(state orchestrator.State) bool {
+	var state orchestrator.State
+	testenv.WaitUntil(t, t.Context(), func() error {
+		var err error
+		state, err = orch.State(t.Context())
+		if err != nil {
+			return err
+		}
 		retry, ok := state.Retry[issue.ID]
-		return ok && retry.Error != ""
+		if !ok || retry.Error == "" {
+			return errors.New("awaiting runner failure retry")
+		}
+		return nil
 	})
 
 	if _, ok := state.Running[issue.ID]; ok {
