@@ -96,23 +96,29 @@ func TestTenantRunnerWritesStayFlatWithHistory(t *testing.T) {
 	for _, history := range []int{20000, 200000} {
 		t.Run(strconv.Itoa(history), func(t *testing.T) {
 			now := f.service.config.now()
-			commitTestAnalytics(t, f.service, func(tx *sql.Tx) {
-				for index, item := range items {
-					var sequence int
-					if err := tx.QueryRowContext(t.Context(), "SELECT event_sequence FROM issues WHERE organization_id=? AND project_id=? AND native_id=?", f.project.OrganizationID, f.project.ID, item.WorkItemID).Scan(&sequence); err != nil {
-						t.Fatal(err)
-					}
-					if _, err := tx.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT ? UNION ALL SELECT i+1 FROM n WHERE i < ?)
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			for index, item := range items {
+				var sequence int
+				if err := tx.QueryRowContext(t.Context(), "SELECT event_sequence FROM issues WHERE organization_id=? AND project_id=? AND native_id=?", f.project.OrganizationID, f.project.ID, item.WorkItemID).Scan(&sequence); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT ? UNION ALL SELECT i+1 FROM n WHERE i < ?)
 INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at,scheduler_outcome,scheduler_reason,scheduler_source,scheduler_runner_id,analytics_attempt_id,analytics_skip_key,analytics_recorded_ns,analytics_projection_version)
 SELECT 'evt_history_'||?||'_'||i, ?, ?, ?, ?+i, 'comment.created', 1, '{"kind":"system"}', ?, ?, '', '', '', '', '', ?, ?, 1 FROM n`,
-						previous+1, history, index, f.project.OrganizationID, f.project.ID, item.WorkItemID, sequence-previous, `{"pad":"`+strings.Repeat("h", 200)+`"}`, formatHubTime(now), analyticsDimension("", ""), now.UnixNano()); err != nil {
-						t.Fatal(err)
-					}
-					if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET event_sequence=? WHERE organization_id=? AND project_id=? AND native_id=?", sequence+history-previous, f.project.OrganizationID, f.project.ID, item.WorkItemID); err != nil {
-						t.Fatal(err)
-					}
+					previous+1, history, index, f.project.OrganizationID, f.project.ID, item.WorkItemID, sequence-previous, `{"pad":"`+strings.Repeat("h", 200)+`"}`, formatHubTime(now), analyticsDimension("", ""), now.UnixNano()); err != nil {
+					t.Fatal(err)
 				}
-			})
+				if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET event_sequence=? WHERE organization_id=? AND project_id=? AND native_id=?", sequence+history-previous, f.project.OrganizationID, f.project.ID, item.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := f.service.database.commit(t.Context(), tx); err != nil {
+				t.Fatal(err)
+			}
 			for index, item := range items {
 				lease := leases[index]
 				for _, operation := range []struct {
