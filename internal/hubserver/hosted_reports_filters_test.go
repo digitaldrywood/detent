@@ -55,6 +55,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 	if err := f.service.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
+	drainTestNativeClosedTimes(t, f.service)
 	drainTestNativeBoard(t, f.service)
 	rebuildTestAnalyticsRollups(t, f.service, scope)
 	read := func(t *testing.T, query url.Values) hostedReportsReport {

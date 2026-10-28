@@ -1328,5 +1328,6 @@ func (f *browserHostedFixture) seedBoardDefaults(t *testing.T) {
 			}
 		}
 	}
+	drainTestNativeClosedTimes(t, f.service)
 	drainTestNativeBoard(t, f.service)
 }

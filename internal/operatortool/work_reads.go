@@ -531,7 +531,7 @@ func BoundNativeListIssue(issue tracker.NativeIssue) (tracker.NativeIssue, error
 	if err != nil {
 		return tracker.NativeIssue{}, err
 	}
-	var fields map[string]json.RawMessage
+	fields := make(map[string]json.RawMessage)
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return tracker.NativeIssue{}, err
 	}
@@ -539,7 +539,7 @@ func BoundNativeListIssue(issue tracker.NativeIssue) (tracker.NativeIssue, error
 	if err != nil {
 		return tracker.NativeIssue{}, err
 	}
-	var names []string
+	names := make([]string, 0, len(fields))
 	for name := range fields {
 		if !slices.Contains([]string{"organization_id", "project_id", "work_item_id", "number", "revision", "profile", "omitted_fields"}, name) {
 			names = append(names, name)

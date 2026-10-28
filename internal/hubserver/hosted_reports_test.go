@@ -134,6 +134,7 @@ func TestReportsShippedPopulation(t *testing.T) {
 	if err := f.service.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
+	drainTestNativeClosedTimes(t, f.service)
 	drainTestNativeBoard(t, f.service)
 	drainTestAnalytics(t, f.service)
 	var priorCost float64
