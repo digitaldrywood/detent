@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -36,6 +38,87 @@ func createTestThread(t *testing.T, f nativeFixture, scope string, issue tracker
 }
 
 func TestTeamThreadScopeAccess(t *testing.T) {
+	t.Run("reference resource authorization", func(t *testing.T) {
+		v := newVerificationFixture(t)
+		v.users["owner"] = v.user(t, "thread-owner", "owner", "thread-owner@example.test", "write", "")
+		base := "/api/v2/organizations/org_security/threads"
+		record := attachment.Metadata{ID: conversation.NewAttachmentID(), Name: "private-report.png", ContentType: "image/png", Size: 100, Width: 1, Height: 1, SHA256: strings.Repeat("a", 64)}
+		r := v.request(t, v.users["tester"], http.MethodPost, v.base+"/attachment-metadata", record)
+		requireNativeStatus(t, r, http.StatusCreated)
+		decodeHubResponse(t, r, &record)
+		r = v.request(t, v.users["tester"], http.MethodPost, v.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "private-report"}, Type: "bug", Title: "Private report", Body: reporterBugSections + "\n![Image](attachment:" + record.ID + ")"})
+		requireNativeStatus(t, r, http.StatusOK)
+		var issue tracker.NativeIssue
+		decodeHubResponse(t, r, &issue)
+		r = v.request(t, v.users["member"], http.MethodPost, v.base+"/work-items/"+string(issue.WorkItemID)+"/changes", tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "private-change"}, Title: "Private change", Body: "Change details"})
+		requireNativeStatus(t, r, http.StatusOK)
+		var change tracker.ChangeRequest
+		decodeHubResponse(t, r, &change)
+		for _, reference := range []operatortool.ThreadReference{{Kind: "attachment", ID: record.ID}, {Kind: "issue", ID: string(issue.WorkItemID)}, {Kind: "change", ID: change.ID}} {
+			t.Run(reference.Kind, func(t *testing.T) {
+				input := teamThreadInput{Scope: "general", Title: "Shared discussion", References: []operatortool.ThreadReference{reference}}
+				r := v.request(t, v.users["owner"], http.MethodPost, base, input)
+				requireNativeStatus(t, r, http.StatusCreated)
+				var thread teamThread
+				decodeHubResponse(t, r, &thread)
+				post := teamThreadInput{Kind: "note", Body: "Shared note", References: input.References}
+				requireNativeStatus(t, v.request(t, v.users["owner"], http.MethodPost, base+"/"+thread.ID+"/posts", post), http.StatusCreated)
+				for _, tc := range []struct {
+					viewer   string
+					readable bool
+				}{{"reporter", false}, {"tester", true}, {"owner", true}, {"member", true}} {
+					t.Run(tc.viewer, func(t *testing.T) {
+						want := 0
+						status := http.StatusNotFound
+						if tc.readable {
+							want, status = 1, http.StatusCreated
+						}
+						for _, target := range []string{base + "/" + thread.ID, base} {
+							r := v.request(t, v.users[tc.viewer], http.MethodGet, target, nil)
+							requireNativeStatus(t, r, http.StatusOK)
+							var references []teamReference
+							if target == base {
+								var page teamThreadPage
+								decodeHubResponse(t, r, &page)
+								found := false
+								for _, listed := range page.Threads {
+									if listed.ID == thread.ID {
+										references, found = listed.References, true
+									}
+								}
+								if !found {
+									t.Fatal("shared thread missing from list")
+								}
+							} else {
+								var read teamThreadRead
+								decodeHubResponse(t, r, &read)
+								references = read.Thread.References
+								if len(read.Posts) == 0 {
+									t.Fatal("shared post missing")
+								}
+								for _, listed := range read.Posts {
+									if len(listed.References) != want {
+										t.Errorf("post references=%+v, want %d", listed.References, want)
+									}
+								}
+							}
+							if len(references) != want {
+								t.Errorf("references=%+v, want %d", references, want)
+							}
+							if !tc.readable && strings.Contains(r.Body.String(), record.Name) {
+								t.Error("unreadable attachment name disclosed")
+							}
+							if tc.readable && reference.Kind == "attachment" && (len(references) != 1 || references[0].Label != record.Name) {
+								t.Errorf("attachment filename missing: %+v", references)
+							}
+						}
+						requireNativeStatus(t, v.request(t, v.users[tc.viewer], http.MethodPost, base, input), status)
+						requireNativeStatus(t, v.request(t, v.users[tc.viewer], http.MethodPost, base+"/"+thread.ID+"/posts", post), status)
+					})
+				}
+			})
+		}
+	})
 	f := newNativeFixture(t, nil, "", "first")
 	second := newNativeFixture(t, f.service, f.project.OrganizationID, "second")
 	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO organizations(id,name,created_at) VALUES('org_other','Other',?)", conversationTime(f.service.config.now())); err != nil {
