@@ -13,8 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/operations"
-	"github.com/digitaldrywood/detent/internal/retro"
-	routinemodel "github.com/digitaldrywood/detent/internal/routine/model"
 	"github.com/digitaldrywood/detent/internal/schedulehealth"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
@@ -75,8 +73,6 @@ type Store interface {
 	RuntimeEvidenceStore
 	AgentResumeStore
 	OrphanSessionStore
-	RetroStore
-	RoutineStore
 	AdmissionStore
 	schedulehealth.Store
 	efficiency.Recorder
@@ -275,18 +271,6 @@ type AgentResumeStore interface {
 type OrphanSessionStore interface {
 	ListOrphanedAgentSessions(context.Context, string) ([]OrphanedAgentSession, error)
 	MarkAgentSessionOrphaned(context.Context, int64, time.Time) error
-}
-
-type RetroStore interface {
-	retro.TelemetryStore
-}
-
-type RoutineStore interface {
-	LatestRoutineRun(context.Context, string, string) (routinemodel.RunRecord, bool, error)
-	OpenRoutineIssueIDs(context.Context, string, string) ([]string, error)
-	RecordRoutineIssue(context.Context, string, string, routinemodel.IssueRecord) error
-	CloseRoutineIssues(context.Context, string, string, []string) error
-	RecordRoutineRun(context.Context, routinemodel.RunRecord) error
 }
 
 type AdmissionStore interface {

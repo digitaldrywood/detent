@@ -172,9 +172,6 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			}
 		}
 	}
-	if o.retrospector != nil {
-		defer o.retrospector.Trigger("completion")
-	}
 	if o.handleOperatorStopCompletion(ctx, state, event, running) {
 		return
 	}

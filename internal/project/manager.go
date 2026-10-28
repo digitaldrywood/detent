@@ -1371,7 +1371,6 @@ func normalizeManagerProjectConfig(cfg globalconfig.Project) globalconfig.Projec
 	}
 	cfg.ActiveHoursOverrideUntil = strings.TrimSpace(cfg.ActiveHoursOverrideUntil)
 	cfg.Knowledge.Normalize()
-	cfg.Intake.Normalize()
 	return cfg
 }
 

@@ -79,7 +79,7 @@ func TestHubPolicyInspectWarnsOnNativeGitHubSteps(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg.Projects = []globalconfig.Project{{ID: "orders", Workflow: workflowPath, Workdir: root, Weight: 1}}
-			if err := globalconfig.Write(configPath, cfg); err != nil {
+			if err := writeLocalConfigurationFile(configPath, cfg); err != nil {
 				t.Fatal(err)
 			}
 			cmd := newHubPolicyCommand(func(string) string { return "" })

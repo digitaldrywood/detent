@@ -14,8 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/digitaldrywood/detent/internal/cli"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -656,31 +654,6 @@ func TestRootCommandPrintsBootBanner(t *testing.T) {
 	}
 }
 
-func TestRootCommandUsesConfiguredProjectWorkflowServerAddress(t *testing.T) {
-	t.Parallel()
-
-	paths := createProjectFilesWithWorkflow(t, workflowContentWithServer("127.0.0.2", 4102))
-	configPath := filepath.Join(paths.root, "global.yaml")
-	writeGlobalConfig(t, configPath, []globalconfig.Project{
-		{ID: "detent", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
-	})
-
-	booted := make(chan cli.BootConfig, 1)
-	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
-		booted <- cfg
-		return nil
-	}))
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--config", configPath})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	assertBootServer(t, <-booted, "127.0.0.2", 4102)
-}
-
 func TestRootCommandCLIAddressOverridesWorkflowServerAddress(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CONFIG_HOME", filepath.Join(root, ".detent"))
@@ -994,74 +967,6 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 			t.Fatalf("detent rank = %d, want 1", project.Priority)
 		}
 	})
-
-}
-
-func TestProjectAdminCommandsPreserveProjectPathLiterals(t *testing.T) {
-	t.Parallel()
-
-	root := t.TempDir()
-	configPath := filepath.Join(root, "global.yaml")
-	workflowPath := filepath.Join(root, "cli.go")
-	if err := os.WriteFile(workflowPath, []byte("package cli\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-	if err := os.WriteFile(configPath, []byte(`apiVersion: detent/v1
-kind: GlobalConfig
-global:
-  max_concurrent_agents: 8
-  scheduling: weighted
-projects:
-  - id: detent
-    workflow: `+workflowPath+`
-    workdir: .
-    weight: 1
-    priority: 0
-  - id: docs
-    workflow: `+workflowPath+`
-    workdir: .
-    weight: 2
-    priority: 1
-`), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return true }))
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--config", configPath, "pause", "detent", "--reason", "maintenance"})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-
-	raw, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-
-	var machine map[string]any
-	if err := yaml.Unmarshal(raw, &machine); err != nil {
-		t.Fatal(err)
-	}
-	if _, exists := machine["projects"]; exists {
-		t.Fatal("global.yaml still contains project registrations")
-	}
-	cfg, err := readStoredCLIConfiguration(t, configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cfg.Projects) != 2 {
-		t.Fatalf("projects = %#v", cfg.Projects)
-	}
-	for _, project := range cfg.Projects {
-		if project.Workflow != workflowPath || project.Workdir != "." {
-			t.Fatalf("project paths changed: %#v", project)
-		}
-		if project.Paused != (project.ID == "detent") {
-			t.Fatalf("project pause changed: %#v", project)
-		}
-	}
 
 }
 
@@ -1395,7 +1300,6 @@ func validWorkflowContent() string {
 tracker:
   kind: github
   api_key: fixture-token
-  project_slug: fixture-project
   repository: example-org/example-project
 ---
 Test workflow prompt.
@@ -1407,7 +1311,6 @@ func workflowContentWithServer(host string, port int) string {
 tracker:
   kind: github
   api_key: fixture-token
-  project_slug: fixture-project
   repository: example-org/example-project
 server:
   host: %s
@@ -1451,6 +1354,14 @@ func writeGlobalConfig(t *testing.T, path string, projects []globalconfig.Projec
 	}
 	if err := globalconfig.Write(path, cfg); err != nil {
 		t.Fatalf("Write() error = %v", err)
+	}
+	backend, err := store.Open(context.Background(), store.Config{Path: filepath.Join(filepath.Dir(path), "detent.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	if _, err := backend.InitializeLocalConfiguration(context.Background(), cfg, nil); err != nil {
+		t.Fatal(err)
 	}
 }
 

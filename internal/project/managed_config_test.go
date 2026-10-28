@@ -43,7 +43,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, scenario := range []string{"resume", "resume running", "resume drained", "resume manager drained", "resume native drained", "resume native busy drained", "resume drained restart refused", "resume native", "resume database", "resume restart refused", "resume runtime pause", "resume stale revision", "resume wrong policy", "native policy running", "native policy busy running", "native policy paused", "native policy git drained", "native policy plain drained", "native policy retry drained", "detach", "database detach", "stale revision", "wrong policy", "active attempt", "deferred completion", "missing handoff", "stopped owner", "apply policy", "apply policy hooks", "apply policy hooks active", "apply policy hooks deferred", "apply policy hooks backend failure", "unapproved policy", "wrong source", "local overlay", "local policy", "local policy overlays", "local policy native", "local policy native busy", "local policy native unapproved", "local policy native wrong source", "binding", "binding unapproved", "binding stale overlay", "binding busy", "binding foreign", "binding local source", "binding drained", "binding running", "binding native running", "binding native paused", "binding native drained", "binding native schedule change"} {
+	for _, scenario := range []string{"resume", "resume running", "resume drained", "resume manager drained", "resume native drained", "resume native busy drained", "resume drained restart refused", "resume native", "resume database", "resume restart refused", "resume runtime pause", "resume stale revision", "resume wrong policy", "native policy running", "native policy busy running", "native policy paused", "native policy git drained", "native policy plain drained", "native policy retry drained", "detach", "database detach", "stale revision", "wrong policy", "active attempt", "deferred completion", "missing handoff", "stopped owner", "apply policy", "apply policy hooks", "apply policy hooks active", "apply policy hooks deferred", "apply policy hooks backend failure", "unapproved policy", "wrong source", "local overlay", "local policy", "local policy overlays", "local policy native", "local policy native busy", "local policy native unapproved", "local policy native wrong source", "binding", "binding changed settings", "binding unapproved", "binding stale overlay", "binding busy", "binding foreign", "binding local source", "binding drained", "binding running", "binding native running", "binding native paused", "binding native drained", "binding native schedule change"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := initWorkflowSourceRepo(t)
 			workflowPath := filepath.Join(root, "WORKFLOW.md")
@@ -85,7 +85,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 			cfg.Global.IO.PressureFullAvg10Threshold = 100
 			cfg.Global.CPU.PressureSomeAvg10Threshold = 100
 			cfg.Projects = []globalconfig.Project{
-				{ID: "selected", Workflow: "WORKFLOW.md", WorkflowRef: "HEAD", Workdir: root, Weight: 1, Paused: true},
+				{ID: "selected", Workflow: "WORKFLOW.md", WorkflowRef: "HEAD", Workdir: root, Weight: 1, Priority: 10, Paused: true},
 				{ID: "unrelated", Workflow: "WORKFLOW.md", WorkflowRef: "HEAD", Workdir: otherRoot, Weight: 3, Priority: 7, Paused: true, PausedReason: "user pause", PausedUntilIssue: "unrelated#42"},
 			}
 			if strings.HasPrefix(scenario, "resume") && scenario != "resume runtime pause" && !strings.Contains(scenario, "drained") && scenario != "resume running" {
@@ -113,10 +113,6 @@ func TestManagedProjectConfiguration(t *testing.T) {
 			if err := globalconfig.Write(cfg.Path, cfg, globalconfig.WithProjectPathLiterals()); err != nil {
 				t.Fatal(err)
 			}
-			cfg, err = globalconfig.Read(cfg.Path, globalconfig.WithProjectPathLiterals())
-			if err != nil {
-				t.Fatal(err)
-			}
 			attempts, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(root, "runtime.db")})
 			if err != nil {
 				t.Fatal(err)
@@ -126,23 +122,14 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			if scenario == "database detach" || scenario == "resume database" {
-				cfg.Projects[0].Priority = 10
-				if _, err := attempts.InitializeLocalConfiguration(t.Context(), cfg, nil); err != nil {
-					t.Fatal(err)
-				}
-				cfg, err = attempts.LocalConfiguration(t.Context(), cfg)
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
+
 			native := strings.HasPrefix(scenario, "resume native") || strings.HasPrefix(scenario, "binding native") || strings.HasPrefix(scenario, "local policy native") || sharedPolicy || hookReload
 			if native {
 				if err := os.WriteFile(workflowPath, []byte("Shared native instructions\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
 				runWorkflowSourceGit(t, root, "add", "WORKFLOW.md")
-				raw := "schema: 1\ntracker:\n  kind: hub_native\n  repository: example/project\n  github_status_source: label\n  api_key: fixture-token\nschedule_ownership:\n  enabled: false\n"
+				raw := "schema: 1\ntracker:\n  kind: hub_native\n  repository: example/project\n  api_key: fixture-token\nschedule_ownership:\n  enabled: false\n"
 				if err := os.WriteFile(filepath.Join(root, "detent.yaml"), []byte(raw), 0600); err != nil {
 					t.Fatal(err)
 				}
@@ -186,6 +173,18 @@ func TestManagedProjectConfiguration(t *testing.T) {
 			}
 			if hookReload {
 				writeHook("A")
+			}
+			var selection *workflowconfig.ModelSelection
+			if hookReload {
+				disabled := false
+				selection = &workflowconfig.ModelSelection{Enabled: &disabled}
+			}
+			if _, err := attempts.InitializeLocalConfiguration(t.Context(), cfg, selection); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err = attempts.LocalConfiguration(t.Context(), cfg)
+			if err != nil {
+				t.Fatal(err)
 			}
 			manager, err := NewManager(ManagerConfigFromGlobal(cfg), ManagerDependencies{ProjectFactory: func(selected globalconfig.Project) (*Project, error) {
 				workflow, err := LoadWorkflow(selected)
@@ -387,8 +386,10 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					}
 				}
 				if scenario == "resume runtime pause" {
-					cfg.Projects[0].Paused = false
-					if err := globalconfig.Write(cfg.Path, cfg, globalconfig.WithProjectPathLiterals()); err != nil {
+					if err := attempts.MutateLocalConfiguration(t.Context(), cfg, func(current *globalconfig.Config, _ string) bool {
+						current.Projects[0].Paused = false
+						return true
+					}); err != nil {
 						t.Fatal(err)
 					}
 					fresh := owner.Read(t.Context(), "selected")
@@ -431,7 +432,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					}
 				}
 				persisted, err := globalconfig.Read(cfg.Path, globalconfig.WithProjectPathLiterals())
-				if scenario == "resume database" {
+				if err == nil {
 					persisted, err = attempts.LocalConfiguration(t.Context(), persisted)
 				}
 				if err != nil || persisted.Projects[0].Paused || persisted.Projects[0].PausedReason != "" || persisted.Projects[0].PausedUntilIssue != "" || !reflect.DeepEqual(persisted.Projects[1], cfg.Projects[1]) {
@@ -596,6 +597,18 @@ func TestManagedProjectConfiguration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if scenario == "binding changed settings" {
+				scheduling.mu.Lock()
+				scheduling.onCheck = func() {
+					if err := attempts.MutateLocalConfiguration(t.Context(), cfg, func(current *globalconfig.Config, _ string) bool {
+						current.Projects[1].PausedReason = "updated settings"
+						return true
+					}); err != nil {
+						t.Error(err)
+					}
+				}
+				scheduling.mu.Unlock()
+			}
 			result := owner.Apply(t.Context(), operation, request)
 			after, err := os.ReadFile(cfg.Path)
 			if err != nil {
@@ -672,7 +685,7 @@ func TestManagedProjectConfiguration(t *testing.T) {
 					t.Fatalf("detach=%+v verified=%d", result, verified)
 				}
 				updated, err := globalconfig.Read(cfg.Path, globalconfig.WithProjectPathLiterals())
-				if scenario == "database detach" {
+				if err == nil {
 					updated, err = attempts.LocalConfiguration(t.Context(), updated)
 				}
 				if err != nil {
@@ -786,6 +799,7 @@ type managedConfigScheduling struct {
 	dispatched      bool
 	resolveApproved bool
 	failApplication int
+	onCheck         func()
 }
 
 func (s *managedConfigScheduling) ConnectorForProject(id string) (connector.Connector, bool) {
@@ -800,6 +814,14 @@ func (s *managedConfigScheduling) ResolveProjectWorkflow(_ context.Context, id s
 }
 
 func (s *managedConfigScheduling) CheckProjectPolicy(ctx context.Context, id, repository string, descriptor policy.Descriptor) error {
+	s.mu.Lock()
+	onCheck := s.onCheck
+	s.onCheck = nil
+	s.mu.Unlock()
+	if onCheck != nil {
+		onCheck()
+	}
+
 	if s.failApplication > 0 {
 		s.failApplication--
 		if s.failApplication == 0 {

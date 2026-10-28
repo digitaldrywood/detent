@@ -765,8 +765,6 @@ type workflowGate struct {
 }
 
 type workflowServer struct {
-	Host   string          `yaml:"host"`
-	Port   *int            `yaml:"port"`
 	Kanban *workflowKanban `yaml:"kanban,omitempty"`
 }
 
@@ -776,7 +774,6 @@ type workflowKanban struct {
 }
 
 func writeWorkflow(path string, input workflowInput) error {
-	port := input.Port
 	activeStates := []string{"Todo", "In Progress", "Rework"}
 	observedStates := []string{"Backlog", "Human Review", "Blocked", "Merging", "Done"}
 	terminalStates := []string{"Done", "Cancelled", "Canceled"}
@@ -829,8 +826,6 @@ func writeWorkflow(path string, input workflowInput) error {
 			CIFailureAction:        "skip",
 		},
 		Server: workflowServer{
-			Host:   defaultHost,
-			Port:   &port,
 			Kanban: kanban,
 		},
 	}

@@ -3433,12 +3433,10 @@ func TestHandleRunResultCompletesDurableAttempt(t *testing.T) {
 		Project:             scheduler.ProjectCandidate{ID: "detent"},
 	})
 	attempts := &recordingWorkAttemptStore{}
-	retrospector := &recordingRetrospector{}
 	orch := Orchestrator{
 		cfg:          cfg,
 		runResults:   make(chan runpkg.Completion, 1),
 		workAttempts: attempts,
-		retrospector: retrospector,
 	}
 	state := newState(cfg)
 	issue := dispatchTestIssue("issue-failed-attempt", "Todo")
@@ -3473,9 +3471,6 @@ func TestHandleRunResultCompletesDurableAttempt(t *testing.T) {
 	}
 	if _, ok := state.Retry[issue.ID]; !ok {
 		t.Fatalf("Retry[%q] missing after failed durable attempt", issue.ID)
-	}
-	if !slices.Equal(retrospector.triggers, []string{"completion"}) {
-		t.Fatalf("retrospector triggers = %v, want completion", retrospector.triggers)
 	}
 }
 
@@ -4123,14 +4118,6 @@ type failingCapacityReleaseConnector struct {
 
 func (c failingCapacityReleaseConnector) SetField(context.Context, string, string, string) error {
 	return c.err
-}
-
-type recordingRetrospector struct {
-	triggers []string
-}
-
-func (r *recordingRetrospector) Trigger(trigger string) {
-	r.triggers = append(r.triggers, trigger)
 }
 
 func (s *recordingWorkAttemptStore) StartWorkAttempt(_ context.Context, attrs store.WorkAttemptStart) (int64, error) {

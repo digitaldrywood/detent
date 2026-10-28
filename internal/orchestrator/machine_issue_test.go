@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issuefiling"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
@@ -15,16 +15,16 @@ import (
 
 type machineIssueTracker struct {
 	*fakehub.Connector
-	draft               intake.IssueDraft
+	draft               issuefiling.IssueDraft
 	reused              bool
 	state               string
 	createErr, stateErr error
 	states              int
 }
 
-func (s *machineIssueTracker) CreateIntakeIssue(_ context.Context, draft intake.IssueDraft) (intake.Issue, error) {
+func (s *machineIssueTracker) CreateIntakeIssue(_ context.Context, draft issuefiling.IssueDraft) (issuefiling.Issue, error) {
 	s.draft = draft
-	return intake.Issue{ID: "issue", Identifier: "example/repo#1", Reused: s.reused, State: s.state}, s.createErr
+	return issuefiling.Issue{ID: "issue", Identifier: "example/repo#1", Reused: s.reused, State: s.state}, s.createErr
 }
 
 func (s *machineIssueTracker) SetIntakeIssueState(_ context.Context, _, state string) error {

@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -690,7 +689,7 @@ chmod 755 "$5"
 	}
 }
 
-func TestFreshInstallBootsOnboardingWizardAndExposesRunnerEnrollment(t *testing.T) {
+func TestFreshInstallExposesRunnerEnrollment(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
@@ -722,26 +721,10 @@ func TestFreshInstallBootsOnboardingWizardAndExposesRunnerEnrollment(t *testing.
 	assertInstalledVersionMetadata(t, binary, root, env)
 
 	home := filepath.Join(tmp, "home")
-	workdir := filepath.Join(tmp, "fresh")
-	if err := os.MkdirAll(workdir, 0o755); err != nil {
-		t.Fatalf("MkdirAll(workdir) error = %v", err)
-	}
 	serverEnv := append(os.Environ(),
 		"HOME="+home,
 		"CONFIG_HOME="+filepath.Join(home, ".detent"),
 	)
-	port := reservePort(t)
-	stop := startDetentServer(t, binary, workdir, serverEnv, port)
-	waitForOnboardingHealth(t, port)
-	onboarding := readURL(t, fmt.Sprintf("http://127.0.0.1:%d/onboarding", port))
-	if !strings.Contains(onboarding, "Detent onboarding") {
-		t.Fatalf("onboarding page missing wizard heading:\n%s", onboarding)
-	}
-	css := readURL(t, fmt.Sprintf("http://127.0.0.1:%d/static/css/output.css", port))
-	if !strings.Contains(css, "tailwindcss") {
-		t.Fatalf("static CSS missing Tailwind marker:\n%s", css)
-	}
-	stop()
 
 	assertInstalledEnrollmentCommand(t, binary, tmp, serverEnv)
 }
@@ -1420,140 +1403,6 @@ func TestTerminateInstallerProcessGroup(t *testing.T) {
 			}
 		})
 	}
-}
-
-func reservePort(t *testing.T) int {
-	t.Helper()
-
-	var listenConfig net.ListenConfig
-	listener, err := listenConfig.Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen() error = %v", err)
-	}
-	defer listener.Close()
-
-	addr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("listener address = %T, want *net.TCPAddr", listener.Addr())
-	}
-	return addr.Port
-}
-
-func startDetentServer(t *testing.T, binary string, workdir string, env []string, port int) func() {
-	t.Helper()
-
-	cmd := exec.CommandContext(t.Context(), binary, "--host", "127.0.0.1", "--port", strconv.Itoa(port))
-	cmd.Dir = workdir
-	cmd.Env = env
-
-	var stdout strings.Builder
-	var stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		done <- cmd.Wait()
-	}()
-
-	var once sync.Once
-	stop := func() {
-		t.Helper()
-
-		once.Do(func() {
-			if cmd.Process != nil {
-				_ = cmd.Process.Signal(syscall.SIGTERM)
-			}
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatalf("detent shutdown error = %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
-				}
-			case <-time.After(2 * time.Second):
-				if cmd.Process != nil {
-					_ = cmd.Process.Kill()
-				}
-				t.Fatalf("timed out waiting for detent shutdown\nstdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
-			}
-		})
-	}
-	t.Cleanup(stop)
-
-	return stop
-}
-
-func waitForOnboardingHealth(t *testing.T, port int) {
-	t.Helper()
-
-	url := fmt.Sprintf("http://127.0.0.1:%d/health", port)
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	tick := time.NewTicker(25 * time.Millisecond)
-	defer tick.Stop()
-
-	for {
-		body, err := tryReadURL(url)
-		if err == nil && strings.Contains(body, `"mode":"onboarding"`) {
-			return
-		}
-		select {
-		case <-deadline.C:
-			t.Fatalf("health endpoint did not report onboarding mode at %s", url)
-		case <-tick.C:
-		}
-	}
-}
-
-func readURL(t *testing.T, url string) string {
-	t.Helper()
-
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	tick := time.NewTicker(25 * time.Millisecond)
-	defer tick.Stop()
-
-	var lastErr error
-	for {
-		body, err := tryReadURL(url)
-		if err == nil {
-			return body
-		}
-		lastErr = err
-		select {
-		case <-deadline.C:
-			t.Fatalf("GET %s error = %v", url, lastErr)
-		case <-tick.C:
-		}
-	}
-}
-
-func tryReadURL(url string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("status = %d body = %s", resp.StatusCode, raw)
-	}
-	return string(raw), nil
 }
 
 func assertInstalledEnrollmentCommand(t *testing.T, binary string, root string, env []string) {

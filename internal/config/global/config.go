@@ -19,7 +19,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/activehours"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
-	intakeconfig "github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/profiling"
 	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -88,8 +87,8 @@ type Config struct {
 	LogMaxBackups         *int             `yaml:"log_max_backups,omitempty"`
 	GitHubToken           string           `yaml:"github_token,omitempty" json:"-"`
 	APIToken              string           `yaml:"api_token,omitempty" json:"-"`
-	TrustLoopbackPeerRead bool             `yaml:"trust_loopback_peer_read,omitempty"`
-	DashboardAccess       DashboardAccess  `yaml:"dashboard_access,omitempty"`
+	TrustLoopbackPeerRead bool             `yaml:"-"`
+	DashboardAccess       DashboardAccess  `yaml:"-"`
 	Client                HubClient        `yaml:"client,omitempty"`
 	Ops                   Ops              `yaml:"ops,omitempty"`
 	Port                  *int             `yaml:"port,omitempty"`
@@ -100,7 +99,7 @@ type Config struct {
 	Auth                  Auth             `yaml:"auth,omitempty"`
 	Profiling             profiling.Config `yaml:"profiling,omitempty"`
 	Global                Settings         `yaml:"global"`
-	Projects              []Project        `yaml:"projects,omitempty"`
+	Projects              []Project        `yaml:"-"`
 }
 
 type DashboardAccess struct {
@@ -148,7 +147,7 @@ func (u Update) NormalizedMaxDeferralHours() int {
 }
 
 type Settings struct {
-	LocalIntakeEnabled  *bool                              `yaml:"local_intake_enabled,omitempty"`
+	LocalIntakeEnabled  *bool                              `yaml:"-"`
 	Worker              workflowconfig.WorkerDefaults      `yaml:"worker,omitempty"`
 	Cache               toolcache.Policy                   `yaml:"cache,omitempty"`
 	Agents              workflowconfig.Agents              `yaml:"agents,omitempty"`
@@ -232,7 +231,7 @@ type AgentPool struct {
 
 type Project struct {
 	ModelSelection           *workflowconfig.ModelSelection     `yaml:"-"`
-	LocalIntakeEnabled       *bool                              `yaml:"local_intake_enabled,omitempty"`
+	LocalIntakeEnabled       *bool                              `yaml:"-"`
 	GlobalLocalIntakeEnabled *bool                              `yaml:"-"`
 	GlobalWorker             workflowconfig.WorkerDefaults      `yaml:"-"`
 	GlobalAgents             workflowconfig.Agents              `yaml:"-"`
@@ -256,7 +255,6 @@ type Project struct {
 	ActiveHoursOverrideUntil string                             `yaml:"active_hours_override_until,omitempty"`
 	CredentialRef            string                             `yaml:"credential_ref,omitempty"`
 	Authorization            selector.Selector                  `yaml:"authorization,omitempty"`
-	Intake                   intakeconfig.Config                `yaml:"intake,omitempty"`
 	Memory                   ProjectMemory                      `yaml:"memory,omitempty"`
 	Identity                 Identity                           `yaml:"-"`
 	GlobalKnowledge          Knowledge                          `yaml:"-"`
@@ -740,6 +738,9 @@ func decodeConfigRoot(raw []byte, path string) (map[string]any, error) {
 }
 
 func parseConfigRoot(root map[string]any, path string, readOptions options, opts ...Option) (Config, error) {
+	if problems := workflowconfig.RetiredKeyErrors(root, []string{"projects", "trust_loopback_peer_read", "dashboard_access", "global.local_intake_enabled"}); len(problems) > 0 {
+		return Config{}, ValidationError{Path: path, Problems: problems}
+	}
 	if problems := runnerKeyErrors(root); len(problems) > 0 {
 		return Config{}, ValidationError{Path: path, Problems: problems}
 	}
@@ -892,9 +893,6 @@ func (c Config) Validate(opts ...Option) error {
 	problems = append(problems, ioPressureProblems(c.Global.IO, "global.io")...)
 	problems = append(problems, cpuPressureProblems(c.Global.CPU, "global.cpu")...)
 
-	if c.Projects == nil {
-		problems = append(problems, "projects: is required")
-	}
 	for index, project := range c.Projects {
 		prefix := fmt.Sprintf("projects[%d]", index)
 		if strings.TrimSpace(project.ID) == "" {
@@ -1609,7 +1607,6 @@ func projectErrors(value any, index int, opts options) []string {
 	problems = append(problems, knowledgeErrors(project["knowledge"], prefix+".knowledge")...)
 	problems = append(problems, credentialRefErrors(project, prefix)...)
 	problems = append(problems, authorizationErrors(project["authorization"], prefix+".authorization")...)
-	problems = append(problems, intakeErrors(project["intake"], prefix+".intake")...)
 	problems = append(problems, memoryErrors(project["memory"], prefix+".memory", true)...)
 
 	return problems
@@ -2567,10 +2564,6 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 		if err != nil {
 			return nil, err
 		}
-		projectIntake, intakeConfigured, err := buildIntake(project, prefix)
-		if err != nil {
-			return nil, err
-		}
 		var memory ProjectMemory
 		if project["memory"] != nil {
 			if err := decodeYAMLValue(project["memory"], &memory); err != nil {
@@ -2606,9 +2599,7 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 			ActiveHoursOverrideUntil: activeHoursOverrideUntil,
 			CredentialRef:            credentialRef,
 			Authorization:            authorization,
-			Intake:                   projectIntake,
 			Memory:                   memory,
-			IntakeConfigured:         intakeConfigured,
 		})
 	}
 	return out, nil
@@ -2641,34 +2632,6 @@ func buildActiveHours(value any, prefix string) (activehours.Config, error) {
 		return activehours.Config{}, errors.New(strings.Join(problems, "; "))
 	}
 	return config, nil
-}
-
-func intakeErrors(value any, prefix string) []string {
-	if value == nil {
-		return nil
-	}
-	if _, ok := value.(map[string]any); !ok {
-		return []string{prefix + ": must be a mapping"}
-	}
-	var cfg intakeconfig.Config
-	if err := decodeYAMLValue(value, &cfg); err != nil {
-		return []string{prefix + ": " + err.Error()}
-	}
-	cfg.Normalize()
-	return cfg.Validate(prefix, nil)
-}
-
-func buildIntake(project map[string]any, prefix string) (intakeconfig.Config, bool, error) {
-	value, configured := project["intake"]
-	if !configured || value == nil {
-		return intakeconfig.Config{}, configured, nil
-	}
-	var cfg intakeconfig.Config
-	if err := decodeYAMLValue(value, &cfg); err != nil {
-		return intakeconfig.Config{}, configured, fmt.Errorf("%s.intake: %w", prefix, err)
-	}
-	cfg.Normalize()
-	return cfg, configured, nil
 }
 
 func buildIdentity(value any, field string) (Identity, error) {

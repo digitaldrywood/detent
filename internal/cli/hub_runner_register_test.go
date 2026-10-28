@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,13 +23,19 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
+	"github.com/digitaldrywood/detent/internal/serviceapi"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehubscheduling"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -645,6 +652,57 @@ func TestHubRunnerRegisterWritesAWorkingRunnerConfiguration(t *testing.T) {
 	if file.Identity.OrganizationID != "org_example" || !strings.Contains(output, file.Identity.RunnerID) {
 		t.Fatalf("identity = %+v", file.Identity)
 	}
+	t.Run("runs repository policy", func(t *testing.T) {
+		workdir := filepath.Join(cfg.WorkspaceRoot, "repository")
+		if err := os.MkdirAll(workdir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"detent.yaml", "WORKFLOW.md"} {
+			raw, err := os.ReadFile(filepath.Join("..", "..", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(workdir, name), raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		selected := globalconfig.Project{ID: "prj_site", Workflow: filepath.Join(workdir, "WORKFLOW.md"), Workdir: workdir, Weight: 1}
+		workflow, err := project.LoadWorkflow(selected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := workflow.Config.Validate(); err != nil {
+			t.Fatalf("repository configuration: %v", err)
+		}
+		run := &workflowStartupRunner{started: make(chan struct{}, 1)}
+		backend := fakehub.New(fakehub.Config{Issues: []connector.Issue{{ID: "wi_example", Identifier: "EXAMPLE-1", Title: "Example work", State: "Todo", AssignedToWorker: true}}})
+		factory := withRunnerFactory(t.Context(), project.Dependencies{
+			Runner: run, Connector: backend, Scheduling: &fakehubscheduling.Source{Connector: backend},
+			GlobalDispatchGate: scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: cfg.Global.MaxConcurrentAgents})),
+			Logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		}, nil, nil, serviceapi.Connection{}, nil)
+		running, err := factory(selected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := running.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		if err := running.Start(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-run.started:
+		case <-t.Context().Done():
+			t.Fatal("repository configuration did not dispatch work")
+		}
+		if !running.Running() || running.Workflow().Config.Tracker.Kind != workflowconfig.TrackerHubNative || running.Workflow().Config.Gate.Run != "make check-landing" {
+			t.Fatal("repository configuration lost native execution or landing policy")
+		}
+	})
+
 }
 
 func TestHubRunnerRegisterAccessConfiguration(t *testing.T) {

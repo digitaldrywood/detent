@@ -97,7 +97,7 @@ func TestRunnerStartupProjectOutcomes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(githubPath, []byte(strings.Replace(string(raw), "kind: hub_native", "kind: hub_native\n  repository: owner/site\n  github_status_source: label\n  status_label_prefix: 'detent:'\nworker:\n  github_token: gh", 1)), 0600); err != nil {
+			if err := os.WriteFile(githubPath, []byte(strings.Replace(string(raw), "kind: hub_native", "kind: hub_native\n  repository: owner/site\nworker:\n  github_token: gh", 1)), 0600); err != nil {
 				t.Fatal(err)
 			}
 			projects := []globalconfig.Project{{ID: "github", Workflow: githubPath, Workdir: filepath.Dir(githubPath), Weight: 1}}

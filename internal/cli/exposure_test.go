@@ -15,8 +15,7 @@ func TestScanIssueExposureReportsConfiguredPrivateSourceMatches(t *testing.T) {
 	workflow := workflowconfig.Workflow{Config: workflowconfig.Default()}
 	workflow.Config.Tracker.Kind = workflowconfig.TrackerGitHub
 	workflow.Config.Tracker.Repository = "private/source"
-	workflow.Config.Retro.Enabled = true
-	workflow.Config.Retro.ProductRepository = "public/destination"
+	workflow.Config.Codex.DeliverableElicitationAllowlist = []workflowconfig.DeliverableElicitationRule{{Repository: "public/destination", Server: "codex_apps", Tool: "github.create_issue"}}
 	workflow.Config.Workspace.Root = "/srv/private/worktrees"
 	workflow.Config.Identity.GitHubLogin = "private-user"
 	global := globalconfig.Config{Projects: []globalconfig.Project{{ID: "private", Workdir: "/srv/private", Workflow: "WORKFLOW.md"}}}

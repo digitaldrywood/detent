@@ -196,7 +196,7 @@ func TestRunnerPolicyAuthoredDefinition(t *testing.T) {
 					s.Config = []byte("schema: 1\ntracker:\n  kind: " + tracker + "\nplan: &options\n  enabled: true\ngate:\n  run: true\n  validator: *options\n")
 				}, false},
 				{"instance-only authored tuning", func(s *ProjectDefinitionSources) {
-					s.Config = append([]byte(string(s.Config)), []byte("agent:\n  max_concurrent_agents: 2\nserver:\n  port: 3030\nworker:\n  ssh_hosts: [local]\n")...)
+					s.Config = append([]byte(string(s.Config)), []byte("agent:\n  max_concurrent_agents: 2\nworker:\n  ssh_hosts: [local]\n")...)
 				}, tracker == "hub_native"},
 				{"one byte config change", func(s *ProjectDefinitionSources) {
 					s.Config = []byte(strings.ReplaceAll(string(s.Config), "echo 1", "echo 2"))
@@ -244,7 +244,7 @@ func TestRunnerPolicyEquivalentOptoutRetainsSecurityAudit(t *testing.T) {
 	t.Parallel()
 	workflow, err := ParseProjectDefinition(ProjectDefinitionSources{
 		WorkflowPath: "WORKFLOW.md",
-		Workflow:     []byte("---\ntracker:\n  kind: hub_native\n  api_key: example-token\n  repository: example/repo\n  github_status_source: label\n---\nRun the work.\n"),
+		Workflow:     []byte("---\ntracker:\n  kind: hub_native\n  api_key: example-token\n  repository: example/repo\n---\nRun the work.\n"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -265,7 +265,7 @@ func TestRunnerPolicyEquivalentOptoutRetainsSecurityAudit(t *testing.T) {
 
 func TestRunnerPolicyCompatibility(t *testing.T) {
 	t.Parallel()
-	shared := "tracker:\n  kind: hub_native\n  api_key: fixture-token\n  project_slug: fixture-project\nrunners:\n  profile: build\n  profiles:\n    build:\n      required_tags: [Linux, linux, gpu]\n      machine_id: machine_abc\ngate:\n  kind: human_review\nagent:\n  auto_promote:\n    enabled: false\ndeliverable:\n  merge_method: rebase\n  github_pull_request: true\n"
+	shared := "tracker:\n  kind: hub_native\n  api_key: fixture-token\nrunners:\n  profile: build\n  profiles:\n    build:\n      required_tags: [Linux, linux, gpu]\n      machine_id: machine_abc\ngate:\n  kind: human_review\nagent:\n  auto_promote:\n    enabled: false\ndeliverable:\n  merge_method: rebase\n  github_pull_request: true\n"
 	for _, test := range []struct {
 		name         string
 		split, local bool
@@ -371,7 +371,7 @@ func TestNativeGitHubCIReviewPolicy(t *testing.T) {
 		{name: "native local checks retain their review floor", tracker: "hub_native", floor: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			source := "---\ntracker:\n  kind: " + test.tracker + "\n  api_key: fixture-token\n  project_slug: fixture-project\ngate:\n  run: true\n  required_status_checks: ['Full CI']\n  ci_trigger_label: run-full-ci\n  validator:\n    enabled: true\nreview:\n  human: true\ndeliverable:\n  github_pull_request: " + map[bool]string{true: "true", false: "false"}[test.github] + "\n---\nComplete the work.\n"
+			source := "---\ntracker:\n  kind: " + test.tracker + "\n  api_key: fixture-token\ngate:\n  run: true\n  required_status_checks: ['Full CI']\n  ci_trigger_label: run-full-ci\n  validator:\n    enabled: true\nreview:\n  human: true\ndeliverable:\n  github_pull_request: " + map[bool]string{true: "true", false: "false"}[test.github] + "\n---\nComplete the work.\n"
 			workflow, err := ParseProjectDefinition(ProjectDefinitionSources{WorkflowPath: "WORKFLOW.md", Workflow: []byte(source)})
 			if err != nil {
 				t.Fatal(err)

@@ -828,49 +828,6 @@ paths:
         "401": {$ref: "#/components/responses/Problem"}
         "404": {$ref: "#/components/responses/Problem"}
         "503": {$ref: "#/components/responses/Unavailable"}
-  /api/v1/intake/{project_id}/{source}:
-    parameters:
-      - $ref: "#/components/parameters/ProjectID"
-      - in: path
-        name: source
-        required: true
-        schema: {type: string}
-    post:
-      operationId: receiveProjectIntake
-      summary: Receive a project intake webhook
-      tags: [projects, webhooks]
-      security:
-        - intakeToken: []
-        - intakeBearer: []
-      x-detent-access: project-scoped
-      x-detent-project-parameter: project_id
-      x-detent-echo-path: /api/v1/intake/:project_id/:source
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: "#/components/schemas/GenericObject"}
-      responses:
-        "200":
-          description: Matching existing intake item processed.
-          content:
-            application/json:
-              schema: {$ref: "#/components/schemas/IntakeResult"}
-        "201":
-          description: Matching intake item created.
-          content:
-            application/json:
-              schema: {$ref: "#/components/schemas/IntakeResult"}
-        "202":
-          description: Valid payload did not match the configured intake source.
-          content:
-            application/json:
-              schema: {$ref: "#/components/schemas/IntakeResult"}
-        "401": {$ref: "#/components/responses/Problem"}
-        "404": {$ref: "#/components/responses/Problem"}
-        "422": {$ref: "#/components/responses/Problem"}
-        "502": {$ref: "#/components/responses/Problem"}
-        "503": {$ref: "#/components/responses/Unavailable"}
   /api/v1/usage:
     get:
       operationId: getUsage
@@ -1093,14 +1050,6 @@ components:
       in: header
       name: X-Hub-Signature-256
       description: HMAC-SHA256 signature over the exact request body.
-    intakeToken:
-      type: apiKey
-      in: header
-      name: X-Detent-Intake-Token
-    intakeBearer:
-      type: http
-      scheme: bearer
-      description: Project intake secret, distinct from Detent API tokens and API keys.
   parameters:
     StateProjection:
       in: query
@@ -1526,14 +1475,6 @@ components:
     Status:
       type: object
       additionalProperties: true
-    IntakeResult:
-      type: object
-      required: [created, matched, source]
-      properties:
-        issue: {$ref: "#/components/schemas/GenericObject"}
-        created: {type: boolean}
-        matched: {type: boolean}
-        source: {type: string}
     KanbanCommentRequest:
       type: object
       required: [project_id, target, body]

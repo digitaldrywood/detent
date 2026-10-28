@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issuefiling"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 )
 
@@ -542,7 +542,7 @@ func TestMachineIssueFingerprint(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c := New(Config{Stateful: true})
-			original, err := c.CreateIntakeIssue(t.Context(), intake.IssueDraft{Title: "Original", Body: issueorigin.Stamp("Original", issueorigin.Origin{Kind: "worker", Fingerprint: "disk"})})
+			original, err := c.CreateIntakeIssue(t.Context(), issuefiling.IssueDraft{Title: "Original", Body: issueorigin.Stamp("Original", issueorigin.Origin{Kind: "worker", Fingerprint: "disk"})})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -551,7 +551,7 @@ func TestMachineIssueFingerprint(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			result, err := c.CreateIntakeIssue(t.Context(), intake.IssueDraft{Title: "Occurrence", Body: issueorigin.Stamp("Occurrence", issueorigin.Origin{Kind: "routine", Fingerprint: tt.fingerprint})})
+			result, err := c.CreateIntakeIssue(t.Context(), issuefiling.IssueDraft{Title: "Occurrence", Body: issueorigin.Stamp("Occurrence", issueorigin.Origin{Kind: "routine", Fingerprint: tt.fingerprint})})
 			if err != nil || result.Reused != tt.reused {
 				t.Fatalf("result=%+v err=%v", result, err)
 			}

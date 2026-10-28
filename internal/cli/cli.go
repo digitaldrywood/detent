@@ -520,22 +520,22 @@ func defaultOptions() options {
 	return options{
 		resolvePath: globalconfig.ResolvePath,
 		readStartup: func(path string) (globalconfig.Config, error) {
-			return readLocalConfigurationSource(path)
+			return readLocalConfigurationSource(context.Background(), path)
 		},
 		read: func(path string) (globalconfig.Config, error) {
-			return readLocalConfigurationSource(path)
+			return readLocalConfigurationSource(context.Background(), path)
 		},
 		readProject: func(path string, projectID string) (globalconfig.Config, []string, error) {
 			return readLocalConfigurationProjectFile(path, projectID)
 		},
 		readDoctor: func(path string) (globalconfig.Config, error) {
-			return readLocalConfigurationFile(path, globalconfig.WithMissingWorkflowFiles())
+			return readLocalConfigurationFile(context.Background(), path, globalconfig.WithMissingWorkflowFiles())
 		},
 		readDoctorProject: func(path string, projectID string) (globalconfig.Config, []string, error) {
 			return readLocalConfigurationProjectFile(path, projectID, globalconfig.WithMissingWorkflowFiles())
 		},
 		readOrDefault: func(path string) (globalconfig.Config, error) {
-			cfg, err := readLocalConfigurationFile(path, globalconfig.WithProjectPathLiterals())
+			cfg, err := readLocalConfigurationFile(context.Background(), path, globalconfig.WithProjectPathLiterals())
 			if err != nil && errors.Is(err, os.ErrNotExist) {
 				return globalconfig.ReadOrDefault(path, globalconfig.WithProjectPathLiterals())
 			}

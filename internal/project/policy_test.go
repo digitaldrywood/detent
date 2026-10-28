@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 
-	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -18,7 +17,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/activehours"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
 
 	"github.com/digitaldrywood/detent/internal/hubclient"
@@ -164,12 +162,10 @@ func TestMappedNativeStartupUsesInspectedPolicy(t *testing.T) {
 		name, feature, wantError string
 	}{
 		{name: "supported workflow"},
-		{name: "intake needs migration", feature: "intake:\n  sources:\n    - name: errors\n      kind: webhook\n      secret: test-secret\n      creates:\n        status: Backlog\n", wantError: "intake.sources"},
-		{name: "routines need migration", feature: "schedule_ownership:\n  enabled: true\n  key: acme/orders\n  repository: acme/orders\nroutines:\n  - name: audit\n    schedule: '0 * * * *'\n    prompt: Inspect.\n", wantError: "routines"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := globalconfig.Project{ID: "orders", Workdir: t.TempDir()}
-			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"))
+			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n  repository: acme/orders\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -208,31 +204,6 @@ func TestMappedNativeStartupUsesInspectedPolicy(t *testing.T) {
 				t.Fatal("startup did not select native tracker")
 			}
 		})
-	}
-}
-
-func TestMappedNativeReloadRetainsPolicySchedulingSource(t *testing.T) {
-	t.Parallel()
-	updated, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\nintake:\n  sources:\n    - name: errors\n      kind: webhook\n      secret: test-secret\n      creates:\n        status: Backlog\n---\nPrompt\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A local tracker does not use Hub scheduling for dispatch, but the
-	// unfiltered source still determines how a changed workflow is mapped.
-	scheduling := &mappedPolicyScheduling{}
-	p := &Project{
-		id:               "orders",
-		cfg:              globalconfig.Project{ID: "orders", Workdir: t.TempDir()},
-		workflow:         workflowconfig.Workflow{Config: workflowconfig.Config{Policy: policy.Descriptor{ID: "approved-local"}}},
-		policyScheduling: scheduling,
-		logger:           slog.Default(),
-	}
-	if p.orchDeps.Scheduling != nil {
-		t.Fatal("local tracker unexpectedly has Hub dispatch scheduling")
-	}
-	err = p.handleWorkflowUpdate(t.Context(), configwatcher.Update{Path: "WORKFLOW.md", Workflow: updated})
-	if err == nil || !strings.Contains(err.Error(), "intake.sources") || !strings.Contains(err.Error(), "migrate") {
-		t.Fatalf("mapped reload error = %v, want native intake migration", err)
 	}
 }
 

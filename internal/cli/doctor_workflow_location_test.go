@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,46 +10,6 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
-
-func TestCheckDoctorConfigPreservesMissingWorkflowForDiagnosis(t *testing.T) {
-	t.Parallel()
-
-	root := t.TempDir()
-	repoRoot := filepath.Join(root, "repo")
-	expectedPath := filepath.Join(repoRoot, "WORKFLOW.md")
-	foundPath := filepath.Join(repoRoot, ".detent", "WORKFLOW.md")
-	writeDoctorWorkflowLocationFile(t, foundPath)
-	configPath := filepath.Join(root, "global.yaml")
-	raw := fmt.Sprintf(`apiVersion: detent/v1
-kind: GlobalConfig
-global:
-  max_concurrent_agents: 1
-  scheduling: weighted
-projects:
-  - id: alpha
-    workflow: %q
-    workdir: %q
-    weight: 1
-    priority: 0
-`, expectedPath, repoRoot)
-	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
-		t.Fatalf("write global config: %v", err)
-	}
-
-	_, cfg, _, _, configCheck := checkDoctorConfig(t.Context(), configPath, "", defaultOptions())
-	if configCheck.Status != doctorOK || cfg == nil {
-		t.Fatalf("checkDoctorConfig() = (%#v, %#v), want parsed config", cfg, configCheck)
-	}
-	checks := checkDoctorProjects(context.Background(), *cfg, successfulDoctorDeps(), RuntimeSecret{}, false)
-	if len(checks) == 0 {
-		t.Fatal("checkDoctorProjects() returned no checks")
-	}
-	for _, want := range []string{foundPath, expectedPath} {
-		if !strings.Contains(checks[1].Detail, want) {
-			t.Fatalf("workflow check detail = %q, want containing %q", checks[1].Detail, want)
-		}
-	}
-}
 
 func TestCheckDoctorWorkflowLocation(t *testing.T) {
 	t.Parallel()

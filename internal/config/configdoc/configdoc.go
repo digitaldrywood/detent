@@ -289,8 +289,7 @@ func expandable(typ reflect.Type) bool {
 		path == "github.com/digitaldrywood/detent/internal/activehours" ||
 		path == "github.com/digitaldrywood/detent/internal/connector" ||
 		path == "github.com/digitaldrywood/detent/internal/gate" ||
-		path == "github.com/digitaldrywood/detent/internal/intake" ||
-		path == "github.com/digitaldrywood/detent/internal/retro" ||
+		path == "github.com/digitaldrywood/detent/internal/issuefiling" ||
 		path == "github.com/digitaldrywood/detent/internal/scheduleowner" ||
 		path == "github.com/digitaldrywood/detent/internal/selector"
 }
@@ -1003,21 +1002,18 @@ agents:
 `,
 		`tracker:
   kind: github
-  github_status_source: label
-  repository: example/example
+  repository: example-org/example-project
   github_app_id: "1"
 `,
 		`tracker:
   kind: github
-  github_status_source: label
-  repository: example/example
+  repository: example-org/example-project
   github_app_installation_id: "2"
   github_app_private_key_path: example.pem
 `,
 		`tracker:
   kind: github
-  github_status_source: label
-  repository: example/example
+  repository: example-org/example-project
   github_app_id: "1"
   github_app_installation_id: "2"
 `,

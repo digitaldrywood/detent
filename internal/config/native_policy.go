@@ -13,7 +13,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
-	"github.com/digitaldrywood/detent/internal/retro"
 )
 
 type nativeBehavior struct {
@@ -27,7 +26,7 @@ type nativeBehavior struct {
 	Plan                       gate.PlanConfig
 	Budget                     Budget
 	Release                    Release
-	Retro                      retro.Config
+	Retro                      json.RawMessage `json:",omitempty"`
 	Operator                   Operator
 	BacklogAdmission           BacklogAdmission
 	Repository                 string
@@ -55,7 +54,7 @@ func nativeProjectBehavior(cfg Config) nativeBehavior {
 		Review: cfg.Review, Runners: cfg.Runners, Workpad: cfg.Workpad,
 		Deliverable: cfg.Deliverable, Dependencies: cfg.Dependencies,
 		Agent: cfg.Agent, Gate: cfg.Gate, Plan: cfg.Plan, Budget: cfg.Budget,
-		Release: cfg.Release, Retro: cfg.Retro, Operator: cfg.Operator, BacklogAdmission: cfg.BacklogAdmission,
+		Release: cfg.Release, Retro: cfg.historicalRetro, Operator: cfg.Operator, BacklogAdmission: cfg.BacklogAdmission,
 		Lanes: cfg.Tracker.Lanes, Repository: cfg.Tracker.Repository, ActiveStates: cfg.Tracker.ActiveStates,
 		ObservedStates: cfg.Tracker.ObservedStates, TerminalStates: cfg.Tracker.TerminalStates,
 		AllowedTransitions: cfg.Server.Kanban.AllowedTransitions,
@@ -113,7 +112,7 @@ func (b nativeBehavior) apply(local Config) Config {
 	local.Budget.perDayMaxUSDConfigured, local.Budget.perIssueMaxUSDConfigured = b.BudgetDayConfigured, b.BudgetIssueConfigured
 	local.Agent.Budget.perDayMaxUSDConfigured, local.Agent.Budget.perIssueMaxUSDConfigured = b.AgentBudgetDayConfigured, b.AgentBudgetIssueConfigured
 	local.Release, local.Operator, local.BacklogAdmission = b.Release, b.Operator, b.BacklogAdmission
-	local.Retro = b.Retro
+	local.historicalRetro = b.Retro
 	local.Tracker.Kind, local.Tracker.Repository = TrackerHubNative, b.Repository
 	local.Tracker.Lanes = b.Lanes
 	local.Tracker.ActiveStates, local.Tracker.ObservedStates, local.Tracker.TerminalStates = b.ActiveStates, b.ObservedStates, b.TerminalStates

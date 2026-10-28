@@ -8,7 +8,6 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 type doctorCapabilityState string
@@ -55,19 +54,7 @@ func checkDoctorCapabilities(project globalconfig.Project, workflow workflowconf
 
 func doctorProjectCapabilities(project globalconfig.Project, workflow workflowconfig.Workflow) []doctorCapability {
 	cfg := workflow.Config
-	intakeEnabled := cfg.Intake.Enabled()
-	intakeCount := len(cfg.Intake.Sources)
-	if project.IntakeConfigured {
-		intakeEnabled = project.Intake.Enabled()
-		intakeCount = len(project.Intake.Sources)
-	}
-
 	return []doctorCapability{
-		doctorBacklogAdmissionCapability(cfg, workflow.SharedPrompt),
-		doctorUntrackedAdmissionCapability(cfg),
-		doctorExcludeLabelsAdmissionCapability(cfg),
-		doctorRoutineCapability(cfg),
-		doctorIntakeCapability(cfg, intakeEnabled, intakeCount),
 		doctorEnabledCapability(
 			"agent.followups",
 			cfg.Agent.Followups.Enabled,
@@ -80,138 +67,9 @@ func doctorProjectCapabilities(project globalconfig.Project, workflow workflowco
 			"enabled; review-ready work advances automatically after configured gates and quiet windows.",
 			"Enable to advance review-ready work automatically after configured gates and quiet windows.",
 		),
-		doctorRetroCapability(cfg),
 		doctorReleaseCapability(cfg),
 		doctorEffortRubricCapability(project, cfg),
 	}
-}
-
-func doctorBacklogAdmissionCapability(cfg workflowconfig.Config, sharedPrompt string) doctorCapability {
-	if cfg.BacklogAdmission.Enabled {
-		return doctorCapability{
-			Name:   "backlog_admission",
-			State:  doctorCapabilityConfigured,
-			Detail: "enabled; Detent evaluates configured backlog sources against WORKFLOW.md admission criteria.",
-		}
-	}
-
-	candidateCapabilities := connector.CandidateCapabilitiesFor(connector.Backend(cfg.Tracker.Kind), cfg.Tracker.GitHubStatusSource)
-	if len(candidateCapabilities.Selectors) == 0 {
-		return doctorCapability{
-			Name:   "backlog_admission",
-			State:  doctorCapabilityUnavailable,
-			Detail: "tracker.kind " + cfg.Tracker.Kind + " does not provide candidate selectors required for backlog admission.",
-		}
-	}
-	prerequisites := make([]string, 0, 3)
-	if len(cfg.BacklogAdmission.Sources.States) == 0 && len(cfg.BacklogAdmission.Sources.Labels) == 0 && !cfg.BacklogAdmission.Sources.Untracked {
-		prerequisites = append(prerequisites, "configure backlog_admission.sources with at least one selector")
-	}
-	if strings.TrimSpace(cfg.BacklogAdmission.TargetState) == "" {
-		prerequisites = append(prerequisites, "set backlog_admission.target_state to a configured workflow state")
-	}
-	if _, err := workflowconfig.ResolveAdmissionCriteria(sharedPrompt, cfg.BacklogAdmission.CriteriaSection); err != nil {
-		prerequisites = append(prerequisites, "set backlog_admission.criteria_section to a shared WORKFLOW.md heading with at least one admission dimension ("+err.Error()+")")
-	}
-	if len(prerequisites) > 0 {
-		return doctorCapability{
-			Name:   "backlog_admission",
-			State:  doctorCapabilityUnavailable,
-			Detail: "Prerequisites: " + strings.Join(prerequisites, "; ") + ". Once satisfied, enabling evaluates backlog candidates and proposes or admits matching work.",
-		}
-	}
-	return doctorCapability{
-		Name:   "backlog_admission",
-		State:  doctorCapabilityUnused,
-		Detail: "Enable to evaluate backlog candidates against WORKFLOW.md criteria and propose or admit matching work.",
-	}
-}
-
-func doctorUntrackedAdmissionCapability(cfg workflowconfig.Config) doctorCapability {
-	capabilities := connector.CandidateCapabilitiesFor(connector.Backend(cfg.Tracker.Kind), cfg.Tracker.GitHubStatusSource)
-	if !capabilities.Supports(connector.CandidateSelectorUntracked) {
-		reason := "tracker.kind " + cfg.Tracker.Kind + " does not provide GitHub label-status drift needed to identify untracked issues."
-		if cfg.Tracker.Kind == workflowconfig.TrackerGitHub && cfg.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceProjectV2 {
-			reason = "github project_v2 status cannot identify untracked repository issues; use github label status to enable this selector."
-		}
-		return doctorCapability{Name: "backlog_admission.sources.untracked", State: doctorCapabilityUnavailable, Detail: reason}
-	}
-	return doctorEnabledCapability(
-		"backlog_admission.sources.untracked",
-		cfg.BacklogAdmission.Sources.Untracked,
-		"configured; admission can consider repository issues outside Detent's tracked status lanes.",
-		"Enable to admit open repository issues not represented in Detent's label-status lanes.",
-	)
-}
-
-func doctorExcludeLabelsAdmissionCapability(cfg workflowconfig.Config) doctorCapability {
-	if cfg.Tracker.Kind == workflowconfig.TrackerGitHub && cfg.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceProjectV2 {
-		return doctorCapability{
-			Name:   "backlog_admission.exclude_labels",
-			State:  doctorCapabilityUnavailable,
-			Detail: "github project_v2 fetches only the first 20 issue labels, so Detent cannot apply exclude_labels completely.",
-		}
-	}
-	return doctorEnabledCapability(
-		"backlog_admission.exclude_labels",
-		len(cfg.BacklogAdmission.ExcludeLabels) > 0,
-		fmt.Sprintf("configured with %d label exclusion(s); matching issues stay out of admission candidates.", len(cfg.BacklogAdmission.ExcludeLabels)),
-		"Configure to keep issues with selected labels out of backlog admission candidates.",
-	)
-}
-
-func doctorRoutineCapability(cfg workflowconfig.Config) doctorCapability {
-	if len(cfg.Routines) > 0 {
-		return doctorCapability{
-			Name:   "routines",
-			State:  doctorCapabilityConfigured,
-			Detail: fmt.Sprintf("%d scheduled routine(s) run recurring agent prompts.", len(cfg.Routines)),
-		}
-	}
-	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub {
-		return doctorCapability{
-			Name:   "routines",
-			State:  doctorCapabilityUnavailable,
-			Detail: "tracker.kind " + cfg.Tracker.Kind + " does not support scheduled routine issue creation; routines require github.",
-		}
-	}
-	return doctorCapability{Name: "routines", State: doctorCapabilityUnused, Detail: "Enable to run recurring agent prompts on a schedule."}
-}
-
-func doctorIntakeCapability(cfg workflowconfig.Config, enabled bool, count int) doctorCapability {
-	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub {
-		return doctorCapability{
-			Name:   "intake.sources",
-			State:  doctorCapabilityUnavailable,
-			Detail: "tracker.kind " + cfg.Tracker.Kind + " cannot create intake issues; intake.sources requires github.",
-		}
-	}
-	if enabled {
-		return doctorCapability{
-			Name:   "intake.sources",
-			State:  doctorCapabilityConfigured,
-			Detail: fmt.Sprintf("%d source(s) turn external or scheduled signals into tracker issues.", count),
-		}
-	}
-	return doctorCapability{Name: "intake.sources", State: doctorCapabilityUnused, Detail: "Enable to turn external webhook or scheduled signals into tracker issues."}
-}
-
-func doctorRetroCapability(cfg workflowconfig.Config) doctorCapability {
-	if cfg.Retro.Enabled {
-		return doctorCapability{
-			Name:   "retro",
-			State:  doctorCapabilityConfigured,
-			Detail: "enabled; recurring failure telemetry can become governed improvement issues.",
-		}
-	}
-	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub {
-		return doctorCapability{
-			Name:   "retro",
-			State:  doctorCapabilityUnavailable,
-			Detail: "tracker.kind " + cfg.Tracker.Kind + " cannot create retrospective issues; retro requires github.",
-		}
-	}
-	return doctorCapability{Name: "retro", State: doctorCapabilityUnused, Detail: "Enable to turn recurring failure telemetry into governed improvement issues."}
 }
 
 func doctorReleaseCapability(cfg workflowconfig.Config) doctorCapability {

@@ -1376,7 +1376,6 @@ kind: GlobalConfig
 global:
   max_concurrent_agents: ` + strconv.Itoa(maxConcurrentAgents) + `
   scheduling: weighted
-projects: []
 `)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)

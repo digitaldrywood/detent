@@ -60,7 +60,6 @@ kind: GlobalConfig
 global:
   max_concurrent_agents: 8
   scheduling: weighted
-projects: []
 `), test.name+".yaml")
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Parse() error = %v, want containing %q", err, test.want)

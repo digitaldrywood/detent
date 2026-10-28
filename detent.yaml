@@ -205,36 +205,11 @@ release:
   max_age_hours: 24
   require_green_ci: true
   version_bump: auto
-retro:
-  enabled: false
 operator:
   actions:
     - clear_closed_dependencies
     - restore_stuck_merging
   merge_wedge_seconds: 7200
-backlog_admission:
-  enabled: false
-  schedule: '*/15 * * * *'
-  sources:
-    states:
-      - backlog
-  target_state: Todo
-  criteria_section: Admission Criteria
-  require_effort: true
-  effort_file: WORKFLOW.md
-  effort_section: Issue effort selection
-  authors:
-    allow:
-      - corylanou
-      - loganlanou
-      - michaelhvisser
-      - jarvislanou
-  max_candidates_per_run: 50
-  max_proposals_per_run: 3
-  max_open_proposals: 10
-  proposal_expiry_days: 7
-  auto_admit: true
-  auto_admit_min_confidence: 0.85
 server:
   kanban:
     allowed_transitions:

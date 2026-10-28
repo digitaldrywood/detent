@@ -346,10 +346,6 @@ the log level from `--log-level`, then `LOG_LEVEL`, then `DETENT_LOG_LEVEL`,
 default to `info`, reject any value other than `debug`, `info`, `warn` or
 `error`, and write JSON logs to stderr for journald.
 
-The web host resolves from `--host`, then the first registered workflow's
-`server.host`, then the built-in `127.0.0.1` default. It is not a top-level
-`global.yaml` key.
-
 ### Host pressure admission
 
 On Linux, Detent refreshes Pressure Stall Information (PSI) at admission time,
@@ -1012,14 +1008,19 @@ Sprite pool customer `bootstrap` covers prerequisites that cannot live in a
 readable repository file, such as fetching credentials through a customer's
 secret service or obtaining the checkout.
 
-### Intake, retrospectives, routines, and admission
+### Retired local-board configuration
 
-`intake.sources`, `retro`, `routines`, and `backlog_admission` are scheduled
-features of repository trackers. `tracker.kind: hub_native` rejects
-`intake.sources` and `routines`, `retro` requires a `github` or `memory`
-tracker, and `backlog_admission` needs candidate selectors that native trackers
-do not provide. Native cutover refuses a workflow that still enables any of
-them.
+The local `intake`, `retro`, `routines`, and `backlog_admission` blocks are
+retired. Workflow loading rejects them even when disabled. GitHub tracker
+status keys (`github_status_source`, `project_slug`, `status_field`,
+`status_label_prefix`, and `write_probe_issue`) and the local dashboard's
+`server.host`, `server.port`, and `server.board_snapshot_stale_after_seconds`
+are retired as well. Keep `server.kanban.allowed_transitions` for native
+workflow transitions.
+
+Runner `global.yaml` files reject `projects`, `dashboard_access`,
+`trust_loopback_peer_read`, and `global.local_intake_enabled`. Errors name the
+retired key. Register-generated runner configuration remains supported.
 
 ## Fleet staleness warnings
 

@@ -568,8 +568,6 @@ gate:
   kind: command
   run: "true"
 server:
-  host: 127.0.0.1
-  port: 0
 ---
 Deterministic Detent demo capture workflow.
 `) + "\n"

@@ -23,7 +23,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
-	routinemodel "github.com/digitaldrywood/detent/internal/routine/model"
 	"github.com/digitaldrywood/detent/internal/scheduleowner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -154,22 +153,6 @@ func TestProjectWithDisabledSchedulersDoesNotAcquireOwnership(t *testing.T) {
 	}
 	if got := coordinationStore.Calls(); got != 0 {
 		t.Fatalf("coordination calls = %d, want 0", got)
-	}
-}
-
-func TestNewLeavesBacklogAdmissionDisabledByDefault(t *testing.T) {
-	t.Parallel()
-
-	got, err := projectfixture.New(project.Config{
-		Project:  globalconfig.Project{ID: "detent", Workdir: "/workspace/detent"},
-		Workflow: workflowconfig.Workflow{Config: workflowConfig(workflowconfig.TrackerHubNative)},
-	}, project.Dependencies{Runner: orchestrator.FakeRunner{}})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	t.Cleanup(func() { _ = got.Close() })
-	if got.Admission() == nil || got.Admission().Enabled() {
-		t.Fatalf("Admission() = %#v, want disabled manager", got.Admission())
 	}
 }
 
@@ -1266,50 +1249,6 @@ func (s *projectCoordinationStore) Calls() int {
 
 type blockingRunner struct{}
 
-type projectRoutineStore struct {
-	records []routinemodel.RunRecord
-}
-
-func (s *projectRoutineStore) LatestRoutineRun(_ context.Context, projectID string, name string) (routinemodel.RunRecord, bool, error) {
-	for index := len(s.records) - 1; index >= 0; index-- {
-		if s.records[index].ProjectID == projectID && s.records[index].RoutineName == name {
-			return s.records[index], true, nil
-		}
-	}
-	return routinemodel.RunRecord{}, false, nil
-}
-
-func (s *projectRoutineStore) RecordRoutineRun(_ context.Context, record routinemodel.RunRecord) error {
-	s.records = append(s.records, record)
-	return nil
-}
-
-func (s *projectRoutineStore) OpenRoutineIssueIDs(_ context.Context, projectID string, name string) ([]string, error) {
-	var issueIDs []string
-	for _, record := range s.records {
-		if record.ProjectID != projectID || record.RoutineName != name {
-			continue
-		}
-		for _, issue := range record.Issues {
-			issueIDs = append(issueIDs, issue.ID)
-		}
-	}
-	return issueIDs, nil
-}
-
-func (s *projectRoutineStore) RecordRoutineIssue(context.Context, string, string, routinemodel.IssueRecord) error {
-	return nil
-}
-
-func (s *projectRoutineStore) CloseRoutineIssues(context.Context, string, string, []string) error {
-	return nil
-}
-
-func (blockingRunner) Run(ctx context.Context, _ orchestrator.RunRequest) (orchestrator.RunResult, error) {
-	<-ctx.Done()
-	return orchestrator.RunResult{}, ctx.Err()
-}
-
 type releaseBlockingRunner struct {
 	release <-chan struct{}
 }
@@ -1602,7 +1541,6 @@ func writeProjectGateWorkflow(t *testing.T, path string, intervalMS int, issueID
 tracker:
   kind: hub_native
   api_key: fixture-token
-  project_slug: fixture-project
   repository: example-org/example-project
 %spolling:
   interval_ms: %d
@@ -1813,4 +1751,9 @@ func receiveEvent(t *testing.T, ch <-chan project.Event) project.Event {
 	}
 
 	return project.Event{}
+}
+
+func (blockingRunner) Run(ctx context.Context, _ orchestrator.RunRequest) (orchestrator.RunResult, error) {
+	<-ctx.Done()
+	return orchestrator.RunResult{}, ctx.Err()
 }

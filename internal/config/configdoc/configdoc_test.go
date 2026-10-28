@@ -156,25 +156,6 @@ func TestConfigDocumentation(t *testing.T) {
 		}
 	})
 
-	t.Run("includes discoverable backlog admission", func(t *testing.T) {
-		markdown := renderMarkdown(fields)
-		reference := string(renderReferenceYAML(fields, nodes))
-		for name, content := range map[string]string{
-			"Markdown": markdown,
-			"YAML":     reference,
-		} {
-			if !strings.Contains(content, "backlog_admission.schedule") {
-				t.Errorf("%s does not include backlog_admission.schedule", name)
-			}
-			if !strings.Contains(content, "active_hours.timezone") || !strings.Contains(content, "active_hours.windows") {
-				t.Errorf("%s does not include active-hours child fields", name)
-			}
-			if !strings.Contains(content, "valid five-field cron expression") {
-				t.Errorf("%s does not include backlog admission cron validation", name)
-			}
-		}
-	})
-
 	t.Run("uses validator constraints and conditional requiredness", func(t *testing.T) {
 		byPath := make(map[string]fieldDetails, len(fields))
 		for _, field := range fields {
@@ -195,7 +176,6 @@ func TestConfigDocumentation(t *testing.T) {
 			{path: "tracker.authorization.priority_in", required: "No", ruleDetail: "integers 1 through 4"},
 			{path: "agents.routes[].selector.priority_in", required: "No", ruleDetail: "integers 1 through 4"},
 			{path: "tracker.github_app_id", required: "No"},
-			{path: "backlog_admission.target_state", required: "Conditional", ruleDetail: "configured workflow state"},
 		}
 		for _, test := range tests {
 			test := test

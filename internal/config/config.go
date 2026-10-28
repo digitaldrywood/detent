@@ -22,12 +22,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/pathsafe"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/publication"
-	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/scheduleowner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -165,13 +163,11 @@ type Config struct {
 	Release           Release              `yaml:"release,omitempty"`
 	Hooks             Hooks                `yaml:"hooks"`
 	ScheduleOwnership scheduleowner.Config `yaml:"schedule_ownership,omitempty"`
-	Intake            intake.Config        `yaml:"intake,omitempty"`
-	Retro             retro.Config         `yaml:"retro,omitempty"`
-	Routines          []Routine            `yaml:"routines,omitempty"`
 	Operator          Operator             `yaml:"operator,omitempty"`
-	BacklogAdmission  BacklogAdmission     `yaml:"backlog_admission,omitempty"`
+	BacklogAdmission  BacklogAdmission     `yaml:"-"`
 
 	executionIssueContract              *IssueContract
+	historicalRetro                     []byte
 	configuredFields                    map[string]struct{}
 	scheduleOwnershipRepositoryExplicit bool
 }
@@ -199,13 +195,13 @@ type Tracker struct {
 	GitHubAppPrivateKeyPath     string                `yaml:"github_app_private_key_path"`
 	GitHubAppInstallationID     string                `yaml:"github_app_installation_id"`
 	GitHubWebhookSecret         string                `yaml:"github_webhook_secret,omitempty"`
-	GitHubStatusSource          string                `yaml:"github_status_source"`
+	GitHubStatusSource          string                `yaml:"-"`
 	StatusPageURL               string                `yaml:"status_page_url,omitempty"`
-	ProjectSlug                 string                `yaml:"project_slug"`
+	ProjectSlug                 string                `yaml:"-"`
 	Repository                  string                `yaml:"repository"`
-	StatusField                 string                `yaml:"status_field"`
-	StatusLabelPrefix           string                `yaml:"status_label_prefix,omitempty"`
-	WriteProbeIssue             string                `yaml:"write_probe_issue,omitempty"`
+	StatusField                 string                `yaml:"-"`
+	StatusLabelPrefix           string                `yaml:"-"`
+	WriteProbeIssue             string                `yaml:"-"`
 	Assignee                    string                `yaml:"assignee"`
 	Lanes                       []Lane                `yaml:"lanes"`
 	ActiveStates                []string              `yaml:"-"`
@@ -795,9 +791,9 @@ func (b *AgentBackend) decodeOptions() {
 }
 
 type Server struct {
-	Port                           *int   `yaml:"port"`
-	Host                           string `yaml:"host"`
-	BoardSnapshotStaleAfterSeconds int    `yaml:"board_snapshot_stale_after_seconds"`
+	Port                           *int   `yaml:"-"`
+	Host                           string `yaml:"-"`
+	BoardSnapshotStaleAfterSeconds int    `yaml:"-"`
 	Kanban                         Kanban `yaml:"kanban,omitempty"`
 }
 
@@ -1345,7 +1341,6 @@ func decodeWorkflowConfig(root *yaml.Node) (Config, error) {
 	cfg := Default()
 	if root != nil {
 		normalizeTrackerIDFields(root)
-		gitHubStatusSourceSet := trackerFieldSet(root, "github_status_source")
 		knowledgeConfigured := nestedFieldSet(root, "agent", "knowledge")
 		mergeMethodConfigured := nestedFieldSet(root, "deliverable", "merge_method")
 		perDayMaxUSDConfigured := nestedFieldSet(root, "budget", "per_day_max_usd")
@@ -1353,7 +1348,6 @@ func decodeWorkflowConfig(root *yaml.Node) (Config, error) {
 		if err := root.Decode(&cfg); err != nil {
 			return Config{}, fmt.Errorf("decode YAML frontmatter: %w", err)
 		}
-		cfg.Tracker.gitHubStatusSourceSet = gitHubStatusSourceSet
 		cfg.Agent.Knowledge.Configured = knowledgeConfigured
 		cfg.Deliverable.mergeMethodConfigured = mergeMethodConfigured
 		cfg.Budget.perDayMaxUSDConfigured = perDayMaxUSDConfigured
@@ -1716,38 +1710,6 @@ func (c *Config) Validate() error {
 	}
 	c.ScheduleOwnership = c.NormalizedScheduleOwnership()
 	problems = append(problems, c.ScheduleOwnership.Validate("schedule_ownership")...)
-	states := make([]string, 0, len(c.configuredWorkflowStates()))
-	for _, state := range c.configuredWorkflowStates() {
-		states = append(states, state)
-	}
-	problems = append(problems, c.Intake.Validate("intake", states)...)
-	if c.Intake.Enabled() && c.Tracker.Kind != TrackerGitHub {
-		problems = append(problems, "intake.sources requires tracker.kind github")
-	}
-	if c.Intake.Enabled() && !validRepositoryName(c.Tracker.Repository) {
-		problems = append(problems, "tracker.repository is required for intake sources")
-	}
-	c.Retro.Normalize()
-	problems = append(problems, c.Retro.Validate("retro", states)...)
-	if c.Retro.Enabled && c.Tracker.Kind != TrackerGitHub {
-		problems = append(problems, "retro.enabled requires tracker.kind github")
-	}
-	if c.Retro.Enabled && c.Tracker.Kind == TrackerGitHub && !validRepositoryName(c.Tracker.Repository) {
-		problems = append(problems, "tracker.repository is required for retro")
-	}
-	problems = append(problems, ValidateRoutines("routines", c.Routines, states)...)
-	if len(c.Routines) > 0 && c.Tracker.Kind != TrackerGitHub {
-		problems = append(problems, "routines requires tracker.kind github")
-	}
-	if len(c.Routines) > 0 && c.Tracker.Kind == TrackerGitHub && !validRepositoryName(c.Tracker.Repository) {
-		problems = append(problems, "tracker.repository is required for routines")
-	}
-	c.BacklogAdmission.Normalize()
-	problems = append(problems, c.BacklogAdmission.Validate("backlog_admission", states, c.Tracker)...)
-	if c.SchedulersEnabled() && !c.ScheduleOwnership.Enabled {
-		problems = append(problems, "schedule_ownership.enabled must be true when scheduled work is configured; add a schedule_ownership block with enabled: true and a shared key")
-	}
-
 	if len(problems) > 0 {
 		return ValidationError{Problems: problems}
 	}
@@ -1954,9 +1916,6 @@ func (c *Config) normalize() {
 	c.Observability.Normalize()
 	c.Hooks.Shell = strings.TrimSpace(c.Hooks.Shell)
 	c.ScheduleOwnership = c.NormalizedScheduleOwnership()
-	c.Intake.Normalize()
-	c.Retro.Normalize()
-	c.Routines = NormalizeRoutines(c.Routines)
 	c.BacklogAdmission.Normalize()
 }
 
@@ -1970,18 +1929,6 @@ func (c Config) NormalizedScheduleOwnership() scheduleowner.Config {
 		repository = ""
 	}
 	return c.ScheduleOwnership.Normalized(repository, endpoint)
-}
-
-func (c Config) SchedulersEnabled() bool {
-	if len(c.Routines) > 0 || c.BacklogAdmission.Enabled {
-		return true
-	}
-	for _, source := range c.Intake.Sources {
-		if source.Kind == intake.KindSchedule {
-			return true
-		}
-	}
-	return false
 }
 
 // ForNativeTracker applies a Hub mapping without carrying an implicit GitHub
@@ -3151,14 +3098,6 @@ func normalizeTrackerIDFields(root *yaml.Node) {
 
 	normalizeScalarField(tracker, "github_app_id")
 	normalizeScalarField(tracker, "github_app_installation_id")
-}
-
-func trackerFieldSet(root *yaml.Node, key string) bool {
-	tracker := mappingValue(root, "tracker")
-	if tracker == nil || tracker.Kind != yaml.MappingNode {
-		return false
-	}
-	return mappingValue(tracker, key) != nil
 }
 
 func nestedFieldSet(root *yaml.Node, keys ...string) bool {

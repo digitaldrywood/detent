@@ -726,8 +726,6 @@ tracker:
   kind: hub_native
   endpoint: https://api.github.com/graphql
   api_key: $GITHUB_TOKEN
-  project_slug: "PVT_project"
-  write_probe_issue: " digitaldrywood/detent#1 "
   http_max_idle_conns: 120
   http_max_idle_conns_per_host: 40
   http_idle_conn_timeout_ms: 120000
@@ -898,8 +896,6 @@ plan:
   approval_label: Plan-Approved
   stop: " Plan Review "
 server:
-  host: 0.0.0.0
-  port: 4001
   kanban:
     mode: integration
     show_blocked_alerts: true
@@ -961,9 +957,6 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Tracker.Endpoint != "https://api.github.com/graphql" {
 		t.Fatalf("Tracker.Endpoint = %q", cfg.Tracker.Endpoint)
-	}
-	if cfg.Tracker.WriteProbeIssue != "digitaldrywood/detent#1" {
-		t.Fatalf("Tracker.WriteProbeIssue = %q, want digitaldrywood/detent#1", cfg.Tracker.WriteProbeIssue)
 	}
 	if cfg.Tracker.HTTPMaxIdleConns != 120 {
 		t.Fatalf("Tracker.HTTPMaxIdleConns = %d, want 120", cfg.Tracker.HTTPMaxIdleConns)
@@ -1224,51 +1217,6 @@ func TestParseWorkflowHookShellSurvivesWorkerTransfer(t *testing.T) {
 				t.Fatalf("transferred hook shell = %q, want %q", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestParseWorkflowRetroDefaultsAndValidation(t *testing.T) {
-	t.Parallel()
-
-	workflow, err := ParseWorkflow([]byte(`---
-tracker:
-  kind: github
-  api_key: fixture-token
-  project_slug: fixture-project
-  repository: example-org/example-project
-  lanes:
-    - name: Backlog
-      role: holding
-    - name: Blocked
-      role: holding
-    - name: Todo
-      role: active
-    - name: Closed
-      role: terminal
-    - name: Cancelled
-      role: terminal
-    - name: Canceled
-      role: terminal
-    - name: Duplicate
-      role: terminal
-    - name: Done
-      role: terminal
-retro:
-  enabled: true
-  target_state: Backlog
-  allow_public_cross_project_details: true
----
-Prompt
-`))
-	if err != nil {
-		t.Fatalf("ParseWorkflow() error = %v", err)
-	}
-	if err := workflow.Config.Validate(); err == nil || !strings.Contains(err.Error(), "tracker.kind must be hub_native") {
-		t.Fatalf("Validate() error = %v", err)
-	}
-	retro := workflow.Config.Retro
-	if !retro.Enabled || !retro.AllowPublicCrossProjectDetails || retro.DailyIssueCap != 3 || retro.LookbackDays != 7 || retro.MinOccurrences != 2 || retro.ProductRepository != "digitaldrywood/detent" || !reflect.DeepEqual(retro.Labels, []string{"retro"}) {
-		t.Fatalf("Retro = %#v", retro)
 	}
 }
 
@@ -1821,32 +1769,6 @@ func TestKanbanTransitionPolicyAllowsConfiguredOverrides(t *testing.T) {
 	}
 	if cfg.KanbanTransitionAllowed("In Progress", "Done") {
 		t.Fatal("KanbanTransitionAllowed(In Progress, Done) = true, want configured source allowlist")
-	}
-}
-
-func TestServerBoardSnapshotStaleness(t *testing.T) {
-	t.Parallel()
-
-	if got := Default().Server.BoardSnapshotStaleAfterSeconds; got != DefaultBoardSnapshotStaleAfterSeconds {
-		t.Fatalf("Default Server.BoardSnapshotStaleAfterSeconds = %d, want %d", got, DefaultBoardSnapshotStaleAfterSeconds)
-	}
-	workflow, err := ParseWorkflow([]byte(`---
-tracker:
-  kind: hub_native
-server:
-  board_snapshot_stale_after_seconds: 120
----
-Prompt
-`))
-	if err != nil {
-		t.Fatalf("ParseWorkflow() error = %v", err)
-	}
-	if got := workflow.Config.Server.BoardSnapshotStaleAfterSeconds; got != 120 {
-		t.Fatalf("Server.BoardSnapshotStaleAfterSeconds = %d, want 120", got)
-	}
-	workflow.Config.Server.BoardSnapshotStaleAfterSeconds = -1
-	if err := workflow.Config.Validate(); err == nil || !strings.Contains(err.Error(), "server.board_snapshot_stale_after_seconds must be greater than 0") {
-		t.Fatalf("Validate() error = %v, want board snapshot staleness validation", err)
 	}
 }
 
@@ -2986,7 +2908,6 @@ func TestParseWorkflowNormalizesGitHubAppIDs(t *testing.T) {
 tracker:
   kind: github
   api_key: token
-  project_slug: PVT_project
   github_app_id: 12345
   github_app_installation_id: 67890
 ---
@@ -3277,9 +3198,9 @@ func TestConfigValidateReportsInvalidSettings(t *testing.T) {
 			raw:  "---\ntracker:\n  kind: githublocal\n---\nPrompt\n",
 			want: []string{"tracker.kind must be hub_native"},
 		},
-		{name: "retired configured github project_v2", raw: "---\ntracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project\n  github_status_source: project_v2\n---\nPrompt\n", want: []string{"tracker.kind must be hub_native"}},
-		{name: "retired configured github issue_field", raw: "---\ntracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project\n  github_status_source: issue_field\n---\nPrompt\n", want: []string{"tracker.kind must be hub_native"}},
-		{name: "retired configured github label", raw: "---\ntracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project\n  github_status_source: label\n---\nPrompt\n", want: []string{"tracker.kind must be hub_native"}},
+		{name: "retired configured github project_v2", raw: "---\ntracker:\n  kind: github\n  api_key: fixture-token\n  repository: example-org/example-project\n---\nPrompt\n", want: []string{"tracker.kind must be hub_native"}},
+		{name: "retired configured github issue_field", raw: "---\ntracker:\n  kind: github\n  api_key: fixture-token\n  repository: example-org/example-project\n---\nPrompt\n", want: []string{"tracker.kind must be hub_native"}},
+		{name: "retired configured github label", raw: "---\ntracker:\n  kind: github\n  api_key: fixture-token\n  repository: example-org/example-project\n---\nPrompt\n", want: []string{"tracker.kind must be hub_native"}},
 		{
 			name: "github credentials",
 			raw:  "---\ntracker:\n  kind: github\n---\nPrompt\n",
@@ -3295,7 +3216,6 @@ func TestConfigValidateReportsInvalidSettings(t *testing.T) {
 			raw: `---
 tracker:
   kind: github
-  project_slug: PVT_project
   github_app_id: 12345
 ---
 Prompt
@@ -3347,7 +3267,6 @@ observability:
 budget:
   per_day_max_usd: 0
 server:
-  port: -1
   kanban:
     mode: edit
     issue_state_field_id: -1
@@ -3381,7 +3300,6 @@ Prompt
 				"hooks.timeout_ms must be greater than 0",
 				"observability.refresh_ms must be greater than 0",
 				"budget.per_day_max_usd must be greater than 0",
-				"server.port must be greater than or equal to 0",
 				"server.kanban.mode must be one of read_only, integration",
 				"server.kanban.issue_state_field_id must be greater than 0 when set",
 			},

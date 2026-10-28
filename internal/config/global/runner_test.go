@@ -16,8 +16,12 @@ func TestRunnerMachineConfiguration(t *testing.T) {
 		wantMemory                 int64
 	}{
 		{name: "machine only"},
+		{name: "retired dashboard access", root: "dashboard_access: []\n", wantError: "dashboard_access: retired configuration key"},
+		{name: "retired loopback read", root: "trust_loopback_peer_read: false\n", wantError: "trust_loopback_peer_read: retired configuration key"},
+		{name: "retired local intake", global: "  local_intake_enabled: false\n", wantError: "global.local_intake_enabled: retired configuration key"},
+
 		{name: "memory limit", global: "  memory: {max_agent_rss_bytes: 123456}\n", wantMemory: 123456},
-		{name: "projects", root: "projects: [{id: old, workflow: /missing/WORKFLOW.md, workdir: /missing, weight: invalid, priority: []}]\n", wantKeys: []string{"projects", "projects[0].weight", "projects[0].priority"}},
+		{name: "projects", root: "projects: [{id: old, workflow: /missing/WORKFLOW.md, workdir: /missing, weight: invalid, priority: []}]\n", wantKeys: []string{"projects"}},
 		{name: "malformed projects", root: "projects: false\n", wantKeys: []string{"projects"}},
 		{name: "top-level weight", root: "weight: invalid\n", wantKeys: []string{"weight"}},
 		{name: "top-level priority", root: "priority: []\n", wantKeys: []string{"priority"}},

@@ -23,58 +23,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/lessons"
-	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func TestDoctorWorkflowOptimizationReportsRetroStatus(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-
-	paths := seedDoctorWorkflowOptimizationFixture(t)
-	ctx := context.Background()
-	backend, err := store.Open(ctx, store.Config{Backend: store.BackendSQLite, Path: paths.db})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	completedAt := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
-	if err := backend.RecordRetroRun(ctx, retro.RunRecord{
-		ProjectID: "detent", Trigger: retro.TriggerDaily,
-		StartedAt: completedAt.Add(-time.Minute), CompletedAt: completedAt,
-		Findings: 4, Filed: 2, Updated: 1,
-	}); err != nil {
-		t.Fatalf("RecordRetroRun() error = %v", err)
-	}
-	if err := backend.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-
-	db, err := openDoctorSQLiteReadOnly(ctx, paths.db)
-	if err != nil {
-		t.Fatalf("openDoctorSQLiteReadOnly() error = %v", err)
-	}
-	defer db.Close()
-	status, err := doctorWorkflowRetroStatusForProject(ctx, db, "detent", true)
-	if err != nil {
-		t.Fatalf("doctorWorkflowRetroStatusForProject() error = %v", err)
-	}
-	if !status.Enabled || status.LastRun == nil || !status.LastRun.Equal(completedAt) || status.Findings != 4 || status.FiledIssues != 2 || status.UpdatedIssues != 1 {
-		t.Fatalf("retro status = %#v", status)
-	}
-
-	var output bytes.Buffer
-	if err := writeDoctorWorkflowOptimizationPretty(&output, doctorWorkflowOptimizationReport{Projects: []doctorWorkflowOptimizationProjectReport{{ProjectID: "detent", Retro: status}}}); err != nil {
-		t.Fatalf("writeDoctorWorkflowOptimizationPretty() error = %v", err)
-	}
-	if text := output.String(); !strings.Contains(text, "Retro detent: enabled=true") || !strings.Contains(text, "filed_issues=2") {
-		t.Fatalf("pretty output missing retro status:\n%s", text)
-	}
-}
 
 func TestDoctorWorkflowOptimizationFindsFixtureRules(t *testing.T) {
 	if testing.Short() {
@@ -979,7 +931,6 @@ func TestDoctorWorkflowReviewFlowTelemetryRespectsCurrentWorkflowBoundary(t *tes
 tracker:
   kind: hub_native
   api_key: fixture-token
-  project_slug: fixture-project
   repository: example-org/example-project
 agent:
   auto_promote:
@@ -1435,7 +1386,6 @@ func TestDoctorWorkflowOptimizationFlagsPinBehindObservedDefault(t *testing.T) {
 tracker:
   kind: hub_native
   api_key: fixture-token
-  project_slug: fixture-project
   repository: example-org/example-project
 agent:
   max_session_tokens: 2000000
@@ -1454,7 +1404,6 @@ Prompt
 tracker:
   kind: hub_native
   api_key: fixture-token
-  project_slug: fixture-project
   repository: example-org/example-project
 agent:
   max_session_tokens: 2000000
@@ -1758,7 +1707,6 @@ func TestDoctorWorkflowOptimizationEmptyModelTelemetryRespectsBackendCommandMode
 tracker:
   kind: hub_native
   api_key: fixture-token
-  project_slug: fixture-project
   repository: example-org/example-project
 agents:
   backends:
@@ -1802,7 +1750,6 @@ func TestDoctorWorkflowOptimizationEmptyModelTelemetryHasNoHardcodedModelPatch(t
 tracker:
   kind: hub_native
   api_key: fixture-token
-  project_slug: fixture-project
   repository: example-org/example-project
 codex:
   command: codex app-server
@@ -1938,7 +1885,6 @@ func TestDoctorWorkflowDefaultRouteModelConfigSources(t *testing.T) {
 tracker:
   kind: hub_native
   api_key: fixture-token
-  project_slug: fixture-project
   repository: example-org/example-project
 agents:
   backends:
@@ -1963,7 +1909,6 @@ Prompt
 tracker:
   kind: hub_native
   api_key: fixture-token
-  project_slug: fixture-project
   repository: example-org/example-project
 agents:
   backends:
@@ -1987,7 +1932,6 @@ Prompt
 tracker:
   kind: hub_native
   api_key: fixture-token
-  project_slug: fixture-project
   repository: example-org/example-project
 agents:
   backends:
@@ -2012,7 +1956,6 @@ Prompt
 tracker:
   kind: hub_native
   api_key: fixture-token
-  project_slug: fixture-project
   repository: example-org/example-project
 agents:
   backends:
@@ -2036,7 +1979,6 @@ Prompt
 tracker:
   kind: hub_native
   api_key: fixture-token
-  project_slug: fixture-project
   repository: example-org/example-project
 codex:
   command: codex app-server
@@ -2093,7 +2035,6 @@ func TestDoctorWorkflowOptimizationUsesRuntimeGitHubToken(t *testing.T) {
 	if err := os.WriteFile(workflowPath, []byte(`---
 tracker:
   kind: hub_native
-  github_status_source: label
   repository: example-org/example-project
 ---
 Prompt

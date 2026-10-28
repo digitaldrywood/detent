@@ -15,8 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
+	"github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/instancelock"
@@ -151,37 +150,16 @@ func TestLocalConfigurationStartupAndReload(t *testing.T) {
 	if err := globalconfig.Write(path, cfg); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(path)
+	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(dir, "detent.db")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	document := map[string]any{}
-	if err := yaml.Unmarshal(raw, &document); err != nil {
+	defer backend.Close()
+	initialSelection := config.ModelSelection{Preset: new("sol_first"), NormalModel: new("legacy-model")}
+	if _, err := backend.InitializeLocalConfiguration(t.Context(), cfg, &initialSelection); err != nil {
 		t.Fatal(err)
 	}
-	global := document["global"].(map[string]any)
-	agents, ok := global["agents"].(map[string]any)
-	if !ok {
-		agents = map[string]any{}
-		global["agents"] = agents
-	}
-	agents["model_selection"] = map[string]any{"preset": "sol_first", "normal_model": "legacy-model"}
-	raw, err = yaml.Marshal(document)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, raw, 0600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err = globalconfig.Read(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db, err := store.Open(t.Context(), store.Config{Path: filepath.Join(dir, "detent.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := backend
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	first, err := initializeLocalConfiguration(t.Context(), db, cfg, logger)
 	if err != nil || len(first.Projects) != 2 || first.Projects[0].ID != "two" || first.Projects[0].ModelSelection.Model("normal") != "legacy-model" {
@@ -206,16 +184,7 @@ func TestLocalConfigurationStartupAndReload(t *testing.T) {
 	if _, err := db.LocalModelSelection(t.Context(), "", &projectsettings.ModelSelectionChange{ExpectedRevision: model.Revision, Selection: &selection}); err != nil {
 		t.Fatal(err)
 	}
-	document["projects"] = 42
-	agents["model_selection"] = map[string]any{"preset": "unknown"}
-	raw, err = yaml.Marshal(document)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, raw, 0600); err != nil {
-		t.Fatal(err)
-	}
-	restart, err := readLocalConfigurationFile(path)
+	restart, err := readLocalConfigurationFile(t.Context(), path)
 	if err != nil || len(restart.Projects) != 2 || restart.Projects[0].ID != "one" || restart.Projects[0].ModelSelection.Model("normal") != "db-model" {
 		t.Fatalf("restart=%+v,%v", restart.Projects, err)
 	}
@@ -228,14 +197,14 @@ func TestLocalConfigurationStartupAndReload(t *testing.T) {
 	if err := writeLocalConfigurationFile(path, restart); err != nil {
 		t.Fatal(err)
 	}
-	raw, err = os.ReadFile(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(raw), "projects:") || strings.Contains(string(raw), "model_selection:") {
 		t.Fatalf("machine YAML contains project settings: %s", raw)
 	}
-	saved, err := readLocalConfigurationFile(path)
+	saved, err := readLocalConfigurationFile(t.Context(), path)
 	if err != nil || len(saved.Projects) != 2 || saved.Global.Agents.ModelSelection.Model("normal") != "db-model" {
 		t.Fatalf("saved=%+v,%v", saved.Projects, err)
 	}

@@ -65,7 +65,6 @@ type doctorCheck struct {
 	BackendCapacity            []doctorBackendCapacityDiagnostic          `json:"backend_capacity,omitempty"`
 	ArtifactGateConvergence    []doctorArtifactGateConvergenceDiagnostic  `json:"artifact_gate_convergence,omitempty"`
 	ValidatorFailures          []doctorValidatorFailureDiagnostic         `json:"validator_failures,omitempty"`
-	Routines                   []doctorRoutineDiagnostic                  `json:"routines,omitempty"`
 	BacklogAdmission           *doctorAdmissionDiagnostic                 `json:"backlog_admission,omitempty"`
 	OverloadRetriesLastHour    int                                        `json:"overload_retries_last_hour,omitempty"`
 	DependencyCapabilities     []connector.DependencyCapability           `json:"dependency_capabilities,omitempty"`
@@ -564,12 +563,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 				})}
 			},
 		})
-		jobs = append(jobs, doctorCheckJob{
-			Name: doctorAgentPoolsCheckName,
-			Run: func(jobCtx context.Context) []doctorCheck {
-				return []doctorCheck{checkDoctorAgentPools(jobCtx, resolution, globalConfig, deps)}
-			},
-		})
+
 	}
 	jobs = append(jobs,
 		doctorCheckJob{

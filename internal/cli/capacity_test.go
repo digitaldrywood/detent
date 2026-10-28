@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -104,18 +103,9 @@ func TestDashboardServerAddrNormalizesWildcardHosts(t *testing.T) {
 }
 
 func TestResolveDashboardBootAddressPrecedence(t *testing.T) {
-	configuredHost := "100.109.187.102"
 	configuredPort := 4101
-	root := t.TempDir()
-	workflowPath := filepath.Join(root, "WORKFLOW.md")
-	writeBootHostWorkflow(t, workflowPath, configuredHost)
 	configured := globalconfig.Config{
 		Port: &configuredPort,
-		Projects: []globalconfig.Project{{
-			ID:       "detent",
-			Workflow: workflowPath,
-			Workdir:  root,
-		}},
 	}
 
 	tests := []struct {
@@ -133,8 +123,8 @@ func TestResolveDashboardBootAddressPrecedence(t *testing.T) {
 			name:      "configured address",
 			config:    configured,
 			port:      -1,
-			wantValue: "100.109.187.102:4101",
-			wantText:  "100.109.187.102:4101 (from config)",
+			wantValue: "127.0.0.1:4101",
+			wantText:  "127.0.0.1:4101 (host from default, port from config)",
 		},
 		{
 			name:      "flags override config",
@@ -205,19 +195,11 @@ func TestResolveDashboardBootAddressPrecedence(t *testing.T) {
 
 func TestRunCapacityClearUsesConfiguredAddress(t *testing.T) {
 	configuredPort := 4101
-	root := t.TempDir()
-	workflowPath := filepath.Join(root, "WORKFLOW.md")
-	writeBootHostWorkflow(t, workflowPath, "100.109.187.102")
 	opts := dashboardAddressOptions(globalconfig.Config{
 		Port: &configuredPort,
-		Projects: []globalconfig.Project{{
-			ID:       "detent",
-			Workflow: workflowPath,
-			Workdir:  root,
-		}},
 	})
 	opts.httpDo = func(request *http.Request) (*http.Response, error) {
-		if got := request.URL.Host; got != "100.109.187.102:4101" {
+		if got := request.URL.Host; got != "127.0.0.1:4101" {
 			t.Fatalf("request host = %q", got)
 		}
 		return &http.Response{

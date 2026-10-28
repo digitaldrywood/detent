@@ -17,8 +17,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/digitaldrywood/detent/internal/cli"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/service"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestProtocolProbeWithoutScratch(t *testing.T) {
@@ -223,6 +225,7 @@ func TestRunCLIWritesProblemJSONForUnknownFlag(t *testing.T) {
 }
 
 func TestRunCLIWritesProblemJSONForProjectNotFound(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "error")
 	root := t.TempDir()
 	workflowPath := filepath.Join(root, "WORKFLOW.md")
 	workdirPath := filepath.Join(root, "repo")
@@ -233,28 +236,22 @@ func TestRunCLIWritesProblemJSONForProjectNotFound(t *testing.T) {
 	if err := os.WriteFile(workflowPath, []byte("name: test\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(workflow) error = %v", err)
 	}
-	config := fmt.Sprintf(`apiVersion: detent/v1
-kind: GlobalConfig
-global:
-  max_concurrent_agents: 1
-  scheduling: weighted
-projects:
-  - id: api
-    workflow: %s
-    workdir: %s
-    weight: 1
-    priority: 0
-  - id: web
-    workflow: %s
-    workdir: %s
-    weight: 1
-    priority: 0
-  - id: infra
-    workflow: %s
-    workdir: %s
-    weight: 1
-    priority: 0
-`, workflowPath, workdirPath, workflowPath, workdirPath, workflowPath, workdirPath)
+	config := "apiVersion: detent/v1\nkind: GlobalConfig\nglobal:\n  max_concurrent_agents: 1\n  scheduling: weighted\n"
+	backend, err := store.Open(t.Context(), store.Config{Path: filepath.Join(root, "detent.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := globalconfig.Config{Projects: []globalconfig.Project{
+		{ID: "api", Workflow: workflowPath, Workdir: workdirPath, Weight: 1},
+		{ID: "web", Workflow: workflowPath, Workdir: workdirPath, Weight: 1},
+		{ID: "infra", Workflow: workflowPath, Workdir: workdirPath, Weight: 1},
+	}}
+	if _, err := backend.InitializeLocalConfiguration(t.Context(), cfg, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
 		t.Fatalf("WriteFile(config) error = %v", err)
 	}
@@ -373,7 +370,6 @@ kind: GlobalConfig
 global:
   max_concurrent_agents: 1
   scheduling: weighted
-projects: []
 `), 0o644); err != nil {
 			t.Fatalf("WriteFile() error = %v", err)
 		}

@@ -19,7 +19,7 @@ func runDoctorStartupPreflight(ctx context.Context, cfg doctorConfig, opts optio
 		opts.read = opts.readStartup
 	} else if opts.read == nil {
 		opts.read = func(path string) (globalconfig.Config, error) {
-			return readLocalConfigurationSource(path)
+			return readLocalConfigurationSource(ctx, path)
 		}
 	}
 	opts = doctorOptions(opts)
@@ -70,24 +70,13 @@ func runDoctorStartupPreflight(ctx context.Context, cfg doctorConfig, opts optio
 	for _, configuredProject := range boot.Global.Projects {
 		id := doctorProjectID(configuredProject)
 		workflow, loadErr := loadDoctorProjectWorkflow(ctx, configuredProject, deps)
-		var migrationErr error
 		if loadErr == nil {
 			workflow.Config = projectpkg.MapNativeTracker(workflow.Config, boot.Global.Client.NativeProjects[id] != "")
 			workflow.Config = doctorWorkflowConfigWithRuntimeGitHubToken(workflow.Config, githubToken)
 			workflow.Config = projectpkg.EffectivePolicyConfig(configuredProject, workflow.Config)
-			migrationErr = projectpkg.ValidateNativeTrackerFeatures(workflow.Config)
-			loadErr = errors.Join(migrationErr, workflow.Config.Validate(), workflowconfig.ValidateWorkflowAdmission(workflow))
+			loadErr = errors.Join(workflow.Config.Validate(), workflowconfig.ValidateWorkflowAdmission(workflow))
 		}
 		if loadErr != nil {
-			if migrationErr != nil {
-				report.Add(doctorCheck{
-					Name:   "Project " + id + " startup",
-					Status: doctorFail,
-					Detail: "mapped native project cannot start: " + strings.TrimSpace(loadErr.Error()),
-					Hint:   "Migrate unsupported intake or scheduled routines before approving this native project policy.",
-				})
-				continue
-			}
 			status := doctorWarn
 			detail := "candidate will isolate this project as degraded: "
 			if selected != "" {

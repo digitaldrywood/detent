@@ -418,10 +418,6 @@ func checkDoctorProjectWithProgress(
 	checks = append(checks, checkDoctorTokenAccounting(ctx, id, storePath, deps))
 	setDoctorCurrentCheck("Project " + id + " ci_trigger_shape")
 	checks = append(checks, checkDoctorCITriggerShape(ctx, id, workflow.Config, deps))
-	if workflow.Config.SchedulersEnabled() {
-		setDoctorCurrentCheck("Project " + id + " schedule ownership")
-		checks = append(checks, checkDoctorScheduleOwnership(ctx, id, workflow.Config, deps))
-	}
 	setDoctorCurrentCheck("Project " + id + " capabilities")
 	checks = append(checks, checkDoctorCapabilities(project, workflow))
 	if len(doctorIssueFilingDestinations(workflow.Config)) > 0 {
@@ -462,10 +458,6 @@ func checkDoctorProjectWithProgress(
 	}
 	setDoctorCurrentCheck("Project " + id + " workflow lint")
 	checks = append(checks, checkDoctorWorkflowLint(ctx, id, project, workflow.Config, workflow.Prompt, workflowTokenThreshold, storePath, deps)...)
-	if len(workflow.Config.Routines) > 0 {
-		setDoctorCurrentCheck("Project " + id + " scheduled routines")
-		checks = append(checks, checkDoctorRoutines(ctx, id, workflow.Config.Routines, storePath, deps))
-	}
 	if workflow.Config.BacklogAdmission.Enabled {
 		setDoctorCurrentCheck("Project " + id + " backlog admission")
 		checks = append(checks, checkDoctorAdmission(ctx, id, workflow, storePath, deps))

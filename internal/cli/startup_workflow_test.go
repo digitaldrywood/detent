@@ -42,17 +42,17 @@ func TestStartupIsolatesWorkflowLoadFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			healthy = []byte(strings.Replace(string(healthy), "kind: hub_native", "kind: hub_native\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project", 1))
+			healthy = []byte(strings.Replace(string(healthy), "kind: hub_native", "kind: hub_native\n  api_key: fixture-token\n  repository: example-org/example-project", 1))
 			if err := os.WriteFile(healthyPath, healthy, 0600); err != nil {
 				t.Fatal(err)
 			}
 			invalidPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
-			content := "---\ntracker:\n  kind: hub_native\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project\nbacklog_admission:\n  enabled: true\n  criteria_section: Admission Criteria\n---\n## Renamed Criteria\nAccept bugs.\n"
+			content := "---\ntracker:\n  kind: hub_native\n  api_key: fixture-token\n  repository: example-org/example-project\nbacklog_admission:\n  enabled: true\n  criteria_section: Admission Criteria\n---\n## Renamed Criteria\nAccept bugs.\n"
 			if err := os.WriteFile(invalidPath, []byte(content), 0600); err != nil {
 				t.Fatal(err)
 			}
 			pausedPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
-			if err := os.WriteFile(pausedPath, []byte("---\ntracker:\n  kind: hub_native\n  repository: owner/paused\n  api_key: test-token\n  github_status_source: label\n  status_label_prefix: 'detent:'\n---\nWork.\n"), 0600); err != nil {
+			if err := os.WriteFile(pausedPath, []byte("---\ntracker:\n  kind: hub_native\n  repository: owner/paused\n  api_key: test-token\n---\nWork.\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			projects := []globalconfig.Project{
@@ -63,7 +63,7 @@ func TestStartupIsolatesWorkflowLoadFailure(t *testing.T) {
 				projects[0], projects[1] = projects[1], projects[0]
 			}
 			projects = append(projects, globalconfig.Project{ID: "paused", Workflow: pausedPath, Workdir: filepath.Dir(pausedPath), Weight: 1, Paused: true, PausedUntilIssue: "owner/invalid#1"})
-			const wantError = `backlog admission criteria section "Admission Criteria" was not found in WORKFLOW.md`
+			const wantError = `backlog_admission: retired configuration key`
 			t.Run("attribution", func(t *testing.T) {
 				if err := backfillRuntimeSessionProjects(t.Context(), projects, &fakeSessionProjectBackfiller{}, project.LoadWorkflow); err != nil {
 					t.Fatal(err)
@@ -196,7 +196,7 @@ func TestStartupIsolatesWorkspacePathFailureAndReloads(t *testing.T) {
 			workflowPath := filepath.Join(root, "WORKFLOW.md")
 			writeWorkflow := func(workspaceRoot, sourceRoot string) {
 				t.Helper()
-				content := "---\ntracker:\n  kind: hub_native\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project\ncodex:\n  command: codex app-server\nworkspace:\n  root: " + workspaceRoot + "\n  source_root: " + sourceRoot + "\n---\n\nWork.\n"
+				content := "---\ntracker:\n  kind: hub_native\n  api_key: fixture-token\n  repository: example-org/example-project\ncodex:\n  command: codex app-server\nworkspace:\n  root: " + workspaceRoot + "\n  source_root: " + sourceRoot + "\n---\n\nWork.\n"
 				if err := os.WriteFile(workflowPath, []byte(content), 0o600); err != nil {
 					t.Fatal(err)
 				}
@@ -212,7 +212,7 @@ func TestStartupIsolatesWorkspacePathFailureAndReloads(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			healthy = []byte(strings.Replace(string(healthy), "kind: hub_native", "kind: hub_native\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/example-project", 1))
+			healthy = []byte(strings.Replace(string(healthy), "kind: hub_native", "kind: hub_native\n  api_key: fixture-token\n  repository: example-org/example-project", 1))
 			if err := os.WriteFile(healthyPath, healthy, 0600); err != nil {
 				t.Fatal(err)
 			}

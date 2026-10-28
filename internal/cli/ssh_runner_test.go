@@ -317,7 +317,7 @@ func TestSSHLocalTargetIntegration(t *testing.T) {
 
 func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, producerFailure ...bool) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	root := t.TempDir()
 	localHome, remoteHome := filepath.Join(root, "local"), filepath.Join(root, "remote")

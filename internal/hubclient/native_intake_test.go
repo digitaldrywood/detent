@@ -17,8 +17,8 @@ import (
 
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/hubserver"
-	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/issuefiling"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -70,7 +70,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, ok := any(conn).(intake.IssueStore)
+	store, ok := any(conn).(issuefiling.IssueStore)
 	if !ok {
 		t.Fatal("native worker has no existing machine intake owner")
 	}
@@ -149,7 +149,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 		t.Fatalf("paginated match = %#v, %t, %v", found, matched, err)
 	}
 	origin := issueorigin.Origin{Kind: "worker", Source: "attempt-2", Fingerprint: "pool-live-acceptance"}
-	draft := intake.IssueDraft{Title: "Verify integrated pool", Body: issueorigin.Stamp("Second occurrence", origin), Priority: new(4)}
+	draft := issuefiling.IssueDraft{Title: "Verify integrated pool", Body: issueorigin.Stamp("Second occurrence", origin), Priority: new(4)}
 	reused, err := store.CreateIntakeIssue(ctx, draft)
 	if err != nil || !reused.Reused || reused.ID != created.ID {
 		t.Fatalf("same fingerprint = %#v, %v", reused, err)
@@ -158,7 +158,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil || len(comments.Items) != 1 || !strings.Contains(comments.Items[0].Body, "## New machine occurrence") {
 		t.Fatalf("occurrence = %#v, %v", comments, err)
 	}
-	updated, err := store.UpdateIntakeIssue(ctx, created.ID, intake.IssueDraft{Title: "Verify deployed pool", Body: "Updated criteria", Labels: []string{"deployment"}})
+	updated, err := store.UpdateIntakeIssue(ctx, created.ID, issuefiling.IssueDraft{Title: "Verify deployed pool", Body: "Updated criteria", Labels: []string{"deployment"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +350,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 		{name: "low", rank: new(4), want: new(3)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			draft := intake.IssueDraft{Title: test.name, Body: issueorigin.Stamp("Priority: High.", issueorigin.Origin{Kind: "worker", Fingerprint: "rank-" + test.name}), Priority: test.rank}
+			draft := issuefiling.IssueDraft{Title: test.name, Body: issueorigin.Stamp("Priority: High.", issueorigin.Origin{Kind: "worker", Fingerprint: "rank-" + test.name}), Priority: test.rank}
 			created, err := store.CreateIntakeIssue(ctx, draft)
 			if err != nil || created.Reused {
 				t.Fatalf("rank creation = %#v, %v", created, err)
@@ -384,7 +384,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	foreignStore, ok := any(foreignConnector).(intake.IssueStore)
+	foreignStore, ok := any(foreignConnector).(issuefiling.IssueStore)
 	if !ok {
 		t.Fatal("foreign connector lost the shared intake interface")
 	}
@@ -418,7 +418,7 @@ func TestNativeMachineIntakeAuthorityAndFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	readOnlyStore, ok := any(readOnlyConnector).(intake.IssueStore)
+	readOnlyStore, ok := any(readOnlyConnector).(issuefiling.IssueStore)
 	if !ok {
 		t.Fatal("read-only connector lost the shared intake interface")
 	}

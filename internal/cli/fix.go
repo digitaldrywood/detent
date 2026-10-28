@@ -33,11 +33,10 @@ func newFixCommand(configPath *string, opts options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "fix",
 		Short:   "Repair Detent project configuration",
-		Example: "detent fix workflow-layout --workflow /repo/WORKFLOW.md --dry-run\n  detent fix agent-pools --dry-run",
+		Example: "detent fix workflow-layout --workflow /repo/WORKFLOW.md --dry-run",
 	}
 	cmd.AddCommand(
 		newWorkflowLayoutFixCommand(configPath, opts),
-		newAgentPoolsFixCommand(configPath, opts),
 		newWorkerProcessesFixCommand(configPath, opts),
 	)
 	return cmd

@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/scheduleowner"
 )
 
@@ -14,7 +13,6 @@ func TestParseWorkflowScheduleOwnership(t *testing.T) {
 tracker:
   kind: hub_native
   api_key: token
-  github_status_source: label
   repository: example/issues
 schedule_ownership:
   enabled: true
@@ -59,7 +57,7 @@ func TestScheduleOwnershipValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := Default()
-			cfg.Tracker.Kind = TrackerGitHub
+			cfg.Tracker.Kind = TrackerHubNative
 			cfg.Tracker.APIKey = "token"
 			cfg.Tracker.Repository = "example/issues"
 			cfg.ScheduleOwnership.Enabled = true
@@ -69,87 +67,6 @@ func TestScheduleOwnershipValidation(t *testing.T) {
 			err := cfg.Validate()
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Validate() error = %v, want %q", err, tt.want)
-			}
-		})
-	}
-}
-
-func TestSchedulersEnabled(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		cfg  Config
-		want bool
-	}{
-		{name: "none", cfg: Default()},
-		{name: "webhook only", cfg: func() Config {
-			cfg := Default()
-			cfg.Intake.Sources = []intake.Source{{Kind: intake.KindWebhook}}
-			return cfg
-		}()},
-		{name: "scheduled intake", cfg: func() Config {
-			cfg := Default()
-			cfg.Intake.Sources = []intake.Source{{Kind: intake.KindSchedule}}
-			return cfg
-		}(), want: true},
-		{name: "routine", cfg: func() Config {
-			cfg := Default()
-			cfg.Routines = []Routine{{Name: "audit"}}
-			return cfg
-		}(), want: true},
-		{name: "admission", cfg: func() Config {
-			cfg := Default()
-			cfg.BacklogAdmission.Enabled = true
-			return cfg
-		}(), want: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := tt.cfg.SchedulersEnabled(); got != tt.want {
-				t.Fatalf("SchedulersEnabled() = %t, want %t", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestSchedulersRequireScheduleOwnership(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		mutate func(*Config)
-	}{
-		{
-			name: "routine",
-			mutate: func(cfg *Config) {
-				cfg.Routines = []Routine{{Name: "audit", Schedule: "0 * * * *", Prompt: "Inspect."}}
-			},
-		},
-		{
-			name: "backlog admission",
-			mutate: func(cfg *Config) {
-				cfg.BacklogAdmission.Enabled = true
-			},
-		},
-		{
-			name: "scheduled intake",
-			mutate: func(cfg *Config) {
-				cfg.Intake.Sources = []intake.Source{{Name: "todos", Kind: intake.KindSchedule, Cron: "0 * * * *", Scan: "stale-todos"}}
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := Default()
-			cfg.Tracker.Kind = TrackerHubNative
-			tt.mutate(&cfg)
-
-			err := cfg.Validate()
-			if err == nil || !strings.Contains(err.Error(), "schedule_ownership.enabled must be true") || !strings.Contains(err.Error(), "schedule_ownership block") {
-				t.Fatalf("Validate() error = %v, want actionable schedule_ownership requirement", err)
 			}
 		})
 	}

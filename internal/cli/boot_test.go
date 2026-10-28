@@ -622,46 +622,6 @@ func TestTerminalDashboardError(t *testing.T) {
 	}
 }
 
-func TestResolveBootConfigUsesWorkflowRefForServerHost(t *testing.T) {
-	if testing.Short() {
-		t.Skip("process lifecycle integration")
-	}
-
-	repo := initRuntimeWorkflowRepo(t)
-	writeBootHostWorkflow(t, filepath.Join(repo, "WORKFLOW.md"), "127.0.0.8")
-	commitRuntimeWorkflowRepo(t, repo, "initial workflow")
-	updateRuntimeWorkflowRef(t, repo, "origin/main", "HEAD")
-	writeBootHostWorkflow(t, filepath.Join(repo, "WORKFLOW.md"), "127.0.0.9")
-
-	configPath := filepath.Join(t.TempDir(), "global.yaml")
-	cfg, err := globalconfig.DefaultAt(configPath)
-	if err != nil {
-		t.Fatalf("DefaultAt() error = %v", err)
-	}
-	cfg.Projects = []globalconfig.Project{
-		{
-			ID:          "detent",
-			Workflow:    "WORKFLOW.md",
-			WorkflowRef: "origin/main",
-			Workdir:     repo,
-			Weight:      1,
-			Priority:    0,
-		},
-	}
-	if err := globalconfig.Write(configPath, cfg); err != nil {
-		t.Fatalf("Write() error = %v", err)
-	}
-
-	got, err := resolveBootConfig(context.Background(), configPath, "", runtimeFlags{}, defaultOptions())
-	if err != nil {
-		t.Fatalf("resolveBootConfig() error = %v", err)
-	}
-
-	if got.Host != "127.0.0.8" {
-		t.Fatalf("Host = %q, want ref-backed host", got.Host)
-	}
-}
-
 func TestRunTerminalDashboardProgramKillsOnContextCancel(t *testing.T) {
 	t.Parallel()
 
@@ -2261,22 +2221,6 @@ Test workflow prompt.
 	}
 }
 
-func writeBootHostWorkflow(t *testing.T, path string, host string) {
-	t.Helper()
-
-	content := `---
-tracker:
-  kind: hub_native
-server:
-  host: ` + host + `
----
-Boot workflow.
-`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-}
-
 type terminalDashboardProgramProbe struct {
 	started chan struct{}
 	killed  chan struct{}
@@ -2354,7 +2298,7 @@ func (m terminalDashboardQuitModel) Update(tea.Msg) (tea.Model, tea.Cmd) {
 func writeBootLocalProjects(t *testing.T, path string, projects []globalconfig.Project) {
 	t.Helper()
 
-	cfg, err := readLocalConfigurationFile(path)
+	cfg, err := readLocalConfigurationFile(t.Context(), path)
 	if err != nil {
 		t.Fatalf("readLocalConfigurationFile() error = %v", err)
 	}
@@ -2367,20 +2311,14 @@ func writeBootLocalProjects(t *testing.T, path string, projects []globalconfig.P
 func writeBootGlobalConfig(t *testing.T, path string, projects []globalconfig.Project) {
 	t.Helper()
 
-	cfg := globalconfig.Config{
-		Path:       path,
-		APIVersion: globalconfig.APIVersion,
-		Kind:       globalconfig.Kind,
-		Global: globalconfig.Settings{
-			MaxConcurrentAgents: 8,
-			Scheduling:          globalconfig.SchedulingWeighted,
-			FairShare:           map[string]any{"half_life": "1h"},
-			Startup:             map[string]any{"jitter_seconds": 0, "max_spawn_per_second": 1},
-		},
-		Projects: projects,
+	cfg, err := globalconfig.DefaultAt(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := globalconfig.Write(path, cfg); err != nil {
-		t.Fatalf("Write() error = %v", err)
+	cfg.Global.MaxConcurrentAgents = 8
+	cfg.Projects = projects
+	if err := writeLocalConfigurationFile(path, cfg); err != nil {
+		t.Fatalf("writeLocalConfigurationFile() error = %v", err)
 	}
 }
 

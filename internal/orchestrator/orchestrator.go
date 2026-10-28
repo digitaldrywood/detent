@@ -236,7 +236,6 @@ type Dependencies struct {
 	ReadCPUPressure      func(context.Context) (hostpressure.Sample, error)
 	Now                  func() time.Time
 	Logger               *slog.Logger
-	Retrospector         Retrospector
 	WorkerProcesses      WorkerProcessStore
 	ReapWorkerProcess    WorkerProcessReapFunc
 	WorkerReapGrace      time.Duration
@@ -249,10 +248,6 @@ type WorkerProcessStore interface {
 }
 
 type WorkerProcessReapFunc func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error)
-
-type Retrospector interface {
-	Trigger(string)
-}
 
 type runDurationLimitFactory func(context.Context, time.Duration, error) (context.Context, context.CancelFunc)
 
@@ -340,7 +335,6 @@ type Orchestrator struct {
 	githubRESTBudgetProber  runpkg.GitHubRESTBudgetProber
 	githubRESTBudgetProbes  map[string]time.Time
 	now                     func() time.Time
-	retrospector            Retrospector
 	workerProcesses         WorkerProcessStore
 	reapWorkerProcess       WorkerProcessReapFunc
 	workerReapGrace         time.Duration
@@ -717,7 +711,6 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		stalenessWarningStore:   deps.StalenessWarnings,
 		activity:                deps.Activity,
 		release:                 deps.Release,
-		retrospector:            deps.Retrospector,
 		workerProcesses:         workerProcesses,
 		reapWorkerProcess:       reapWorkerProcess,
 		workerReapGrace:         workerReapGrace,
