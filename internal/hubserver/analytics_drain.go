@@ -135,7 +135,7 @@ func (d *database) drainAnalyticsItem(ctx context.Context, id string, now time.T
 			return saveErr
 		}
 		for _, w := range plan.writes {
-			if _, writeErr := tx.ExecContext(ctx, w.query, w.args...); writeErr != nil {
+			if _, writeErr := d.analytics.exec(ctx, tx, w.query, w.args...); writeErr != nil {
 				err = writeErr
 				break
 			}

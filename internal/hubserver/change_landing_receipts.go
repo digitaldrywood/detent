@@ -101,7 +101,7 @@ func persistAttemptLanding(ctx context.Context, tx *sql.Tx, attempt string, rece
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET data_json=? WHERE id=?", string(encoded), attempt); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET data_json=?,analytics_revision=analytics_revision+1 WHERE id=?", string(encoded), attempt); err != nil {
 		return err
 	}
 	if data.Runtime == nil {

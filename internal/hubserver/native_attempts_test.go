@@ -89,23 +89,24 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 
 	lifecycleTest := t
 	for _, test := range []struct {
-		name    string
-		event   tracker.NativeRunEvent
-		status  int
-		restart bool
+		name     string
+		event    tracker.NativeRunEvent
+		status   int
+		restart  bool
+		revision int64
 	}{
-		{"evidence without upload", forged, http.StatusUnprocessableEntity, false},
-		{"invalid runtime observation", invalid, http.StatusUnprocessableEntity, false},
-		{"invalid checkpoint observation", invalidCheckpoint, http.StatusUnprocessableEntity, false},
-		{"invalid source validation", invalidValidation, http.StatusUnprocessableEntity, false},
-		{"checkpoint before start", checkpoint, http.StatusConflict, false},
-		{"start", start, http.StatusOK, false},
-		{"same command", start, http.StatusOK, false},
-		{"completion skips checkpoint", finish, http.StatusConflict, false},
-		{"checkpoint", checkpoint, http.StatusOK, false},
-		{"complete after restart", finish, http.StatusOK, true},
-		{"duplicate completion", finish, http.StatusOK, false},
-		{"completed attempt cannot reconnect", reconnect, http.StatusConflict, false},
+		{"evidence without upload", forged, http.StatusUnprocessableEntity, false, 0},
+		{"invalid runtime observation", invalid, http.StatusUnprocessableEntity, false, 0},
+		{"invalid checkpoint observation", invalidCheckpoint, http.StatusUnprocessableEntity, false, 0},
+		{"invalid source validation", invalidValidation, http.StatusUnprocessableEntity, false, 0},
+		{"checkpoint before start", checkpoint, http.StatusConflict, false, 0},
+		{"start", start, http.StatusOK, false, 0},
+		{"same command", start, http.StatusOK, false, 0},
+		{"completion skips checkpoint", finish, http.StatusConflict, false, 0},
+		{"checkpoint", checkpoint, http.StatusOK, false, 1},
+		{"complete after restart", finish, http.StatusOK, true, 2},
+		{"duplicate completion", finish, http.StatusOK, false, 2},
+		{"completed attempt cannot reconnect", reconnect, http.StatusConflict, false, 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if test.restart {
@@ -131,6 +132,13 @@ func TestNativeOrderedAttemptLifecycle(t *testing.T) {
 			}
 			response := performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, test.event)
 			requireNativeStatus(t, response, test.status)
+			var revision int64
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce((SELECT analytics_revision FROM native_attempts WHERE id=?),0)", start.Data.AttemptID).Scan(&revision); err != nil {
+				t.Fatal(err)
+			}
+			if revision != test.revision {
+				t.Fatalf("analytics revision=%d, want %d", revision, test.revision)
+			}
 			if strings.Contains(response.Body.String(), "sentinel-private") {
 				t.Fatal("public rejection disclosed private payload")
 			}
