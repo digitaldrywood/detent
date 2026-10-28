@@ -215,14 +215,6 @@ func readRunnerSetupConfig(path string) (globalconfig.Config, error) {
 	return globalconfig.Read(path, globalconfig.WithMissingProjectPaths())
 }
 
-func resolveRunnerSetupPolicy(ctx context.Context, path, name string) (globalconfig.Config, workflowconfig.Workflow, policy.Descriptor, error) {
-	cfg, err := readRunnerRuntimeConfig(ctx, path)
-	if err != nil {
-		return cfg, workflowconfig.Workflow{}, policy.Descriptor{}, err
-	}
-	return resolveRunnerProjectPolicy(ctx, cfg, name)
-}
-
 func resolveRunnerProjectPolicy(ctx context.Context, cfg globalconfig.Config, name string) (globalconfig.Config, workflowconfig.Workflow, policy.Descriptor, error) {
 	for _, selected := range cfg.Projects {
 		if selected.ID == name {
