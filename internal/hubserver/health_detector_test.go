@@ -867,6 +867,11 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if test.nonsignal && !test.incomplete {
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE collaboration_events SET health_projected=1,event_landed=0,analytics_projection_version=1 WHERE id LIKE 'health-event-%'`); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO health_event_times(event_id,organization_id,recorded_at_ns,type,landed) SELECT id,organization_id,?,type,0 FROM collaboration_events WHERE id LIKE 'health-event-%'`, now.UnixNano()); err != nil {
 					t.Fatal(err)
 				}
