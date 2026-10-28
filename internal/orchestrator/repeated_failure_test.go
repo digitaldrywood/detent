@@ -129,11 +129,20 @@ func TestRunDefersRESTBudgetFailureAsCapacityWithoutBreaker(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 	stop := runOrchestrator(t, orch)
-	state := waitForState(t, orch, func(state orchestrator.State) bool {
-		_, ok := state.Retry[issue.ID]
-		return ok
+	defer stop()
+
+	var state orchestrator.State
+	testenv.WaitUntil(t, t.Context(), func() error {
+		var err error
+		state, err = orch.State(t.Context())
+		if err != nil {
+			return err
+		}
+		if _, ok := state.Retry[issue.ID]; !ok {
+			return errors.New("awaiting REST capacity deferral")
+		}
+		return nil
 	})
-	stop()
 
 	retry := state.Retry[issue.ID]
 	if want := resetAt.Add(5 * time.Second); !retry.DueAt.Equal(want) {
