@@ -25,6 +25,9 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID,
 				sourceActor: &tracker.Actor{Kind: test.kind, PrincipalID: test.principal}}
 			now := f.service.config.now()
