@@ -1317,3 +1317,58 @@ func TestNativeBoardCandidateQueryBounded(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeBoardDirtyWriterBound(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		f.create(t, fmt.Sprintf("Bounded board %d", i))
+	}
+	d := f.service.database
+	if _, err := d.db.ExecContext(t.Context(), "UPDATE issues SET title=title||' refreshed' WHERE organization_id=? AND project_id=?", f.project.OrganizationID, f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	var reads int
+	ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+		if strings.Contains(query, "SELECT record_json FROM native_board_items") {
+			reads++
+			if d.db.Stats().InUse != 0 {
+				t.Error("board projection reads while holding the writer")
+			}
+		}
+	}})
+	var cursor string
+	for remaining := 3; remaining > 0; remaining-- {
+		var before, after int
+		if err := d.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_board_deltas").Scan(&before); err != nil {
+			t.Fatal(err)
+		}
+		timingCtx, timing := withWriterTiming(ctx)
+		more, id, err := d.drainNativeBoardDirtyAfter(timingCtx, f.service.config.now(), cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !more || id == "" || timing.txs.Load() != 1 {
+			t.Fatalf("drain more=%t id=%q transactions=%d", more, id, timing.txs.Load())
+		}
+		var dirty int
+		if err := d.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_board_dirty").Scan(&dirty); err != nil {
+			t.Fatal(err)
+		}
+		if dirty != remaining-1 {
+			t.Fatalf("dirty=%d want=%d: each transaction must refresh one card", dirty, remaining-1)
+		}
+		if err := d.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_board_deltas").Scan(&after); err != nil {
+			t.Fatal(err)
+		}
+		if after-before != 1 {
+			t.Fatalf("one board transaction published %d deltas; want one", after-before)
+		}
+		cursor = id
+	}
+	if reads != 3 {
+		t.Fatalf("projection reads=%d want=3", reads)
+	}
+}

@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"time"
@@ -20,8 +19,8 @@ type analyticsCapacitySample struct {
 	Valid     bool
 }
 
-func refreshAnalyticsClaims(ctx context.Context, tx *sql.Tx, scope nativeScope, id string, through int64) error {
-	rows, err := tx.QueryContext(ctx, `SELECT e.id,e.data_json,e.recorded_at,coalesce(p.data_json,'null'),coalesce(p.type,''),coalesce(p.recorded_at,'') FROM collaboration_events e LEFT JOIN collaboration_events p ON p.organization_id=e.organization_id AND p.project_id=e.project_id AND p.work_item_id=e.work_item_id AND p.sequence=e.sequence-1 WHERE e.organization_id=? AND e.project_id=? AND e.work_item_id=? AND e.sequence>? AND e.type='scheduler.decision' AND e.scheduler_source='native_claim' AND e.scheduler_outcome='claimed'`, scope.organization, scope.project, id, through)
+func refreshAnalyticsClaims(ctx context.Context, tx projectionQuery, scope nativeScope, id string, through int64, before ...int64) error {
+	rows, err := tx.QueryContext(ctx, `SELECT e.id,e.data_json,e.recorded_at,coalesce(p.data_json,'null'),coalesce(p.type,''),coalesce(p.recorded_at,'') FROM collaboration_events e LEFT JOIN collaboration_events p ON p.organization_id=e.organization_id AND p.project_id=e.project_id AND p.work_item_id=e.work_item_id AND p.sequence=e.sequence-1 WHERE e.organization_id=? AND e.project_id=? AND e.work_item_id=? AND e.sequence>? AND e.sequence<=? AND e.type='scheduler.decision' AND e.scheduler_source='native_claim' AND e.scheduler_outcome='claimed'`, scope.organization, scope.project, id, through, projectionUpper(before))
 	if err != nil {
 		return err
 	}

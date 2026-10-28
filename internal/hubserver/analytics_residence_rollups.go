@@ -56,7 +56,7 @@ func analyticsResidenceStates(ctx context.Context, q nativeQueryer, scope native
 	return states, rows.Err()
 }
 
-func writeAnalyticsResidenceSample(ctx context.Context, tx *sql.Tx, scope nativeScope, metric, dimension string, sample analyticsResidenceSample) error {
+func writeAnalyticsResidenceSample(ctx context.Context, tx nativeExecer, scope nativeScope, metric, dimension string, sample analyticsResidenceSample) error {
 	sample.AtNS = sample.At.UnixNano()
 	raw, err := json.Marshal(sample)
 	if err != nil {
@@ -66,7 +66,7 @@ func writeAnalyticsResidenceSample(ctx context.Context, tx *sql.Tx, scope native
 	return err
 }
 
-func refreshAnalyticsResidence(ctx context.Context, tx *sql.Tx, scope nativeScope, id string, after int64) error {
+func refreshAnalyticsResidence(ctx context.Context, tx projectionQuery, scope nativeScope, id string, after int64, before ...int64) error {
 	states, err := analyticsResidenceStates(ctx, tx, scope)
 	if err != nil {
 		return err
@@ -82,7 +82,28 @@ func refreshAnalyticsResidence(ctx context.Context, tx *sql.Tx, scope nativeScop
 	}
 	sample := analyticsResidenceSample{ID: id, Created: start, At: start, Initial: initial, State: initial, Entered: start, Partial: initial == "", Lanes: map[string]float64{}, LanesNS: map[string]int64{}, Causes: map[string]operatortool.AnalyticsReworkCause{}}
 	var previous string
-	err = tx.QueryRowContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour' AND dimension=? ORDER BY hour DESC LIMIT 1`, scope.organization, scope.project, id).Scan(&previous)
+	if len(before) == 0 {
+		err = tx.QueryRowContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour' AND dimension=? ORDER BY hour DESC LIMIT 1`, scope.organization, scope.project, id).Scan(&previous)
+	} else {
+		var prior int64
+		err = tx.QueryRowContext(ctx, `SELECT coalesce(max(sequence),0) FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence<=? AND (type='workflow.transitioned' OR (type='scheduler.decision' AND scheduler_source='native_claim' AND scheduler_outcome='claimed'))`, scope.organization, scope.project, id, after).Scan(&prior)
+		if err != nil {
+			return err
+		}
+		err = tx.QueryRowContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_edge' AND dimension=?`, scope.organization, scope.project, id+":"+strconv.FormatInt(prior, 10)).Scan(&previous)
+		if errors.Is(err, sql.ErrNoRows) {
+			err = tx.QueryRowContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour' AND dimension=? ORDER BY hour DESC LIMIT 1`, scope.organization, scope.project, id).Scan(&previous)
+			if err == nil {
+				var retained analyticsResidenceSample
+				if err := json.Unmarshal([]byte(previous), &retained); err != nil {
+					return err
+				}
+				if retained.Sequence > after {
+					err = sql.ErrNoRows
+				}
+			}
+		}
+	}
 	fresh := errors.Is(err, sql.ErrNoRows)
 	if err != nil && !fresh {
 		return err
@@ -92,6 +113,9 @@ func refreshAnalyticsResidence(ctx context.Context, tx *sql.Tx, scope nativeScop
 			return err
 		}
 		fresh = sample.Initial != initial
+		if fresh && len(before) > 0 {
+			return errAnalyticsResidenceReset
+		}
 	}
 	if fresh {
 		after = 0
@@ -114,7 +138,7 @@ func refreshAnalyticsResidence(ctx context.Context, tx *sql.Tx, scope nativeScop
 			return err
 		}
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT sequence,type,recorded_at,data_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? AND (type='workflow.transitioned' OR (type='scheduler.decision' AND scheduler_source='native_claim' AND scheduler_outcome='claimed')) ORDER BY sequence`, scope.organization, scope.project, id, max(sample.Sequence, after))
+	rows, err := tx.QueryContext(ctx, `SELECT sequence,type,recorded_at,data_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? AND sequence<=? AND (type='workflow.transitioned' OR (type='scheduler.decision' AND scheduler_source='native_claim' AND scheduler_outcome='claimed')) ORDER BY sequence`, scope.organization, scope.project, id, max(sample.Sequence, after), projectionUpper(before))
 	if err != nil {
 		return err
 	}

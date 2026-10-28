@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -134,7 +133,7 @@ func analyticsProjection(raw string) ([]any, error) {
 	return values, nil
 }
 
-func writeAnalyticsSample(ctx context.Context, tx *sql.Tx, organization, project string, hour int64, metric, dimension string, value float64, raw string) error {
+func writeAnalyticsSample(ctx context.Context, tx nativeExecer, organization, project string, hour int64, metric, dimension string, value float64, raw string) error {
 	values, err := analyticsProjection(raw)
 	if err != nil {
 		return err

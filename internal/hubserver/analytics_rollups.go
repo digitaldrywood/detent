@@ -18,7 +18,7 @@ const (
 	analyticsSourceIssues  = `WITH analytics_source_issues AS (SELECT organization_id,project_id,unixepoch(created_at)/3600*3600 AS hour,'issue' AS metric,native_id AS dimension,1 AS value,'{}' AS data_json,id AS issue_id,native_id,title,created_at,updated_at,workflow_state_id FROM issues WHERE organization_id IS NOT NULL AND project_id IS NOT NULL AND native_id IS NOT NULL) `
 	analyticsSourceEvents  = `WITH analytics_source_events AS (SELECT e.organization_id,e.project_id,unixepoch(e.recorded_at)/3600*3600 AS hour,'event' AS metric,e.id AS dimension,1 AS value,'{}' AS data_json,e.work_item_id,e.sequence,e.type,e.recorded_at,e.scheduler_outcome,e.scheduler_source,e.scheduler_reason,e.analytics_to_state,e.analytics_from_state,e.analytics_attempt_id,e.analytics_skip_key AS skip_key,e.analytics_recorded_ns AS sample_ns,julianday(e.recorded_at) AS recorded_day FROM collaboration_events e WHERE e.type IN ('workflow.transitioned','scheduler.decision','issue.created') AND e.analytics_projection_version=1) `
 	analyticsSourceLeases  = `WITH analytics_source_leases AS (SELECT i.organization_id,i.project_id,unixepoch(l.acquired_at)/3600*3600 AS hour,'lease' AS metric,l.lease_id AS dimension,1 AS value,'{}' AS data_json,l.lease_id,l.issue_id,l.acquired_at,l.released_at,l.expires_at FROM leases l JOIN issues i ON i.id=l.issue_id WHERE i.native_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM analytics_slot_retention p WHERE p.organization_id=i.organization_id AND p.project_id=i.project_id AND unixepoch(coalesce(l.released_at,l.expires_at))<=p.through_hour)) `
-	analyticsEventsRefresh = analyticsSourceEvents + `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,work_item_id,sequence,type,recorded_at,scheduler_outcome,scheduler_source,scheduler_reason,analytics_to_state,analytics_from_state,analytics_attempt_id,skip_key,sample_ns,recorded_day,projection_version) SELECT organization_id,project_id,hour,metric,dimension,value,data_json,work_item_id,sequence,type,recorded_at,scheduler_outcome,scheduler_source,scheduler_reason,analytics_to_state,analytics_from_state,analytics_attempt_id,skip_key,sample_ns,recorded_day,1 FROM analytics_source_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? ON CONFLICT(organization_id,project_id,metric,hour,dimension) DO NOTHING`
+	analyticsEventsRefresh = analyticsSourceEvents + `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,work_item_id,sequence,type,recorded_at,scheduler_outcome,scheduler_source,scheduler_reason,analytics_to_state,analytics_from_state,analytics_attempt_id,skip_key,sample_ns,recorded_day,projection_version) SELECT organization_id,project_id,hour,metric,dimension,value,data_json,work_item_id,sequence,type,recorded_at,scheduler_outcome,scheduler_source,scheduler_reason,analytics_to_state,analytics_from_state,analytics_attempt_id,skip_key,sample_ns,recorded_day,1 FROM analytics_source_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? AND sequence<=? ON CONFLICT(organization_id,project_id,metric,hour,dimension) DO NOTHING`
 	analyticsIssuesRefresh = analyticsSourceIssues + `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,issue_id,native_id,title,created_at,updated_at,workflow_state_id,projection_version) SELECT organization_id,project_id,hour,metric,dimension,value,data_json,issue_id,native_id,title,created_at,updated_at,workflow_state_id,1 FROM analytics_source_issues WHERE organization_id=? AND project_id=? AND dimension=? ON CONFLICT DO UPDATE SET hour=excluded.hour,value=excluded.value,data_json=excluded.data_json,issue_id=excluded.issue_id,native_id=excluded.native_id,title=excluded.title,created_at=excluded.created_at,updated_at=excluded.updated_at,workflow_state_id=excluded.workflow_state_id,projection_version=1`
 	analyticsLeaseRefresh  = analyticsSourceLeases + `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,lease_id,issue_id,acquired_at,released_at,expires_at,projection_version) SELECT organization_id,project_id,hour,metric,dimension,value,data_json,lease_id,issue_id,acquired_at,released_at,expires_at,1 FROM analytics_source_leases WHERE organization_id=? AND project_id=? AND issue_id=(SELECT id FROM issues WHERE organization_id=? AND project_id=? AND native_id=?) ON CONFLICT DO UPDATE SET hour=excluded.hour,data_json=excluded.data_json,lease_id=excluded.lease_id,issue_id=excluded.issue_id,acquired_at=excluded.acquired_at,released_at=excluded.released_at,expires_at=excluded.expires_at,projection_version=1 RETURNING dimension,acquired_at,released_at,expires_at`
 )
@@ -129,7 +129,7 @@ func analyticsProjectReader(ctx context.Context, q nativeQueryer, scope nativeSc
 		return q, nil
 	}
 	var complete bool
-	if err := q.QueryRowContext(ctx, `SELECT NOT EXISTS(SELECT 1 FROM analytics_rollup_backfill WHERE organization_id=? AND project_id=?) AND NOT EXISTS(SELECT 1 FROM analytics_rollup_positions WHERE organization_id=? AND project_id=? AND failed=1) AND NOT EXISTS(SELECT 1 FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND projection_version IS NULL) AND NOT EXISTS(SELECT 1 FROM collaboration_events WHERE organization_id=? AND project_id=? AND analytics_projection_version IS NULL)`, scope.organization, scope.project, scope.organization, scope.project, scope.organization, scope.project, scope.organization, scope.project).Scan(&complete); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT NOT EXISTS(SELECT 1 FROM analytics_rollup_backfill WHERE organization_id=? AND project_id=?) AND NOT EXISTS(SELECT 1 FROM analytics_rollup_positions WHERE organization_id=? AND project_id=? AND (failed=1 OR refresh_phase>=0)) AND NOT EXISTS(SELECT 1 FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND projection_version IS NULL) AND NOT EXISTS(SELECT 1 FROM collaboration_events WHERE organization_id=? AND project_id=? AND analytics_projection_version IS NULL)`, scope.organization, scope.project, scope.organization, scope.project, scope.organization, scope.project, scope.organization, scope.project).Scan(&complete); err != nil {
 		return nil, fmt.Errorf("read analytics rollup status: %w", err)
 	}
 	if complete {
@@ -206,44 +206,24 @@ func (s *Service) maintainAnalyticsRollups(ctx context.Context, now time.Time, r
 }
 
 func (d *database) backfillAnalyticsRollups(ctx context.Context, now time.Time) (bool, error) {
-	var pending bool
-	if err := d.reader.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM analytics_rollup_backfill)").Scan(&pending); err != nil {
-		return false, fmt.Errorf("read analytics backfill: %w", err)
-	}
-	if !pending {
+	var organization, project string
+	err := d.reader.QueryRowContext(ctx, "SELECT organization_id,project_id FROM analytics_rollup_backfill ORDER BY organization_id,project_id LIMIT 1").Scan(&organization, &project)
+	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
-	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
-		return false, fmt.Errorf("begin analytics backfill: %w", err)
-	}
-	defer tx.Rollback()
-	var organization, project string
-	if err := tx.QueryRowContext(ctx, "SELECT organization_id,project_id FROM analytics_rollup_backfill ORDER BY organization_id,project_id LIMIT 1").Scan(&organization, &project); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
-		}
 		return false, fmt.Errorf("select analytics backfill project: %w", err)
 	}
-	ids, err := analyticsBackfillItems(ctx, tx, organization, project)
-	if err != nil {
+	var id string
+	err = d.reader.QueryRowContext(ctx, `SELECT i.native_id FROM issues i WHERE i.organization_id=? AND i.project_id=? AND i.native_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM analytics_rollup_positions p WHERE p.organization_id=i.organization_id AND p.project_id=i.project_id AND p.work_item_id=i.native_id AND (p.refresh_phase<0 OR p.failed=1)) ORDER BY i.native_id LIMIT 1`, organization, project).Scan(&id)
+	if err == nil {
+		return true, d.drainAnalyticsItem(ctx, id, now)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
-	var failures error
-	for _, id := range ids {
-		if err := refreshAnalyticsIssueIsolated(ctx, tx, d.analytics, id, now); err != nil {
-			failures = errors.Join(failures, fmt.Errorf("backfill analytics item %s: %w", id, err))
-		}
-	}
-	if len(ids) == 0 {
-		if _, err := tx.ExecContext(ctx, "DELETE FROM analytics_rollup_backfill WHERE organization_id=? AND project_id=?", organization, project); err != nil {
-			return false, fmt.Errorf("complete analytics backfill: %w", err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return false, fmt.Errorf("commit analytics backfill: %w", err)
-	}
-	return true, failures
+	_, err = d.db.ExecContext(ctx, "DELETE FROM analytics_rollup_backfill WHERE organization_id=? AND project_id=?", organization, project)
+	return true, err
 }
 
 func analyticsBackfillItems(ctx context.Context, tx *sql.Tx, organization, project string) ([]string, error) {
@@ -275,27 +255,18 @@ ORDER BY i.native_id LIMIT ?`, organization, project, 1)
 }
 
 func (d *database) drainAnalyticsDirty(ctx context.Context, now time.Time) (bool, error) {
-	var pending bool
-	if err := d.reader.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM analytics_rollup_dirty)").Scan(&pending); err != nil {
-		return false, fmt.Errorf("read analytics rollup work: %w", err)
-	}
-	if !pending {
+	var id string
+	err := d.reader.QueryRowContext(ctx, "SELECT work_item_id FROM analytics_rollup_dirty ORDER BY work_item_id LIMIT 1").Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
-	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
-		return false, fmt.Errorf("begin analytics drain: %w", err)
+		return false, fmt.Errorf("read analytics rollup work: %w", err)
 	}
-	defer tx.Rollback()
-	failures := d.projectAnalyticsBatch(ctx, tx, now, 1)
+	failure := d.drainAnalyticsItem(ctx, id, now)
 	var more bool
-	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM analytics_rollup_dirty)").Scan(&more); err != nil {
-		return false, errors.Join(failures, fmt.Errorf("read analytics rollup work: %w", err))
-	}
-	if err := tx.Commit(); err != nil {
-		return false, errors.Join(failures, fmt.Errorf("commit analytics drain: %w", err))
-	}
-	return more, failures
+	err = d.reader.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM analytics_rollup_dirty)").Scan(&more)
+	return more, errors.Join(failure, err)
 }
 
 func (d *database) retryFailedAnalyticsRollups(ctx context.Context, now time.Time) error {
@@ -311,15 +282,8 @@ func (d *database) retryFailedAnalyticsRollups(ctx context.Context, now time.Tim
 	}
 	var failures error
 	for _, id := range ids {
-		tx, err := d.db.BeginTx(ctx, nil)
-		if err != nil {
-			return errors.Join(failures, fmt.Errorf("begin analytics retry: %w", err))
-		}
-		if err := refreshAnalyticsIssueIsolated(ctx, tx, d.analytics, id, now); err != nil {
+		if err := d.drainAnalyticsItem(ctx, id, now); err != nil {
 			failures = errors.Join(failures, fmt.Errorf("retry analytics item %s: %w", id, err))
-		}
-		if err := tx.Commit(); err != nil {
-			return errors.Join(failures, fmt.Errorf("commit analytics retry: %w", err))
 		}
 	}
 	return failures
@@ -362,7 +326,7 @@ func refreshAnalyticsIssue(ctx context.Context, tx *sql.Tx, statements analytics
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if _, err := statements.exec(ctx, tx, analyticsEventsRefresh, organization, project, id, through); err != nil {
+	if _, err := statements.exec(ctx, tx, analyticsEventsRefresh, organization, project, id, through, projectionUpper(nil)); err != nil {
 		return err
 	}
 	if _, err := statements.exec(ctx, tx, analyticsIssuesRefresh, organization, project, id); err != nil {
