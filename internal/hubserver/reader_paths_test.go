@@ -327,6 +327,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"nativeIssueJSON":              "The mutation response reads back the browser path of the issue this request just wrote.",
 	}
 	transactionReasons := map[string]string{
+		"nativeProgressOwner.Publish":       "Atomically publishes one fenced progress decision, its bounded evidence and comment, and one deduplicated machine intake occurrence.",
 		"requestTeamUnread":                 "Writes only the caller's unread refresh intent and supplied project scope; history projection runs in maintenance and summary reads use the reader.",
 		"advanceTeamUnread":                 "Publishes one reader-planned, bounded unread summary page and its cursor under the existing board maintenance owner.",
 		"teamThreadOperation":               "Updates one thread's status after rechecking the caller's mutation authority.",

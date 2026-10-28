@@ -295,6 +295,7 @@ type Orchestrator struct {
 	agentResume             store.AgentResumeStore
 	orphanSessions          store.OrphanSessionStore
 	supervisor              *runpkg.Supervisor
+	progressRunner          retryProgressRunner
 	validator               Validator
 	securityAuditor         SecurityAuditor
 	reaper                  WorkspaceReaper
@@ -758,6 +759,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	}
 	orchestrator.setLocalIntakeDisabled(cfg.LocalIntakeDisabled)
 	orchestrator.heartbeats = newHeartbeatManager(cfg, deps.Connector, deps.WorkAttempts, now, logger, deps.Scheduling)
+	orchestrator.progressRunner, _ = runner.(retryProgressRunner)
 	return orchestrator, nil
 }
 
