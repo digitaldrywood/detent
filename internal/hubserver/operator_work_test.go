@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -395,6 +396,34 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if _, failed := call("add_comment", "comment", map[string]any{"identifier": identifier, "body": "Changed retry"}); !failed {
 		t.Fatal("changed comment retry was accepted")
 	}
+	t.Run("visual reference refusals", func(t *testing.T) {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project.ID); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+			defer cancel()
+			if _, err := f.service.database.db.ExecContext(ctx, "UPDATE projects SET require_visual_attachments=0 WHERE id=?", f.project.ID); err != nil {
+				t.Error(err)
+			}
+		})
+		const visual = "https://figma.com/design/example?token=private"
+		for _, test := range []struct {
+			tool   string
+			fields map[string]any
+		}{
+			{operatortool.FileIssue, map[string]any{"title": "Visual", "description": visual + issueContractTestSections, "state": "Todo"}},
+			{operatortool.EditItem, map[string]any{"identifier": id, "body": visual + issueContractTestSections, "expected_revision": createdFields["revision"]}},
+			{operatortool.AddComment, map[string]any{"identifier": id, "body": visual}},
+			{operatortool.EditComment, map[string]any{"identifier": id, "comment_id": comment.ID, "body": visual, "expected_revision": commentFields["revision"]}},
+		} {
+			raw, failed := call(test.tool, "visual-"+test.tool, test.fields)
+			var refusal operatortool.RequestError
+			if !failed || json.Unmarshal(raw, &refusal) != nil || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, attachment.VisualReferenceMessage) || strings.Contains(refusal.Message, "private") {
+				t.Fatalf("%s refusal=%s failed=%v", test.tool, raw, failed)
+			}
+		}
+	})
 	for _, tt := range []struct {
 		name, tool string
 		fields     map[string]any

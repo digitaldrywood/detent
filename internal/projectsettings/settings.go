@@ -14,6 +14,36 @@ import (
 var ErrConflict = errors.New("settings revision changed")
 var ErrInvalid = errors.New("invalid settings")
 
+type Content struct {
+	Revision                 tracker.Revision `json:"revision,string"`
+	RequireVisualAttachments bool             `json:"require_visual_attachments"`
+}
+
+type ContentChange struct {
+	ExpectedRevision         tracker.Revision `json:"expected_revision,string"`
+	RequireVisualAttachments bool             `json:"require_visual_attachments"`
+}
+
+func ReadContent(ctx context.Context, db Queryer, organization tracker.OrganizationID, project tracker.ProjectID) (Content, error) {
+	var value Content
+	err := db.QueryRowContext(ctx, "SELECT content_settings_revision, require_visual_attachments FROM projects WHERE organization_id=? AND id=?", organization, project).Scan(&value.Revision, &value.RequireVisualAttachments)
+	return value, err
+}
+
+func UpdateContent(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, project tracker.ProjectID, change ContentChange) (Content, error) {
+	current, err := ReadContent(ctx, tx, organization, project)
+	if err != nil {
+		return current, err
+	}
+	if current.Revision != change.ExpectedRevision {
+		return current, ErrConflict
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE projects SET require_visual_attachments=?, content_settings_revision=content_settings_revision+1 WHERE organization_id=? AND id=?", change.RequireVisualAttachments, organization, project); err != nil {
+		return current, err
+	}
+	return ReadContent(ctx, tx, organization, project)
+}
+
 type Queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)

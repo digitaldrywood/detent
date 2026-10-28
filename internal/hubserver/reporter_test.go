@@ -118,6 +118,7 @@ func TestReporterNativeCommands(t *testing.T) {
 			attachmentResponse := request(u, http.MethodPost, f.base+"/attachment-metadata", record)
 			requireNativeStatus(t, attachmentResponse, http.StatusCreated)
 			decodeHubResponse(t, attachmentResponse, &record)
+			operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project)
 			for _, issueType := range []string{"", "question"} {
 				refused := request(u, http.MethodPost, f.base+"/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "missing-type-" + issueType}, Title: "Tester report", Type: issueType})
 				requireNativeStatus(t, refused, http.StatusUnprocessableEntity)
@@ -127,9 +128,9 @@ func TestReporterNativeCommands(t *testing.T) {
 					t.Fatalf("failure=%#v", failure)
 				}
 			}
-			var own tracker.NativeIssue
+			var own, sharedVisualIssue tracker.NativeIssue
 			for i, state := range []string{"", "Todo", "Backlog", "Cancelled", "Triage", "Missing"} {
-				draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("file-%d", i)}, Type: []string{"bug", "change_request"}[i%2], Title: "Tester report", Body: reporterTestBody([]string{"bug", "change_request"}[i%2]) + "\n![Screenshot](attachment:" + record.ID + ")", State: state}
+				draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("file-%d", i)}, Type: []string{"bug", "change_request"}[i%2], Title: "Tester report", Body: reporterTestBody([]string{"bug", "change_request"}[i%2]) + "\nScreenshot: https://example.test/preview ![Screenshot](attachment:" + record.ID + ")", State: state}
 				r := request(u, http.MethodPost, f.base+"/work-items", draft)
 				wantStatus := http.StatusOK
 				if i > 0 {
@@ -150,17 +151,33 @@ func TestReporterNativeCommands(t *testing.T) {
 					requireNativeStatus(t, r, http.StatusOK)
 				}
 				decodeHubResponse(t, r, &own)
+				if i == 0 {
+					sharedVisualIssue = own
+				}
 				if own.State != "Triage" || own.Type != []string{"bug", "change_request"}[i%2] {
 					t.Fatalf("requested %q: state=%s", state, own.State)
 				}
 			}
 			operatorSQL(t, f.hostedSecurityFixture, "UPDATE projects SET duplicate_challenge=0 WHERE id=?", f.project)
+			hiddenImage := record
+			hiddenImage.ID = conversation.NewAttachmentID()
+			requireNativeStatus(t, request(member, http.MethodPost, f.base+"/attachment-metadata", hiddenImage), http.StatusCreated)
+			requireNativeStatus(t, request(u, http.MethodPost, f.base+"/work-items/"+string(own.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "unreadable-visual"}, Body: "https://figma.com/design/example " + hiddenImage.Markdown("org_security")}), http.StatusUnprocessableEntity)
+			operatorSQL(t, f.hostedSecurityFixture, "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL WHERE project_id=?", f.project)
 			attachmentResponse = request(u, http.MethodGet, f.base+"/attachment-metadata/"+record.ID, nil)
 			requireNativeStatus(t, attachmentResponse, http.StatusOK)
 			var fetched attachment.Metadata
 			decodeHubResponse(t, attachmentResponse, &fetched)
 			if fetched.ContentType != "image/png" || len(fetched.ReferencedBy) != 6 {
 				t.Fatalf("attachment=%#v", fetched)
+			}
+			requireNativeStatus(t, request(member, http.MethodPost, f.base+"/attachment-metadata/"+hiddenImage.ID+"/reference", map[string]any{"work_item_id": sharedVisualIssue.WorkItemID}), http.StatusNoContent)
+			requireNativeStatus(t, request(u, http.MethodPost, f.base+"/work-items/"+string(sharedVisualIssue.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "readable-legacy-visual"}, Body: "https://figma.com/design/example " + hiddenImage.Markdown("org_security")}), http.StatusOK)
+			attachmentResponse = request(u, http.MethodGet, f.base+"/attachment-metadata/"+hiddenImage.ID, nil)
+			requireNativeStatus(t, attachmentResponse, http.StatusOK)
+			decodeHubResponse(t, attachmentResponse, &fetched)
+			if len(fetched.ReferencedBy) != 2 {
+				t.Fatalf("shared legacy attachment references=%v", fetched.ReferencedBy)
 			}
 			requireNativeStatus(t, request(u, http.MethodPost, f.base+"/attachment-metadata/"+record.ID+"/reference", map[string]any{"work_item_id": own.WorkItemID}), http.StatusNoContent)
 			requireNativeStatus(t, request(u, http.MethodDelete, f.base+"/attachment-metadata/"+record.ID, nil), http.StatusForbidden)

@@ -115,6 +115,7 @@ AND (native_source_key = ? OR (repository_id = ? AND github_number = ?))`, scope
 			request.State, request.Priority, request.Body = "Todo", new(0), verified.importBody
 			bodySupplied = true
 			scope.sourceActor = nativeIntegrationActor("github")
+			scope.importedContent = true
 		} else if verified.importReason == "" {
 			verified.importReason = "Scheduled CI import requires a dispatchable nonterminal Todo lane"
 		}

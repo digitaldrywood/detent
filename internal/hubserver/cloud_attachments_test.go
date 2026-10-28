@@ -16,7 +16,7 @@ import (
 
 func TestCloudAttachmentSavedReferences(t *testing.T) {
 	t.Parallel()
-	for _, source := range []string{"issue", "comment", "issue-path", "comment-path", "issue-path-other-item", "comment-path-other-item"} {
+	for _, source := range []string{"issue", "comment", "issue-path", "comment-path", "issue-path-other-item", "comment-path-other-item", "issue-visual-path", "comment-visual-path", "issue-visual-reference", "comment-visual-reference", "issue-visual-path-reference", "comment-visual-path-reference", "issue-visual-path-title"} {
 		t.Run(source, func(t *testing.T) {
 			f := newHostedSharedFixture(t)
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
@@ -49,10 +49,30 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 			if strings.Contains(source, "-path") {
 				body = record.Markdown("org_security")
 			}
+			if strings.HasSuffix(source, "-reference") {
+				destination := "attachment:" + record.ID
+				if strings.Contains(source, "-path") {
+					destination = "/organizations/org_security/api/v2/projects/" + string(f.project) + "/attachments/" + record.ID
+				}
+				body = "![image][shot]\n\n[shot]: " + destination
+			}
+			if strings.Contains(source, "-visual") {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project); err != nil {
+					t.Fatal(err)
+				}
+				body = "Screenshot: https://example.test/preview " + body
+				if !strings.HasSuffix(source, "-reference") {
+					body += ". Documentation: [API guide](https://example.test/docs) [Pull request](https://github.com/example-org/example-project/pull/1)"
+				}
+			}
 			issue := tracker.NativeIssue{}
 			comment := tracker.NativeComment{}
 			if strings.HasPrefix(source, "issue") {
-				raw = send(http.MethodPost, "/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "save-image"}, Title: "Image issue", Body: body + issueContractTestSections, State: "Todo"}, http.StatusOK)
+				title, issueBody := "Image issue", body+issueContractTestSections
+				if strings.HasSuffix(source, "-title") {
+					title, issueBody = body, issueContractTestSections
+				}
+				raw = send(http.MethodPost, "/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "save-image"}, Title: title, Body: issueBody, State: "Todo"}, http.StatusOK)
 				if err := json.Unmarshal(raw, &issue); err != nil {
 					t.Fatal(err)
 				}
@@ -74,6 +94,51 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 				}
 			}
 			assertReference(record.ID, string(issue.WorkItemID), comment.ID)
+			if strings.HasSuffix(source, "-reference") {
+				if strings.HasPrefix(source, "issue") {
+					changed := "Updated " + body + issueContractTestSections
+					raw = send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "edit-reference"}, ExpectedRevision: issue.Revision, Body: &changed}, http.StatusOK)
+					if err := json.Unmarshal(raw, &issue); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					raw = send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID)+"/comments/"+comment.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "edit-reference"}, ExpectedRevision: comment.Revision, Body: "Updated " + body}, http.StatusOK)
+					if err := json.Unmarshal(raw, &comment); err != nil {
+						t.Fatal(err)
+					}
+				}
+				assertReference(record.ID, string(issue.WorkItemID), comment.ID)
+			}
+			if strings.HasSuffix(source, "-title") {
+				send(http.MethodPut, "/content-settings", cloudContentSettingsRequest{Mutation: tracker.Mutation{IdempotencyKey: "disable-visual"}}, http.StatusOK)
+				raw = send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "priority-only"}, ExpectedRevision: issue.Revision, Priority: tracker.SetPriority(new(2))}, http.StatusOK)
+				if err := json.Unmarshal(raw, &issue); err != nil {
+					t.Fatal(err)
+				}
+				assertReference(record.ID, string(issue.WorkItemID), "")
+				changed := "Changed content" + issueContractTestSections
+				raw = send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "body-only"}, ExpectedRevision: issue.Revision, Body: &changed}, http.StatusOK)
+				if err := json.Unmarshal(raw, &issue); err != nil {
+					t.Fatal(err)
+				}
+				assertReference(record.ID, string(issue.WorkItemID), "")
+			}
+			if strings.Contains(source, "-visual") && !strings.HasSuffix(source, "-title") {
+				textFile := attachment.Metadata{ID: conversation.NewAttachmentID(), Name: "diagnostic.log", ContentType: "text/plain", Size: 10, SHA256: record.SHA256}
+				send(http.MethodPost, "/attachment-metadata", textFile, http.StatusCreated)
+				const visual = "https://figma.com/design/example "
+				for _, invalid := range []struct{ name, body string }{
+					{"unrelated binding", visual},
+					{"text file", visual + textFile.Markdown("org_security")},
+					{"fabricated", visual + "![upload](attachment:att_0123456789abcdef0123456789abcdef)"},
+					{"foreign", visual + "![upload](attachment:" + foreign + ")"},
+					{"foreign canonical", visual + "![upload](/organizations/org_security/api/v2/projects/prj_foreign/attachments/" + foreign + ")"},
+					{"wrong paragraph", visual + "\n\n" + record.Markdown("org_security")},
+					{"multiple sources", visual + "https://example.test/image.png " + record.Markdown("org_security")},
+				} {
+					send(http.MethodPost, "/work-items/"+string(issue.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "invalid-" + invalid.name}, Body: invalid.body}, http.StatusUnprocessableEntity)
+				}
+			}
 			assertReference(foreign, "", "")
 			var count int
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM attachment_references WHERE attachment_id=?", record.ID).Scan(&count); err != nil || count != 1 {
@@ -108,7 +173,11 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 			}
 			if strings.HasPrefix(source, "issue") {
 				removed := "No image" + issueContractTestSections
-				send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "remove-image"}, ExpectedRevision: issue.Revision, Body: &removed}, http.StatusOK)
+				update := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "remove-image"}, ExpectedRevision: issue.Revision, Body: &removed}
+				if strings.HasSuffix(source, "-title") {
+					update.Title = new("Image issue")
+				}
+				send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID), update, http.StatusOK)
 			} else {
 				send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID)+"/comments/"+comment.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "remove-image"}, ExpectedRevision: comment.Revision, Body: "No image"}, http.StatusOK)
 			}

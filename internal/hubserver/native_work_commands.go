@@ -348,11 +348,6 @@ func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScop
 		if err := validateNativeContent(issue.Title, issue.Body, issue.Labels, issue.Assignees, issue.Priority); err != nil {
 			return nil, err
 		}
-		if request.Body != nil {
-			if err := bindCloudAttachmentReferences(ctx, tx, scope, string(issue.WorkItemID), "", issue.Body); err != nil {
-				return nil, err
-			}
-		}
 		return persistNativeIssue(ctx, tx, scope, issue, "issue.edited", tracker.CollaborationData{Fields: fields}, now)
 	})
 }
@@ -485,6 +480,11 @@ func (s *Service) updateNativeCommentCommand(ctx context.Context, scope nativeSc
 		}
 		if comment.Body == request.Body && comment.Deleted == request.Deleted {
 			return comment, nil
+		}
+		if !request.Deleted {
+			if err := validateCloudVisualReferences(ctx, tx, scope, cloudContentField{"body", request.Body}); err != nil {
+				return nil, err
+			}
 		}
 		comment.Body = request.Body
 		comment.Deleted = request.Deleted

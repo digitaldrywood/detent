@@ -383,6 +383,7 @@ func (s *Service) fetchImportPage(ctx context.Context, integration ProjectIntegr
 }
 
 func importGitHubIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, integration ProjectIntegration, current *GitHubImport, source IssueSource, now time.Time) error {
+	scope.importedContent = true
 	if source.NodeID == "" || source.CreatedAt.IsZero() || source.UpdatedAt.IsZero() {
 		return nativePublicInvalid("GitHub issue provenance is incomplete")
 	}

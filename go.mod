@@ -40,6 +40,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
 	github.com/templui/templui v1.12.0
+	github.com/yuin/goldmark v1.7.13
 	go.uber.org/goleak v1.3.0
 	golang.org/x/crypto v0.57.0
 	golang.org/x/image v0.45.0

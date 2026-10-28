@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -16,24 +17,98 @@ import (
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/projectsettings"
 )
 
 const attachmentMetadataBase = nativeBase + "/attachment-metadata"
 
 var cloudAttachmentReference = regexp.MustCompile(`\]\(\s*<?attachment:(att_[A-Za-z0-9_-]+)>?(?:\s+"[^"]*")?\s*\)`)
 
-func syncCloudAttachmentReferences(ctx context.Context, tx *sql.Tx, scope nativeScope, itemID, commentID, body string) error {
+type cloudContentField struct {
+	name  string
+	value string
+}
+
+func validateCloudVisualReferences(ctx context.Context, tx *sql.Tx, scope nativeScope, fields ...cloudContentField) error {
+	if len(fields) == 0 || scope.importedContent {
+		return nil
+	}
+	settings, err := projectsettings.ReadContent(ctx, tx, scope.organization, scope.project)
+	if err != nil || !settings.RequireVisualAttachments {
+		return err
+	}
+	for _, field := range fields {
+		err := attachment.ValidateVisualReferences(field.value, string(scope.organization), string(scope.project), func(id string) (attachment.Metadata, error) {
+			record, err := readCloudAttachmentMetadata(ctx, tx, scope, id)
+			if isNativeNotFound(err) {
+				return attachment.Metadata{}, nil
+			}
+			return record, err
+		})
+		var refusal *attachment.VisualReferenceError
+		if errors.As(err, &refusal) {
+			return nativePublicInvalid(fmt.Sprintf("%s block %d: %s", field.name, refusal.Block, attachment.VisualReferenceMessage))
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func cloudIssueAttachmentContent(ctx context.Context, tx *sql.Tx, scope nativeScope, title, body string) (string, error) {
+	settings, err := projectsettings.ReadContent(ctx, tx, scope.organization, scope.project)
+	if err != nil {
+		return "", err
+	}
+	if settings.RequireVisualAttachments {
+		return title + "\n\n" + body, nil
+	}
+	return body, nil
+}
+
+func cloudContentAttachmentReferences(body string, scope nativeScope) ([]attachment.Reference, error) {
+	refs, err := attachment.MarkdownReferences(body, string(scope.organization), string(scope.project))
+	if err != nil {
+		return nil, err
+	}
+	for _, match := range cloudAttachmentReference.FindAllStringSubmatch(body, -1) {
+		refs = append(refs, attachment.Reference{URL: "attachment:" + match[1], ID: match[1]})
+	}
+	return append(refs, attachment.References(body, string(scope.organization), string(scope.project))...), nil
+}
+
+func syncCloudAttachmentReferences(ctx context.Context, tx *sql.Tx, scope nativeScope, itemID, commentID, body string, retainedContent ...string) error {
+	refs, err := cloudContentAttachmentReferences(body, scope)
+	if err != nil {
+		return err
+	}
+	ids := make(map[string]bool, len(refs))
+	for _, reference := range refs {
+		ids[reference.ID] = true
+	}
+	for _, content := range retainedContent {
+		references, err := cloudContentAttachmentReferences(content, scope)
+		if err != nil {
+			return err
+		}
+		for _, reference := range references {
+			if ids[reference.ID] {
+				continue
+			}
+			var bound bool
+			if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM attachment_references WHERE attachment_id=? AND work_item_id=? AND comment_id=?)", reference.ID, itemID, commentID).Scan(&bound); err != nil {
+				return err
+			}
+			if bound {
+				ids[reference.ID] = true
+			}
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM attachment_references WHERE work_item_id=? AND comment_id=? AND attachment_id IN (SELECT id FROM attachments WHERE organization_id=? AND project_id=?)`, itemID, commentID, scope.organization, scope.project); err != nil {
 		return err
 	}
-	var ids []string
-	for _, match := range cloudAttachmentReference.FindAllStringSubmatch(body, -1) {
-		ids = append(ids, match[1])
-	}
-	for _, reference := range attachment.References(body, string(scope.organization), string(scope.project)) {
-		ids = append(ids, reference.ID)
-	}
-	for _, id := range ids {
+	for id := range ids {
 		if conversation.ValidateAttachmentID(id) != nil {
 			continue
 		}
@@ -237,7 +312,7 @@ func (s *Service) readCloudAttachment(ctx context.Context, scope nativeScope, id
 	return readCloudAttachment(ctx, s.database.reader, scope, id)
 }
 
-func readCloudAttachment(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (attachment.Metadata, error) {
+func readCloudAttachmentMetadata(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (attachment.Metadata, error) {
 	if scope.credential.HostedRole == "reporter" {
 		pageQuery, pageErr := prepareNativePageQuery(ctx, query, nativeScope{organization: scope.organization}, "", "native_issue_actors")
 		if pageErr != nil {
@@ -280,6 +355,22 @@ func readCloudAttachment(ctx context.Context, query nativeQueryer, scope nativeS
 			}
 		}
 	}
+	return record, nil
+}
+
+func readCloudAttachment(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (attachment.Metadata, error) {
+	if scope.credential.HostedRole == "reporter" {
+		pageQuery, pageErr := prepareNativePageQuery(ctx, query, nativeScope{organization: scope.organization}, "", "native_issue_actors")
+		if pageErr != nil {
+			return attachment.Metadata{}, pageErr
+		}
+		query = pageQuery
+	}
+	record, err := readCloudAttachmentMetadata(ctx, query, scope, id)
+	if err != nil {
+		return record, err
+	}
+
 	references := "SELECT work_item_id,comment_id FROM attachment_references WHERE attachment_id=?"
 	args := []any{record.ID}
 	if scope.credential.HostedRole == "reporter" {
@@ -478,7 +569,16 @@ func (s *Service) cloudAttachmentExists(c echo.Context) error {
 }
 
 func bindCloudAttachmentReferences(ctx context.Context, tx *sql.Tx, scope nativeScope, item, comment, body string) error {
-	for _, ref := range attachment.References(body, string(scope.organization), string(scope.project)) {
+	refs, err := cloudContentAttachmentReferences(body, scope)
+	if err != nil {
+		return err
+	}
+	seen := make(map[string]bool, len(refs))
+	for _, ref := range refs {
+		if strings.HasPrefix(ref.URL, "attachment:") || seen[ref.ID] {
+			continue
+		}
+		seen[ref.ID] = true
 		if scope.credential.HostedRole == "reporter" {
 			if _, err := readCloudAttachment(ctx, tx, scope, ref.ID); err != nil {
 				return err

@@ -41,6 +41,7 @@ type nativeScope struct {
 	project               tracker.ProjectID
 	credential            apiCredential
 	requireHostedAdmin    bool
+	importedContent       bool
 	managedRunner         string
 	managedRunnerScope    string
 	managedRunnerProjects []tracker.ProjectID

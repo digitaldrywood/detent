@@ -194,6 +194,7 @@ func planLocalBoardItem(ctx context.Context, q nativeQueryer, scope nativeScope,
 }
 
 func importLocalBoardItem(ctx context.Context, tx *sql.Tx, scope nativeScope, record localboard.Record, now time.Time) (localboard.Result, error) {
+	scope.importedContent = true
 	result, issue, err := planLocalBoardItem(ctx, tx, scope, record)
 	if err != nil || result.Action == "unchanged" {
 		return result, err

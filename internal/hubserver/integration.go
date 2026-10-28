@@ -368,6 +368,8 @@ func (s *Service) registerIntegrationRoutes(e *echo.Echo) {
 	e.GET("/api/v2/github/requests", s.githubRequestCounts, s.requireInstanceAdmin())
 	e.GET(nativeBase+"/model-selection", s.getCloudModelSelection, s.requireNativeScope(apiScopeWorker, apiScopeOperator))
 	e.PUT(nativeBase+"/model-selection", s.updateCloudModelSelection, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
+	e.GET(nativeBase+"/content-settings", s.getCloudContentSettings, s.requireNativeScope(apiScopeWorker, apiScopeOperator))
+	e.PUT(nativeBase+"/content-settings", s.updateCloudContentSettings, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
 	read := s.requireNativeScope(apiScopeWorker, apiScopeOperator)
 	operator := s.requireNativeScope(apiScopeOperator)
 	admin := s.requireNativeScope(apiScopeAdmin)

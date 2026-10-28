@@ -1288,6 +1288,34 @@ are bound to their organization and token principal; another token cannot take
 over registration or renew its leases. A legacy registration cannot overwrite a
 native machine. Native tokens cannot read legacy global lists through v1.
 
+## Project content settings
+
+`GET` and `PUT /api/v2/organizations/{org}/projects/{prj}/content-settings`
+read and update project-only Cloud content policy. Browser sessions use
+`/organizations/{org}/api/v2/projects/{prj}/content-settings` with the usual
+CSRF protection for updates. Reads require project read authority; updates use
+project administration authority (hosted owners/admins and an administrative
+key scope where applicable). Workers and Reporters cannot update it.
+
+The response is `{"revision":"0","require_visual_attachments":false}` for a
+new project. A PUT supplies `idempotency_key`, string `expected_revision` and
+boolean `require_visual_attachments`. A successful update increments the
+revision; a stale revision returns HTTP 409 `revision_conflict`. Identical
+accepted command replays return their original response. The typed boolean and
+revision persist per project. There is no organization inheritance, repository
+configuration override, CLI command or settings UI. No runner or approved
+repository workflow is required to read or update this setting.
+
+When enabled, native issue filing/preflight, title/body edits, comment insertion
+and body edits apply the [visual reference pairing rule](api-mcp-setup.md#attachments)
+inside their existing write transaction. REST, MCP, Cloud submissions and host
+content writes share the same owners. A failure returns HTTP 422
+`invalid_request`, including through structured MCP errors, and leaves content,
+revisions, history, attachment bindings and success receipts unchanged. The
+current flag is read in that transaction; no historical scan or admission hold
+is created. Connector-owned snapshots and historical imports retain their
+existing ownership; author-supplied provenance cannot exempt a new native write.
+
 ## Native collaboration protocol
 
 `GET /api/v2/capabilities` reports server identity, the Hub's running `version`,

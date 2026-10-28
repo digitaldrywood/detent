@@ -396,6 +396,49 @@ Upload with `POST /organizations/ORG/api/v2/projects/PROJECT/attachments` (brows
 
 Files are limited to 20 MiB. PNG, JPEG, GIF and WebP images (up to 16 megapixels) are re-encoded to remove metadata; GIF and WebP become PNG. PDF, UTF-8 plain text, Markdown, CSV, valid JSON, `.log` console logs and `.har` network exports are stored as downloads. SVG, HTML, mismatched text and malformed images are refused. Stored bytes count toward the organization's `collaboration_bytes` allowance and remain counted until object deletion is confirmed; a quota refusal returns `allowance_exhausted`.
 
+Projects can opt in to `require_visual_attachments` through the project
+[content settings API](hub-api.md#project-content-settings). It defaults to false.
+When enabled, each external visual source in a new or changed issue title/body
+or comment body must share its paragraph, list item or table cell with a readable
+uploaded image or PDF from that project. Put one source in each block, for example:
+
+```markdown
+[Design reference](https://figma.com/design/example) ![Screenshot](attachment:att_<uploaded-id>)
+
+Screenshot: https://example.test/preview [Uploaded PDF](attachment:att_<uploaded-pdf-id>)
+```
+
+The canonical attachment Markdown returned by Cloud is also supported. A file
+elsewhere in the content or on another issue/comment does not satisfy a source;
+text/log uploads, deleted files, fabricated IDs and cross-project references do
+not qualify. Attachment-only content remains supported. Metadata confirms type,
+dimensions and digest, but cannot establish that the upload depicts the source.
+
+Detection parses Markdown links and images (including reference links),
+autolinks, bare HTTP(S) URLs and HTML image sources. It ignores inline and fenced
+code. External image embeds, decoded paths ending in `.png`, `.jpg`, `.jpeg`,
+`.gif`, `.webp`, `.avif` or `.svg`, exact `claude.ai` artifact paths
+(`/artifacts/…` or `/public/artifacts/…`) and exact `figma.com`/`www.figma.com`
+`design`, `file`, `board` and `proto` paths qualify. Query strings and fragments
+do not affect path detection. Arbitrary destinations qualify when introduced
+by `Screenshot:`, `Screenshots:`, `Design reference:`, `Design board:`, `Mockup:`
+or `Wireframe:`, or those exact Markdown link labels (case-insensitive, with an
+optional final colon). Ordinary documentation, PDF links, repository/PR/CI
+links, Claude chats and report context URLs do not qualify merely by being URLs.
+Unlabeled redirects and arbitrary board URLs cannot reliably be recognized;
+use an explicit label. Detent performs no network probing or semantic matching.
+
+Refused writes return HTTP 422 `invalid_request` or the same structured MCP
+refusal, naming the field and block without repeating customer content or URLs:
+“This project requires uploaded screenshots and design references. Upload the
+file to Detent and include its attachment reference beside each visual source.”
+The entire write rolls back. Metadata-only edits, unchanged content, comment
+deletion and previously accepted idempotency/provenance replays remain allowed.
+Changed fields are validated in full, including retained old visual sources.
+Changing the setting affects subsequent writes, never historical records or
+dispatch. This policy covers issue and comment writes. It does not cover Change evidence
+writes.
+
 `GET .../attachments/ATTACHMENT` reads the file under current organization and project authority; other organizations, other projects and requests without a session or valid key get 404, so a copied link grants no access. `offset` and `length` query parameters return a bounded base64 chunk instead of the file. `GET .../attachments/ATTACHMENT/metadata` returns type, size, SHA-256, dimensions and `referenced_by` without object bytes. `DELETE .../attachments/ATTACHMENT` hides the attachment and deletes the object. An attachment with no remaining references is removed after seven days; referenced attachments do not expire.
 
 | MCP tool | Input and result |

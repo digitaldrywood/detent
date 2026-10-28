@@ -620,6 +620,9 @@ func validateNativeIssueFiling(ctx context.Context, tx *sql.Tx, scope nativeScop
 		return err
 	}
 	issue := nativeIssueDraft(ctx, tx, scope, project, request, now, false)
+	if err := validateCloudVisualReferences(ctx, tx, scope, cloudContentField{"title", issue.Title}, cloudContentField{"body", issue.Body}); err != nil {
+		return err
+	}
 	if err := validateNativeIssueState(scope, project, issue.State, false); err != nil {
 		return err
 	}
@@ -665,6 +668,9 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		}
 	}
 	issue := nativeIssueDraft(ctx, tx, scope, project, request, now, machineIntake)
+	if err := validateCloudVisualReferences(ctx, tx, scope, cloudContentField{"title", issue.Title}, cloudContentField{"body", issue.Body}); err != nil {
+		return tracker.NativeIssue{}, err
+	}
 	if err := validateNativeIssueState(scope, project, issue.State, machineIntake); err != nil {
 		return tracker.NativeIssue{}, err
 	}
@@ -755,7 +761,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, '', '', '', ?, ?, ?, ?, ?, ?, ?
 	if _, err := tx.ExecContext(ctx, "INSERT INTO queue_entries (issue_id, workflow_state_id, scope, state, rank, priority_override, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", id, workflowID, scope.project, issue.State, string(issue.WorkItemID), issue.Priority, formatHubTime(now), formatHubTime(now)); err != nil {
 		return tracker.NativeIssue{}, err
 	}
-	if err := bindCloudAttachmentReferences(ctx, tx, scope, string(issue.WorkItemID), "", issue.Body); err != nil {
+	attachmentContent, err := cloudIssueAttachmentContent(ctx, tx, scope, issue.Title, issue.Body)
+	if err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	if err := bindCloudAttachmentReferences(ctx, tx, scope, string(issue.WorkItemID), "", attachmentContent); err != nil {
 		return tracker.NativeIssue{}, err
 	}
 	if err := recordNativeChange(ctx, tx, scope, issue, string(issue.WorkItemID), issue.Revision, "issue.created", tracker.CollaborationData{Revision: issue.Revision}, now); err != nil {
@@ -767,7 +777,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, '', '', '', ?, ?, ?, ?, ?, ?, ?
 func recordNativeChange(ctx context.Context, tx *sql.Tx, scope nativeScope, record any, workItemID string, revision tracker.Revision, eventType string, data tracker.CollaborationData, now time.Time) error {
 	switch value := record.(type) {
 	case tracker.NativeIssue:
-		if err := syncCloudAttachmentReferences(ctx, tx, scope, workItemID, "", value.Body); err != nil {
+		content, err := cloudIssueAttachmentContent(ctx, tx, scope, value.Title, value.Body)
+		if err != nil {
+			return err
+		}
+		if err := syncCloudAttachmentReferences(ctx, tx, scope, workItemID, "", content, value.Title); err != nil {
 			return err
 		}
 	case tracker.NativeComment:
@@ -906,6 +920,29 @@ func persistNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, issu
 	issue.Revision, issue.UpdatedAt = current.Revision, current.UpdatedAt
 	if reflect.DeepEqual(issue, current) {
 		return current, nil
+	}
+	if eventType != "github.imported" {
+		var fields []cloudContentField
+		if issue.Title != current.Title {
+			fields = append(fields, cloudContentField{"title", issue.Title})
+		}
+		if issue.Body != current.Body {
+			fields = append(fields, cloudContentField{"body", issue.Body})
+		}
+		if err := validateCloudVisualReferences(ctx, tx, scope, fields...); err != nil {
+			return issue, err
+		}
+		if len(fields) != 0 {
+			content, err := cloudIssueAttachmentContent(ctx, tx, scope, issue.Title, issue.Body)
+			if err != nil {
+				return issue, err
+			}
+			if issue.Body != current.Body || content != issue.Body {
+				if err := bindCloudAttachmentReferences(ctx, tx, scope, string(issue.WorkItemID), "", content); err != nil {
+					return issue, err
+				}
+			}
+		}
 	}
 	issue.Revision++
 	issue.UpdatedAt = now

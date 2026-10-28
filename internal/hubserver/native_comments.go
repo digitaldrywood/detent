@@ -57,6 +57,9 @@ func (s *Service) createNativeComment(c echo.Context) error {
 // insertNativeComment appends a comment by the request's actor to a native
 // issue and records it in the issue's history.
 func insertNativeComment(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, body string, provenance *tracker.Provenance, now time.Time) (tracker.NativeComment, error) {
+	if err := validateCloudVisualReferences(ctx, tx, scope, cloudContentField{"body", body}); err != nil {
+		return tracker.NativeComment{}, err
+	}
 	comment := tracker.NativeComment{ID: newNativeID("cmt"), OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID,
 		Revision: 1, Body: body, Actor: scope.actor(), Provenance: provenance, CreatedAt: now, UpdatedAt: now}
 	if err := tx.QueryRowContext(ctx, "SELECT event_sequence + 1 FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?", scope.organization, scope.project, issue.WorkItemID).Scan(&comment.Sequence); err != nil {

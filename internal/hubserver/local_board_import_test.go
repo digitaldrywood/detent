@@ -105,6 +105,7 @@ func TestLocalBoardImportFixtures(t *testing.T) {
 			if len(records[1].Comments) != 1 || records[1].Comments[0].Body != "Edited comment" {
 				t.Fatalf("comment event replay: %+v", records[1].Comments)
 			}
+			records[0].Body += "\n\nhttps://figma.com/design/example"
 			before, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatal(err)
@@ -115,6 +116,9 @@ func TestLocalBoardImportFixtures(t *testing.T) {
 				intake := map[string]tracker.NativeIssue{}
 				if kind == "github_local" {
 					intake = seedLocalBoardIntake(t, f, records)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project.ID); err != nil {
+					t.Fatal(err)
 				}
 				dryCounts := localBoardCounts(t, f)
 				plans := []localboard.Result{}
