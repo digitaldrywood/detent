@@ -272,11 +272,12 @@ func (o *Orchestrator) completeNativeChangeRun(
 			o.recordCompletionUsage(ctx, state, event, issue)
 			return true
 		}
-		if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(max(running.Attempt, state.Retry[issueID].Attempt)), event.CompletedAt, firstNonBlank(change.VersionError, retryMessage), running.WorkerHost); err != nil {
+		if err := o.abandonClaim(ctx, issueID); err != nil {
 			return handoff(err)
 		}
 		o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "provider completed; issue acceptance is not recorded", nativeChangeMetadata(change))
 		o.recordCompletionUsage(ctx, state, event, issue)
+		o.releaseClaim(state, issueID)
 		return true
 	}
 	unaddressedRefusal, resolvedRefusal := "", false
