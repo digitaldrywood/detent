@@ -138,6 +138,63 @@ FROM seed CROSS JOIN issues i WHERE i.native_id=?`, count+2, test.issues+1, stri
 	}
 }
 
+func TestNativeDuplicateCandidateCrowding(t *testing.T) {
+	for _, crowd := range []string{"project", "organization", "archived", "invisible"} {
+		t.Run(crowd, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			target := f.create(t, "Repository association deadlocks")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=?,actor_principal_id=? WHERE native_id=?", "Repository association deadlocks", "visible-reporter", target.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID,
+				credential: apiCredential{HostedRole: "reporter"}, sourceActor: &tracker.Actor{Kind: "human", PrincipalID: "visible-reporter"}}
+			seed := target
+			if crowd == "project" || crowd == "organization" {
+				organization := f.project.OrganizationID
+				if crowd == "organization" {
+					organization = ""
+				}
+				foreign := newNativeFixture(t, f.service, organization, "foreign-crowding")
+				seed = foreign.create(t, "Repository association deadlocks")
+			}
+			archived, principal := crowd == "archived", "visible-reporter"
+			if crowd == "invisible" {
+				principal = "another-reporter"
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE seed(n) AS (
+SELECT 2 UNION ALL SELECT n+1 FROM seed WHERE n<126)
+INSERT INTO issues(native_id,organization_id,project_id,number,workflow_state_id,title,body,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,actor_kind,actor_principal_id,archived)
+SELECT 'wi_crowd_'||i.project_id||'_'||seed.n,i.organization_id,i.project_id,seed.n,i.workflow_state_id,
+i.title,?,'','open','','','',i.created_at,i.updated_at,'human',?,?
+FROM seed CROSS JOIN issues i WHERE i.native_id=?`, "Repository association deadlocks", principal, archived, seed.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			var steps int64
+			pool := sql.OpenDB(duplicateCostConnector{timedConnector: timedConnector{driver: f.service.database.reader.Driver(), dsn: sqliteReaderDSN(f.service.database.path, f.service.config.BusyTimeout)}, steps: &steps})
+			pool.SetMaxOpenConns(1)
+			t.Cleanup(func() {
+				if err := pool.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			for _, request := range []tracker.CreateIssue{
+				{Title: "Repository association deadlocks"},
+				{Title: "Separate observed symptom", Body: "Repository association deadlocks"},
+			} {
+				steps = 0
+				matches, err := resolveNativeDuplicates(t.Context(), pool, scope, request, f.service.config.now(), false)
+				t.Logf("crowd=%s title=%q steps=%d", crowd, request.Title, steps)
+				if steps == 0 || steps > 100000 {
+					t.Errorf("crowded duplicate search used %d VM steps, budget 100000", steps)
+				}
+				if err != nil || len(matches) != 1 || matches[0].WorkItemID != target.WorkItemID {
+					t.Errorf("request=%+v matches=%+v err=%v", request, matches, err)
+				}
+			}
+		})
+	}
+}
+
 func TestNativeDuplicateFiling(t *testing.T) {
 	for _, test := range []struct {
 		name       string

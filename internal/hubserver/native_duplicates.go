@@ -106,7 +106,7 @@ func resolveNativeDuplicates(ctx context.Context, query nativeQueryer, scope nat
 SELECT d.issue_id,d.comment_id FROM native_work_fts JOIN native_work_documents d ON d.id=native_work_fts.rowid
 JOIN issues i ON i.id=d.issue_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
 WHERE native_work_fts MATCH ? AND i.organization_id=? AND i.project_id=?`+window+`
-ORDER BY native_work_fts.rank LIMIT ?)
+ORDER BY native_work_fts.rowid DESC LIMIT ?)
 SELECT i.native_id,i.number,i.title,ws.detent_state,i.revision,ws.terminal,i.body || char(10) || COALESCE(c.body,'')
 FROM candidates d JOIN issues i ON i.id=d.issue_id
 JOIN workflow_states ws ON ws.id=i.workflow_state_id LEFT JOIN native_comments c ON c.id=d.comment_id
@@ -170,24 +170,24 @@ WHERE i.organization_id=? AND i.project_id=?`+window+` ORDER BY ws.terminal,i.nu
 		}
 		var candidateCTEs, candidateUnion []string
 		var searchArgs []any
-		candidateSQL := `SELECT d.issue_id,d.id,hits.score FROM (
-SELECT native_work_fts.rowid AS id,
+		candidateSQL := `SELECT d.issue_id,d.id,
 -1.0-4.0*(length(highlight(native_work_fts,0,char(1),''))-length(native_work_fts.title)) AS score
-FROM native_work_fts WHERE native_work_fts MATCH ? ORDER BY native_work_fts.rowid DESC LIMIT ?
-) hits CROSS JOIN native_work_documents d CROSS JOIN issues i CROSS JOIN workflow_states ws
-WHERE d.id=hits.id AND i.id=d.issue_id AND ws.id=i.workflow_state_id
-AND i.organization_id=? AND i.project_id=?` + window
+FROM native_work_fts CROSS JOIN native_work_documents d CROSS JOIN issues i CROSS JOIN workflow_states ws
+WHERE native_work_fts MATCH ? AND d.id=native_work_fts.rowid AND i.id=d.issue_id AND ws.id=i.workflow_state_id
+AND i.organization_id=? AND i.project_id=?` + window + ` ORDER BY native_work_fts.rowid DESC LIMIT ?`
 		for index, expression := range expressions {
 			name := "term" + strconv.Itoa(index)
 			candidateCTEs = append(candidateCTEs, name+" AS MATERIALIZED ("+candidateSQL+")")
 			candidateUnion = append(candidateUnion, "SELECT issue_id,id,score,1 AS terms,? AS matched FROM "+name)
-			searchArgs = append(searchArgs, expression, duplicateCandidateLimit)
+			searchArgs = append(searchArgs, expression)
 			searchArgs = append(searchArgs, args...)
+			searchArgs = append(searchArgs, duplicateCandidateLimit)
 		}
 		if len(expressions) > 1 {
 			candidateCTEs = append(candidateCTEs, "full_hits AS MATERIALIZED ("+candidateSQL+")")
-			searchArgs = append(searchArgs, strings.Join(expressions, " AND "), duplicateCandidateLimit)
+			searchArgs = append(searchArgs, strings.Join(expressions, " AND "))
 			searchArgs = append(searchArgs, args...)
+			searchArgs = append(searchArgs, duplicateCandidateLimit)
 		}
 		for _, expression := range expressions {
 			searchArgs = append(searchArgs, expression)
