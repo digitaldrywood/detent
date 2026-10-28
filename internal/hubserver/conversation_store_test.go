@@ -716,7 +716,7 @@ func TestConversationStoreEvents(t *testing.T) {
 				t.Fatal("replay crossed a conversation boundary")
 			}
 		}
-		if ids[0] != ids[1] || ids[2] != ids[3] || ids[0] == ids[2] || len(objects.content) != 2 {
+		if ids[0] != ids[1] || ids[2] != ids[3] || ids[0] == ids[2] || len(objects.content) != 6 {
 			t.Fatalf("org deduplication=%v objects=%d", ids, len(objects.content))
 		}
 		if _, err := f.store.readConversation(t.Context(), f.service.database.reader, f.organization, f.project.ID, records[2].ID); err == nil {

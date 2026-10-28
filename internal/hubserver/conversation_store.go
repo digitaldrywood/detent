@@ -121,6 +121,7 @@ type conversationMessageRecord struct {
 	ID             string
 	ContentID      string
 	contentHash    string
+	TextBytes      int64
 	ConversationID string
 	Seq            int64
 	Role           conversation.Role
@@ -588,15 +589,21 @@ WHERE id = ? AND organization_id = ? AND project_id = ? AND revision = ?`,
 
 const conversationMessageColumns = `id, conversation_id, seq, role, kind, text, data_json, delivery, attempt_id, thread_id, turn_id, provider_item_id, actor_json, command_key, created_at, updated_at, content_attachment_id, revision`
 
+const conversationMessageReadColumns = `id, conversation_id, seq, role, kind, text, data_json, delivery, attempt_id, thread_id, turn_id, provider_item_id, CASE WHEN actor_principal_id IS NULL THEN actor_json ELSE '{}' END, command_key, created_at, updated_at, content_attachment_id, revision, actor_kind, actor_principal_id, COALESCE(text_bytes,length(CAST(text AS BLOB)))`
+
 func scanConversationMessage(row conversationScanner) (conversationMessageRecord, error) {
 	var message conversationMessageRecord
 	var data, actor, created, updated string
-	if err := row.Scan(&message.ID, &message.ConversationID, &message.Seq, &message.Role, &message.Kind, &message.Text, &data, &message.Delivery, &message.AttemptID, &message.ThreadID, &message.TurnID, &message.ProviderItemID, &actor, &message.CommandKey, &created, &updated, &message.ContentID, &message.Revision); err != nil {
+	var actorKind, actorPrincipal sql.NullString
+	if err := row.Scan(&message.ID, &message.ConversationID, &message.Seq, &message.Role, &message.Kind, &message.Text, &data, &message.Delivery, &message.AttemptID, &message.ThreadID, &message.TurnID, &message.ProviderItemID, &actor, &message.CommandKey, &created, &updated, &message.ContentID, &message.Revision, &actorKind, &actorPrincipal, &message.TextBytes); err != nil {
 		return message, err
 	}
 	message.Data = json.RawMessage(data)
 	if err := json.Unmarshal([]byte(actor), &message.Actor); err != nil {
 		return message, fmt.Errorf("decode message %s actor: %w", message.ID, err)
+	}
+	if actorPrincipal.Valid {
+		message.Actor = conversation.Actor{Kind: conversation.ActorKind(actorKind.String), PrincipalID: actorPrincipal.String}
 	}
 	var err error
 	if message.CreatedAt, err = parseTimeValue(created); err != nil {
@@ -654,6 +661,9 @@ func (s *conversationStore) appendMessage(ctx context.Context, tx *sql.Tx, messa
 		return err
 	}
 	message.ContentID = contentID
+	if contentID != "" {
+		actor = "{}"
+	}
 	message.Revision = 1
 	if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_messages (`+conversationMessageColumns+`)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -665,6 +675,15 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	metadata, err := messageQueryMetadata(message.Data, message.Actor.Kind)
 	if err != nil {
 		return err
+	}
+	if contentID != "" {
+		metadata.add("actor_principal_id", message.Actor.PrincipalID)
+	} else {
+		metadata.add("actor_principal_id", nil)
+	}
+	metadata.add("text_bytes", len(message.Text))
+	if contentID != "" {
+		metadata.add("conversion_state", 2)
 	}
 	if err := metadata.write(ctx, tx, "conversation_messages", "id=?", message.ID); err != nil {
 		return err
@@ -687,7 +706,10 @@ func (s *conversationStore) updateMessage(ctx context.Context, tx *sql.Tx, messa
 	if err != nil {
 		return err
 	}
-	if message.Kind == conversation.MessageTool && message.Actor.Kind == conversation.ActorCoordinator {
+	if contentID != "" {
+		actor = "{}"
+	}
+	if contentID == "" && message.Kind == conversation.MessageTool && message.Actor.Kind == conversation.ActorCoordinator {
 		if err := s.preserveLegacyToolRevision(ctx, tx, message); err != nil {
 			return err
 		}
@@ -715,6 +737,15 @@ WHERE id = ? AND conversation_id = ?`,
 	if err != nil {
 		return err
 	}
+	if contentID != "" {
+		metadata.add("actor_principal_id", message.Actor.PrincipalID)
+	} else {
+		metadata.add("actor_principal_id", nil)
+	}
+	metadata.add("text_bytes", len(message.Text))
+	if contentID != "" {
+		metadata.add("conversion_state", 2)
+	}
 	return metadata.write(ctx, tx, "conversation_messages", "id=?", message.ID)
 }
 
@@ -739,7 +770,7 @@ func (s *conversationStore) listMessages(ctx context.Context, query nativeQuerye
 		args = append(args, beforeSeq)
 	}
 	args = append(args, limit)
-	rows, err := query.QueryContext(ctx, "SELECT "+conversationMessageColumns+" FROM conversation_messages WHERE conversation_id = ?"+condition+" ORDER BY seq DESC LIMIT ?", args...)
+	rows, err := query.QueryContext(ctx, "SELECT "+conversationMessageReadColumns+" FROM conversation_messages WHERE conversation_id = ?"+condition+" ORDER BY seq DESC LIMIT ?", args...)
 	if err != nil {
 		return nil, fmt.Errorf("list messages: %w", err)
 	}
@@ -998,7 +1029,11 @@ func (s *conversationStore) appendEvent(ctx context.Context, tx *sql.Tx, convers
 	if err != nil {
 		return 0, fmt.Errorf("allocate event sequence: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO conversation_events (conversation_id, seq, type, body_json, created_at) VALUES (?, ?, ?, ?, ?)", conversationID, seq, eventType, encoded, conversationTime(now)); err != nil {
+	stored, contentID, err := s.eventStorage(ctx, tx, conversationID, []byte(encoded), now)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO conversation_events (conversation_id, seq, type, body_json, created_at, content_attachment_id, conversion_state) VALUES (?, ?, ?, ?, ?, ?, ?)", conversationID, seq, eventType, stored, conversationTime(now), contentID, 2); err != nil {
 		return 0, fmt.Errorf("insert event: %w", err)
 	}
 	metadata, err := eventQueryMetadata([]byte(encoded))
@@ -1018,16 +1053,17 @@ func (s *conversationStore) listEvents(ctx context.Context, query nativeQueryer,
 	if limit > 1000 {
 		limit = 1000
 	}
-	rows, err := query.QueryContext(ctx, "SELECT seq, type, body_json, created_at FROM conversation_events WHERE conversation_id = ? AND seq > ? ORDER BY seq LIMIT ?", conversationID, afterSeq, limit)
+	rows, err := query.QueryContext(ctx, "SELECT seq, type, body_json, created_at, COALESCE(content_attachment_id,'') FROM conversation_events WHERE conversation_id = ? AND seq > ? ORDER BY seq LIMIT ?", conversationID, afterSeq, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list events: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	var events []conversation.Event
+	var contents []string
 	for rows.Next() {
 		var event conversation.Event
-		var body, created string
-		if err := rows.Scan(&event.Seq, &event.Type, &body, &created); err != nil {
+		var body, created, contentID string
+		if err := rows.Scan(&event.Seq, &event.Type, &body, &created, &contentID); err != nil {
 			return nil, fmt.Errorf("list events: %w", err)
 		}
 		event.Data = json.RawMessage(body)
@@ -1035,9 +1071,20 @@ func (s *conversationStore) listEvents(ctx context.Context, query nativeQueryer,
 			return nil, fmt.Errorf("decode event %d created_at: %w", event.Seq, err)
 		}
 		events = append(events, event)
+		contents = append(contents, contentID)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("list events: %w", err)
+	}
+	for index, contentID := range contents {
+		if contentID == "" {
+			continue
+		}
+		data, err := s.readEventStorage(ctx, query, conversationID, contentID)
+		if err != nil {
+			return nil, err
+		}
+		events[index].Data = data
 	}
 	if err := s.resolveEventContent(ctx, query, conversationID, events); err != nil {
 		return nil, err

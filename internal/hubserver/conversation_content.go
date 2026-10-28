@@ -31,10 +31,6 @@ func messageContent(message conversationMessageRecord) ([]byte, error) {
 type preparedConversationContents map[string]attachment.ArchiveReference
 type conversationContentsKey struct{}
 
-func externalConversationContent(message conversationMessageRecord) bool {
-	return message.Role == conversation.RoleSystem || (message.Delivery != conversation.DeliveryResponding && len(message.Text)+len(message.Data) > 2048)
-}
-
 func (c *conversationService) prepareContents(ctx context.Context, organization, project, uploader string, messages ...conversationMessageRecord) (context.Context, error) {
 	if c.store.contents == nil {
 		return ctx, nil
@@ -46,9 +42,6 @@ func (c *conversationService) prepareContents(ctx context.Context, organization,
 		}
 	}
 	for _, message := range messages {
-		if !externalConversationContent(message) {
-			continue
-		}
 		content, err := messageContent(message)
 		if err != nil {
 			return ctx, err
@@ -89,7 +82,7 @@ func (c *conversationService) prepareContents(ctx context.Context, organization,
 }
 
 func (s *conversationStore) messageStorage(ctx context.Context, tx *sql.Tx, message conversationMessageRecord) (string, string, string, error) {
-	if s.contents == nil || !externalConversationContent(message) {
+	if s.contents == nil {
 		return message.Text, string(message.Data), "", nil
 	}
 	content, err := messageContent(message)
@@ -98,26 +91,29 @@ func (s *conversationStore) messageStorage(ctx context.Context, tx *sql.Tx, mess
 	}
 	digest := artifact.Digest(content)
 	if message.ContentID != "" && digest == message.contentHash {
-		return conversationTruncate(message.Text, 256), "{}", message.ContentID, nil
+		return "", "{}", message.ContentID, nil
 	}
 	var organization, project string
 	if err := tx.QueryRowContext(ctx, "SELECT organization_id,project_id FROM conversations WHERE id=?", message.ConversationID).Scan(&organization, &project); err != nil {
 		return "", "", "", err
 	}
 	prepared, ok := ctx.Value(conversationContentsKey{}).(preparedConversationContents)
-	if !ok {
-		return "", "", "", errors.New("conversation content was not prepared")
-	}
 	ref, found := prepared[organization+"/"+digest]
-	if !found || ref.Validate(organization) != nil {
-		return "", "", "", errors.New("conversation content was not published before the transaction")
+	if !ok || !found {
+		ref, err = s.contents.PublishContent(ctx, organization, content)
+		if err != nil {
+			return "", "", "", fmt.Errorf("publish conversation content: %w", err)
+		}
+	}
+	if err := ref.Validate(organization); err != nil {
+		return "", "", "", err
 	}
 	id := contentArchiveID(organization, ref)
 	if err := s.recordContentArchive(ctx, tx, organization, project, message.Actor.PrincipalID, ref, message.CreatedAt); err != nil {
 		return "", "", "", err
 	}
 
-	return conversationTruncate(message.Text, 256), "{}", id, nil
+	return "", "{}", id, nil
 }
 
 type conversationReadContentsKey struct{}
@@ -162,6 +158,14 @@ func (s *conversationStore) resolveMessageContents(ctx context.Context, query na
 		}
 		message.Text, message.Data, message.contentHash = decoded.Text, decoded.Data, artifact.Digest(content)
 		cache[key] = readConversationContent{content: decoded, hash: message.contentHash}
+	}
+	for _, message := range messages {
+		if message.Role != conversation.RoleAssistant || message.TextBytes <= int64(len(message.Text)) {
+			continue
+		}
+		if err := s.resolveMessageDeltas(ctx, query, message); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -345,4 +349,48 @@ func (c *conversationService) prepareBindNotice(ctx context.Context, scope nativ
 	}
 	notice := conversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageStatus, Text: conversationTranscriptNotice(len(resume.Transcript)), Delivery: conversation.DeliverySaved}
 	return c.prepareContents(ctx, string(scope.organization), string(scope.project), scope.credential.ID, notice)
+}
+
+func (s *conversationStore) resolveMessageDeltas(ctx context.Context, q nativeQueryer, message *conversationMessageRecord) error {
+	rows, err := q.QueryContext(ctx, `SELECT body_json,content_attachment_id FROM conversation_events WHERE conversation_id=? AND message_id=? AND type='message.delta' AND delta_offset>=? AND delta_offset<? ORDER BY seq`, message.ConversationID, message.ID, len(message.Text), message.TextBytes)
+	if err != nil {
+		return err
+	}
+	type delta struct{ raw, content string }
+	var batch []delta
+	for rows.Next() {
+		var d delta
+		if err := rows.Scan(&d.raw, &d.content); err != nil {
+			rows.Close()
+			return err
+		}
+		batch = append(batch, d)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	var text strings.Builder
+	text.WriteString(message.Text)
+	for _, d := range batch {
+		raw := []byte(d.raw)
+		if d.content != "" {
+			raw, err = s.readEventStorage(ctx, q, message.ConversationID, d.content)
+			if err != nil {
+				return err
+			}
+		}
+		var fact conversationDeltaFact
+		if err := json.Unmarshal(raw, &fact); err != nil {
+			return err
+		}
+		if fact.Offset != int64(text.Len()) || len(fact.Text) != fact.Bytes {
+			return errors.New("message delta boundary is invalid")
+		}
+		text.WriteString(fact.Text)
+	}
+	if int64(text.Len()) != message.TextBytes {
+		return errors.New("message delta content is incomplete")
+	}
+	message.Text = text.String()
+	return nil
 }

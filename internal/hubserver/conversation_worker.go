@@ -435,7 +435,7 @@ func (c *conversationService) ensureWorkerConversation(ctx context.Context, tx *
 
 // conversationMessageQuery prefixes a constant filter; callers append their
 // constant condition so the full statement is a compile-time string.
-const conversationMessageQuery = "SELECT " + conversationMessageColumns + " FROM conversation_messages WHERE "
+const conversationMessageQuery = "SELECT " + conversationMessageReadColumns + " FROM conversation_messages WHERE "
 
 func (c *conversationService) queryMessages(ctx context.Context, tx nativeQueryer, query string, args ...any) ([]conversationMessageRecord, error) {
 	rows, err := tx.QueryContext(ctx, query, args...)
@@ -1229,9 +1229,9 @@ func (c *conversationService) applyDelta(ctx context.Context, tx *sql.Tx, turn *
 	owner := turn.execution.Owner
 	// Only the message identity and its stored length are needed: the
 	// delta is appended in place, never by reading and rewriting the text.
-	query, args := "SELECT id, length(CAST(text AS BLOB)) FROM conversation_messages WHERE conversation_id = ? AND role = 'assistant' AND attempt_id = ? AND provider_item_id = ? ORDER BY seq LIMIT 1", []any{turn.record.ID, owner.AttemptID, item}
+	query, args := "SELECT id, COALESCE(text_bytes,length(CAST(text AS BLOB))) FROM conversation_messages WHERE conversation_id = ? AND role = 'assistant' AND attempt_id = ? AND provider_item_id = ? ORDER BY seq LIMIT 1", []any{turn.record.ID, owner.AttemptID, item}
 	if event.MessageID != "" {
-		query, args = "SELECT id, length(CAST(text AS BLOB)) FROM conversation_messages WHERE conversation_id = ? AND role = 'assistant' AND attempt_id = ? AND id = ? ORDER BY seq LIMIT 1", []any{turn.record.ID, owner.AttemptID, event.MessageID}
+		query, args = "SELECT id, COALESCE(text_bytes,length(CAST(text AS BLOB))) FROM conversation_messages WHERE conversation_id = ? AND role = 'assistant' AND attempt_id = ? AND id = ? ORDER BY seq LIMIT 1", []any{turn.record.ID, owner.AttemptID, event.MessageID}
 	}
 	var messageID string
 	var offset int64

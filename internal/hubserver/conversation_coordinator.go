@@ -388,7 +388,7 @@ func (c *conversationTurnCoordinator) pendingMessages(ctx context.Context, query
 	// before later answers and a backlog beyond one turn's bound is served
 	// by the next pass. queued is matched as well as saved, so an unlinked
 	// message that was queued for any reason is still answered.
-	rows, err := query.QueryContext(ctx, "SELECT "+conversationMessageColumns+` FROM conversation_messages
+	rows, err := query.QueryContext(ctx, "SELECT "+conversationMessageReadColumns+` FROM conversation_messages
 WHERE conversation_id = ? AND role = ? AND kind = ? AND delivery IN (?, ?)
 ORDER BY seq LIMIT ?`, conversationID, conversation.RoleUser, conversation.MessageText, conversation.DeliverySaved, conversation.DeliveryQueued, coordinatorPendingMessages)
 	if err != nil {

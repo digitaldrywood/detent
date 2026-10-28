@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -634,28 +635,36 @@ SELECT ?,?,'runs','completed-'||n,1,n,n,1,'' FROM history`, scope.organization, 
 		}
 		f.commit(t, tx)
 	}
-	rows, err := db.reader.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+storageConversionDiscovery, scope.organization, scope.project, "runs")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var plan strings.Builder
-	for rows.Next() {
-		var id, parent, unused int
-		var detail string
-		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+	for _, test := range []struct {
+		query, index string
+		args         []any
+	}{
+		{storageConversionDiscovery, "storage_conversion_pending", []any{scope.organization, scope.project, "runs"}},
+		{storageConversionSchedule, "storage_conversion_schedule", nil},
+	} {
+		rows, err := db.reader.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+test.query, test.args...)
+		if err != nil {
 			t.Fatal(err)
 		}
-		plan.WriteString(detail)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(plan.String(), "USING INDEX storage_conversion_pending") || strings.Contains(plan.String(), "SCAN") || strings.Contains(plan.String(), "TEMP B-TREE") {
-		t.Fatalf("unbounded discovery plan: %s", plan.String())
+		var plan strings.Builder
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			plan.WriteString(detail)
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(plan.String(), "USING INDEX "+test.index) || strings.Contains(plan.String(), "TEMP B-TREE") {
+			t.Fatalf("unbounded discovery plan: %s", plan.String())
+		}
 	}
 	for pass, want := range []int{2, 0} {
-		if err := f.service.convertStorageFamily(f.service.contentContext(t.Context()), scope, storageConversionFamilies[0], f.now.Add(time.Duration(pass)*time.Second)); err != nil {
+		if err := f.service.convertLegacyStorage(t.Context(), f.now.Add(time.Duration(pass)*time.Second)); err != nil {
 			t.Fatal(err)
 		}
 		var pending int
@@ -678,6 +687,17 @@ func TestStorageConversionDiscoveryInitialization(t *testing.T) {
 	if !ok {
 		t.Fatal("missing migration rollback")
 	}
+	payloadMigration, err := migrationFiles.ReadFile("migrations/20261028195844_conversation_payload_references.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadUp, payloadDown, ok := strings.Cut(string(payloadMigration), "-- +goose Down")
+	if !ok {
+		t.Fatal("missing payload migration rollback")
+	}
+	if _, err := db.db.ExecContext(ctx, payloadDown); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.db.ExecContext(ctx, down); err != nil {
 		t.Fatal(err)
 	}
@@ -689,6 +709,9 @@ SELECT ?,?,n,'attempt','legacy-'||n,1,'{"obsolete":"payload"}' FROM history`, fi
 		}
 	}
 	if _, err := db.db.ExecContext(ctx, up); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.ExecContext(ctx, payloadUp); err != nil {
 		t.Fatal(err)
 	}
 	var progress int
@@ -797,6 +820,196 @@ func TestStorageConversionReusedRowIDs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestConversationConversionClearsOneLegacyPayloadPerTransaction(t *testing.T) {
+	for _, size := range []int{32, 64 << 10} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			f := newStorageArchiveFixture(t)
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			records := make([]conversationRecord, 0, 2)
+			for range 2 {
+				record := f.record(f.owner, "legacy payload", f.now)
+				record.Status = conversation.StatusSettled
+				records = append(records, f.create(t, record))
+			}
+			for _, record := range records {
+				tx := f.tx(t)
+				for range 2 {
+					message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryCompleted, Text: strings.Repeat("x", size), Data: json.RawMessage(`{"value":"` + strings.Repeat("y", size) + `"}`), Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.owner}, CreatedAt: f.now, UpdatedAt: f.now}
+					if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventHeartbeat, map[string]string{"text": strings.Repeat("z", size)}, f.now); err != nil {
+						t.Fatal(err)
+					}
+				}
+				f.commit(t, tx)
+			}
+			if _, err := f.store.db.ExecContext(t.Context(), "UPDATE conversation_events SET conversion_state=2"); err != nil {
+				t.Fatal(err)
+			}
+			f.store.contents = convertedConversationContent{service: f.service}
+			f.hook = func(r entryauthority.ContentRequest) error {
+				if r.Write {
+					if _, err := f.store.db.ExecContext(t.Context(), "UPDATE conversations SET title=title WHERE id=?", records[0].ID); err != nil {
+						return fmt.Errorf("writer held during object publication: %w", err)
+					}
+				}
+				return nil
+			}
+			for _, family := range storageConversionFamilies[3:5] {
+				for _, record := range records {
+					beforeMessages, err := f.store.listMessages(t.Context(), f.store.reader, record.ID, 0, 10)
+					if err != nil {
+						t.Fatal(err)
+					}
+					beforeEvents, err := f.store.listEvents(t.Context(), f.store.reader, record.ID, 0, 10)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for remaining := 1; remaining >= 0; remaining-- {
+						if err := f.service.discoverStorageFamily(t.Context(), family, f.now); err != nil {
+							t.Fatal(err)
+						}
+						if err := f.service.convertConversationPayload(t.Context(), scope, family, record.ID, f.now); err != nil {
+							t.Fatal(err)
+						}
+						var pending int
+						if err := f.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM "+family.table()+" WHERE conversation_id=? AND "+family.pending(), record.ID).Scan(&pending); err != nil || pending != remaining {
+							t.Fatalf("%s pending=%d want=%d err=%v", family.name, pending, remaining, err)
+						}
+					}
+					afterMessages, err := f.store.listMessages(t.Context(), f.store.reader, record.ID, 0, 10)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for i, message := range beforeMessages {
+						if message.Text != afterMessages[i].Text || !bytes.Equal(message.Data, afterMessages[i].Data) || message.Actor != afterMessages[i].Actor {
+							t.Fatal("legacy message read changed")
+						}
+					}
+					afterEvents, err := f.store.listEvents(t.Context(), f.store.reader, record.ID, 0, 10)
+					if err != nil || !reflect.DeepEqual(beforeEvents, afterEvents) {
+						t.Fatalf("legacy event read changed: %v", err)
+					}
+					var inline int
+					column := "length(CAST(body_json AS BLOB))"
+					want := 2
+					if family.name == "messages" {
+						column = "length(CAST(text AS BLOB))+length(CAST(data_json AS BLOB))+length(CAST(actor_json AS BLOB))"
+						want = 4
+					}
+					if err := f.store.reader.QueryRowContext(t.Context(), "SELECT max("+column+") FROM "+family.table()+" WHERE conversation_id=?", record.ID).Scan(&inline); err != nil || inline != want {
+						t.Fatalf("%s inline=%d want=%d err=%v", family.name, inline, want, err)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestConversationToolRevisionConversionPreservesReplay(t *testing.T) {
+	f := newStorageArchiveFixture(t)
+	record := f.record(f.owner, "legacy tools", f.now)
+	record.Status = conversation.StatusSettled
+	record = f.create(t, record)
+	message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleSystem, Kind: conversation.MessageTool, Delivery: conversation.DeliveryCompleted, Text: "Running tool " + strings.Repeat("x", 5000), Data: json.RawMessage(`{"tool":"example","item_id":"item","status":"running"}`), Actor: conversation.Actor{Kind: conversation.ActorCoordinator}, CreatedAt: f.now, UpdatedAt: f.now}
+	tx := f.tx(t)
+	if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventMessageAccepted, projectMessage(message), f.now); err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []string{"completed", "saved"} {
+		message.Text = status + strings.Repeat("y", 7000)
+		message.Data = json.RawMessage(`{"tool":"example","item_id":"item","status":"` + status + `"}`)
+		if err := f.service.conversations.updateMessage(t.Context(), tx, message, f.now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.commit(t, tx)
+	before, err := f.store.listEvents(t.Context(), f.store.reader, record.ID, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.store.contents = convertedConversationContent{service: f.service}
+	family := storageConversionFamilies[4]
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	if err := f.service.discoverStorageFamily(t.Context(), family, f.now); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := f.service.convertConversationPayload(t.Context(), scope, family, record.ID, f.now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after, err := f.store.listEvents(t.Context(), f.store.reader, record.ID, 0, 10)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("tool replay changed: err=%v", err)
+	}
+	var inline int
+	if err := f.store.reader.QueryRowContext(t.Context(), `SELECT coalesce(sum(length(CAST(text AS BLOB))),0) FROM conversation_tool_revisions WHERE conversation_id=?`, record.ID).Scan(&inline); err != nil || inline != 0 {
+		t.Fatalf("tool revision inline bytes=%d err=%v", inline, err)
+	}
+}
+
+func TestConversationConversionPublicationFailureKeepsInlineContent(t *testing.T) {
+	for _, family := range storageConversionFamilies[3:5] {
+		for _, failure := range []string{"publish", "read"} {
+			t.Run(family.name+"/"+failure, func(t *testing.T) {
+				f := newStorageArchiveFixture(t)
+				record := f.record(f.owner, "legacy conversion", f.now)
+				record.Status = conversation.StatusSettled
+				record = f.create(t, record)
+				tx := f.tx(t)
+				message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryCompleted, Text: "original text", Data: json.RawMessage(`{}`), Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.owner}, CreatedAt: f.now, UpdatedAt: f.now}
+				if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventHeartbeat, map[string]string{"text": "original event"}, f.now); err != nil {
+					t.Fatal(err)
+				}
+				f.commit(t, tx)
+				f.store.contents = convertedConversationContent{service: f.service}
+				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+				if err := f.service.discoverStorageFamily(t.Context(), family, f.now); err != nil {
+					t.Fatal(err)
+				}
+				column := family.column
+				if family.name == "messages" {
+					column = "text"
+				}
+				var original string
+				query := "SELECT " + column + " FROM " + family.table() + " WHERE conversation_id=?"
+				if err := f.store.reader.QueryRowContext(t.Context(), query, record.ID).Scan(&original); err != nil {
+					t.Fatal(err)
+				}
+				f.hook = func(r entryauthority.ContentRequest) error {
+					if r.Write == (failure == "publish") {
+						return errors.New("object storage unavailable")
+					}
+					return nil
+				}
+				if err := f.service.convertConversationPayload(t.Context(), scope, family, record.ID, f.now); err == nil {
+					t.Fatal("conversion accepted unavailable storage")
+				}
+				var after string
+				if err := f.store.reader.QueryRowContext(t.Context(), query, record.ID).Scan(&after); err != nil || after != original {
+					t.Fatalf("failed conversion changed source: err=%v", err)
+				}
+				f.hook = nil
+				if err := f.service.convertConversationPayload(t.Context(), scope, family, record.ID, f.now); err != nil {
+					t.Fatal(err)
+				}
+				var pending int
+				if err := f.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM "+family.table()+" WHERE conversation_id=? AND "+family.pending(), record.ID).Scan(&pending); err != nil || pending != 0 {
+					t.Fatalf("conversion did not resume: pending=%d err=%v", pending, err)
+				}
+			})
+		}
 	}
 }
 

@@ -102,6 +102,17 @@ func eventQueryMetadata(raw []byte) (conversationQueryMetadata, error) {
 		}
 		m.add(field.column, value)
 	}
+	for _, field := range []struct{ column, key string }{
+		{"delta_offset", "seq"}, {"delta_bytes", "text_bytes"}, {"message_revision", "message_revision"},
+	} {
+		var value *int64
+		if data := body[field.key]; len(data) > 0 {
+			if err := json.Unmarshal(data, &value); err != nil {
+				return m, err
+			}
+		}
+		m.add(field.column, value)
+	}
 	var preferences struct {
 		Model  *string `json:"model"`
 		Effort *string `json:"reasoning_effort"`

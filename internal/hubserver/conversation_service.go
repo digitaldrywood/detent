@@ -1049,19 +1049,23 @@ func (c *conversationService) appendDelta(ctx context.Context, tx *sql.Tx, messa
 	return nil
 }
 
-// appendDeltaAt appends text to a stored message in place. offset is the
-// message's byte length before the append; the stored text is never read
-// back and rewritten, so a long streamed message costs only its new bytes.
 func (c *conversationService) appendDeltaAt(ctx context.Context, tx *sql.Tx, conversationID, messageID string, offset int64, text string, now time.Time) error {
-	var revision int64
-	err := tx.QueryRowContext(ctx, "UPDATE conversation_messages SET text = text || ?, updated_at = ?, revision=revision+1 WHERE id = ? AND conversation_id = ? RETURNING revision", text, conversationTime(now), messageID, conversationID).Scan(&revision)
+	statement := "UPDATE conversation_messages SET text = text || ?, text_bytes=COALESCE(text_bytes,length(CAST(text AS BLOB)))+?,updated_at=?,revision=revision+1 WHERE id=? AND conversation_id=? AND COALESCE(text_bytes,length(CAST(text AS BLOB)))=? RETURNING revision"
+	args := []any{text, len(text), conversationTime(now), messageID, conversationID, offset}
+	fact := conversationDeltaFact{MessageID: messageID, Offset: offset, Bytes: len(text)}
+	if c.store.contents != nil {
+		statement = "UPDATE conversation_messages SET text_bytes=COALESCE(text_bytes,length(CAST(text AS BLOB)))+?,updated_at=?,revision=revision+1 WHERE id=? AND conversation_id=? AND COALESCE(text_bytes,length(CAST(text AS BLOB)))=? RETURNING revision"
+		args = []any{len(text), conversationTime(now), messageID, conversationID, offset}
+		fact.Text = text
+	}
+	err := tx.QueryRowContext(ctx, statement, args...).Scan(&fact.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nativeNotFound()
+		return conversationStale("Message text changed")
 	}
 	if err != nil {
 		return fmt.Errorf("append message delta: %w", err)
 	}
-	if _, err := c.store.appendEvent(ctx, tx, conversationID, conversation.EventMessageDelta, conversationDeltaFact{MessageID: messageID, Revision: revision, Offset: offset, Bytes: len(text)}, now); err != nil {
+	if _, err := c.store.appendEvent(ctx, tx, conversationID, conversation.EventMessageDelta, fact, now); err != nil {
 		return err
 	}
 	return nil

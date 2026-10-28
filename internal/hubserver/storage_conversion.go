@@ -13,7 +13,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
-	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -31,8 +30,8 @@ var storageConversionFamilies = []storageConversionFamily{
 	{name: "runs", update: "UPDATE collaboration_events SET data_json=? WHERE rowid=?", column: "data_json", from: "collaboration_events r", where: "r.type IN ('run.started','run.checkpointed','run.observed','run.finished')", aggregate: "r.work_item_id"},
 	{name: "attempts", update: "UPDATE native_attempts SET data_json=?,analytics_revision=analytics_revision+1 WHERE rowid=?", column: "data_json", from: "native_attempts r", where: "1", aggregate: "r.work_item_id"},
 	{name: "analytics", update: "UPDATE analytics_hourly_rollups SET data_json=? WHERE rowid=?", column: "data_json", from: "analytics_hourly_rollups r", where: "r.metric='attempt'", aggregate: "''"},
-	{name: "conversation_events", update: "UPDATE conversation_events SET body_json=? WHERE rowid=?", column: "body_json", from: "conversation_events r JOIN conversations c ON c.id=r.conversation_id", where: "r.type IN ('message.accepted','message.updated')", aggregate: "r.conversation_id"},
-	{name: "messages", column: "", from: "conversation_messages r JOIN conversations c ON c.id=r.conversation_id", where: "r.content_attachment_id=''", aggregate: "r.conversation_id"},
+	{name: "conversation_events", update: "UPDATE conversation_events SET body_json=? WHERE rowid=?", column: "body_json", from: "conversation_events r JOIN conversations c ON c.id=r.conversation_id", where: "r.content_attachment_id=''", aggregate: "r.conversation_id"},
+	{name: "messages", column: "data_json", from: "conversation_messages r JOIN conversations c ON c.id=r.conversation_id", where: "r.actor_principal_id IS NULL", aggregate: "r.conversation_id"},
 	{name: "versions", update: "UPDATE change_versions SET record_json=? WHERE rowid=?", column: "record_json", from: "change_versions r JOIN change_requests c ON c.id=r.change_id", where: "1", aggregate: "c.work_item_id"},
 	{name: "evidence", update: "UPDATE change_evidence SET record_json=? WHERE rowid=?", column: "record_json", from: "change_evidence r JOIN change_requests c ON c.id=r.change_id", where: "1", aggregate: "c.work_item_id"},
 	{name: "sources", column: "bundle", from: "change_sources r JOIN change_versions v ON v.id=r.version_id JOIN change_requests c ON c.id=v.change_id", where: "r.object_key=''", aggregate: "c.work_item_id"},
@@ -48,9 +47,6 @@ func (f storageConversionFamily) scope() string {
 
 func (f storageConversionFamily) selection() string {
 	column := "r." + f.column
-	if f.name == "messages" {
-		column = "json_object('text',r.text,'data',json(r.data_json))"
-	}
 	if f.name == "diff_files" {
 		column = `json_object('diff_id',r.diff_id,'position',r.position,'file',json_object('path',r.path,'old_path',r.old_path,'status',r.status,'additions',r.additions,'deletions',r.deletions,'binary',json(CASE WHEN r.binary THEN 'true' ELSE 'false' END),'patch',r.patch,'truncated',json(CASE WHEN r.truncated THEN 'true' ELSE 'false' END),'denied',json(CASE WHEN r.denied THEN 'true' ELSE 'false' END),'patch_expired',json(CASE WHEN r.patch_expired THEN 'true' ELSE 'false' END),'patch_body',CASE WHEN r.patch_object<>'' AND r.patch_expired=0 THEN json_object('key',r.patch_object,'sha256',r.patch_sha256,'bytes',r.patch_size) ELSE NULL END))`
 	}
@@ -68,6 +64,8 @@ func (f storageConversionFamily) positions() string {
 const storageConversionDiscovery = `SELECT aggregate_id,through_rowid FROM storage_conversion_progress
 WHERE organization_id=? AND project_id=? AND family=? AND (complete=0 OR format_version<>1)
 ORDER BY updated_at,aggregate_id LIMIT 4`
+
+const storageConversionSchedule = `SELECT organization_id,project_id,family,aggregate_id FROM storage_conversion_progress WHERE (complete=0 OR format_version<>1) AND family IN ('runs','attempts','analytics','conversation_events','messages','versions','evidence','sources','diff_files') ORDER BY updated_at,organization_id,project_id,family,aggregate_id LIMIT 4`
 
 type storageConversionProgress struct {
 	Family    string `json:"family"`
@@ -154,25 +152,35 @@ func (s *Service) convertLegacyStorage(ctx context.Context, now time.Time) error
 			return err
 		}
 	}
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT organization_id,id FROM projects WHERE profile='native' AND deleted_at IS NULL ORDER BY organization_id,id")
+	rows, err := s.database.reader.QueryContext(ctx, storageConversionSchedule)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	var scopes []nativeScope
+	type pending struct {
+		scope             nativeScope
+		family, aggregate string
+	}
+	var batch []pending
 	for rows.Next() {
-		var scope nativeScope
-		if err := rows.Scan(&scope.organization, &scope.project); err != nil {
+		var item pending
+		if err := rows.Scan(&item.scope.organization, &item.scope.project, &item.family, &item.aggregate); err != nil {
+			rows.Close()
 			return err
 		}
-		scopes = append(scopes, scope)
+		batch = append(batch, item)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
-	for _, scope := range scopes {
+	for _, item := range batch {
 		for _, family := range storageConversionFamilies {
-			if err := s.convertStorageFamily(ctx, scope, family, now); err != nil {
+			if family.name != item.family {
+				continue
+			}
+			if _, err := s.database.db.ExecContext(ctx, `UPDATE storage_conversion_progress SET cursor_rowid=CASE WHEN format_version<>? THEN 0 ELSE cursor_rowid END,format_version=?,complete=0,updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=?`, storageConversionVersion, storageConversionVersion, formatHubTime(now), item.scope.organization, item.scope.project, family.name, item.aggregate); err != nil {
+				return err
+			}
+			if err := s.convertStorageAggregate(ctx, item.scope, family, item.aggregate, now); err != nil {
 				failures = errors.Join(failures, fmt.Errorf("convert legacy %s: %w", family.name, err))
 				if ctx.Err() != nil {
 					return failures
@@ -188,18 +196,32 @@ func (f storageConversionFamily) table() string {
 	return table
 }
 
+func (f storageConversionFamily) pending() string {
+	return strings.ReplaceAll(f.where, "r.", "")
+}
+
 func (f storageConversionFamily) discoverySelection() string {
+	if f.name == "messages" || f.name == "conversation_events" {
+		return "SELECT rowid FROM " + f.table() + " WHERE " + f.pending() + " AND conversion_state<>1 ORDER BY rowid LIMIT ?"
+	}
 	return "SELECT rowid FROM " + f.table() + " WHERE conversion_state=0 ORDER BY rowid LIMIT ?"
 }
 
 func (f storageConversionFamily) discoveryUpsert() string {
+	state := "r.conversion_state=0"
+	if f.name == "messages" || f.name == "conversation_events" {
+		state = f.where
+	}
 	return `INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,updated_at)
-SELECT ` + f.scope() + ".organization_id," + f.scope() + ".project_id,?," + f.aggregate + ",?,r.rowid,? FROM " + f.from + " WHERE r.rowid=? AND r.conversion_state=0 AND (" + f.where + `)
+SELECT ` + f.scope() + ".organization_id," + f.scope() + ".project_id,?," + f.aggregate + ",?,r.rowid,? FROM " + f.from + " WHERE r.rowid=? AND " + state + " AND (" + f.where + `)
 ON CONFLICT(organization_id,project_id,family,aggregate_id) DO UPDATE SET
 format_version=excluded.format_version,through_rowid=max(through_rowid,excluded.through_rowid),complete=0,updated_at=excluded.updated_at`
 }
 
 func (f storageConversionFamily) stateUpdate() string {
+	if f.name == "messages" || f.name == "conversation_events" {
+		return "UPDATE " + f.table() + " SET conversion_state=? WHERE rowid=? AND " + f.pending() + " AND ?=0"
+	}
 	return "UPDATE " + f.table() + " SET conversion_state=? WHERE rowid=? AND conversion_state=?"
 }
 
@@ -208,7 +230,11 @@ func (f storageConversionFamily) completionUpdate() string {
 }
 
 func (s *Service) discoverStorageFamily(ctx context.Context, family storageConversionFamily, now time.Time) error {
-	rows, err := s.database.reader.QueryContext(ctx, family.discoverySelection(), storageConversionRows)
+	limit := storageConversionRows
+	if family.name == "messages" || family.name == "conversation_events" {
+		limit = 1
+	}
+	rows, err := s.database.reader.QueryContext(ctx, family.discoverySelection(), limit)
 	if err != nil {
 		return err
 	}
@@ -303,6 +329,9 @@ format_version=excluded.format_version,through_rowid=max(through_rowid,excluded.
 }
 
 func (s *Service) convertStorageAggregate(ctx context.Context, scope nativeScope, family storageConversionFamily, aggregate string, now time.Time) error {
+	if family.name == "messages" || family.name == "conversation_events" {
+		return s.convertConversationPayload(ctx, scope, family, aggregate, now)
+	}
 	var p storageConversionProgress
 	err := s.database.reader.QueryRowContext(ctx, `SELECT format_version,through_rowid,cursor_rowid,converted_rows,reclaimed_bytes,complete FROM storage_conversion_progress WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=?`, scope.organization, scope.project, family.name, aggregate).Scan(&p.Version, &p.Through, &p.Cursor, &p.Rows, &p.Bytes, &p.Complete)
 	if err != nil {
@@ -456,7 +485,7 @@ func (s *Service) prepareStorageConversion(ctx context.Context, scope nativeScop
 			return nil, zero, err
 		}
 		data = decoded
-	} else if family.name != "messages" && family.name != "diff_files" {
+	} else if family.name != "diff_files" {
 		payload := storageJSONPayload{Organization: string(scope.organization), Project: string(scope.project), Family: family.name, Row: row, Data: raw}
 		encoded, err := json.Marshal(payload)
 		if err != nil {
@@ -464,39 +493,9 @@ func (s *Service) prepareStorageConversion(ctx context.Context, scope nativeScop
 		}
 		data = encoded
 	}
-	var ref attachment.ArchiveReference
-	var err error
-	if family.name == "messages" {
-		if s.conversations == nil || s.conversations.store.contents == nil {
-			return nil, zero, errors.New("conversation storage unavailable")
-		}
-		var content conversationContent
-		if err := json.Unmarshal(raw, &content); err != nil {
-			return nil, zero, err
-		}
-		message := conversationMessageRecord{Role: conversation.RoleSystem, Text: content.Text, Data: content.Data}
-		data, err = messageContent(message)
-		if err != nil {
-			return nil, zero, err
-		}
-		var uploader string
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT token_id FROM token_grants WHERE organization_id=? AND project_id=? ORDER BY token_id LIMIT 1", scope.organization, scope.project).Scan(&uploader); err != nil {
-			return nil, zero, err
-		}
-		prepared, err := s.conversations.prepareContents(ctx, string(scope.organization), string(scope.project), uploader, message)
-		if err != nil {
-			return nil, zero, err
-		}
-		contents, ok := prepared.Value(conversationContentsKey{}).(preparedConversationContents)
-		if !ok {
-			return nil, zero, errors.New("conversation content was not prepared")
-		}
-		ref = contents[string(scope.organization)+"/"+artifact.Digest(data)]
-	} else {
-		ref, err = prepareChangeContent(ctx, string(scope.organization), data)
-		if err != nil {
-			return nil, zero, err
-		}
+	ref, err := prepareChangeContent(ctx, string(scope.organization), data)
+	if err != nil {
+		return nil, zero, err
 	}
 	verified, err := readChangeContent(ctx, string(scope.organization), ref)
 	if err != nil {
@@ -504,13 +503,6 @@ func (s *Service) prepareStorageConversion(ctx context.Context, scope nativeScop
 	}
 	if !bytes.Equal(data, verified) {
 		return nil, zero, artifact.ErrIntegrity
-	}
-	if family.name == "messages" {
-		var message conversationContent
-		if err := json.Unmarshal(raw, &message); err != nil {
-			return nil, zero, err
-		}
-		return []byte(conversationTruncate(message.Text, 256)), ref, nil
 	}
 	if family.name == "sources" || family.name == "diff_files" {
 		return []byte{}, ref, nil
@@ -554,20 +546,6 @@ func (s *Service) applyStorageConversion(ctx context.Context, tx *sql.Tx, scope 
 			return false, err
 		}
 		switch family.name {
-		case "messages":
-			var uploader string
-			if err := tx.QueryRowContext(ctx, "SELECT token_id FROM token_grants WHERE organization_id=? AND project_id=? ORDER BY token_id LIMIT 1", scope.organization, scope.project).Scan(&uploader); err != nil {
-				return false, err
-			}
-			if s.conversations == nil {
-				return false, errors.New("conversation storage unavailable")
-			}
-			if err := s.conversations.store.recordContentArchive(ctx, tx, string(scope.organization), string(scope.project), uploader, ref, now); err != nil {
-				return false, err
-			}
-			if _, err := tx.ExecContext(ctx, "UPDATE conversation_messages SET text=?,data_json='{}',content_attachment_id=? WHERE rowid=?", string(converted), contentArchiveID(string(scope.organization), ref), row); err != nil {
-				return false, err
-			}
 		case "diff_files":
 			if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_diff_file_archives(diff_id,position,organization_id,project_id,object_key,object_sha256,object_bytes,content_bytes) SELECT diff_id,position,?,?,?,?,?,? FROM attempt_diff_files WHERE rowid=?`, scope.organization, scope.project, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize, row); err != nil {
 				return false, err
@@ -587,13 +565,6 @@ func (s *Service) applyStorageConversion(ctx context.Context, tx *sql.Tx, scope 
 		if len(metadata.columns) > 0 {
 			table := "collaboration_events"
 			where := "rowid=?"
-			if family.name == "messages" {
-				table = "conversation_messages"
-				where += " AND query_metadata_version=0"
-			}
-			if family.name == "conversation_events" {
-				table = "conversation_events"
-			}
 			if err := metadata.write(ctx, tx, table, where, row); err != nil {
 				return false, err
 			}
