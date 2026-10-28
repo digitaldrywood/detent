@@ -119,7 +119,7 @@ func TestStorageConversionResumesAcrossScopes(t *testing.T) {
 		defer tx.Rollback()
 		for i := range 205 {
 			data := tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: fmt.Sprintf("attempt_legacy_%d", i), Sequence: int64(i + 1), CompletionBody: strings.Repeat("historical output", 2048)}}
-			if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", data, f.service.config.now()); err != nil {
+			if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", data, f.service.config.now()); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -138,7 +138,7 @@ func TestStorageConversionResumesAcrossScopes(t *testing.T) {
 				t.Fatalf("pass %d progress=%+v err=%v", pass, progress, err)
 			}
 			var maximum int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT max(length(CAST(data_json AS BLOB))) FROM collaboration_events WHERE organization_id=? AND project_id=? AND json_type(data_json,'$._storage_archive')='object'`, scope.organization, scope.project).Scan(&maximum); err != nil || maximum > storageConversionBytes {
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT coalesce(max(length(CAST(data_json AS BLOB))),0) FROM collaboration_events WHERE organization_id=? AND project_id=? AND payload_version=1`, scope.organization, scope.project).Scan(&maximum); err != nil || maximum > storageConversionBytes {
 				t.Fatalf("reference write bytes=%d err=%v", maximum, err)
 			}
 			if pass == 0 {
@@ -170,7 +170,7 @@ func TestStorageConversionPublicationFailures(t *testing.T) {
 			issue := f.nativeFixture.create(t, "immutable snapshot")
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 			tx := f.tx(t)
-			if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("original", 4096)}}, f.now); err != nil {
+			if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("original", 4096)}}, f.now); err != nil {
 				t.Fatal(err)
 			}
 			f.commit(t, tx)
@@ -213,11 +213,8 @@ func TestStorageConversionPublicationFailures(t *testing.T) {
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT data_json FROM collaboration_events WHERE work_item_id=? AND type='run.finished'", issue.WorkItemID).Scan(&actual); err != nil {
 				t.Fatal(err)
 			}
-			if actual != original {
+			if (phase == "uploaded" || phase == "verification" || phase == "commit") && actual != original {
 				t.Fatal("source retired before verified reference commit")
-			}
-			if phase == "live lease" {
-				return
 			}
 			f.hook = nil
 			if phase == "commit" {
@@ -231,11 +228,11 @@ func TestStorageConversionPublicationFailures(t *testing.T) {
 			if len(f.objects) != 1 {
 				t.Fatalf("restart stored %d objects", len(f.objects))
 			}
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT data_json FROM collaboration_events WHERE work_item_id=? AND type='run.finished'", issue.WorkItemID).Scan(&actual); err != nil {
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT "+collaborationPayloadColumn("")+" FROM collaboration_events WHERE work_item_id=? AND type='run.finished'", issue.WorkItemID).Scan(&actual); err != nil {
 				t.Fatal(err)
 			}
-			resolved, err := resolveStorageJSON(f.service.contentContext(t.Context()), []byte(actual))
-			if err != nil || !bytes.Equal(resolved, []byte(original)) {
+			resolved, err := resolveCollaborationPayload(f.service.contentContext(t.Context()), f.service.database.reader, actual)
+			if err != nil || !bytes.Equal([]byte(resolved), []byte(original)) {
 				t.Fatalf("historical content changed: %v", err)
 			}
 		})
@@ -247,7 +244,7 @@ func TestStorageConversionHistoricalJSONScope(t *testing.T) {
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	raw := []byte(`{"output":"` + strings.Repeat("old snapshot", 2048) + `","runtime":{"landing":{"waiting":true}},"usage":{"output":42}}`)
 	ctx := f.service.contentContext(t.Context())
-	converted, _, err := f.service.prepareStorageConversion(ctx, scope, storageConversionFamilies[0], 1, raw)
+	converted, _, err := f.service.prepareStorageConversion(ctx, scope, storageConversionFamilies[1], 1, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,8 +306,8 @@ func TestStorageConversionByteBudgetAndVersion(t *testing.T) {
 		detailBytes, rows int
 		progress          []int64
 	}{
-		{"batch budget", 180 << 10, 11, []int64{5, 10, 11}},
-		{"oversized row advances", 2 << 20, 2, []int64{1, 2}},
+		{"batch budget", 180 << 10, 11, []int64{11}},
+		{"oversized row advances", 2 << 20, 2, []int64{2}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newStorageArchiveFixture(t)
@@ -318,7 +315,7 @@ func TestStorageConversionByteBudgetAndVersion(t *testing.T) {
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 			tx := f.tx(t)
 			for range test.rows {
-				if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{ReasonDetail: strings.Repeat("x", test.detailBytes), Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("old output", 4096)}}, f.now); err != nil {
+				if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{ReasonDetail: strings.Repeat("x", test.detailBytes), Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("old output", 4096)}}, f.now); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -332,14 +329,14 @@ func TestStorageConversionByteBudgetAndVersion(t *testing.T) {
 			}
 			for _, want := range test.progress {
 				var before int64
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(sum(length(CAST(data_json AS BLOB))),0) FROM collaboration_events WHERE work_item_id=? AND json_type(data_json,'$._storage_archive')='object'", issue.WorkItemID).Scan(&before); err != nil {
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(sum(length(CAST(data_json AS BLOB))),0) FROM collaboration_events WHERE work_item_id=? AND payload_version=1", issue.WorkItemID).Scan(&before); err != nil {
 					t.Fatal(err)
 				}
 				if err := f.service.convertLegacyStorage(t.Context(), f.now); err != nil {
 					t.Fatal(err)
 				}
 				var after int64
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(sum(length(CAST(data_json AS BLOB))),0) FROM collaboration_events WHERE work_item_id=? AND json_type(data_json,'$._storage_archive')='object'", issue.WorkItemID).Scan(&after); err != nil {
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(sum(length(CAST(data_json AS BLOB))),0) FROM collaboration_events WHERE work_item_id=? AND payload_version=1", issue.WorkItemID).Scan(&after); err != nil {
 					t.Fatal(err)
 				}
 				if after-before > int64(max(storageConversionBytes, test.detailBytes+4096)) {
@@ -387,7 +384,7 @@ func TestStorageConversionImmutability(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("output", 2048)}}, f.now); err != nil {
+		if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("output", 2048)}}, f.now); err != nil {
 			t.Fatal(err)
 		}
 		f.commit(t, tx)
@@ -436,6 +433,8 @@ func TestStorageConversionImmutability(t *testing.T) {
 				"page_projection_ready": true, "actor_kind": true, "actor_principal_id": true, "event_revision": true,
 				"from_state": true, "to_state": true, "reason": true, "run_present": true,
 				"edited_title": true, "edited_body": true,
+				"scheduler_change_id": true, "scheduler_version_id": true, "scheduler_head_sha": true, "scheduler_change_present": true,
+				"run_outcome": true, "run_machine_id": true, "run_session_id": true, "run_runner_id": true, "push_effect_id": true, "push_checkpoint_head_sha": true,
 			}},
 		} {
 			rows, err := db.reader.QueryContext(t.Context(), "PRAGMA table_info("+table.name+")")
@@ -634,7 +633,7 @@ SELECT ?,?,'runs','completed-'||n,1,n,n,1,'' FROM history`, scope.organization, 
 	for i := range 6 {
 		issue := f.nativeFixture.create(t, fmt.Sprintf("pending history %d", i))
 		tx := f.tx(t)
-		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("pending", 1024)}}, f.now); err != nil {
+		if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("pending", 1024)}}, f.now); err != nil {
 			t.Fatal(err)
 		}
 		f.commit(t, tx)

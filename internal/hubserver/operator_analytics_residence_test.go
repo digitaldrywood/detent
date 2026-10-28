@@ -63,7 +63,7 @@ func TestNativeAnalyticsLaneResidence(t *testing.T) {
 				issue.State = event.data.ToState
 				issue, err = persistNativeIssue(t.Context(), tx, scope, issue, event.kind, event.data, event.at)
 			} else {
-				err = appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), event.kind, event.data, event.at)
+				err = appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), event.kind, event.data, event.at)
 			}
 			if err != nil {
 				t.Fatal(err)

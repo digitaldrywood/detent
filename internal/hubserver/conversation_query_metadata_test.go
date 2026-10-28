@@ -120,7 +120,7 @@ func TestCollaborationActivityQueryMetadata(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = tx.Rollback() })
 			data := tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: test.attempt, Runtime: &tracker.NativeRuntimeObservation{Activity: test.activity}}}
-			if err := appendNativeHistory(t.Context(), tx, a.scope, string(item), test.kind, data, a.service.config.now()); err != nil {
+			if err := appendLegacyNativeHistory(t.Context(), tx, a.scope, string(item), test.kind, data, a.service.config.now()); err != nil {
 				t.Fatal(err)
 			}
 			var sequence int64
@@ -147,6 +147,7 @@ func TestCollaborationActivityQueryMetadata(t *testing.T) {
 		if phase == "settled" {
 			a.advance(2 * time.Hour)
 		}
+		restoreLegacyCollaborationPayloads(t, a.service, a.scope)
 		for _, stage := range []string{"typed", "legacy", "backfilled"} {
 			if stage == "legacy" {
 				if _, err := a.service.database.db.ExecContext(t.Context(), "UPDATE collaboration_events SET query_metadata_version=0,run_attempt_id=NULL,activity_spans_present=NULL"); err != nil {

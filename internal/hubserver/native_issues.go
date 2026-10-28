@@ -854,10 +854,18 @@ func appendNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScope, wor
 	if err != nil {
 		return err
 	}
-	args := []any{id, scope.organization, scope.project, workItemID, sequence, eventType, actor, payload, formatHubTime(now), decision.Outcome, decision.Reason, decision.Source, decision.RunnerID, nullString(data.FromState), nullString(data.ToState), attempt, key, now.UnixNano(), metadata.values[0], metadata.values[1]}
+	storedPayload, payloadValues, err := collaborationPayloadValues(eventType, data, payload)
+	if err != nil {
+		return err
+	}
+	if strings.HasPrefix(eventType, "run.") {
+		metadata.values[1] = false
+	}
+	args := []any{id, scope.organization, scope.project, workItemID, sequence, eventType, actor, storedPayload, formatHubTime(now), decision.Outcome, decision.Reason, decision.Source, decision.RunnerID, nullString(data.FromState), nullString(data.ToState), attempt, key, now.UnixNano(), metadata.values[0], metadata.values[1]}
 	args = append(args, eventClaimFacts(data.Run)...)
 	args = append(args, archiveValues...)
-	_, err = tx.ExecContext(ctx, "INSERT INTO collaboration_events (id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at,scheduler_outcome,scheduler_reason,scheduler_source,scheduler_runner_id,analytics_from_state,analytics_to_state,analytics_attempt_id,analytics_skip_key,analytics_recorded_ns,analytics_projection_version,query_metadata_version,run_attempt_id,activity_spans_present,claim_attempt_id,run_id,run_lease_id,run_fencing_token,run_sequence,run_policy_id,push_change_id,push_version_id,push_head_sha,push_external_effect,push_effect_state,archive_operation,archive_from_state,archive_to_state,archive_attempt_id,archive_outcome,archive_landed_commit) VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,1,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", args...)
+	args = append(args, payloadValues...)
+	_, err = tx.ExecContext(ctx, "INSERT INTO collaboration_events (id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at,scheduler_outcome,scheduler_reason,scheduler_source,scheduler_runner_id,analytics_from_state,analytics_to_state,analytics_attempt_id,analytics_skip_key,analytics_recorded_ns,analytics_projection_version,query_metadata_version,run_attempt_id,activity_spans_present,claim_attempt_id,run_id,run_lease_id,run_fencing_token,run_sequence,run_policy_id,push_change_id,push_version_id,push_head_sha,push_external_effect,push_effect_state,archive_operation,archive_from_state,archive_to_state,archive_attempt_id,archive_outcome,archive_landed_commit,payload_version,payload_attachment_id,payload_entry,scheduler_change_id,scheduler_version_id,scheduler_head_sha,scheduler_change_present,run_outcome,run_machine_id,run_session_id,run_runner_id,push_effect_id,push_checkpoint_head_sha) VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,1,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", args...)
 	if err != nil {
 		return err
 	}
@@ -868,7 +876,7 @@ func appendNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScope, wor
 	if err := updateHealthEventProjection(ctx, tx, id, scope.actor(), data); err != nil {
 		return err
 	}
-	if err := writeChangeColumns(ctx, tx, changeColumnFamily{table: "collaboration_events", key: "id", payload: "data_json"}, id, payload, changeEventColumns(data)); err != nil {
+	if err := writeChangeColumns(ctx, tx, changeColumnFamily{table: "collaboration_events", key: "id", payload: "data_json"}, id, storedPayload, changeEventColumns(data)); err != nil {
 		return err
 	}
 	landed := data.Run != nil && data.Run.Runtime != nil && data.Run.Runtime.Landing != nil && data.Run.Runtime.Landing.Landed

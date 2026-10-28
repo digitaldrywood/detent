@@ -618,7 +618,7 @@ func TestAnalyticsRollupCompactionPreservesPredecessor(t *testing.T) {
 			decision.Outcome = "claimed"
 			decision.At = start.Add(time.Minute)
 		}
-		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), kind, tracker.CollaborationData{Decision: decision}, start.Add(time.Duration(i)*30*time.Second)); err != nil {
+		if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), kind, tracker.CollaborationData{Decision: decision}, start.Add(time.Duration(i)*30*time.Second)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -733,7 +733,7 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 		{"workflow.transitioned", now.Add(-22 * time.Hour), tracker.CollaborationData{FromState: "Merging", ToState: "Done"}},
 		{"scheduler.decision", now.Add(-time.Minute), tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "ready", At: now.Add(-time.Minute)}}},
 	} {
-		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), event.kind, event.data, event.at); err != nil {
+		if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), event.kind, event.data, event.at); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1116,7 +1116,7 @@ func TestAnalyticsHourlyRetentionScopes(t *testing.T) {
 			{"workflow.transitioned", start.Add(30 * time.Minute), tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}},
 			{"workflow.transitioned", start.Add(90 * time.Minute), tracker.CollaborationData{FromState: "In Progress", ToState: "Done"}},
 		} {
-			if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), e.kind, e.data, e.at); err != nil {
+			if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), e.kind, e.data, e.at); err != nil {
 				t.Fatal(err)
 			}
 		}

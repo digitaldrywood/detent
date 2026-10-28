@@ -72,11 +72,11 @@ func updateAnalyticsEventProjection(ctx context.Context, writer *sql.DB, id stri
 }
 
 func previousSchedulingDecision(ctx context.Context, q nativeQueryer, scope nativeScope, item string, decision tracker.NativeSchedulerDecision) (string, error) {
-	rows, err := q.QueryContext(ctx, `SELECT data_json FROM collaboration_events
+	rows, err := q.QueryContext(ctx, `SELECT `+collaborationPayloadColumn("")+` FROM collaboration_events
 WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='scheduler.decision'
 AND (scheduler_outcome IS NULL OR scheduler_outcome='claimed' OR
  (scheduler_runner_id=? AND ((?='skipped' AND scheduler_outcome='skipped' AND scheduler_reason=?) OR (?<>'skipped' AND scheduler_source=?))))
-ORDER BY sequence DESC`, scope.organization, scope.project, item, decision.RunnerID, decision.Outcome, decision.Reason, decision.Outcome, decision.Source)
+ORDER BY sequence DESC LIMIT 64`, scope.organization, scope.project, item, decision.RunnerID, decision.Outcome, decision.Reason, decision.Outcome, decision.Source)
 	if err != nil {
 		return "", err
 	}
@@ -87,7 +87,7 @@ ORDER BY sequence DESC`, scope.organization, scope.project, item, decision.Runne
 			return "", err
 		}
 		var data tracker.CollaborationData
-		if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		if err := decodeRunHistory(ctx, q, raw, &data); err != nil {
 			return "", err
 		}
 		d := data.Decision

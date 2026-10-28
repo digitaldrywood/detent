@@ -531,10 +531,10 @@ func (s *Service) readHistory(ctx context.Context, scope nativeScope, item strin
 	if params.Get("direction") == "newest" && view == "" {
 		return tracker.Page[tracker.CollaborationEvent]{}, nativePublicInvalid("Newest history requires the timeline or blockers view")
 	}
-	dataColumn := "data_json"
+	dataColumn := collaborationPayloadColumn("")
 	switch view {
 	case "timeline":
-		dataColumn = "CASE WHEN type IN ('run.started','run.checkpointed','run.finished') THEN '{}' ELSE data_json END"
+		dataColumn = "CASE WHEN type IN ('run.started','run.checkpointed','run.finished') THEN '{}' ELSE " + collaborationPayloadColumn("") + " END"
 	case "blockers":
 		dataColumn = "data_json,page_projection_ready,event_revision,from_state,to_state,reason,run_present,run_attempt_id,run_fencing_token"
 	}
@@ -633,12 +633,12 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND `+order+` 
 				}
 			}
 		} else {
-			resolved, err := resolveStorageJSON(ctx, []byte(data))
+			resolved, err := resolveCollaborationPayload(ctx, query, data)
 			if err != nil {
 				return tracker.Page[tracker.CollaborationEvent]{}, err
 			}
-			data = string(resolved)
-			if err := decodeRunHistory(ctx, tx, data, &event.Data); err != nil {
+			data = resolved
+			if err := decodeRunHistory(ctx, query, data, &event.Data); err != nil {
 				return tracker.Page[tracker.CollaborationEvent]{}, err
 			}
 			if event.Data.Run != nil {

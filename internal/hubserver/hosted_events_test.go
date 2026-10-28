@@ -130,7 +130,7 @@ func TestHostedEventsActivityIncludesChangesBelowIssueMaximum(t *testing.T) {
 	appendEvent := func(item tracker.NativeWorkItemID, kind string, data tracker.CollaborationData) {
 		t.Helper()
 		if err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, now time.Time) error {
-			return appendNativeHistory(t.Context(), tx, scope, string(item), kind, data, now)
+			return appendLegacyNativeHistory(t.Context(), tx, scope, string(item), kind, data, now)
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -240,7 +240,7 @@ func TestHostedEventsIssue(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, now time.Time) error {
-				return appendNativeHistory(t.Context(), tx, scope, string(test.item), test.kind, tracker.CollaborationData{}, now)
+				return appendLegacyNativeHistory(t.Context(), tx, scope, string(test.item), test.kind, tracker.CollaborationData{}, now)
 			}); err != nil {
 				t.Fatal(err)
 			}

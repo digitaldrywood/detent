@@ -1575,7 +1575,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 					publish = appended && history
 				}
 				if publish {
-					if err := appendNativeHistory(t.Context(), tx, scope, string(runItem), event.Type, tracker.CollaborationData{Run: &event.Data}, now); err != nil {
+					if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(runItem), event.Type, tracker.CollaborationData{Run: &event.Data}, now); err != nil {
 						t.Fatal(err)
 					}
 				}

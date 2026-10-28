@@ -831,7 +831,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			eventScope, eventItem := scope, f.issue.WorkItemID
 			appendCheckpoint := func() {
 				t.Helper()
-				if err := appendNativeHistory(t.Context(), tx, eventScope, string(eventItem), "run.checkpointed", tracker.CollaborationData{Run: &run}, f.service.config.now()); err != nil {
+				if err := appendLegacyNativeHistory(t.Context(), tx, eventScope, string(eventItem), "run.checkpointed", tracker.CollaborationData{Run: &run}, f.service.config.now()); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -2202,7 +2202,7 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusOK)
 				var evaluatedReady int
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision' AND json_extract(data_json, '$.decision.source')='native_claim_eligibility' AND json_extract(data_json, '$.decision.outcome')='ready' AND json_extract(data_json, '$.change.version_id')=?", issue.WorkItemID, version.ID).Scan(&evaluatedReady); err != nil || evaluatedReady != 1 {
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision' AND scheduler_source='native_claim_eligibility' AND scheduler_outcome='ready' AND scheduler_version_id=?", issue.WorkItemID, version.ID).Scan(&evaluatedReady); err != nil || evaluatedReady != 1 {
 					t.Fatalf("actual reviewed Change evaluation missing: count=%d error=%v", evaluatedReady, err)
 				}
 			}

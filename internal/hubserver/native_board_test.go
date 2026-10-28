@@ -1059,7 +1059,7 @@ func drainTestNativeBoard(t *testing.T, service *Service) {
 	t.Helper()
 	var cursor string
 	for {
-		more, id, err := service.database.drainNativeBoardDirtyAfter(t.Context(), service.config.now(), cursor)
+		more, id, err := service.database.drainNativeBoardDirtyAfter(service.runDetailContext(t.Context()), service.config.now(), cursor)
 		if err != nil {
 			t.Fatal(err)
 		}

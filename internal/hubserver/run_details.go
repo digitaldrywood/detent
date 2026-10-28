@@ -54,9 +54,24 @@ func (s *Service) runDetailStore() attachment.DetailStore {
 		return s.config.RunDetails
 	}
 	if s.config.Hosted != nil && s.config.Hosted.SharedEntry != nil {
-		return s.config.Hosted.SharedEntry.RunDetails
+		if store := s.config.Hosted.SharedEntry.RunDetails; store != nil {
+			return store
+		}
+	}
+	if s.storageArchiveContent() != nil {
+		return contentRunDetails{}
 	}
 	return nil
+}
+
+type contentRunDetails struct{}
+
+func (contentRunDetails) StoreDetail(ctx context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
+	return prepareChangeContent(ctx, organization, data)
+}
+
+func (contentRunDetails) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	return readChangeContent(ctx, organization, ref)
 }
 
 func (s *Service) runDetailContext(ctx context.Context) context.Context {
@@ -137,11 +152,11 @@ func decodeRunDetail(ctx context.Context, q nativeQueryer, raw string, result *t
 }
 
 func decodeRunHistory(ctx context.Context, q nativeQueryer, raw string, result *tracker.CollaborationData) error {
-	resolved, err := resolveStorageJSON(ctx, []byte(raw))
+	resolved, err := resolveCollaborationPayload(ctx, q, raw)
 	if err != nil {
 		return err
 	}
-	raw = string(resolved)
+	raw = resolved
 	if err := json.Unmarshal([]byte(raw), result); err != nil {
 		return err
 	}
@@ -253,7 +268,7 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 	ctx = s.runDetailContext(ctx)
 	owner, ok := ctx.Value(runDetailContextKey{}).(*runDetailContext)
 	if !ok {
-		return ctx, nil
+		return ctx, errRunDetailStoreUnavailable
 	}
 	var previous string
 	var stored storedRun
@@ -262,8 +277,8 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 		if err := json.Unmarshal([]byte(previous), &stored); err != nil {
 			return ctx, err
 		}
-		if stored.Detail == nil || explanationRead(ctx) {
-			return ctx, nil
+		if explanationRead(ctx) {
+			return ctx, errRunDetailStoreUnavailable
 		}
 		var run tracker.NativeRunData
 		if err := decodeRunDetail(ctx, s.database.reader, previous, &run); err != nil {
@@ -291,20 +306,15 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 		if err != nil {
 			return ctx, err
 		}
-		if event.Data.Sequence <= 0 {
-			return ctx, nativeInvalid("Run detail requires an ordered execution")
-		}
-		update, err := prepareNativeAttempt(ctx, s.database.reader, scope, issue.WorkItemID, &event, now, termination, prior)
-		if err != nil {
-			return ctx, err
-		}
-		if update.duplicate {
-			continue
-		}
-		prior = &update
-		if termination && stored.Detail != nil {
-			owner.reuse[event.Data.AttemptID] = stored.Detail
-			continue
+		if event.Data.Sequence > 0 {
+			update, err := prepareNativeAttempt(ctx, s.database.reader, scope, issue.WorkItemID, &event, now, termination, prior)
+			if err != nil {
+				return ctx, err
+			}
+			if update.duplicate {
+				continue
+			}
+			prior = &update
 		}
 		runs[runDetailEntry(event.Data)] = event.Data
 	}

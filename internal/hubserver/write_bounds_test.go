@@ -89,7 +89,7 @@ func TestINV18RequestCommitDoesNoDerivedWork(t *testing.T) {
 		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_board_dirty").Scan(&dirty); err != nil || dirty != want {
 			t.Fatalf("request left dirty cards=%d want %d err=%v", dirty, want, err)
 		}
-		more, id, err := f.service.database.drainNativeBoardDirtyAfter(t.Context(), now, cursor)
+		more, id, err := f.service.database.drainNativeBoardDirtyAfter(f.service.runDetailContext(t.Context()), now, cursor)
 		if err != nil || !more {
 			t.Fatalf("background dirty refresh: more=%v err=%v", more, err)
 		}
@@ -119,7 +119,7 @@ func TestINV18RequestCommitDoesNoDerivedWork(t *testing.T) {
 	want := 2
 	for {
 		statements = statements[:0]
-		more, id, err := f.service.database.drainNativeBoardDirtyAfter(ctx, now, cursor)
+		more, id, err := f.service.database.drainNativeBoardDirtyAfter(f.service.runDetailContext(ctx), now, cursor)
 		if err != nil {
 			t.Fatalf("background expiry refresh: more=%v err=%v", more, err)
 		}

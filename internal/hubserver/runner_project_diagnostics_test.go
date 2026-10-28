@@ -53,10 +53,10 @@ func TestRunnerAdmissionPublishesNativeDecision(t *testing.T) {
 	for i, issue := range []tracker.NativeIssue{first, second} {
 		var data tracker.CollaborationData
 		var raw, eventID string
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id, data_json FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&eventID, &raw); err != nil {
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id,"+collaborationPayloadColumn("")+" FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&eventID, &raw); err != nil {
 			t.Fatal(err)
 		}
-		if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		if err := decodeRunHistory(f.service.runDetailContext(t.Context()), f.service.database.reader, raw, &data); err != nil {
 			t.Fatal(err)
 		}
 		want := view.Diagnostics.Admissions[i].Predicate
@@ -86,6 +86,7 @@ func TestRunnerAdmissionPublishesNativeDecision(t *testing.T) {
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	for _, stage := range []string{"legacy", "converted"} {
 		if stage == "legacy" {
+			restoreLegacyCollaborationPayloads(t, f.service, scope)
 			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE collaboration_events SET analytics_projection_version=NULL,scheduler_outcome=NULL,scheduler_reason='',scheduler_source='',scheduler_runner_id='' WHERE organization_id=? AND project_id=? AND type='scheduler.decision'`, scope.organization, scope.project); err != nil {
 				t.Fatal(err)
 			}

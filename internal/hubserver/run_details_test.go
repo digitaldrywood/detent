@@ -400,7 +400,7 @@ func TestNativeRunDetailReferences(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.ExecContext(t.Context(), "UPDATE collaboration_events SET data_json=? WHERE work_item_id=? AND json_extract(data_json,'$.run.sequence')=?", string(raw), issue.WorkItemID, strconv.FormatInt(sequence, 10)); err != nil {
+		if _, err := tx.ExecContext(t.Context(), "UPDATE collaboration_events SET data_json=?,payload_version=0,payload_attachment_id='',payload_entry='' WHERE work_item_id=? AND run_sequence=?", string(raw), issue.WorkItemID, sequence); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -542,7 +542,7 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), test.status)
 			wantUploads := 1
-			if test.duringUpload {
+			if test.duringUpload || test.cancelled && test.status == http.StatusOK {
 				wantUploads = 2
 			}
 			if store.uploads != wantUploads {
@@ -552,8 +552,12 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachment_archive_references").Scan(&references); err != nil {
 				t.Fatal(err)
 			}
-			if references != 1 {
-				t.Fatalf("rejected event committed %d references", references)
+			wantReferences := 1
+			if test.cancelled && test.status == http.StatusOK {
+				wantReferences = 2
+			}
+			if references != wantReferences {
+				t.Fatalf("event committed %d references, want %d", references, wantReferences)
 			}
 			var sequence int64
 			var status string

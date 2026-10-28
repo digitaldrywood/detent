@@ -466,7 +466,7 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope nativeScope, item, kind, outcome string) (tracker.CollaborationEvent, error) {
 	e := tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: tracker.NativeWorkItemID(item), AggregateType: "work_item"}
 	var actor, data, at string
-	statement := "SELECT id, sequence, type, schema_version, actor_json, data_json, recorded_at FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type=?"
+	statement := "SELECT id, sequence, type, schema_version, actor_json, " + collaborationPayloadColumn("") + ", recorded_at,payload_version,scheduler_present,scheduler_outcome,scheduler_reason,scheduler_source,scheduler_runner_id,scheduler_at,scheduler_revision,scheduler_change_id,scheduler_version_id,scheduler_head_sha,scheduler_change_present,event_revision FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type=?"
 	args := []any{scope.organization, scope.project, item, kind}
 	if outcome != "" && explanationRead(ctx) {
 		base := statement
@@ -478,9 +478,7 @@ func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope native
 			args = append(args, outcome)
 		}
 		statement += " ORDER BY sequence DESC"
-		if explanationRead(ctx) {
-			statement += " LIMIT 64"
-		}
+		statement += " LIMIT 64"
 	}
 	rows, err := q.QueryContext(ctx, statement, args...)
 	if err != nil {
@@ -489,12 +487,37 @@ func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope native
 	defer rows.Close()
 	found := false
 	for rows.Next() {
-		if err := rows.Scan(&e.ID, &e.AggregateSequence, &e.Type, &e.SchemaVersion, &actor, &data, &at); err != nil {
+		var version int
+		var present, changePresent sql.NullBool
+		var source, reason, decisionOutcome, runner, decisionAt sql.NullString
+		var revision, eventRevision sql.NullInt64
+		var change tracker.NativeChangeReference
+		if err := rows.Scan(&e.ID, &e.AggregateSequence, &e.Type, &e.SchemaVersion, &actor, &data, &at, &version, &present, &decisionOutcome, &reason, &source, &runner, &decisionAt, &revision, &change.ChangeID, &change.VersionID, &change.HeadSHA, &changePresent, &eventRevision); err != nil {
 			return tracker.CollaborationEvent{}, err
+		}
+		if version == 1 && e.Type == "scheduler.decision" {
+			projected := tracker.CollaborationData{Revision: tracker.Revision(eventRevision.Int64)}
+			if present.Bool {
+				decision := tracker.NativeSchedulerDecision{Outcome: decisionOutcome.String, Reason: reason.String, Source: source.String, RunnerID: runner.String, WorkItemRevision: tracker.Revision(revision.Int64)}
+				if decisionAt.String != "" {
+					decision.At, err = parseTimeValue(decisionAt.String)
+					if err != nil {
+						return tracker.CollaborationEvent{}, err
+					}
+				}
+				projected.Decision = &decision
+			}
+			if changePresent.Bool {
+				projected.Change = &change
+			}
+			data, err = marshalNative(projected)
+			if err != nil {
+				return tracker.CollaborationEvent{}, err
+			}
 		}
 		if outcome != "" {
 			var projection tracker.CollaborationData
-			if err := json.Unmarshal([]byte(data), &projection); err != nil {
+			if err := decodeRunHistory(ctx, q, data, &projection); err != nil {
 				return tracker.CollaborationEvent{}, err
 			}
 			if projection.Decision == nil || projection.Decision.Outcome != outcome {
@@ -504,7 +527,7 @@ func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope native
 		found = true
 		break
 	}
-	if err := rows.Err(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return tracker.CollaborationEvent{}, err
 	}
 	if !found {
@@ -600,7 +623,7 @@ func recordNativeSchedulingOutcome(ctx context.Context, tx *sql.Tx, scope *nativ
 		}
 		if err == nil {
 			var previous tracker.CollaborationData
-			if err := json.Unmarshal([]byte(raw), &previous); err != nil {
+			if err := decodeRunHistory(ctx, tx, raw, &previous); err != nil {
 				return err
 			}
 			if previous.Decision != nil {

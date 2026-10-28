@@ -995,6 +995,9 @@ func TestBackupCancellationRemovesPartialDestination(t *testing.T) {
 
 func openTestService(t *testing.T, cfg Config) *Service {
 	t.Helper()
+	if cfg.RunDetails == nil && (cfg.Hosted == nil || cfg.Hosted.SharedEntry == nil || cfg.Hosted.SharedEntry.RunDetails == nil) {
+		cfg.RunDetails = &memoryRunDetails{}
+	}
 	if cfg.RunnerReleaseClient == nil {
 		cfg.RunnerReleaseClient = &runnerReleaseFixture{}
 	}

@@ -97,7 +97,7 @@ func benchmarkHotSQLMutations(b *testing.B, f nativeFixture, scope nativeScope, 
 		if i > 0 {
 			d.RunnerID, d.Source, d.Outcome = "other-runner", "native_claim", "ready"
 		}
-		if err := appendNativeHistory(b.Context(), tx, scope, item, "scheduler.decision", tracker.CollaborationData{Decision: &d}, now); err != nil {
+		if err := appendLegacyNativeHistory(b.Context(), tx, scope, item, "scheduler.decision", tracker.CollaborationData{Decision: &d}, now); err != nil {
 			b.Fatal(err)
 		}
 	}

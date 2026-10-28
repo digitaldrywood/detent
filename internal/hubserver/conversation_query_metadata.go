@@ -16,6 +16,7 @@ import (
 )
 
 type conversationQueryMetadata struct {
+	project func(context.Context, *sql.Tx) error
 	columns []string
 	values  []any
 }
@@ -596,7 +597,7 @@ func (s *Service) prepareStorageConversionQueryMetadata(ctx context.Context, fam
 	var err error
 	switch family.name {
 	case "runs":
-		m, err = activityQueryMetadata(converted)
+		return s.prepareCollaborationPayloadMetadata(ctx, row, raw)
 	case "conversation_events":
 		m, err = eventQueryMetadata(converted)
 	case "messages":

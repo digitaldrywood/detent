@@ -48,6 +48,10 @@ func authorizeStorageConversion(ctx context.Context, tx *sql.Tx, scope nativeSco
 		return nil
 	}
 	before, after := storageConversionDigest(raw), storageConversionDigest(converted)
+	if family.name == "runs" {
+		before = storageConversionDigest(raw, int64(0), "", "", "", "", int64(0), int64(0))
+		after = storageConversionDigest(converted, int64(1), "", "", ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize)
+	}
 	if family.name == "sources" {
 		before = storageConversionDigest(raw, "", "", int64(0), int64(0))
 		after = storageConversionDigest([]byte{}, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize)

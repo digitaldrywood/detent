@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"encoding/json"
 	"slices"
 	"sort"
 	"time"
@@ -237,12 +236,24 @@ ORDER BY work_item_id,sequence LIMIT ? OFFSET ?`, args...)
 	}
 	defer rows.Close()
 	observed := 0
+	type record struct {
+		id, at, raw string
+		event       analyticsResidenceEvent
+	}
+	var records []record
 	for rows.Next() {
-		var id, at, raw string
-		var event analyticsResidenceEvent
-		if err := rows.Scan(&id, &event.kind, &at, &raw); err != nil {
+		var r record
+		if err := rows.Scan(&r.id, &r.event.kind, &r.at, &r.raw); err != nil {
 			return nil, nil, false, err
 		}
+		records = append(records, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, nil, false, err
+	}
+	for _, r := range records {
+		id, at, raw, event := r.id, r.at, r.raw, r.event
 		if observed == maxAnalyticsPopulation {
 			clipped = true
 			for i := byID[id]; i < len(issues); i++ {
@@ -255,7 +266,7 @@ ORDER BY work_item_id,sequence LIMIT ? OFFSET ?`, args...)
 		if err != nil {
 			return nil, nil, false, err
 		}
-		if err := json.Unmarshal([]byte(raw), &event.data); err != nil {
+		if err := decodeRunHistory(ctx, q, raw, &event.data); err != nil {
 			return nil, nil, false, err
 		}
 		issues[byID[id]].events = append(issues[byID[id]].events, event)
