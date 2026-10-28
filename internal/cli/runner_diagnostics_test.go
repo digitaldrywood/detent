@@ -110,7 +110,7 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 					runDoctorWorkflowSourceGit(t, workdir, "remote", "add", "origin", remote)
 				}
 				if !tt.missingWorkflow {
-					if _, _, _, err := resolveRunnerSetupPolicy(t.Context(), path, "orders"); err != nil {
+					if _, _, _, err := resolveRunnerProjectPolicy(t.Context(), cfg, "orders"); err != nil {
 						t.Fatalf("configured workflow cannot resolve: %v", err)
 					}
 				}
@@ -130,7 +130,10 @@ func TestCollectRunnerLocalChecks(t *testing.T) {
 					t.Fatalf("wrong doctor context: %+v", c)
 				}
 				if tt.startup {
-					return runDoctorStartupPreflight(t.Context(), c, options{}, doctorDeps{
+					opts := options{readDoctorProject: func(string, string) (globalconfig.Config, []string, error) {
+						return cfg, nil, nil
+					}}
+					return runDoctorStartupPreflight(t.Context(), c, opts, doctorDeps{
 						gitLandingCredential: func(context.Context, string) error { return nil },
 					})
 				}
