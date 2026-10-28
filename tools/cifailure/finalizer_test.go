@@ -91,8 +91,11 @@ func TestScheduledFinalizer(t *testing.T) {
 			for i := 1; i <= 5; i++ {
 				names = append(names, fmt.Sprintf("Verify race (%d/5)", i))
 			}
+			for i := 1; i <= 5; i++ {
+				names = append(names, fmt.Sprintf("Verify race (hub %d/5)", i), fmt.Sprintf("Test Coverage (hub %d/5)", i))
+			}
 			for i := 1; i <= 4; i++ {
-				names = append(names, fmt.Sprintf("Verify race (hub %d/4)", i), fmt.Sprintf("Test Coverage (%d/4)", i), fmt.Sprintf("Test Coverage (hub %d/4)", i))
+				names = append(names, fmt.Sprintf("Test Coverage (%d/4)", i))
 			}
 			for i := 1; i <= 3; i++ {
 				names = append(names, fmt.Sprintf("Browser Visual (%d/3)", i))
