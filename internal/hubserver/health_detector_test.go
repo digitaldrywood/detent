@@ -863,7 +863,7 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 				if test.cancellations {
 					kind = "workflow.transitioned"
 				}
-				_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?) INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) SELECT 'health-event-'||x,?,?,?,x+100,?,1,'{"kind":"runner","principal_id":"health-test"}','{}',? FROM n`, healthReadLimit+1, f.project.OrganizationID, f.project.ID, item.WorkItemID, kind, formatHubTime(now))
+				_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?) INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at,analytics_projection_version) SELECT 'health-event-'||x,?,?,?,x+100,?,1,'{"kind":"runner","principal_id":"health-test"}','{}',?,1 FROM n`, healthReadLimit+1, f.project.OrganizationID, f.project.ID, item.WorkItemID, kind, formatHubTime(now))
 				if err != nil {
 					t.Fatal(err)
 				}

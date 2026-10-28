@@ -120,6 +120,28 @@ func TestHostedActivityReads(t *testing.T) {
 	now := f.service.config.now().UTC().Truncate(time.Microsecond)
 	f.service.config.now = func() time.Time { return now }
 	db := f.service.database.db
+	projectActivity := func(t *testing.T, id string) {
+		t.Helper()
+		var raw string
+		if err := db.QueryRowContext(t.Context(), "SELECT data_json FROM native_attempts WHERE id=?", id).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var data tracker.NativeRunData
+		if err := decodeActivityRun(t.Context(), f.service.database.reader, raw, &data); err != nil {
+			t.Fatal(err)
+		}
+		tx, err := db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		if err := updateActivityAttemptProjection(t.Context(), tx, id, data, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	runtime := tracker.NativeRuntimeObservation{Phase: "implement", Identity: agentidentity.Configured("codex", "codex", "", "code", "a", "openai", "high", "", now), Phases: []tracker.NativePhase{{Name: "setup", StartedAt: now.Add(-5 * time.Minute), FinishedAt: now.Add(-4 * time.Minute)}, {Name: "implement", StartedAt: now.Add(-3 * time.Minute), FinishedAt: now.Add(-time.Minute)}}}
 	raw, err := json.Marshal(runtime)
 	if err != nil {
@@ -207,6 +229,13 @@ SELECT 'activity_seed_history',i.id,l.machine_id,'activity_seed_history_session'
 	}
 
 	projectTestChangeColumns(t, f.service)
+	ids, err := nativePageIDs(t.Context(), f.service.database.reader, "SELECT id FROM native_attempts ORDER BY id LIMIT ?", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		projectActivity(t, id)
+	}
 	beforeHistory := f.page(t, "owner", "/api/v2/organizations/org_browser_preview/activity")
 	browserHostedStatus(t, beforeHistory, http.StatusOK)
 	historyAt := formatHubTime(now.Add(-30 * 24 * time.Hour))
@@ -391,6 +420,7 @@ SELECT l.lease_id,i.organization_id,i.project_id,i.native_id,l.lease_id,l.fencin
 				if _, err := db.ExecContext(t.Context(), `UPDATE native_attempts SET status=?,started_at=?,updated_at=?,data_json=json_set(data_json,'$.runtime.identity.role',?,'$.runtime.phases',json(?),'$.runtime.phases_dropped',?) WHERE id=?`, tt.status, formatHubTime(now.Add(-time.Minute)), formatHubTime(now.Add(-time.Second)), tt.role, string(phases), tt.dropped, id); err != nil {
 					t.Fatal(err)
 				}
+				projectActivity(t, id)
 				itemScope := nativeScope{organization: scope.organization, project: tracker.ProjectID(project)}
 				typical, partial, err := f.service.readActivityTypicalDurations(t.Context(), f.service.database.reader, itemScope, operatortool.AnalyticsWindow{From: now.Add(-2 * time.Second), To: now}, "runner_browser_preview")
 				if err != nil {
