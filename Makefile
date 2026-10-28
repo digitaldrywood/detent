@@ -163,7 +163,7 @@ HUB_SLICE_1 := -run '^Test[BDEFILNQTUV]'
 HUB_SLICE_2 := -run '^Test[HMP]'
 HUB_SLICE_3 := -run '^Test[CGS]'
 HUB_SLICE_4 := -skip '^Test[ABCDEFGHILMNPQSTUV]'
-HUB_SLICE_5 := -run '^Test[A]'
+HUB_SLICE_5 := -run '^TestA'
 
 # RACE_SHARD=i/n races one balanced slice of the packages outside the hub server; RACE_SHARD=hub-N races hub server slice N.
 RACE_SHARD ?=
