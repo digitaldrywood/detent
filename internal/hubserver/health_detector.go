@@ -132,7 +132,7 @@ func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker
 			if !f.ConditionSince.IsZero() && f.ConditionSince.Before(now) {
 				openedAt = f.ConditionSince
 			}
-			_, err = tx.ExecContext(ctx, `INSERT INTO health_findings(id,organization_id,fingerprint,signal,class,subject_json,projects_json,opened_at,last_seen_at,severity,summary,next_action,evidence_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, organization, f.Fingerprint, f.Signal, f.Class, string(subject), string(projects), formatHubTime(openedAt), formatHubTime(now), f.Severity, f.Summary, f.NextAction, string(evidence))
+			_, err = tx.ExecContext(ctx, `INSERT INTO health_findings(id,organization_id,fingerprint,signal,class,subject_json,projects_json,opened_at,last_seen_at,severity,summary,next_action,evidence_json,projects_projected) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1)`, id, organization, f.Fingerprint, f.Signal, f.Class, string(subject), string(projects), formatHubTime(openedAt), formatHubTime(now), f.Severity, f.Summary, f.NextAction, string(evidence))
 			if err == nil {
 				err = syncHealthFindingProjects(ctx, tx, organization, id, f.Projects)
 			}
@@ -146,12 +146,9 @@ func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker
 			if err := syncHealthFindingProjects(ctx, tx, organization, id, f.Projects); err != nil {
 				return nil, err
 			}
-			_, err = tx.ExecContext(ctx, `UPDATE health_findings SET last_seen_at=?,resolved_at=NULL,projects_json=?,severity=?,summary=?,next_action=?,evidence_json=? WHERE id=? AND organization_id=?`, formatHubTime(now), string(projects), f.Severity, f.Summary, f.NextAction, string(evidence), id, organization)
+			_, err = tx.ExecContext(ctx, `UPDATE health_findings SET last_seen_at=?,resolved_at=NULL,projects_json=?,severity=?,summary=?,next_action=?,evidence_json=?,projects_projected=1 WHERE id=? AND organization_id=?`, formatHubTime(now), string(projects), f.Severity, f.Summary, f.NextAction, string(evidence), id, organization)
 		}
 		if err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE health_findings SET projects_projected=1 WHERE id=?`, id); err != nil {
 			return nil, err
 		}
 	}
