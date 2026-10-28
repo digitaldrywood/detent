@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -500,6 +501,82 @@ func TestAccessKeyScopeAndServiceLifetime(t *testing.T) {
 	}
 	if result, failed := serviceCall("list_projects", map[string]any{"organization_id": "org_alpha"}); !failed || !strings.Contains(string(result), "key_inactive") {
 		t.Fatalf("revoked service key=%s failed=%v", result, failed)
+	}
+}
+
+func TestKeyTenantCallAssertionLifetimeAfterUsage(t *testing.T) {
+	t.Parallel()
+	f := newEntryFixture(t)
+	owner := newBrowser(t, f.service.Handler())
+	owner.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+	key := createTestAccessKey(t, owner, "selected", []keyOrganization{{OrganizationID: "org_alpha", ProjectContext: apikey.ProjectContext{Access: "all"}}}, "org_alpha")
+	organization, err := f.service.registry.Organization(t.Context(), "org_alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name       string
+		delay      time.Duration
+		expires    time.Duration
+		wantExpiry time.Duration
+		wantError  bool
+	}{
+		{name: "immediate delivery", wantExpiry: 20 * time.Second},
+		{name: "usage recording outlasts assertion", delay: 21 * time.Second, wantExpiry: 41 * time.Second},
+		{name: "key expiry caps assertion", delay: 21 * time.Second, expires: 30 * time.Second, wantExpiry: 30 * time.Second},
+		{name: "key expires during usage recording", delay: 21 * time.Second, expires: 20 * time.Second, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := start
+			sent := 0
+			if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE access_key_organizations SET last_used_at=NULL WHERE key_id=? AND organization_id=?", key.ID, organization.ID); err != nil {
+				t.Fatal(err)
+			}
+			service := &Service{config: f.service.config, auth: f.service.auth}
+			service.config.now = func() time.Time {
+				var used sql.NullString
+				if err := f.service.auth.store.db.QueryRowContext(t.Context(), "SELECT last_used_at FROM access_key_organizations WHERE key_id=? AND organization_id=?", key.ID, organization.ID).Scan(&used); err != nil && !errors.Is(err, sql.ErrNoRows) {
+					t.Fatal(err)
+				}
+				if used.Valid {
+					now = start.Add(test.delay)
+				}
+				return now
+			}
+			credential := key
+			credential.ExpiresAt = nil
+			if test.expires != 0 {
+				expires := start.Add(test.expires)
+				credential.ExpiresAt = &expires
+			}
+			service.config.transport = func(Organization) (http.RoundTripper, error) {
+				return runtimeTransport(func(request *http.Request) (*http.Response, error) {
+					sent++
+					body, err := io.ReadAll(request.Body)
+					if err != nil {
+						return nil, err
+					}
+					verifier := &cloudassert.Verifier{PublicKeys: f.fixtures["org_alpha"].config.Hosted.SharedEntry.PublicKeys, Issuer: "entry", Audience: "org_alpha", Generation: 1, Now: service.config.now}
+					claims, err := verifier.Verify(request.Header.Get(cloudassert.Header), request.Method, request.URL.RequestURI(), body)
+					if err != nil {
+						return nil, err
+					}
+					if !claims.IssuedAt.Equal(now) || !claims.ExpiresAt.Equal(start.Add(test.wantExpiry)) || claims.Key.ID != key.ID {
+						t.Fatalf("assertion issued=%s expires=%s key=%s", claims.IssuedAt, claims.ExpiresAt, claims.Key.ID)
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+				}), nil
+			}
+			_, err := service.keyTenantCall(t.Context(), credential, organization, "/internal/v1/keys/call", map[string]string{"name": operatortool.AddComment})
+			if test.wantError {
+				if !errors.Is(err, cloudassert.ErrInvalid) || sent != 0 {
+					t.Fatalf("expired key call error=%v sent=%d", err, sent)
+				}
+			} else if err != nil || sent != 1 {
+				t.Fatalf("key call error=%v sent=%d", err, sent)
+			}
+		})
 	}
 }
 

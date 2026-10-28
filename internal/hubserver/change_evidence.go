@@ -22,6 +22,10 @@ func insertChangeEvidence(ctx context.Context, tx *sql.Tx, changeID, versionID, 
 	if err != nil {
 		return err
 	}
+	return insertChangeEvidenceRecord(ctx, tx, changeID, versionID, kind, sourceKey, raw)
+}
+
+func insertChangeEvidenceRecord(ctx context.Context, tx *sql.Tx, changeID, versionID, kind, sourceKey, raw string) error {
 	result, err := tx.ExecContext(ctx, "INSERT INTO change_evidence (change_id, version_id, kind, source_key, record_json) VALUES (?, NULLIF(?, ''), ?, NULLIF(?, ''), ?)", changeID, versionID, kind, sourceKey, raw)
 	if err != nil {
 		return err
@@ -316,15 +320,7 @@ func storeChangeReview(ctx context.Context, tx *sql.Tx, organization, changeID s
 				return err
 			}
 		}
-		result, err := tx.ExecContext(ctx, "INSERT INTO change_evidence (change_id, version_id, kind, record_json) VALUES (?, ?, 'review', ?)", changeID, review.VersionID, raw)
-		if err != nil {
-			return err
-		}
-		sequence, err := result.LastInsertId()
-		if err != nil {
-			return err
-		}
-		return projectChangeColumns(ctx, tx, "change_evidence", sequence, raw)
+		return insertChangeEvidenceRecord(ctx, tx, changeID, review.VersionID, "review", "", raw)
 	}
 	slots := reviewAttributionSlots(&review)
 	if err := storeAttributionSlots(ctx, tx, review.VersionID, review.ID, slots); err != nil {

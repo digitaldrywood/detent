@@ -122,6 +122,11 @@ func (s *Service) keyTenantCall(ctx context.Context, key accessKey, org Organiza
 	if err := s.recordCredentialUse(ctx, key, org.ID); err != nil {
 		return nil, err
 	}
+	claims.IssuedAt = s.config.now()
+	claims.ExpiresAt = claims.IssuedAt.Add(assertionLifetime)
+	if key.ExpiresAt != nil && key.ExpiresAt.Before(claims.ExpiresAt) {
+		claims.ExpiresAt = *key.ExpiresAt
+	}
 	status, raw, err := s.signedCall(ctx, org, claims, body, "")
 	if err != nil {
 		return nil, err
