@@ -237,11 +237,11 @@ class LandingGateTest(unittest.TestCase):
                     self.assertIn("-short", hub_tests[0]["args"])
                     self.assertNotIn("test-landing-hub", result.stdout)
                 else:
-                    self.assertEqual(len(hub_tests), {3: 3, 4: 2}.get(index, 6))
-                    for test_index, call in enumerate(hub_tests):
+                    self.assertEqual(len(hub_tests), {3: 3, 4: 1}.get(index, 6))
+                    for call in hub_tests:
                         self.assertNotIn("-short", call["args"])
                         self.assertIn("-timeout=10m", call["args"])
-                        self.assertEqual(call["budget"], "1" if test_index < 2 else "2")
+                        self.assertEqual(call["budget"], "2")
                         self.assertEqual(call["args"][call["args"].index("-p") + 1], "1")
                         self.assertFalse(call["token"])
                         pattern = call["args"][call["args"].index("-run") + 1]
