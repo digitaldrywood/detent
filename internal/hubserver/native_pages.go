@@ -302,11 +302,6 @@ func (s *Service) readIssuesProjection(ctx context.Context, scope nativeScope, p
 		return tracker.NativeIssuePage{}, err
 	}
 	defer tx.Rollback()
-	if searchQuery != "" {
-		if err := requireNativeSearchIndex(ctx, tx, scope); err != nil {
-			return tracker.NativeIssuePage{}, err
-		}
-	}
 	watermark, _, err := readDashboardWatermark(ctx, tx, scope)
 	if err != nil {
 		return tracker.NativeIssuePage{}, err

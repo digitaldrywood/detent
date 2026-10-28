@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -74,6 +75,9 @@ func duplicateWindow(scope nativeScope, now time.Time, machine bool) (string, []
 
 func resolveNativeDuplicates(ctx context.Context, query nativeQueryer, scope nativeScope, request tracker.CreateIssue, now time.Time, machine bool) ([]possibleDuplicate, error) {
 	if err := requireNativeSearchIndex(ctx, query, scope); err != nil {
+		if errors.Is(err, operatortool.ErrServiceUnavailable) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	pageQuery, pageErr := prepareNativePageQuery(ctx, query, scope, "", "native_issue_actors", "native_transition_facts")
