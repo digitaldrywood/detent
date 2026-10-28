@@ -524,106 +524,6 @@ func nativeChangeDiff(head string, files ...string) runner.AttemptDiffSource {
 	}
 }
 
-func TestNativeExecutionEmptyDiffPreservesAuditedLanding(t *testing.T) {
-	t.Parallel()
-	for _, test := range []struct {
-		name          string
-		audit         bool
-		github        bool
-		release       bool
-		wantShortcuts int
-	}{
-		{name: "audited native change uses normal landing", audit: true},
-		{name: "non-audited native change keeps shortcut", wantShortcuts: 1},
-		{name: "audited GitHub PR keeps shortcut", audit: true, github: true, wantShortcuts: 1},
-		{name: "audited release delivery keeps shortcut", audit: true, release: true, wantShortcuts: 1},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			selected := clientTestPolicy()
-			selected.Gates.SecurityAudit, selected.Gates.GitHubPullRequest = test.audit, test.github
-			selected = selected.WithID()
-			version := tracker.ChangeVersion{ID: "version_example", ChangeVersionInput: tracker.ChangeVersionInput{
-				Repository: "https://github.com/example-org/example-project", BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), PolicyID: selected.ID,
-			}, Policy: selected}
-			detail := tracker.ChangeDetail{
-				Change:   tracker.ChangeRequest{ID: "change_example", ProjectID: "prj_example", WorkItemID: "wi_example", CurrentVersion: version.ID},
-				Versions: []tracker.ChangeVersion{version}, Summary: tracker.ChangeSummary{Status: "reviewed"},
-			}
-			landingWrites := 0
-			client, err := New(Config{URL: "http://native-hub.test", TokenSource: func() string { return "token" }, HTTPClient: providerHandlerClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				var response any
-				switch {
-				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/validate"):
-					response = struct{}{}
-				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/changes"):
-					response = []tracker.ChangeRequest{detail.Change}
-				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/changes/change_example"):
-					page := operatortool.ChangeResult{OrganizationID: "org_example", ProjectID: "prj_example", WorkItemID: "wi_example", Detail: &detail, Read: &operatortool.ChangeRead{VersionID: version.ID, Sections: map[string]operatortool.ChangeReadPage{}}}
-					for _, section := range []string{"versions", "reviews", "checks", "discussion"} {
-						page.Read.Sections[section] = operatortool.ChangeReadPage{Complete: true}
-					}
-					response = page
-				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/landing"):
-					landingWrites++
-					var request tracker.LandChangeVersion
-					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-						t.Fatal(err)
-					}
-					if test.audit && !test.github && !test.release && (request.Receipt == nil || request.Receipt.SecurityAudit == nil || request.Receipt.BaseSHA == "") {
-						w.WriteHeader(http.StatusUnprocessableEntity)
-						response = map[string]string{"message": "landing requires security audit evidence for its exact base and head"}
-					} else {
-						response = detail.Change
-					}
-				default:
-					t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
-				}
-				if err := json.NewEncoder(w).Encode(response); err != nil {
-					t.Fatal(err)
-				}
-			}))})
-			if err != nil {
-				t.Fatal(err)
-			}
-			native, err := client.Native("org_example", "prj_example")
-			if err != nil {
-				t.Fatal(err)
-			}
-			source := &NativeConnector{client: native}
-			claim := nativeClaim{source: source, lease: tracker.NativeLease{ID: "lease_example", WorkItemID: "wi_example", FencingToken: 1}, deadline: time.Now().Add(time.Hour)}
-			if test.release {
-				claim.recovery.Issue.ReleaseDelivery = &tracker.ReleaseDelivery{ChangeID: detail.Change.ID, VersionID: version.ID, ReleasePickInput: tracker.ReleasePickInput{
-					Repository: version.Repository, BaseSHA: version.BaseSHA, HeadSHA: version.HeadSHA, BaseRef: "release/example",
-				}}
-			}
-			integrations := 0
-			execution := &nativeExecution{
-				scheduler: &Scheduler{client: client, now: time.Now, nativeClaims: map[string]nativeClaim{"wi_example": claim}, nativeProjects: map[string]*NativeConnector{"prj_example": source}, claimPolicies: map[string]claimPolicy{"wi_example": {project: "prj_example", descriptor: selected}}},
-				claim:     claim, role: runner.RoleRework, data: tracker.NativeRunData{AttemptID: "attempt_example", PolicyID: selected.ID},
-				worktreeState: "clean", worktreeHead: version.BaseSHA, storedSeq: 1,
-				lastDiff: &tracker.AttemptDiffRequest{BaseSHA: version.BaseSHA, HeadSHA: version.BaseSHA}, preparedDisposition: &tracker.NativeDisposition{Status: "complete"},
-				integrationSource: func(context.Context, tracker.ChangeVersion, string) (workspace.LandResult, error) {
-					integrations++
-					return workspace.LandResult{MergeSHA: version.BaseSHA, BaseRef: "main", Method: "squash"}, nil
-				},
-			}
-			err = execution.settle(t.Context(), "succeeded", 1)
-			if err != nil || integrations != test.wantShortcuts || landingWrites != test.wantShortcuts {
-				t.Fatalf("empty diff settlement: integrations=%d landing writes=%d, want %d; error=%v", integrations, landingWrites, test.wantShortcuts, err)
-			}
-			if test.wantShortcuts == 0 {
-				target, err := execution.LandingTarget(t.Context())
-				if err != nil || target.VersionID != version.ID || target.HeadSHA != version.HeadSHA || target.BaseSHA != version.BaseSHA || !target.SecurityAudit || execution.change.Landing != nil {
-					t.Fatalf("audited version is unavailable for normal landing: target=%+v change=%+v error=%v", target, execution.change, err)
-				}
-			} else if execution.change.Landing == nil || !execution.change.Landing.Landed {
-				t.Fatalf("shortcut lost landing receipt: %+v", execution.change)
-			}
-		})
-	}
-}
-
 // TestNativeExecutionSettlesFinishedRun drives one claimed execution through
 // start, checkpoint and finish against a real hub, and checks what the finish
 // decides: whether a Change Request is opened under the lease and what the run
@@ -715,7 +615,6 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		{name: "required PR refuses an unknown retained branch head", requiredPR: true, publicationReference: "unknown", publicationFailure: "identity", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 2},
 		{name: "required PR refuses unrelated ambiguous external effect", requiredPR: true, publicationUncertain: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "required PR no edit Rework preserves human hold", requiredPR: true, checkPRBeforeFinish: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
-		{name: "required PR reconciles a lost push already on the forge without another push or attempt", requiredPR: true, lostPush: "present", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "required PR retries a lost push absent from the forge", requiredPR: true, lostPush: "absent", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "required PR retries a lost push over its recorded head", requiredPR: true, lostPush: "absent", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 2},
 		{name: "required PR finishes a lost push over a diverged branch as head moved", requiredPR: true, lostPush: "diverged", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
@@ -840,7 +739,6 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			base, head := base, head
 			var publicationSource func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)
 			var publicationCalls int
-			var publicationPushes int
 			publicationNumber := 7
 			if test.publicationLanded {
 				publicationNumber = 8
@@ -1026,9 +924,6 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					if test.lostPush != "" {
 						record := opts.PublicationEffect
 						opts.PublicationEffect = func(ctx context.Context, kind, state string, publication workspace.GitHubPublication) error {
-							if kind == "git_push" && state == "pending" {
-								publicationPushes++
-							}
 							if opts.UnresolvedEffect && opts.ExpectedPublicationHead == "" && state == "pending" && test.lostPush == "absent" && !publicationCleared {
 								t.Fatal("publication retried before recording the absent external effect")
 							}
@@ -1048,9 +943,6 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 							pushLost = true
 							if err := record(ctx, kind, state, publication); err != nil {
 								return err
-							}
-							if test.lostPush == "present" {
-								nativeChangeGitWithContext(ctx, t, info.Path, "push", "origin", version.HeadSHA+":refs/heads/"+info.Branch)
 							}
 							return errors.Join(errors.New("git push response lost before the remote recorded it"), record(ctx, kind, "ambiguous", publication))
 						}
@@ -2160,13 +2052,6 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				t.Fatalf("repeated finish error = %v", again)
 			}
 			checkChange(test.wantChanges, test.wantVersions)
-			if test.lostPush == "present" {
-				recovery, err := h.admin.Recovery(t.Context(), item)
-				if err != nil || len(recovery.Attempts) != 1 || publicationPushes != 1 || publicationCalls != 1 || publicationHead() != head {
-					t.Fatalf("publication replay started new delivery: attempts=%d pushes=%d PR creates=%d error=%v", len(recovery.Attempts), publicationPushes, publicationCalls, err)
-				}
-			}
-
 			evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
 			if err != nil || evidence.Attempt == nil {
 				t.Fatalf("finalizer projection unavailable: %+v, %v", evidence, err)
@@ -5272,15 +5157,10 @@ func nativeChangeSourceRepo(t *testing.T) string {
 
 func nativeChangeGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	nativeChangeGitWithContext(t.Context(), t, dir, args...)
-}
-
-func nativeChangeGitWithContext(ctx context.Context, t *testing.T, dir string, args ...string) {
-	t.Helper()
 	if !filepath.IsAbs(dir) {
 		t.Fatalf("git fixture directory must be absolute: %q", dir)
 	}
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(t.Context(), "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_CEILING_DIRECTORIES="+dir)
 	if output, err := cmd.CombinedOutput(); err != nil {

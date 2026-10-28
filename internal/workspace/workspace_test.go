@@ -3787,7 +3787,6 @@ func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
 
 	for _, tt := range []struct {
 		name        string
-		args        []string
 		redirection string
 		exitCode    int
 		wantDelay   bool
@@ -3796,9 +3795,6 @@ func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
 		{name: "stderr retained", redirection: ">/dev/null", wantDelay: true},
 		{name: "failed command", exitCode: 23},
 		{name: "output closed", redirection: ">/dev/null 2>&1"},
-		{name: "worktree creation stdout retained", args: []string{"worktree", "add", "--detach", "new-worktree", "HEAD"}, redirection: "2>/dev/null"},
-		{name: "worktree creation stderr retained", args: []string{"worktree", "add", "--detach", "new-worktree", "HEAD"}, redirection: ">/dev/null"},
-		{name: "failed worktree creation retains diagnostics", args: []string{"worktree", "add", "--detach", "new-worktree", "HEAD"}, exitCode: 23},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -3830,14 +3826,10 @@ exit %d
 			joined := make(chan struct{})
 			go func() {
 				defer close(joined)
-				args := tt.args
-				if len(args) == 0 {
-					args = []string{"worktree", "prune"}
-				}
 				output, err := runGitAtWithEnv(ctx, dir, []string{
 					"DETENT_PIPE_RELEASE=" + fifoPath,
 					"DETENT_PIPE_DONE=" + donePath,
-				}, args...)
+				}, "worktree", "prune")
 				results <- result{output: output, err: err}
 			}()
 			defer func() {

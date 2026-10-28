@@ -150,14 +150,10 @@ enabled = true
 			if err := toml.Unmarshal(raw, &settings); err != nil {
 				t.Fatal(err)
 			}
-			for _, key := range []string{"plugins", "hooks", "skills", "notify"} {
+			for _, key := range []string{"mcp_servers", "plugins", "hooks", "skills", "notify"} {
 				if _, ok := settings[key]; ok {
 					t.Errorf("worker config kept %s:\n%s", key, raw)
 				}
-			}
-			servers, _ := settings["mcp_servers"].(map[string]any)
-			if servers["personal"] == nil {
-				t.Errorf("worker config dropped MCP servers that workflows use for browser verification:\n%s", raw)
 			}
 			providers, _ := settings["model_providers"].(map[string]any)
 			if settings["model"] != "gpt-5.6-codex" || settings["model_provider"] != "openai" || settings["model_reasoning_effort"] != "high" || providers["openai"] == nil {

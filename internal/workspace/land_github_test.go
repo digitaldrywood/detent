@@ -242,6 +242,8 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		t.Skip("landing gate fixtures require a POSIX shell")
 	}
 
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {
 		releaseRace          string
 		releasePushRefused   bool
@@ -496,9 +498,7 @@ func TestLocalGitLandChangeViaGitHub(t *testing.T) {
 		{name: "external secondary quota 429", method: "merge", external: true, failureMethod: "GET", status: 429, message: "secondary rate limit", rate: true, retryAfter: "120"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if test.gitReadFailure == "" && !test.baseMovesDuringRead && !test.publicationLostReply && test.publicationReadFault == "" {
-				t.Parallel()
-			}
+			t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 			fixture := newLandingFixture(t)
 			originalBase := fixture.remoteMain(t)
 			if test.pinnedBase && !test.releaseMultiple {

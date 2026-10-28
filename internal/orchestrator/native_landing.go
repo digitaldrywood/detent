@@ -39,8 +39,7 @@ func (o *Orchestrator) completeNativeLandingRun(
 	running Running,
 ) bool {
 	landing := event.Result.NativeLanding
-	reader, ok := o.connector.(connector.WorkflowStateReader)
-	if landing == nil || !ok {
+	if landing == nil || !o.nativeWorkflow() {
 		return false
 	}
 	issue := running.Issue
@@ -76,31 +75,11 @@ func (o *Orchestrator) completeNativeLandingRun(
 		if target == "" {
 			return handoff(fmt.Errorf("the landed item %s was not returned by the hub", issueID))
 		}
-		terminal := stateIn(target, o.cfg.TerminalStates)
-		if !terminal {
-			states, err := reader.WorkflowStates(ctx)
-			if err != nil {
-				return handoff(fmt.Errorf("read native workflow states: %w", err))
-			}
-			for _, candidate := range states {
-				if normalizeState(candidate.Name) == normalizeState(target) && candidate.Terminal {
-					terminal = true
-				}
-			}
-			if !terminal {
-				from := cloneIssue(issue)
-				from.State = target
-				lane, allowed := connector.CompletionLane(states, target, "", false)
-				if !allowed {
-					return handoff(fmt.Errorf("native workflow allows no move from %s to a terminal lane", target))
-				}
-				if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, from, lane, event.CompletedAt, "completed_active_review_transition", workflowLaneMetadata{}); err != nil {
-					return handoff(fmt.Errorf("complete landed native item: %w", err))
-				}
-				target = lane
-			}
-		}
 	} else {
+		reader, ok := o.connector.(connector.WorkflowStateReader)
+		if !ok {
+			return false
+		}
 		states, err := reader.WorkflowStates(ctx)
 		if err != nil {
 			return handoff(fmt.Errorf("read native workflow states: %w", err))
