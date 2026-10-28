@@ -576,12 +576,14 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		land                    bool
 		integrate               bool
 		integrateHead           bool
+		integrateChanged        bool
 		landingRestart          bool
 		reviewDispositions      bool
 		finalMessage            string
 		disposition             *tracker.NativeDisposition
 		releasedBlocked         bool
 		unreadFinal             bool
+		refreshFinal            bool
 		checkpointHead          string
 		existing                bool
 		published               string
@@ -693,6 +695,11 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			wantDiagnostic: "the final attempt diff does not identify the current Change Request head", wantChanges: 1, wantVersions: 1},
 		{name: "removed clean worktree reuses its matching final checkpoint diff", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, unreadFinal: true, checkpointHead: head,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "final checkpoint refreshes the diff after a late commit before cleanup", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(nativeChangeFixtureHead("b"), "README.md"), refreshFinal: true, unreadFinal: true, checkpointHead: head,
+			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "final checkpoint advances past the stored diff before cleanup", role: runner.RoleCode, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(nativeChangeFixtureHead("b"), "README.md"), refreshFinal: true, unreadFinal: true, checkpointHead: nativeChangeFixtureHead("b"),
+			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "NativeCompletion differing final head already integrated with a nonempty diff", land: true, integrate: true, integrateChanged: true, role: runner.RoleCode, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), finalMessage: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"},
 		{name: "an unavailable final diff cannot reuse an older checkpoint head", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, unreadFinal: true, checkpointHead: nativeChangeFixtureHead("b"),
 			wantDiagnostic: "checkpoint head", wantChanges: 1, wantVersions: 1},
 		{name: "rework preserves the same head after configuration changes", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, repolicy: true,
@@ -1208,6 +1215,13 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			}
 			if err := execution.Checkpoint(guarded, checkpoint); err != nil {
 				t.Fatal(err)
+			}
+			if test.refreshFinal {
+				execution.(runner.DiffExecution).SetDiffSource(nativeChangeDiff(head, "README.md"))
+				checkpoint.HeadSHA = head
+				if err := execution.Checkpoint(guarded, checkpoint); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if test.publicationRecovery {
 				reopenPublication := func() {
@@ -1743,6 +1757,10 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 						checkpointHead = head
 					}
 					owner.SetDiffSource(nativeChangeDiff(checkpointHead))
+					if test.integrateChanged {
+						checkpointHead = nativeChangeFixtureHead("e")
+						owner.SetDiffSource(nativeChangeDiff(checkpointHead, "README.md"))
+					}
 					if err := owner.Start(ctx, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
 						t.Fatal(err)
 					}
@@ -1758,6 +1776,9 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 						return workspace.LandResult{MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: "squash"}, nil
 					})
 					if err := owner.RecordUsage(ctx, tracker.NativeUsage{Provider: "openai", Model: "test", Input: 123, Output: 45}); err != nil {
+						t.Fatal(err)
+					}
+					if err := owner.PrepareFinish(ctx, "succeeded", test.finalMessage, nil); err != nil {
 						t.Fatal(err)
 					}
 					if err := owner.PrepareFinish(ctx, "succeeded", test.finalMessage, nil); err != nil {
@@ -1789,6 +1810,10 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					attempt := evidence.Attempt
 					if attempt.Status != "succeeded" || attempt.Outcome != "succeeded" || attempt.ClaimReleasedAt == nil || evidence.CurrentLease != nil || evidence.Change == nil || evidence.Change.Change.CurrentLanding() == nil {
 						t.Fatalf("integration did not finish and release: attempt=%+v lease=%+v", attempt, evidence.CurrentLease)
+					}
+					recovery, err := h.admin.Recovery(t.Context(), item)
+					if err != nil || len(recovery.Attempts) != 2 || len(h.candidatesIn(t, "In Progress")) != 0 || len(h.candidatesIn(t, "Rework")) != 0 {
+						t.Fatalf("repeated finalization scheduled another provider attempt: attempts=%d error=%v", len(recovery.Attempts), err)
 					}
 					if f := attempt.Finalization; f == nil || !f.Settled || !f.Reviewed || f.VersionID == "" || f.HeadSHA != head || f.Error != "" || f.VersionError != "" {
 						t.Fatalf("integration lost host finalization: %+v", f)
@@ -2142,6 +2167,16 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
 			if err != nil || evidence.Attempt == nil {
 				t.Fatalf("finalizer projection unavailable: %+v, %v", evidence, err)
+			}
+			if test.refreshFinal {
+				var stored tracker.AttemptDiff
+				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/attempts/"+evidence.Attempt.AttemptID+"/diff", nil, &stored); err != nil {
+					t.Fatal(err)
+				}
+				recovery, err := h.admin.Recovery(t.Context(), item)
+				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "succeeded" || recovery.Attempts[0].TerminalFailure != nil || stored.HeadSHA != checkpoint.HeadSHA || stored.Generation.Seq != evidence.Attempt.Sequence {
+					t.Fatalf("final checkpoint did not store and settle the final head once: diff=%+v attempts=%+v error=%v", stored, recovery.Attempts, err)
+				}
 			}
 			if change := changes.NativeChange(); change != nil {
 				f := evidence.Attempt.Finalization

@@ -487,6 +487,9 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 		return err
 	}
 	if string(previous) == string(current) {
+		if e.diffSource != nil {
+			return e.captureDiff(ctx)
+		}
 		return nil
 	}
 	if err := e.append(ctx, "run.checkpointed", "", &checkpoint); err != nil {

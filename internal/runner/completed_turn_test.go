@@ -255,10 +255,12 @@ func TestNativeCompletedTurnRetry(t *testing.T) {
 		changedSource, changedPolicy, changedReview bool
 		rejectedGate, rejectedReview                bool
 		independentGate                             bool
+		repeatedRefusal                             bool
 		turns, commits, validations                 int
 	}{
 		{name: "commit", stage: "commit", turns: 1, commits: 2},
 		{name: "publication", stage: "publication", turns: 1, commits: 1},
+		{name: "repeated publication refusal on unchanged source", stage: "publication", repeatedRefusal: true, turns: 1, commits: 1},
 		{name: "checkpoint recovery", stage: "checkpoint_recovery", turns: 1, commits: 1},
 		{name: "validation publication", stage: "validation", turns: 1, commits: 1, validations: 1},
 		{name: "changed source", stage: "publication", changedSource: true, turns: 2, commits: 2},
@@ -331,6 +333,16 @@ func TestNativeCompletedTurnRetry(t *testing.T) {
 			}
 			if test.rejectedReview {
 				second.recovery.ChangeDetail = &tracker.ChangeDetail{Reviews: []tracker.ChangeReview{{ID: "review-rejected", Decision: "changes_requested"}}}
+			}
+			if test.repeatedRefusal {
+				second.failPublication = true
+				request.Execution = second
+				if _, err := r.Run(t.Context(), request); err == nil || agent.calls != 1 || backend.finalizationCalls != 1 {
+					t.Fatalf("repeated refusal reran completed work: error=%v provider turns=%d commits=%d", err, agent.calls, backend.finalizationCalls)
+				}
+				third := &retryStepExecution{finalizingTestExecution: &finalizingTestExecution{}}
+				third.recovery.Attempts = []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "second", CompletionBody: message, Steps: second.steps}, Status: "failed", Checkpoint: second.checkpoint}}
+				second = third
 			}
 			request.Execution = second
 			result, err := r.Run(t.Context(), request)

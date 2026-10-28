@@ -171,8 +171,7 @@ func (e *nativeExecution) settleIntegratedChange(ctx context.Context, detail tra
 		return false, nil
 	}
 	for _, version := range detail.Versions {
-		if version.ID != detail.Change.CurrentVersion || version.PolicyID != e.data.PolicyID ||
-			version.HeadSHA != diff.HeadSHA && (diff.BaseSHA != diff.HeadSHA || len(diff.Files) != 0) {
+		if version.ID != detail.Change.CurrentVersion || version.PolicyID != e.data.PolicyID {
 			continue
 		}
 		if d := e.claim.recovery.Issue.ReleaseDelivery; d != nil && (d.ChangeID != detail.Change.ID || d.VersionID != version.ID || d.HeadSHA != version.HeadSHA || d.BaseSHA != version.BaseSHA || d.Repository != version.Repository) {
