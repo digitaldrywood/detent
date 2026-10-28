@@ -81,8 +81,8 @@ func readLegacyReportFact(ctx context.Context, q nativeQueryer, scope nativeScop
 		query = "SELECT id,organization_id,project_id,work_item_id,lease_id,status,started_at,updated_at,data_json FROM main.native_attempts WHERE report_projection_version IS NULL"
 	case "report_events":
 		f.columns = "id,organization_id,project_id,work_item_id,sequence,type,recorded_at,data_json,scheduler_outcome,scheduler_source,scheduler_reason,analytics_from_state,analytics_to_state,from_state,to_state,analytics_projection_version"
-		f.known = "SELECT id,organization_id,project_id,work_item_id,sequence,type,recorded_at,data_json,scheduler_outcome,scheduler_source,scheduler_reason,analytics_from_state,analytics_to_state,analytics_from_state,analytics_to_state,analytics_projection_version FROM main.collaboration_events WHERE (analytics_projection_version=1 OR type NOT IN ('workflow.transitioned','scheduler.decision','issue.created'))"
-		query = "SELECT id,organization_id,project_id,work_item_id,sequence,type,recorded_at,data_json FROM main.collaboration_events INDEXED BY collaboration_events_report_recovery WHERE analytics_projection_version IS NULL AND type IN ('workflow.transitioned','scheduler.decision','issue.created')"
+		f.known = "SELECT id,organization_id,project_id,work_item_id,sequence,type,recorded_at,data_json,scheduler_outcome,scheduler_source,scheduler_reason,analytics_from_state,analytics_to_state,analytics_from_state,analytics_to_state,analytics_projection_version FROM main.collaboration_events WHERE analytics_projection_version=1"
+		query = "SELECT id,organization_id,project_id,work_item_id,sequence,type,recorded_at,data_json FROM main.collaboration_events WHERE analytics_projection_version IS NULL"
 	}
 	args := []any{scope.organization}
 	query += " AND organization_id=?"
@@ -97,7 +97,7 @@ func readLegacyReportFact(ctx context.Context, q nativeQueryer, scope nativeScop
 	if family == "report_attempts" {
 		query += " ORDER BY project_id,work_item_id,id LIMIT ?"
 	} else {
-		query += " ORDER BY project_id,type,id LIMIT ?"
+		query += " ORDER BY project_id,id LIMIT ?"
 	}
 	args = append(args, storageConversionRows+1)
 	rows, err := q.QueryContext(ctx, query, args...)
