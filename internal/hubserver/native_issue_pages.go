@@ -231,8 +231,8 @@ CASE WHEN i.last_activity_at = '0001-01-01T00:00:00Z' THEN '' ELSE rtrim(i.last_
 i.project_id || '#' || i.number`
 
 const nativeClosedIssuePageProjection = `SELECT i.native_id,
-0, '', 0, CASE WHEN ws.terminal = 1 AND ` + nativeTerminalEnteredAt + ` IS NOT NULL THEN 0 ELSE 1 END,
-CASE WHEN ws.terminal = 1 THEN COALESCE(strftime('%Y-%m-%dT%H:%M:%f', ` + nativeTerminalEnteredAt + `), '') ELSE '' END,
+0, '', 0, CASE WHEN ws.terminal = 1 AND i.terminal_entered_at IS NOT NULL THEN 0 ELSE 1 END,
+CASE WHEN ws.terminal = 1 THEN COALESCE(strftime('%Y-%m-%dT%H:%M:%f', i.terminal_entered_at), '') ELSE '' END,
 i.project_id || '#' || i.number`
 
 const nativeIssuePageItemColumns = 9
