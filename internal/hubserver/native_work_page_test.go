@@ -29,7 +29,7 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 	for _, fixture := range []nativeFixture{f, other} {
 		scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
 		seedNativeFixturePolicy(t, f.service, string(scope.organization)+"/"+string(scope.project))
-		var issues []tracker.NativeIssue
+		issues := make([]tracker.NativeIssue, 2)
 		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
@@ -46,7 +46,7 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			issues = append(issues, updated)
+			issues[index] = updated
 			closed[issue.WorkItemID] = at
 		}
 		for range 400 {
