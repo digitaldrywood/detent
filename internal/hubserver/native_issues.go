@@ -138,7 +138,6 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
 	var landingPending bool
 	var priority sql.NullInt64
 	var actorKind, actorPrincipal sql.NullString
-	var legacyTransitions bool
 	var legacyChange bool
 	bodyColumn := "i.body"
 	if compact {
@@ -155,8 +154,7 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
  i.actor_json,i.actor_kind,i.actor_principal_id, `+nativeActorDisplayName(nativeIssuePrincipal("i"), "i.organization_id")+`, i.issue_contract_json, i.provenance_json, i.native_created_at, i.native_updated_at, i.last_activity_at, COALESCE(i.github_node_id, ''),
  i.author_login, i.created_at, i.source_updated_at, i.synchronized_at, p.require_dependencies = 0, i.archived,
  COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(i.github_number, 0), i.url,
- CASE WHEN ws.terminal = 1 THEN `+nativeTerminalEnteredAt+` ELSE NULL END,
- CASE WHEN ws.terminal=1 THEN EXISTS(SELECT 1 FROM collaboration_events legacy WHERE legacy.organization_id=i.organization_id AND legacy.project_id=i.project_id AND legacy.work_item_id=i.native_id AND legacy.type='workflow.transitioned' AND legacy.page_projection_ready IS NULL) ELSE 0 END,
+ CASE WHEN ws.terminal = 1 THEN i.terminal_entered_at ELSE NULL END,
  c.id, CASE WHEN c.landed_version_id = c.claim_version_id THEN COALESCE(c.landed_base_ref, '') ELSE '' END,
  CASE WHEN c.landed_version_id = c.claim_version_id THEN COALESCE(c.landed_merge_sha, '') ELSE COALESCE(v.head_sha, '') END,
  COALESCE((`+nativePendingLandingClause+`),0), pr.external_id, pr.external_url,
@@ -172,7 +170,7 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visi
 		&organizationSlug, &projectSlug, &internalID, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile,
 		&issueType, &reportContext, &verificationState, &verifiedBy, &verifiedAt, &issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &actorKind, &actorPrincipal, &displayName, &contractJSON, &provenance, &created, &updated, &activity, &externalID,
 		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies, &issue.Archived,
-		&repositoryOwner, &repositoryName, &sourceNumber, &importedURL, &closedAt, &legacyTransitions, &listChangeID, &listBranch, &listHead, &landingPending, &pullRequestID, &pullRequestURL, &legacyChange)
+		&repositoryOwner, &repositoryName, &sourceNumber, &importedURL, &closedAt, &listChangeID, &listBranch, &listHead, &landingPending, &pullRequestID, &pullRequestURL, &legacyChange)
 	if err != nil {
 		return issue, 0, err
 	}
@@ -190,15 +188,6 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visi
 	}
 	if !actorPrincipal.Valid {
 		if err := query.QueryRowContext(ctx, "SELECT "+nativeActorDisplayName("?", "?"), scope.organization, issue.Actor.PrincipalID).Scan(&displayName); err != nil {
-			return issue, 0, err
-		}
-	}
-	if legacyTransitions {
-		legacy, err := prepareNativePageQuery(ctx, query, scope, id, "native_transition_facts")
-		if err != nil {
-			return issue, 0, err
-		}
-		if err := legacy.QueryRowContext(ctx, "SELECT "+nativeTerminalEnteredAt+" FROM issues i WHERE i.organization_id=? AND i.project_id=? AND i.native_id=?", scope.organization, scope.project, id).Scan(&closedAt); err != nil {
 			return issue, 0, err
 		}
 	}
