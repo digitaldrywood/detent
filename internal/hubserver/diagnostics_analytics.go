@@ -15,8 +15,8 @@ import (
 const diagnosticsAttemptsQuery = `SELECT r.dimension,r.started_at,r.updated_at,r.data_json
 FROM analytics_hourly_rollups r INDEXED BY analytics_attempt_reports_updated
 WHERE r.organization_id=? AND r.project_id=? AND r.metric='attempt'
-AND r.updated_at>=? AND julianday(r.updated_at)>=julianday(?) AND julianday(r.started_at)<julianday(?)
-ORDER BY r.started_at,r.dimension LIMIT ?`
+AND r.updated_at>=?
+ORDER BY r.updated_at,r.started_at LIMIT ?`
 
 const diagnosticsFailuresQuery = `SELECT r.status,r.data_json,r.work_item_id,r.failed_at,r.started_at,r.updated_at
 FROM analytics_hourly_rollups r INDEXED BY analytics_attempt_failed
@@ -71,10 +71,10 @@ func readDiagnosticsAttempts(ctx context.Context, q nativeQueryer, scope nativeS
 	statement := diagnosticsAttemptsQuery
 	if _, projected := q.(analyticsRollupReader); !projected {
 		statement = `SELECT r.id,r.started_at,r.updated_at,r.data_json FROM report_attempts r
-WHERE r.organization_id=? AND r.project_id=? AND r.updated_at>=? AND julianday(r.updated_at)>=julianday(?) AND julianday(r.started_at)<julianday(?)
-ORDER BY r.started_at,r.id LIMIT ?`
+WHERE r.organization_id=? AND r.project_id=? AND r.updated_at>=?
+ORDER BY r.updated_at,r.started_at LIMIT ?`
 	}
-	statement, args, err := diagnosticsScopedQuery(ctx, statement, []any{scope.organization, scope.project, w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), formatHubTime(w.From), formatHubTime(w.To)})
+	statement, args, err := diagnosticsScopedQuery(ctx, statement, []any{scope.organization, scope.project, w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly)})
 	if err != nil {
 		return err
 	}
@@ -84,15 +84,28 @@ ORDER BY r.started_at,r.id LIMIT ?`
 	}
 	defer rows.Close()
 	phases := map[string]int{}
+	observed := 0
 	for rows.Next() {
-		if out.AttemptsObserved == maxAnalyticsPopulation {
+		if observed == maxAnalyticsPopulation {
 			out.Partial = true
 			break
 		}
+		observed++
 		var attempt nativeAnalyticsAttempt
 		var started, updated, raw string
 		if err := rows.Scan(&attempt.AttemptID, &started, &updated, &raw); err != nil {
 			return err
+		}
+		attempt.StartedAt, err = parseTimeValue(started)
+		if err != nil {
+			return err
+		}
+		attempt.ObservedAt, err = parseTimeValue(updated)
+		if err != nil {
+			return err
+		}
+		if attempt.ObservedAt.Before(w.From) || !attempt.StartedAt.Before(w.To) {
+			continue
 		}
 		var payload struct {
 			Detail  *runDetailReference `json:"detail"`
@@ -119,14 +132,6 @@ ORDER BY r.started_at,r.id LIMIT ?`
 				}
 				payload.Runtime.Activity = activity
 			}
-		}
-		attempt.StartedAt, err = parseTimeValue(started)
-		if err != nil {
-			return err
-		}
-		attempt.ObservedAt, err = parseTimeValue(updated)
-		if err != nil {
-			return err
 		}
 		if payload.Runtime.Phases.malformed || len(payload.Runtime.Phases.items) == 0 || payload.Runtime.PhasesDropped > 0 {
 			out.Partial = true
