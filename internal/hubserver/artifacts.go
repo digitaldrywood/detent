@@ -122,17 +122,18 @@ func (s *Service) artifactReceipt(c echo.Context) error {
 		return s.nativeAPIError(c, nativePublicInvalid("Invalid artifact receipt"))
 	}
 	var count int
-	if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND id=? AND json_extract(data_json,'$.run_id')=?", scope.organization, scope.project, ref.WorkItemID, ref.AttemptID, ref.RunID).Scan(&count); err != nil {
+	if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND id=? AND run_id=?", scope.organization, scope.project, ref.WorkItemID, ref.AttemptID, ref.RunID).Scan(&count); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if count != 1 {
 		return s.nativeAPIError(c, nativeNotFound())
 	}
 	if ref.VersionID != "" {
-		if err := s.database.reader.QueryRowContext(readCtx, "SELECT count(*) FROM change_versions v JOIN change_requests c ON c.id=v.change_id WHERE v.id=? AND c.organization_id=? AND c.project_id=? AND json_extract(v.record_json,'$.attempt_id')=?", ref.VersionID, scope.organization, scope.project, ref.AttemptID).Scan(&count); err != nil {
+		matches, err := changeArtifactAttemptMatches(readCtx, s.database.reader, scope, ref.VersionID, ref.AttemptID)
+		if err != nil {
 			return s.nativeAPIError(c, err)
 		}
-		if count != 1 {
+		if !matches {
 			return s.nativeAPIError(c, nativeNotFound())
 		}
 	}
@@ -247,7 +248,7 @@ func (s *Service) authorizeArtifactUpload(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	var count int
-	if err := tx.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM native_attempts WHERE id=? AND lease_id=? AND organization_id=? AND project_id=? AND work_item_id=? AND status='running' AND json_extract(data_json,'$.run_id')=?", r.AttemptID, r.LeaseID, scope.organization, scope.project, r.WorkItemID, r.RunID).Scan(&count); err != nil {
+	if err := tx.QueryRowContext(c.Request().Context(), "SELECT count(*) FROM native_attempts WHERE id=? AND lease_id=? AND organization_id=? AND project_id=? AND work_item_id=? AND status='running' AND run_id=?", r.AttemptID, r.LeaseID, scope.organization, scope.project, r.WorkItemID, r.RunID).Scan(&count); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	if count != 1 {

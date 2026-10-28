@@ -30,6 +30,7 @@ ELSE json_object('discussion_id',c.id||k,'version_id',v.id,'created_at',json_ext
 FROM change_requests c JOIN change_versions v ON v.change_id=c.id CROSS JOIN n WHERE c.organization_id=? AND c.project_id=? AND c.id LIKE 'change_wi_shaped_%'`, scope.organization, scope.project); err != nil {
 		t.Fatal(err)
 	}
+	projectTestChangeColumns(t, f.service)
 	for _, test := range []struct {
 		name      string
 		rangeName string

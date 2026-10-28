@@ -119,7 +119,10 @@ func persistAttemptLanding(ctx context.Context, tx *sql.Tx, attempt string, rece
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO change_landing_receipts (attempt_id, version_id, record_json) VALUES (?, ?, ?)
 ON CONFLICT(attempt_id) DO UPDATE SET version_id=excluded.version_id, record_json=excluded.record_json`, attempt, receipt.VersionID, raw)
-	return err
+	if err != nil {
+		return err
+	}
+	return projectChangeColumns(ctx, tx, "change_landing_receipts", attempt, raw)
 }
 
 func recordLandingTransition(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, from string) error {

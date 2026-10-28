@@ -23,7 +23,22 @@ type productivityHour struct {
 	worked, reworked, landed int
 }
 
+func requireProductivityChangeColumns(ctx context.Context, query nativeQueryer, scope nativeScope, id string) error {
+	var pending bool
+	err := query.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM change_requests c WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? AND (c.created_at IS NULL OR EXISTS(SELECT 1 FROM change_versions v WHERE v.change_id=c.id AND v.head_sha IS NULL) OR EXISTS(SELECT 1 FROM change_evidence e WHERE e.change_id=c.id AND e.has_validator IS NULL))) OR EXISTS(SELECT 1 FROM collaboration_events e WHERE e.organization_id=? AND e.project_id=? AND e.work_item_id=? AND e.type='workflow.transitioned' AND (e.from_state IS NULL OR e.to_state IS NULL))`, scope.organization, scope.project, id, scope.organization, scope.project, id).Scan(&pending)
+	if err != nil {
+		return err
+	}
+	if pending {
+		return errChangeColumnsIncomplete
+	}
+	return nil
+}
+
 func refreshProductivitySummary(ctx context.Context, tx projectionQuery, scope nativeScope, id string) error {
+	if err := requireProductivityChangeColumns(ctx, tx, scope, id); err != nil {
+		return err
+	}
 	var created, closed, state, kind, priority, actorRaw, body, labelsRaw string
 	err := tx.QueryRowContext(ctx, `SELECT i.created_at,coalesce(CASE WHEN ws.terminal=1 THEN `+nativeTerminalEnteredAt+` END,''),ws.detent_state,coalesce(i.issue_type,''),coalesce(CAST(q.priority_override AS TEXT),''),i.actor_json,i.body,i.labels_json
  FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id LEFT JOIN queue_entries q ON q.issue_id=i.id
@@ -67,7 +82,7 @@ func refreshProductivitySummary(ctx context.Context, tx projectionQuery, scope n
 			return err
 		}
 		var completionActor string
-		err = tx.QueryRowContext(ctx, `SELECT actor_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='workflow.transitioned' AND json_extract(data_json,'$.to_state')='Done' ORDER BY sequence DESC LIMIT 1`, scope.organization, scope.project, id).Scan(&completionActor)
+		err = tx.QueryRowContext(ctx, `SELECT actor_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='workflow.transitioned' AND to_state='Done' ORDER BY sequence DESC LIMIT 1`, scope.organization, scope.project, id).Scan(&completionActor)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -201,8 +216,11 @@ func productivityHours(ctx context.Context, tx projectionQuery, scope nativeScop
 
 func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope nativeScope, id string) (productivityQuality, error) {
 	out := productivityQuality{}
-	rows, err := tx.QueryContext(ctx, `SELECT c.id,c.work_item_id,l.record_json,coalesce(json_extract(c.record_json,'$.landed.version_id')=v.id AND json_extract(c.record_json,'$.landed.head_sha')=json_extract(v.record_json,'$.head_sha') AND length(json_extract(c.record_json,'$.landed.merge_sha')) IN (40,64),0) FROM change_requests c JOIN change_versions v ON v.change_id=c.id JOIN quality_landings l ON l.version_id=v.id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=?
- UNION ALL SELECT c.id,c.work_item_id,json_extract(c.record_json,'$.landed'),1 FROM change_requests c JOIN change_versions v ON v.change_id=c.id AND v.id=json_extract(c.record_json,'$.landed.version_id') WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? AND NOT EXISTS(SELECT 1 FROM quality_landings l WHERE l.version_id=v.id) AND json_extract(c.record_json,'$.landed.head_sha')=json_extract(v.record_json,'$.head_sha') AND length(json_extract(c.record_json,'$.landed.merge_sha')) IN (40,64)`, scope.organization, scope.project, id, scope.organization, scope.project, id)
+	if err := requireProductivityChangeColumns(ctx, tx, scope, id); err != nil {
+		return out, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT c.id,c.work_item_id,l.record_json,coalesce(c.landed_version_id=v.id AND c.landed_head_sha=v.head_sha AND length(c.landed_merge_sha) IN (40,64),0) FROM change_requests c JOIN change_versions v ON v.change_id=c.id JOIN quality_landings l ON l.version_id=v.id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=?
+ UNION ALL SELECT c.id,c.work_item_id,c.record_json,1 FROM change_requests c JOIN change_versions v ON v.change_id=c.id AND v.id=c.landed_version_id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? AND NOT EXISTS(SELECT 1 FROM quality_landings l WHERE l.version_id=v.id) AND c.landed_head_sha=v.head_sha AND length(c.landed_merge_sha) IN (40,64)`, scope.organization, scope.project, id, scope.organization, scope.project, id)
 	if err != nil {
 		return out, err
 	}
@@ -215,7 +233,7 @@ func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope na
 			rows.Close()
 			return out, err
 		}
-		if err := json.Unmarshal([]byte(raw), &landing.Landing); err != nil {
+		if err := decodeQualityLanding(ctx, raw, &landing.Landing); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -254,7 +272,7 @@ func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope na
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return out, err
 	}
-	rows, err = tx.QueryContext(ctx, `SELECT e.record_json FROM change_requests c JOIN change_evidence e ON e.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? AND e.kind='review' AND json_extract(e.record_json,'$.decision')='changes_requested' AND NOT EXISTS(SELECT 1 FROM change_versions current JOIN change_versions newer ON newer.change_id=current.change_id AND newer.number>current.number WHERE current.id=e.version_id AND julianday(json_extract(newer.record_json,'$.created_at'))<=julianday(json_extract(e.record_json,'$.created_at')))`, scope.organization, scope.project, id)
+	rows, err = tx.QueryContext(ctx, `SELECT e.record_json FROM change_requests c JOIN change_evidence e ON e.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? AND e.kind='review' AND e.claim_review_decision='changes_requested' AND NOT EXISTS(SELECT 1 FROM change_versions current JOIN change_versions newer ON newer.change_id=current.change_id AND newer.number>current.number WHERE current.id=e.version_id AND julianday(newer.created_at)<=julianday(e.created_at))`, scope.organization, scope.project, id)
 	if err != nil {
 		return out, err
 	}

@@ -349,6 +349,7 @@ FROM shaped`,
 			t.Fatalf("seed production-shaped rollups: %v\n%s", err, statement.query)
 		}
 	}
+	projectTestChangeColumns(t, s)
 	convertTestAnalyticsProjections(t, s)
 }
 
@@ -457,6 +458,7 @@ func TestAnalyticsRollupReportPlans(t *testing.T) {
 			f := newUsageHostedFixture(t)
 			scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
 			tenant.seed(t, f.service, scope)
+			projectTestChangeColumns(t, f.service)
 			reader := f.service.database.reader
 			for _, window := range []string{"24h", "7d", "30d"} {
 				t.Run(window, func(t *testing.T) {
@@ -637,5 +639,6 @@ FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organ
 			t.Fatalf("seed production project: %v\n%s", err, statement.query)
 		}
 	}
+	projectTestChangeColumns(t, s)
 	rebuildTestAnalyticsRollups(t, s, scope)
 }

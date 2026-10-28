@@ -45,6 +45,7 @@ SELECT ?,x*2-?,'review',?,json_object('review_id',?||x,'version_id',?,'decision'
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	projectTestChangeColumns(t, f.service)
 	w := operatortool.AnalyticsWindow{From: now.Add(-time.Hour), To: now, Bucket: time.Hour}
 	for _, test := range []struct {
 		offset, count int

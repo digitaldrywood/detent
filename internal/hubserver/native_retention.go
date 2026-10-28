@@ -26,6 +26,7 @@ type nativeRetentionStage struct {
 func (s *Service) maintainNativeBackfills(ctx context.Context) error {
 	return s.runNativeRetentionStages(ctx, []nativeRetentionStage{
 		{"populate conversation query metadata", s.convertConversationQueryMetadata},
+		{"populate Change columns", s.populateChangeColumns},
 		{"populate claim facts", func(ctx context.Context) error {
 			return s.database.populateClaimFacts(s.contentContext(ctx))
 		}},

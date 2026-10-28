@@ -335,6 +335,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"convertActivityAttempt":            "Backfills one attempt and its owned phase and duration projections after verifying its current source.",
 		"applyHealthProjection":             "Converts one source row after a conditional write fences its source and projection state.",
 		"writeTimeIndexRecord":              "Writes one historical timestamp and its durable cursor per retention transaction.",
+		"populateChangeColumn":              "Updates one owned typed projection after decoding and comparing its source through the reader pool.",
 		"populateClaimFact":                 "Populates at most 100 unknown claim projections from their source rows in the existing retention transaction owner.",
 		"convertAttemptHotProjection":       "Converts one attempt projection after checking its source row under the write transaction.",
 		"convertNativeBoardRank":            "Converts one project workflow rank set after checking its source under the write transaction.",

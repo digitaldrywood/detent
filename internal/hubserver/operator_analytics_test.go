@@ -545,6 +545,7 @@ VALUES (?,'org_security',?,?,json_object('landed',json_object('version_id',?,'he
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}
+			projectTestChangeColumns(t, f.service)
 			identity := operatortool.Identity{PrincipalID: user.identity.Subject, OrganizationID: "org_security", CredentialID: "test"}
 			ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
 				return operatortool.Authority{Identity: identity, Check: func(context.Context, operatortool.Requirement) error { return nil }}, nil

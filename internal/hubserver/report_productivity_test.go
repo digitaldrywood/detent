@@ -126,6 +126,7 @@ func TestOrganizationProductivity(t *testing.T) {
 	if err := f.service.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
+	projectTestChangeColumns(t, f.service)
 	drainTestNativeBoard(t, f.service)
 	for _, project := range projects {
 		rebuildTestAnalyticsRollups(t, f.service, nativeScope{organization: org, project: project})

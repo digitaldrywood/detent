@@ -29,6 +29,30 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	columns, err := f.service.database.reader.QueryContext(t.Context(), `PRAGMA table_info(collaboration_events)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer columns.Close()
+	extras := []string{}
+	for columns.Next() {
+		var cid, notNull, primary int
+		var name, kind string
+		var defaultValue any
+		if err := columns.Scan(&cid, &name, &kind, &notNull, &defaultValue, &primary); err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(name, "change_") || strings.HasPrefix(name, "publication_") {
+			extras = append(extras, name+" "+kind)
+		}
+	}
+	if err := columns.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(extras) > 0 {
+		data = []byte(strings.ReplaceAll(string(data), "recorded_at TEXT NOT NULL,", "recorded_at TEXT NOT NULL,\n"+strings.Join(extras, ",\n")+","))
+	}
+
 	projection, err := migrationFiles.ReadFile("migrations/20261023234600_scheduler_projections.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -84,6 +108,9 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), `DROP VIEW native_transition_facts;
+DROP INDEX IF EXISTS collaboration_events_change_unknown;
+DROP INDEX IF EXISTS collaboration_events_change_conversion;
+DROP INDEX IF EXISTS collaboration_events_health_transition_unknown;
 DROP INDEX collaboration_events_comment_actor;
 DROP INDEX collaboration_events_terminal_transition;
 DROP INDEX collaboration_events_page_unknown;
@@ -164,6 +191,9 @@ ALTER TABLE collaboration_events DROP COLUMN page_projection_ready;
 		lease := claimNativeAttempt(t, f.nativeFixture, worker, "activity-machine", "activity-session", f.issue.WorkItemID)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", worker, nativeStartedEvent(lease)), http.StatusOK)
 		version := f.publishExternal(t, "activity-version")
+		if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER change_versions_linked_activity"); err != nil {
+			t.Fatal(err)
+		}
 		for _, body := range []string{"Comment", "## Codex Workpad"} {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: body}, Body: body}), http.StatusOK)
 		}

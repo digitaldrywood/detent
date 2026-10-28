@@ -41,6 +41,7 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		historyLegacy                                                                         string
 		landing                                                                               string
 		unbound, unmerged, otherBranch, lateLanding                                           bool
+		partialLanding, otherCommit                                                           bool
 		largeHistory                                                                          bool
 		changedSource, concurrentReports                                                      bool
 	}{
@@ -53,6 +54,9 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 		{name: "native default branch landing retains provenance", initial: true, canonical: true, changedInputs: true, reachable: true, landing: "native", status: http.StatusNoContent, applied: true},
 		{name: "merged PR default branch landing retains provenance", initial: true, canonical: true, changedInputs: true, reachable: true, landing: "pr", status: http.StatusNoContent, applied: true},
 		{name: "native landing on another branch stays pending", initial: true, canonical: true, changedInputs: true, landing: "native", otherBranch: true, status: http.StatusNoContent},
+		{name: "partially backfilled native landing applies matching source", initial: true, canonical: true, changedInputs: true, landing: "native", partialLanding: true, status: http.StatusNoContent, applied: true},
+		{name: "partially backfilled native landing on another branch stays pending", initial: true, canonical: true, changedInputs: true, landing: "native", partialLanding: true, otherBranch: true, status: http.StatusNoContent},
+		{name: "partially backfilled native landing of another commit stays pending", initial: true, canonical: true, changedInputs: true, landing: "native", partialLanding: true, otherCommit: true, status: http.StatusNoContent},
 		{name: "merged PR on another branch stays pending", initial: true, canonical: true, changedInputs: true, landing: "pr", otherBranch: true, status: http.StatusNoContent},
 		{name: "unbound merged PR stays pending", initial: true, canonical: true, changedInputs: true, landing: "pr", unbound: true, status: http.StatusNoContent},
 		{name: "closed unmerged PR stays pending", initial: true, canonical: true, changedInputs: true, landing: "pr", unmerged: true, status: http.StatusNoContent},
@@ -267,12 +271,20 @@ func TestObservedRepositoryWorkflowApply(t *testing.T) {
 				}
 				if test.landing == "native" {
 					change := tracker.ChangeRequest{ID: "change_landed", OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, WorkItemID: item.WorkItemID, CurrentVersion: "version_landed", Landed: &tracker.ChangeLanding{VersionID: "version_landed", MergeSHA: source.Commit, BaseRef: baseRef, Actor: tracker.Actor{Kind: "runner", PrincipalID: landingActor}}}
+					if test.otherCommit {
+						change.Landed.MergeSHA = strings.Repeat("e", 40)
+					}
 					raw, err := json.Marshal(change)
 					if err != nil {
 						t.Fatal(err)
 					}
 					if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_requests(id, organization_id, project_id, work_item_id, record_json) VALUES(?,?,?,?,?)", change.ID, f.project.OrganizationID, f.project.ID, item.WorkItemID, string(raw)); err != nil {
 						t.Fatal(err)
+					}
+					if test.partialLanding {
+						if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE change_requests SET landed_version_id=? WHERE id=?`, change.Landed.VersionID, change.ID); err != nil {
+							t.Fatal(err)
+						}
 					}
 					version := tracker.ChangeVersion{ID: "version_landed", ChangeID: change.ID, Number: 1, ChangeVersionInput: tracker.ChangeVersionInput{Repository: "https://github.com/example-org/example-project"}}
 					raw, err = json.Marshal(version)

@@ -443,7 +443,7 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?,?)", change.ID, scope.organization, scope.project, issue.WorkItemID, raw); err != nil {
+				if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json,claim_version_id) VALUES(?,?,?,?,?,?)", change.ID, scope.organization, scope.project, issue.WorkItemID, raw, change.CurrentVersion); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_issue_links(change_id,organization_id,project_id,work_item_id) VALUES(?,?,?,?)", change.ID, scope.organization, scope.project, issue.WorkItemID); err != nil {
@@ -454,6 +454,9 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 					t.Fatal(err)
 				}
 				if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,1,?)", change.CurrentVersion, change.ID, versionRaw); err != nil {
+					t.Fatal(err)
+				}
+				if err := projectChangeColumns(t.Context(), tx, "change_requests", change.ID, raw); err != nil {
 					t.Fatal(err)
 				}
 			}

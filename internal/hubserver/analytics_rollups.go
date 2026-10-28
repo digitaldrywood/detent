@@ -99,7 +99,7 @@ var analyticsEventTable = regexp.MustCompile(`(?i)\b(FROM|JOIN)\s+collaboration_
 
 var analyticsSQLKeywords = map[string]bool{"where": true, "join": true, "left": true, "inner": true, "cross": true, "on": true, "order": true, "group": true, "limit": true, "union": true, "except": true, "intersect": true, "having": true, "window": true, "using": true, "natural": true, "indexed": true, "not": true, "outer": true}
 
-const analyticsEventSource = `(SELECT r.organization_id,r.project_id,r.dimension AS id,r.work_item_id AS work_item_id,r.sequence AS sequence,r.type AS type,r.recorded_at AS recorded_at,e.data_json,e.scheduler_outcome,e.scheduler_source,e.scheduler_reason,e.analytics_from_state,e.analytics_to_state,e.analytics_attempt_id,e.analytics_projection_version FROM analytics_hourly_rollups r JOIN collaboration_events e ON e.id=r.dimension WHERE r.metric='event')`
+const analyticsEventSource = `(SELECT r.organization_id,r.project_id,r.dimension AS id,r.work_item_id AS work_item_id,r.sequence AS sequence,r.type AS type,r.recorded_at AS recorded_at,e.data_json,e.from_state,e.to_state,e.scheduler_outcome,e.scheduler_source,e.scheduler_reason,e.analytics_from_state,e.analytics_to_state,e.analytics_attempt_id,e.analytics_projection_version FROM analytics_hourly_rollups r JOIN collaboration_events e ON e.id=r.dimension WHERE r.metric='event')`
 
 func analyticsRollupStatement(statement string) string {
 	return analyticsEventTable.ReplaceAllStringFunc(analyticsRollupTables.Replace(statement), func(match string) string {

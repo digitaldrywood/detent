@@ -19,8 +19,8 @@ const diffBodyRetention = 30 * 24 * time.Hour
 
 const supersededDiffBody = `julianday(d.created_at) < julianday(?)
 AND NOT EXISTS (SELECT 1 FROM native_attempts a WHERE a.id=d.attempt_id AND a.status='running')
-AND NOT EXISTS (SELECT 1 FROM change_versions v JOIN change_requests c ON json_extract(c.record_json,'$.current_version_id')=v.id
-WHERE json_extract(v.record_json,'$.attempt_id')=d.attempt_id)
+AND NOT EXISTS (SELECT 1 FROM change_versions v JOIN change_requests c ON (c.claim_version_id=v.id OR c.claim_version_id IS NULL)
+WHERE c.organization_id=d.organization_id AND c.project_id=d.project_id AND (v.attempt_id=d.attempt_id OR v.attempt_id IS NULL))
 AND d.id <> (SELECT latest.id FROM attempt_diffs latest
 WHERE latest.organization_id=d.organization_id AND latest.project_id=d.project_id AND latest.work_item_id=d.work_item_id AND latest.source=d.source
 ORDER BY latest.created_at DESC, latest.rowid DESC LIMIT 1)`

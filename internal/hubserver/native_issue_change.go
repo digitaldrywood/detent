@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -154,17 +155,27 @@ func readNativeChangeVersion(ctx context.Context, query nativeQueryer, request t
 // agree on what "the item as it stands" means. Zero means no attempt has
 // recorded anything for the item.
 func readNativeChangeRevision(ctx context.Context, query nativeQueryer, scope nativeScope, item string) (tracker.Revision, error) {
+	legacy, err := readLegacyChangeAttempts(ctx, query, scope, item)
+	if err != nil {
+		return 0, err
+	}
+	legacyClause := "0"
+	args := []any{scope.organization, scope.project, item}
+	if len(legacy) > 0 {
+		legacyClause = "a.id IN (" + strings.TrimSuffix(strings.Repeat("?,", len(legacy)), ",") + ")"
+		args = append(args, legacy...)
+	}
+
 	var revision tracker.Revision
-	err := query.QueryRowContext(ctx, `SELECT COALESCE(MAX(a.work_item_revision), 0) FROM native_attempts a
+	err = query.QueryRowContext(ctx, `SELECT COALESCE(MAX(a.work_item_revision), 0) FROM native_attempts a
 WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.status = 'succeeded'
   AND (EXISTS (SELECT 1 FROM attempt_diffs d
       WHERE d.attempt_id = a.id AND d.source = 'attempt' AND d.seq = a.sequence AND d.file_count > 0)
     OR EXISTS (SELECT 1 FROM change_versions v
       JOIN change_requests c ON c.id = v.change_id
       JOIN change_issue_links l ON l.change_id = c.id
-      WHERE l.work_item_id = a.work_item_id
-        AND json_extract(v.record_json, '$.attempt_id') = a.id))`,
-		scope.organization, scope.project, item).Scan(&revision)
+      WHERE c.organization_id=a.organization_id AND c.project_id=a.project_id AND l.work_item_id = a.work_item_id
+        AND v.attempt_id = a.id) OR `+legacyClause+`)`, args...).Scan(&revision)
 	if err != nil {
 		return 0, fmt.Errorf("read recorded change revision for %s: %w", item, err)
 	}

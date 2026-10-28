@@ -220,6 +220,9 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 			return nil, err
 		}
 	}
+	if err := projectChangeColumns(ctx, tx, "change_versions", version.ID, raw); err != nil {
+		return nil, err
+	}
 	if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok && version.Validation != nil {
 		command := *version.Validation
 		if err := persistCommandOutput(ctx, tx, string(scope.organization), version.ID, "", "validation", 0, &command); err != nil {
@@ -260,6 +263,9 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 		return nil, err
 	}
 	if err := writeArchiveChangeFacts(ctx, tx, change, ""); err != nil {
+		return nil, err
+	}
+	if err := projectChangeColumns(ctx, tx, "change_requests", change.ID, raw); err != nil {
 		return nil, err
 	}
 	ref := &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}

@@ -907,12 +907,35 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			proof, found, err := resolveVersionPublicationPush(t.Context(), tx, scope, string(f.issue.WorkItemID), version)
-			if err != nil || found != test.want {
-				t.Fatalf("proof=%+v want=%v error=%v", proof, test.want, err)
-			}
-			if found && (proof.Change != ref || proof.RecordingAttemptID != start.Data.AttemptID || proof.EffectID != binding.EffectID("git_push")) {
-				t.Fatalf("checkpoint attribution changed: %+v", proof)
+			for _, projection := range []string{"typed", "unconverted event", "unconverted attempt", "unconverted policy"} {
+				if _, err := tx.ExecContext(t.Context(), "SAVEPOINT projection"); err != nil {
+					t.Fatal(err)
+				}
+				if projection != "typed" {
+					if _, err := tx.ExecContext(t.Context(), "UPDATE collaboration_events SET claim_attempt_id=NULL WHERE type='run.checkpointed'"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if projection == "unconverted attempt" {
+					if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET claim_facts_known=NULL WHERE id=?", start.Data.AttemptID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if projection == "unconverted policy" {
+					if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET claim_facts_known=NULL,policy_id='' WHERE id=? AND policy_id=?", start.Data.AttemptID, descriptor.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				proof, found, err := resolveVersionPublicationPush(t.Context(), tx, scope, string(f.issue.WorkItemID), version)
+				if err != nil || found != test.want {
+					t.Fatalf("%s: proof=%+v want=%v error=%v", projection, proof, test.want, err)
+				}
+				if found && (proof.Change != ref || proof.RecordingAttemptID != start.Data.AttemptID || proof.EffectID != binding.EffectID("git_push")) {
+					t.Fatalf("%s: checkpoint attribution changed: %+v", projection, proof)
+				}
+				if _, err := tx.ExecContext(t.Context(), "ROLLBACK TO projection; RELEASE projection"); err != nil {
+					t.Fatal(err)
+				}
 			}
 			detail, err := readChangeDetail(t.Context(), tx, scope, string(f.issue.WorkItemID), version.ChangeID, f.service.config.now())
 			if err != nil || !reflect.DeepEqual(detail.Versions, baseline.Versions) || !reflect.DeepEqual(detail.Reviews, baseline.Reviews) || !reflect.DeepEqual(detail.Summary, baseline.Summary) || detail.External != nil {
@@ -1227,6 +1250,20 @@ func TestChangeApprovalPreservesProtectedMerge(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var version tracker.ChangeVersion
 	decodeHubResponse(t, response, &version)
+	for _, pending := range []bool{false, true} {
+		if pending {
+			if _, err := service.database.db.ExecContext(t.Context(), `UPDATE change_versions SET head_sha=NULL,external_id=NULL,external_url=NULL WHERE id=?`, version.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		projected, _, err := readNativeIssueProjection(t.Context(), service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID), true)
+		if err != nil || projected.PullRequest == nil || projected.PullRequest.Number != 1 || projected.PullRequest.URL != "https://github.com/example/repo/pull/1" {
+			t.Fatalf("pending=%v external change projection=%+v error=%v", pending, projected.PullRequest, err)
+		}
+	}
+	if err := service.populateChangeColumns(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	path := f.path + "/versions/" + version.ID
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "native-approval"}, Decision: "approved"}), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, service, http.MethodPost, path+"/checks", f.token, changeTestResult(version)), http.StatusOK)

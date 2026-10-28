@@ -85,6 +85,9 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
+		t.Fatal(err)
+	}
 	previous, count, explanationCount := 0, 0, 0
 	for _, history := range []int{1, 64, 256} {
 		t.Run(strconv.Itoa(history), func(t *testing.T) {
@@ -123,6 +126,7 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 					}
 				}
 			}
+			projectTestChangeColumns(t, f.service)
 			previous = history
 			q := &runtimeReadQuery{nativeQueryer: db}
 			evidence, err := readNativeRuntime(t.Context(), q, scope, string(f.issue.WorkItemID), "", f.service.config.now())
@@ -167,8 +171,12 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 					t.Fatal(err)
 				}
 				index := "change_evidence_current_idx"
-				if strings.Contains(statement, "FROM change_versions") {
+				if strings.Contains(statement, "v.attempt_id IS NULL") {
+					index = "change_versions_change_attempt_unknown"
+				} else if strings.Contains(statement, "FROM change_versions") {
 					index = "sqlite_autoindex_change_versions_1 (id=?)"
+				} else if strings.Contains(statement, "has_validator IS NULL") {
+					index = "change_evidence_change_unknown"
 				} else if strings.Contains(statement, "SELECT EXISTS") {
 					index = "change_evidence_approval_idx"
 				}

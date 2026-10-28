@@ -94,16 +94,15 @@ func validateQualityEscape(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 		}
 	}
 	if escape.Kind == "reopened" {
-		var count int
-		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND id=? AND type='workflow.transitioned' AND lower(json_extract(data_json,'$.from_state'))='done' AND EXISTS (SELECT 1 FROM workflow_states ws WHERE ws.project_id=collaboration_events.project_id AND ws.detent_state=json_extract(data_json,'$.to_state') AND ws.terminal=0) AND julianday(recorded_at)=julianday(?)`, scope.organization, scope.project, change.WorkItemID, escape.OccurrenceID, formatHubTime(escape.ObservedAt)).Scan(&count); err != nil {
+		valid, err := qualityReopenOccurrence(ctx, tx, scope, string(change.WorkItemID), *escape)
+		if err != nil {
 			return err
 		}
-		if count != 1 {
+		if !valid {
 			return nativePublicInvalid("Reopen occurrence must reference its recorded Done transition")
 		}
 	}
-	var previous string
-	err = tx.QueryRowContext(ctx, `SELECT record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='discussion' AND json_extract(record_json,'$.escape.occurrence_id')=? ORDER BY sequence DESC LIMIT 1`, change.ID, landing.VersionID, escape.OccurrenceID).Scan(&previous)
+	previous, err := readEscapeOccurrence(ctx, tx, change.ID, landing.VersionID, escape.OccurrenceID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}

@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"net/url"
 	"slices"
 	"sort"
@@ -470,14 +469,21 @@ func readNativeAnalytics(ctx context.Context, q nativeQueryer, scope nativeScope
 }
 
 func nativeAnalyticsLandings(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) ([]nativeAnalyticsLanding, error) {
+	pending, err := analyticsChangeColumnsPending(ctx, q, scope)
+	if err != nil {
+		return nil, err
+	}
+	if pending {
+		return readUnconvertedAnalyticsLandings(ctx, q, scope, w, false)
+	}
 	issues, issueArgs := reportsIssueClause(ctx, "c.work_item_id")
-	rows, err := queryAnalyticsPopulation(ctx, q, "landings", `SELECT c.id,c.work_item_id,json_extract(c.record_json,'$.landed') FROM change_requests c
-JOIN change_versions v ON v.change_id=c.id AND v.id=json_extract(c.record_json,'$.landed.version_id')
-WHERE c.organization_id=? AND c.project_id=? AND json_extract(c.record_json,'$.landed.head_sha')=json_extract(v.record_json,'$.head_sha')
-AND length(json_extract(c.record_json,'$.landed.merge_sha')) IN (40,64)
-AND julianday(json_extract(c.record_json,'$.landed.landed_at'))>=julianday(?) AND julianday(json_extract(c.record_json,'$.landed.landed_at'))<julianday(?) AND json_extract(c.record_json,'$.landed.landed_at')>=? AND json_extract(c.record_json,'$.landed.landed_at')<?
+	rows, err := queryAnalyticsPopulation(ctx, q, "landings", `SELECT c.id,c.work_item_id,c.record_json FROM change_requests c
+JOIN change_versions v ON v.change_id=c.id AND v.id=c.landed_version_id
+WHERE c.organization_id=? AND c.project_id=? AND c.landed_head_sha=v.head_sha
+AND length(c.landed_merge_sha) IN (40,64)
+AND julianday(c.landed_at)>=julianday(?) AND julianday(c.landed_at)<julianday(?) AND c.landed_at>=? AND c.landed_at<?
 `+issues+`
-ORDER BY json_extract(c.record_json,'$.landed.landed_at'),c.id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly)}, issueArgs...)...)
+ORDER BY c.landed_at,c.id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly)}, issueArgs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -489,7 +495,7 @@ ORDER BY json_extract(c.record_json,'$.landed.landed_at'),c.id LIMIT ? OFFSET ?`
 		if err := rows.Scan(&landing.ChangeID, &landing.WorkItemID, &raw); err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal([]byte(raw), &landing.Landing); err != nil {
+		if err := decodeQualityLanding(ctx, raw, &landing.Landing); err != nil {
 			return nil, err
 		}
 		landing.Landing.Quality = nil

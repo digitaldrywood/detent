@@ -54,9 +54,16 @@ func updateAttemptHotProjection(ctx context.Context, tx *sql.Tx, id, status stri
 		landingAt = projectionTime(data.Runtime.Landing.ObservedAt)
 	}
 	var settled, changed bool
-	var versionID string
+	var versionID, finalizationID, publicationURL, checkpointID string
 	if f := data.Finalization; f != nil {
 		settled, changed, versionID = f.Settled, f.Changed, f.VersionID
+		finalizationID = f.ChangeID
+		if f.Publication != nil {
+			publicationURL = f.Publication.External.URL
+		}
+	}
+	if data.Handoff != nil && data.Handoff.Change != nil {
+		checkpointID = data.Handoff.Change.ChangeID
 	}
 	var dispositionReason, dispositionStatus string
 	var dispositionHumanAction bool
@@ -67,7 +74,7 @@ func updateAttemptHotProjection(ctx context.Context, tx *sql.Tx, id, status stri
 	if data.Runtime != nil {
 		local = data.Runtime.LocalAttemptID
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE native_attempts SET hot_projection_version=1,session_id=?,local_attempt_id=?,heartbeat_at=?,health_failure_signature=?,health_recovery_reason=?,health_instance_failure=?,health_landing=?,health_landed=?,health_conflict=?,health_landing_at=?,health_landing_key=?,failure_stage=?,finalization_settled=?,finalization_changed=?,finalization_version_id=?,health_disposition_reason=?,disposition_status=?,disposition_human_action=?,health_updated_day=julianday(updated_at),health_landing_day=julianday(?) WHERE id=?`, a.Session, local, heartbeat, a.Signature, a.Recovery, a.InstanceSetupFailure, a.Landing, a.Landed, a.Conflict, landingAt, a.LandingKey, a.Stage, settled, changed, versionID, dispositionReason, dispositionStatus, dispositionHumanAction, landingAt, id)
+	_, err := tx.ExecContext(ctx, `UPDATE native_attempts SET finalization_change_id=?,finalization_external_url=?,checkpoint_change_id=CASE WHEN ? THEN ? WHEN checkpoint_json IS NULL THEN '' ELSE checkpoint_change_id END,runner_id=?,activity_identity_known=CASE WHEN ? OR checkpoint_json IS NULL OR checkpoint_change_id IS NOT NULL THEN 1 ELSE NULL END,policy_id=?,has_landing_receipt=?,hot_projection_version=1,session_id=?,local_attempt_id=?,heartbeat_at=?,health_failure_signature=?,health_recovery_reason=?,health_instance_failure=?,health_landing=?,health_landed=?,health_conflict=?,health_landing_at=?,health_landing_key=?,failure_stage=?,finalization_settled=?,finalization_changed=?,finalization_version_id=?,health_disposition_reason=?,disposition_status=?,disposition_human_action=?,health_updated_day=julianday(updated_at),health_landing_day=julianday(?) WHERE id=?`, finalizationID, publicationURL, data.Handoff != nil, checkpointID, data.RunnerID, data.Handoff != nil, data.PolicyID, data.Runtime != nil && data.Runtime.Landing != nil, a.Session, local, heartbeat, a.Signature, a.Recovery, a.InstanceSetupFailure, a.Landing, a.Landed, a.Conflict, landingAt, a.LandingKey, a.Stage, settled, changed, versionID, dispositionReason, dispositionStatus, dispositionHumanAction, landingAt, id)
 	return err
 }
 

@@ -499,7 +499,7 @@ func (s *Service) updateNativeCommentCommand(ctx context.Context, scope nativeSc
 		if err != nil {
 			return nil, err
 		}
-		_, err = tx.ExecContext(ctx, "UPDATE native_comments SET body = ?, revision = ?, edited_by_json = ?, updated_at = ?, deleted = ? WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND id = ?", comment.Body, comment.Revision, editedBy, formatHubTime(now), comment.Deleted, scope.organization, scope.project, comment.WorkItemID, comment.ID)
+		_, err = tx.ExecContext(ctx, "UPDATE native_comments SET body = ?, revision = ?, edited_by_json = ?,change_edited_by_kind = ?, updated_at = ?, deleted = ? WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND id = ?", comment.Body, comment.Revision, editedBy, scope.actor().Kind, formatHubTime(now), comment.Deleted, scope.organization, scope.project, comment.WorkItemID, comment.ID)
 		if err != nil {
 			return nil, err
 		}

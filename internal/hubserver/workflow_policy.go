@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/policy"
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type policyLanding struct {
@@ -27,28 +26,9 @@ func readPolicyLanding(ctx context.Context, query policyQuerier, scope string, s
 	}
 	organization, project, native := strings.Cut(scope, "/")
 	if native && !strings.HasPrefix(scope, "repository:") {
-		var raw string
-		err := query.QueryRowContext(ctx, `SELECT c.record_json FROM change_requests c
-JOIN change_versions v ON v.change_id = c.id AND v.id = json_extract(c.record_json, '$.landed.version_id')
-WHERE c.organization_id = ? AND c.project_id = ?
-AND json_extract(c.record_json, '$.landed.merge_sha') = ?
-AND json_extract(c.record_json, '$.landed.base_ref') = ?
-ORDER BY c.id LIMIT 1`, organization, project, source.Commit, source.DefaultBranch).Scan(&raw)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		landing, found, err := readNativePolicyLanding(ctx, query, organization, project, source)
+		if err != nil || found {
 			return landing, err
-		}
-		if err == nil {
-			var change tracker.ChangeRequest
-			if err := json.Unmarshal([]byte(raw), &change); err != nil {
-				return landing, err
-			}
-			var repository string
-			if err := query.QueryRowContext(ctx, "SELECT json_extract(record_json, '$.repository') FROM change_versions WHERE id = ?", change.Landed.VersionID).Scan(&repository); err != nil {
-				return landing, err
-			}
-			if strings.EqualFold(validationRepository(repository), source.Repository) {
-				return policyLanding{ChangeID: change.ID, Actor: change.Landed.Actor.PrincipalID}, nil
-			}
 		}
 	}
 	err := query.QueryRowContext(ctx, `SELECT pr.url, pr.merged_by FROM pull_requests pr

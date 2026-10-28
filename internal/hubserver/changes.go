@@ -312,6 +312,7 @@ func resolveVersionPublicationPush(ctx context.Context, query nativeQueryer, sco
 	if run == nil {
 		return tracker.ChangePublicationPush{}, false, nil
 	}
+
 	ref := tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
 	checkpoint := run.Handoff
 	if checkpoint == nil || checkpoint.Change == nil || *checkpoint.Change != ref || checkpoint.HeadSHA != version.HeadSHA || !validNativeID(checkpoint.EffectID, "effect") {
@@ -533,8 +534,7 @@ func readChangeDetailView(ctx context.Context, query nativeQueryer, scope native
 	}
 	var staleApproval bool
 	if current {
-		err = query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_evidence WHERE change_id = ? AND kind = 'review'
-AND json_extract(record_json, '$.decision') = 'approved' AND json_extract(record_json, '$.validator') IS NULL AND json_extract(record_json, '$.implementation_review') IS NULL AND version_id != ?)`, id, result.Change.CurrentVersion).Scan(&staleApproval)
+		staleApproval, err = readPriorChangeApproval(ctx, query, id, result.Change.CurrentVersion)
 		if err != nil {
 			return result, fmt.Errorf("load stale approval: %w", err)
 		}
@@ -573,8 +573,7 @@ func readCurrentChangeDetailWithPolicy(ctx context.Context, query nativeQueryer,
 		if err != nil {
 			return result, err
 		}
-		err = query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_evidence WHERE change_id = ? AND kind = 'review'
-AND json_extract(record_json, '$.decision') = 'approved' AND json_extract(record_json, '$.validator') IS NULL AND json_extract(record_json, '$.implementation_review') IS NULL AND version_id != ?)`, change.ID, version.ID).Scan(&staleApproval)
+		staleApproval, err = readPriorChangeApproval(ctx, query, change.ID, version.ID)
 		if err != nil {
 			return result, err
 		}
@@ -699,6 +698,9 @@ func (s *Service) createChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 		return nil, err
 	}
 	if err := writeArchiveChangeFacts(ctx, tx, change, ""); err != nil {
+		return nil, err
+	}
+	if err := projectChangeColumns(ctx, tx, "change_requests", change.ID, raw); err != nil {
 		return nil, err
 	}
 	for _, id := range change.LinkedIssues {

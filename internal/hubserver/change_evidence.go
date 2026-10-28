@@ -22,8 +22,15 @@ func insertChangeEvidence(ctx context.Context, tx *sql.Tx, changeID, versionID, 
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO change_evidence (change_id, version_id, kind, source_key, record_json) VALUES (?, NULLIF(?, ''), ?, NULLIF(?, ''), ?)", changeID, versionID, kind, sourceKey, raw)
-	return err
+	result, err := tx.ExecContext(ctx, "INSERT INTO change_evidence (change_id, version_id, kind, source_key, record_json) VALUES (?, NULLIF(?, ''), ?, NULLIF(?, ''), ?)", changeID, versionID, kind, sourceKey, raw)
+	if err != nil {
+		return err
+	}
+	sequence, err := result.LastInsertId()
+	if err != nil {
+		return err
+	}
+	return projectChangeColumns(ctx, tx, "change_evidence", sequence, raw)
 }
 
 func (s *Service) reviewChange(c echo.Context) error {

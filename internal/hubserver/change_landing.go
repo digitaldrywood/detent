@@ -332,6 +332,9 @@ func (s *Service) landChange(c echo.Context) error {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO quality_landings (version_id,record_json) VALUES (?,?)", version.ID, qualityRaw); err != nil {
 			return nil, err
 		}
+		if err := projectChangeColumns(ctx, tx, "quality_landings", version.ID, qualityRaw); err != nil {
+			return nil, err
+		}
 		change.UpdatedAt = now
 		change.Revision++
 		raw, err := marshalNative(change)
@@ -342,6 +345,9 @@ func (s *Service) landChange(c echo.Context) error {
 			return nil, err
 		}
 		if err := writeArchiveChangeFacts(ctx, tx, change, ""); err != nil {
+			return nil, err
+		}
+		if err := projectChangeColumns(ctx, tx, "change_requests", change.ID, raw); err != nil {
 			return nil, err
 		}
 		if err := recordPolicyLandingProvenance(ctx, tx, string(scope.organization)+"/"+string(scope.project), 0, validationRepository(version.Repository), request.MergeSHA, policyLanding{ChangeID: change.ID}); err != nil {

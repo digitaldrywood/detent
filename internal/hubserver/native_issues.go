@@ -133,10 +133,13 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
 	var sourceAuthor, sourceCreated, sourceUpdated, sourceObserved string
 	var repositoryOwner, repositoryName, importedURL, organizationSlug, projectSlug string
 	var sourceNumber int
-	var provenance, closedAt, listChange, pullRequest, issueType, reportContext, verificationState, verifiedBy, verifiedAt sql.NullString
+	var provenance, closedAt, issueType, reportContext, verificationState, verifiedBy, verifiedAt sql.NullString
+	var listChangeID, listBranch, listHead, pullRequestID, pullRequestURL sql.NullString
+	var landingPending bool
 	var priority sql.NullInt64
 	var actorKind, actorPrincipal sql.NullString
 	var legacyTransitions bool
+	var legacyChange bool
 	bodyColumn := "i.body"
 	if compact {
 		bodyColumn = "''"
@@ -154,29 +157,22 @@ func readNativeIssueProjection(ctx context.Context, query nativeQueryer, scope n
  COALESCE(r.github_owner, ''), COALESCE(r.github_name, ''), COALESCE(i.github_number, 0), i.url,
  CASE WHEN ws.terminal = 1 THEN `+nativeTerminalEnteredAt+` ELSE NULL END,
  CASE WHEN ws.terminal=1 THEN EXISTS(SELECT 1 FROM collaboration_events legacy WHERE legacy.organization_id=i.organization_id AND legacy.project_id=i.project_id AND legacy.work_item_id=i.native_id AND legacy.type='workflow.transitioned' AND legacy.page_projection_ready IS NULL) ELSE 0 END,
- (SELECT json_object('branch', CASE WHEN json_extract(c.record_json, '$.landed.version_id') = json_extract(c.record_json, '$.current_version_id') THEN COALESCE(json_extract(c.record_json, '$.landed.base_ref'), '') ELSE '' END,
- 'head_sha', CASE WHEN json_extract(c.record_json, '$.landed.version_id') = json_extract(c.record_json, '$.current_version_id') THEN COALESCE(json_extract(c.record_json, '$.landed.merge_sha'), '') ELSE COALESCE(json_extract(v.record_json, '$.head_sha'), '') END,
- 'landing_pending', json(CASE WHEN (`+nativePendingLandingClause+`) THEN 'true' ELSE 'false' END))
- FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
- LEFT JOIN change_versions v ON v.id = json_extract(c.record_json, '$.current_version_id') AND v.change_id = c.id
- WHERE c.organization_id = i.organization_id AND c.project_id = i.project_id AND l.work_item_id = i.native_id
- ORDER BY c.rowid DESC LIMIT 1),
- (SELECT json_extract(v.record_json, '$.external')
- FROM change_requests c JOIN change_issue_links l ON l.change_id = c.id
- JOIN change_versions v ON v.change_id = c.id
- WHERE c.organization_id = i.organization_id AND c.project_id = i.project_id AND l.work_item_id = i.native_id
- AND json_extract(v.record_json, '$.external.provider') = 'github'
- AND COALESCE(json_extract(v.record_json, '$.external.url'), '') <> ''
- ORDER BY c.rowid DESC, v.number DESC LIMIT 1)
+ c.id, CASE WHEN c.landed_version_id = c.claim_version_id THEN COALESCE(c.landed_base_ref, '') ELSE '' END,
+ CASE WHEN c.landed_version_id = c.claim_version_id THEN COALESCE(c.landed_merge_sha, '') ELSE COALESCE(v.head_sha, '') END,
+ COALESCE((`+nativePendingLandingClause+`),0), pr.external_id, pr.external_url,
+ EXISTS (SELECT 1 FROM change_requests c JOIN change_issue_links cl ON cl.change_id=c.id LEFT JOIN change_versions cv ON cv.change_id=c.id WHERE c.organization_id=i.organization_id AND c.project_id=i.project_id AND cl.work_item_id=i.native_id AND (c.claim_version_id IS NULL OR c.created_at IS NULL OR (cv.id IS NOT NULL AND cv.head_sha IS NULL)))
 FROM issues i JOIN organizations o ON o.id=i.organization_id JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
 LEFT JOIN repositories r ON r.id = i.repository_id
 LEFT JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN queue_entries q ON q.id = (SELECT id FROM queue_entries WHERE issue_id = i.id ORDER BY id LIMIT 1)
+LEFT JOIN change_requests c ON c.id=(SELECT c.id FROM change_requests c JOIN change_issue_links l ON l.change_id=c.id WHERE c.organization_id=i.organization_id AND c.project_id=i.project_id AND l.work_item_id=i.native_id ORDER BY c.rowid DESC LIMIT 1)
+LEFT JOIN change_versions v ON v.id=c.claim_version_id AND v.change_id=c.id
+LEFT JOIN change_versions pr ON pr.id=(SELECT latest.id FROM change_versions latest JOIN change_requests pc ON pc.id=latest.change_id JOIN change_issue_links l ON l.change_id=pc.id WHERE pc.organization_id=i.organization_id AND pc.project_id=i.project_id AND l.work_item_id=i.native_id AND latest.external_provider='github' AND latest.external_url<>'' ORDER BY pc.rowid DESC,latest.number DESC LIMIT 1)
 WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visibility+`)`, args...).Scan(
 		&organizationSlug, &projectSlug, &internalID, &issue.WorkItemID, &issue.OrganizationID, &issue.ProjectID, &issue.Number, &issue.Revision, &issue.Profile,
 		&issueType, &reportContext, &verificationState, &verifiedBy, &verifiedAt, &issue.Title, &issue.Body, &issue.State, &issue.Terminal, &priority, &labels, &assignees, &actor, &actorKind, &actorPrincipal, &displayName, &contractJSON, &provenance, &created, &updated, &activity, &externalID,
 		&sourceAuthor, &sourceCreated, &sourceUpdated, &sourceObserved, &issue.IgnoreDependencies, &issue.Archived,
-		&repositoryOwner, &repositoryName, &sourceNumber, &importedURL, &closedAt, &legacyTransitions, &listChange, &pullRequest)
+		&repositoryOwner, &repositoryName, &sourceNumber, &importedURL, &closedAt, &legacyTransitions, &listChangeID, &listBranch, &listHead, &landingPending, &pullRequestID, &pullRequestURL, &legacyChange)
 	if err != nil {
 		return issue, 0, err
 	}
@@ -293,10 +289,8 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visi
 		}
 		issue.ClosedAt = &at
 	}
-	if listChange.Valid {
-		if err := json.Unmarshal([]byte(listChange.String), &issue.ListChange); err != nil {
-			return issue, 0, err
-		}
+	if listChangeID.Valid {
+		issue.ListChange = &tracker.NativeListChange{Branch: listBranch.String, HeadSHA: listHead.String, LandingPending: landingPending}
 	}
 	if issue.ListChange != nil {
 		_, pending, err := readPendingLandingFact(ctx, query, internalID)
@@ -306,15 +300,18 @@ WHERE i.organization_id = ? AND i.project_id = ? AND i.native_id = ? AND (`+visi
 		issue.ListChange.LandingPending = pending
 	}
 
-	if pullRequest.Valid {
-		var reference tracker.ChangeExternalReference
-		if err := json.Unmarshal([]byte(pullRequest.String), &reference); err != nil {
-			return issue, 0, err
-		}
+	if pullRequestURL.Valid {
+		reference := tracker.ChangeExternalReference{Provider: "github", ID: pullRequestID.String, URL: pullRequestURL.String}
 		if number := externalPullRequestNumber(reference); number > 0 {
 			issue.PullRequest = &tracker.NativePullRequest{Number: number, URL: reference.URL}
 		}
 	}
+	if legacyChange {
+		if err := readLegacyIssueChangeSideData(ctx, query, scope, id, &issue); err != nil {
+			return issue, 0, err
+		}
+	}
+
 	if priority.Valid {
 		value := int(priority.Int64)
 		issue.Priority = &value
@@ -871,6 +868,9 @@ func appendNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScope, wor
 		return err
 	}
 	if err := updateHealthEventProjection(ctx, tx, id, scope.actor(), data); err != nil {
+		return err
+	}
+	if err := writeChangeColumns(ctx, tx, changeColumnFamily{table: "collaboration_events", key: "id", payload: "data_json"}, id, payload, changeEventColumns(data)); err != nil {
 		return err
 	}
 	landed := data.Run != nil && data.Run.Runtime != nil && data.Run.Runtime.Landing != nil && data.Run.Runtime.Landing.Landed

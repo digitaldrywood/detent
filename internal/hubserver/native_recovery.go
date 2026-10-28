@@ -92,12 +92,7 @@ func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, ite
 	if bounded {
 		discussionOrder = " ORDER BY sequence DESC LIMIT 33"
 	}
-	ids, err := nativePageIDs(ctx, tx, `SELECT id FROM native_comments
-WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND (
- json_extract(actor_json, '$.kind') = 'human' OR json_extract(edited_by_json, '$.kind') = 'human' OR id = (
- SELECT id FROM native_comments WHERE organization_id = ? AND project_id = ? AND work_item_id = ?
- AND json_extract(actor_json, '$.kind') != 'human' ORDER BY sequence DESC LIMIT 1))`+discussionOrder,
-		scope.organization, scope.project, item, scope.organization, scope.project, item)
+	ids, err := readRecoveryCommentIDs(ctx, tx, scope, item, discussionOrder, bounded)
 	if err != nil {
 		return result, err
 	}
@@ -127,16 +122,20 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND (
 		}
 		result.Discussion = append(result.Discussion, comment)
 	}
+	landingAttempt, err := latestRecoveryLandingAttempt(ctx, tx, scope, item)
+	if err != nil {
+		return result, err
+	}
+
 	rows, err := tx.QueryContext(ctx, `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
 FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
 WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND (a.id = ? OR a.id = ? OR a.id = (
  SELECT id FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ? ORDER BY fencing_token DESC LIMIT 1)
- OR a.id = (SELECT id FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ?
- AND json_extract(data_json, '$.runtime.landing') IS NOT NULL ORDER BY fencing_token DESC LIMIT 1)
+ OR a.id = ?
  OR a.id = (SELECT id FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ?
  AND checkpoint_json IS NOT NULL ORDER BY fencing_token DESC LIMIT 1))
 ORDER BY a.fencing_token LIMIT 5`, scope.organization, scope.project, item, sourceAttempt, changeAttempt,
-		scope.organization, scope.project, item, scope.organization, scope.project, item, scope.organization, scope.project, item)
+		scope.organization, scope.project, item, landingAttempt, scope.organization, scope.project, item)
 	if err != nil {
 		return result, err
 	}
@@ -592,6 +591,11 @@ func boundedRecoveryRecords[T any](records []T, budget int) ([]T, bool, error) {
 }
 
 func (s *Service) readRecoveryChange(ctx context.Context, query nativeQueryer, scope nativeScope, item string, change tracker.ChangeRequest) (tracker.ChangeDetail, error) {
+	var unknown bool
+	if err := query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' AND has_validator IS NULL)`, change.ID, change.CurrentVersion).Scan(&unknown); err != nil {
+		return tracker.ChangeDetail{}, err
+	}
+
 	detail := tracker.ChangeDetail{Change: change, Checks: []tracker.ChangeCheck{}}
 	var err error
 	query, err = archiveQuery(ctx, query, item, "change", change.ID, 0)
@@ -620,21 +624,27 @@ func (s *Service) readRecoveryChange(ctx context.Context, query nativeQueryer, s
 	if err != nil {
 		return detail, err
 	}
-	detail.Reviews, err = changeRows[tracker.ChangeReview](ctx, query, `SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id = ? AND sequence IN (
+	legacyDecisions := map[string]bool{}
+	if unknown {
+		detail.Reviews, legacyDecisions, err = legacyRecoveryReviews(ctx, query, change.ID, change.CurrentVersion)
+	} else {
+		detail.Reviews, err = changeRows[tracker.ChangeReview](ctx, query, `SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id = ? AND sequence IN (
  SELECT sequence FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id = ? ORDER BY sequence DESC LIMIT 32
 ) OR change_id = ? AND kind = 'review' AND version_id = ? AND sequence IN (
- SELECT MAX(sequence) FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id = ? AND json_type(record_json, '$.implementation_review') = 'object'
- UNION SELECT MAX(sequence) FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id = ? AND json_type(record_json, '$.validator') = 'object'
- UNION SELECT MAX(sequence) FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id = ? AND json_type(record_json, '$.security_audit') = 'object'
- UNION SELECT MAX(sequence) FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id = ? AND json_type(record_json, '$.security_audit') = 'object' AND COALESCE(json_extract(record_json, '$.security_audit.landing'), 0) = 0
- UNION SELECT MAX(sequence) FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id = ? AND json_type(record_json, '$.security_audit') = 'object' AND json_extract(record_json, '$.decision') = 'changes_requested'
+ SELECT MAX(sequence) FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id = ? AND has_implementation_review=1
+ UNION SELECT MAX(sequence) FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id = ? AND has_validator=1
+ UNION SELECT MAX(sequence) FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id = ? AND has_security_audit=1
+ UNION SELECT MAX(sequence) FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id = ? AND has_security_audit=1 AND security_audit_landing = 0
+ UNION SELECT MAX(sequence) FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id = ? AND has_security_audit=1 AND claim_review_decision = 'changes_requested'
 ) ORDER BY sequence`, change.ID, change.CurrentVersion, change.ID, change.CurrentVersion, change.ID, change.CurrentVersion,
-		change.ID, change.CurrentVersion, change.ID, change.CurrentVersion, change.ID, change.CurrentVersion, change.ID, change.CurrentVersion, change.ID, change.CurrentVersion)
+			change.ID, change.CurrentVersion, change.ID, change.CurrentVersion, change.ID, change.CurrentVersion, change.ID, change.CurrentVersion, change.ID, change.CurrentVersion)
+	}
+
 	if err != nil {
 		return detail, err
 	}
 	for _, expected := range version.Checks {
-		checks, err := changeRows[tracker.ChangeCheck](ctx, query, `SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'check' AND version_id = ? AND json_extract(record_json, '$.check_run_id') = ? ORDER BY sequence DESC LIMIT 1`, change.ID, change.CurrentVersion, expected.CheckRunID)
+		checks, err := readRecoveryChangeCheck(ctx, query, change.ID, change.CurrentVersion, expected.CheckRunID)
 		if err != nil {
 			return detail, err
 		}
@@ -649,11 +659,17 @@ func (s *Service) readRecoveryChange(ctx context.Context, query nativeQueryer, s
 	summaryDetail.Reviews = slices.Clone(detail.Reviews)
 	for _, decision := range []string{"approved", "changes_requested"} {
 		var present bool
-		err := query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_evidence e WHERE e.change_id = ? AND e.version_id = ? AND e.kind = 'review'
- AND json_extract(e.record_json, '$.decision') = ? AND json_type(e.record_json, '$.implementation_review') IS NULL AND json_type(e.record_json, '$.validator') IS NULL AND json_type(e.record_json, '$.security_audit') IS NULL
+
+		if unknown {
+			present = legacyDecisions[decision]
+		} else {
+			err = query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_evidence e WHERE e.change_id = ? AND e.version_id = ? AND e.kind = 'review'
+ AND e.claim_review_decision = ? AND e.has_implementation_review=0 AND e.has_validator=0 AND e.has_security_audit=0
  AND NOT EXISTS (SELECT 1 FROM change_evidence later WHERE later.change_id = e.change_id AND later.version_id = e.version_id AND later.kind = 'review' AND later.sequence > e.sequence
- AND json_extract(later.record_json, '$.actor.principal_id') = json_extract(e.record_json, '$.actor.principal_id') AND json_extract(later.record_json, '$.decision') != 'commented'
- AND json_type(later.record_json, '$.implementation_review') IS NULL AND json_type(later.record_json, '$.validator') IS NULL AND json_type(later.record_json, '$.security_audit') IS NULL))`, change.ID, change.CurrentVersion, decision).Scan(&present)
+ AND later.claim_review_actor = e.claim_review_actor AND later.claim_review_decision != 'commented'
+ AND later.has_implementation_review=0 AND later.has_validator=0 AND later.has_security_audit=0))`, change.ID, change.CurrentVersion, decision).Scan(&present)
+		}
+
 		if err != nil {
 			return detail, err
 		}
@@ -662,8 +678,7 @@ func (s *Service) readRecoveryChange(ctx context.Context, query nativeQueryer, s
 		}
 	}
 	var priorApproval bool
-	err = query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id != ? AND json_extract(record_json, '$.decision') = 'approved'
- AND json_type(record_json, '$.implementation_review') IS NULL AND json_type(record_json, '$.validator') IS NULL)`, change.ID, change.CurrentVersion).Scan(&priorApproval)
+	priorApproval, err = readPriorChangeApproval(ctx, query, change.ID, change.CurrentVersion)
 	if err != nil {
 		return detail, err
 	}
@@ -726,22 +741,31 @@ func boundedRecoveryReviews(reviews []tracker.ChangeReview, budget int) ([]track
 // reason records why landing stopped, which the next attempt acts on.
 func readLatestLandingExit(ctx context.Context, tx *sql.Tx, scope nativeScope, item string) (tracker.CollaborationEvent, bool, error) {
 	event := tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "work_item", AggregateID: tracker.NativeWorkItemID(item)}
-	var actor, data, at string
-	err := tx.QueryRowContext(ctx, `SELECT id, sequence, type, actor_json, data_json, recorded_at FROM collaboration_events
-WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND type = 'workflow.transitioned' AND lower(json_extract(data_json, '$.from_state')) = 'merging'
-ORDER BY sequence DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&event.ID, &event.AggregateSequence, &event.Type, &actor, &data, &at)
-	if errors.Is(err, sql.ErrNoRows) {
-		return event, false, nil
+	before := int64(1<<63 - 1)
+	for examined := 0; ; examined++ {
+		var actor, data, at string
+		var from sql.NullString
+		err := tx.QueryRowContext(ctx, `SELECT id,sequence,type,actor_json,data_json,recorded_at,from_state FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='workflow.transitioned' AND sequence<? AND (lower(from_state)='merging' OR from_state IS NULL) ORDER BY sequence DESC LIMIT 1`, scope.organization, scope.project, item, before).Scan(&event.ID, &event.AggregateSequence, &event.Type, &actor, &data, &at, &from)
+		if errors.Is(err, sql.ErrNoRows) {
+			return event, false, nil
+		}
+		if err != nil {
+			return event, false, err
+		}
+		if examined == changeLegacyReadLimit {
+			return event, false, errChangeColumnsIncomplete
+		}
+		if err := json.Unmarshal([]byte(actor), &event.Actor); err != nil {
+			return event, false, err
+		}
+		if err := decodeRunHistory(ctx, tx, data, &event.Data); err != nil {
+			return event, false, err
+		}
+		if !from.Valid && !strings.EqualFold(event.Data.FromState, "merging") {
+			before = event.AggregateSequence
+			continue
+		}
+		event.RecordedAt, err = parseTimeValue(at)
+		return event, err == nil, err
 	}
-	if err != nil {
-		return event, false, err
-	}
-	if err := json.Unmarshal([]byte(actor), &event.Actor); err != nil {
-		return event, false, err
-	}
-	if err := decodeRunHistory(ctx, tx, data, &event.Data); err != nil {
-		return event, false, err
-	}
-	event.RecordedAt, err = parseTimeValue(at)
-	return event, err == nil, err
 }

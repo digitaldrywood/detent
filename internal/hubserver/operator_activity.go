@@ -179,6 +179,7 @@ func activityStageTiming(a *operatortool.ActivityAttempt, phases []tracker.Nativ
 func readActivityAttempts(ctx context.Context, q nativeQueryer, organization string, projects []string, r operatortool.ActivityRequest, w operatortool.AnalyticsWindow, now time.Time, running bool) ([]operatortool.ActivityAttempt, error) {
 	out := []operatortool.ActivityAttempt{}
 	offset := 0
+	unknown := 0
 	for {
 		statement, args, err := activityAttemptsQuery(organization, projects, r, w, now, running)
 		if err != nil {
@@ -198,6 +199,13 @@ func readActivityAttempts(ctx context.Context, q nativeQueryer, organization str
 		}
 		for _, c := range candidates {
 			a := c.attempt
+			visibility, scoped := reportsScopeFrom(ctx)
+			if r.RunnerID != "" && !c.ready.Valid || scoped && visibility.reporterPrincipal != "" && !c.actor.Valid {
+				if unknown == changeLegacyReadLimit {
+					return nil, errChangeColumnsIncomplete
+				}
+				unknown++
+			}
 			if visibility, ok := reportsScopeFrom(ctx); ok && visibility.reporterPrincipal != "" {
 				principal := c.actor.String
 				if !c.actor.Valid {
@@ -245,6 +253,15 @@ func readActivityAttempts(ctx context.Context, q nativeQueryer, organization str
 					}
 				}
 			} else {
+				if !c.publicationURL.Valid {
+					var data tracker.NativeRunData
+					if err := decodeActivityRun(ctx, q, c.raw, &data); err != nil {
+						return nil, err
+					}
+					if data.Finalization != nil && data.Finalization.Publication != nil {
+						a.PullRequestURL = data.Finalization.Publication.External.URL
+					}
+				}
 				phases, err = readActivityPhases(ctx, q, a.AttemptID)
 				if err != nil {
 					return nil, err
@@ -320,9 +337,9 @@ linked AS MATERIALIZED (
 )
 SELECT a.id,a.work_item_id,i.number,i.title,a.project_id,p.name,a.resolved_runner_id,
  coalesce(nullif(a.role,''),a.execution_role,''),CASE WHEN a.activity_projection_version IS NOT NULL THEN coalesce(a.runtime_phase,'') ELSE '' END,coalesce(a.activity_phases_dropped,0),a.started_at,
- coalesce(CASE WHEN a.activity_projection_version IS NOT NULL THEN nullif(a.session_id,'') END,l.session_id,''),a.change_id,CASE WHEN a.activity_projection_version IS NOT NULL THEN coalesce(a.activity_publication_url,'') ELSE '' END,
+ coalesce(CASE WHEN a.activity_projection_version IS NOT NULL THEN nullif(a.session_id,'') END,l.session_id,''),a.change_id,CASE WHEN a.activity_projection_version IS NOT NULL THEN a.activity_publication_url END,
  CASE WHEN a.status='running' THEN 'interrupted' ELSE a.status END,a.effective_finished_at,
- CASE WHEN a.activity_projection_version IS NULL THEN a.data_json ELSE '' END,CASE WHEN a.activity_projection_version IS NULL THEN a.checkpoint_json END,a.activity_projection_version,i.activity_actor_principal_id,CASE WHEN i.activity_actor_principal_id IS NULL THEN i.actor_json ELSE '' END
+ CASE WHEN a.activity_projection_version IS NULL OR a.activity_publication_url IS NULL THEN a.data_json ELSE '' END,CASE WHEN a.activity_projection_version IS NULL THEN a.checkpoint_json END,a.activity_projection_version,i.activity_actor_principal_id,CASE WHEN i.activity_actor_principal_id IS NULL THEN i.actor_json ELSE '' END
 FROM linked a JOIN leases l ON l.lease_id=a.lease_id
 JOIN issues i ON i.organization_id=a.organization_id AND i.project_id=a.project_id AND i.native_id=a.work_item_id
 JOIN projects p ON p.organization_id=a.organization_id AND p.id=a.project_id`
@@ -339,6 +356,7 @@ type activityAttemptCandidate struct {
 	ready                  sql.NullInt64
 	started, finished, raw string
 	checkpoint             sql.NullString
+	publicationURL         sql.NullString
 	actor, actorRaw        sql.NullString
 	dropped                int
 }
@@ -354,10 +372,11 @@ func readActivityAttemptCandidates(ctx context.Context, q nativeQueryer, stateme
 	for rows.Next() {
 		var c activityAttemptCandidate
 		a := &c.attempt
-		if err := rows.Scan(&a.AttemptID, &a.WorkItemID, &a.Number, &a.Title, &a.ProjectID, &a.ProjectName, &a.RunnerID, &a.Stage, &a.Phase, &c.dropped, &c.started, &a.SessionID, &a.ChangeID, &a.PullRequestURL, &a.Outcome, &c.finished, &c.raw, &c.checkpoint, &c.ready, &c.actor, &c.actorRaw); err != nil {
+		if err := rows.Scan(&a.AttemptID, &a.WorkItemID, &a.Number, &a.Title, &a.ProjectID, &a.ProjectName, &a.RunnerID, &a.Stage, &a.Phase, &c.dropped, &c.started, &a.SessionID, &a.ChangeID, &c.publicationURL, &a.Outcome, &c.finished, &c.raw, &c.checkpoint, &c.ready, &c.actor, &c.actorRaw); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		a.PullRequestURL = c.publicationURL.String
 		candidates = append(candidates, c)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {

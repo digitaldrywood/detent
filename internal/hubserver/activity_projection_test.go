@@ -23,6 +23,10 @@ func TestActivityChangeWritersCompleteLegacyProjection(t *testing.T) {
 			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 				t.Fatal(err)
 			}
+			plan := explainQueryPlan(t, f.service.database.reader, activityLatestChangeQuery, []any{f.project.OrganizationID, f.project.ID, f.issue.WorkItemID})
+			if violations := hotReadPlanViolations(activityLatestChangeQuery, plan); len(violations) != 0 {
+				t.Fatalf("latest Change lookup scans or sorts history: %v", plan)
+			}
 			input := changeTestInput()
 			input.External = &tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: "https://github.com/example-org/example-project/pull/1"}
 			publish := func() tracker.ChangeVersion {

@@ -206,6 +206,7 @@ SELECT 'activity_seed_history',i.id,l.machine_id,'activity_seed_history_session'
 		}
 	}
 
+	projectTestChangeColumns(t, f.service)
 	beforeHistory := f.page(t, "owner", "/api/v2/organizations/org_browser_preview/activity")
 	browserHostedStatus(t, beforeHistory, http.StatusOK)
 	historyAt := formatHubTime(now.Add(-30 * 24 * time.Hour))

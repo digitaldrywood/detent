@@ -1,8 +1,12 @@
 package hubserver
 
 import (
+	"cmp"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -129,76 +133,122 @@ func readValidationAudit(ctx context.Context, query nativeQueryer, scope nativeS
 }
 
 func readValidationCandidates(ctx context.Context, query nativeQueryer, scope nativeScope, item, change, attempt string, scheduled gate.ScheduledEvidence) ([]tracker.ValidationComparison, bool, error) {
-	rows, err := query.QueryContext(ctx, `SELECT c.work_item_id, v.record_json, COALESCE(a.id,''), COALESCE(a.run_id,''), COALESCE(json_extract(a.data_json,'$.runtime.local_attempt_id'),0), COALESCE(r.record_json,''), c.record_json
+	type rankedCandidate struct {
+		value        tracker.ValidationComparison
+		rowid, fence int64
+		priority     int
+	}
+	ranked := []rankedCandidate{}
+	partial := false
+	for _, unknown := range []bool{false, true} {
+		limit := 21
+		if unknown {
+			limit = changeLegacyReadLimit + 1
+		}
+		rows, err := query.QueryContext(ctx, `SELECT c.work_item_id,v.record_json,COALESCE(a.id,''),COALESCE(a.run_id,''),COALESCE(a.local_attempt_id,0),COALESCE(r.record_json,''),c.record_json,v.rowid,COALESCE(a.fencing_token,0),r.merge_sha
  FROM change_versions v JOIN change_requests c ON c.id=v.change_id
  LEFT JOIN change_landing_receipts r ON r.version_id=v.id
  LEFT JOIN native_attempts a ON a.id=r.attempt_id AND a.organization_id=c.organization_id AND a.project_id=c.project_id
  WHERE c.organization_id=? AND c.project_id=? AND (?='' OR c.work_item_id=?) AND (?='' OR c.id=?) AND (?='' OR a.id=?)
- ORDER BY (json_extract(r.record_json,'$.merge_sha')=?) DESC, v.rowid DESC, a.fencing_token DESC LIMIT 21`, scope.organization, scope.project, item, item, change, change, attempt, attempt, scheduled.HeadSHA)
-	if err != nil {
-		return nil, false, err
-	}
-	defer rows.Close()
-	candidates := []tracker.ValidationComparison{}
-	count := 0
-	partial := false
-	for rows.Next() {
-		var candidate tracker.ValidationComparison
-		var versionRaw, receiptRaw, changeRaw string
-		if err := rows.Scan(&candidate.WorkItemID, &versionRaw, &candidate.NativeAttemptID, &candidate.NativeRunID, &candidate.LocalAttemptID, &receiptRaw, &changeRaw); err != nil {
+ AND (r.merge_sha IS NULL AND r.attempt_id IS NOT NULL)=?
+ ORDER BY (r.merge_sha=?) DESC,v.rowid DESC,a.fencing_token DESC LIMIT ?`, scope.organization, scope.project, item, item, change, change, attempt, attempt, unknown, scheduled.HeadSHA, limit)
+		if err != nil {
 			return nil, false, err
 		}
-		count++
-		if count > 20 {
-			partial = true
-			break
-		}
-		var version tracker.ChangeVersion
-		var request tracker.ChangeRequest
-		if err := json.Unmarshal([]byte(versionRaw), &version); err != nil {
-			return nil, false, err
-		}
-		if err := json.Unmarshal([]byte(changeRaw), &request); err != nil {
-			return nil, false, err
-		}
-		if validationRepository(version.Repository) != scheduled.Repository {
-			continue
-		}
-		candidate.ChangeID, candidate.VersionID, candidate.VersionAttemptID, candidate.ReviewedHeadSHA = version.ChangeID, version.ID, version.AttemptID, version.HeadSHA
-		candidate.VersionRunID = version.RunID
-		candidate.IntegratedSource = "unknown"
-		candidate.Attribution = "candidate_only; source_inclusion_and_causality_unverified"
-		candidate.Local, candidate.ObservedAt = version.Validation, version.CreatedAt
-		if receiptRaw != "" {
-			var receipt tracker.NativeLandingReceipt
-			if err := json.Unmarshal([]byte(receiptRaw), &receipt); err != nil {
+		defer rows.Close()
+		count := 0
+		for rows.Next() {
+			if unknown && count == changeLegacyReadLimit {
+				rows.Close()
+				return nil, false, errChangeColumnsIncomplete
+			}
+			count++
+			var candidate tracker.ValidationComparison
+			var versionRaw, receiptRaw, changeRaw string
+			var rowid, fence int64
+			var merge sql.NullString
+			if err := rows.Scan(&candidate.WorkItemID, &versionRaw, &candidate.NativeAttemptID, &candidate.NativeRunID, &candidate.LocalAttemptID, &receiptRaw, &changeRaw, &rowid, &fence, &merge); err != nil {
+				rows.Close()
 				return nil, false, err
 			}
-			if receipt.Gate != nil {
-				candidate.Local, candidate.ObservedAt = receipt.Gate, receipt.ObservedAt
+			var version tracker.ChangeVersion
+			var request tracker.ChangeRequest
+			if err := json.Unmarshal([]byte(versionRaw), &version); err != nil {
+				rows.Close()
+				return nil, false, err
 			}
-			candidate.IntegratedHeadSHA = receipt.MergeSHA
-		} else if request.Landed != nil && request.Landed.VersionID == version.ID {
-			candidate.IntegratedHeadSHA = request.Landed.MergeSHA
-		}
-		if candidate.IntegratedHeadSHA != "" {
-			candidate.IntegratedSource = "different_commit"
-			if candidate.IntegratedHeadSHA == scheduled.HeadSHA {
-				candidate.IntegratedSource = "same_commit"
+			if err := json.Unmarshal([]byte(changeRaw), &request); err != nil {
+				rows.Close()
+				return nil, false, err
 			}
-		}
-		if candidate.Local != nil {
-			local := *candidate.Local
-			local.Output = ""
-			if !local.Evidence.Valid() {
-				local.Evidence = nil
+			if validationRepository(version.Repository) != scheduled.Repository {
+				continue
 			}
-			local.Command = tracker.PublicValidationCommand(local.Command)
-			candidate.Local = &local
+			candidate.ChangeID, candidate.VersionID, candidate.VersionAttemptID, candidate.ReviewedHeadSHA = version.ChangeID, version.ID, version.AttemptID, version.HeadSHA
+			candidate.VersionRunID = version.RunID
+			candidate.IntegratedSource = "unknown"
+			candidate.Attribution = "candidate_only; source_inclusion_and_causality_unverified"
+			candidate.Local, candidate.ObservedAt = version.Validation, version.CreatedAt
+			if receiptRaw != "" {
+				var receipt tracker.NativeLandingReceipt
+				if err := json.Unmarshal([]byte(receiptRaw), &receipt); err != nil {
+					rows.Close()
+					return nil, false, err
+				}
+				if receipt.Gate != nil {
+					candidate.Local, candidate.ObservedAt = receipt.Gate, receipt.ObservedAt
+				}
+				candidate.IntegratedHeadSHA = receipt.MergeSHA
+			} else if request.Landed != nil && request.Landed.VersionID == version.ID {
+				candidate.IntegratedHeadSHA = request.Landed.MergeSHA
+			}
+			if candidate.IntegratedHeadSHA != "" {
+				candidate.IntegratedSource = "different_commit"
+				if candidate.IntegratedHeadSHA == scheduled.HeadSHA {
+					candidate.IntegratedSource = "same_commit"
+				}
+			}
+			if candidate.Local != nil {
+				local := *candidate.Local
+				local.Output = ""
+				if !local.Evidence.Valid() {
+					local.Evidence = nil
+				}
+				local.Command = tracker.PublicValidationCommand(local.Command)
+				candidate.Local = &local
+			}
+			priority := 0
+			if merge.Valid || unknown {
+				priority = 1
+			}
+			if merge.Valid && merge.String == scheduled.HeadSHA || unknown && candidate.IntegratedHeadSHA == scheduled.HeadSHA {
+				priority = 2
+			}
+			ranked = append(ranked, rankedCandidate{value: candidate, rowid: rowid, fence: fence, priority: priority})
 		}
-		candidates = append(candidates, candidate)
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return nil, false, err
+		}
+		partial = partial || !unknown && count == 21
 	}
-	return candidates, partial, rows.Err()
+	slices.SortStableFunc(ranked, func(a, b rankedCandidate) int {
+		if order := cmp.Compare(b.priority, a.priority); order != 0 {
+			return order
+		}
+		if order := cmp.Compare(b.rowid, a.rowid); order != 0 {
+			return order
+		}
+		return cmp.Compare(b.fence, a.fence)
+	})
+	if len(ranked) > 20 {
+		partial = true
+		ranked = ranked[:20]
+	}
+	candidates := make([]tracker.ValidationComparison, 0, len(ranked))
+	for _, candidate := range ranked {
+		candidates = append(candidates, candidate.value)
+	}
+	return candidates, partial, nil
 }
 
 func validationRepository(repository string) string {

@@ -40,9 +40,15 @@ func TestAttemptDiffBodyMigrationAndRetention(t *testing.T) {
 		currentChange, running, latest bool
 		expired                        bool
 		legacy                         bool
+		currentVersion, versionAttempt any
 	}{
 		{name: "superseded", expired: true, legacy: true},
 		{name: "current Change", currentChange: true},
+		{name: "converted current Change", currentChange: true, currentVersion: "version_current", versionAttempt: "attempt_old"},
+		{name: "converted superseded version", currentChange: true, currentVersion: "version_other", versionAttempt: "attempt_old", expired: true},
+		{name: "converted unrelated attempt", currentChange: true, currentVersion: "version_current", versionAttempt: "attempt_other", expired: true},
+		{name: "converted current version with unknown attempt", currentChange: true, currentVersion: "version_current"},
+		{name: "unknown current version with converted attempt", currentChange: true, versionAttempt: "attempt_old"},
 		{name: "running", running: true},
 		{name: "latest work item", latest: true},
 	} {
@@ -88,10 +94,10 @@ func TestAttemptDiffBodyMigrationAndRetention(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.currentChange {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES ('change_current',?,?,?,'{"current_version_id":"version_current"}')`, f.project.OrganizationID, f.project.ID, f.issue.WorkItemID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json,claim_version_id) VALUES ('change_current',?,?,?,'{"current_version_id":"version_current"}',?)`, f.project.OrganizationID, f.project.ID, f.issue.WorkItemID, test.currentVersion); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_versions(id,change_id,number,record_json) VALUES ('version_current','change_current',1,'{"attempt_id":"attempt_old"}')`); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_versions(id,change_id,number,record_json,attempt_id) VALUES ('version_current','change_current',1,'{"attempt_id":"attempt_old"}',?),('version_other','change_current',2,'{"attempt_id":"attempt_other"}','attempt_other')`, test.versionAttempt); err != nil {
 					t.Fatal(err)
 				}
 			}

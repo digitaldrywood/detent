@@ -12,13 +12,16 @@ import (
 )
 
 func readActivityWorkspaces(ctx context.Context, q nativeQueryer, organization string, a operatortool.ActivityAttempt) ([]string, error) {
-	rows, err := q.QueryContext(ctx, `SELECT id FROM workspace_sessions WHERE organization_id=? AND project_id=? AND subject_work_item_id=? AND attempt_id=? AND state IN ('requested','starting','ready','idle')`, organization, a.ProjectID, a.WorkItemID, a.AttemptID)
+	rows, err := q.QueryContext(ctx, `SELECT id FROM workspace_sessions WHERE organization_id=? AND project_id=? AND subject_work_item_id=? AND attempt_id=? AND state IN ('requested','starting','ready','idle') ORDER BY id LIMIT ?`, organization, a.ProjectID, a.WorkItemID, a.AttemptID, changeLegacyReadLimit+1)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	ids := []string{}
 	for rows.Next() {
+		if len(ids) == changeLegacyReadLimit {
+			return nil, errChangeColumnsIncomplete
+		}
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			return nil, err
@@ -28,11 +31,13 @@ func readActivityWorkspaces(ctx context.Context, q nativeQueryer, organization s
 	return ids, rows.Err()
 }
 
+const activityLatestChangeQuery = `SELECT id,activity_created_at FROM change_requests WHERE organization_id=? AND project_id=? AND work_item_id=? AND activity_current_version_id IS NOT NULL ORDER BY activity_created_at DESC,id DESC LIMIT 1`
+
 func readActivityChangeLink(ctx context.Context, q nativeQueryer, organization string, a *operatortool.ActivityAttempt) error {
 	if a.ChangeID == "" {
 		var latest string
 		var at float64
-		err := q.QueryRowContext(ctx, `SELECT id,activity_created_at FROM change_requests WHERE organization_id=? AND project_id=? AND work_item_id=? AND activity_current_version_id IS NOT NULL ORDER BY activity_created_at DESC,id DESC LIMIT 1`, organization, a.ProjectID, a.WorkItemID).Scan(&latest, &at)
+		err := q.QueryRowContext(ctx, activityLatestChangeQuery, organization, a.ProjectID, a.WorkItemID).Scan(&latest, &at)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
