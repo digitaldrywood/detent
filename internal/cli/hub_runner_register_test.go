@@ -1024,7 +1024,7 @@ func TestHubRunnerRegisterReportsBeforeService(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(workdir, "WORKFLOW.md"), []byte("Work the issue.\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(workdir, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: hub_native\n"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(workdir, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: hub_native\ndeliverable:\n  github_pull_request: true\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			runDoctorWorkflowSourceGit(t, workdir, "config", "url."+workdir+".insteadOf", "git@github.com:acme/orders.git")

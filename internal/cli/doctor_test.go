@@ -3864,7 +3864,7 @@ func TestDoctorCommandProjectFlagScopesJSONReport(t *testing.T) {
 	}
 }
 
-func TestDoctorCommandAllowWriteProbesFlagEnablesWriteReadiness(t *testing.T) {
+func TestDoctorCommandAllowWriteProbesKeepsNativeTrackerReadOnly(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live service, profiling, or filesystem watcher integration")
 	}
@@ -3872,12 +3872,11 @@ func TestDoctorCommandAllowWriteProbesFlagEnablesWriteReadiness(t *testing.T) {
 	t.Parallel()
 
 	workflow := validDoctorWorkflow("/repo")
-	workflow.Tracker.Kind = workflowconfig.TrackerGitHub
 	workflow.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
-	workflow.Tracker.Repository = "digitaldrywood/detent"
+	workflow.Tracker.Repository = "example-org/example-project"
 	workflow.Tracker.StatusLabelPrefix = "detent:"
 	workflow.Tracker.ActiveStates = []string{"Todo", "In Progress"}
-	workflow.Tracker.WriteProbeIssue = "digitaldrywood/detent#1"
+	workflow.Tracker.WriteProbeIssue = "example-org/example-project#1"
 	workflow.Server.Kanban.Mode = workflowconfig.KanbanModeIntegration
 
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
@@ -3901,20 +3900,14 @@ func TestDoctorCommandAllowWriteProbesFlagEnablesWriteReadiness(t *testing.T) {
 		return workflowconfig.Workflow{Config: workflow}, nil
 	}
 	deps.gitRemoteURL = func(context.Context, string) (string, error) {
-		return "https://github.com/digitaldrywood/detent.git", nil
+		return "https://github.com/example-org/example-project.git", nil
 	}
 	deps.autoPromoteConnector = func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
 		return &fakeDoctorAutoPromoteConnector{}, nil
 	}
-	// Buffer the single capture so a timed-out doctor run cannot leave the stub blocked.
-	readinessCh := make(chan ghconnector.ReadinessConfig, 1)
-	deps.githubReadiness = func(_ context.Context, _ ghconnector.Config, readiness ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
-		readinessCh <- readiness
-		return []ghconnector.ReadinessCheck{{
-			Name:   "GitHub status label update",
-			Status: ghconnector.ReadinessOK,
-			Detail: "write probe requested",
-		}}, nil
+	deps.githubReadiness = func(context.Context, ghconnector.Config, ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
+		t.Error("native tracker must not run retired GitHub tracker write probes")
+		return nil, nil
 	}
 
 	configFlag := configPath
@@ -3931,17 +3924,8 @@ func TestDoctorCommandAllowWriteProbesFlagEnablesWriteReadiness(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v\n%s", err, stdout.String())
 	}
-	var gotReadiness ghconnector.ReadinessConfig
-	select {
-	case gotReadiness = <-readinessCh:
-	default:
-		t.Fatal("GitHub readiness check did not capture its configuration")
-	}
-	if !gotReadiness.RequireLabelStatusWrite || !gotReadiness.RequireIssueComments {
-		t.Fatalf("readiness write requirements = %#v, want write probes enabled by flag", gotReadiness)
-	}
-	if !gotReadiness.AllowWriteProbes {
-		t.Fatalf("AllowWriteProbes = false, want write probes enabled by flag")
+	if !strings.Contains(stdout.String(), "Project existing workflow") {
+		t.Fatalf("native project workflow check missing: %s", stdout.String())
 	}
 }
 
@@ -4008,92 +3992,29 @@ func TestDoctorChecksSuppressConnectorLogsFromProgress(t *testing.T) {
 	}
 }
 
-func TestCheckDoctorProjectBuildsGitHubReadinessInventory(t *testing.T) {
+func TestCheckDoctorProjectSkipsGitHubTrackerReadinessForNative(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live service, profiling, or filesystem watcher integration")
 	}
 
 	t.Parallel()
-
 	workflow := validDoctorWorkflow("/repo")
-	workflow.Tracker.Kind = workflowconfig.TrackerGitHub
-	workflow.Tracker.ProjectSlug = "PVT_1"
-	workflow.Tracker.ActiveStates = []string{"Todo", "In Progress", "Merging"}
-	workflow.Tracker.ObservedStates = []string{"Backlog", "Human Review", "Blocked"}
-	workflow.Tracker.TerminalStates = []string{"Done", "Cancelled"}
-	workflow.Tracker.WriteProbeIssue = "digitaldrywood/detent#1"
-	workflow.Tracker.Claims = workflowconfig.Claims{
-		Enabled:          true,
-		LeaseField:       "Detent Lease",
-		TTLSeconds:       300,
-		HeartbeatSeconds: 60,
+	workflow.Deliverable.GitHubPullRequest = true
+	deps := successfulDoctorDeps()
+	deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
+		return workflowconfig.Workflow{Config: workflow}, nil
 	}
-	workflow.Identity = workflowconfig.Identity{
-		Name:          "release-captain",
-		OwnershipMode: workflowconfig.IdentityOwnershipField,
-		OwnerField:    "Owner",
+	deps.githubReadiness = func(context.Context, ghconnector.Config, ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
+		t.Error("native tracker must not request retired GitHub issue or project permissions")
+		return nil, nil
 	}
-	var gotConnector ghconnector.Config
-	var gotReadiness ghconnector.ReadinessConfig
-
-	checks := checkDoctorProject(context.Background(), globalconfig.Project{
-		ID:       "alpha",
-		Workflow: "WORKFLOW.md",
-	}, doctorDeps{
-		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
-			return workflowconfig.Workflow{Config: workflow}, nil
-		},
-		gitWorkTree: func(context.Context, string) error {
-			return nil
-		},
-		gitWorktrees: func(context.Context, string) ([]doctorGitWorktree, error) {
-			return nil, nil
-		},
-		gitRemoteURL: func(context.Context, string) (string, error) {
-			return "git@github.com:digitaldrywood/detent.git", nil
-		},
-		githubReadiness: func(_ context.Context, connectorCfg ghconnector.Config, readinessCfg ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
-			gotConnector = connectorCfg
-			gotReadiness = readinessCfg
-			return []ghconnector.ReadinessCheck{{Name: "GitHub auth path", Status: ghconnector.ReadinessOK, Detail: readinessCfg.AuthPath}}, nil
-		},
-	}, RuntimeSecret{Value: "token", Source: "github_token", ResolvedVia: "gh"}, true)
-
-	if gotConnector.APIKey != "token" {
-		t.Fatalf("connector APIKey = %q, want injected runtime token", gotConnector.APIKey)
-	}
-	if gotConnector.ProjectSlug != "PVT_1" {
-		t.Fatalf("connector ProjectSlug = %q, want PVT_1", gotConnector.ProjectSlug)
-	}
-	if gotReadiness.AuthPath != "gh-resolved token" {
-		t.Fatalf("AuthPath = %q, want gh-resolved token", gotReadiness.AuthPath)
-	}
-	if gotReadiness.WriteProbeIssue != "digitaldrywood/detent#1" {
-		t.Fatalf("WriteProbeIssue = %q, want configured probe", gotReadiness.WriteProbeIssue)
-	}
-	if len(gotReadiness.Repositories) != 1 || gotReadiness.Repositories[0] != "digitaldrywood/detent" {
-		t.Fatalf("Repositories = %#v, want digitaldrywood/detent", gotReadiness.Repositories)
-	}
-	if !gotReadiness.RequireProjectStatusWrite || !gotReadiness.RequireIssueComments || gotReadiness.RequireAssigneeWrite || !gotReadiness.RequireIssueClose {
-		t.Fatalf("write/read requirements = %#v", gotReadiness)
-	}
-	if !gotReadiness.RequireIssueCommentsRead || !gotReadiness.RequireDependencyMetadataRead || !gotReadiness.RequireIssueChildrenRead || !gotReadiness.RequireIssueParentsRead {
-		t.Fatalf("issue read requirements = %#v", gotReadiness)
-	}
-	if !gotReadiness.RequirePullRequestRead || !gotReadiness.RequirePullRequestReviews || !gotReadiness.RequirePullRequestChecks {
-		t.Fatalf("pull request read requirements = %#v", gotReadiness)
-	}
-	if len(gotReadiness.ProjectFieldWrites) != 2 {
-		t.Fatalf("ProjectFieldWrites = %#v, want lease and owner fields", gotReadiness.ProjectFieldWrites)
-	}
-	for _, want := range []string{"Todo", "Human Review", "Done"} {
-		if !stringSliceContains(gotReadiness.StatusStates, want) {
-			t.Fatalf("StatusStates = %#v, want %q", gotReadiness.StatusStates, want)
+	checks := checkDoctorProject(t.Context(), globalconfig.Project{ID: "alpha", Workflow: "WORKFLOW.md"}, deps, RuntimeSecret{Value: "token", Source: "github_token", ResolvedVia: "gh"}, true)
+	for _, check := range checks {
+		if strings.Contains(check.Name, "GitHub readiness") {
+			t.Fatalf("retired GitHub tracker readiness check: %#v", check)
 		}
 	}
-	if len(checks) < 3 || checks[len(checks)-1].Status != doctorOK {
-		t.Fatalf("checks = %#v, want readiness OK check appended", checks)
-	}
+	assertDoctorCheck(t, doctorReport{Checks: checks}, "Project alpha workflow", doctorOK, "WORKFLOW.md is valid")
 }
 
 func TestDoctorGitHubReadinessRequiresKanbanIntegrationWrites(t *testing.T) {

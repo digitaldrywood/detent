@@ -314,8 +314,8 @@ func TestTickDelegatesNativeMergeQueueTrainWithoutAgentDispatch(t *testing.T) {
 	if strings.Contains(logs.String(), "merge_worker_attempt") {
 		t.Fatal(logs.String())
 	}
-	if got := strings.Count(logs.String(), "msg=merge_queue_entered "); got != len(issues) {
-		t.Fatalf("queue entered events=%d want %d: %s", got, len(issues), logs.String())
+	if got := strings.Count(logs.String(), "msg=merge_worker_native_queue_delegated "); got != len(issues) {
+		t.Fatalf("native queue delegation events=%d want %d: %s", got, len(issues), logs.String())
 	}
 	queued := 0
 	for _, issue := range state.BoardIssues {

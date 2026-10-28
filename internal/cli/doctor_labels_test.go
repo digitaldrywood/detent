@@ -181,7 +181,7 @@ func TestDoctorConfiguredLabelFixTerminatesFlagParsing(t *testing.T) {
 	}
 }
 
-func TestCheckDoctorProjectIncludesConfiguredLabelCheck(t *testing.T) {
+func TestCheckDoctorProjectSkipsTrackerLabelsForNative(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live service, profiling, or filesystem watcher integration")
 	}
@@ -189,27 +189,24 @@ func TestCheckDoctorProjectIncludesConfiguredLabelCheck(t *testing.T) {
 	t.Parallel()
 
 	cfg := validDoctorWorkflow("/repo")
-	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
 	cfg.Tracker.APIKey = "token"
 	cfg.Tracker.ProjectSlug = "PVT_1"
-	cfg.Tracker.Repository = "digitaldrywood/detent"
+	cfg.Tracker.Repository = "example-org/example-project"
 	cfg.Agent.AutoPromote.OptoutLabel = "requires-human-review"
 	deps := successfulDoctorDeps()
 	deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
 		return workflowconfig.Workflow{Config: cfg}, nil
 	}
 	deps.githubLabels = func(context.Context, workflowconfig.Config, string) ([]string, error) {
-		return []string{"bug"}, nil
+		t.Error("native tracker must not read GitHub tracker labels")
+		return nil, nil
 	}
 
 	checks := checkDoctorProject(context.Background(), globalconfig.Project{ID: "detent", Workflow: "WORKFLOW.md"}, deps, RuntimeSecret{}, false)
 	for _, check := range checks {
 		if check.Name == "Project detent configured labels" {
-			if check.Status != doctorFail || !strings.Contains(check.Detail, "agent.auto_promote.optout_label") {
-				t.Fatalf("configured label check = %#v, want missing opt-out failure", check)
-			}
-			return
+			t.Fatalf("retired GitHub tracker label check: %#v", check)
 		}
 	}
-	t.Fatalf("checks = %#v, want configured label check", checks)
+	assertDoctorCheck(t, doctorReport{Checks: checks}, "Project detent workflow", doctorOK, "WORKFLOW.md is valid")
 }

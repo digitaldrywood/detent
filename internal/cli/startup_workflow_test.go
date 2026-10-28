@@ -220,8 +220,9 @@ func TestStartupIsolatesWorkspacePathFailureAndReloads(t *testing.T) {
 				{ID: "invalid", Workflow: workflowPath, Workdir: root, Weight: 1},
 				{ID: "healthy", Workflow: healthyPath, Workdir: filepath.Dir(healthyPath), Weight: 1},
 			}
+			tracker := fakehub.New(fakehub.Config{})
 			manager, err := projectfixture.NewManager(project.ManagerConfig{Projects: projects}, project.ManagerDependencies{
-				ProjectFactory: withRunnerFactory(t.Context(), project.Dependencies{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, nil, nil, serviceapi.Connection{}, nil),
+				ProjectFactory: withRunnerFactory(t.Context(), project.Dependencies{Scheduling: &fakehubscheduling.Source{Connector: tracker}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}, nil, nil, serviceapi.Connection{}, nil),
 			})
 			if err != nil {
 				t.Fatal(err)

@@ -30,7 +30,7 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	workflowPath := filepath.Join(root, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/orders\n---\nPRIVATE WORKFLOW\n"), 0o600); err != nil {
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/orders\n---\nWork the issue.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(root, "global.yaml")
@@ -91,7 +91,7 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 			if test.valid && !strings.Contains(output.String(), descriptor.ID) {
 				t.Fatalf("missing policy output: %s", output.String())
 			}
-			for _, private := range []string{"PRIVATE WORKFLOW", "fixture-admin", root} {
+			for _, private := range []string{"fixture-token", "fixture-admin", root} {
 				if test.valid && strings.Contains(output.String(), private) {
 					t.Fatalf("private value in policy output: %s", private)
 				}
@@ -166,13 +166,29 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 			t.Fatalf("enrolled doctor policy = %#v", check)
 		}
 	})
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/orders\ngate:\n  kind: artifact\n---\nChanged instructions\n"), 0o600); err != nil {
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n  api_key: fixture-token\n  project_slug: fixture-project\n  repository: example-org/orders\ngate:\n  kind: artifact\n---\nChanged instructions\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	check = checkDoctorHubPolicy(t.Context(), loaded, loaded.Projects[0], doctorDeps{lookupEnv: func(string) string { return "fixture-admin" }})
-	if check.Status != doctorFail || !strings.Contains(check.Detail, "policy_mismatch") || !strings.Contains(check.Hint, "hub policy inspect") {
-		t.Fatalf("doctor mismatch = %#v", check)
+	if check.Status != doctorOK || !strings.Contains(check.Detail, descriptor.ID) || !strings.Contains(check.Detail, "gate=command") {
+		t.Fatalf("doctor did not preserve approved native policy = %#v", check)
 	}
+	t.Run("invalid approved descriptor", func(t *testing.T) {
+		invalid := descriptor
+		invalid.ID = "policy_" + strings.Repeat("0", 64)
+		hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := json.NewEncoder(w).Encode(policy.Approval{Policy: invalid}); err != nil {
+				t.Error(err)
+			}
+		}))
+		t.Cleanup(hub.Close)
+		configured := loaded
+		configured.Client.URL = hub.URL
+		check := checkDoctorHubPolicy(t.Context(), configured, configured.Projects[0], doctorDeps{lookupEnv: func(string) string { return "fixture-admin" }})
+		if check.Status != doctorFail || !strings.Contains(check.Detail, "policy_mismatch") || !strings.Contains(check.Hint, "hub policy inspect") {
+			t.Fatalf("doctor accepted invalid policy = %#v", check)
+		}
+	})
 }
 
 func TestHubPolicyInspectRejectsMappedNativeUnsupportedWork(t *testing.T) {
