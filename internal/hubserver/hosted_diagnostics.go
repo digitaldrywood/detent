@@ -79,15 +79,27 @@ func (s *Service) hostedDiagnostics(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	w := operatortool.AnalyticsWindow{From: window.From, To: window.To, Bucket: time.Hour}
-	analytics, err := s.readAnalyticsReport(ctx, credential, operatortool.AnalyticsRequest{Limit: 100}, w)
-	if err != nil {
-		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Diagnostics are temporarily unavailable")
-	}
-	report, err := s.readHostedDiagnostics(ctx, analytics)
+	report, err := s.readCloudDiagnostics(ctx, credential, w)
 	if err != nil {
 		return s.hostedJSONError(c, http.StatusServiceUnavailable, "Diagnostics are temporarily unavailable")
 	}
 	return c.JSON(http.StatusOK, report)
+}
+
+func (s *Service) readCloudDiagnostics(ctx context.Context, credential apiCredential, w operatortool.AnalyticsWindow) (diagnosticsReport, error) {
+	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
+	defer cancel()
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return diagnosticsReport{}, err
+	}
+	defer tx.Rollback()
+	q := analyticsRollupReader{tx}
+	analytics, err := s.readAnalyticsReportFor(ctx, credential, operatortool.AnalyticsRequest{Limit: 100}, w, q, true)
+	if err != nil {
+		return diagnosticsReport{}, err
+	}
+	return s.readHostedDiagnosticsFrom(ctx, analytics, q)
 }
 
 func (s *Service) readHostedDiagnostics(ctx context.Context, analytics nativeAnalyticsReport) (diagnosticsReport, error) {

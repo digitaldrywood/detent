@@ -191,6 +191,10 @@ func (s *Service) readAnalyticsReport(ctx context.Context, credential apiCredent
 }
 
 func (s *Service) readAnalyticsReportFrom(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow, q nativeQueryer) (nativeAnalyticsReport, error) {
+	return s.readAnalyticsReportFor(ctx, credential, r, w, q, false)
+}
+
+func (s *Service) readAnalyticsReportFor(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow, q nativeQueryer, diagnostics bool) (nativeAnalyticsReport, error) {
 	ctx, reporterErr := prepareReporterReadContext(ctx, q, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential})
 	if reporterErr != nil {
 		return nativeAnalyticsReport{}, reporterErr
@@ -229,6 +233,14 @@ func (s *Service) readAnalyticsReportFrom(ctx context.Context, credential apiCre
 		projectQ, err = prepareReportsQuery(projectCtx, projectQ, scope, "report_attempts", "report_events")
 		if err != nil {
 			return report, err
+		}
+		if diagnostics {
+			value, err := readNativeDiagnostics(projectCtx, projectQ, scope, r, w)
+			if err != nil {
+				return report, err
+			}
+			report.Projects = append(report.Projects, value)
+			continue
 		}
 		value, err := readNativeAnalytics(projectCtx, projectQ, scope, r, w)
 		if err != nil {

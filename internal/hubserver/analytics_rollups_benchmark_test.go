@@ -192,3 +192,60 @@ strftime('%Y-%m-%dT%H:%M:%SZ',?,'+'||(x*12)||' seconds') FROM n`, events, scope.
 	}
 	return nativeFixture{service: s, project: tracker.NativeProject{OrganizationID: scope.organization, ID: scope.project}}
 }
+
+func BenchmarkDiagnosticsProjectionReads(b *testing.B) {
+	f := benchmarkAnalyticsFixture(b, 0)
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	now := formatHubTime(f.service.config.now())
+	if _, err := f.service.database.db.ExecContext(b.Context(), `INSERT INTO machines(id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES('machine_browser_preview_runner','example-runner',1,'test',?,?,?)`, now, now, now); err != nil {
+		b.Fatal(err)
+	}
+	seedProductionProject(b, f.service, scope, productionProjectShape{issues: 594, attempts: 469, usage: 262, leases: 1682, comments: 7000})
+	old := formatHubTime(f.service.config.now().Add(-365 * 24 * time.Hour))
+	if _, err := f.service.database.db.ExecContext(b.Context(), `WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100000)
+INSERT INTO leases(lease_id,fencing_token,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at)
+SELECT 'lease_history_'||x,1000000+x,id,'machine_browser_preview_runner','session_history_'||x,?,?,?,?,?,? FROM n CROSS JOIN (SELECT id FROM issues WHERE organization_id=? AND project_id=? LIMIT 1)`, old, old, old, old, old, old, scope.organization, scope.project); err != nil {
+		b.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(b.Context(), `WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100000)
+INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,started_at,updated_at,report_projection_version,report_requested_model,report_resolved_model,report_failed_at,activity_projection_version,hot_projection_version)
+SELECT 'attempt_history_'||x,organization_id,project_id,work_item_id,'lease_history_'||x,1000000+x,'run_history_'||x,100+x,'failed','{}',?,?,1,'','',?,1,1
+FROM n CROSS JOIN (SELECT * FROM native_attempts WHERE organization_id=? AND project_id=? LIMIT 1)`, old, old, old, scope.organization, scope.project); err != nil {
+		b.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(b.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,work_item_id,started_at,updated_at,status,failed_at,failed_day,projection_version)
+SELECT organization_id,project_id,unixepoch(started_at)/3600*3600,'attempt',id,1,'{}',work_item_id,started_at,updated_at,status,report_failed_at,julianday(report_failed_at),1 FROM native_attempts WHERE organization_id=? AND project_id=? AND id LIKE 'attempt_history_%'`, scope.organization, scope.project); err != nil {
+		b.Fatal(err)
+	}
+	w := operatortool.AnalyticsWindow{From: f.service.config.now().Add(-24 * time.Hour), To: f.service.config.now(), Bucket: time.Hour}
+	r := operatortool.AnalyticsRequest{Limit: 100}
+	for _, source := range []struct {
+		name string
+		q    nativeQueryer
+	}{{"native", f.service.database.reader}, {"rollups", analyticsRollupReader{f.service.database.reader}}} {
+		for _, focused := range []bool{false, true} {
+			b.Run(fmt.Sprintf("%s/focused=%t", source.name, focused), func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					q, err := prepareReportsQuery(b.Context(), source.q, scope, "report_attempts", "report_events")
+					if err != nil {
+						b.Fatal(err)
+					}
+					var project nativeAnalyticsProject
+					if focused {
+						project, err = readNativeDiagnostics(b.Context(), q, scope, r, w)
+					} else {
+						project, err = readNativeAnalytics(b.Context(), q, scope, r, w)
+					}
+					if err != nil {
+						b.Fatal(err)
+					}
+					report := nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []nativeAnalyticsProject{project}}
+					if _, err := f.service.readHostedDiagnosticsFrom(b.Context(), report, q); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}

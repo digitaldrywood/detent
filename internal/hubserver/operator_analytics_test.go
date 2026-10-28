@@ -302,7 +302,7 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 				return f.service.readAnalyticsReport(ctx, credential, operatortool.AnalyticsRequest{ProjectID: string(f.project), Limit: 1}, report.Window)
 			}},
 			{"diagnostics", func(ctx context.Context) (any, error) {
-				return f.service.readHostedDiagnostics(ctx, report)
+				return f.service.readCloudDiagnostics(ctx, credential, report.Window)
 			}},
 			{"reports", func(ctx context.Context) (any, error) {
 				return f.service.readHostedReports(ctx, report)

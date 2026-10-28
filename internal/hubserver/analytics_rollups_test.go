@@ -843,6 +843,35 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertAnalyticsJSONEqual(t, wantDiagnostics, gotDiagnostics)
+			if test.request.PopulationCursor == "" {
+				for _, source := range []struct {
+					q    nativeQueryer
+					want diagnosticsReport
+				}{{q, gotDiagnostics}, {f.service.database.reader, wantDiagnostics}} {
+					q := source.q
+					project, err := readNativeDiagnostics(t.Context(), q, scope, test.request, w)
+					if err != nil {
+						t.Fatal(err)
+					}
+					narrow := nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []nativeAnalyticsProject{project}}
+					got, err := f.service.readHostedDiagnosticsFrom(t.Context(), narrow, q)
+					if err != nil {
+						t.Fatal(err)
+					}
+					usageRows, err := readUsageRows(t.Context(), q, string(scope.organization), usageWindow{From: w.From, To: w.To}, []string{string(scope.project)}, maxAnalyticsPopulation+1)
+					if err != nil {
+						t.Fatal(err)
+					}
+					usageAttempts := map[string]bool{}
+					for _, row := range usageRows[:min(len(usageRows), maxAnalyticsPopulation)] {
+						if row.Period.Before(w.To) {
+							usageAttempts[row.AttemptID] = true
+						}
+					}
+					source.want.Coverage[2].Observed = new(len(usageAttempts))
+					assertAnalyticsJSONEqual(t, source.want, got)
+				}
+			}
 			gotReports, err := f.service.readHostedReportsFrom(t.Context(), rolled, q)
 			if err != nil {
 				t.Fatal(err)
