@@ -120,6 +120,7 @@ DROP INDEX collaboration_events_terminal_transition;
 DROP INDEX collaboration_events_page_unknown;
 DROP INDEX collaboration_events_transition_unknown;
 DROP INDEX daily_summary_rework_window;
+DROP INDEX collaboration_events_report_recovery;
 ALTER TABLE collaboration_events DROP COLUMN edited_body;
 ALTER TABLE collaboration_events DROP COLUMN edited_title;
 ALTER TABLE collaboration_events DROP COLUMN run_present;
@@ -186,7 +187,8 @@ ALTER TABLE collaboration_events DROP COLUMN page_projection_ready;
 	if _, err := provider.Up(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE INDEX daily_summary_rework_window ON collaboration_events(organization_id,project_id,work_item_id,analytics_recorded_ns,to_state) WHERE type='workflow.transitioned'`); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE INDEX daily_summary_rework_window ON collaboration_events(organization_id,project_id,work_item_id,analytics_recorded_ns,to_state) WHERE type='workflow.transitioned';
+CREATE INDEX collaboration_events_report_recovery ON collaboration_events(organization_id,project_id,type,id) WHERE analytics_projection_version IS NULL AND type IN ('workflow.transitioned','scheduler.decision','issue.created');`); err != nil {
 		t.Fatal(err)
 	}
 	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", f.token, nil), &after)

@@ -190,16 +190,20 @@ func TestReportUnknownFactsFailClosed(t *testing.T) {
 	}
 	issue := f.create(t, "Example unknown reports")
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	for _, family := range []string{"report_events", "report_attempts"} {
-		t.Run(family, func(t *testing.T) {
+	for _, test := range []struct{ family, event string }{
+		{"report_events", "scheduler.decision"},
+		{"report_events", "run.observed"},
+		{"report_attempts", ""},
+	} {
+		t.Run(test.family+"/"+test.event, func(t *testing.T) {
 			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
-			if family == "report_events" {
+			if test.family == "report_events" {
 				for index := range storageConversionRows + 1 {
-					if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed"}}, f.service.config.now().Add(time.Duration(index)*time.Nanosecond)); err != nil {
+					if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), test.event, tracker.CollaborationData{Reason: "example observation", Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed"}}, f.service.config.now().Add(time.Duration(index)*time.Nanosecond)); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -216,7 +220,22 @@ func TestReportUnknownFactsFailClosed(t *testing.T) {
 					seedHealthRateAttempt(t, tx, scope, issue, machine, "failed", tracker.NativeRunData{}, now, -1)
 				}
 			}
-			q, err := prepareReportsQuery(t.Context(), tx, scope, family)
+			q, err := prepareReportsQuery(t.Context(), tx, scope, test.family)
+			if test.event == "run.observed" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				var count int
+				var raw string
+				if err := q.QueryRowContext(t.Context(), `SELECT count(*),min(data_json) FROM report_events WHERE organization_id=? AND project_id=? AND type='run.observed'`, scope.organization, scope.project).Scan(&count, &raw); err != nil {
+					t.Fatal(err)
+				}
+				var data tracker.CollaborationData
+				if err := json.Unmarshal([]byte(raw), &data); err != nil || count != storageConversionRows+1 || data.Reason != "example observation" {
+					t.Fatalf("runtime predecessors lost: count=%d data=%+v error=%v", count, data, err)
+				}
+				return
+			}
 			if !errors.Is(err, operatortool.ErrReadUnavailable) || q != nil {
 				t.Fatalf("unknown population authorized a partial query: query=%v error=%v", q, err)
 			}
