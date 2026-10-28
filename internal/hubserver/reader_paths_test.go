@@ -327,6 +327,11 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"nativeIssueJSON":              "The mutation response reads back the browser path of the issue this request just wrote.",
 	}
 	transactionReasons := map[string]string{
+		"requestTeamUnread":                 "Writes only the caller's unread refresh intent and supplied project scope; history projection runs in maintenance and summary reads use the reader.",
+		"advanceTeamUnread":                 "Publishes one reader-planned, bounded unread summary page and its cursor under the existing board maintenance owner.",
+		"teamThreadOperation":               "Updates one thread's status after rechecking the caller's mutation authority.",
+		"createTeamThread":                  "Creates one thread and its request-supplied references after rechecking mutation authority.",
+		"postTeamThread":                    "Appends one post and its request-supplied references, and updates only its thread and author's participant row atomically.",
 		"writeConversationQueryMetadata":    "Backfills one source row per transaction, conditional on its unchanged payload, under the existing retention owner.",
 		"recordSpriteWakeFacts":             "The Sprite lifecycle owner atomically updates the candidate machine's wake result and matching typed facts.",
 		"populateRunnerFact":                "Retention verifies one unchanged source row and writes that row's typed facts per transaction.",

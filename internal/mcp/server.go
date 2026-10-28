@@ -151,6 +151,7 @@ type session struct {
 	mu              sync.Mutex
 	state           lifecycleState
 	protocolVersion string
+	clientName      string
 	bridgeOpened    bool
 	active          map[string]*activeRequest
 	calls           sync.WaitGroup
@@ -240,6 +241,14 @@ func (s *session) handle(ctx context.Context, line []byte) error {
 	case "ping":
 		return s.writeVersionResult(message.ID, version, message.Method, map[string]any{})
 	case "tools/list", "tools/call":
+		client := meta.Client
+		if !meta.Modern {
+			s.mu.Lock()
+			client = s.clientName
+			s.mu.Unlock()
+		}
+		connection := operatortool.CurrentConnection(ctx)
+		ctx = operatortool.BindConnection(ctx, connection.ID, client)
 		if meta.Modern {
 			if err := s.ensureBridge(ctx, meta.Client); err != nil {
 				if message.Method == "tools/call" {
@@ -312,6 +321,7 @@ func (s *session) initialize(ctx context.Context, message request) error {
 	}
 	s.state = stateInitialized
 	s.protocolVersion = negotiated
+	s.clientName = params.ClientInfo.Name
 	s.mu.Unlock()
 
 	return s.writeResult(message.ID, map[string]any{

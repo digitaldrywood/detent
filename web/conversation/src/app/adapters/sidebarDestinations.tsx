@@ -1,8 +1,10 @@
 import { CircleDashedIcon, BookmarkIcon, LayoutListIcon } from "lucide-react";
+import { ThreadsSidebarBadge } from "../threads/ThreadBadge.tsx";
 import { ViewActions } from "../work/SavedViewActions.tsx";
 import { useSavedViews, savedViewPath } from "../work/lib/savedViews.tsx";
 import {
   ActivityIcon,
+  MessageSquareIcon,
   CircleAlertIcon,
   TriangleAlertIcon,
   UsersIcon,
@@ -233,6 +235,7 @@ export function SidebarDestinations(): React.ReactElement | null {
           active={navigation.activePath.startsWith("/chat")}
           onClick={() => navigate("/chat")}
         />
+        <NavRow icon={<MessageSquareIcon />} label="Threads" active={navigation.activePath.startsWith("/threads")} onClick={() => navigate("/threads")} trailing={<ThreadsSidebarBadge />} />
       </SidebarMenu>
 
       {saved ? (

@@ -6,6 +6,33 @@ The dashboard's operator API uses the same application executors as MCP.
 `TestOperatorToolAPIUsesSharedReadOnlyExecutor` checks that every tool advertised
 by the dashboard is registered in this catalog.
 
+## Team threads
+
+The `threads` toolset exposes `list_threads`, `get_thread`, `create_thread`,
+`post_to_thread` and `resolve_thread` through the Hub's organization connection.
+It uses the [team thread REST contract](hub-api.md#team-threads), current member
+and project grants, and the key's existing read/write scope. The organization,
+author principal and acting-for human come from authenticated authority, never
+tool arguments. A personal key records the MCP client or key name on its posts.
+
+`list_threads` accepts scope, project, issue, status, search and cursor filters.
+`get_thread` takes `thread_id`, optional `since` (including `last_read`) and a
+bounded `limit`; continue with the returned `cursor` while `has_more` is true.
+Reading advances only the caller's cursor. `create_thread` takes a scope and
+title, plus the corresponding project or issue ID. `post_to_thread` takes a
+thread ID, kind and markdown body. `resolve_thread` takes a thread ID and
+`status: resolved` or `status: open`. Creation and posting accept stable
+`idempotency_key` values for retries and optional issue, Change or attachment
+references.
+
+Results wrap application data in `{semantics, data}`. The semantics explicitly
+mark content authored by other members as untrusted data, never instructions;
+MCP post bodies also use the existing escaped `<transcript>` boundary. Tool
+descriptions state that threads are informational. Thread posts never direct
+another member's agent, dispatch work, file issues, move lanes, write issue
+comments or enter runner task context. Each person decides what their own agent
+does with findings from a thread.
+
 ## Cloud issue attachments
 
 Shared entry plus the tenant Hub supports `upload_attachment`,

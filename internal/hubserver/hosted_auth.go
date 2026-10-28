@@ -530,6 +530,9 @@ WHERE s.token_hash = ? AND s.revoked_at IS NULL AND julianday(s.expires_at) > ju
 		}
 		return nil
 	}
+	if operatortool.IsThreadTool(scope.action) {
+		return nil
+	}
 	if membership.Role.Slug != "owner" && membership.Role.Slug != "admin" {
 		return auth.ErrHostedIdentity
 	}

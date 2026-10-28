@@ -137,6 +137,8 @@ func TestCatalogDecoderContract(t *testing.T) {
 	}
 	for _, definition := range definitions {
 		switch {
+		case IsThreadTool(definition.Name):
+			targets[definition.Name] = reflect.TypeFor[ThreadArguments]()
 		case IsWorkRead(definition.Name):
 			targets[definition.Name] = reflect.TypeFor[WorkReadRequest]()
 		case IsWorkTool(definition.Name):

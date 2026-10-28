@@ -89,7 +89,7 @@ func hostedRoleAllows(role string, scope apikey.Scope, action ...string) bool {
 				return false
 			}
 			switch action[0] {
-			case operatortool.EditItem, operatortool.FileIssue, operatortool.UploadAttachment, operatortool.ReferenceAttachment, operatortool.AddComment, operatortool.EditComment, operatortool.MoveItem, operatortool.VerifyFix, "credentials":
+			case operatortool.EditItem, operatortool.FileIssue, operatortool.UploadAttachment, operatortool.ReferenceAttachment, operatortool.AddComment, operatortool.EditComment, operatortool.MoveItem, operatortool.VerifyFix, "create_thread", "post_to_thread", "resolve_thread", "credentials":
 				return true
 			}
 			return false

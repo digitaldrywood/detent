@@ -57,6 +57,7 @@ func (s *Service) registerRoutes(e *echo.Echo) {
 		s.registerLocalAppRoutes(e)
 	}
 	s.registerOperatorTools(e)
+	s.registerTeamThreadRoutes(e)
 	s.registerNativeRoutes(e)
 	s.registerProjectSecretRoutes(e)
 	s.registerSpritePoolRoutes(e)

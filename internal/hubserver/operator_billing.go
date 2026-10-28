@@ -87,6 +87,17 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 		return nil, err
 	}
 	definitions = append(definitions, changes...)
+	if catalog, err := operatorCatalog(ctx); err == nil && catalog.credential.HostedRole != "account" {
+		for _, definition := range operatortool.ThreadCatalog() {
+			required := apikey.ScopeRead
+			if definition.Name != "list_threads" && definition.Name != "get_thread" {
+				required = apikey.ScopeWrite
+			}
+			if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: required, Action: definition.Name}); err == nil {
+				definitions = append(definitions, definition)
+			}
+		}
+	}
 	admin, err := e.service.administrationCatalog(ctx)
 	if err != nil {
 		return nil, err
@@ -157,6 +168,9 @@ func safeBillingError(err error) error {
 }
 
 func (e hostedOperatorExecutor) Execute(ctx context.Context, call operatortool.Call) (result operatortool.Result, err error) {
+	if operatortool.IsThreadTool(call.Name) {
+		return e.service.executeThreadTool(ctx, call)
+	}
 	ctx = e.service.freshRunDetailContext(ctx)
 	call, err = e.service.normalizeToolReferences(ctx, call)
 	if err != nil {

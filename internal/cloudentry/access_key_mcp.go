@@ -263,11 +263,19 @@ func (e accessKeyExecutor) Execute(ctx context.Context, call operatortool.Call) 
 		return operatortool.Result{}, err
 	}
 	connection := operatortool.CurrentConnection(ctx)
+	clientName := ""
+	if operatortool.IsThreadTool(call.Name) {
+		clientName = connection.Client
+		if clientName == "" {
+			clientName = key.Name
+		}
+	}
 	raw, err := e.service.keyTenantCall(ctx, key, org, "/internal/v1/keys/call", struct {
 		Name         string          `json:"name"`
 		Arguments    json.RawMessage `json:"arguments"`
 		ConnectionID string          `json:"connection_id"`
-	}{call.Name, arguments, key.ID + ":" + connection.ID})
+		ClientName   string          `json:"client_name,omitempty"`
+	}{call.Name, arguments, key.ID + ":" + connection.ID, clientName})
 	if err != nil {
 		return operatortool.Result{}, err
 	}

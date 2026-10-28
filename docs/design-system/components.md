@@ -4,7 +4,7 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 Each contract states what a component is for, how to import it, the variants its source defines, the interaction states it owns, its keyboard behaviour and what to use instead. The source file is the owner of the component's appearance and behaviour; features compose it and do not restyle it. A proposed entry names a component Detent does not have yet; listing one does not authorize building it.
 
-Catalog totals: 146 entries; by kind: 57 primitive, 82 composition, 7 surface; by status: 146 available, 0 proposed, 0 exception.
+Catalog totals: 147 entries; by kind: 57 primitive, 82 composition, 8 surface; by status: 147 available, 0 proposed, 0 exception.
 
 ## Actions
 
@@ -82,7 +82,7 @@ Single-line text entry with an associated Label; `size="compact"` in toolbars an
 - Kind: Primitive; status: available; id: `input`.
 - Import: `import { Input, InputProps } from "~/components/ui/input";`
 - Source: [src/components/ui/input.tsx](../../web/conversation/src/components/ui/input.tsx).
-- Variants: `size`: `sm`, `compact`, `default`, `lg`; `font`: `default`, `mono`.
+- Variants: `size`: `sm`, `compact`, `default`, `lg`, `touch`; `font`: `default`, `mono`.
 - States: hover, focus-visible, disabled, invalid, read-only.
 - Keyboard: Native text input editing and selection.
 - Avoid: Multi-line text (use Textarea), choices from a known list (use Select or Combobox) and search inside a popup (the Command and Combobox inputs own that).
@@ -226,7 +226,7 @@ One saved value from a short, known list. Use SelectButton to give a Menu or Com
 - Kind: Primitive; status: available; id: `select`.
 - Import: `import { Select, SelectTrigger, SelectButton, selectTriggerVariants, SelectValue, SelectPopup, SelectContent, SelectItem, SelectSeparator, SelectGroup, SelectGroupLabel } from "~/components/ui/select";`
 - Source: [src/components/ui/select.tsx](../../web/conversation/src/components/ui/select.tsx).
-- Variants: `variant`: `default`, `ghost`; `size`: `compact`, `default`, `lg`, `sm`, `xs`.
+- Variants: `variant`: `default`, `ghost`; `size`: `compact`, `default`, `lg`, `sm`, `xs`, `touch`.
 - States: hover, focus-visible, open, highlighted, selected, disabled, invalid.
 - Keyboard: Base UI select: Enter, Space or arrow keys open; arrow keys move; typeahead jumps; Enter selects; Escape closes and returns focus.
 - Avoid: Searchable or long lists (use Combobox) and lists of actions (use Menu).
@@ -995,6 +995,19 @@ Read-only organization activity: runners, running attempts, recent finishes and 
 - Keyboard: Tab reaches compact filters, runner chips, issue links, time toggles and stage tooltips; Select and Toggle own their keyboard behavior.
 - Avoid: Historical reports, diagnostic evidence or runner controls; use their existing surfaces.
 - Related: [Runner status dot](#runner-status-dot), [Stage progress](#stage-progress), [Workspace page header](#workspace-page-header), [Workspace page container](#workspace-page-container).
+
+### Team threads
+
+Informational organization, project and issue discussions shared by people and their local agents, with typed posts and member read cursors.
+
+- Kind: Surface; status: available; id: `team-threads`.
+- Import: `import { ThreadsRoute, ThreadFiltersBar, ThreadAgentBadge, ThreadReplyComposer } from "~/app/threads/ThreadsPage";`
+- Source: [src/app/threads/ThreadsPage.tsx](../../web/conversation/src/app/threads/ThreadsPage.tsx).
+- Variants: none.
+- States: loading, empty, error, filtered, open, resolved, new, posting.
+- Keyboard: Tab reaches filters, thread rows, scope and kind pickers, reply and status actions. Select owns its keyboard behavior.
+- Avoid: Worker instructions, issue comments or private coordinator Q&A; use their existing surfaces.
+- Related: [Workspace page header](#workspace-page-header), [Input](#input), [Textarea](#textarea), [Select](#select), [Badge](#badge), [Toggle](#toggle), [Button](#button).
 
 ## Conversation
 

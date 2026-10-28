@@ -4,7 +4,7 @@ This document is generated from [`web/conversation/src/design-system/catalog.jso
 
 One row per catalogued element. The [component contracts](components.md) hold the full contract for each. Status *available* means the component ships in Detent; *proposed* means it is planned and has no source yet; *exception* means a deliberate, documented departure from the shared contract.
 
-Totals: 146 entries; by kind: 57 primitive, 82 composition, 7 surface; by status: 146 available, 0 proposed, 0 exception.
+Totals: 147 entries; by kind: 57 primitive, 82 composition, 8 surface; by status: 147 available, 0 proposed, 0 exception.
 
 | Element | Group | Kind | Status | Source |
 | --- | --- | --- | --- | --- |
@@ -83,6 +83,7 @@ Totals: 146 entries; by kind: 57 primitive, 82 composition, 7 surface; by status
 | [Sidebar update pill](components.md#sidebar-update-pill) | Workspace | composition | available | `src/components/sidebar/SidebarUpdatePill.tsx` |
 | [Capacity panel](components.md#capacity-panel) | Workspace | composition | available | `src/app/fleet/CapacityPanel.tsx` |
 | [Activity page](components.md#activity-page) | Workspace | surface | available | `src/app/activity/ActivityPage.tsx` |
+| [Team threads](components.md#team-threads) | Workspace | surface | available | `src/app/threads/ThreadsPage.tsx` |
 | [Chat header](components.md#chat-header) | Conversation | composition | available | `src/components/chat/ChatHeader.tsx` |
 | [Conversation timeline](components.md#conversation-timeline) | Conversation | composition | available | `src/app/components/Timeline.tsx` |
 | [Messages timeline](components.md#messages-timeline) | Conversation | composition | available | `src/components/chat/MessagesTimeline.tsx` |

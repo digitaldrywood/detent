@@ -10,6 +10,53 @@ Cloud members get one scoped key for direct API and MCP access from
 private credential handling, agent prompts and the browser approval contract.
 Cloud keys do not authorize compatibility, worker, runner or instance-admin routes.
 
+## Team threads
+
+Threads are informational discussions, separate from private conversations,
+issue comments and worker context. They never dispatch work or change lanes.
+All endpoints use `/api/v2/organizations/{organization}/threads`, current
+member/key authorization, and browser CSRF protection on mutations.
+
+| Method and suffix | Behavior |
+| --- | --- |
+| `GET /` | List threads. Filters: `scope` (`general`, `project`, `issue`), `project_id`, `issue_id`, `status` (`open`, `resolved`), `search`, `cursor`, `limit` (1–50, default 25). A project filter also includes its issue threads. |
+| `GET /unread` | Read the caller’s persisted unread-thread summary for General and up to 100 repeated `project_id` parameters, each authorized against current grants. `refresh=true` requests a rebuild; ordinary reads resume observation without restarting it. Returns `{count, pending}`; `count` is null until the first rebuild completes. |
+| `POST /` | Create with `scope`, `title` (1–200 characters), optional `project_id`, `issue_id`, `references` and `idempotency_key`. Issue scope derives its project from the issue. |
+| `GET /{thread}` | Read posts in ascending sequence. `since` accepts a returned sequence cursor or `last_read`; `limit` is 1–50. Advances only the caller's read cursor, through the last delivered post. |
+| `POST /{thread}/posts` | Append `kind` (`note`, `finding`, `question`, `decision`), `body` (1–8192 UTF-8 bytes), optional `references` and `idempotency_key`. |
+| `PATCH /{thread}` | Set `status` to `resolved` or reopen with `open`. |
+
+Lists return `{threads, next_cursor?}`. Each thread includes scope, title,
+status, creator, post and unread counts, the last post preview, timestamps,
+up to 20 participants and visible references. Reads return
+`{thread, posts, cursor, has_more}`. Post pages also have a 24 KiB body budget;
+continue using `cursor` when `has_more` is true. The read cursor never regresses
+when two clients read concurrently. List cursors order fixed-width UTC timestamps
+and thread IDs; restart a list to observe activity that moves before its cursor.
+
+Unread summaries are eventually consistent. A refresh records only the caller's
+requested scope; it does not scan threads or load post metadata. The existing
+maintenance owner projects at most four pages of 50 threads per turn, persisting
+its cursor between turns. Clients may check pending summaries with jittered
+1–2 second intervals and stop when `pending` is false. Completed counts remain
+available during a refresh of the same scope. Each member has one active summary
+per organization. Changing the project selection replaces that scope and clears
+the previous count until the replacement completes; simultaneous clients with
+different selections share this slot. Refresh requests coalesce into the active
+scan and at most one subsequent scan. Scope changes preserve the queue position,
+and new members join the end of the queue. A response never exposes a count from
+a different project selection.
+
+A reference is `{kind, id}`, where kind is `issue`, `change` or `attachment`;
+at most 20 references accompany a thread or post. References require current
+project access at creation and are filtered again at read time. They do not
+change a thread's scope. General threads are organization-visible; project and
+issue threads require current project access. Agent-key posts retain
+`author_principal`, `acting_for` and `client_name`; read cursors belong to the
+acting human across that person's clients. Viewer and read-only keys cannot post.
+Retry a write with its original `idempotency_key`; changed content under the same
+key returns a conflict.
+
 ## Runner project diagnostics
 
 `GET /api/v2/organizations/{organization}/projects/{project}/runner-diagnostics`

@@ -26,6 +26,9 @@ WHERE work_item_id>? ORDER BY work_item_id LIMIT 1)`
 
 func (s *Service) maintainNativeBoard(ctx context.Context) {
 	ctx = s.runDetailContext(ctx)
+	if err := s.maintainTeamUnread(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		s.config.Logger.ErrorContext(ctx, "refresh team unread summary", "error", err)
+	}
 	if err := s.trimNextDashboardProject(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		s.config.Logger.ErrorContext(ctx, "trim dashboard changes", "error", err)
 	}

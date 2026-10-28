@@ -94,7 +94,7 @@
       "source": "src/components/ui/input.tsx",
       "exports": ["Input", "InputProps"],
       "variants": {
-        "size": ["sm", "compact", "default", "lg"],
+        "size": ["sm", "compact", "default", "lg", "touch"],
         "font": ["default", "mono"]
       },
       "states": ["hover", "focus-visible", "disabled", "invalid", "read-only"],
@@ -272,7 +272,7 @@
       "exports": ["Select", "SelectTrigger", "SelectButton", "selectTriggerVariants", "SelectValue", "SelectPopup", "SelectContent", "SelectItem", "SelectSeparator", "SelectGroup", "SelectGroupLabel"],
       "variants": {
         "variant": ["default", "ghost"],
-        "size": ["compact", "default", "lg", "sm", "xs"]
+        "size": ["compact", "default", "lg", "sm", "xs", "touch"]
       },
       "states": ["hover", "focus-visible", "open", "highlighted", "selected", "disabled", "invalid"],
       "keyboard": "Base UI select: Enter, Space or arrow keys open; arrow keys move; typeahead jumps; Enter selects; Escape closes and returns focus.",
@@ -2320,6 +2320,21 @@
       "use": "Read-only organization activity: runners, running attempts, recent finishes and timing against server-provided typical durations.",
       "avoid": "Historical reports, diagnostic evidence or runner controls; use their existing surfaces.",
       "related": ["runner-status-dot", "stage-progress", "workspace-page-header", "workspace-page-container"]
+    },
+    {
+      "id": "team-threads",
+      "name": "Team threads",
+      "kind": "surface",
+      "group": "Workspace",
+      "status": "available",
+      "source": "src/app/threads/ThreadsPage.tsx",
+      "exports": ["ThreadsRoute", "ThreadFiltersBar", "ThreadAgentBadge", "ThreadReplyComposer"],
+      "variants": {},
+      "states": ["loading", "empty", "error", "filtered", "open", "resolved", "new", "posting"],
+      "keyboard": "Tab reaches filters, thread rows, scope and kind pickers, reply and status actions. Select owns its keyboard behavior.",
+      "use": "Informational organization, project and issue discussions shared by people and their local agents, with typed posts and member read cursors.",
+      "avoid": "Worker instructions, issue comments or private coordinator Q&A; use their existing surfaces.",
+      "related": ["workspace-page-header", "input", "textarea", "select", "badge", "toggle", "button"]
     }
   ],
   "internal": [

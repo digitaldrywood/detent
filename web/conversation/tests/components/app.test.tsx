@@ -26,6 +26,7 @@ import { getBoardRead } from "../../src/app/work/lib/boardStore.ts";
 import { workHttpFor } from "../../src/app/work/lib/useWork.ts";
 import "../../src/app/reports/ReportsPage.tsx";
 import "../../src/app/ChatRoutes.tsx";
+import "../../src/app/work/WorkRoutes.tsx";
 
 // The router restores scroll on navigation; jsdom has no scrolling.
 Object.defineProperty(globalThis, "scrollTo", { value: () => {}, writable: true });
@@ -220,7 +221,7 @@ describe("the conversation shell", () => {
       within(heading()).getByText("2 projects").focus();
     });
     expect((await screen.findByRole("tooltip")).textContent).toBe("alpha, beta");
-    const allCards = screen.getAllByTestId("issue-card").map((card) => card.textContent);
+    const allCards = screen.getAllByTestId("issue-card").map((card) => card.getAttribute("data-work-item"));
     expect(screen.getByTestId("attention-issue-wi_alpha")).toBeTruthy();
     expect(screen.getByTestId("attention-issue-wi_beta")).toBeTruthy();
     for (const name of ["alpha", "beta"]) {
@@ -234,7 +235,7 @@ describe("the conversation shell", () => {
     }
     fireEvent.click(rows().getByRole("button", { name: "All" }));
     await waitFor(() => expect(heading().textContent).toBe("2 projects"));
-    expect(screen.getAllByTestId("issue-card").map((card) => card.textContent)).toEqual(allCards);
+    expect(screen.getAllByTestId("issue-card").map((card) => card.getAttribute("data-work-item"))).toEqual(allCards);
     expect(boardRequests()).toBe(initial);
     fireEvent.click(screen.getByRole("radio", { name: "List" }));
     await waitFor(() => expect(screen.getByRole("table")).toBeTruthy());

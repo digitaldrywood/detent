@@ -26,6 +26,7 @@ const SettingsScreen = lazyRouteComponent(() => import("./routes.account.screens
 const ProjectSettingsScreen = lazyRouteComponent(() => import("./routes.account.screens.tsx"), "ProjectSettingsScreen");
 const SetupScreen = lazyRouteComponent(() => import("./routes.account.screens.tsx"), "SetupScreen");
 const UsageRoute = lazyRouteComponent(() => import("./usage/UsagePage.tsx"), "UsageRoute");
+const ThreadsRoute = lazyRouteComponent(() => import("./threads/ThreadsPage.tsx"), "ThreadsRoute");
 const ActivityRoute = lazyRouteComponent(() => import("./activity/ActivityPage.tsx"), "ActivityRoute");
 const DiagnosticsRoute = lazyRouteComponent(() => import("./diagnostics/DiagnosticsPage.tsx"), "DiagnosticsRoute");
 const ReportsRoute = lazyRouteComponent(() => import("./reports/ReportsPage.tsx"), "ReportsRoute");
@@ -122,6 +123,8 @@ export function accountRoutes(rootRoute: AnyRoute): AnyRoute[] {
       component: ReportsRoute,
     }),
     createRoute({ getParentRoute, path: "/activity", component: ActivityRoute }),
+    createRoute({ getParentRoute, path: "/threads", component: ThreadsRoute }),
+    createRoute({ getParentRoute, path: "/threads/$thread", component: ThreadsRoute }),
     createRoute({ getParentRoute, path: "/diagnostics", component: DiagnosticsRoute }),
     createRoute({
       getParentRoute,

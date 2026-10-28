@@ -1,3 +1,4 @@
+import { IssueThreads } from "../threads/IssueThreads.tsx";
 import { dependencyLabel } from "./lib/dependencies.ts";
 import { ReporterIssue } from "../reporter/ReporterIssue.tsx";
 import { DependencyPanels } from "./components/DependencyDetails.tsx";
@@ -1280,6 +1281,7 @@ function IssueBody(props: IssueBodyProps): React.ReactElement {
           </Tooltip>
 
           <IssueResources rows={resources} />
+          <IssueThreads issueId={data.issue.work_item_id} />
 
           <IssueDetailTabs native={data.project.profile === "native"} diagnostics={<IssueDiagnostics issue={data.issue} attempts={data.attempts} history={data.history} now={now} attemptsAvailable={data.attemptsAvailable} historyAvailable={data.historyAvailable} historyPartial={Boolean(data.historyCursor) || data.historyCompacted === true} attemptsPartial={Boolean(data.attemptsCursor)} />}>
           <ActivityFeed

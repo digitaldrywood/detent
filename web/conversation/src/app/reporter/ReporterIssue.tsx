@@ -1,3 +1,4 @@
+import { IssueThreads } from "../threads/IssueThreads.tsx";
 import React from "react";
 import { Link, useParams, useRouteContext } from "@tanstack/react-router";
 import { XCircleIcon } from "lucide-react";
@@ -308,6 +309,7 @@ export function ReporterIssue() {
                 <Markdown projectId={issue.project_id} source={issue.body} />
               </div>
             )}
+            <IssueThreads issueId={data.issue.work_item_id} />
             <section className="space-y-3">
               <h2 className="text-sm font-semibold">Comments</h2>
               {data.comments.map((comment) => (

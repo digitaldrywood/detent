@@ -147,6 +147,7 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 		Name         string          `json:"name"`
 		Arguments    json.RawMessage `json:"arguments"`
 		ConnectionID string          `json:"connection_id"`
+		ClientName   string          `json:"client_name,omitempty"`
 	}
 	if err := decodeAPIJSON(c, &call); err != nil {
 		return s.invalidAPIRequest(c, err)
@@ -154,10 +155,13 @@ func (s *Service) entryKeyCall(c echo.Context) error {
 	if audit := entryKeyAuditFrom(c.Request().Context()); audit != nil {
 		audit.operation = call.Name
 	}
-	if call.ConnectionID == "" || len(call.ConnectionID) > 256 {
+	if call.ConnectionID == "" || len(call.ConnectionID) > 256 || len(call.ClientName) > 256 {
 		return s.invalidAPIRequest(c, operatortool.ErrInvalidArguments)
 	}
-	ctx := operatortool.BindConnection(c.Request().Context(), call.ConnectionID, "shared-entry")
+	if call.ClientName == "" {
+		call.ClientName = "shared-entry"
+	}
+	ctx := operatortool.BindConnection(c.Request().Context(), call.ConnectionID, call.ClientName)
 	if err := (hostedOperatorExecutor{s}).OpenConnection(ctx); err != nil {
 		return s.nativeAPIError(c, err)
 	}
