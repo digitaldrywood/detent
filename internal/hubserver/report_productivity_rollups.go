@@ -125,13 +125,19 @@ func refreshProductivitySummary(ctx context.Context, tx projectionQuery, scope n
 	if err != nil {
 		return err
 	}
-	orderedHours := make([]int64, 0, len(hours))
-	for hour := range hours {
-		orderedHours = append(orderedHours, hour)
+	type hourRow struct {
+		hour  int64
+		value productivityHour
 	}
-	slices.Sort(orderedHours)
-	for _, hour := range orderedHours {
-		value := hours[hour]
+	orderedHours := make([]hourRow, 0, len(hours))
+	for hour, value := range hours {
+		if value != nil {
+			orderedHours = append(orderedHours, hourRow{hour, *value})
+		}
+	}
+	slices.SortFunc(orderedHours, func(a, b hourRow) int { return cmp.Compare(a.hour, b.hour) })
+	for _, row := range orderedHours {
+		hour, value := row.hour, row.value
 		if _, err := tx.ExecContext(ctx, `INSERT INTO report_issue_hours VALUES(?,?,?,?,?,?,?,?)`, scope.organization, scope.project, id, hour, value.cost, value.worked, value.reworked, value.landed); err != nil {
 			return err
 		}
