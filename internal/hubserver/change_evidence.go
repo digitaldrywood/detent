@@ -316,8 +316,15 @@ func storeChangeReview(ctx context.Context, tx *sql.Tx, organization, changeID s
 				return err
 			}
 		}
-		_, err := tx.ExecContext(ctx, "INSERT INTO change_evidence (change_id, version_id, kind, record_json) VALUES (?, ?, 'review', ?)", changeID, review.VersionID, raw)
-		return err
+		result, err := tx.ExecContext(ctx, "INSERT INTO change_evidence (change_id, version_id, kind, record_json) VALUES (?, ?, 'review', ?)", changeID, review.VersionID, raw)
+		if err != nil {
+			return err
+		}
+		sequence, err := result.LastInsertId()
+		if err != nil {
+			return err
+		}
+		return projectChangeColumns(ctx, tx, "change_evidence", sequence, raw)
 	}
 	slots := reviewAttributionSlots(&review)
 	if err := storeAttributionSlots(ctx, tx, review.VersionID, review.ID, slots); err != nil {
