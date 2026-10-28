@@ -70,10 +70,22 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 		}
 		return count
 	}
-	for _, stage := range []string{"legacy", "partially converted", "converted"} {
+	for _, stage := range []string{"legacy", "partially converted", "converted", "recovered without archive storage"} {
 		t.Run(stage, func(t *testing.T) {
 			before := unknown()
 			switch stage {
+			case "recovered without archive storage":
+				if f.service.storageArchiveContent() != nil {
+					t.Fatal("fixture unexpectedly has archive storage")
+				}
+				for _, fixture := range []nativeFixture{f, other} {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET terminal_entered_at=NULL WHERE project_id=?", fixture.project.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := f.service.archiveClosedNativeIssues(t.Context(), now); err != nil {
+					t.Fatal(err)
+				}
 			case "partially converted":
 				if err := f.service.convertIssuePageFacts(t.Context()); err != nil {
 					t.Fatal(err)
@@ -142,6 +154,27 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 				t.Fatalf("list read converted history: unknown=%d before=%d", got, before)
 			}
 		})
+	}
+}
+
+func drainTestNativeClosedTimes(t *testing.T, service *Service) {
+	t.Helper()
+	previous := -1
+	for {
+		var pending int
+		if err := service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM issues i WHERE i.terminal_entered_at IS NULL AND EXISTS(SELECT 1 FROM workflow_states w WHERE w.id=i.workflow_state_id AND w.terminal=1) AND `+nativeTerminalEnteredAt+` IS NOT NULL`).Scan(&pending); err != nil {
+			t.Fatal(err)
+		}
+		if pending == 0 {
+			return
+		}
+		if previous >= 0 && pending >= previous {
+			t.Fatalf("closure backfill made no progress: pending=%d previous=%d", pending, previous)
+		}
+		previous = pending
+		if err := service.archiveClosedNativeIssues(t.Context(), service.config.now()); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

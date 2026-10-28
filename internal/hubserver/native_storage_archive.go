@@ -77,10 +77,6 @@ func (s *Service) storageArchiveContent() entryauthority.ContentHandler {
 func (s *Service) archiveClosedNativeIssues(ctx context.Context, now time.Time) error {
 	ctx, cancel := context.WithTimeout(ctx, backgroundStorageBudget)
 	defer cancel()
-	call := s.storageArchiveContent()
-	if call == nil {
-		return nil
-	}
 	ids, err := nativePageIDs(ctx, s.database.reader, `SELECT i.native_id FROM issues i JOIN projects p ON p.id=i.project_id WHERE p.profile='native' AND p.deleted_at IS NULL AND i.terminal_entered_at IS NULL AND EXISTS(SELECT 1 FROM workflow_states w WHERE w.id=i.workflow_state_id AND w.terminal=1) AND `+nativeTerminalEnteredAt+` IS NOT NULL ORDER BY i.id LIMIT 4`)
 	if err != nil {
 		return err
@@ -89,6 +85,10 @@ func (s *Service) archiveClosedNativeIssues(ctx context.Context, now time.Time) 
 		if _, err := s.database.db.ExecContext(ctx, `UPDATE issues AS i SET terminal_entered_at=`+nativeTerminalEnteredAt+` WHERE native_id=? AND terminal_entered_at IS NULL AND EXISTS(SELECT 1 FROM workflow_states w WHERE w.id=i.workflow_state_id AND w.terminal=1)`, id); err != nil {
 			return err
 		}
+	}
+	call := s.storageArchiveContent()
+	if call == nil {
+		return nil
 	}
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT i.organization_id,i.project_id,i.native_id,i.revision,i.event_sequence,`+storageArchiveConversationSequence+` FROM issues i JOIN projects p ON p.id=i.project_id AND p.organization_id=i.organization_id LEFT JOIN issue_storage_archives a ON a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.work_item_id=i.native_id
 LEFT JOIN storage_conversion_progress progress ON progress.organization_id=i.organization_id AND progress.project_id=i.project_id AND progress.family='issue_archives' AND progress.aggregate_id=i.native_id

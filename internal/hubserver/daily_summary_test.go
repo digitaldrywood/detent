@@ -339,6 +339,7 @@ func newDailySummaryFixture(t *testing.T, numberOffset int) dailySummaryFixture 
 	}
 	exec(`INSERT INTO health_findings(id,organization_id,fingerprint,signal,class,subject_json,projects_json,opened_at,last_seen_at,severity,summary,next_action,evidence_json) VALUES('finding_summary','org_security','summary-health','Runner offline','capacity','{"kind":"runner","id":"machine_summary"}','["prj_security"]',?,?,'attention','No heartbeat for 6h · 2 queued issues waiting for capacity','Check runner','{}')`, formatHubTime(end.Add(-6*time.Hour)), formatHubTime(end))
 	exec(`INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at) VALUES(?,'org_security',?,?,1,2,'private-comment-text-sentinel','{"kind":"human","principal_id":"fixture"}',?,?)`, newNativeID("cmt"), f.project, blocked, formatHubTime(end.Add(-time.Hour)), formatHubTime(end.Add(-time.Hour)))
+	drainTestNativeClosedTimes(t, f.service)
 	drainTestNativeBoard(t, f.service)
 	return dailySummaryFixture{f, user, r, ids}
 }
