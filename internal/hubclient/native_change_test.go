@@ -2878,7 +2878,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 		{name: "Rework scoped read failure releases claim before dispatch", rework: true, failDetail: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if test.publication != "head_read" && test.publicationFault != "initial_read" && test.publicationFault != "post_push_read" {
+			if test.publication != "head_read" {
 				t.Parallel()
 			}
 			genuinePublication := test.publication != "" && test.validator != "" && (test.publicationFault == "" || test.publicationFault == "policy")
@@ -4381,22 +4381,40 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if readErr != nil {
 					t.Fatal(readErr)
 				}
+				var publicationFault func(*workspace.LandOptions) func()
+				var readFailure, pushMarker string
 				if test.publicationFault == "initial_read" || test.publicationFault == "post_push_read" {
 					realGit, lookupErr := exec.LookPath("git")
 					if lookupErr != nil {
 						t.Fatal(lookupErr)
 					}
 					wrapper := t.TempDir()
-					marker := filepath.Join(wrapper, "pushed")
+					pushMarker = filepath.Join(wrapper, "pushed")
+					readFailure = filepath.Join(wrapper, "read-failed")
+					quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'" }
 					condition := "true"
 					if test.publicationFault == "post_push_read" {
-						condition = "test -f '" + marker + "'"
+						condition = "test -f " + quote(pushMarker)
 					}
-					script := "#!/bin/sh\nread_ref=0\nfor arg in \"$@\"; do if [ \"$arg\" = ls-remote ]; then read_ref=1; fi; if [ \"$read_ref\" = 1 ] && [ \"${arg#refs/heads/}\" != \"$arg\" ] && " + condition + "; then exit 1; fi; done\n'" + realGit + "' \"$@\"\nresult=$?\nif [ \"$3\" = push ]; then touch '" + marker + "'; exit 1; fi\nexit \"$result\"\n"
-					if writeErr := os.WriteFile(filepath.Join(wrapper, "git"), []byte(script), 0o700); writeErr != nil {
-						t.Fatal(writeErr)
+					for name, script := range map[string]string{
+						"uploadpack":  "#!/bin/sh\nif " + condition + "; then : > " + quote(readFailure) + "; exit 1; fi\nexec " + quote(realGit) + " upload-pack \"$@\"\n",
+						"receivepack": "#!/bin/sh\n" + quote(realGit) + " receive-pack \"$@\"\nresult=$?\nif [ \"$result\" -ne 0 ]; then exit \"$result\"; fi\n: > " + quote(pushMarker) + "\nexit 1\n",
+					} {
+						if writeErr := os.WriteFile(filepath.Join(wrapper, name), []byte(script), 0o700); writeErr != nil {
+							t.Fatal(writeErr)
+						}
 					}
-					t.Setenv("PATH", wrapper+string(os.PathListSeparator)+os.Getenv("PATH"))
+					publicationFault = func(opts *workspace.LandOptions) func() {
+						opts.TargetBranch = "main"
+						for _, name := range []string{"uploadpack", "receivepack"} {
+							nativeChangeGit(t, source, "config", "remote.origin."+name, quote(filepath.Join(wrapper, name)))
+						}
+						return func() {
+							for _, name := range []string{"uploadpack", "receivepack"} {
+								nativeChangeGit(t, source, "config", "--unset", "remote.origin."+name)
+							}
+						}
+					}
 				}
 				prBefore := forgePull
 				callsBefore := provider.calls
@@ -4418,9 +4436,16 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				result, err = agent.Run(t.Context(), runner.RunRequest{Execution: &nativePublicationFixtureExecution{nativeExecution: owner, forge: forge, losePush: &losePush, retainedHead: retainedHead}, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+				result, err = agent.Run(t.Context(), runner.RunRequest{Execution: &nativePublicationFixtureExecution{nativeExecution: owner, forge: forge, losePush: &losePush, retainedHead: retainedHead, publicationFault: publicationFault}, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
 				result.NativeChange = owner.NativeChange()
 				if test.publicationFault == "initial_read" || test.publicationFault == "post_push_read" {
+					if _, statErr := os.Stat(readFailure); statErr != nil {
+						t.Fatalf("publication did not reach the injected ref read failure: %v; run error=%v", statErr, err)
+					}
+					_, pushErr := os.Stat(pushMarker)
+					if test.publicationFault == "post_push_read" && pushErr != nil || test.publicationFault == "initial_read" && !errors.Is(pushErr, os.ErrNotExist) {
+						t.Fatalf("publication ref read failed at the wrong push boundary: %v", pushErr)
+					}
 					if !nativeTransportUnavailable(err) || !owner.data.Handoff.UncertainForgeEffect() || owner.settled || provider.calls != callsBefore || forgeCreates != wantCreates || forgePull != prBefore {
 						t.Fatalf("ref read failure lost infrastructure retry: settled=%t checkpoint=%+v error=%v", owner.settled, owner.data.Handoff, err)
 					}
@@ -5552,12 +5577,17 @@ type nativePublicationFixtureExecution struct {
 	losePush          *bool
 	retainedHead      string
 	beforePublication func()
+	publicationFault  func(*workspace.LandOptions) func()
 }
 
 func (e *nativePublicationFixtureExecution) SetPublicationSource(source func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)) {
+	pushConfirmationLost := false
 	e.nativeExecution.SetPublicationSource(func(ctx context.Context, version tracker.ChangeVersion, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
 		if e.beforePublication != nil {
 			e.beforePublication()
+		}
+		if e.publicationFault != nil {
+			defer e.publicationFault(&opts)()
 		}
 		opts.GitHubClient = e.forge
 		if e.retainedHead != "" {
@@ -5567,8 +5597,9 @@ func (e *nativePublicationFixtureExecution) SetPublicationSource(source func(con
 		if e.losePush != nil {
 			effect := opts.PublicationEffect
 			opts.PublicationEffect = func(ctx context.Context, kind, state string, publication workspace.GitHubPublication) error {
-				if *e.losePush && kind == "git_push" && state == "confirmed" {
+				if (*e.losePush || pushConfirmationLost) && kind == "git_push" && state == "confirmed" {
 					*e.losePush = false
+					pushConfirmationLost = true
 					return fmt.Errorf("%w: push confirmation lost after remote accepted head", ErrUnavailable)
 				}
 				return effect(ctx, kind, state, publication)
