@@ -53,6 +53,14 @@ func newConversationWorkerFixture(t *testing.T, contents ...attachment.ArchiveCo
 		defer fixture.mu.Unlock()
 		return fixture.now
 	}}
+	var logs bytes.Buffer
+	config.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log(logs.String())
+		}
+	})
+	config.Conversation.ArchiveContents = &conversationContentFixture{}
 	if len(contents) > 0 {
 		config.Conversation.ArchiveContents = contents[0]
 	}
@@ -191,21 +199,36 @@ func (f *conversationWorkerFixture) awaitControlSubscribers(t *testing.T, want i
 func (f *conversationWorkerFixture) queue(t *testing.T, kind conversation.MessageKind, key, text string, data map[string]any) conversationMessageRecord {
 	t.Helper()
 	ctx := t.Context()
-	tx := f.tx(t)
-	record, err := f.chat.store.readConversation(ctx, tx, f.record.OrganizationID, f.record.ProjectID, f.record.ID)
+	record, err := f.chat.store.readConversation(ctx, f.chat.store.reader, f.record.OrganizationID, f.record.ProjectID, f.record.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	commandKind := map[conversation.MessageKind]conversation.CommandKind{conversation.MessageText: conversation.CommandMessage, conversation.MessageAnswer: conversation.CommandAnswer, conversation.MessageInterrupt: conversation.CommandInterrupt, conversation.MessageContinue: conversation.CommandContinue}[kind]
 	now := f.service.config.now()
-	if _, _, err := f.chat.store.reserveCommand(ctx, tx, record.ID, key, commandKind, "hash-"+key, now); err != nil {
-		t.Fatalf("reserveCommand() error = %v", err)
-	}
 	encoded, err := json.Marshal(data)
 	if err != nil {
 		t.Fatal(err)
 	}
 	message := conversationMessageRecord{Role: conversation.RoleUser, Kind: kind, Text: text, Data: encoded, Delivery: conversation.DeliveryQueued, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.principal}, CommandKey: key}
+	plan := &conversationPublicationPlan{service: f.chat, record: record, original: record, now: now}
+	if err := plan.appendMessage(t.Context(), &message); err != nil {
+		t.Fatal(err)
+	}
+	receiptPlan := conversation.Receipt{Key: key, Kind: commandKind, Status: conversation.DeliveryQueued, MessageID: message.ID}
+	if data != nil {
+		receiptPlan.QuestionID, _ = data["question_id"].(string)
+	}
+	if err := plan.recordReceipt(t.Context(), receiptPlan); err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.saveConversation(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	ctx = plan.context(t.Context())
+	tx := f.tx(t)
+	if _, _, err := f.chat.store.reserveCommand(ctx, tx, record.ID, key, commandKind, "hash-"+key, now); err != nil {
+		t.Fatal(err)
+	}
 	if err := f.chat.appendMessage(ctx, tx, &record, &message, now); err != nil {
 		t.Fatalf("appendMessage() error = %v", err)
 	}

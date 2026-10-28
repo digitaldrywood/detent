@@ -186,6 +186,11 @@ func newNativeChangeHubDependencies(t *testing.T, review string, states []tracke
 
 func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.NativeState, inMemory, requireDependencies bool, config hubserver.Config, repositoryBackend ...hubserver.ReconcileBackend) *nativeChangeHub {
 	t.Helper()
+	if config.Conversation != nil && config.Conversation.Enabled && config.Conversation.ArchiveContents == nil {
+		conversationConfig := *config.Conversation
+		conversationConfig.ArchiveContents = &conversationArchiveFixture{}
+		config.Conversation = &conversationConfig
+	}
 	if len(repositoryBackend) > 0 {
 		config.ReconcileBackend = repositoryBackend[0]
 		config.ImportBackend, _ = repositoryBackend[0].(hubserver.ImportBackend)

@@ -140,6 +140,7 @@ func newCoordinatorFixture(t *testing.T, name string, contents ...*conversationC
 	t.Helper()
 	backend := newFakeCoordinatorBackend()
 	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), GitHubDisabled: true, Conversation: &ConversationConfig{Enabled: true, Backend: backend, Workspace: t.TempDir()}}
+	config.Conversation.ArchiveContents = &conversationContentFixture{}
 	if len(contents) > 0 {
 		config.Conversation.ArchiveContents = contents[0]
 	}
@@ -180,6 +181,38 @@ func newCoordinatorFixture(t *testing.T, name string, contents ...*conversationC
 
 func (f *coordinatorFixture) coordinator() conversationCoordinator {
 	return f.conversations.coordinator
+}
+
+func TestCoordinatorPublicationRefreshesBeforeMutation(t *testing.T) {
+	objects := &conversationContentFixture{}
+	f := newCoordinatorFixture(t, "publication-conflict", objects)
+	record := f.seed(t, "publication conflict", nil)
+	var interfere sync.Once
+	objects.onIO = func() error {
+		var err error
+		interfere.Do(func() {
+			_, err = f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET revision=revision+1 WHERE id=?", record.ID)
+		})
+		return err
+	}
+	message := conversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageStatus, Text: "prepared", Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}}
+	preparations, mutations := 0, 0
+	err := f.coordinator().(*conversationTurnCoordinator).write(t.Context(), record.ID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
+		mutations++
+		return f.conversations.appendMessage(ctx, tx, record, &message, now)
+	}, func(ctx context.Context, p *conversationPublicationPlan) error {
+		preparations++
+		return p.appendMessage(ctx, &message)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preparations != 2 || mutations != 1 {
+		t.Fatalf("preparations=%d mutations=%d; want 2 and 1", preparations, mutations)
+	}
+	if got := f.messages(t, record.ID); len(got) != 1 || got[0].ID != message.ID || got[0].Text != message.Text {
+		t.Fatalf("committed messages=%v", got)
+	}
 }
 
 func (f *coordinatorFixture) transact(t *testing.T, fn func(tx *sql.Tx) error) {
@@ -226,9 +259,19 @@ func (f *coordinatorFixture) seed(t *testing.T, title string, mutate func(*conve
 func (f *coordinatorFixture) say(t *testing.T, record *conversationRecord, text string) conversationMessageRecord {
 	t.Helper()
 	message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: text, Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}}
-	f.transact(t, func(tx *sql.Tx) error {
-		return f.conversations.appendMessage(t.Context(), tx, record, &message, time.Now().UTC())
-	})
+	plan, err := f.conversations.newPublicationPlan(t.Context(), record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.appendMessage(t.Context(), &message); err != nil {
+		t.Fatal(err)
+	}
+	ctx := plan.context(t.Context())
+	if err := f.conversations.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+		return f.conversations.appendMessage(ctx, tx, record, &message, now)
+	}); err != nil {
+		t.Fatal(err)
+	}
 	f.conversations.committed(*record)
 	return message
 }
@@ -241,9 +284,19 @@ func (f *coordinatorFixture) history(t *testing.T, record *conversationRecord, r
 		actor = conversation.Actor{Kind: conversation.ActorCoordinator}
 	}
 	message := conversationMessageRecord{Role: role, Kind: conversation.MessageText, Text: text, Delivery: delivery, Actor: actor}
-	f.transact(t, func(tx *sql.Tx) error {
-		return f.conversations.appendMessage(t.Context(), tx, record, &message, time.Now().UTC())
-	})
+	plan, err := f.conversations.newPublicationPlan(t.Context(), record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.appendMessage(t.Context(), &message); err != nil {
+		t.Fatal(err)
+	}
+	ctx := plan.context(t.Context())
+	if err := f.conversations.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+		return f.conversations.appendMessage(ctx, tx, record, &message, now)
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (f *coordinatorFixture) conversation(t *testing.T, id string) conversationRecord {
@@ -748,10 +801,7 @@ func TestConversationCoordinatorIgnoresLinked(t *testing.T) {
 		record.LinkedAt = &linkedAt
 		record.Visibility = conversation.VisibilityShared
 	})
-	message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "hello", Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}}
-	f.transact(t, func(tx *sql.Tx) error {
-		return f.conversations.appendMessage(t.Context(), tx, &linked, &message, time.Now().UTC())
-	})
+	f.history(t, &linked, conversation.RoleUser, "hello", conversation.DeliverySaved)
 	f.coordinator().Wake(linked.ID)
 	time.Sleep(150 * time.Millisecond)
 	if f.backend.turns() != 0 {
@@ -1726,8 +1776,16 @@ func TestConversationCoordinatorAttachmentReadFailure(t *testing.T) {
 			f := newCoordinatorFixture(t, "attachment")
 			record := f.seed(t, test.name, nil)
 			message := conversationMessageRecord{Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "read this", Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}}
+			plan, err := f.conversations.newPublicationPlan(t.Context(), record.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := plan.appendMessage(t.Context(), &message); err != nil {
+				t.Fatal(err)
+			}
+			ctx := plan.context(t.Context())
 			f.transact(t, func(tx *sql.Tx) error {
-				if err := f.conversations.appendMessage(t.Context(), tx, &record, &message, time.Now().UTC()); err != nil {
+				if err := f.conversations.appendMessage(ctx, tx, &record, &message, plan.now); err != nil {
 					return err
 				}
 				if _, err := tx.ExecContext(t.Context(), `INSERT INTO conversation_attachments (id, conversation_id, message_id, principal_id, name, mime, size, artifact_ref, created_at)

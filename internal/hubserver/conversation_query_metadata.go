@@ -341,22 +341,40 @@ func (c *conversationService) prepareLegacyContinuation(ctx context.Context, sco
 		return result, err
 	}
 	result.head = record.EventSeq
-	rows, err := c.store.reader.QueryContext(ctx, `SELECT seq,type,body_json FROM conversation_events WHERE conversation_id=? AND query_metadata_version=0 AND type IN ('message.updated','execution.updated') ORDER BY seq LIMIT ?`, record.ID, eventCompactionBatch+1)
+	rows, err := c.store.reader.QueryContext(ctx, `SELECT seq,type,body_json,content_attachment_id FROM conversation_events WHERE conversation_id=? AND query_metadata_version=0 AND type IN ('message.updated','execution.updated') ORDER BY seq LIMIT ?`, record.ID, eventCompactionBatch+1)
 	if err != nil {
 		return result, err
 	}
 	defer rows.Close()
-	processed := 0
+	type candidate struct {
+		seq                int64
+		kind, raw, content string
+	}
+	var candidates []candidate
 	for rows.Next() {
+		var event candidate
+		if err := rows.Scan(&event.seq, &event.kind, &event.raw, &event.content); err != nil {
+			return result, err
+		}
+		candidates = append(candidates, event)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return result, err
+	}
+	processed := 0
+	for _, event := range candidates {
 		processed++
 		if processed > eventCompactionBatch {
 			return result, errors.New("conversation continuation metadata conversion is pending")
 		}
-		var seq int64
-		var kind, raw string
+		seq, kind, raw := event.seq, event.kind, event.raw
 		result.id = record.ID
-		if err := rows.Scan(&seq, &kind, &raw); err != nil {
-			return result, err
+		if event.content != "" {
+			content, err := c.store.readEventStorage(ctx, c.store.reader, record.ID, event.content)
+			if err != nil {
+				return result, err
+			}
+			raw = string(content)
 		}
 		var body struct {
 			Role      string `json:"role"`
@@ -374,18 +392,20 @@ func (c *conversationService) prepareLegacyContinuation(ctx context.Context, sco
 			result.completed = seq
 		}
 	}
-	return result, rows.Err()
+	return result, nil
 }
 
 type legacyToolRevisionKey struct{}
 type legacyToolRevision struct {
-	raw, actor string
-	data       queryMessageData
-	actorKind  conversation.ActorKind
+	payload          json.RawMessage
+	raw, actor, text string
+	revision         int64
+	data             queryMessageData
+	actorKind        conversation.ActorKind
 }
 
 func (s *conversationStore) prepareLegacyToolRevisions(ctx context.Context, id string) (context.Context, error) {
-	rows, err := s.reader.QueryContext(ctx, `SELECT id,data_json,actor_json FROM conversation_messages WHERE conversation_id=? AND kind='tool' AND content_attachment_id='' AND query_metadata_version=0 LIMIT ?`, id, storageConversionRows+1)
+	rows, err := s.reader.QueryContext(ctx, `SELECT id,data_json,actor_json,text,revision,query_metadata_version,actor_kind,tool_name,tool_item_id,tool_status FROM conversation_messages WHERE conversation_id=? AND kind='tool' AND content_attachment_id='' LIMIT ?`, id, storageConversionRows+1)
 	if err != nil {
 		return ctx, err
 	}
@@ -394,7 +414,9 @@ func (s *conversationStore) prepareLegacyToolRevisions(ctx context.Context, id s
 	for rows.Next() {
 		var id string
 		var c legacyToolRevision
-		if err := rows.Scan(&id, &c.raw, &c.actor); err != nil {
+		var version int
+		var actorKind, tool, item, status sql.NullString
+		if err := rows.Scan(&id, &c.raw, &c.actor, &c.text, &c.revision, &version, &actorKind, &tool, &item, &status); err != nil {
 			return ctx, err
 		}
 		if err := json.Unmarshal([]byte(c.raw), &c.data); err != nil {
@@ -405,20 +427,55 @@ func (s *conversationStore) prepareLegacyToolRevisions(ctx context.Context, id s
 			return ctx, err
 		}
 		c.actorKind = actor.Kind
+		if version == 1 {
+			c.actorKind = conversation.ActorKind(actorKind.String)
+			c.data.Tool, c.data.ItemID, c.data.Status = &tool.String, &item.String, &status.String
+		}
+		value := func(value *string) string {
+			if value == nil {
+				return ""
+			}
+			return *value
+		}
+		c.payload, err = json.Marshal(map[string]string{"tool": value(c.data.Tool), "item_id": value(c.data.ItemID), "status": value(c.data.Status)})
+		if err != nil {
+			return ctx, err
+		}
 		prepared[id] = c
 	}
-	if err := rows.Err(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return ctx, err
 	}
 	if len(prepared) > storageConversionRows {
 		return ctx, errors.New("conversation tool metadata conversion is pending")
+	}
+	if len(prepared) > 0 {
+		var organization string
+		if err := s.reader.QueryRowContext(ctx, "SELECT organization_id FROM conversations WHERE id=?", id).Scan(&organization); err != nil {
+			return ctx, err
+		}
+		var contents [][]byte
+		for _, old := range prepared {
+			if old.actorKind != conversation.ActorCoordinator {
+				continue
+			}
+			content, err := messageContent(conversationMessageRecord{Text: old.text, Data: old.payload})
+			if err != nil {
+				return ctx, err
+			}
+			contents = append(contents, content)
+		}
+		ctx, err = s.preparePayloads(ctx, organization, contents...)
+		if err != nil {
+			return ctx, err
+		}
 	}
 	return context.WithValue(ctx, legacyToolRevisionKey{}, prepared), nil
 }
 
 func (s *conversationStore) preserveLegacyToolRevision(ctx context.Context, tx *sql.Tx, message conversationMessageRecord) error {
 	var pending bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation_id=? AND id=? AND kind='tool' AND content_attachment_id='' AND query_metadata_version=0)`, message.ConversationID, message.ID).Scan(&pending); err != nil || !pending {
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation_id=? AND id=? AND kind='tool' AND content_attachment_id='')`, message.ConversationID, message.ID).Scan(&pending); err != nil || !pending {
 		return err
 	}
 	prepared, ready := ctx.Value(legacyToolRevisionKey{}).(map[string]legacyToolRevision)
@@ -430,7 +487,7 @@ func (s *conversationStore) preserveLegacyToolRevision(ctx context.Context, tx *
 		return errors.New("conversation tool revision was not prepared")
 	}
 	var unchanged bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation_id=? AND id=? AND query_metadata_version=0 AND data_json=? AND actor_json=?)`, message.ConversationID, message.ID, old.raw, old.actor).Scan(&unchanged); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE conversation_id=? AND id=? AND data_json=? AND actor_json=? AND text=? AND revision=?)`, message.ConversationID, message.ID, old.raw, old.actor, old.text, old.revision).Scan(&unchanged); err != nil {
 		return err
 	}
 	if !unchanged {
@@ -445,7 +502,11 @@ func (s *conversationStore) preserveLegacyToolRevision(ctx context.Context, tx *
 		}
 		return ""
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO conversation_tool_revisions(conversation_id,message_id,revision,text,tool,item_id,status) SELECT conversation_id,id,revision,text,?,?,? FROM conversation_messages WHERE conversation_id=? AND id=? AND query_metadata_version=0 AND data_json=? AND actor_json=?`, value(old.data.Tool), value(old.data.ItemID), value(old.data.Status), message.ConversationID, message.ID, old.raw, old.actor)
+	_, _, contentID, err := s.messageStorage(ctx, tx, conversationMessageRecord{ConversationID: message.ConversationID, Text: old.text, Data: old.payload, CreatedAt: message.CreatedAt})
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO conversation_tool_revisions(conversation_id,message_id,revision,text,tool,item_id,status,content_attachment_id) VALUES(?,?,?,'',?,?,?,?)`, message.ConversationID, message.ID, old.revision, value(old.data.Tool), value(old.data.ItemID), value(old.data.Status), contentID)
 	return err
 }
 

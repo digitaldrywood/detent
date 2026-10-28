@@ -273,7 +273,11 @@ func conversationWorkerError(err error) error {
 // runner, the policy is approved and a running native attempt row binds the
 // attempt to that lease and fencing token. With allowReleased the lease may
 // already be released or expired, which lets a finishing worker unbind.
-func (c *conversationService) requireWorkerOwner(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, identity conversationWorkerIdentity, runID string, allowReleased bool, now time.Time) (leaseRecord, error) {
+func (c *conversationService) requireWorkerOwner(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, identity conversationWorkerIdentity, runID string, allowReleased bool, _ time.Time) (leaseRecord, error) {
+	now, err := c.server.database.currentTime()
+	if err != nil {
+		return leaseRecord{}, err
+	}
 	if allowReleased {
 		if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
 			return leaseRecord{}, err
@@ -375,7 +379,11 @@ func (c *conversationService) readLinkedConversation(ctx context.Context, tx nat
 }
 
 func readLinkedConversationRecord(ctx context.Context, tx nativeQueryer, scope nativeScope, item string) (conversationRecord, error) {
-	record, err := scanConversation(tx.QueryRowContext(ctx, "SELECT "+conversationReadColumns+" FROM conversations WHERE organization_id = ? AND project_id = ? AND work_item_id = ?", scope.organization, scope.project, item))
+	columns := conversationReadColumns
+	if plan, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan); ok && plan.record.WorkItemID == item {
+		columns = conversationReadProjection(ctx, tx, plan.record.ID)
+	}
+	record, err := scanConversation(tx.QueryRowContext(ctx, "SELECT "+columns+" FROM conversations WHERE organization_id = ? AND project_id = ? AND work_item_id = ?", scope.organization, scope.project, item))
 	if errors.Is(err, sql.ErrNoRows) {
 		return record, nativeNotFound()
 	}
@@ -426,6 +434,9 @@ func (c *conversationService) ensureWorkerConversation(ctx context.Context, tx *
 		case !errors.Is(err, sql.ErrNoRows):
 			return conversationRecord{}, fmt.Errorf("read issue actor token: %w", err)
 		}
+	}
+	if p, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan); ok && p.creation != nil {
+		record = *p.creation
 	}
 	if err := c.store.createConversation(ctx, tx, &record); err != nil {
 		return conversationRecord{}, err
@@ -714,40 +725,11 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 	ctx := e.Request().Context()
 	scope := nativeRequestScope(e)
 	item := e.Param("item")
-	if c.store.contents != nil {
-		authTx, err := c.store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-		if err != nil {
-			return s.nativeAPIError(e, err)
-		}
-		now, err := s.database.currentTime()
-		if err == nil {
-			_, err = c.requireWorkerOwner(ctx, authTx, scope, item, request.conversationWorkerIdentity, request.RunID, false, now)
-		}
-		rollbackErr := authTx.Rollback()
-		if err == nil {
-			err = rollbackErr
-		}
-		if err != nil {
-			return s.nativeAPIError(e, err)
-		}
-		linked, err := c.readLinkedConversation(ctx, c.store.reader, scope, item)
-		var failure *nativeError
-		if err != nil && (!errors.As(err, &failure) || failure.status != http.StatusNotFound) {
-			return s.nativeAPIError(e, err)
-		}
-		if err == nil {
-			prepared, err := c.prepareTurnContents(ctx, string(scope.organization), linked.ID, nil, true)
-			if err != nil {
-				return s.nativeAPIError(e, err)
-			}
-			ctx = prepared
-			prepared, err = c.prepareBindNotice(ctx, scope, linked, request)
-			if err != nil {
-				return s.nativeAPIError(e, err)
-			}
-			ctx = prepared
-		}
+	plan, err := c.prepareWorkerBind(ctx, scope, item, request)
+	if err != nil {
+		return s.nativeAPIError(e, err)
 	}
+	ctx = plan.context(ctx)
 	legacyContinuation, err := c.prepareLegacyContinuation(ctx, scope, item)
 	if err != nil {
 		return s.nativeAPIError(e, err)
@@ -893,9 +875,31 @@ func (r *conversationWorkerRouter) unbind(e echo.Context) error {
 		}
 		ctx = prepared
 	}
+	linked, err := c.readLinkedConversation(ctx, c.store.reader, scope, item)
+	if err != nil {
+		return s.nativeAPIError(e, err)
+	}
+	plan, err := c.newPublicationPlan(ctx, linked.ID)
+	if err != nil {
+		return s.nativeAPIError(e, err)
+	}
+	plan.record = linked
+	if !plan.record.Execution.Settled {
+		if plan.record.Execution.Status == conversation.ExecutionInterrupted && plan.record.Execution.Error == conversationLeaseLostError {
+			execution := plan.record.Execution
+			execution.Status, execution.Error, execution.Settled = status, strings.TrimSpace(request.Error), true
+			err = plan.updateExecution(ctx, execution)
+		} else {
+			err = plan.finishExecution(ctx, status, strings.TrimSpace(request.Error), true)
+		}
+		if err != nil {
+			return s.nativeAPIError(e, err)
+		}
+	}
+	ctx = plan.context(ctx)
 	var record conversationRecord
 	changed := false
-	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+	err = c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
 		}
@@ -1005,9 +1009,26 @@ func conversationControlQuery(e echo.Context) (after int64, wait time.Duration, 
 // changed nothing, so an idle worker never produces events.
 func (c *conversationService) pollControls(ctx context.Context, scope nativeScope, id string, identity conversationWorkerIdentity, after int64) (conversationControlsResponse, error) {
 	page := conversationControlsResponse{Controls: []conversationControl{}, Cursor: after}
+	plan, err := c.newPublicationPlan(ctx, id)
+	if err != nil {
+		return page, err
+	}
+	acknowledged, err := c.queryMessages(ctx, c.store.reader, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND delivery = 'sending' AND attempt_id = ? AND seq <= ? ORDER BY seq", id, identity.AttemptID, after)
+	if err != nil {
+		return page, err
+	}
+	for _, message := range acknowledged {
+		if err := plan.setControlDelivery(ctx, message, conversation.DeliverySent, nil); err != nil {
+			return page, err
+		}
+	}
+	if err := plan.handOffControls(ctx, after); err != nil {
+		return page, err
+	}
+	ctx = plan.context(ctx)
 	var record conversationRecord
 	changed := false
-	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+	err = c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 		var item string
 		var err error
 		record, item, err = c.loadWorkerConversation(ctx, tx, scope, id)
@@ -1081,18 +1102,26 @@ func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
 	id := e.Param("conversation")
 	if c.store.contents != nil {
 		if err := c.authorizeWorkerContent(ctx, scope, id, "", request.conversationWorkerIdentity, false); err != nil {
-			return s.nativeAPIError(e, err)
+			return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
 		}
 		prepared, err := c.prepareTurnContents(ctx, string(scope.organization), id, request.Events, false)
 		if err != nil {
-			return s.nativeAPIError(e, err)
+			return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
 		}
 		ctx = prepared
 	}
+	plan, err := c.newPublicationPlan(ctx, id)
+	if err != nil {
+		return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
+	}
+	if err := plan.turnEvents(ctx, scope, request.Events); err != nil {
+		return s.nativeAPIError(e, conversationStaleExecutionError("turn_events", id, err))
+	}
+	ctx = plan.context(ctx)
 	var record conversationRecord
 	var response conversationTurnEventsResponse
 	replayed := false
-	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+	err = c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
 		}
@@ -1339,7 +1368,7 @@ func (c *conversationService) applyQuestionOpened(ctx context.Context, tx *sql.T
 		questionOwner.ThreadID = thread
 	}
 	question := conversationQuestionRecord{Question: conversation.Question{
-		ID: conversation.NewQuestionID(), ConversationID: turn.record.ID, MessageID: message.ID, Status: conversation.QuestionPending,
+		ID: conversationQuestionID(ctx), ConversationID: turn.record.ID, MessageID: message.ID, Status: conversation.QuestionPending,
 		Owner: questionOwner, Prompts: event.Prompts, ExpiresAt: &expires, CreatedAt: turn.now, UpdatedAt: turn.now,
 	}, RequestID: requestID}
 	if err := c.store.upsertQuestion(ctx, tx, question); err != nil {
@@ -1561,6 +1590,20 @@ func (c *conversationService) settleLostExecution(ctx context.Context, ref conve
 		return err
 	}
 	ctx = prepared
+	plan, err := c.newPublicationPlan(ctx, ref.id)
+	if err != nil {
+		return err
+	}
+	execution := plan.record.Execution
+	if execution.Status.Terminal() {
+		err = plan.finishExecution(ctx, execution.Status, execution.Error, true)
+	} else {
+		err = plan.finishExecution(ctx, conversation.ExecutionInterrupted, conversationLeaseLostError, false)
+	}
+	if err != nil {
+		return err
+	}
+	ctx = plan.context(ctx)
 	var record conversationRecord
 	changed := false
 	err = c.transact(ctx, func(tx *sql.Tx, now time.Time) error {

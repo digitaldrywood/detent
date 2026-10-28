@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 )
@@ -194,15 +195,19 @@ func (s *conversationStore) resolveEventContent(ctx context.Context, query nativ
 
 func (s *conversationStore) eventStorage(ctx context.Context, tx *sql.Tx, id string, data []byte, now time.Time) (string, string, error) {
 	if s.contents == nil {
-		return string(data), "", nil
+		return "", "", errors.New("conversation content storage is unavailable")
 	}
 	var organization, project, uploader string
 	if err := tx.QueryRowContext(ctx, "SELECT organization_id,project_id,owner_principal_id FROM conversations WHERE id=?", id).Scan(&organization, &project, &uploader); err != nil {
 		return "", "", err
 	}
-	ref, err := s.contents.PublishContent(ctx, organization, data)
-	if err != nil {
-		return "", "", fmt.Errorf("publish conversation event: %w", err)
+	prepared, ok := ctx.Value(conversationContentsKey{}).(preparedConversationContents)
+	ref, found := prepared[organization+"/"+artifact.Digest(data)]
+	if !ok || !found {
+		return "", "", errors.New("conversation event was not published before the transaction")
+	}
+	if err := ref.Validate(organization); err != nil {
+		return "", "", err
 	}
 	if err := s.recordContentArchive(ctx, tx, organization, project, uploader, ref, now); err != nil {
 		return "", "", err
@@ -215,16 +220,5 @@ func (s *conversationStore) readEventStorage(ctx context.Context, q nativeQuerye
 	if err := q.QueryRowContext(ctx, "SELECT organization_id FROM conversations WHERE id=?", id).Scan(&organization); err != nil {
 		return nil, err
 	}
-	ref, err := scanAttachmentArchive(q.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class,storage_binding_id,customer_owned FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, contentID, organization))
-	if err != nil {
-		return nil, err
-	}
-	if s.contents == nil {
-		return nil, errors.New("conversation content storage is unavailable")
-	}
-	data, err := s.contents.ReadContent(ctx, organization, ref)
-	if err != nil {
-		return nil, fmt.Errorf("read conversation event: %w", err)
-	}
-	return data, nil
+	return s.readConversationArchive(ctx, q, organization, contentID)
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -41,10 +42,10 @@ func TestStorageConversionHistoricalConversations(t *testing.T) {
 		old := strings.Repeat("historical message", 1024)
 		latest := strings.Repeat("latest message", 1024)
 		message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: latest, Data: json.RawMessage(`{"answer":"latest"}`), Delivery: conversation.DeliveryCompleted, CreatedAt: f.now, UpdatedAt: f.now, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "example-runner"}}
-		if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+		if err := f.insertLegacyMessage(t, t.Context(), tx, &message); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventMessageAccepted, map[string]any{"id": message.ID, "text": old, "data": map[string]string{"answer": "historical"}}, f.now); err != nil {
+		if _, err := f.insertLegacyEvent(t, t.Context(), tx, record.ID, conversation.EventMessageAccepted, map[string]any{"id": message.ID, "text": old, "data": map[string]string{"answer": "historical"}}, f.now); err != nil {
 			t.Fatal(err)
 		}
 		f.commit(t, tx)
@@ -646,6 +647,7 @@ SELECT ?,?,'runs','completed-'||n,1,n,n,1,'' FROM history`, scope.organization, 
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer rows.Close()
 		var plan strings.Builder
 		for rows.Next() {
 			var id, parent, unused int
@@ -825,7 +827,7 @@ func TestStorageConversionReusedRowIDs(t *testing.T) {
 
 func TestConversationConversionClearsOneLegacyPayloadPerTransaction(t *testing.T) {
 	for _, size := range []int{32, 64 << 10} {
-		t.Run(fmt.Sprint(size), func(t *testing.T) {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
 			f := newStorageArchiveFixture(t)
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 			records := make([]conversationRecord, 0, 2)
@@ -838,10 +840,10 @@ func TestConversationConversionClearsOneLegacyPayloadPerTransaction(t *testing.T
 				tx := f.tx(t)
 				for range 2 {
 					message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryCompleted, Text: strings.Repeat("x", size), Data: json.RawMessage(`{"value":"` + strings.Repeat("y", size) + `"}`), Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.owner}, CreatedAt: f.now, UpdatedAt: f.now}
-					if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+					if err := f.insertLegacyMessage(t, t.Context(), tx, &message); err != nil {
 						t.Fatal(err)
 					}
-					if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventHeartbeat, map[string]string{"text": strings.Repeat("z", size)}, f.now); err != nil {
+					if _, err := f.insertLegacyEvent(t, t.Context(), tx, record.ID, conversation.EventHeartbeat, map[string]string{"text": strings.Repeat("z", size)}, f.now); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -917,16 +919,16 @@ func TestConversationToolRevisionConversionPreservesReplay(t *testing.T) {
 	record = f.create(t, record)
 	message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleSystem, Kind: conversation.MessageTool, Delivery: conversation.DeliveryCompleted, Text: "Running tool " + strings.Repeat("x", 5000), Data: json.RawMessage(`{"tool":"example","item_id":"item","status":"running"}`), Actor: conversation.Actor{Kind: conversation.ActorCoordinator}, CreatedAt: f.now, UpdatedAt: f.now}
 	tx := f.tx(t)
-	if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+	if err := f.insertLegacyMessage(t, t.Context(), tx, &message); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventMessageAccepted, projectMessage(message), f.now); err != nil {
+	if _, err := f.insertLegacyEvent(t, t.Context(), tx, record.ID, conversation.EventMessageAccepted, projectMessage(message), f.now); err != nil {
 		t.Fatal(err)
 	}
 	for _, status := range []string{"completed", "saved"} {
 		message.Text = status + strings.Repeat("y", 7000)
 		message.Data = json.RawMessage(`{"tool":"example","item_id":"item","status":"` + status + `"}`)
-		if err := f.service.conversations.updateMessage(t.Context(), tx, message, f.now); err != nil {
+		if err := f.updateLegacyToolMessage(t, t.Context(), tx, message, f.now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -966,10 +968,10 @@ func TestConversationConversionPublicationFailureKeepsInlineContent(t *testing.T
 				record = f.create(t, record)
 				tx := f.tx(t)
 				message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryCompleted, Text: "original text", Data: json.RawMessage(`{}`), Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.owner}, CreatedAt: f.now, UpdatedAt: f.now}
-				if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+				if err := f.insertLegacyMessage(t, t.Context(), tx, &message); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventHeartbeat, map[string]string{"text": "original event"}, f.now); err != nil {
+				if _, err := f.insertLegacyEvent(t, t.Context(), tx, record.ID, conversation.EventHeartbeat, map[string]string{"text": "original event"}, f.now); err != nil {
 					t.Fatal(err)
 				}
 				f.commit(t, tx)

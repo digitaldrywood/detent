@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -37,6 +39,7 @@ func newConversationFixture(t *testing.T) conversationFixture {
 	}
 	store := newConversationStore(f.service.database.db)
 	store.reader = f.service.database.reader
+	store.contents = &conversationContentFixture{}
 	return conversationFixture{
 		nativeFixture: f,
 		store:         store,
@@ -289,7 +292,7 @@ func TestConversationStoreCreateReadAndList(t *testing.T) {
 	t.Run("last message orders before updated", func(t *testing.T) {
 		tx := f.tx(t)
 		message := conversationMessageRecord{ConversationID: older.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "bump", Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}, CreatedAt: base.Add(time.Hour), UpdatedAt: base.Add(time.Hour)}
-		if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+		if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
 			t.Fatalf("appendMessage() error = %v", err)
 		}
 		got, _, err := f.store.listConversations(t.Context(), tx, conversationListQuery{Organization: f.organization, Project: f.project.ID, Principal: f.owner, Limit: 10})
@@ -415,7 +418,7 @@ func TestConversationStoreMessagesSequenceUnderConcurrency(t *testing.T) {
 			}
 			defer func() { _ = tx.Rollback() }()
 			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "message " + strconv.Itoa(i), Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}, CommandKey: "key-" + strconv.Itoa(i), CreatedAt: now.Add(time.Duration(i) * time.Millisecond), UpdatedAt: now}
-			if err := f.store.appendMessage(ctx, tx, &message); err != nil {
+			if err := f.appendMessage(t, ctx, tx, &message); err != nil {
 				failures <- err
 				return
 			}
@@ -463,7 +466,7 @@ func TestConversationStoreMessagesSequenceUnderConcurrency(t *testing.T) {
 	updated.ProviderItemID = "item_1"
 	updated.Text = "edited"
 	updated.UpdatedAt = now.Add(time.Hour)
-	if err := f.store.updateMessage(t.Context(), tx, updated); err != nil {
+	if err := f.updateMessage(t, t.Context(), tx, updated); err != nil {
 		t.Fatalf("updateMessage() error = %v", err)
 	}
 	again, err := f.store.listMessages(t.Context(), tx, record.ID, 2, 1)
@@ -482,7 +485,7 @@ func TestConversationStoreMessagesSequenceUnderConcurrency(t *testing.T) {
 	}
 	missing := updated
 	missing.ID = conversation.NewMessageID()
-	if err := f.store.updateMessage(t.Context(), tx, missing); err == nil {
+	if err := f.updateMessage(t, t.Context(), tx, missing); err == nil {
 		t.Fatal("updateMessage(missing) must fail")
 	}
 }
@@ -502,7 +505,7 @@ func TestConversationStoreQuestions(t *testing.T) {
 	record := f.create(t, f.record(f.owner, "questions", now))
 	tx := f.tx(t)
 	message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageStatus, Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "runner"}, CreatedAt: now, UpdatedAt: now}
-	if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+	if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
 		t.Fatalf("appendMessage() error = %v", err)
 	}
 	expires := now.Add(24 * time.Hour)
@@ -611,11 +614,11 @@ func TestConversationStoreEvents(t *testing.T) {
 	record := f.create(t, f.record(f.owner, "events", now))
 
 	tx := f.tx(t)
-	seq, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventMessageDelta, map[string]any{"message_id": "msg_1", "seq": 1, "text": "hel"}, now)
+	seq, err := f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventMessageDelta, map[string]any{"message_id": "msg_1", "seq": 1, "text": "hel"}, now)
 	if err != nil || seq != 1 {
 		t.Fatalf("appendEvent() = %d, %v", seq, err)
 	}
-	seq, err = f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventHeartbeat, map[string]any{"seq": 1}, now)
+	seq, err = f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventHeartbeat, map[string]any{"seq": 1}, now)
 	if err != nil || seq != 2 {
 		t.Fatalf("appendEvent() = %d, %v", seq, err)
 	}
@@ -640,10 +643,10 @@ func TestConversationStoreEvents(t *testing.T) {
 	if len(events) != 1 || events[0].Seq != 2 {
 		t.Fatalf("listEvents(after=1) = %#v", events)
 	}
-	if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventType("bogus"), nil, now); err == nil {
+	if _, err := f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventType("bogus"), nil, now); err == nil {
 		t.Fatal("appendEvent(bogus type) must fail")
 	}
-	if _, err := f.store.appendEvent(t.Context(), tx, conversation.NewConversationID(), conversation.EventHeartbeat, nil, now); err == nil {
+	if _, err := f.appendEvent(t, t.Context(), tx, conversation.NewConversationID(), conversation.EventHeartbeat, nil, now); err == nil {
 		t.Fatal("appendEvent(missing conversation) must fail")
 	}
 	// A rolled back transaction leaves neither the event nor the counter.
@@ -688,10 +691,10 @@ func TestConversationStoreEvents(t *testing.T) {
 				t.Fatal(err)
 			}
 			tx := f.tx(t)
-			if err := f.store.appendMessage(ctx, tx, &message); err != nil {
+			if err := f.appendMessage(t, ctx, tx, &message); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.store.appendEvent(ctx, tx, record.ID, conversation.EventMessageAccepted, projectMessage(message), now); err != nil {
+			if _, err := f.appendEvent(t, ctx, tx, record.ID, conversation.EventMessageAccepted, projectMessage(message), now); err != nil {
 				t.Fatal(err)
 			}
 			f.commit(t, tx)
@@ -722,7 +725,7 @@ func TestConversationStoreEvents(t *testing.T) {
 		if _, err := f.store.readConversation(t.Context(), f.service.database.reader, f.organization, f.project.ID, records[2].ID); err == nil {
 			t.Fatal("foreign conversation was readable")
 		}
-		f.store.contents = nil
+		f.store.contents = objects
 		for index, record := range records {
 			tool := "tool-" + strconv.Itoa(index)
 			data, err := json.Marshal(map[string]string{"tool": tool, "item_id": record.ID, "status": "running"})
@@ -731,10 +734,10 @@ func TestConversationStoreEvents(t *testing.T) {
 			}
 			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleSystem, Kind: conversation.MessageTool, Text: "Running " + tool, Data: data, Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}, CreatedAt: now, UpdatedAt: now}
 			tx := f.tx(t)
-			if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+			if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventMessageAccepted, projectMessage(message), now); err != nil {
+			if _, err := f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventMessageAccepted, projectMessage(message), now); err != nil {
 				t.Fatal(err)
 			}
 			for _, status := range []string{"completed", "saved"} {
@@ -743,7 +746,7 @@ func TestConversationStoreEvents(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := chat.updateMessage(t.Context(), tx, message, now); err != nil {
+				if err := f.updateChatMessage(t, chat, t.Context(), tx, message, now); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -844,7 +847,7 @@ func TestConversationStoreNormalizeAfterRestart(t *testing.T) {
 		ids[i] = record.ID
 		tx := f.tx(t)
 		message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "m", Delivery: test.in.delivery, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}, CommandKey: "k", CreatedAt: now, UpdatedAt: now}
-		if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+		if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
 			t.Fatalf("appendMessage() error = %v", err)
 		}
 		question := conversationQuestionRecord{Question: conversation.Question{ID: conversation.NewQuestionID(), ConversationID: record.ID, MessageID: message.ID, Status: test.in.question, Prompts: []conversation.Prompt{{ID: "p", Question: "?"}}, CreatedAt: now, UpdatedAt: now}}
@@ -982,4 +985,186 @@ func TestConversationMigrationTables(t *testing.T) {
 			t.Fatal("origin CHECK must reject unknown values")
 		}
 	})
+}
+
+func (f conversationFixture) appendMessage(t *testing.T, ctx context.Context, tx *sql.Tx, message *conversationMessageRecord) error {
+	t.Helper()
+	if err := validateConversationMessage(message); err != nil {
+		return err
+	}
+	var organization string
+	if err := tx.QueryRowContext(ctx, "SELECT organization_id FROM conversations WHERE id=?", message.ConversationID).Scan(&organization); err != nil {
+		return err
+	}
+	content, err := messageContent(*message)
+	if err != nil {
+		return err
+	}
+	ctx, err = f.store.preparePayload(ctx, organization, content)
+	if err != nil {
+		return err
+	}
+	return f.store.appendMessage(ctx, tx, message)
+}
+
+func (f conversationFixture) appendEvent(t *testing.T, ctx context.Context, tx *sql.Tx, id string, kind conversation.EventType, body any, now time.Time) (int64, error) {
+	t.Helper()
+	if body == nil {
+		body = map[string]any{}
+	}
+	raw, err := marshalNative(compactConversationEvent(body))
+	if err != nil {
+		return 0, err
+	}
+	var organization string
+	if err := tx.QueryRowContext(ctx, "SELECT organization_id FROM conversations WHERE id=?", id).Scan(&organization); err != nil {
+		return 0, err
+	}
+	ctx, err = f.store.preparePayload(ctx, organization, []byte(raw))
+	if err != nil {
+		return 0, err
+	}
+	return f.store.appendEvent(ctx, tx, id, kind, body, now)
+}
+
+func (f conversationFixture) prepareMessage(t *testing.T, ctx context.Context, tx *sql.Tx, message conversationMessageRecord) (context.Context, error) {
+	t.Helper()
+	var organization string
+	if err := tx.QueryRowContext(ctx, "SELECT organization_id FROM conversations WHERE id=?", message.ConversationID).Scan(&organization); err != nil {
+		return ctx, err
+	}
+	content, err := messageContent(message)
+	if err != nil {
+		return ctx, err
+	}
+	return f.store.preparePayload(ctx, organization, content)
+}
+
+func (f conversationFixture) updateMessage(t *testing.T, ctx context.Context, tx *sql.Tx, message conversationMessageRecord) error {
+	t.Helper()
+	ctx, err := f.prepareMessage(t, ctx, tx, message)
+	if err != nil {
+		return err
+	}
+	return f.store.updateMessage(ctx, tx, message)
+}
+
+func (f conversationFixture) updateChatMessage(t *testing.T, chat *conversationService, ctx context.Context, tx *sql.Tx, message conversationMessageRecord, now time.Time) error {
+	t.Helper()
+	ctx, err := f.prepareMessage(t, ctx, tx, message)
+	if err != nil {
+		return err
+	}
+	var organization string
+	if err := tx.QueryRowContext(ctx, "SELECT organization_id FROM conversations WHERE id=?", message.ConversationID).Scan(&organization); err != nil {
+		return err
+	}
+	fact := message
+	if err := tx.QueryRowContext(ctx, "SELECT revision+1 FROM conversation_messages WHERE id=?", message.ID).Scan(&fact.Revision); err != nil {
+		return err
+	}
+	content, err := messageContent(message)
+	if err != nil {
+		return err
+	}
+	ref, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(content))
+	if err != nil {
+		return err
+	}
+	fact.ContentID, fact.UpdatedAt = contentArchiveID(organization, ref), now
+	raw, err := marshalNative(compactConversationEvent(projectMessage(fact)))
+	if err != nil {
+		return err
+	}
+	ctx, err = f.store.preparePayload(ctx, organization, []byte(raw))
+	if err != nil {
+		return err
+	}
+	return chat.updateMessage(ctx, tx, message, now)
+}
+
+func (f conversationFixture) appendDelta(t *testing.T, chat *conversationService, ctx context.Context, tx *sql.Tx, message *conversationMessageRecord, text string, now time.Time) error {
+	t.Helper()
+	var organization string
+	var revision int64
+	if err := tx.QueryRowContext(ctx, "SELECT c.organization_id,m.revision+1 FROM conversations c JOIN conversation_messages m ON m.conversation_id=c.id WHERE m.id=?", message.ID).Scan(&organization, &revision); err != nil {
+		return err
+	}
+	raw, err := marshalNative(conversationDeltaFact{Text: text, Revision: revision, MessageID: message.ID, Offset: int64(len(message.Text)), Bytes: len(text)})
+	if err != nil {
+		return err
+	}
+	ctx, err = f.store.preparePayload(ctx, organization, []byte(raw))
+	if err != nil {
+		return err
+	}
+	return chat.appendDelta(ctx, tx, message, text, now)
+}
+
+func (f conversationFixture) insertLegacyMessage(t *testing.T, ctx context.Context, tx *sql.Tx, message *conversationMessageRecord) error {
+	t.Helper()
+	if err := validateConversationMessage(message); err != nil {
+		return err
+	}
+	if err := tx.QueryRowContext(ctx, "SELECT coalesce(max(seq),0)+1 FROM conversation_messages WHERE conversation_id=?", message.ConversationID).Scan(&message.Seq); err != nil {
+		return err
+	}
+	actor, err := marshalNative(message.Actor)
+	if err != nil {
+		return err
+	}
+	message.Revision = 1
+	_, err = tx.ExecContext(ctx, "INSERT INTO conversation_messages("+conversationMessageColumns+") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", message.ID, message.ConversationID, message.Seq, message.Role, message.Kind, message.Text, string(message.Data), message.Delivery, message.AttemptID, message.ThreadID, message.TurnID, message.ProviderItemID, actor, message.CommandKey, conversationTime(message.CreatedAt), conversationTime(message.UpdatedAt), "", message.Revision)
+	if err != nil {
+		return err
+	}
+	metadata, err := messageQueryMetadata(message.Data, message.Actor.Kind)
+	if err != nil {
+		return err
+	}
+	if err := metadata.write(ctx, tx, "conversation_messages", "id=?", message.ID); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, "UPDATE conversations SET last_message_at=? WHERE id=?", conversationTime(message.CreatedAt), message.ConversationID)
+	return err
+}
+
+func (f conversationFixture) insertLegacyEvent(t *testing.T, ctx context.Context, tx *sql.Tx, id string, kind conversation.EventType, body any, now time.Time) (int64, error) {
+	t.Helper()
+	raw, err := marshalNative(compactConversationEvent(body))
+	if err != nil {
+		return 0, err
+	}
+	var seq int64
+	if err := tx.QueryRowContext(ctx, "UPDATE conversations SET event_seq=event_seq+1 WHERE id=? RETURNING event_seq", id).Scan(&seq); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO conversation_events(conversation_id,seq,type,body_json,created_at) VALUES(?,?,?,?,?)", id, seq, kind, raw, conversationTime(now)); err != nil {
+		return 0, err
+	}
+	metadata, err := eventQueryMetadata([]byte(raw))
+	if err != nil {
+		return 0, err
+	}
+	return seq, metadata.write(ctx, tx, "conversation_events", "conversation_id=? AND seq=?", id, seq)
+}
+
+func (f conversationFixture) updateLegacyToolMessage(t *testing.T, ctx context.Context, tx *sql.Tx, message conversationMessageRecord, now time.Time) error {
+	t.Helper()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_tool_revisions(conversation_id,message_id,revision,text,tool,item_id,status) SELECT conversation_id,id,revision,text,coalesce(tool_name,''),coalesce(tool_item_id,''),coalesce(tool_status,'') FROM conversation_messages WHERE id=?`, message.ID); err != nil {
+		return err
+	}
+	if err := tx.QueryRowContext(ctx, "UPDATE conversation_messages SET text=?,data_json=?,updated_at=?,revision=revision+1 WHERE id=? RETURNING revision", message.Text, string(message.Data), conversationTime(now), message.ID).Scan(&message.Revision); err != nil {
+		return err
+	}
+	message.UpdatedAt = now
+	metadata, err := messageQueryMetadata(message.Data, message.Actor.Kind)
+	if err != nil {
+		return err
+	}
+	if err := metadata.write(ctx, tx, "conversation_messages", "id=?", message.ID); err != nil {
+		return err
+	}
+	_, err = f.insertLegacyEvent(t, ctx, tx, message.ConversationID, conversation.EventMessageUpdated, projectMessage(message), now)
+	return err
 }

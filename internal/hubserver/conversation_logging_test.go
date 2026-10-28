@@ -113,6 +113,11 @@ func openConversationLogService(t *testing.T, cfg Config, sink *conversationLogS
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
 	}
+	if cfg.Conversation != nil && cfg.Conversation.ArchiveContents == nil {
+		conversationConfig := *cfg.Conversation
+		conversationConfig.ArchiveContents = &conversationContentFixture{}
+		cfg.Conversation = &conversationConfig
+	}
 
 	cfg.Logger = slog.New(slog.NewJSONHandler(sink, nil))
 	if len(cfg.InitialAdminToken) == 0 {
@@ -292,7 +297,7 @@ func TestConversationLoggingRestartNormalization(t *testing.T) {
 	sink := &conversationLogSink{}
 	// The restarted hub has a coordinator backend, so the saved message of
 	// the unlinked conversation is handed to the coordinator.
-	openConversationLogService(t, Config{DatabasePath: databasePath, Conversation: &ConversationConfig{Enabled: true, ControlQueueSize: 8, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir()}}, sink)
+	openConversationLogService(t, Config{DatabasePath: databasePath, Conversation: &ConversationConfig{Enabled: true, ControlQueueSize: 8, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir(), ArchiveContents: f.service.config.Conversation.ArchiveContents}}, sink)
 
 	requireConversationLogFields(t, sink.only(t, "conversation.restart_normalized"), map[string]any{
 		"conversations": float64(1),
@@ -330,7 +335,7 @@ func TestConversationNormalizeAfterRestartSummary(t *testing.T) {
 		key := "k" + strconv.Itoa(i)
 		tx := f.tx(t)
 		message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: conversationLogSentinel, Delivery: row.delivery, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}, CommandKey: key, CreatedAt: now, UpdatedAt: now}
-		if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+		if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
 			t.Fatalf("appendMessage() error = %v", err)
 		}
 		question := conversationQuestionRecord{Question: conversation.Question{ID: conversation.NewQuestionID(), ConversationID: record.ID, MessageID: message.ID, Status: row.question, Prompts: []conversation.Prompt{{ID: "p", Question: "?"}}, CreatedAt: now, UpdatedAt: now}}

@@ -8,12 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 )
+
+var errConversationPublicationUncertain = errors.New("conversation content publication is uncertain")
 
 type conversationContent struct {
 	Text string          `json:"text"`
@@ -30,60 +33,118 @@ func messageContent(message conversationMessageRecord) ([]byte, error) {
 
 type preparedConversationContents map[string]attachment.ArchiveReference
 type conversationContentsKey struct{}
+type conversationArchiveReadsKey struct{}
+type conversationArchiveReads struct {
+	mu      sync.Mutex
+	content map[string][]byte
+}
 
-func (c *conversationService) prepareContents(ctx context.Context, organization, project, uploader string, messages ...conversationMessageRecord) (context.Context, error) {
-	if c.store.contents == nil {
-		return ctx, nil
+func (r *conversationArchiveReads) load(key string) ([]byte, bool) {
+	if r == nil {
+		return nil, false
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	data, ok := r.content[key]
+	return data, ok
+}
+
+func (r *conversationArchiveReads) store(key string, data []byte) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.content[key] = bytes.Clone(data)
+}
+
+func withConversationArchiveReads(ctx context.Context) context.Context {
+	if conversationArchiveCache(ctx) != nil {
+		return ctx
+	}
+	return newConversationArchiveReads(ctx)
+}
+
+func conversationArchiveCache(ctx context.Context) *conversationArchiveReads {
+	cache, ok := ctx.Value(conversationArchiveReadsKey{}).(*conversationArchiveReads)
+	if !ok {
+		return nil
+	}
+	return cache
+}
+
+func newConversationArchiveReads(ctx context.Context) context.Context {
+	return context.WithValue(ctx, conversationArchiveReadsKey{}, &conversationArchiveReads{content: map[string][]byte{}})
+}
+
+func (s *conversationStore) publishPayload(ctx context.Context, organization string, content []byte) (attachment.ArchiveReference, error) {
+	if s.contents == nil {
+		return attachment.ArchiveReference{}, errors.New("conversation content storage is unavailable")
+	}
+	expected, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(content))
+	if err != nil {
+		return attachment.ArchiveReference{}, err
+	}
+	ref, publishErr := s.contents.PublishContent(ctx, organization, content)
+	if publishErr != nil {
+		reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), hubReadTimeout)
+		defer cancel()
+		stored, readErr := s.contents.ReadContent(reconcileCtx, organization, expected)
+		if readErr != nil || !bytes.Equal(stored, content) {
+			return attachment.ArchiveReference{}, errors.Join(errConversationPublicationUncertain, publishErr, readErr)
+		}
+		ref = expected
+	}
+	if ref != expected {
+		return attachment.ArchiveReference{}, errors.New("conversation archive reference changed during publication")
+	}
+	return ref, nil
+}
+
+func (s *conversationStore) preparePayload(ctx context.Context, organization string, content []byte) (context.Context, error) {
+	return s.preparePayloads(ctx, organization, content)
+}
+
+func (s *conversationStore) preparePayloads(ctx context.Context, organization string, contents ...[]byte) (context.Context, error) {
+	ctx = withConversationArchiveReads(ctx)
 	prepared := preparedConversationContents{}
 	if existing, ok := ctx.Value(conversationContentsKey{}).(preparedConversationContents); ok {
 		for key, ref := range existing {
 			prepared[key] = ref
 		}
 	}
+	reads := conversationArchiveCache(ctx)
+	for _, content := range contents {
+		key := organization + "/" + artifact.Digest(content)
+		ref, found := prepared[key]
+		if !found {
+			var err error
+			ref, err = s.publishPayload(ctx, organization, content)
+			if err != nil {
+				return ctx, err
+			}
+			prepared[key] = ref
+		}
+		reads.store(organization+"/"+contentArchiveID(organization, ref), content)
+	}
+	return context.WithValue(ctx, conversationContentsKey{}, prepared), nil
+}
+
+func (c *conversationService) prepareContents(ctx context.Context, organization, project, uploader string, messages ...conversationMessageRecord) (context.Context, error) {
+	contents := make([][]byte, 0, len(messages))
 	for _, message := range messages {
 		content, err := messageContent(message)
 		if err != nil {
 			return ctx, err
 		}
-		key := organization + "/" + artifact.Digest(content)
-		if _, ok := prepared[key]; ok {
-			continue
-		}
-		expected, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(content))
-		if err != nil {
-			return ctx, err
-		}
-		tx, err := c.store.db.BeginTx(ctx, nil)
-		if err != nil {
-			return ctx, err
-		}
-		err = c.store.recordContentArchive(ctx, tx, organization, project, uploader, expected, c.server.config.now())
-		if err == nil {
-			err = tx.Commit()
-		}
-		rollbackErr := tx.Rollback()
-		if rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			err = errors.Join(err, rollbackErr)
-		}
-		if err != nil {
-			return ctx, err
-		}
-		ref, err := c.store.contents.PublishContent(ctx, organization, content)
-		if err != nil {
-			return ctx, fmt.Errorf("publish conversation content: %w", err)
-		}
-		if ref != expected {
-			return ctx, errors.New("conversation archive reference changed during publication")
-		}
-		prepared[key] = ref
+		contents = append(contents, content)
 	}
-	return context.WithValue(ctx, conversationContentsKey{}, prepared), nil
+	return c.store.preparePayloads(ctx, organization, contents...)
 }
 
 func (s *conversationStore) messageStorage(ctx context.Context, tx *sql.Tx, message conversationMessageRecord) (string, string, string, error) {
 	if s.contents == nil {
-		return message.Text, string(message.Data), "", nil
+		return "", "", "", errors.New("conversation content storage is unavailable")
 	}
 	content, err := messageContent(message)
 	if err != nil {
@@ -93,23 +154,20 @@ func (s *conversationStore) messageStorage(ctx context.Context, tx *sql.Tx, mess
 	if message.ContentID != "" && digest == message.contentHash {
 		return "", "{}", message.ContentID, nil
 	}
-	var organization, project string
-	if err := tx.QueryRowContext(ctx, "SELECT organization_id,project_id FROM conversations WHERE id=?", message.ConversationID).Scan(&organization, &project); err != nil {
+	var organization, project, uploader string
+	if err := tx.QueryRowContext(ctx, "SELECT organization_id,project_id,owner_principal_id FROM conversations WHERE id=?", message.ConversationID).Scan(&organization, &project, &uploader); err != nil {
 		return "", "", "", err
 	}
 	prepared, ok := ctx.Value(conversationContentsKey{}).(preparedConversationContents)
 	ref, found := prepared[organization+"/"+digest]
 	if !ok || !found {
-		ref, err = s.contents.PublishContent(ctx, organization, content)
-		if err != nil {
-			return "", "", "", fmt.Errorf("publish conversation content: %w", err)
-		}
+		return "", "", "", errors.New("conversation content was not published before the transaction")
 	}
 	if err := ref.Validate(organization); err != nil {
 		return "", "", "", err
 	}
 	id := contentArchiveID(organization, ref)
-	if err := s.recordContentArchive(ctx, tx, organization, project, message.Actor.PrincipalID, ref, message.CreatedAt); err != nil {
+	if err := s.recordContentArchive(ctx, tx, organization, project, uploader, ref, message.CreatedAt); err != nil {
 		return "", "", "", err
 	}
 
@@ -141,16 +199,9 @@ func (s *conversationStore) resolveMessageContents(ctx context.Context, query na
 			message.Text, message.Data, message.contentHash = cached.content.Text, cached.content.Data, cached.hash
 			continue
 		}
-		ref, err := scanAttachmentArchive(query.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class,storage_binding_id,customer_owned FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, message.ContentID, organization))
+		content, err := s.readConversationArchive(ctx, query, organization, message.ContentID)
 		if err != nil {
 			return err
-		}
-		if s.contents == nil {
-			return errors.New("conversation content storage is unavailable")
-		}
-		content, err := s.contents.ReadContent(ctx, organization, ref)
-		if err != nil {
-			return fmt.Errorf("read conversation content: %w", err)
 		}
 		var decoded conversationContent
 		if err := json.Unmarshal(content, &decoded); err != nil {
@@ -312,50 +363,12 @@ func (s *conversationStore) recordContentArchive(ctx context.Context, tx *sql.Tx
 	return nil
 }
 
-func (c *conversationService) prepareBindNotice(ctx context.Context, scope nativeScope, record conversationRecord, request conversationBindRequest) (context.Context, error) {
-	messages, err := c.pendingControlMessages(ctx, c.store.reader, record.ID, 0)
-	if err != nil {
-		return ctx, err
-	}
-	var pending []conversationControl
-	for _, message := range messages {
-		if len(pending) >= c.config.ControlQueueSize {
-			break
-		}
-		if message.Delivery == conversation.DeliverySending && !record.Execution.Status.Terminal() && record.Execution.Owner.AttemptID != "" && record.Execution.Owner.AttemptID != request.AttemptID {
-			continue
-		}
-		if message.Kind == conversation.MessageAnswer {
-			if _, _, err := c.resolveAnswer(ctx, c.store.reader, record.ID, message); err != nil {
-				continue
-			}
-		}
-		pending = append(pending, conversationControl{MessageID: message.ID})
-	}
-	thread := strings.TrimSpace(request.ThreadID)
-	named := thread != ""
-	if !named {
-		thread = record.ProviderThreadID
-	} else {
-		record.ProviderThreadRunnerID = scope.credential.Runner.RunnerID
-		record.ProviderThreadOrigin = conversation.ThreadOriginWorker
-	}
-	resume, err := c.resumeFor(ctx, c.store.reader, record, scope, thread, named, false, pending)
-	if err != nil {
-		return ctx, err
-	}
-	if conversationResumeKind(resume) != conversation.ResumeTranscript {
-		return ctx, nil
-	}
-	notice := conversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageStatus, Text: conversationTranscriptNotice(len(resume.Transcript)), Delivery: conversation.DeliverySaved}
-	return c.prepareContents(ctx, string(scope.organization), string(scope.project), scope.credential.ID, notice)
-}
-
 func (s *conversationStore) resolveMessageDeltas(ctx context.Context, q nativeQueryer, message *conversationMessageRecord) error {
 	rows, err := q.QueryContext(ctx, `SELECT body_json,content_attachment_id FROM conversation_events WHERE conversation_id=? AND message_id=? AND type='message.delta' AND delta_offset>=? AND delta_offset<? ORDER BY seq`, message.ConversationID, message.ID, len(message.Text), message.TextBytes)
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	type delta struct{ raw, content string }
 	var batch []delta
 	for rows.Next() {
@@ -393,4 +406,28 @@ func (s *conversationStore) resolveMessageDeltas(ctx context.Context, q nativeQu
 	}
 	message.Text = text.String()
 	return nil
+}
+
+func (s *conversationStore) readConversationArchive(ctx context.Context, query nativeQueryer, organization, contentID string) ([]byte, error) {
+	cache := conversationArchiveCache(ctx)
+	key := organization + "/" + contentID
+	if data, ok := cache.load(key); ok {
+		return data, nil
+	}
+	if _, transactional := query.(*sql.Tx); transactional && ctx.Value(conversationPublicationKey{}) != nil {
+		return nil, errors.New("conversation archive was not read before the transaction")
+	}
+	ref, err := scanAttachmentArchive(query.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class,storage_binding_id,customer_owned FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, contentID, organization))
+	if err != nil {
+		return nil, err
+	}
+	if s.contents == nil {
+		return nil, errors.New("conversation content storage is unavailable")
+	}
+	data, err := s.contents.ReadContent(ctx, organization, ref)
+	if err != nil {
+		return nil, fmt.Errorf("read conversation content: %w", err)
+	}
+	cache.store(key, data)
+	return data, nil
 }
