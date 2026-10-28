@@ -2529,7 +2529,8 @@ func runGitAt(ctx context.Context, dir string, args ...string) (string, error) {
 }
 
 func runGitAtWithEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
-	return runGitAtWithEnvCapture(ctx, dir, env, false, args...)
+	fileOutput := len(args) >= 2 && args[0] == "worktree" && args[1] == "add"
+	return runGitAtWithEnvCapture(ctx, dir, env, fileOutput, args...)
 }
 
 func runGitAtWithEnvCapture(ctx context.Context, dir string, env []string, fileOutput bool, args ...string) (string, error) {
@@ -2550,9 +2551,7 @@ func runGitAtWithInput(ctx context.Context, dir string, env []string, fileOutput
 	var output []byte
 	var err error
 	if fileOutput {
-		// A completed identity query must not depend on an inherited output pipe
-		// closing within WaitDelay under heavy subprocess load.
-		file, createErr := os.CreateTemp("", "detent-git-common-dir-*")
+		file, createErr := os.CreateTemp("", "detent-git-output-*")
 		if createErr != nil {
 			return "", fmt.Errorf("create git output file: %w", createErr)
 		}

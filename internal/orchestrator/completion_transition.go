@@ -321,7 +321,8 @@ func (o *Orchestrator) finishCompletedActiveReviewTransition(
 func (o *Orchestrator) recordCompletedActiveReviewTransition(state *State, issue connector.Issue, completed Completed, targetState string) {
 	issueID := strings.TrimSpace(issue.ID)
 	sameState := normalizeState(issue.State) == normalizeState(targetState)
-	if sameState {
+	terminal := stateIn(targetState, o.cfg.TerminalStates)
+	if sameState && !terminal {
 		delete(state.Completed, issueID)
 	} else {
 		updated := mergeIssueTrackerFields(completed.Issue, issue)
@@ -330,7 +331,7 @@ func (o *Orchestrator) recordCompletedActiveReviewTransition(state *State, issue
 		state.Completed[issueID] = completed
 	}
 	delete(state.Claimed, issueID)
-	if !sameState {
+	if !sameState || terminal {
 		delete(state.Retry, issueID)
 		delete(state.BudgetRefusals, issueID)
 	}
