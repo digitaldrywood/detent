@@ -26,10 +26,11 @@ import (
 )
 
 type NativeClient struct {
-	githubBatch  func(context.Context, tracker.GitHubBatchTask) error
-	client       *Client
-	organization tracker.OrganizationID
-	project      tracker.ProjectID
+	repositoryCommand repositoryCommand
+	githubBatch       func(context.Context, tracker.GitHubBatchTask) error
+	client            *Client
+	organization      tracker.OrganizationID
+	project           tracker.ProjectID
 }
 
 func (c *Client) Native(organization tracker.OrganizationID, project tracker.ProjectID) (*NativeClient, error) {

@@ -29,21 +29,44 @@ func TestRunnerRepositoryReports(t *testing.T) {
 		decodeHubResponse(t, response, &result)
 		return result.RequestID
 	}
-	for i, test := range []struct{ base, id, credential string }{
-		{f.base, first.binding.RunnerID, first.redemption.Credential},
-		{other.base, second.binding.RunnerID, second.redemption.Credential},
+	for i, test := range []struct{ base, id, credential, machine string }{
+		{f.base, first.binding.RunnerID, first.redemption.Credential, string(first.binding.MachineID)},
+		{other.base, second.binding.RunnerID, second.redemption.Credential, string(second.binding.MachineID)},
 	} {
 		requestID := request(test.base, test.id, "request")
 		if request(test.base, test.id, "request") != requestID {
 			t.Fatal("refresh replay changed request")
 		}
-		snapshot, err := readRunnerRoutingSnapshot(ctx, f.service.database.reader, f.project.OrganizationID, test.id, f.service.config.now())
-		if err != nil || snapshot.RepositoryListRequest != requestID {
-			t.Fatalf("command=%+v err=%v", snapshot, err)
+		var snapshot runnerauth.RoutingSnapshot
+		response := performHubAPIRequest(t, f.service, http.MethodPost, test.base+"/machines/"+test.machine+"/heartbeat", test.credential, map[string]any{"capacity": 2, "version": "test"})
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &snapshot)
+		if snapshot.RepositoryListRequest != requestID {
+			t.Fatalf("command=%+v", snapshot)
+		}
+		setupList := func() *runnerauth.RepositoryList {
+			t.Helper()
+			response := performHubAPIRequest(t, f.service, http.MethodGet, test.base+"/onboarding", testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var setup onboarding.Project
+			decodeHubResponse(t, response, &setup)
+			for _, runner := range setup.Runners {
+				if runner.Runner.RunnerID == test.id && runner.RepositoryList != nil {
+					return runner.RepositoryList
+				}
+			}
+			t.Fatal("runner repository list missing from setup read")
+			return nil
+		}
+		if list := setupList(); !list.Pending || list.RequestID != requestID {
+			t.Fatalf("pending setup list=%+v", list)
 		}
 		at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 		body := map[string]any{"idempotency_key": requestID, "request_id": requestID, "repositories": []runnerauth.Repository{{Owner: "example-org", Name: "private", Private: true, PushedAt: &at}, {Owner: "example-user", Name: "public"}}}
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, test.base+"/onboarding/repositories/report", test.credential, body), http.StatusOK)
+		if list := setupList(); list.Pending || list.RequestID != requestID || len(list.Repositories) != 2 || list.Repositories[0].Owner != "example-org" || list.Repositories[0].Name != "private" {
+			t.Fatalf("reported repositories missing from setup read: %+v", list)
+		}
 		list, err := readRunnerRepositories(ctx, f.service.database.reader, test.id)
 		if err != nil || list.Pending || list.ListedAt == "" || len(list.Repositories) != 2 || !list.Repositories[0].Private || list.Repositories[0].PushedAt == nil || !list.Repositories[0].PushedAt.Equal(at) {
 			t.Fatalf("report=%+v err=%v", list, err)

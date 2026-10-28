@@ -16,6 +16,46 @@ import { fetchEventStreamTransport } from "../../src/runtime/rpc/sse.ts";
 let hub: MockHub | undefined;
 let client: ConversationClient | undefined;
 
+it.each(["pending", "refreshing", "request error", "runner error"] as const)("keeps repository discovery recoverable during %s", async (state) => {
+  vi.useFakeTimers();
+  const runner = { ...Schema.decodeUnknownSync(Onboarding)(onboardingFixture).runners![0]!, repository_list: {
+    request_id: "pending", pending: state !== "runner error", repositories: [], reason: state === "runner error" ? "repository listing unavailable" : "",
+  } };
+  const refresh = vi.fn();
+  const change = vi.fn();
+  const props = { runner, value: "", onChange: change, refresh, refreshing: state === "refreshing", error: state === "request error" ? "Repository request failed" : null };
+  const view = render(<RepositoryPicker {...props} />);
+  const button = screen.getByRole("button", { name: "Refresh" }) as HTMLButtonElement;
+  if (state === "pending" || state === "refreshing") {
+    const status = screen.getByRole("status", { name: "Loading repositories" });
+    expect(status.querySelector("svg")?.getAttribute("class")).toContain("visible-animate-spin");
+    expect(button.disabled).toBe(true);
+    await act(() => vi.advanceTimersByTimeAsync(59_999));
+    expect(screen.queryByRole("alert")).toBeNull();
+    view.rerender(<RepositoryPicker {...props} runner={{ ...runner, repository_list: { ...runner.repository_list } }} />);
+    await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(screen.getByRole("alert").textContent).toContain("taking too long");
+  } else {
+    expect(screen.getByRole("alert").textContent).toContain(state === "request error" ? "request failed" : "listing unavailable");
+  }
+  expect(screen.queryByRole("status", { name: "Loading repositories" })).toBeNull();
+  expect(button.disabled).toBe(false);
+  fireEvent.click(button);
+  expect(refresh).toHaveBeenCalledOnce();
+  view.rerender(<RepositoryPicker {...props} refreshing={false} error={null} runner={{ ...runner, repository_list: { request_id: "retry", pending: true, repositories: [] } }} />);
+  expect(screen.getByRole("status", { name: "Loading repositories" })).toBeTruthy();
+  expect(button.disabled).toBe(true);
+  view.rerender(<RepositoryPicker {...props} refreshing={false} error={null} runner={{ ...runner, repository_list: {
+    request_id: "retry", pending: false, repositories: [{ owner: "example-org", name: "example-project", private: true, pushed_at: null }],
+  } }} />);
+  expect(screen.getByRole("option", { name: /example-org\/example-project/ })).toBeTruthy();
+  expect(screen.queryByRole("status", { name: "Loading repositories" })).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(button.disabled).toBe(false);
+  fireEvent.click(screen.getByRole("option", { name: /example-org\/example-project/ }));
+  expect(change).toHaveBeenCalledWith("example-org/example-project");
+});
+
 it.each([false, true])("offers GitHub discovery only when available (%s), including from Not listed", async (available) => {
   const connect = vi.fn();
   const view = render(<RepositoryPicker runner={undefined} value="example-org/unlisted" onChange={vi.fn()} refresh={vi.fn()} refreshing={false}
@@ -63,6 +103,7 @@ afterEach(async () => {
   await hub?.close();
   hub = undefined;
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 async function mountSetup(onNavigate?: (to: string) => void) {
@@ -76,6 +117,36 @@ async function mountSetup(onNavigate?: (to: string) => void) {
     </ClientContext.Provider>,
   );
 }
+
+it("retries a failed repository request while the setup read still reports pending", async () => {
+  const mount = await mountSetup();
+  const fetch = globalThis.fetch;
+  let requests = 0;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    if (String(input).endsWith("/onboarding/repositories") && init?.method === "POST") {
+      requests += 1;
+      if (requests === 1) return Response.json({ code: "tenant_unavailable", message: "Repository request failed" }, { status: 502 });
+    }
+    const response = await fetch(input, init);
+    if (String(input).endsWith("/onboarding") && response.ok) {
+      const data = await response.json();
+      return Response.json({ ...data, runners: data.runners.map((entry: object) => ({ ...entry, repository_list: {
+        request_id: "request", pending: requests < 2, repositories: requests < 2 ? [] : [{ owner: "example-org", name: "example-project", private: false, pushed_at: null }],
+      } })) });
+    }
+    return response;
+  });
+  mount();
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Repository action required/ }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Repository request failed");
+  const refresh = screen.getByRole("button", { name: "Refresh" }) as HTMLButtonElement;
+  expect(refresh.disabled).toBe(false);
+  await user.click(refresh);
+  expect(await screen.findByRole("option", { name: /example-org\/example-project/ })).toBeTruthy();
+  expect(requests).toBe(2);
+  expect(screen.queryByRole("alert")).toBeNull();
+});
 
 it("preserves unsaved setup choices and fields through refresh, then saves and switches projects", async () => {
   const mount = await mountSetup();

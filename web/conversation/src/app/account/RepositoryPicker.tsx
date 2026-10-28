@@ -4,6 +4,7 @@ import { Combobox, ComboboxInput, ComboboxGroup, ComboboxGroupLabel, ComboboxIte
 import { Badge } from "../../components/ui/badge.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { Label } from "../../components/ui/label.tsx";
+import { Spinner } from "../../components/ui/spinner.tsx";
 import type { GitHubRepositories, RunnerEligibility } from "../../contracts/account.ts";
 import { formatRelativeTime } from "../fleet/format.ts";
 
@@ -11,12 +12,13 @@ export function validRepositoryName(value: string): boolean {
   return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) && value.split("/").every((part) => part.length <= 100 && part !== "." && part !== "..");
 }
 
-export function RepositoryPicker({ runner, value, onChange, refresh, refreshing, disabled = false, github, connectGitHub, connecting = false }: {
+export function RepositoryPicker({ runner, value, onChange, refresh, refreshing, error, disabled = false, github, connectGitHub, connecting = false }: {
   readonly runner: RunnerEligibility | undefined;
   readonly value: string;
   readonly onChange: (value: string) => void;
   readonly refresh: () => void;
   readonly refreshing: boolean;
+  readonly error?: string | null;
   readonly disabled?: boolean;
   readonly github?: GitHubRepositories;
   readonly connectGitHub?: () => void;
@@ -26,6 +28,17 @@ export function RepositoryPicker({ runner, value, onChange, refresh, refreshing,
   const [showHelp, setShowHelp] = React.useState(false);
   const input = React.useRef<HTMLInputElement>(null);
   const list = runner?.repository_list;
+  const [stalled, setStalled] = React.useState(false);
+  const [retry, setRetry] = React.useState(0);
+  const pending = refreshing || list?.pending === true;
+  React.useEffect(() => {
+    setStalled(false);
+    if (!pending) return;
+    const timer = window.setTimeout(() => setStalled(true), 60_000);
+    return () => window.clearTimeout(timer);
+  }, [pending, list?.request_id, retry]);
+  const failure = error || (stalled ? "Repository listing is taking too long. Refresh to try again, or type owner/name." : !pending ? list?.reason : null);
+  const loading = pending && !failure;
   const query = value.trim();
   const repositories = new Map((list?.repositories ?? []).map((repo) => [`${repo.owner}/${repo.name}`.toLowerCase(), { ...repo, source: "runner" }]));
   for (const repo of github?.repositories ?? []) {
@@ -62,7 +75,9 @@ export function RepositoryPicker({ runner, value, onChange, refresh, refreshing,
               </ComboboxItem>)}
             </ComboboxGroup>)}
         </ComboboxList>
-        {items.length === 0 ? <p role="status" className="p-3 text-sm text-muted-foreground">{refreshing || list?.pending ? "Loading repositories…" : list?.reason || "Type owner/name to use a repository."}</p> : null}
+        {loading ? <div role="status" aria-label="Loading repositories" className="flex items-center gap-2 p-3 text-sm text-muted-foreground"><Spinner size="sm" aria-hidden="true" role="presentation" />Loading repositories…</div>
+          : failure ? <p role="alert" className="p-3 text-sm text-muted-foreground">{failure}</p>
+          : items.length === 0 ? <p role="status" className="p-3 text-sm text-muted-foreground">Type owner/name to use a repository.</p> : null}
         {github?.available && connectGitHub && (matches.length === 0 || showHelp) ? <Button variant="ghost" size="sm-multiline" className="w-full justify-start rounded-none border-t border-border px-3 py-3 text-left" disabled={connecting} onClick={connectGitHub}>
           <CirclePlusIcon aria-hidden="true" />
           <span className="flex min-w-0 flex-col whitespace-normal">
@@ -76,7 +91,7 @@ export function RepositoryPicker({ runner, value, onChange, refresh, refreshing,
       <span>Listed by {runner?.runner.display_name ?? "your runner"}{github?.connected ? " and the Detent Cloud GitHub App" : ""} · {list?.listed_at ? `updated ${formatRelativeTime(list.listed_at)}` : "not yet updated"}</span>
       <div className="flex items-center gap-2">
         <Button variant="link" size="sm" onClick={() => { setShowHelp(true); setOpen(true); input.current?.focus(); }}>Not listed?</Button>
-        <Button variant="link" size="sm" disabled={!runner || refreshing || list?.pending} onClick={refresh}>Refresh</Button>
+        <Button variant="link" size="sm" disabled={!runner || (pending && !failure)} onClick={() => { setStalled(false); setRetry((attempt) => attempt + 1); refresh(); }}>Refresh</Button>
       </div>
     </div>
     {!online ? <p role="status" className="text-sm text-muted-foreground">The runner is offline. You can still type owner/name.</p> : null}

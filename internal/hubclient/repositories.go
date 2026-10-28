@@ -101,9 +101,13 @@ func listRunnerRepositories(ctx context.Context, requestID string, run repositor
 }
 
 func (c *NativeClient) reportRepositoryList(ctx context.Context, requestID string) error {
+	run := c.repositoryCommand
+	if run == nil {
+		run = githubRepositoryCommand
+	}
 	request := struct {
 		tracker.Mutation
 		runnerauth.RepositoryList
-	}{Mutation: tracker.Mutation{IdempotencyKey: requestID}, RepositoryList: listRunnerRepositories(ctx, requestID, githubRepositoryCommand)}
+	}{Mutation: tracker.Mutation{IdempotencyKey: requestID}, RepositoryList: listRunnerRepositories(ctx, requestID, run)}
 	return c.client.request(ctx, http.MethodPost, c.base()+"/onboarding/repositories/report", request, nil)
 }

@@ -590,10 +590,10 @@ function SetupContent({ projectId, onNavigate }: {
       <>
         <RepositoryPicker key={preparingRunner?.runner.runner_id} runner={preparingRunner} value={checkoutRepository || repositoryName}
           onChange={setRepositoryName} disabled={Boolean(checkoutRepository)} refreshing={refreshRepositories.pending}
+          error={refreshRepositories.error?.message ?? onboarding.error?.message}
           github={githubAvailable ? githubRepositories.value : undefined} connectGitHub={() => void connectGitHub.call()} connecting={connectGitHub.pending}
           refresh={() => { if (preparingRunner) void refreshRepositories.call(preparingRunner.runner.runner_id); void githubRepositories.refresh(); }} />
         <ControlError message={connectGitHub.error?.message ?? null} />
-        <ControlError message={refreshRepositories.error?.message ?? null} />
         <ControlError message={bindRepository.error?.message ?? null} />
         <ControlError message={integration.error?.message ?? null} />
         {showGitHubApp ? (

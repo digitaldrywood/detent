@@ -607,13 +607,14 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 		return c.heartbeatMachine(ctx, machine, capacity, false)
 	}
 
+	var commandErr error
 	if snapshot.GitHubIntake != nil && c.githubBatch != nil {
-		return c.githubBatch(ctx, *snapshot.GitHubIntake)
+		commandErr = c.githubBatch(ctx, *snapshot.GitHubIntake)
 	}
 	if snapshot.RepositoryListRequest != "" {
-		return c.reportRepositoryList(ctx, snapshot.RepositoryListRequest)
+		commandErr = errors.Join(commandErr, c.reportRepositoryList(ctx, snapshot.RepositoryListRequest))
 	}
-	return nil
+	return commandErr
 }
 
 func (r *runnerCredentialSource) setRouting(snapshot runnerauth.RoutingSnapshot) {
