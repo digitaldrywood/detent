@@ -67,7 +67,7 @@ func nativeScopedExpression(scopes, expressions []string, operator string) strin
 			if expression == `""` {
 				phrases = append(phrases, expression)
 			} else {
-				phrases = append(phrases, `"`+scope+` `+strings.TrimPrefix(expression, `"`))
+				phrases = append(phrases, `"`+scope+`_`+strings.TrimPrefix(expression, `"`))
 			}
 		}
 		variants = append(variants, `scope : "`+scope+`" AND {title body} : (`+strings.Join(phrases, operator)+`)`)
@@ -124,9 +124,9 @@ func nativeSearchJoin(scope nativeScope, archived string, expressions []string) 
 	ctes, args := nativeSearchHits(scope, archived, expressions)
 	args = append(args, strings.Join(expressions, " OR "))
 	return ` LEFT JOIN (` + ctes + `,previews AS MATERIALIZED (
- SELECT ranked.issue_id,ranked.search_score AS score,snippet(native_work_fts,-1,'[',']',' … ',32) AS snippet
- FROM ranked CROSS JOIN native_work_fts
- WHERE ranked.hit=1 AND native_work_fts.rowid=ranked.id/2 AND native_work_fts MATCH ?
+ SELECT ranked.issue_id,ranked.search_score AS score,native_search_snippet(content.title,content.body,?) AS snippet
+ FROM ranked CROSS JOIN native_work_search_content content
+ WHERE ranked.hit=1 AND content.id=ranked.id/2
  ) SELECT issue_id,score,substr(snippet,max(1,instr(snippet,'[')-60),240) AS snippet FROM previews
  ) search ON search.issue_id=i.id `, args
 }

@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -424,10 +425,27 @@ func TestNativeWorkSearchRanking(t *testing.T) {
 	}
 }
 
+func nativeSearchProbe(t *testing.T) *sql.DB {
+	t.Helper()
+	pool, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return pool
+}
+
 func TestNativeWorkSearchUnicode61Tokens(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "unicode-search")
-	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE VIRTUAL TABLE search_token_probe USING fts5(original,indexed,tokenize='porter unicode61');
-CREATE VIRTUAL TABLE search_token_vocabulary USING fts5vocab(search_token_probe,instance)`); err != nil {
+	pool := nativeSearchProbe(t)
+	if _, err := pool.ExecContext(t.Context(), `CREATE VIRTUAL TABLE search_token_probe USING fts5(original,tokenize='porter unicode61');
+CREATE VIRTUAL TABLE search_token_vocabulary USING fts5vocab(search_token_probe,instance);
+CREATE VIRTUAL TABLE search_scoped_token_probe USING fts5(indexed,tokenize='native_scoped');
+CREATE VIRTUAL TABLE search_scoped_token_vocabulary USING fts5vocab(search_scoped_token_probe,instance)`); err != nil {
 		t.Fatal(err)
 	}
 	var boundaryText strings.Builder
@@ -442,17 +460,23 @@ CREATE VIRTUAL TABLE search_token_vocabulary USING fts5vocab(search_token_probe,
 	for index, test := range []struct{ name, content string }{
 		{"stemming", "running runners relational generously skies dying ties"},
 		{"punctuation", "repo/path-name:word@example.org #123"},
+		{"underscores and empty input", "a_b __ _scope_term"},
+		{"empty", ""},
 		{"unicode", "café cafe\u0301 naïve Ελληνικά 中文 ß א ב ع"},
 		{"noncharacters", "a\ufffeb a\uffffb a\ufffdb"},
 		{"combining separators", "a\u0301b a\u0312b \u0301word \u1885x a\u200db"},
 		{"Unicode61 boundaries", boundaryText.String()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			const scope = "s61v"
-			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO search_token_probe(rowid,original,indexed) VALUES(?,?,?)", index+1, test.content, nativeSearchText(test.content, scope)); err != nil {
+			scope := nativeSearchScopes(nativeScope{organization: "example-organization", project: "example-project"}, "")[0]
+			if _, err := pool.ExecContext(t.Context(), "INSERT INTO search_token_probe(rowid,original) VALUES(?,?)", index+1, test.content); err != nil {
 				t.Fatal(err)
 			}
-			rows, err := f.service.database.reader.QueryContext(t.Context(), "SELECT term,col,offset FROM search_token_vocabulary WHERE doc=? ORDER BY col,offset", index+1)
+			if _, err := pool.ExecContext(t.Context(), "INSERT INTO search_scoped_token_probe(rowid,indexed) VALUES(?,?)", index+1, nativeSearchText(test.content, scope)); err != nil {
+				t.Fatal(err)
+			}
+			rows, err := pool.QueryContext(t.Context(), `SELECT term,col,offset FROM search_token_vocabulary WHERE doc=?
+UNION ALL SELECT term,col,offset FROM search_scoped_token_vocabulary WHERE doc=? ORDER BY col,offset`, index+1, index+1)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -466,10 +490,12 @@ CREATE VIRTUAL TABLE search_token_vocabulary USING fts5vocab(search_token_probe,
 				}
 				if column == "original" {
 					original = append(original, term)
-				} else if offset%2 == 1 {
-					indexed = append(indexed, term)
-				} else if term != scope {
-					t.Fatalf("scope token at %d = %q", offset, term)
+				} else {
+					unqualified, ok := strings.CutPrefix(term, strings.ToLower(scope)+"_")
+					if !ok {
+						t.Fatalf("unqualified token at %d = %q", offset, term)
+					}
+					indexed = append(indexed, unqualified)
 				}
 			}
 			if err := rows.Err(); err != nil {
@@ -477,6 +503,28 @@ CREATE VIRTUAL TABLE search_token_vocabulary USING fts5vocab(search_token_probe,
 			}
 			if !slices.Equal(original, indexed) {
 				t.Fatalf("Unicode61 tokens changed: original=%v indexed=%v", original, indexed)
+			}
+		})
+	}
+}
+
+func TestNativeWorkSearchSnippet(t *testing.T) {
+	pool := nativeSearchProbe(t)
+	for _, test := range []struct{ name, title, body, query, want string }{
+		{"stemming", "Relational runners", "", `"relation"*`, "[Relational] runners"},
+		{"diacritics", "Café résumé", "", `"cafe"*`, "[Café] résumé"},
+		{"body coverage", "Runner", "Runner checkout deadlocks", `"runner"* OR "checkout"*`, "[Runner] [checkout] deadlocks"},
+		{"Unicode offsets", strings.Repeat("é", 80) + " runners", "", `"runner"*`, strings.Repeat("é", 30) + " [runners]"},
+		{"embedded NUL", "prefix\x00runners", "", `"runner"*`, "prefix\x00[runners]"},
+		{"plain terms", "repository association", "", `"repository" OR "association"`, "[repository] [association]"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var snippet string
+			if err := pool.QueryRowContext(t.Context(), "SELECT native_search_snippet(?,?,?)", test.title, test.body, test.query).Scan(&snippet); err != nil {
+				t.Fatal(err)
+			}
+			if snippet != test.want {
+				t.Fatalf("snippet=%q want=%q", snippet, test.want)
 			}
 		})
 	}
@@ -511,6 +559,23 @@ FROM seed CROSS JOIN issues i WHERE i.native_id=?`, nativeSearchRebuildBatch+5, 
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), up); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_work_scoped_fts(rowid,title,body,scope)
+SELECT id,scope||' legacy',scope||' repository',scope FROM native_work_scoped_content`); err != nil {
+		t.Fatal(err)
+	}
+	tokens, err := migrationFiles.ReadFile("migrations/20261028205333_native_work_search_scoped_tokens.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenUp, tokenDown, ok := strings.Cut(string(tokens), "-- +goose Down")
+	if !ok {
+		t.Fatal("missing token rollback section")
+	}
+	for _, statement := range []string{tokenUp, tokenDown, tokenUp} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
+			t.Fatal(err)
+		}
 	}
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	if err := requireNativeSearchIndex(t.Context(), f.service.database.reader, scope); !errors.Is(err, operatortool.ErrServiceUnavailable) {
@@ -663,7 +728,8 @@ func TestNativeWorkSearchIndexMaintenance(t *testing.T) {
 			t.Fatal(err)
 		}
 		var scoped int
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(DISTINCT rowid/2) FROM native_work_scoped_fts WHERE native_work_scoped_fts MATCH ?", term).Scan(&scoped); err != nil {
+		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(DISTINCT rowid/2) FROM native_work_scoped_fts WHERE native_work_scoped_fts MATCH ?", nativeScopedExpression(nativeSearchScopes(scope, ""), []string{`"` + term + `"`}, " OR ")).Scan(&scoped); err != nil {
 			t.Fatal(err)
 		}
 		if scoped != count {

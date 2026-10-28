@@ -6,8 +6,6 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-	"sort"
-	"strings"
 	"sync"
 
 	"modernc.org/sqlite"
@@ -18,6 +16,9 @@ import (
 const nativeSearchRebuildBatch = 100
 
 var registerNativeSearchText = sync.OnceValue(func() error {
+	if err := registerNativeSearchTokenizer(); err != nil {
+		return err
+	}
 	return sqlite.RegisterDeterministicScalarFunction("native_search_text", 2, func(_ *sqlite.FunctionContext, values []driver.Value) (driver.Value, error) {
 		content, contentOK := values[0].(string)
 		scope, scopeOK := values[1].(string)
@@ -29,23 +30,7 @@ var registerNativeSearchText = sync.OnceValue(func() error {
 })
 
 func nativeSearchText(content, scope string) string {
-	var indexed strings.Builder
-	inside := false
-	for _, r := range content {
-		codepoint := r
-		if r == 0xfffe || r == 0xffff {
-			codepoint = 0xfffd
-		}
-		token := sort.Search(len(nativeSearchTokenBoundaries), func(i int) bool { return nativeSearchTokenBoundaries[i] > codepoint })%2 == 1
-		diacritic := r >= 768 && r <= 817 && (r < 800 && uint32(0x08029FDF)&(1<<uint(r-768)) != 0 || r >= 800 && uint32(0x000361F8)&(1<<uint(r-800)) != 0)
-		if token && !inside {
-			indexed.WriteString(scope)
-			indexed.WriteByte(' ')
-		}
-		inside = token || inside && diacritic
-		indexed.WriteRune(r)
-	}
-	return indexed.String()
+	return scope + "_" + content
 }
 
 func nativeSearchIndexPending(scope nativeScope) (string, []any) {

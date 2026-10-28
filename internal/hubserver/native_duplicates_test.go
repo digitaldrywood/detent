@@ -18,11 +18,12 @@ import (
 	"time"
 	"unsafe"
 
+	"modernc.org/libc"
+	sqlite3 "modernc.org/sqlite/lib"
+
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"modernc.org/libc"
-	sqlite3 "modernc.org/sqlite/lib"
 )
 
 type duplicateCostConnector struct {
@@ -164,6 +165,9 @@ func TestNativeSearchScopedCost(t *testing.T) {
 		}
 	})
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "CREATE VIRTUAL TABLE scoped_cost_vocabulary USING fts5vocab(native_work_scoped_fts,row)"); err != nil {
+		t.Fatal(err)
+	}
 	count := 1
 	baselines := map[string]int64{}
 	for _, size := range []int{1, 300, 3000, 6000} {
@@ -172,14 +176,22 @@ func TestNativeSearchScopedCost(t *testing.T) {
 				_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE seed(n) AS (
 SELECT ? UNION ALL SELECT n+1 FROM seed WHERE n<?)
 INSERT INTO issues(native_id,organization_id,project_id,number,workflow_state_id,title,body,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,actor_kind,actor_principal_id)
-SELECT 'wi_scoped_cost_'||seed.n,i.organization_id,i.project_id,seed.n,i.workflow_state_id,i.title,i.body,'','open','','','',i.created_at,i.updated_at,i.actor_kind,i.actor_principal_id
+SELECT 'wi_scoped_cost_'||seed.n,i.organization_id,i.project_id,seed.n,i.workflow_state_id,i.title,'Repository association deadlocks','','open','','','',i.created_at,i.updated_at,i.actor_kind,i.actor_principal_id
 FROM seed CROSS JOIN issues i WHERE i.native_id=?`, count+1, size, seed.WorkItemID)
 				if err != nil {
 					t.Fatal(err)
 				}
 				count = size
 			}
-			for _, mode := range []string{"issues", "duplicates"} {
+			var postings int
+			prefix := strings.ToLower(nativeSearchScopes(scope, "")[0]) + "_"
+			if err := pool.QueryRowContext(t.Context(), "SELECT coalesce(sum(doc),0) FROM scoped_cost_vocabulary WHERE term>=? AND term<?", prefix+"repos", prefix+"repot").Scan(&postings); err != nil {
+				t.Fatal(err)
+			}
+			if postings != 1 {
+				t.Fatalf("scope-qualified repository prefix has %d postings, want 1", postings)
+			}
+			for _, mode := range []string{"issues", "duplicates", "prefix hits and coverage", "plain hits and coverage"} {
 				steps = 0
 				switch mode {
 				case "issues":
@@ -195,6 +207,23 @@ FROM seed CROSS JOIN issues i WHERE i.native_id=?`, count+1, size, seed.WorkItem
 					matches, err := resolveNativeDuplicates(t.Context(), pool, scope, tracker.CreateIssue{Title: "Repository association deadlocks"}, f.service.config.now(), false)
 					if err != nil || len(matches) != 1 || matches[0].WorkItemID != target.WorkItemID {
 						t.Fatalf("matches=%v err=%v", matches, err)
+					}
+				default:
+					expressions := nativeSearchExpressions("repository repository association association")
+					if mode == "prefix hits and coverage" {
+						expressions = nativeSearchExpressions("repos associ")
+					} else {
+						for i := range expressions {
+							expressions[i] = strings.TrimSuffix(expressions[i], "*")
+						}
+					}
+					statement, args := nativeSearchHits(scope, "", expressions)
+					var hits, coverage int
+					if err := pool.QueryRowContext(t.Context(), statement+"SELECT count(*),coalesce(sum(terms),0) FROM ranked WHERE hit=1", args...).Scan(&hits, &coverage); err != nil {
+						t.Fatal(err)
+					}
+					if hits != 1 || coverage != 2 {
+						t.Fatalf("hits=%d coverage=%d, want 1 hit covering 2 terms", hits, coverage)
 					}
 				}
 				t.Logf("mode=%s foreign documents=%d VM steps=%d", mode, size, steps)
