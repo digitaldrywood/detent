@@ -12,6 +12,8 @@ export const SavedWorkState = Schema.Struct({
     "closed",
   ]),
   completedWindow: Schema.Literals(["1h", "24h", "7d"]),
+  completedFrom: Schema.optional(Schema.String),
+  completedTo: Schema.optional(Schema.String),
   archived: Schema.optional(Schema.Boolean),
   createdBy: Schema.optional(Schema.Literal("me")),
   state: Schema.Array(Schema.String),

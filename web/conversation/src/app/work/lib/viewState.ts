@@ -30,6 +30,8 @@ export const COMPLETED_WINDOW_LABELS: Readonly<Record<CompletedWindow, string>> 
 
 export interface WorkViewState {
   readonly completedWindow: CompletedWindow;
+  readonly completedFrom?: string;
+  readonly completedTo?: string;
   readonly view: WorkViewMode;
   readonly tab: WorkTab;
   readonly archived?: boolean;
@@ -97,6 +99,8 @@ export function parseViewState(search: string | URLSearchParams): WorkViewState 
     tab: WORK_TABS.find((tab) => tab === params.get("tab")) ?? "active",
     ...(params.get("archived") === "true" ? { archived: true } : {}),
     q: params.get("q") ?? "",
+    ...(params.has("completed_from") ? { completedFrom: params.get("completed_from")! } : {}),
+    ...(params.has("completed_to") ? { completedTo: params.get("completed_to")! } : {}),
     ...(params.get("created_by") === "me" ? { createdBy: "me" as const } : {}),
     state: readList(params.get("state")),
     type: readList(params.get("type")).filter((value) => value === "bug" || value === "change_request"),
@@ -116,6 +120,8 @@ export function parseViewState(search: string | URLSearchParams): WorkViewState 
  */
 export function serializeViewState(state: WorkViewState): string {
   const params = new URLSearchParams();
+  if (state.completedFrom) params.set("completed_from", state.completedFrom);
+  if (state.completedTo) params.set("completed_to", state.completedTo);
   if (state.archived === true) params.set("archived", "true");
   if (state.createdBy === "me") params.set("created_by", "me");
   if (state.view !== DEFAULT_VIEW_STATE.view) params.set("view", state.view);
@@ -214,7 +220,7 @@ export function tabQuery(view: WorkViewState, lanes: readonly Lane[]): { open?: 
   switch (view.tab) {
     case "active": return { open: true, state: lanes.filter((lane) => !lane.terminal && lane.name.toLowerCase() !== "backlog").map((lane) => lane.name) };
     case "backlog": return { state: lanes.filter((lane) => lane.name.toLowerCase() === "backlog").map((lane) => lane.name) };
-    case "closed": return { open: false, state: [] };
+    case "closed": return { open: false, state: view.completedFrom || view.completedTo ? view.state : [] };
     case "all": return { state: [] };
   }
 }

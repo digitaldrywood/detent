@@ -27,6 +27,26 @@ async function fixture() {
 }
 
 describe("the Work snapshot ordering", () => {
+  it("keeps summary windows in the cache identity, page requests and stream", async () => {
+    const source = workPaginationFixture();
+    await source.control();
+    const http = makeWorkHttp({ ...source.client.http, fetch: source.fetch });
+    const window = { completedFrom: "2026-10-26T11:00:00Z", completedTo: "2026-10-27T11:00:00Z" };
+    const read = getBoardRead(source.client, http, "proj_alpha", { ...DEFAULT_VIEW_STATE, ...window, view: "list", tab: "closed", state: ["Done"] });
+    expect(read).not.toBe(getBoardRead(source.client, http, "proj_alpha", { ...DEFAULT_VIEW_STATE, view: "list", tab: "closed", state: ["Done"] }));
+    read.start();
+    await expect.poll(() => read.snapshot().error ?? read.snapshot().resolved).toBe(true);
+    const pages = source.requests.filter(({ url }) => url.pathname.endsWith("/work-items"));
+    expect(pages.length).toBeGreaterThan(0);
+    for (const { url } of pages) {
+      expect(url.searchParams.get("completed_from")).toBe(window.completedFrom);
+      expect(url.searchParams.get("completed_to")).toBe(window.completedTo);
+    }
+    const events = new URL(http.eventsUrl("proj_alpha", undefined, undefined, { since: 0, filters: read.streamFilters("proj_alpha") }), "http://example.test");
+    expect(events.searchParams.get("completed_from")).toBe(window.completedFrom);
+    expect(events.searchParams.get("completed_to")).toBe(window.completedTo);
+  });
+
   it("loads one page per lane and continues only Backlog", async () => {
     const source = workPaginationFixture();
     await source.control({ activeOverflow: true, backlogOverflow: true });

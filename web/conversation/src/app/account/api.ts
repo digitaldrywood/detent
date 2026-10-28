@@ -16,6 +16,7 @@ import type * as SchemaAST from "effect/SchemaAST";
 import type * as SchemaIssue from "effect/SchemaIssue";
 
 import {
+  DailySummaryPreference,
   ReleaseNotesPage,
   GitHubRepositories,
   CreatedOperatorAPIKey,
@@ -262,6 +263,8 @@ export function makeAccountApi(options: AccountApiOptions) {
     releaseNotes: (cursor?: string) => send(ReleaseNotesPage, "GET", `${base}/release-notes${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
     markReleaseNotesSeen: () => send(ReleaseNotesPage, "PUT", `${base}/release-notes/seen`, {}),
     widgetToken: () => send(Schema.Struct({ token: Schema.String }), "POST", `${base}/widget-token`, {}),
+    dailySummaryPreference: () => send(DailySummaryPreference, "GET", `${base}/daily-summary-preference`),
+    saveDailySummaryPreference: (value: Pick<typeof DailySummaryPreference.Type, "enabled" | "send_time" | "time_zone" | "days">) => send(DailySummaryPreference, "PUT", `${base}/daily-summary-preference`, value),
     issueNotificationPreference: () => send(Schema.Struct({ enabled: Schema.Boolean }), "GET", `${base}/issue-notification-preference`),
     saveIssueNotificationPreference: (enabled: boolean) => send(Schema.Struct({ enabled: Schema.Boolean }), "PUT", `${base}/issue-notification-preference`, { enabled }),
     personalKeys: (cursor?: string) => send(AccessKeys, "GET", `/api/cloud/account/api-keys${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),

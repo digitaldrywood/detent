@@ -1148,3 +1148,14 @@ export const ReleaseNotesPage = Schema.Struct({
   next_cursor: Schema.optional(Schema.String),
 });
 export type ReleaseNotesPage = typeof ReleaseNotesPage.Type;
+
+export const DailySummaryPreference = Schema.Struct({
+  enabled: Schema.Boolean,
+  configured: Schema.optional(Schema.Boolean),
+  send_time: Schema.String,
+  time_zone: Schema.String,
+  days: Schema.Literals(["every_day", "weekdays"]),
+  next_send: Schema.NullOr(Schema.String),
+  recipient: Schema.String,
+});
+export type DailySummaryPreference = typeof DailySummaryPreference.Type;

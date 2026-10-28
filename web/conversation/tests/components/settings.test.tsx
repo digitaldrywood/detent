@@ -298,6 +298,7 @@ describe("personal account settings", () => {
     widgetState.actual = failure === "token" ? null : failure;
     const token = `header.${btoa(JSON.stringify({ permissions: [], exp: Math.floor(Date.now() / 1000) + 3600 }))}.signature`;
     const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).endsWith("daily-summary-preference")) return new Response(JSON.stringify({ enabled: false, send_time: "06:00", time_zone: "UTC", days: "every_day", next_send: null, recipient: "owner@example.test" }));
       if (String(url).startsWith("https://api.workos.com/")) throw new TypeError("private-customer-fetch-sentinel");
       if (String(url).endsWith("widget-token")) return failure === "token"
         ? new Response(JSON.stringify({ code: "unavailable", message: "private-customer-token-sentinel" }), { status: 503 })
@@ -343,7 +344,7 @@ describe("self-hosted settings", () => {
     expect(screen.queryByText("Profile widget")).toBeNull();
     expect(screen.queryByText("Security widget")).toBeNull();
     expect(screen.queryByRole("switch", { name: "Notify me about issues I filed or commented on" })).toBeNull();
-    expect(fetch.mock.calls.some(([url]) => /widget-token|issue-notification-preference|api-keys|\/plan$|\/billing$|logout/.test(String(url)))).toBe(false);
+    expect(fetch.mock.calls.some(([url]) => /widget-token|daily-summary-preference|issue-notification-preference|api-keys|\/plan$|\/billing$|logout/.test(String(url)))).toBe(false);
   });
 });
 
@@ -377,6 +378,64 @@ describe("issue notification preference", () => {
     await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("true"));
     fireEvent.click(toggle);
     await screen.findByText("Notification preference could not be saved");
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+  });
+});
+
+describe("daily summary preference", () => {
+  it("saves opt-in, schedule fields and opt-out with CSRF", async () => {
+    const user = userEvent.setup();
+    let preference = { enabled: false, configured: false, send_time: "06:00", time_zone: "UTC", days: "every_day", next_send: null as string | null, recipient: "owner@example.test" };
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url).endsWith("daily-summary-preference")) {
+        if (init?.method === "PUT") preference = { ...preference, ...JSON.parse(String(init.body)), configured: true, next_send: JSON.parse(String(init.body)).enabled ? "2026-10-28T11:00:00Z" : null };
+        return new Response(JSON.stringify(preference));
+      }
+      if (String(url).endsWith("issue-notification-preference")) return new Response(JSON.stringify({ enabled: true }));
+      return new Response(JSON.stringify({ projects: [] }));
+    });
+    renderSidebarNav("/settings/general", OWNER_ACCOUNT, <GeneralSettings />);
+    const toggle = await screen.findByRole("switch", { name: "Daily summary email" });
+    await waitFor(() => expect(toggle.hasAttribute("disabled")).toBe(false));
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(screen.queryByRole("combobox", { name: "Send at" })).toBeNull();
+    await user.click(toggle);
+    await screen.findByText(/Next summary:/);
+    expect(preference.time_zone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    for (const [label, option, field, value] of [
+      ["Send at", "7:30 AM", "send_time", "07:30"],
+      ["Time zone", "America/Chicago", "time_zone", "America/Chicago"],
+      ["Days", "Weekdays", "days", "weekdays"],
+    ] as const) {
+      await user.click(screen.getByRole("combobox", { name: label }));
+      await user.click(await screen.findByRole("option", { name: option }));
+      await waitFor(() => expect(preference[field]).toBe(value));
+      await waitFor(() => expect(toggle.hasAttribute("disabled")).toBe(false));
+    }
+    expect(screen.getByText(/Sent to owner@example.test/)).toBeTruthy();
+    await user.click(toggle);
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("false"));
+    const writes = fetch.mock.calls.filter(([url, init]) => String(url).endsWith("daily-summary-preference") && init?.method === "PUT");
+    expect(writes).toHaveLength(5);
+    for (const [, init] of writes) expect((init!.headers as Record<string, string>)["X-CSRF-Token"]).toBe(accountFixture.csrf_token);
+    expect(JSON.parse(String(writes.at(-1)![1]!.body))).toEqual({ enabled: false, send_time: "07:30", time_zone: "America/Chicago", days: "weekdays" });
+    await user.click(toggle);
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("true"));
+    expect(preference.time_zone).toBe("America/Chicago");
+  });
+
+  it("preserves the saved summary preference when saving fails", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url).endsWith("daily-summary-preference")) return init?.method === "PUT"
+        ? new Response(JSON.stringify({ code: "unavailable", message: "Summary preference could not be saved" }), { status: 503 })
+        : new Response(JSON.stringify({ enabled: true, send_time: "06:00", time_zone: "America/Chicago", days: "every_day", next_send: "2026-10-28T11:00:00Z", recipient: "owner@example.test" }));
+      return new Response(JSON.stringify({ enabled: true, projects: [] }));
+    });
+    renderSidebarNav("/settings/general", OWNER_ACCOUNT, <GeneralSettings />);
+    const toggle = await screen.findByRole("switch", { name: "Daily summary email" });
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("true"));
+    fireEvent.click(toggle);
+    await screen.findByText("Summary preference could not be saved");
     expect(toggle.getAttribute("aria-checked")).toBe("true");
   });
 });

@@ -18,6 +18,16 @@ func nativeBoardFilter(scope nativeScope, params url.Values, lanes bool) (string
 	var where strings.Builder
 	where.WriteString("b.organization_id=? AND b.project_id=?")
 	args := []any{scope.organization, scope.project}
+	for _, bound := range []struct{ name, operator string }{{"completed_from", ">="}, {"completed_to", "<"}} {
+		if value := params.Get(bound.name); value != "" {
+			at, err := time.Parse(time.RFC3339Nano, value)
+			if err != nil {
+				return "", nil, nativePublicInvalid("Completion window bounds must be RFC3339 timestamps")
+			}
+			where.WriteString(" AND b.closed_at<>'' AND b.closed_at" + bound.operator + "?")
+			args = append(args, nativeBoardTime(at))
+		}
+	}
 	if scope.credential.HostedRole == "reporter" {
 		where.WriteString(" AND b.work_item_id IN (SELECT i.native_id FROM issues i WHERE i.organization_id=b.organization_id AND i.project_id=b.project_id AND ")
 		visibility, visibilityArgs := scope.issueVisibilitySQL("i")

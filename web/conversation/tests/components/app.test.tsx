@@ -8,7 +8,7 @@
 import { RegistryProvider } from "@effect/atom-react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { startMockHub, type CoordinatorMode, type MockHub } from "../../dev/mock-hub.ts";
 import { ClientContext, LAST_PROJECT_STORAGE_KEY } from "../../src/app/client.ts";
@@ -22,6 +22,8 @@ import { useUiStateStore } from "../../src/uiStateStore.ts";
 import * as humanActions from "../../src/app/adapters/sidebarHumanActions.ts";
 import { sidebarProjectScopeKey } from "../../src/app/adapters/shell.ts";
 import { DEFAULT_VIEW_STATE } from "../../src/app/work/lib/viewState.ts";
+import { getBoardRead } from "../../src/app/work/lib/boardStore.ts";
+import { workHttpFor } from "../../src/app/work/lib/useWork.ts";
 import "../../src/app/reports/ReportsPage.tsx";
 import "../../src/app/ChatRoutes.tsx";
 
@@ -150,6 +152,11 @@ describe("the conversation shell", () => {
     vi.spyOn(humanActions, "useSidebarHumanActions").mockReturnValue(actions);
     const requests: URL[] = [];
     let pendingBoardRequests = 0;
+    let releaseInitialBoard = () => {};
+    const initialBoardReleased = new Promise<void>((resolve) => { releaseInitialBoard = resolve; });
+    let receiveInitialBoard = () => {};
+    const initialBoardReceived = new Promise<void>((resolve) => { receiveInitialBoard = resolve; });
+    onTestFinished(releaseInitialBoard);
     vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input), "http://fixture.test");
       requests.push(url);
@@ -160,19 +167,43 @@ describe("the conversation shell", () => {
       if (board) pendingBoardRequests++;
       try {
         const response = await sameRealmFetch(input, init);
-        if (board) await response.clone().arrayBuffer();
+        if (board) {
+          await response.clone().arrayBuffer();
+          receiveInitialBoard();
+          await initialBoardReleased;
+        }
         return response;
       } finally {
         if (board) pendingBoardRequests--;
       }
     });
-    const { router } = await mountApp({ path, bootstrap: (bootstrap) => {
+    const { router, client } = await mountApp({ path, bootstrap: (bootstrap) => {
       const keys = bootstrap.projects.filter((project) => ["proj_alpha", "proj_beta"].includes(project.id)).map(sidebarProjectScopeKey);
       useUiStateStore.setState({ sidebarProjectWorkingSetKeys: keys });
       return bootstrap;
     } });
     const rows = () => within(screen.getByRole("list", { name: "Project working set" }));
-    await waitFor(() => expect(screen.getAllByTestId("issue-card").length).toBeGreaterThan(0));
+    const initialBoard = getBoardRead(client, workHttpFor(client), null, DEFAULT_VIEW_STATE, ["proj_alpha", "proj_beta"]);
+    let stop = () => {};
+    const initialBoardReady = new Promise<void>((resolve) => {
+      const check = () => {
+        const state = initialBoard.snapshot();
+        if (state.resolved || state.error !== null) resolve();
+      };
+      stop = initialBoard.subscribe(check);
+      check();
+    });
+    onTestFinished(() => stop());
+    await act(async () => {
+      await initialBoardReceived;
+      expect(screen.queryAllByTestId("issue-card")).toHaveLength(0);
+      expect(screen.getByText("Loading work…")).toBeTruthy();
+      releaseInitialBoard();
+      await initialBoardReady;
+    });
+    stop();
+    expect(initialBoard.snapshot().error).toBeNull();
+    expect(screen.getAllByTestId("issue-card").length).toBeGreaterThan(0);
     const heading = () => screen.getByRole("heading", { level: 1 });
     expect(heading().textContent).toBe(path === "/work" ? "2 projects" : "alpha");
     const boardRequests = () => requests.filter((url) => url.pathname.endsWith("/work-items") && url.searchParams.get("include") === "board").length;

@@ -333,7 +333,8 @@ describe("the thread sidebar", () => {
     trigger.focus();
     await user.keyboard(" ");
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
-    trigger.focus();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Search projects")));
+    act(() => trigger.focus());
     await user.keyboard(" ");
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
     const working = within(screen.getByRole("list", { name: "Project working set" }));

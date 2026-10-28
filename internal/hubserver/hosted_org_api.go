@@ -42,6 +42,8 @@ func (s *Service) registerHostedOrganizationRoutes(e *echo.Echo) {
 	administration := s.hostedAdministrationSession
 	e.GET(hostedOrganizationBase+"/issue-notification-preference", s.issueNotificationPreference, session)
 	e.PUT(hostedOrganizationBase+"/issue-notification-preference", s.issueNotificationPreference, session)
+	e.GET(hostedOrganizationBase+"/daily-summary-preference", s.dailySummaryPreference, session)
+	e.PUT(hostedOrganizationBase+"/daily-summary-preference", s.dailySummaryPreference, session)
 	e.GET(hostedOrganizationBase+"/name", s.hostedOrganizationName, session)
 	e.PUT(hostedOrganizationBase+"/name", s.renameHostedOrganization, session)
 	e.GET(hostedOrganizationBase+"/logo", s.getOrganizationLogo, session)

@@ -263,6 +263,7 @@ func (s *Service) registerHostedSharedRoutes(e *echo.Echo) {
 	e.POST("/internal/v1/sessions/revoke", s.revokeHostedSharedSessions)
 	e.POST("/internal/v1/invitations/accept", s.acceptHostedSharedInvitation)
 	e.POST("/internal/v1/issue-notifications/unsubscribe", s.unsubscribeIssueEmail)
+	e.POST("/internal/v1/daily-summary/unsubscribe", s.unsubscribeDailySummary)
 	e.POST("/internal/v1/health", s.hostedSharedHealth)
 	e.POST("/internal/v1/platform/members", s.platformTenantMembers)
 	e.POST("/internal/v1/platform/runners", s.platformTenantRunners)

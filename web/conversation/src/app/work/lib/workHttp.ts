@@ -155,6 +155,8 @@ export interface ListWorkItemsInput {
   readonly includeBoard?: boolean;
   readonly open?: boolean | undefined;
   readonly completedWindow?: string;
+  readonly completedFrom?: string;
+  readonly completedTo?: string;
   readonly sort?: "closed";
   readonly archived?: boolean | "all";
   readonly createdBy?: string | undefined;
@@ -620,6 +622,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         board: board === undefined ? undefined : "true", since: board?.since,
         created_by: board?.filters.createdBy, q: board?.filters.q || undefined, type: board?.filters.type, label: board?.filters.label, assignee: board?.filters.assignee,
         priority: board?.filters.priority, archived: board?.filters.archived === true ? "true" : undefined,
+        completed_from: board?.filters.completedFrom, completed_to: board?.filters.completedTo,
         completed_window: board?.filters.completedWindow }),
     listHealthFindings: (projectId, cursor, signal, options) => send(HealthFindingsRead, "GET", url(`${projectBase(projectId)}/health/findings`, { cursor, ...options }), undefined, signal),
     getProject: (projectId, signal) => send(NativeProject, "GET", url(projectBase(projectId)), undefined, signal),
@@ -641,6 +644,7 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
           cursor: input.cursor,
           limit: input.limit,
           completed_window: input.completedWindow,
+          completed_from: input.completedFrom, completed_to: input.completedTo,
           include: input.includeBoard === true ? "board" : input.includeWork === true ? "work" : input.includeCoordinator === true ? "coordinator" : undefined,
         }),
         undefined,

@@ -159,7 +159,7 @@ function getProject(http: WorkHttp, id: string): Promise<NativeProject> {
 
 function normalized(view: WorkViewState): WorkViewState {
   const values = (entries: readonly string[]) => [...new Set(entries)].sort();
-  return { ...view, q: view.q.trim(), state: view.view === "list" ? [] : values(view.state), type: view.view === "list" ? values(view.type) : [], label: values(view.label),
+  return { ...view, q: view.q.trim(), state: view.view === "list" && !view.completedFrom && !view.completedTo ? [] : values(view.state), type: view.view === "list" ? values(view.type) : [], label: values(view.label),
     assignee: values(view.assignee), priority: values(view.priority), lanes: view.lanes === null ? null : values(view.lanes) };
 }
 
@@ -172,7 +172,7 @@ export function getBoardRead(client: BoardAccount, http: WorkHttp, projectId: st
     : [...new Set(projectIds)].filter((id) => accessible.includes(id)).sort();
   const view = normalized(input);
   const key = JSON.stringify([owner, projectId, scope, view.q, view.state, view.type, view.label, view.assignee,
-    view.priority.map((name) => String(priorityValue(name) ?? name)).sort(), view.archived === true, view.completedWindow,
+    view.priority.map((name) => String(priorityValue(name) ?? name)).sort(), view.archived === true, view.completedWindow, view.completedFrom, view.completedTo,
     view.createdBy, view.view, view.view === "list" ? view.tab : view.lanes, effectiveSort(view) === "closed"]);
   let board = boards.get(key);
   if (board !== undefined) {
@@ -357,7 +357,7 @@ export class BoardRead {
       const project = await projectRead;
       if (continuing && previous?.nextCursor === undefined) return previous!;
       const filters = {
-        projectId: id, includeBoard: true, completedWindow: this.view.completedWindow, q: this.view.q,
+        projectId: id, includeBoard: true, completedWindow: this.view.completedWindow, completedFrom: this.view.completedFrom, completedTo: this.view.completedTo, q: this.view.q,
         createdBy: this.view.createdBy, archived: this.view.archived === true, type: this.view.type, label: this.view.label, assignee: this.view.assignee,
         priority: this.view.priority.map((name) => String(priorityValue(name) ?? name)), signal,
       };
@@ -439,7 +439,7 @@ export class BoardRead {
       pageCount: 1, backlogCursor: back?.cursor, backlogPageCount: back?.pageCount ?? 0, backlogTotal: back?.total ?? 0 };
   }
 
-  streamFilters = (projectId: string) => ({ projectId, completedWindow: this.view.completedWindow, q: this.view.q,
+  streamFilters = (projectId: string) => ({ projectId, completedWindow: this.view.completedWindow, completedFrom: this.view.completedFrom, completedTo: this.view.completedTo, q: this.view.q,
     createdBy: this.view.createdBy, archived: this.view.archived === true, type: this.view.type, label: this.view.label, assignee: this.view.assignee,
     priority: this.view.priority.map((name) => String(priorityValue(name) ?? name)) });
 
@@ -491,7 +491,10 @@ export class BoardRead {
 
   private matches(issue: NativeIssue, project: NativeProject): boolean {
     const view = this.view;
-    return (view.createdBy !== "me" || issue.actor.principal_id === this.principalId) && (view.view !== "board" || (!issue.terminal && project.states.some((state) => state.name === issue.state && !state.terminal) &&
+    return (!view.completedFrom || typeof issue.closed_at === "string" && Date.parse(issue.closed_at) >= Date.parse(view.completedFrom)) &&
+      (!view.completedTo || typeof issue.closed_at === "string" && Date.parse(issue.closed_at) < Date.parse(view.completedTo)) &&
+      (!(view.completedFrom || view.completedTo) || view.state.length === 0 || view.state.includes(issue.state)) &&
+      (view.createdBy !== "me" || issue.actor.principal_id === this.principalId) && (view.view !== "board" || (!issue.terminal && project.states.some((state) => state.name === issue.state && !state.terminal) &&
       (view.lanes === null || view.lanes.includes(issue.state)))) && (issue.archived === true) === (view.archived === true) &&
       (view.view === "list" ? tabMatches(view.tab, { state: issue.state, terminal: project.states.find((state) => state.name === issue.state)?.terminal ?? issue.terminal })
         : view.state.length === 0 || view.state.includes(issue.state)) &&

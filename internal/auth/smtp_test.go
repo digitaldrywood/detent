@@ -31,12 +31,16 @@ func TestSMTPMessages(t *testing.T) {
 	}
 	for _, test := range []struct {
 		name, subject, body, html string
+		failureMode, wantOutcome  string
 		link, escapedLink         string
 		images                    []InlineImage
 		magicLink                 bool
 		implicitTLS               bool
 		untrusted                 bool
 	}{
+		{name: "SMTP rejection after data", failureMode: "reject", wantOutcome: "rejected"},
+		{name: "disconnect after data", failureMode: "uncertain", wantOutcome: "uncertain"},
+		{name: "accepted before quit fails", failureMode: "quit", wantOutcome: "committed"},
 		{name: "finding", subject: "[Detent] runner_heartbeat_gap: runner example", body: "Finding opened\nSummary: Heartbeat gap.\n"},
 		{name: "implicit TLS", subject: "New sign-up: user@example.test", body: "New sign-up", implicitTLS: true},
 		{name: "untrusted implicit TLS", implicitTLS: true, untrusted: true},
@@ -77,7 +81,7 @@ func TestSMTPMessages(t *testing.T) {
 			}
 			completed := make(chan receipt, 1)
 			go func() {
-				raw, err := receiveSMTPMessage(listener)
+				raw, err := receiveSMTPMessage(listener, test.failureMode)
 				completed <- receipt{raw, err}
 			}()
 			host, portText, err := net.SplitHostPort(listener.Addr().String())
@@ -106,6 +110,15 @@ func TestSMTPMessages(t *testing.T) {
 				err = sender.SendMagicLink(t.Context(), Message{To: "owner@example.test", URL: test.link, ExpiresAt: time.Date(2026, 10, 6, 20, 30, 45, 0, time.FixedZone("offset", 150*60))})
 			} else {
 				err = sender.SendEmail(t.Context(), EmailMessage{To: "owner@example.test", Subject: test.subject, Body: test.body, HTMLBody: test.html, InlineImages: test.images})
+			}
+			if test.failureMode != "" {
+				if err == nil || EmailDeliveryOutcome(err) != test.wantOutcome {
+					t.Fatalf("outcome=%s error=%v want=%s", EmailDeliveryOutcome(err), err, test.wantOutcome)
+				}
+				if result := <-completed; result.err != nil {
+					t.Fatal(result.err)
+				}
+				return
 			}
 			if test.untrusted {
 				if err == nil || !strings.Contains(err.Error(), "certificate") {
@@ -261,7 +274,7 @@ func TestEmailMessageInlineHeaders(t *testing.T) {
 	}
 }
 
-func receiveSMTPMessage(listener net.Listener) (string, error) {
+func receiveSMTPMessage(listener net.Listener, failureMode string) (string, error) {
 	connection, err := listener.Accept()
 	if err != nil {
 		return "", err
@@ -292,8 +305,17 @@ func receiveSMTPMessage(listener net.Listener) (string, error) {
 				return "", readErr
 			}
 			message = string(raw)
+			if failureMode == "uncertain" {
+				return message, nil
+			}
+			if failureMode == "reject" {
+				return message, protocol.PrintfLine("550 Message rejected")
+			}
 			err = protocol.PrintfLine("250 OK")
 		case command == "QUIT":
+			if failureMode == "quit" {
+				return message, protocol.PrintfLine("500 Quit failed")
+			}
 			return message, protocol.PrintfLine("221 Bye")
 		default:
 			err = protocol.PrintfLine("500 Unexpected command")

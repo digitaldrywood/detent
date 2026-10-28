@@ -404,6 +404,7 @@ func (s *Service) routes() {
 	e.Any("/*", s.readableProxy)
 	e.Any("/organizations/:organization", s.proxy)
 	e.GET("/organizations/:organization/issue-notifications/unsubscribe", s.unsubscribeIssueEmail)
+	e.GET("/organizations/:organization/daily-summary/unsubscribe", s.unsubscribeDailySummary)
 	e.Any("/organizations/:organization/*", s.proxy)
 	e.Any("/api/v2/organizations/:organization/*", s.proxy)
 }

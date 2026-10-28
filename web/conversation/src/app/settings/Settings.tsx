@@ -15,6 +15,8 @@ import {
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
+import { Select, SelectTrigger, SelectValue, SelectPopup, SelectItem } from "../../components/ui/select.tsx";
+import { Label } from "../../components/ui/label.tsx";
 import { Switch } from "../../components/ui/switch.tsx";
 import { UsageMeter, formatUsageValue } from "../../components/ui/usage-meter.tsx";
 import { Badge } from "../../components/ui/badge.tsx";
@@ -26,7 +28,7 @@ import {
   WorkspaceBreadcrumbSeparator,
 } from "../../components/WorkspaceBreadcrumb.tsx";
 import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
-import type { BillingReport, BillingUsageReport, ComparisonPlan, PlanReport } from "../../contracts/account.ts";
+import type { DailySummaryPreference, BillingReport, BillingUsageReport, ComparisonPlan, PlanReport } from "../../contracts/account.ts";
 import { ControlError } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { Avatar } from "../../components/ui/avatar.tsx";
@@ -120,6 +122,28 @@ export function GeneralSettings(): React.ReactElement {
     notifications.set(value);
     return value;
   });
+  const summary = useResource(() => selfHosted ? Promise.resolve(null) : api.dailySummaryPreference(), [api, selfHosted]);
+  const saveSummary = useMutation(async (changes: Partial<DailySummaryPreference>) => {
+    if (!summary.value) return null;
+    const current = summary.value;
+    const value = await api.saveDailySummaryPreference({
+      enabled: current.enabled,
+      send_time: current.send_time,
+      time_zone: current.time_zone,
+      days: current.days,
+      ...changes,
+    });
+    summary.set(value);
+    return value;
+  });
+  const summaryValue = summary.value;
+  const summaryDisabled = summary.loading || summary.error !== null || saveSummary.pending || !summaryValue;
+  const times = Array.from({ length: 48 }, (_, index) => {
+    const hour = Math.floor(index / 2);
+    const minute = index % 2 ? "30" : "00";
+    return { value: `${String(hour).padStart(2, "0")}:${minute}`, label: `${hour % 12 || 12}:${minute} ${hour < 12 ? "AM" : "PM"}` };
+  });
+  const zones = Array.from(new Set([summaryValue?.time_zone ?? "UTC", Intl.DateTimeFormat().resolvedOptions().timeZone, "UTC", ...Intl.supportedValuesOf("timeZone")])).sort();
   const signOut = useMutation(async () => {
     await api.logout();
     globalThis.location?.assign(signInPath());
@@ -159,6 +183,46 @@ export function GeneralSettings(): React.ReactElement {
           />}
         />}
         <ControlError message={(notifications.error ?? saveNotifications.error)?.message ?? null} />
+        {!selfHosted && <SettingsRow
+          id="settings-general-daily-summary"
+          controlLayout="inline"
+          title="Daily summary email"
+          description={`Each morning, email me what shipped, what needs me and what was spent in ${bootstrap?.organization.name ?? "this organization"} over the last 24 hours.`}
+          control={<Switch
+            aria-label="Daily summary email"
+            checked={summaryValue?.enabled ?? false}
+            disabled={summaryDisabled}
+            onCheckedChange={(enabled) => void saveSummary.call({ enabled, ...(enabled && summaryValue?.configured === false ? { time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone } : {}) })}
+          />}
+        >
+          {summaryValue?.enabled && <>
+            <div className="mt-4 grid gap-3 sm:grid-cols-3 sm:max-w-lg">
+              <div className="min-w-0 space-y-1">
+                <Label htmlFor="daily-summary-time" className="text-xs text-muted-foreground">Send at</Label>
+                <Select value={summaryValue.send_time} items={times} disabled={summaryDisabled} onValueChange={(send_time) => { if (send_time) void saveSummary.call({ send_time }); }}>
+                  <SelectTrigger id="daily-summary-time" size="sm" className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectPopup>{times.map((time) => <SelectItem key={time.value} value={time.value}>{time.label}</SelectItem>)}</SelectPopup>
+                </Select>
+              </div>
+              <div className="min-w-0 space-y-1">
+                <Label htmlFor="daily-summary-zone" className="text-xs text-muted-foreground">Time zone</Label>
+                <Select value={summaryValue.time_zone} disabled={summaryDisabled} onValueChange={(time_zone) => { if (time_zone) void saveSummary.call({ time_zone }); }}>
+                  <SelectTrigger id="daily-summary-zone" size="sm" className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectPopup>{zones.map((zone) => <SelectItem key={zone} value={zone}>{zone}</SelectItem>)}</SelectPopup>
+                </Select>
+              </div>
+              <div className="min-w-0 space-y-1">
+                <Label htmlFor="daily-summary-days" className="text-xs text-muted-foreground">Days</Label>
+                <Select value={summaryValue.days} items={[{ value: "every_day", label: "Every day" }, { value: "weekdays", label: "Weekdays" }]} disabled={summaryDisabled} onValueChange={(days) => { if (days === "every_day" || days === "weekdays") void saveSummary.call({ days }); }}>
+                  <SelectTrigger id="daily-summary-days" size="sm" className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectPopup><SelectItem value="every_day">Every day</SelectItem><SelectItem value="weekdays">Weekdays</SelectItem></SelectPopup>
+                </Select>
+              </div>
+            </div>
+            <p className="my-5 text-xs text-muted-foreground">Next summary: {summaryValue.next_send ? new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: summaryValue.time_zone }).format(new Date(summaryValue.next_send)) : "Not scheduled"}. Sent to {summaryValue.recipient}.</p>
+          </>}
+          <ControlError message={(summary.error ?? saveSummary.error)?.message ?? null} />
+        </SettingsRow>}
       </SettingsSection>
       {!selfHosted && <AccountWidgets />}
     </SettingsPageContainer>

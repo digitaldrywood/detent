@@ -69,10 +69,6 @@ func Render(content Content) (Message, error) {
 	if err := layout.Execute(&html, content); err != nil {
 		return Message{}, fmt.Errorf("render email layout: %w", err)
 	}
-	mark, err := fs.ReadFile(detent.StaticFS(), "img/detent-mark.png")
-	if err != nil {
-		return Message{}, fmt.Errorf("read email mark: %w", err)
-	}
 	var text strings.Builder
 	for _, detail := range content.Details {
 		fmt.Fprintf(&text, "%s: %s\n", detail.Label, detail.Value)
@@ -81,10 +77,9 @@ func Render(content Content) (Message, error) {
 		fmt.Fprintf(&text, "%s\n\n", content.Note)
 	}
 	fmt.Fprintf(&text, "%s\n\n%s\n", content.ActionURL, content.Footer)
-	return Message{
-		Body: text.String(), HTMLBody: html.String(),
-		InlineImages: []InlineImage{{ContentID: "detent-mark", ContentType: "image/png", Data: mark}},
-	}, nil
+	message, err := renderMarkup(html.String())
+	message.Body = text.String()
+	return message, err
 }
 
 func laneColor(lane string) string {
@@ -187,3 +182,11 @@ var layout = template.Must(template.New("email").Funcs(template.FuncMap{"laneCol
 </html>
 {{define "lane"}}<span style="display:inline-block;padding:3px 8px;border:1px solid #e4e4e7;border-radius:6px;background-color:#fafafa;color:#27272a;"><span aria-hidden="true" style="color:{{laneColor .}};">&#9679;</span> {{.}}</span>{{end}}
 {{define "action"}}<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-top:18px;"><tr><td align="center" bgcolor="#346bf1" style="background-color:#346bf1;border-radius:8px;mso-padding-alt:12px 18px;"><a href="{{.}}" style="display:inline-block;padding:12px 18px;border:1px solid #346bf1;border-radius:8px;color:#ffffff;font-size:14px;font-weight:600;line-height:1.2;text-decoration:none;">Verify</a></td></tr></table>{{end}}`))
+
+func renderMarkup(html string) (Message, error) {
+	mark, err := fs.ReadFile(detent.StaticFS(), "img/detent-mark.png")
+	if err != nil {
+		return Message{}, fmt.Errorf("read email mark: %w", err)
+	}
+	return Message{HTMLBody: html, InlineImages: []InlineImage{{ContentID: "detent-mark", ContentType: "image/png", Data: mark}}}, nil
+}

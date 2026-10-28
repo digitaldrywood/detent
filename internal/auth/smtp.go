@@ -32,6 +32,25 @@ type EmailSender interface {
 	SendEmail(context.Context, EmailMessage) error
 }
 
+type EmailDeliveryError struct {
+	Err     error
+	Outcome string
+}
+
+func (e *EmailDeliveryError) Error() string { return e.Err.Error() }
+func (e *EmailDeliveryError) Unwrap() error { return e.Err }
+
+func EmailDeliveryOutcome(err error) string {
+	if err == nil {
+		return "committed"
+	}
+	var delivery *EmailDeliveryError
+	if errors.As(err, &delivery) {
+		return delivery.Outcome
+	}
+	return "uncertain"
+}
+
 type SMTPSender interface {
 	Sender
 	EmailSender
@@ -101,6 +120,12 @@ func (s *smtpSender) SendMagicLink(ctx context.Context, message Message) error {
 }
 
 func (s *smtpSender) SendEmail(ctx context.Context, message EmailMessage) (err error) {
+	outcome := "rejected"
+	defer func() {
+		if err != nil {
+			err = &EmailDeliveryError{Err: err, Outcome: outcome}
+		}
+	}()
 	if strings.ContainsAny(message.To+message.Subject, "\r\n") {
 		return errors.New("email headers are invalid")
 	}
@@ -161,12 +186,18 @@ func (s *smtpSender) SendEmail(ctx context.Context, message EmailMessage) (err e
 	if err != nil {
 		return fmt.Errorf("start smtp message: %w", err)
 	}
+	outcome = "uncertain"
 	if _, err := writer.Write(data); err != nil {
 		return errors.Join(fmt.Errorf("write smtp message: %w", err), writer.Close())
 	}
 	if err := writer.Close(); err != nil {
+		var response *textproto.Error
+		if errors.As(err, &response) {
+			outcome = "rejected"
+		}
 		return fmt.Errorf("finish smtp message: %w", err)
 	}
+	outcome = "committed"
 	if err := client.Quit(); err != nil {
 		return fmt.Errorf("quit smtp client: %w", err)
 	}

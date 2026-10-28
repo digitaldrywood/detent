@@ -1365,7 +1365,7 @@ export function createWorkMock(options: {
       const scoped = issues.filter((issue) => issue.project_id === projectId);
 
       if (segments.length === 2 && method === "GET") {
-        const problem = validateQuery(url, ["type", "state", "label", "assignee", "priority", "include", "archived", "q", "completed_window", "open", "sort", "created_by"], ["type", "state", "label", "assignee", "priority"]);
+        const problem = validateQuery(url, ["type", "state", "label", "assignee", "priority", "include", "archived", "q", "completed_window", "completed_from", "completed_to", "open", "sort", "created_by"], ["type", "state", "label", "assignee", "priority"]);
         if (problem !== null) {
           invalid(response, problem);
           return true;
@@ -1387,7 +1387,7 @@ export function createWorkMock(options: {
         const boardIncluded = url.searchParams.get("include") === "board";
         const limit = Math.min(Number(url.searchParams.get("limit") ?? "50"), boardIncluded ? 2000 : 200);
         const q = url.searchParams.get("q")?.trim().toLowerCase() ?? "";
-        const cursorScope = JSON.stringify([projectId, state, type, label, assignee, priority, q, createdBy, url.searchParams.get("archived"), completedWindow, url.searchParams.get("open"), url.searchParams.get("sort")]);
+        const cursorScope = JSON.stringify([projectId, state, type, label, assignee, priority, q, createdBy, url.searchParams.get("archived"), completedWindow, url.searchParams.get("completed_from"), url.searchParams.get("completed_to"), url.searchParams.get("open"), url.searchParams.get("sort")]);
         let after = Number(url.searchParams.get("cursor") ?? "0");
         if (pagination && url.searchParams.has("cursor")) {
           try {
@@ -1400,6 +1400,8 @@ export function createWorkMock(options: {
           }
         }
         const baseFiltered = scoped
+          .filter((issue) => !url.searchParams.has("completed_from") || Date.parse(terminalEntries.get(issue.work_item_id) ?? "") >= Date.parse(url.searchParams.get("completed_from")!))
+          .filter((issue) => !url.searchParams.has("completed_to") || Date.parse(terminalEntries.get(issue.work_item_id) ?? "") < Date.parse(url.searchParams.get("completed_to")!))
           .filter(() => url.searchParams.get("archived") !== "true")
           .filter((issue) => filer === null || issue.actor.principal_id === filer)
           .filter((issue) => type.length === 0 || issue.type !== undefined && type.includes(issue.type))

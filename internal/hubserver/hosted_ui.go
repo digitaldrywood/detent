@@ -27,6 +27,7 @@ func (s *Service) registerHostedRoutes(e *echo.Echo) {
 	e.GET("/auth/oidc/callback", s.completeHostedLogin)
 	e.GET("/invite", s.startHostedInvitation)
 	e.GET("/issue-notifications/unsubscribe", s.unsubscribeIssueEmail)
+	e.GET("/daily-summary/unsubscribe", s.unsubscribeDailySummary)
 	e.POST("/logout", s.logoutHosted)
 	e.POST("/support/start", s.startHostedSupport)
 	e.GET("/support", s.hostedSupportPage)

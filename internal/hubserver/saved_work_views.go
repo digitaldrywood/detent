@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/labstack/echo/v4"
@@ -36,6 +37,8 @@ type savedWorkState struct {
 	Q               string   `json:"q"`
 	Sort            string   `json:"sort"`
 	CompletedWindow string   `json:"completedWindow"`
+	CompletedFrom   string   `json:"completedFrom,omitempty"`
+	CompletedTo     string   `json:"completedTo,omitempty"`
 	Archived        bool     `json:"archived"`
 	CreatedBy       string   `json:"createdBy,omitempty"`
 	State           []string `json:"state"`
@@ -181,7 +184,7 @@ func (s *Service) savedWorkViews(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `INSERT INTO hosted_work_views (id,organization_id,owner_id,name,scope,project_id,layout, tab, search, sort, completed_window, archived, created_by,all_lanes,owner_slot,organization_slot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,scope=excluded.scope,project_id=excluded.project_id,layout=excluded.layout,tab=excluded.tab,search=excluded.search,sort=excluded.sort,completed_window=excluded.completed_window,archived=excluded.archived,created_by=excluded.created_by,all_lanes=excluded.all_lanes`, id, org, user, v.Name, v.Scope, v.ProjectID, v.State.View, v.State.Tab, v.State.Q, v.State.Sort, v.State.CompletedWindow, v.State.Archived, v.State.CreatedBy, v.State.Lanes == nil, ownerSlot, organizationSlot)
+	_, err = tx.ExecContext(ctx, `INSERT INTO hosted_work_views (id,organization_id,owner_id,name,scope,project_id,layout, tab, search, sort, completed_window,completed_from,completed_to, archived, created_by,all_lanes,owner_slot,organization_slot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,scope=excluded.scope,project_id=excluded.project_id,layout=excluded.layout,tab=excluded.tab,search=excluded.search,sort=excluded.sort,completed_window=excluded.completed_window,completed_from=excluded.completed_from,completed_to=excluded.completed_to,archived=excluded.archived,created_by=excluded.created_by,all_lanes=excluded.all_lanes`, id, org, user, v.Name, v.Scope, v.ProjectID, v.State.View, v.State.Tab, v.State.Q, v.State.Sort, v.State.CompletedWindow, v.State.CompletedFrom, v.State.CompletedTo, v.State.Archived, v.State.CreatedBy, v.State.Lanes == nil, ownerSlot, organizationSlot)
 	if err != nil {
 		var constraint *sqlite.Error
 		if errors.As(err, &constraint) && constraint.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE {
@@ -226,6 +229,13 @@ func (s savedWorkState) values() map[string][]string {
 
 func validSavedWorkView(v savedWorkView) bool {
 	s := v.State
+	for _, bound := range []string{s.CompletedFrom, s.CompletedTo} {
+		if bound != "" {
+			if _, err := time.Parse(time.RFC3339Nano, bound); err != nil {
+				return false
+			}
+		}
+	}
 	if len(v.Name) == 0 || utf8.RuneCountInString(v.Name) > 120 || !slices.Contains([]string{"personal", "organization"}, v.Scope) || (v.ProjectID != nil && *v.ProjectID == "") {
 		return false
 	}
@@ -256,7 +266,7 @@ func (s *Service) readSavedWorkView(ctx context.Context, org, user, id string) (
 		return v, err
 	}
 	defer tx.Rollback()
-	err = tx.QueryRowContext(ctx, `SELECT id,owner_id,name,scope,project_id,layout, tab, search, sort, completed_window, archived, created_by,all_lanes,EXISTS(SELECT 1 FROM hosted_work_view_favorites f WHERE f.view_id=v.id AND f.user_id=?) FROM hosted_work_views v WHERE id=? AND organization_id=? AND (owner_id=? OR scope='organization') AND (? OR project_id IS NULL OR EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=v.organization_id AND g.project_id=v.project_id AND g.user_id=?))`, user, id, org, user, s.config.Hosted == nil, user).Scan(&v.ID, &v.OwnerID, &v.Name, &v.Scope, &v.ProjectID, &v.State.View, &v.State.Tab, &v.State.Q, &v.State.Sort, &v.State.CompletedWindow, &v.State.Archived, &v.State.CreatedBy, &allLanes, &v.Favorite)
+	err = tx.QueryRowContext(ctx, `SELECT id,owner_id,name,scope,project_id,layout, tab, search, sort, completed_window,completed_from,completed_to, archived, created_by,all_lanes,EXISTS(SELECT 1 FROM hosted_work_view_favorites f WHERE f.view_id=v.id AND f.user_id=?) FROM hosted_work_views v WHERE id=? AND organization_id=? AND (owner_id=? OR scope='organization') AND (? OR project_id IS NULL OR EXISTS(SELECT 1 FROM hosted_project_grants g WHERE g.organization_id=v.organization_id AND g.project_id=v.project_id AND g.user_id=?))`, user, id, org, user, s.config.Hosted == nil, user).Scan(&v.ID, &v.OwnerID, &v.Name, &v.Scope, &v.ProjectID, &v.State.View, &v.State.Tab, &v.State.Q, &v.State.Sort, &v.State.CompletedWindow, &v.State.CompletedFrom, &v.State.CompletedTo, &v.State.Archived, &v.State.CreatedBy, &allLanes, &v.Favorite)
 	if errors.Is(err, sql.ErrNoRows) {
 		return v, nativeNotFound()
 	}

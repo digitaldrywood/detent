@@ -17,7 +17,7 @@ func TestSavedWorkViews(t *testing.T) {
 	alice := f.user(t, "alice", "viewer", "alice@example.test", "read", "")
 	bob := f.user(t, "bob", "member", "bob@example.test", "read", "")
 	base := "/api/v2/organizations/org_security/work-views"
-	state := savedWorkState{View: "list", Tab: "closed", Q: "a search", Sort: "updated", CompletedWindow: "7d", Archived: true, CreatedBy: "me", State: []string{"Done"}, Type: []string{"bug"}, Label: []string{"label-a", "label-b"}, Assignee: []string{"alice", "bob"}, Priority: []string{"1", "2"}, Lanes: []string{}, Collapsed: []string{"Todo", "Backlog"}}
+	state := savedWorkState{View: "list", Tab: "closed", Q: "a search", Sort: "updated", CompletedWindow: "7d", CompletedFrom: "2026-10-26T11:00:00Z", CompletedTo: "2026-10-27T11:00:00Z", Archived: true, CreatedBy: "me", State: []string{"Done"}, Type: []string{"bug"}, Label: []string{"label-a", "label-b"}, Assignee: []string{"alice", "bob"}, Priority: []string{"1", "2"}, Lanes: []string{}, Collapsed: []string{"Todo", "Backlog"}}
 	create := func(user hostedSecurityUser, name, scope string, project *string) savedWorkView {
 		t.Helper()
 		response := f.request(t, user, http.MethodPost, base, savedWorkView{Name: name, Scope: scope, ProjectID: project, Favorite: true, State: state})
