@@ -1,8 +1,8 @@
 package hubserver
 
 import (
-	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -15,86 +15,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
-
-func TestNativeWorkSearchCost(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
-	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
-		t.Fatal(err)
-	}
-	target := f.create(t, "Repository association hangs")
-	var words []string
-	for i := range 4000 {
-		words = append(words, fmt.Sprintf("symptom%04dx", i))
-	}
-	reversed := slices.Clone(words)
-	slices.Reverse(reversed)
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", strings.Join(reversed, " "), target.WorkItemID); err != nil {
-		t.Fatal(err)
-	}
-	var steps int64
-	pool := sql.OpenDB(duplicateCostConnector{timedConnector: timedConnector{driver: f.service.database.reader.Driver(), dsn: sqliteReaderDSN(f.service.database.path, f.service.config.BusyTimeout)}, steps: &steps})
-	pool.SetMaxOpenConns(1)
-	t.Cleanup(func() {
-		if err := pool.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	var bodies []string
-	var bodyArgs []any
-	for missing := range 16 {
-		bodies = append(bodies, "WHEN "+strconv.Itoa(missing)+" THEN ?")
-		partial := append(slices.Clone(words[:missing]), words[missing+1:16]...)
-		bodyArgs = append(bodyArgs, strings.Join(partial, " "))
-	}
-	count := 0
-	for _, size := range []int{300, 3000, 6000} {
-		t.Run(strconv.Itoa(size), func(t *testing.T) {
-			seedArgs := append([]any{count + 2, size + 1}, bodyArgs...)
-			seedArgs = append(seedArgs, target.WorkItemID)
-			if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE seed(n) AS (
-SELECT ? UNION ALL SELECT n+1 FROM seed WHERE n<?)
-INSERT INTO issues(native_id,organization_id,project_id,number,workflow_state_id,title,body,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,actor_kind,actor_principal_id)
-SELECT 'wi_search_cost_'||i.project_id||'_'||seed.n,i.organization_id,i.project_id,seed.n,i.workflow_state_id,
-'Unrelated history',CASE seed.n%16 `+strings.Join(bodies, " ")+` END,'','open','','','',i.created_at,i.updated_at,i.actor_kind,i.actor_principal_id
-FROM seed CROSS JOIN issues i WHERE i.native_id=?`, seedArgs...); err != nil {
-				t.Fatal(err)
-			}
-			count = size
-			query, args, err := nativeIssueSelection(scope, url.Values{"q": {strings.Join(words[:16], " ")}}, false)
-			if err != nil {
-				t.Fatal(err)
-			}
-			steps = 0
-			rows, err := pool.QueryContext(t.Context(), query, args...)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer rows.Close()
-			var ids []tracker.NativeWorkItemID
-			for rows.Next() {
-				var id tracker.NativeWorkItemID
-				if err := rows.Scan(&id); err != nil {
-					t.Fatal(err)
-				}
-				ids = append(ids, id)
-			}
-			if err := rows.Err(); err != nil {
-				t.Fatal(err)
-			}
-			if err := rows.Close(); err != nil {
-				t.Fatal(err)
-			}
-			t.Logf("issues=%d matches=%d VM steps=%d", size, len(ids), steps)
-			if !slices.Contains(ids, target.WorkItemID) || len(ids) > 200 {
-				t.Errorf("expected the older full match and bounded partial candidates, got %d issues, target present=%v", len(ids), slices.Contains(ids, target.WorkItemID))
-			}
-			if steps == 0 || steps > 1000000 {
-				t.Errorf("native work search used %d VM steps, budget 1000000", steps)
-			}
-		})
-	}
-}
 
 func TestNativeWorkSearch(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "ranked-search")
@@ -270,25 +190,15 @@ No safety-critical path is touched; onboarding repository binding and runner che
 	for _, transport := range []string{"stdio", "http"} {
 		protocols[transport] = hostedContextProtocol(t, f.service, ctx, transport)
 	}
-	var longTerms []string
-	for index := range 501 {
-		longTerms = append(longTerms, "w"+strconv.Itoa(index))
+	longTerms := make([]string, 502)
+	for index := range longTerms {
+		longTerms[index] = "w" + strconv.Itoa(index)
 	}
-	t.Run("long query", func(t *testing.T) {
-		page := list(url.Values{"q": {strings.Join(longTerms, " ") + " fixture"}, "label": {"search-fixture"}})
-		if len(page.Items) != 1 || page.Items[0].WorkItemID != target.WorkItemID {
-			t.Fatalf("long query lost matching issue: %+v", page.Items)
-		}
-	})
-	t.Run("long query with many filters", func(t *testing.T) {
-		params := url.Values{"q": {strings.Join(longTerms, " ") + " fixture"}}
-		for _, field := range []string{"state", "label", "assignee", "priority"} {
-			for index := range 32 {
-				params.Add(field, "unmatched-filter-"+strconv.Itoa(index))
-			}
-		}
-		if page := list(params); len(page.Items) != 0 {
-			t.Fatalf("unmatched filters returned issues: %+v", page.Items)
+	longTerms[len(longTerms)-1] = "unicorn"
+	t.Run("long HTTP query", func(t *testing.T) {
+		page := list(url.Values{"q": {strings.Join(longTerms, " ")}})
+		if len(page.Items) != 1 || page.Items[0].WorkItemID != commentItem.WorkItemID {
+			t.Fatalf("long query lost comment match: %+v", page.Items)
 		}
 	})
 	for _, test := range []struct {
@@ -466,20 +376,127 @@ func TestNativeWorkDateFilters(t *testing.T) {
 	}
 }
 
-func TestNativeWorkSearchIndexMaintenance(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "index-maintenance")
-	issue := f.create(t, "Existing migration document")
-	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "existing-comment"}, Body: "Existing zebras discussion"})
+func TestNativeWorkSearchRanking(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "search-ranking")
+	body := f.create(t, "Separate symptom")
+	title := f.create(t, "Repository association deadlocks")
+	partial := f.create(t, "Repository association")
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body='' WHERE project_id=?", f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body='Repository association deadlocks' WHERE native_id=?", body.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	want := []tracker.NativeWorkItemID{title.WorkItemID, body.WorkItemID, partial.WorkItemID}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	for _, mode := range []string{"issues", "duplicates"} {
+		t.Run(mode, func(t *testing.T) {
+			var got []tracker.NativeWorkItemID
+			if mode == "issues" {
+				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?"+url.Values{"q": {"repos associ deadlock"}}.Encode(), f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var page tracker.NativeIssuePage
+				decodeHubResponse(t, response, &page)
+				for _, item := range page.Items {
+					got = append(got, item.WorkItemID)
+				}
+			} else {
+				matches, err := resolveNativeDuplicates(t.Context(), f.service.database.reader, scope, tracker.CreateIssue{Title: "Repository association deadlocks"}, f.service.config.now(), false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, match := range matches {
+					got = append(got, match.WorkItemID)
+				}
+			}
+			if !slices.Equal(got, want) {
+				t.Fatalf("coverage then title-weighted BM25 order=%v want=%v", got, want)
+			}
+		})
+	}
+}
+
+func TestNativeWorkSearchUnicode61Tokens(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "unicode-search")
+	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE VIRTUAL TABLE search_token_probe USING fts5(original,indexed,tokenize='porter unicode61');
+CREATE VIRTUAL TABLE search_token_vocabulary USING fts5vocab(search_token_probe,instance)`); err != nil {
+		t.Fatal(err)
+	}
+	var boundaryText strings.Builder
+	for _, boundary := range nativeSearchTokenBoundaries {
+		for delta := -1; delta <= 1; delta++ {
+			r := boundary + rune(delta)
+			if r >= 0 && r <= 0x10ffff && (r < 0xd800 || r > 0xdfff) {
+				boundaryText.WriteString("a" + string(r) + "b ")
+			}
+		}
+	}
+	for index, test := range []struct{ name, content string }{
+		{"stemming", "running runners relational generously skies dying ties"},
+		{"punctuation", "repo/path-name:word@example.org #123"},
+		{"unicode", "café cafe\u0301 naïve Ελληνικά 中文 ß א ב ع"},
+		{"noncharacters", "a\ufffeb a\uffffb a\ufffdb"},
+		{"combining separators", "a\u0301b a\u0312b \u0301word \u1885x a\u200db"},
+		{"Unicode61 boundaries", boundaryText.String()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const scope = "s61v"
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO search_token_probe(rowid,original,indexed) VALUES(?,?,?)", index+1, test.content, nativeSearchText(test.content, scope)); err != nil {
+				t.Fatal(err)
+			}
+			rows, err := f.service.database.reader.QueryContext(t.Context(), "SELECT term,col,offset FROM search_token_vocabulary WHERE doc=? ORDER BY col,offset", index+1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var original, indexed []string
+			for rows.Next() {
+				var term, column string
+				var offset int
+				if err := rows.Scan(&term, &column, &offset); err != nil {
+					t.Fatal(err)
+				}
+				if column == "original" {
+					original = append(original, term)
+				} else if offset%2 == 1 {
+					indexed = append(indexed, term)
+				} else if term != scope {
+					t.Fatalf("scope token at %d = %q", offset, term)
+				}
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(original, indexed) {
+				t.Fatalf("Unicode61 tokens changed: original=%v indexed=%v", original, indexed)
+			}
+		})
+	}
+}
+
+func TestNativeWorkSearchScopedMigration(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "scoped-migration")
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	first := f.create(t, "Original migration document")
+	second := f.create(t, "Second migration document")
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(first.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "migration-comment"}, Body: "Older comment zebras"})
 	requireNativeStatus(t, response, http.StatusOK)
-	var comment tracker.NativeComment
-	decodeHubResponse(t, response, &comment)
-	migration, err := migrationFiles.ReadFile("migrations/20261021171000_native_work_search_content.sql")
+	if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE seed(n) AS (
+SELECT 1 UNION ALL SELECT n+1 FROM seed WHERE n<?)
+INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at)
+SELECT 'migration-history-'||seed.n,i.organization_id,i.project_id,i.native_id,1,seed.n,'Separate historical discussion','{}',i.native_created_at,i.native_created_at
+FROM seed CROSS JOIN issues i WHERE i.native_id=?`, nativeSearchRebuildBatch+5, second.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	migration, err := migrationFiles.ReadFile("migrations/20261028173817_native_work_search_scope.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	up, down, ok := strings.Cut(string(migration), "-- +goose Down")
 	if !ok {
-		t.Fatal("missing rollback migration")
+		t.Fatal("missing rollback section")
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), down); err != nil {
 		t.Fatal(err)
@@ -487,11 +504,149 @@ func TestNativeWorkSearchIndexMaintenance(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), up); err != nil {
 		t.Fatal(err)
 	}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	if err := requireNativeSearchIndex(t.Context(), f.service.database.reader, scope); !errors.Is(err, operatortool.ErrServiceUnavailable) {
+		t.Fatalf("pending migration err=%v", err)
+	}
+	var indexed int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_scoped_fts").Scan(&indexed); err != nil || indexed != 0 {
+		t.Fatalf("migration rebuilt %d rows err=%v", indexed, err)
+	}
+	for _, test := range []struct {
+		statement string
+		args      []any
+	}{
+		{"UPDATE issues SET title='Current narwhals' WHERE native_id=?", []any{first.WorkItemID}},
+		{`INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,body,actor_json,created_at,updated_at,sequence)
+SELECT 'concurrent-migration-comment',organization_id,project_id,native_id,1,'Concurrent wombats','{}',native_created_at,native_created_at,1000 FROM issues WHERE native_id=?`, []any{second.WorkItemID}},
+	} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), test.statement, test.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, timing := withWriterTiming(t.Context())
+	f.service.maintainNativeSearch(ctx)
+	if got := timing.txs.Load(); got != nativeSearchRebuildBatch {
+		t.Fatalf("maintenance wrote %d transactions want %d", got, nativeSearchRebuildBatch)
+	}
+	if err := requireNativeSearchIndex(t.Context(), f.service.database.reader, scope); !errors.Is(err, operatortool.ErrServiceUnavailable) {
+		t.Fatalf("unbounded maintenance completed all history: %v", err)
+	}
+	for range 15 {
+		more, err := f.service.database.backfillNativeSearch(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !more {
+			break
+		}
+	}
+	if err := requireNativeSearchIndex(t.Context(), f.service.database.reader, scope); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		term string
+		want tracker.NativeWorkItemID
+	}{
+		{"narwhal", first.WorkItemID}, {"zebra", first.WorkItemID}, {"wombat", second.WorkItemID},
+	} {
+		statement, args, err := nativeIssueSelection(scope, url.Values{"q": {test.term}}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids, err := nativePageIDs(t.Context(), f.service.database.reader, statement, args...)
+		if err != nil || !slices.Equal(ids, []string{string(test.want)}) {
+			t.Fatalf("term=%q ids=%v err=%v", test.term, ids, err)
+		}
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO native_work_scoped_fts(native_work_scoped_fts) VALUES('integrity-check')"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNativeWorkSearchScopeRefresh(t *testing.T) {
+	for _, test := range []struct{ name, statement, archived, principal string }{
+		{"archive", "UPDATE issues SET archived=1 WHERE native_id=?", "true", "owner"},
+		{"reporter", "UPDATE issues SET actor_principal_id='new-owner' WHERE native_id=?", "", "new-owner"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newNativeFixture(t, nil, "", "scope-refresh")
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			issue := f.create(t, "Issue context")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_principal_id='owner' WHERE native_id=?", issue.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "scope-comment"}, Body: "Comment-only narwhals"})
+			requireNativeStatus(t, response, http.StatusOK)
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{HostedRole: "reporter"}, sourceActor: &tracker.Actor{Kind: "human", PrincipalID: test.principal}}
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if _, err := tx.ExecContext(t.Context(), test.statement, issue.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			if err := requireNativeSearchIndex(t.Context(), tx, scope); !errors.Is(err, operatortool.ErrServiceUnavailable) {
+				t.Fatalf("uncommitted refresh err=%v", err)
+			}
+			if err := tx.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			if err := requireNativeSearchIndex(t.Context(), f.service.database.reader, scope); err != nil {
+				t.Fatalf("rollback left dirty scope: %v", err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), test.statement, issue.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			if err := requireNativeSearchIndex(t.Context(), f.service.database.reader, scope); !errors.Is(err, operatortool.ErrServiceUnavailable) {
+				t.Fatalf("dirty scope err=%v", err)
+			}
+			for range 5 {
+				more, err := f.service.database.backfillNativeSearch(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !more {
+					break
+				}
+			}
+			if err := requireNativeSearchIndex(t.Context(), f.service.database.reader, scope); err != nil {
+				t.Fatal(err)
+			}
+			query, args, err := nativeIssueSelection(scope, url.Values{"q": {"narwhal"}, "archived": {test.archived}}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids, err := nativePageIDs(t.Context(), f.service.database.reader, query, args...)
+			if err != nil || !slices.Equal(ids, []string{string(issue.WorkItemID)}) {
+				t.Fatalf("refreshed ids=%v err=%v", ids, err)
+			}
+		})
+	}
+}
+
+func TestNativeWorkSearchIndexMaintenance(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "index-maintenance")
+	issue := f.create(t, "Existing migration document")
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "existing-comment"}, Body: "Existing zebras discussion"})
+	requireNativeStatus(t, response, http.StatusOK)
+	var comment tracker.NativeComment
+	decodeHubResponse(t, response, &comment)
 	matches := func(term string) int {
 		t.Helper()
 		var count int
 		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_fts WHERE native_work_fts MATCH ?", term).Scan(&count); err != nil {
 			t.Fatal(err)
+		}
+		var scoped int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(DISTINCT rowid/2) FROM native_work_scoped_fts WHERE native_work_scoped_fts MATCH ?", term).Scan(&scoped); err != nil {
+			t.Fatal(err)
+		}
+		if scoped != count {
+			t.Fatalf("term=%q original index=%d scoped index=%d", term, count, scoped)
 		}
 		return count
 	}

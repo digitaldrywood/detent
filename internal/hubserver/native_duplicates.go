@@ -16,6 +16,8 @@ import (
 
 const duplicateChallengeLifetime = time.Hour
 
+const duplicateCandidateLimit = 100
+
 type possibleDuplicate struct {
 	revision   tracker.Revision
 	terminal   bool
@@ -32,12 +34,6 @@ type duplicateChallenge struct {
 	PossibleDuplicates []possibleDuplicate `json:"possible_duplicates"`
 	ChallengeToken     string              `json:"challenge_token"`
 }
-
-const (
-	duplicateCandidateLimit = 100
-	duplicateTitleTermLimit = 8
-	duplicateBodyTermLimit  = 16
-)
 
 type nativeDuplicateSearch struct {
 	latestNumber int
@@ -69,7 +65,7 @@ func duplicateWindow(scope nativeScope, now time.Time, machine bool) (string, []
 	window := " AND i.archived = 0"
 	args := []any{scope.organization, scope.project}
 	if !machine {
-		window = " AND ((ws.terminal = 0 AND i.archived = 0) OR (ws.terminal = 1 AND julianday(COALESCE(" + nativeTerminalEnteredAt + ", i.native_created_at)) >= julianday(?)))"
+		window = " AND i.archived = 0 AND (ws.terminal = 0 OR (ws.terminal = 1 AND julianday(COALESCE(" + nativeTerminalEnteredAt + ", i.native_created_at)) >= julianday(?)))"
 		args = append(args, formatHubTime(now.AddDate(0, 0, -30)))
 	}
 	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
@@ -77,6 +73,9 @@ func duplicateWindow(scope nativeScope, now time.Time, machine bool) (string, []
 }
 
 func resolveNativeDuplicates(ctx context.Context, query nativeQueryer, scope nativeScope, request tracker.CreateIssue, now time.Time, machine bool) ([]possibleDuplicate, error) {
+	if err := requireNativeSearchIndex(ctx, query, scope); err != nil {
+		return nil, err
+	}
 	pageQuery, pageErr := prepareNativePageQuery(ctx, query, scope, "", "native_issue_actors", "native_transition_facts")
 	if pageErr != nil {
 		return nil, pageErr
@@ -92,21 +91,20 @@ func resolveNativeDuplicates(ctx context.Context, query nativeQueryer, scope nat
 		}
 		var searches []string
 		for _, fingerprint := range fingerprints {
-			searches = append(searches, `"`+strings.ReplaceAll(fingerprint, `"`, `""`)+`"`)
+			searches = append(searches, nativeScopedExpression(nativeSearchScopes(scope, ""), nativeSearchExpressions(fingerprint), " AND "))
 		}
 		if expressions := duplicateSearchExpressions(request.Body); len(expressions) > 0 {
-			searches = append(searches, strings.Join(expressions, " OR "))
+			searches = append(searches, nativeScopedExpression(nativeSearchScopes(scope, ""), expressions, " OR "))
 		}
 		for _, expression := range searches {
 			searchArgs := []any{expression}
 			searchArgs = append(searchArgs, args...)
-			searchArgs = append(searchArgs, duplicateCandidateLimit)
 			searchArgs = append(searchArgs, args...)
 			rows, err := query.QueryContext(ctx, `WITH candidates AS MATERIALIZED (
-SELECT d.issue_id,d.comment_id FROM native_work_fts JOIN native_work_documents d ON d.id=native_work_fts.rowid
+SELECT d.issue_id,d.comment_id FROM native_work_scoped_fts JOIN native_work_documents d ON d.id=native_work_scoped_fts.rowid/2
 JOIN issues i ON i.id=d.issue_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
-WHERE native_work_fts MATCH ? AND i.organization_id=? AND i.project_id=?`+window+`
-ORDER BY native_work_fts.rowid DESC LIMIT ?)
+WHERE native_work_scoped_fts MATCH ? AND i.organization_id=? AND i.project_id=?`+window+`
+ )
 SELECT i.native_id,i.number,i.title,ws.detent_state,i.revision,ws.terminal,i.body || char(10) || COALESCE(c.body,'')
 FROM candidates d JOIN issues i ON i.id=d.issue_id
 JOIN workflow_states ws ON ws.id=i.workflow_state_id LEFT JOIN native_comments c ON c.id=d.comment_id
@@ -156,11 +154,8 @@ WHERE i.organization_id=? AND i.project_id=?`+window+` ORDER BY ws.terminal,i.nu
 	if machine || len(matches) == 5 {
 		return matches, nil
 	}
-	for index, content := range []string{request.Title, request.Body} {
+	for _, content := range []string{request.Title, request.Body} {
 		expressions := duplicateSearchExpressions(content)
-		if index == 0 {
-			expressions = expressions[:min(duplicateTitleTermLimit, len(expressions))]
-		}
 		if len(expressions) == 0 {
 			continue
 		}
@@ -168,47 +163,14 @@ WHERE i.organization_id=? AND i.project_id=?`+window+` ORDER BY ws.terminal,i.nu
 		if len(expressions) == 1 && content == request.Title {
 			minimum = 1
 		}
-		var candidateCTEs, candidateUnion []string
-		var searchArgs []any
-		candidateSQL := `SELECT d.issue_id,d.id,
--1.0-4.0*(length(highlight(native_work_fts,0,char(1),''))-length(native_work_fts.title)) AS score
-FROM native_work_fts CROSS JOIN native_work_documents d CROSS JOIN issues i CROSS JOIN workflow_states ws
-WHERE native_work_fts MATCH ? AND d.id=native_work_fts.rowid AND i.id=d.issue_id AND ws.id=i.workflow_state_id
-AND i.organization_id=? AND i.project_id=?` + window + ` ORDER BY native_work_fts.rowid DESC LIMIT ?`
-		for index, expression := range expressions {
-			name := "term" + strconv.Itoa(index)
-			candidateCTEs = append(candidateCTEs, name+" AS MATERIALIZED ("+candidateSQL+")")
-			candidateUnion = append(candidateUnion, "SELECT issue_id,id,score,1 AS terms,? AS matched FROM "+name)
-			searchArgs = append(searchArgs, expression)
-			searchArgs = append(searchArgs, args...)
-			searchArgs = append(searchArgs, duplicateCandidateLimit)
-		}
-		if len(expressions) > 1 {
-			candidateCTEs = append(candidateCTEs, "full_hits AS MATERIALIZED ("+candidateSQL+")")
-			searchArgs = append(searchArgs, strings.Join(expressions, " AND "))
-			searchArgs = append(searchArgs, args...)
-			searchArgs = append(searchArgs, duplicateCandidateLimit)
-		}
-		for _, expression := range expressions {
-			searchArgs = append(searchArgs, expression)
-		}
-		coverageUnion := "SELECT issue_id,id,sum(score) AS score,sum(terms) AS terms,group_concat(matched,', ') AS matched FROM term_hits GROUP BY issue_id,id"
-		if len(expressions) > 1 {
-			coverageUnion += " UNION ALL SELECT issue_id,id,score,?,? FROM full_hits"
-			searchArgs = append(searchArgs, len(expressions), strings.Join(expressions, ", "))
-		}
+		ctes, searchArgs := nativeSearchHits(scope, "", expressions)
 		searchArgs = append(searchArgs, args...)
-		searchArgs = append(searchArgs, -minimum)
-		rows, err := query.QueryContext(ctx, `WITH `+strings.Join(candidateCTEs, ",")+`,
-term_hits AS MATERIALIZED (`+strings.Join(candidateUnion, " UNION ALL ")+`),
-coverage AS MATERIALIZED (`+coverageUnion+`), ranked AS (
-SELECT coverage.issue_id,coverage.matched,-coverage.terms+coverage.score/(1-coverage.score) AS score,
-row_number() OVER (PARTITION BY coverage.issue_id ORDER BY coverage.terms DESC,coverage.score,coverage.id) AS hit
-FROM coverage)
+		searchArgs = append(searchArgs, minimum)
+		rows, err := query.QueryContext(ctx, ctes+`
 SELECT i.native_id,i.number,i.title,ws.detent_state,i.revision,search.matched
 FROM ranked search JOIN issues i ON i.id=search.issue_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
 WHERE search.hit=1 AND i.organization_id=? AND i.project_id=?`+window+`
-AND search.score < ? ORDER BY search.score,ws.terminal,i.number DESC LIMIT 5`, searchArgs...)
+AND search.terms>=? ORDER BY search.search_score,ws.terminal,i.number DESC LIMIT 5`, searchArgs...)
 		if err != nil {
 			return nil, err
 		}
@@ -282,7 +244,7 @@ func duplicateSearchExpressions(content string) []string {
 			continue
 		}
 		expressions = append(expressions, expression)
-		if len(expressions) == duplicateBodyTermLimit {
+		if len(expressions) == 32 {
 			break
 		}
 	}
