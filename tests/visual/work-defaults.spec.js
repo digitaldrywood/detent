@@ -202,15 +202,15 @@ test("terminal URL and stored lane names never produce board lanes", async ({ pa
   await expect(page.getByTestId("board-lane")).toHaveCount(1);
   await expect(page.getByTestId("lane-body-Todo")).toBeVisible();
   await expect(page.getByTestId("lane-body-Done")).toHaveCount(0);
-  const stored = await page.evaluate(async (project) => {
+  const stored = await page.evaluate(async () => {
     const bootstrap = await (await fetch("/chat/bootstrap")).json();
-    const response = await fetch(`${bootstrap.api_base}/projects/${project}/work-view-preference`, {
+    const response = await fetch(`${bootstrap.api_base}/work-view-preference`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", "X-CSRF-Token": bootstrap.csrf_token },
       body: JSON.stringify({ query: "lanes=Backlog,Cancelled" }),
     });
     return response.status;
-  }, hub.fixture.project_id);
+  });
   expect(stored).toBe(200);
   await page.goto(new URL(route, hub.fixture.url).toString());
   await expect(page.getByTestId("board-lane")).toHaveCount(1);

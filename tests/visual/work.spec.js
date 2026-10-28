@@ -466,7 +466,8 @@ test.describe("the issue page", () => {
 
     await expect(page).toHaveURL(/\/local-organization\/browser-collaboration$/);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("Browser collaboration");
-    await expect(page.getByRole("combobox", { name: "Filter threads by project" })).toHaveText("Browser collaboration");
+    await expect(page.getByRole("combobox", { name: "Filter threads by project" })).toHaveText("1 of 2 projects");
+    await expect(page.getByRole("list", { name: "Project working set" }).getByRole("button", { name: "Browser collaboration", exact: true })).toHaveAttribute("aria-pressed", "true");
     const board = page.getByTestId("work-board");
     await expect(board.getByRole("button", { name: "Review the invitation flow", exact: true })).toBeVisible();
     await expect(board.getByRole("button", { name: otherTitle, exact: true })).toHaveCount(0);
@@ -793,11 +794,11 @@ test.describe("the issue page", () => {
 
 test("shares project scope between the sidebar and Work across reloads", async ({ page }) => {
   const errors = watchConsole(page);
-  await openWork(page, `/work/p/${hub.fixture.project_id}`);
+  await openWork(page);
   const secondProjectId = new URL(hub.fixture.private_project).pathname.split("/").at(-1);
   const projects = [
-    { id: hub.fixture.project_id, slug: "browser-collaboration", name: "Browser collaboration", title: "Completed collaboration work" },
-    { id: secondProjectId, slug: "owner-private-project", name: "Owner private project", title: "Completed private work" },
+    { id: hub.fixture.project_id, name: "Browser collaboration", title: "Completed collaboration work" },
+    { id: secondProjectId, name: "Owner private project", title: "Completed private work" },
   ];
   for (const project of projects) {
     const created = await page.evaluate(async ({ id, title }) => {
@@ -812,6 +813,10 @@ test("shares project scope between the sidebar and Work across reloads", async (
     expect(created).toBe(200);
   }
   const scope = page.getByRole("combobox", { name: "Filter threads by project" });
+  const workingSet = page.getByRole("list", { name: "Project working set" });
+  await scope.click();
+  await page.getByRole("button", { name: "Select all", exact: true }).click();
+  await page.keyboard.press("Escape");
   const closedTab = page.getByTestId("list-tab-closed");
   const closed = page.getByTestId("work-list");
   const showClosed = async () => {
@@ -822,20 +827,20 @@ test("shares project scope between the sidebar and Work across reloads", async (
     await expect(closedTab).toHaveAttribute("aria-pressed", "true");
   };
   const selectScope = async (name) => {
-    await scope.click();
-    await page.getByRole("option", { name, exact: true }).click();
+    await workingSet.getByRole("button", { name, exact: true }).click();
   };
   const expectProject = async (project) => {
-    await expect.poll(() => new URL(page.url()).pathname).toBe(`/local-organization/${project.slug}`);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText(project.name);
-    await expect(scope).toHaveText(project.name);
+    await expect(scope).toHaveText("2 of 2 projects");
+    await expect(workingSet.getByRole("button", { name: project.name, exact: true })).toHaveAttribute("aria-pressed", "true");
     await showClosed();
     await expect(closedTab).toHaveText("Closed 1");
     await expect(closed.getByText(project.title, { exact: true })).toBeVisible();
     const other = projects.find((candidate) => candidate.id !== project.id);
     await expect(closed.getByText(other.title, { exact: true })).toHaveCount(0);
   };
-  await expect(scope).toHaveText(projects[0].name);
+  await selectScope(projects[0].name);
+  await expectProject(projects[0]);
   await selectScope(projects[1].name);
   await expectProject(projects[1]);
   await page.reload();
@@ -846,16 +851,23 @@ test("shares project scope between the sidebar and Work across reloads", async (
   await expectProject(projects[1]);
   await selectScope(projects[0].name);
   await expectProject(projects[0]);
+  await page.goto(new URL(`/work/p/${projects[1].id}`, hub.fixture.url).toString());
+  await expectProject(projects[1]);
+  await page.goto(new URL(`/work/p/${projects[0].id}`, hub.fixture.url).toString());
+  await expectProject(projects[0]);
   await page.goBack();
   await expectProject(projects[1]);
   await page.goForward();
   await expectProject(projects[0]);
 
-  await selectScope("All Browser organization projects");
+  await page.goto(new URL("/work", hub.fixture.url).toString());
+  await scope.click();
+  await page.getByRole("button", { name: "Clear", exact: true }).click();
+  await page.keyboard.press("Escape");
   const expectAll = async () => {
-    await expect(page).toHaveURL(/\/work(?:\?|$)/);
     await expect(page.getByRole("heading", { level: 1 })).toHaveText("All Browser organization projects");
     await expect(scope).toHaveText("All Browser organization projects");
+    await expect(workingSet.getByRole("button", { name: "All", exact: true })).toHaveAttribute("aria-pressed", "true");
     await showClosed();
     await expect(closedTab).toHaveText("Closed 2");
     for (const project of projects) {
