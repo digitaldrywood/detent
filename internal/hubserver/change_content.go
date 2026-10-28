@@ -114,11 +114,21 @@ func persistCommandOutput(ctx context.Context, tx *sql.Tx, organization string, 
 	if command == nil || command.Output == "" {
 		return nil
 	}
-	ref, err := preparedChangeContent(ctx, organization, []byte(command.Output))
-	if err != nil {
-		return err
+	var ref attachment.ArchiveReference
+	if prepared := preparedChangeMutation(ctx); prepared != nil {
+		var found bool
+		ref, found = prepared.outputs[fmt.Sprintf("%s.%d", role, position)]
+		if !found {
+			return errors.New("command output was not prepared")
+		}
+	} else {
+		var err error
+		ref, err = preparedChangeContent(ctx, organization, []byte(command.Output))
+		if err != nil {
+			return err
+		}
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO change_command_outputs(version_id,review_id,role,position,organization_id,object_key,object_sha256,object_bytes,content_bytes) VALUES(?,?,?,?,?,?,?,?,?)`, version, review, role, position, organization, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize)
+	_, err := tx.ExecContext(ctx, `INSERT INTO change_command_outputs(version_id,review_id,role,position,organization_id,object_key,object_sha256,object_bytes,content_bytes) VALUES(?,?,?,?,?,?,?,?,?)`, version, review, role, position, organization, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize)
 	if err == nil {
 		command.Output = ""
 	}
@@ -255,69 +265,6 @@ func compactChangeVersion(version tracker.ChangeVersion) (string, error) {
 	}
 	data, err := json.Marshal(record)
 	return string(data), err
-}
-
-func (s *Service) prepareReviewContent(c echo.Context, request tracker.ReviewChange) error {
-	ctx := c.Request().Context()
-	if _, ok := ctx.Value(changeContentKey{}).(*changeContent); !ok {
-		return nil
-	}
-	scope := nativeRequestScope(c)
-	operation := c.Request().Method + " " + c.Request().URL.EscapedPath()
-	if _, found, err := s.nativeCommandReplay(ctx, scope, operation, request.IdempotencyKey, request); err != nil || found {
-		return err
-	}
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
-		return err
-	}
-	now, err := s.database.currentTime()
-	if err != nil {
-		return err
-	}
-	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
-		return err
-	}
-	if scope.credential.Scope == apiScopeWorker {
-		if err := requireNativeMutationLease(ctx, tx, scope, c.Param("item"), request.Mutation, now); err != nil {
-			return err
-		}
-	}
-	if err := s.database.requireHostedFeature(ctx, tx, "collaboration", now); err != nil {
-		return err
-	}
-	raw, err := json.Marshal(request)
-	if err != nil {
-		return err
-	}
-	var validation tracker.ReviewChange
-	if err := json.Unmarshal(raw, &validation); err != nil {
-		return err
-	}
-	if _, _, err := validateChangeReview(ctx, tx, scope, c.Param("item"), c.Param("change"), c.Param("version"), validation, now); err != nil {
-		return err
-	}
-	if err := tx.Rollback(); err != nil {
-		return err
-	}
-	for _, result := range []*gate.ValidatorResult{request.Validator, request.ImplementationReview} {
-		if result == nil {
-			continue
-		}
-		for _, command := range result.Commands {
-			if command.Output == "" {
-				continue
-			}
-			if _, err := prepareChangeContent(ctx, string(scope.organization), []byte(command.Output)); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 func preparedChangeContent(ctx context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {

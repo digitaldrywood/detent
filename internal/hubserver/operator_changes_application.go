@@ -336,7 +336,7 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 	default:
 		return result, operatortool.ErrUnknownTool
 	}
-	result.Receipt, err = s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: method + " " + path, Item: args.ItemID, Feature: "collaboration", ArtifactRead: name == operatortool.ArtifactAccess}, command, input, op)
+	result.Receipt, err = s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: method + " " + path, Item: args.ItemID, ChangeID: args.ChangeID, VersionID: args.VersionID, Feature: "collaboration", ArtifactRead: name == operatortool.ArtifactAccess}, command, input, op)
 	if err != nil {
 		return result, err
 	}

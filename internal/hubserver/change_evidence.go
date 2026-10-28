@@ -38,9 +38,6 @@ func (s *Service) reviewChange(c echo.Context) error {
 	if err := decodeAPIJSON(c, &request); err != nil {
 		return s.invalidAPIRequest(c, err)
 	}
-	if err := s.prepareReviewContent(c, request); err != nil {
-		return s.nativeAPIError(c, err)
-	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.reviewChangeCommand(ctx, tx, scope, c.Param("item"), c.Param("change"), c.Param("version"), request, now)
 	})
@@ -195,9 +192,22 @@ func changeReviewContentFields(request tracker.ReviewChange) []cloudContentField
 
 func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID, versionID string, request tracker.ReviewChange, now time.Time) (any, error) {
 	fields := changeReviewContentFields(request)
-	change, sessionMachineID, err := validateChangeReview(ctx, tx, scope, item, changeID, versionID, request, now)
-	if err != nil {
-		return nil, err
+	var change tracker.ChangeRequest
+	var sessionMachineID tracker.MachineID
+	if prepared := preparedChangeMutation(ctx); prepared != nil {
+		change, sessionMachineID, request = prepared.change, prepared.sessionMachineID, prepared.review
+		fields = prepared.reviewFields
+		if request.Bundle != nil {
+			if err := validateReviewBundle(ctx, tx, scope, change, prepared.version, *request.Bundle, now); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		var err error
+		change, sessionMachineID, err = validateChangeReview(ctx, tx, scope, item, changeID, versionID, request, now)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if err := bindCloudChangeReferences(ctx, tx, scope, string(change.WorkItemID), fields, nil, ""); err != nil {
@@ -205,7 +215,11 @@ func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 	}
 
 	review := tracker.ChangeReview{SecurityAudit: request.SecurityAudit, SessionMachineID: sessionMachineID, ImplementationReview: request.ImplementationReview, Validator: request.Validator, ID: newNativeID("review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: now}
-	reviewAttributionSlots(&review)
+	if prepared := preparedChangeMutation(ctx); prepared != nil {
+		review = prepared.record
+	} else {
+		reviewAttributionSlots(&review)
+	}
 	if request.Decision == "changes_requested" {
 		if err := routeIndependentReview(ctx, tx, scope, change, &review, now); err != nil {
 			return nil, err
@@ -217,7 +231,7 @@ func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 
 	switch request.Decision {
 	case "approved":
-		if err := promoteReviewedChange(ctx, tx, scope, change, now); err != nil {
+		if err := promotePreparedChange(ctx, tx, scope, change, now); err != nil {
 			return nil, err
 		}
 	case "changes_requested":
@@ -276,6 +290,35 @@ func (s *Service) discussChangeCommand(ctx context.Context, tx *sql.Tx, scope na
 }
 
 func storeChangeReview(ctx context.Context, tx *sql.Tx, organization, changeID string, review tracker.ChangeReview) error {
+	if prepared := preparedChangeMutation(ctx); prepared != nil && prepared.record.ID == review.ID {
+		if err := storeAttributionSlots(ctx, tx, review.VersionID, review.ID, prepared.reviewSlots); err != nil {
+			return err
+		}
+		if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
+			for role, result := range map[string]*gate.ValidatorResult{"validator": review.Validator, "implementation_review": review.ImplementationReview} {
+				if result == nil {
+					continue
+				}
+				for i, command := range result.Commands {
+					if err := persistCommandOutput(ctx, tx, organization, review.VersionID, review.ID, role, i, &command); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		raw := prepared.reviewRaw
+		if len(review.RepairDependencies) != 0 || review.RepairRefusal != "" {
+			stored := prepared.storedReview
+			stored.RepairDependencies, stored.RepairRefusal = review.RepairDependencies, review.RepairRefusal
+			var err error
+			raw, err = marshalNative(stored)
+			if err != nil {
+				return err
+			}
+		}
+		_, err := tx.ExecContext(ctx, "INSERT INTO change_evidence (change_id, version_id, kind, record_json) VALUES (?, ?, 'review', ?)", changeID, review.VersionID, raw)
+		return err
+	}
 	slots := reviewAttributionSlots(&review)
 	if err := storeAttributionSlots(ctx, tx, review.VersionID, review.ID, slots); err != nil {
 		return err

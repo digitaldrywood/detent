@@ -1,6 +1,8 @@
 package hubserver
 
 import (
+	"context"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -99,6 +101,8 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			r.Validator.Commands = []gate.CommandResult{{Command: "inspect", Output: "https://figma.com/design/example?secret=hidden"}}
 		}, http.StatusOK, "reviewed", nil},
 
+		{"attempt changes during preparation", func(_ *tracker.ReviewChange) {}, http.StatusConflict, "needs_evidence", nil},
+		{"security audit attempt changes during preparation", func(_ *tracker.ReviewChange) {}, http.StatusConflict, "needs_evidence", nil},
 		{"required acceptance before source", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired}},
 		{"required acceptance after source pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", &stageCase{mode: gate.AutomatedReviewRequired, sourceVerdicts: []string{"pass"}}},
 		{"required acceptance after source rework", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired, sourceVerdicts: []string{"rework"}}},
@@ -510,7 +514,53 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
+			if strings.HasSuffix(test.name, "attempt changes during preparation") {
+				injected := false
+				ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+					if injected || !strings.Contains(query, "FROM change_requests c JOIN issues i") {
+						return
+					}
+					injected = true
+					var raw string
+					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT data_json FROM native_attempts WHERE id=?", version.AttemptID).Scan(&raw); err != nil {
+						t.Fatal(err)
+					}
+					var run tracker.NativeRunData
+					if err := json.Unmarshal([]byte(raw), &run); err != nil {
+						t.Fatal(err)
+					}
+					if request.SecurityAudit != nil {
+						run.Runtime.Activity.SessionID = request.SecurityAudit.SessionID
+					} else {
+						run.Runtime.Activity.SessionID = request.Validator.SessionID
+					}
+					updated, err := json.Marshal(run)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=? WHERE id=?", string(updated), version.AttemptID); err != nil {
+						t.Fatal(err)
+					}
+				}})
+				response = httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request).WithContext(ctx))
+				if !injected {
+					t.Fatal("concurrent session change was not injected")
+				}
+			} else if objects != nil {
+				measurement := &changeWriterMeasurement{}
+				ctx := context.WithValue(t.Context(), changeWriterMeasurementKey{}, measurement)
+				ctx = withRequestTiming(ctx, &requestTiming{writerTrace: func(_ string, _ []driver.NamedValue) {
+					measurement.statements++
+				}, writerTransaction: func(active bool) { measurement.active = active }})
+				response = httptest.NewRecorder()
+				f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request).WithContext(ctx))
+				if measurement.statements > 30 || measurement.content != 0 {
+					t.Fatalf("review writer statements=%d (bound 30), content operations=%d (want 0)", measurement.statements, measurement.content)
+				}
+			} else {
+				response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
+			}
 			requireNativeStatus(t, response, test.want)
 			if strings.Contains(test.name, "visual") && test.want == http.StatusUnprocessableEntity {
 				raw := response.Body.String()

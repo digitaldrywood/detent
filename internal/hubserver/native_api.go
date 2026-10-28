@@ -474,7 +474,7 @@ func (s *Service) nativeMutation(c echo.Context, command tracker.Mutation, input
 // reports. A replay answers with the same status as the first call, so a
 // created resource stays 201 on every retry of its key.
 func (s *Service) nativeMutationStatus(c echo.Context, status int, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) error {
-	options := nativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath(), Item: c.Param("item"), CheckPrincipal: changeCheckRequest(c), RequireLease: c.Param("item") != "" && !strings.HasSuffix(c.Path(), "/events") && c.Path() != changeBase+"/:change/versions/:version/checks", Completion: hostedCompletionMutation(c, input), Feature: hostedMutationFeature(c)}
+	options := nativeCommandOptions{OperationID: c.Request().Method + " " + c.Request().URL.EscapedPath(), Item: c.Param("item"), ChangeID: c.Param("change"), VersionID: c.Param("version"), CheckPrincipal: changeCheckRequest(c), RequireLease: c.Param("item") != "" && !strings.HasSuffix(c.Path(), "/events") && c.Path() != changeBase+"/:change/versions/:version/checks", Completion: hostedCompletionMutation(c, input), Feature: hostedMutationFeature(c)}
 	result, err := s.executeNativeMutation(c.Request().Context(), nativeRequestScope(c), options, command, input, operation)
 	if err != nil {
 		if request, ok := input.(tracker.NativeRunEvent); ok {
@@ -488,6 +488,7 @@ func (s *Service) nativeMutationStatus(c echo.Context, status int, command track
 type nativeCommandOptions struct {
 	RunnerAdministration                     bool
 	OperationID, Item, Feature               string
+	ChangeID, VersionID                      string
 	CheckPrincipal, RequireLease, Completion bool
 	ArtifactRead                             bool
 }
@@ -514,6 +515,12 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	preparedCtx, preparationErr := s.prepareHostedImportMutation(ctx, scope, operationID, input)
 	if preparationErr == nil {
 		ctx = preparedCtx
+	}
+	if preparationErr == nil {
+		preparedCtx, preparationErr = s.prepareChangeMutation(ctx, scope, options, command, input, requestHash)
+		if preparationErr == nil {
+			ctx = preparedCtx
+		}
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -567,6 +574,9 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		if err := requireNativeMutationLease(ctx, tx, scope, options.Item, command, now); err != nil {
 			return nil, err
 		}
+	}
+	if err := recheckChangeMutation(ctx, tx, scope, options); err != nil {
+		return nil, err
 	}
 	metrics := hostedNativeMutationMetrics(input, options.Completion)
 	before, err := s.database.hostedConsumption(ctx, tx, now, metrics...)

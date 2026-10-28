@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"crypto/sha256"
+	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -2208,17 +2210,25 @@ func TestApprovalMovesToLandingLane(t *testing.T) {
 func TestReviewedChangePromotesOnAnyEvidence(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name    string
-		require bool
-		order   []string
+		name                    string
+		require                 bool
+		order                   []string
+		expireDuringPreparation bool
 	}{
 		{name: "check after approval", require: true, order: []string{"approve", "check"}},
 		{name: "approval after check", require: true, order: []string{"check", "approve"}},
+		{name: "check expires before approval commits", require: true, order: []string{"check", "approve"}, expireDuringPreparation: true},
 		{name: "no review required", require: false, order: []string{"check"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := newNativeFixture(t, nil, "", "promote")
+			var service *Service
+			var clock atomic.Int64
+			if test.expireDuringPreparation {
+				clock.Store(time.Now().UTC().UnixNano())
+				service = openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return time.Unix(0, clock.Load()).UTC() }})
+			}
+			f := newNativeFixture(t, service, "", "promote")
 			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM workflow_states WHERE project_id = ?", f.project.ID); err != nil {
 				t.Fatal(err)
 			}
@@ -2270,12 +2280,25 @@ func TestReviewedChangePromotesOnAnyEvidence(t *testing.T) {
 			for i, step := range test.order {
 				switch step {
 				case "approve":
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, Decision: "approved"}), http.StatusOK)
+					request := newHubAPIRequest(t, http.MethodPost, path+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, Decision: "approved"})
+					if test.expireDuringPreparation {
+						advanced := false
+						ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+							if !advanced && strings.Contains(query, "FROM change_requests c JOIN issues i") {
+								advanced = true
+								clock.Add(int64(time.Hour))
+							}
+						}})
+						request = request.WithContext(ctx)
+					}
+					response := httptest.NewRecorder()
+					f.service.Handler().ServeHTTP(response, request)
+					requireNativeStatus(t, response, http.StatusOK)
 				case "check":
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/checks", f.token, changeTestResult(version)), http.StatusOK)
 				}
 				want := "Human Review"
-				if i == len(test.order)-1 {
+				if i == len(test.order)-1 && !test.expireDuringPreparation {
 					want = "Merging"
 				}
 				if got := state(); got != want {

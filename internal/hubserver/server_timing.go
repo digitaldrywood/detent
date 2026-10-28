@@ -21,12 +21,14 @@ import (
 // their own spans; compute is the remainder of the total. Named spans time
 // the parts of one read, such as each Reports sub-read, by wall clock.
 type requestTiming struct {
-	start  time.Time
-	db     atomic.Int64
-	encode atomic.Int64
-	trace  func(query string, args []driver.NamedValue)
-	mu     sync.Mutex
-	spans  []timingSpan
+	start             time.Time
+	db                atomic.Int64
+	encode            atomic.Int64
+	trace             func(query string, args []driver.NamedValue)
+	writerTrace       func(query string, args []driver.NamedValue)
+	writerTransaction func(active bool)
+	mu                sync.Mutex
+	spans             []timingSpan
 }
 
 type timingSpan struct {

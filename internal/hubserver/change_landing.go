@@ -72,6 +72,10 @@ func promoteReviewedChange(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 	if detail.Summary.Status != "reviewed" {
 		return nil
 	}
+	return promoteReviewedIssue(ctx, tx, scope, change, now)
+}
+
+func promoteReviewedIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, change tracker.ChangeRequest, now time.Time) error {
 	issue, _, err := readNativeIssue(ctx, tx, scope, string(change.WorkItemID))
 	if err != nil {
 		return err

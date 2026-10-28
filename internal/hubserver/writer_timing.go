@@ -245,6 +245,9 @@ func (t *timedTx) Rollback() error {
 }
 
 func (t *timedTx) end() {
+	if t.conn.writer && t.request != nil && t.request.writerTransaction != nil {
+		t.request.writerTransaction(false)
+	}
 	t.conn.inTx = false
 	t.timing.add(t.start)
 	t.conn.endWriterHold(&t.holder)
@@ -263,6 +266,9 @@ func (c *timedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.
 		return nil, err
 	}
 	c.inTx = true
+	if request := requestTimingFrom(ctx); c.writer && request != nil && request.writerTransaction != nil {
+		request.writerTransaction(true)
+	}
 	var timing *writerTiming
 	if c.writer {
 		timing = writerTimingFrom(ctx)
@@ -285,7 +291,11 @@ func (c *timedConn) ExecContext(ctx context.Context, query string, args []driver
 	start := time.Now()
 	holder := c.startWriterHold(ctx)
 	result, err := execer.ExecContext(ctx, query, args)
-	requestTimingFrom(ctx).statement(start, query, args)
+	timing := requestTimingFrom(ctx)
+	timing.statement(start, query, args)
+	if c.writer && c.inTx && timing != nil && timing.writerTrace != nil {
+		timing.writerTrace(query, args)
+	}
 	if c.writer && !c.inTx {
 		writerTimingFrom(ctx).add(start)
 		if err == nil {
@@ -306,6 +316,9 @@ func (c *timedConn) QueryContext(ctx context.Context, query string, args []drive
 	holder := c.startWriterHold(ctx)
 	rows, err := queryer.QueryContext(ctx, query, args)
 	timing.statement(start, query, args)
+	if c.writer && c.inTx && timing != nil && timing.writerTrace != nil {
+		timing.writerTrace(query, args)
+	}
 	if err != nil {
 		if holder.n != 0 {
 			writerTimingFrom(ctx).add(start)

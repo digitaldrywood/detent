@@ -32,6 +32,9 @@ type changeObjectFixture struct {
 }
 
 func (f *changeObjectFixture) call(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+	if measurement, ok := ctx.Value(changeWriterMeasurementKey{}).(*changeWriterMeasurement); ok && measurement.active {
+		measurement.content++
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -113,7 +114,17 @@ func (s *Service) publishChangeVersion(c echo.Context) error {
 	})
 }
 
-func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID string, request tracker.PublishChangeVersion, now time.Time) (any, error) {
+type preparedChangeVersion struct {
+	change     tracker.ChangeRequest
+	version    tracker.ChangeVersion
+	raw        string
+	associated bool
+	delivery   tracker.ReleaseDelivery
+	source     []byte
+	sourceRef  attachment.ArchiveReference
+}
+
+func (s *Service) prepareChangeVersion(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID string, request tracker.PublishChangeVersion, now time.Time) (*preparedChangeVersion, error) {
 	change, err := readChange(ctx, tx, scope, item, changeID)
 	if err != nil {
 		return nil, err
@@ -185,10 +196,6 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	if err := requireChangeRun(ctx, tx, scope, change, request); err != nil {
 		return nil, err
 	}
-	if err := bindCloudChangeReferences(ctx, tx, scope, string(change.WorkItemID), nil, request.Artifacts, "artifacts"); err != nil {
-		return nil, err
-	}
-
 	version := tracker.ChangeVersion{ChangeVersionInput: request.ChangeVersionInput, ID: newNativeID("version"), ChangeID: change.ID, Number: int64(change.Revision), Policy: approved.Policy, ReviewPolicy: rules, Actor: scope.actor(), CreatedAt: now, Checks: []tracker.ChangeCheckExpectation{}}
 	for _, spec := range rules.RequiredChecks {
 		version.Checks = append(version.Checks, tracker.ChangeCheckExpectation{ChangeCheckSpec: spec, CheckRunID: newNativeID("check")})
@@ -206,6 +213,46 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	if err != nil {
 		return nil, err
 	}
+	prepared := &preparedChangeVersion{change: change, version: version, raw: raw, associated: associated, delivery: delivery}
+	if version.Source != nil {
+		if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
+			prepared.sourceRef, err = preparedChangeContent(ctx, string(scope.organization), request.SourceBundle)
+		} else {
+			prepared.source, err = encodeChangeSource(request.SourceBundle)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return prepared, nil
+}
+
+func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID string, request tracker.PublishChangeVersion, now time.Time) (any, error) {
+	var prepared *preparedChangeVersion
+	if mutation := preparedChangeMutation(ctx); mutation != nil {
+		prepared = mutation.publication
+	} else {
+		var err error
+		prepared, err = s.prepareChangeVersion(ctx, tx, scope, item, changeID, request, now)
+		if err != nil {
+			return nil, err
+		}
+	}
+	change, version, raw := prepared.change, prepared.version, prepared.raw
+	if err := bindCloudChangeReferences(ctx, tx, scope, string(change.WorkItemID), nil, request.Artifacts, "artifacts"); err != nil {
+		return nil, err
+	}
+	associated := prepared.associated
+	if mutation := preparedChangeMutation(ctx); mutation != nil {
+		delivery, found, err := readReleaseDelivery(ctx, tx, scope, item)
+		if err != nil {
+			return nil, err
+		}
+		if found != associated || delivery != prepared.delivery {
+			return nil, nativeConflict(change.Revision)
+		}
+	}
+	var err error
 	var activityURL string
 	if version.External != nil {
 		activityURL = version.External.URL
@@ -236,18 +283,12 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	}
 	if version.Source != nil {
 		if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
-			ref, err := preparedChangeContent(ctx, string(scope.organization), request.SourceBundle)
-			if err != nil {
-				return nil, err
-			}
+			ref := prepared.sourceRef
 			if _, err := tx.ExecContext(ctx, `INSERT INTO change_sources(version_id,bundle,object_key,object_sha256,object_bytes,content_bytes) VALUES(?,x'',?,?,?,?)`, version.ID, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize); err != nil {
 				return nil, err
 			}
 		} else {
-			stored, err := encodeChangeSource(request.SourceBundle)
-			if err != nil {
-				return nil, err
-			}
+			stored := prepared.source
 			if _, err := tx.ExecContext(ctx, "INSERT INTO change_sources (version_id, bundle) VALUES (?, ?)", version.ID, stored); err != nil {
 				return nil, err
 			}
@@ -274,9 +315,7 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 			return nil, err
 		}
 	}
-	// A policy that requires no review and no checks makes the version
-	// reviewed as published.
-	if err := promoteReviewedChange(ctx, tx, scope, change, now); err != nil {
+	if err := promotePreparedChange(ctx, tx, scope, change, now); err != nil {
 		return nil, err
 	}
 	return version, nil
