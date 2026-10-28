@@ -294,11 +294,16 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 	if expected == "" && opts.External != nil {
 		expected = opts.ExternalHeadSHA
 	}
-	if opts.External != nil && (!exists || previous != head && previous != opts.ExternalHeadSHA && (!opts.UnresolvedEffect || previous != expected)) {
+	if opts.External != nil && (!exists && !opts.UnresolvedEffect || exists && previous != head && previous != opts.ExternalHeadSHA && (!opts.UnresolvedEffect || previous != expected)) {
 		return githubLandingPull{}, false, false, errors.Join(refuse(LandRefusalHeadMoved, "the retained PR branch moved beyond its recorded source; rebase before retrying publication"), effect("git_push", "none"))
 	}
-	if opts.UnresolvedEffect && previous != head && previous != expected {
+	if opts.UnresolvedEffect && exists && previous != head && previous != expected {
 		return githubLandingPull{}, false, false, errors.Join(refuse(LandRefusalHeadMoved, fmt.Sprintf("the publication branch %s holds %s, not intended head %s; rebase before retrying publication", branch, previous, head)), effect("git_push", "none"))
+	}
+	if previous == head {
+		if err := effect("git_push", "confirmed"); err != nil {
+			return githubLandingPull{}, false, false, err
+		}
 	}
 	headChanged := exists && previous != head
 	var pulls []githubLandingPull
@@ -374,9 +379,9 @@ func (l *LocalGit) publishGitHubPull(ctx context.Context, info Info, issue Issue
 				return githubLandingPull{}, false, headChanged, errors.Join(classifyLandingPush(err, branch), effect("git_push", "ambiguous"))
 			}
 		}
-	}
-	if err := effect("git_push", "confirmed"); err != nil {
-		return githubLandingPull{}, false, headChanged, err
+		if err := effect("git_push", "confirmed"); err != nil {
+			return githubLandingPull{}, false, headChanged, err
+		}
 	}
 	created := false
 	if pull.Number == 0 {

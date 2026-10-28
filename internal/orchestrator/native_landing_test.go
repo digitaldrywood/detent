@@ -101,6 +101,9 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		baseMoves          int
 	}{
 		{name: "absorbed Rework uses the existing landing completion owner", absorbed: true, landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
+		{name: "landed receipt retries an unavailable terminal transition", landing: landed, hubState: "Merging", states: workflow, updateErr: errors.New("hub unavailable"), wantDeferred: true},
+		{name: "landed receipt retries unavailable workflow evidence", landing: landed, hubState: "Merging", statesErr: errors.New("hub unavailable"), wantDeferred: true},
+		{name: "landed receipt completes a same lane Hub response", landing: landed, hubState: "Merging", states: workflow, wantState: "Done", wantMoves: 1, wantComment: "Landed Change Request change_1"},
 		{name: "a landed version is finished by the hub", landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
 		{name: "failed configured CI returns to Rework", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalProtected, Refusal: "Full CI failed", CI: &tracker.NativeLandingCIReceipt{HeadSHA: head, State: "failure", FailedChecks: []string{"Full CI"}}}, hubState: "Merging", states: workflow, wantState: "Rework", wantComment: "Full CI failed", wantMoves: 1},
 		{name: "trigger permission refusal overrides pending CI", landing: &runpkg.NativeLanding{ChangeID: "change_1", VersionID: "version_1", HeadSHA: head, RefusalKind: workspace.LandRefusalProtected, Refusal: "Resource not accessible", CI: &tracker.NativeLandingCIReceipt{HeadSHA: head, State: "pending"}}, hubState: "Merging", states: workflow, wantState: "Rework", wantComment: "Resource not accessible", wantMoves: 1},
@@ -476,6 +479,19 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			if test.landing.Landed {
 				if !ok || completed.Issue.State != test.wantState || retried {
 					t.Fatalf("completed = %#v, present = %t, retried = %t", completed, ok, retried)
+				}
+				before := state.Completed[issue.ID]
+				orch.recordCompletedActiveReviewTransition(&state, before.Issue, before, before.Issue.State)
+				if !reflect.DeepEqual(before, state.Completed[issue.ID]) {
+					t.Fatal("same lane landing completion cleared terminal result")
+				}
+				orch.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, CompletedAt: now.Add(time.Second), Result: result})
+				if !reflect.DeepEqual(before, state.Completed[issue.ID]) || len(tick.comments) != 1 || len(attempts.completions) != 1 {
+					t.Fatal("repeated landing replayed delivery")
+				}
+				plan := newDispatchPlanner(cfg).plan(&state, []connector.Issue{state.Completed[issue.ID].Issue}, now, dispatchPlanHooks{})
+				if len(plan.Dispatches) != 0 {
+					t.Fatalf("landed issue dispatched again: %+v", plan.Dispatches)
 				}
 			} else if ok || !retried || retry.Issue.State != test.wantState || !retry.DueAt.After(now) || retry.DueAt.After(now.Add(orch.cfg.MaxRetryBackoff)) {
 				t.Fatalf("landing refusal lost capped retry: completed=%t retry=%+v", ok, retry)

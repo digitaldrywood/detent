@@ -615,6 +615,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		{name: "required PR refuses an unknown retained branch head", requiredPR: true, publicationReference: "unknown", publicationFailure: "identity", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 2},
 		{name: "required PR refuses unrelated ambiguous external effect", requiredPR: true, publicationUncertain: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "required PR no edit Rework preserves human hold", requiredPR: true, checkPRBeforeFinish: true, reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
+		{name: "required PR reconciles a lost push already on the forge without another push or attempt", requiredPR: true, lostPush: "present", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "required PR retries a lost push absent from the forge", requiredPR: true, lostPush: "absent", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md"), wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "required PR retries a lost push over its recorded head", requiredPR: true, lostPush: "absent", publicationReference: "previous", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", wantChanges: 1, wantVersions: 2},
 		{name: "required PR finishes a lost push over a diverged branch as head moved", requiredPR: true, lostPush: "diverged", reviewer: true, existing: true, published: head, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head, "README.md")},
@@ -739,6 +740,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			base, head := base, head
 			var publicationSource func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)
 			var publicationCalls int
+			var publicationPushes int
 			publicationNumber := 7
 			if test.publicationLanded {
 				publicationNumber = 8
@@ -924,6 +926,9 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 					if test.lostPush != "" {
 						record := opts.PublicationEffect
 						opts.PublicationEffect = func(ctx context.Context, kind, state string, publication workspace.GitHubPublication) error {
+							if kind == "git_push" && state == "pending" {
+								publicationPushes++
+							}
 							if opts.UnresolvedEffect && opts.ExpectedPublicationHead == "" && state == "pending" && test.lostPush == "absent" && !publicationCleared {
 								t.Fatal("publication retried before recording the absent external effect")
 							}
@@ -943,6 +948,9 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 							pushLost = true
 							if err := record(ctx, kind, state, publication); err != nil {
 								return err
+							}
+							if test.lostPush == "present" {
+								nativeChangeGitWithContext(ctx, t, info.Path, "push", "origin", version.HeadSHA+":refs/heads/"+info.Branch)
 							}
 							return errors.Join(errors.New("git push response lost before the remote recorded it"), record(ctx, kind, "ambiguous", publication))
 						}
@@ -2052,6 +2060,13 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				t.Fatalf("repeated finish error = %v", again)
 			}
 			checkChange(test.wantChanges, test.wantVersions)
+			if test.lostPush == "present" {
+				recovery, err := h.admin.Recovery(t.Context(), item)
+				if err != nil || len(recovery.Attempts) != 1 || publicationPushes != 1 || publicationCalls != 1 || publicationHead() != head {
+					t.Fatalf("publication replay started new delivery: attempts=%d pushes=%d PR creates=%d error=%v", len(recovery.Attempts), publicationPushes, publicationCalls, err)
+				}
+			}
+
 			evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
 			if err != nil || evidence.Attempt == nil {
 				t.Fatalf("finalizer projection unavailable: %+v, %v", evidence, err)
@@ -5157,10 +5172,15 @@ func nativeChangeSourceRepo(t *testing.T) string {
 
 func nativeChangeGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
+	nativeChangeGitWithContext(t.Context(), t, dir, args...)
+}
+
+func nativeChangeGitWithContext(ctx context.Context, t *testing.T, dir string, args ...string) {
+	t.Helper()
 	if !filepath.IsAbs(dir) {
 		t.Fatalf("git fixture directory must be absolute: %q", dir)
 	}
-	cmd := exec.CommandContext(t.Context(), "git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_CEILING_DIRECTORIES="+dir)
 	if output, err := cmd.CombinedOutput(); err != nil {
