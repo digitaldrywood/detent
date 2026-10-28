@@ -134,7 +134,7 @@ func publishedChangeSourceSupersedes(detail tracker.ChangeDetail, selected strin
 	}
 	if owner := recovery.SourceAttempt(); owner != nil && owner.Checkpoint.PreservesSource() {
 		checkpoint := owner.Checkpoint
-		if checkpoint.UncertainForgeEffect() || checkpoint.HeadSHA != previous.HeadSHA || checkpoint.WorktreeState != "clean" && checkpoint.WorktreeState != "unpushed" {
+		if checkpoint.UncertainForgeEffect() || checkpoint.HeadSHA != previous.HeadSHA && checkpoint.HeadSHA != current.HeadSHA || checkpoint.WorktreeState != "clean" && checkpoint.WorktreeState != "unpushed" {
 			return false
 		}
 	}
