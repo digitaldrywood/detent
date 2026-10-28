@@ -22,10 +22,6 @@ type reportsOpenIssue struct {
 	partial   bool
 }
 
-// reportsInputs is what the tab series, open work and prior values read:
-// the shipped population of the window and the one before it, cycle timing
-// for any set of shipped issues, and lane residence from the hourly rollups
-// or, while they are incomplete, from raw residence history.
 type reportsInputs struct {
 	states    map[string]tracker.NativeState
 	done      []reportsDone
@@ -99,46 +95,18 @@ func reportsTimelineResidence(in *reportsInputs, timelines []analyticsResidenceT
 	}
 }
 
-// readReportsResidence fills the residence inputs from the hourly rollups, or
-// from raw residence history while the project's rollups are incomplete.
 func readReportsResidence(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow, in *reportsInputs) error {
 	history := operatortool.AnalyticsWindow{From: w.From.Add(-w.To.Sub(w.From)), To: w.To, Bucket: w.Bucket}
-	if _, projected := q.(analyticsRollupReader); !projected {
-		states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, q, scope, history)
-		if err != nil {
-			return err
-		}
-		timelines := make([]analyticsResidenceTimeline, 0, len(issues))
-		for _, issue := range issues {
-			timelines = append(timelines, buildAnalyticsResidenceTimeline(issue, states, w.To))
-		}
-		reportsTimelineResidence(in, timelines, issues, states, w, clipped)
-		return nil
-	}
-	points := []time.Time{history.From, w.From, w.To}
-	for _, span := range reportsSeriesSpans(w) {
-		points = append(points, span.from, span.to)
-	}
-	frames, err := readAnalyticsResidenceFrames(ctx, q, scope, history, points)
+
+	states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, q, scope, history)
 	if err != nil {
 		return err
 	}
-	in.states, in.clipped = frames.states, frames.clipped
-	in.lanes = func(from, to time.Time) map[string]float64 {
-		summary, _ := summarizeResidenceFrames(frames, from, to)
-		return reportsLanesExcept(summary)
+	timelines := make([]analyticsResidenceTimeline, 0, len(issues))
+	for _, issue := range issues {
+		timelines = append(timelines, buildAnalyticsResidenceTimeline(issue, states, w.To))
 	}
-	at := func(instant time.Time) []reportsOpenIssue {
-		out := make([]reportsOpenIssue, 0, len(frames.ids))
-		for _, id := range frames.ids {
-			sample, ok := frames.sample(instant, id)
-			if !ok || sample.State == "" {
-				continue
-			}
-			out = append(out, reportsOpenIssue{id: id, state: sample.State, entered: sample.Entered, started: sample.Started, partial: sample.Partial})
-		}
-		return out
-	}
-	in.open, in.priorOpen = at(w.To), at(w.From)
+	reportsTimelineResidence(in, timelines, issues, states, w, clipped)
 	return nil
+
 }

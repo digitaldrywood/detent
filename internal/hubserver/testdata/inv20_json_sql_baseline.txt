@@ -1,7 +1,6 @@
 db/queries/store.sql 25
 db/queries/worker_generations.sql 1
-internal/hubserver/analytics_capacity_rollups.go 8
-internal/hubserver/analytics_residence_rollups.go 11
+internal/hubserver/analytics_residence_rollups.go 2
 internal/hubserver/app_ui.go 2
 internal/hubserver/chat_usage.go 2
 internal/hubserver/conversation_attachments.go 1
@@ -14,7 +13,7 @@ internal/hubserver/health_email.go 1
 internal/hubserver/hosted_admin.go 2
 internal/hubserver/hosted_auth.go 1
 internal/hubserver/hosted_context.go 1
-internal/hubserver/hosted_diagnostics.go 8
+internal/hubserver/hosted_diagnostics.go 4
 internal/hubserver/hosted_reports.go 4
 internal/hubserver/hosted_reports_filters.go 8
 internal/hubserver/hosted_usage_api.go 1

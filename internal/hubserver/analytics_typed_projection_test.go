@@ -89,24 +89,23 @@ SELECT organization_id,project_id,unixepoch(period),'usage',json_array(attempt_i
 	converted := func() int {
 		t.Helper()
 		var n int
-		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_hourly_rollups WHERE projection_version=1").Scan(&n); err != nil {
+		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_rollup_legacy WHERE projection_version=1").Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		return n
 	}
 	served := func(project string) bool {
 		t.Helper()
-		q, err := analyticsProjectReader(t.Context(), analyticsRollupReader{db}, nativeScope{organization: "org_example", project: tracker.ProjectID(project)})
-		if err != nil {
+		var complete bool
+		if err := db.QueryRowContext(t.Context(), `SELECT NOT EXISTS(SELECT 1 FROM analytics_rollup_legacy WHERE project_id=? AND projection_version IS NULL)`, project).Scan(&complete); err != nil {
 			t.Fatal(err)
 		}
-		_, projected := q.(analyticsRollupReader)
-		return projected
+		return complete
 	}
 	if converted() != 0 || served("project-a") || served("project-b") {
 		t.Fatal("startup rewrote history or an unknown projection selected the rollup reader")
 	}
-	if _, err := db.ExecContext(t.Context(), `CREATE TRIGGER reject_projection BEFORE UPDATE ON analytics_hourly_rollups WHEN NEW.dimension='legacy-001' BEGIN SELECT RAISE(ABORT,'conversion unavailable'); END`); err != nil {
+	if _, err := db.ExecContext(t.Context(), `CREATE TRIGGER reject_projection BEFORE UPDATE ON analytics_rollup_legacy WHEN NEW.dimension='legacy-001' BEGIN SELECT RAISE(ABORT,'conversion unavailable'); END`); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.convertAnalyticsProjections(t.Context()); err == nil || converted() != 1 {
@@ -129,7 +128,7 @@ SELECT organization_id,project_id,unixepoch(period),'usage',json_array(attempt_i
 	}
 	columns := `work_item_id,sequence,type,recorded_at,started_at,updated_at,attempt_id,period,sample_id,sample_at,sample_ns,sample_start_ns,sample_from_ns,skip_source,skip_reason,last_at,last_ns,issue_id,native_id,title,created_at,workflow_state_id,lease_id,status,provider,model,input,cached_input,output,currency,acquired_at,released_at,expires_at,failed_at,scheduler_outcome,scheduler_source,scheduler_reason,analytics_to_state,attempt_role`
 	want := []any{"item", int64(7), "scheduler.decision", "2026-10-25T00:00:00.000000007Z", "2026-10-25T00:00:00Z", "2026-10-25T01:00:00Z", "attempt", "2026-10-25T00:00:00Z", "sample", "2026-10-25T01:00:00Z", int64(1792890000000000000), int64(1792886400000000000), int64(1792886400000000001), "sample-source", "sample-reason", "2026-10-25T01:00:00Z", int64(1792890000000000000), "issue", "item", "Example item", "2026-10-25T00:00:00Z", "state", "lease", "failed", "example-provider", "example-model", int64(100), int64(20), int64(10), "USD", "2026-10-25T00:00:00Z", nil, "2026-10-25T02:00:00Z", "2026-10-25T01:00:00Z", "skipped", "source", "refused", "Merging", "code"}
-	rows, err := db.QueryContext(t.Context(), "SELECT "+columns+",data_json FROM analytics_hourly_rollups WHERE metric='capacity_claim'")
+	rows, err := db.QueryContext(t.Context(), "SELECT "+columns+",data_json FROM analytics_rollup_legacy WHERE metric='capacity_claim'")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +153,7 @@ SELECT organization_id,project_id,unixepoch(period),'usage',json_array(attempt_i
 		t.Fatal(err)
 	}
 	var objects int
-	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM sqlite_schema WHERE (name LIKE 'analytics_%' OR tbl_name='analytics_hourly_rollups') AND lower(sql) LIKE '%json_extract%'`).Scan(&objects); err != nil || objects != 0 {
+	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM sqlite_schema WHERE (name LIKE 'analytics_%' OR tbl_name='analytics_rollup_legacy') AND lower(sql) LIKE '%json_extract%'`).Scan(&objects); err != nil || objects != 0 {
 		t.Fatalf("JSON analytics schema objects remain: %d %v", objects, err)
 	}
 	for _, project := range projects {
@@ -177,7 +176,7 @@ SELECT organization_id,project_id,unixepoch(period),'usage',json_array(attempt_i
 				var count, input, cached, output int
 				var cost float64
 				var dimension string
-				if err := db.QueryRowContext(t.Context(), `SELECT count(*),sum(input),sum(cached_input),sum(output),sum(value),dimension FROM analytics_hourly_rollups WHERE organization_id='org_example' AND project_id=? AND metric='usage' AND model=?`, project, identity.value).Scan(&count, &input, &cached, &output, &cost, &dimension); err != nil {
+				if err := db.QueryRowContext(t.Context(), `SELECT count(*),sum(input),sum(cached_input),sum(output),sum(value),dimension FROM analytics_rollup_legacy WHERE organization_id='org_example' AND project_id=? AND metric='usage' AND model=?`, project, identity.value).Scan(&count, &input, &cached, &output, &cost, &dimension); err != nil {
 					t.Fatal(err)
 				}
 				var historical string
@@ -204,7 +203,7 @@ SELECT organization_id,project_id,unixepoch(period),'usage',json_array(attempt_i
 		remaining := func() int {
 			t.Helper()
 			var count int
-			if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_hourly_rollups WHERE metric IN ('capacity_claim','skip_sample')`).Scan(&count); err != nil {
+			if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_rollup_legacy WHERE metric IN ('capacity_claim','skip_sample')`).Scan(&count); err != nil {
 				t.Fatal(err)
 			}
 			return count
@@ -221,7 +220,7 @@ SELECT organization_id,project_id,unixepoch(period),'usage',json_array(attempt_i
 		}
 		for _, project := range projects {
 			var samples int
-			if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_hourly_rollups WHERE project_id=? AND metric='skip_sample'`, project).Scan(&samples); err != nil || samples != 0 {
+			if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_rollup_legacy WHERE project_id=? AND metric='skip_sample'`, project).Scan(&samples); err != nil || samples != 0 {
 				t.Fatalf("%s: historical samples remaining=%d error=%v", project, samples, err)
 			}
 			out := nativeAnalyticsProject{Window: window}
@@ -359,7 +358,7 @@ func TestAnalyticsCompactionLegacyIdentifiers(t *testing.T) {
 				scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
 				insert := func(metric, dimension, raw string, version any) int64 {
 					t.Helper()
-					result, err := d.db.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,projection_version) VALUES(?,?,?,?,?,2,?,?)`, scope.organization, scope.project, now.Unix(), metric, dimension, raw, version)
+					result, err := d.db.ExecContext(t.Context(), `INSERT INTO analytics_rollup_legacy(organization_id,project_id,hour,metric,dimension,value,data_json,projection_version) VALUES(?,?,?,?,?,2,?,?)`, scope.organization, scope.project, now.Unix(), metric, dimension, raw, version)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -388,7 +387,7 @@ func TestAnalyticsCompactionLegacyIdentifiers(t *testing.T) {
 			}
 			for _, fixture := range []nativeFixture{f, other} {
 				var id, state string
-				if err := d.reader.QueryRowContext(t.Context(), `SELECT issue_id,workflow_state_id FROM analytics_hourly_rollups WHERE project_id=? AND dimension='good'`, fixture.project.ID).Scan(&id, &state); err != nil {
+				if err := d.reader.QueryRowContext(t.Context(), `SELECT issue_id,workflow_state_id FROM analytics_rollup_legacy WHERE project_id=? AND dimension='good'`, fixture.project.ID).Scan(&id, &state); err != nil {
 					t.Fatal(err)
 				}
 				if id != "9007199254740993" || state != id {
@@ -396,7 +395,7 @@ func TestAnalyticsCompactionLegacyIdentifiers(t *testing.T) {
 				}
 				var remaining, count int
 				var total float64
-				if err := d.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_hourly_rollups WHERE project_id=? AND metric IN ('slots','lease')`, fixture.project.ID).Scan(&remaining); err != nil {
+				if err := d.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_rollup_legacy WHERE project_id=? AND metric IN ('slots','lease')`, fixture.project.ID).Scan(&remaining); err != nil {
 					t.Fatal(err)
 				}
 				if remaining != 0 {
@@ -408,7 +407,7 @@ func TestAnalyticsCompactionLegacyIdentifiers(t *testing.T) {
 				if count != 1 || total != 2 {
 					t.Fatalf("compacted totals: %d %g", count, total)
 				}
-				if err := d.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_hourly_rollups WHERE project_id=? AND dimension IN ('bad','bad-sample','bad-residence')`, fixture.project.ID).Scan(&remaining); err != nil {
+				if err := d.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_rollup_legacy WHERE project_id=? AND dimension IN ('bad','bad-sample','bad-residence')`, fixture.project.ID).Scan(&remaining); err != nil {
 					t.Fatal(err)
 				}
 				if remaining != 3 {
@@ -429,91 +428,58 @@ func TestAnalyticsCompactionLegacyIdentifiers(t *testing.T) {
 func TestAnalyticsMaintenanceFailureBatchProgress(t *testing.T) {
 	for _, test := range []struct {
 		name, metric string
-		rows         int
-		version      any
-		clockStep    time.Duration
+		interrupt    bool
 	}{
-		{"projection", "slots", storageConversionRows, nil, 0},
-		{"samples", "capacity_claim", analyticsSampleCompactionBatch, 1, 0},
-		{"residence", "residence_hour", analyticsSampleCompactionBatch, 1, 0},
-		{"time budget", "capacity_claim", 1, 1, analyticsBackfillBudget + time.Nanosecond},
+		{"projection", "slots", false}, {"samples", "capacity_claim", false}, {"residence", "residence_hour", false}, {"interrupted", "residence_hour", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			now := time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC)
-			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
 			other := newNativeFixture(t, f.service, f.project.OrganizationID, "second")
 			d := f.service.database
-			tx, err := d.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
-			for i := range test.rows {
-				if _, err := tx.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,projection_version) VALUES(?,?,?,?,?,2,?,?)`, f.project.OrganizationID, f.project.ID, now.Unix(), test.metric, fmt.Sprintf("bad-%05d", i), `{"At":{"value":"private customer content"}}`, test.version); err != nil {
+			for i := range storageConversionRows + 1 {
+				if _, err := d.db.ExecContext(t.Context(), `INSERT INTO analytics_rollup_legacy(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,0,?,?,2,'{"At":{"value":"private customer content"}}')`, f.project.OrganizationID, f.project.ID, test.metric, fmt.Sprintf("bad-%05d", i)); err != nil {
 					t.Fatal(err)
 				}
-			}
-			goodMetric := "slots"
-			if test.metric == "residence_hour" {
-				goodMetric = test.metric
 			}
 			for _, fixture := range []nativeFixture{f, other} {
-				if _, err := tx.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,projection_version) VALUES(?,?,?,?, 'good',2,?,?)`, fixture.project.OrganizationID, fixture.project.ID, now.Unix(), goodMetric, `{"State":"Done"}`, test.version); err != nil {
+				if _, err := d.db.ExecContext(t.Context(), `INSERT INTO analytics_rollup_legacy(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,0,?,'good',2,'{}')`, fixture.project.OrganizationID, fixture.project.ID, test.metric); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
-			maintenance := func() {
-				t.Helper()
-				restarted := &database{db: d.db, reader: d.reader}
-				elapsed := time.Duration(0)
-				err := restarted.compactAnalyticsSamplesWithClock(t.Context(), now.Add(analyticsSampleRetention+time.Hour), func() time.Time {
-					at := now.Add(elapsed)
-					elapsed += test.clockStep
-					return at
-				})
-				if err != nil && (!strings.Contains(err.Error(), "rowid=") || strings.Contains(err.Error(), "private customer content")) {
-					t.Fatalf("unexpected or unsafe diagnostic: %v", err)
-				}
-			}
-			completed := func(project, dimension string) bool {
-				t.Helper()
-				var done bool
-				query := `SELECT NOT EXISTS(SELECT 1 FROM analytics_hourly_rollups WHERE project_id=? AND dimension=?)`
-				if test.metric == "residence_hour" {
-					query = `SELECT EXISTS(SELECT 1 FROM analytics_residence_retention WHERE project_id=? AND work_item_id=? AND through_hour>0)`
-				}
-				if err := d.reader.QueryRowContext(t.Context(), query, project, dimension).Scan(&done); err != nil {
+			if test.interrupt {
+				if _, err := d.db.ExecContext(t.Context(), `CREATE TRIGGER reject_legacy_delete BEFORE DELETE ON analytics_rollup_legacy WHEN OLD.dimension='bad-00050' BEGIN SELECT RAISE(ABORT,'deletion unavailable'); END`); err != nil {
 					t.Fatal(err)
 				}
-				return done
-			}
-			maintenance()
-			if completed(string(other.project.ID), "good") {
-				t.Fatal("fixture did not exceed the first pass budget")
-			}
-			for pass := 0; pass < test.rows+3 && !completed(string(other.project.ID), "good"); pass++ {
-				maintenance()
-			}
-			for _, fixture := range []nativeFixture{f, other} {
-				if !completed(string(fixture.project.ID), "good") {
-					t.Fatal("valid rows behind a full failed batch did not compact")
+				if err := f.service.discoverStorageFamily(t.Context(), storageConversionFamilies[2], f.service.config.now()); err == nil || strings.Contains(err.Error(), "private customer content") {
+					t.Fatalf("unsafe or missing deletion error: %v", err)
+				}
+				var remaining int
+				if err := d.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_rollup_legacy`).Scan(&remaining); err != nil || remaining != storageConversionRows+3-50 {
+					t.Fatalf("partial commits lost: remaining=%d error=%v", remaining, err)
+				}
+				if _, err := d.db.ExecContext(t.Context(), `DROP TRIGGER reject_legacy_delete`); err != nil {
+					t.Fatal(err)
 				}
 			}
-			var retained int
-			if err := d.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_hourly_rollups WHERE dimension LIKE 'bad-%'`).Scan(&retained); err != nil || retained != test.rows {
-				t.Fatalf("failed rows retained=%d want=%d: %v", retained, test.rows, err)
-			}
-			if _, err := d.db.ExecContext(t.Context(), `UPDATE analytics_hourly_rollups SET data_json='{"State":"Done"}' WHERE project_id=? AND dimension='bad-00000'`, f.project.ID); err != nil {
+			restarted := &Service{database: d, config: f.service.config}
+			if err := restarted.discoverStorageFamily(t.Context(), storageConversionFamilies[2], f.service.config.now()); err != nil {
 				t.Fatal(err)
 			}
-			for pass := 0; pass < test.rows+3 && !completed(string(f.project.ID), "bad-00000"); pass++ {
-				maintenance()
+			if !test.interrupt {
+				var retained int
+				if err := d.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_rollup_legacy`).Scan(&retained); err != nil || retained != 3 {
+					t.Fatalf("batch bound lost: remaining=%d error=%v", retained, err)
+				}
 			}
-			if !completed(string(f.project.ID), "bad-00000") {
-				t.Fatal("repaired row was never retried")
+			if err := restarted.discoverStorageFamily(t.Context(), storageConversionFamilies[2], f.service.config.now()); err != nil {
+				t.Fatal(err)
+			}
+			var remaining int
+			if err := d.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_rollup_legacy`).Scan(&remaining); err != nil || remaining != 0 {
+				t.Fatalf("malformed payloads prevented progress: remaining=%d error=%v", remaining, err)
 			}
 		})
 	}

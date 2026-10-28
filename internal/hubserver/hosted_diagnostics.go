@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -114,6 +113,8 @@ func (s *Service) readHostedDiagnostics(ctx context.Context, analytics nativeAna
 }
 
 func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativeAnalyticsReport, reader nativeQueryer) (diagnosticsReport, error) {
+	ctx = s.runDetailContext(ctx)
+	reader = analyticsSourceReader(reader)
 	w := analytics.Window
 	out := diagnosticsReport{From: w.From, To: w.To, Partial: analytics.NextOffset != nil, Capacity: []diagnosticsCapacity{}, SkipReasons: []nativeAnalyticsSkip{}}
 	for at := w.From; at.Before(w.To); at = at.Add(time.Hour) {
@@ -165,8 +166,13 @@ func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativ
 			return out, err
 		}
 
+		countersAvailable, err := analyticsCountersAvailable(ctx, q, scope)
+		if err != nil {
+			return out, err
+		}
 		var projectReady int
-		if _, rolledUp := q.(analyticsRollupReader); rolledUp {
+
+		if countersAvailable {
 			projectReady, err = readAnalyticsCounter(ctx, q, scope, "ready", w.From, w.To)
 			if err != nil {
 				return out, err
@@ -175,39 +181,34 @@ func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativ
 			if err := q.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT id FROM report_events WHERE organization_id=? AND project_id=? AND type='scheduler.decision' AND scheduler_outcome='ready' AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) LIMIT ?)`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To), maxAnalyticsPopulation+1).Scan(&projectReady); err != nil {
 				return out, err
 			}
+
 		}
+
 		out.Partial = out.Partial || projectReady > maxAnalyticsPopulation
 		ready += min(projectReady, maxAnalyticsPopulation)
-		if _, projected := q.(analyticsRollupReader); projected {
-			observed, partial, err := readDiagnosticsResidenceRollups(ctx, q, scope, &out)
-			if err != nil {
-				return out, err
-			}
-			transitions += observed
-			out.Partial = out.Partial || partial
-		} else {
-			states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, q, scope, w)
-			if err != nil {
-				return out, err
-			}
-			out.Partial = out.Partial || clipped
-			for _, issue := range issues {
-				for _, event := range issue.events {
-					if event.kind == "workflow.transitioned" && !event.at.Before(w.From) && event.at.Before(w.To) {
-						transitions++
-					}
-				}
-			}
-			for i := range out.Capacity {
-				at := minTime(out.Capacity[i].Hour.Add(time.Hour), w.To)
-				depth := diagnosticsTodoDepth(issues, states, clipped, at)
-				if depth == nil {
-					out.Capacity[i].Todo = nil
-				} else if out.Capacity[i].Todo != nil {
-					*out.Capacity[i].Todo += *depth
+
+		states, issues, clipped, err := readAnalyticsResidenceHistory(ctx, q, scope, w)
+		if err != nil {
+			return out, err
+		}
+		out.Partial = out.Partial || clipped
+		for _, issue := range issues {
+			for _, event := range issue.events {
+				if event.kind == "workflow.transitioned" && !event.at.Before(w.From) && event.at.Before(w.To) {
+					transitions++
 				}
 			}
 		}
+		for i := range out.Capacity {
+			at := minTime(out.Capacity[i].Hour.Add(time.Hour), w.To)
+			depth := diagnosticsTodoDepth(issues, states, clipped, at)
+			if depth == nil {
+				out.Capacity[i].Todo = nil
+			} else if out.Capacity[i].Todo != nil {
+				*out.Capacity[i].Todo += *depth
+			}
+		}
+
 		for _, phase := range p.Efficiency {
 			if phase.Name == "planning" {
 				planning += phase.Count
@@ -230,7 +231,8 @@ func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativ
 			return out, err
 		}
 		var entered int
-		if _, rolledUp := q.(analyticsRollupReader); rolledUp {
+
+		if countersAvailable {
 			entered, err = readAnalyticsCounter(ctx, q, scope, "merge_entered", w.From, w.To)
 			if err != nil {
 				return out, err
@@ -239,7 +241,9 @@ func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativ
 			if err := q.QueryRowContext(ctx, `SELECT count(*) FROM report_events WHERE organization_id=? AND project_id=? AND type='workflow.transitioned' AND analytics_to_state='Merging' AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)`, scope.organization, scope.project, formatHubTime(w.From), formatHubTime(w.To)).Scan(&entered); err != nil {
 				return out, err
 			}
+
 		}
+
 		out.MergeEntered += entered
 		projectWaits, err := diagnosticsMergeWaits(ctx, q, scope, p.Landings.Items)
 		if err != nil {
@@ -325,11 +329,8 @@ func diagnosticsMergeWaits(ctx context.Context, q nativeQueryer, scope nativeSco
 	if err != nil {
 		return nil, err
 	}
-	_, projected := q.(analyticsRollupReader)
 	statement := `SELECT json_extract(l.value,'$.landing.landed_at'),e.recorded_at,l.key,e.analytics_to_state FROM json_each(?) l JOIN report_events e ON e.organization_id=? AND e.project_id=? AND e.work_item_id=json_extract(l.value,'$.work_item_id') AND e.type='workflow.transitioned' AND (e.analytics_to_state='Merging' OR e.analytics_projection_version IS NULL) AND julianday(e.recorded_at)<=julianday(json_extract(l.value,'$.landing.landed_at')) ORDER BY l.key,e.recorded_at DESC`
-	if projected {
-		statement = `WITH landings AS (SELECT key,value FROM json_each(?)),waits AS (SELECT l.key,json_extract(l.value,'$.landing.landed_at') AS landed,(SELECT e.sample_at FROM analytics_hourly_rollups e WHERE e.organization_id=? AND e.project_id=? AND e.metric='merge_entry' AND e.sample_id=json_extract(l.value,'$.work_item_id') AND julianday(e.sample_at)<=julianday(json_extract(l.value,'$.landing.landed_at')) ORDER BY e.sample_ns DESC LIMIT 1) AS entered FROM landings l) SELECT landed,entered,key,'{}' FROM waits WHERE entered IS NOT NULL`
-	}
+
 	rows, err := q.QueryContext(ctx, statement, encoded, scope.organization, scope.project)
 	if err != nil {
 		return nil, err
@@ -347,7 +348,7 @@ func diagnosticsMergeWaits(ctx context.Context, q nativeQueryer, scope nativeSco
 		if err := rows.Scan(&landed, &entered, &landing, &raw); err != nil {
 			return nil, err
 		}
-		if !projected && raw != "Merging" {
+		if raw != "Merging" {
 			continue
 		}
 		if seen[landing] {
@@ -416,42 +417,13 @@ func diagnosticsPolicyValues(ctx context.Context, q policyQuerier, scope nativeS
 }
 
 func diagnosticsLeaseCapacity(ctx context.Context, q nativeQueryer, scope nativeScope, out *diagnosticsReport) error {
-	if _, rolledUp := q.(analyticsRollupReader); rolledUp && out.From.Equal(out.From.Truncate(time.Hour)) {
-		rows, err := q.QueryContext(ctx, `SELECT hour,sum(value) FROM (
-SELECT hour,value FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='slots' AND hour>=? AND hour<?
-UNION ALL SELECT hour,total FROM analytics_sample_hours WHERE organization_id=? AND project_id=? AND metric='slots' AND hour>=? AND hour<?) GROUP BY hour`, scope.organization, scope.project, out.From.Unix(), out.To.Truncate(time.Hour).Unix(), scope.organization, scope.project, out.From.Unix(), out.To.Truncate(time.Hour).Unix())
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var hour int64
-			var slots float64
-			if err := rows.Scan(&hour, &slots); err != nil {
-				return errors.Join(err, rows.Close())
-			}
-			i := int(time.Unix(hour, 0).Sub(out.From) / time.Hour)
-			if i >= 0 && i < len(out.Capacity) {
-				out.Capacity[i].Slots += slots
-			}
-		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			return err
-		}
-		if !out.To.Equal(out.To.Truncate(time.Hour)) && len(out.Capacity) > 0 {
-			edge := diagnosticsReport{From: out.To.Truncate(time.Hour), To: out.To, Capacity: out.Capacity[len(out.Capacity)-1:]}
-			return diagnosticsLeaseCapacityFrom(ctx, q, scope, &edge)
-		}
-		return nil
-	}
+
 	return diagnosticsLeaseCapacityFrom(ctx, q, scope, out)
 }
 
 func diagnosticsLeaseCapacityFrom(ctx context.Context, q nativeQueryer, scope nativeScope, out *diagnosticsReport) error {
 	statement := `SELECT l.acquired_at,coalesce(l.released_at,l.expires_at),l.expires_at FROM leases l JOIN issues i ON i.id=l.issue_id WHERE i.organization_id=? AND i.project_id=? AND julianday(l.acquired_at)<julianday(?) AND julianday(coalesce(l.released_at,l.expires_at))>julianday(?)`
-	if _, rolledUp := q.(analyticsRollupReader); rolledUp {
-		return readAnalyticsSlotHours(ctx, q, scope, out)
-	}
+
 	rows, err := q.QueryContext(ctx, statement, scope.organization, scope.project, formatHubTime(out.To), formatHubTime(out.From))
 	if err != nil {
 		return err

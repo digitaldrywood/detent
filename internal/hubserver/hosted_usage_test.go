@@ -727,9 +727,9 @@ type usageHostedFixture struct {
 
 // newUsageHostedFixture is the allocated browser fixture with the hub price
 // table installed and three days of usage seeded against its shared project.
-func newUsageHostedFixture(t *testing.T) usageHostedFixture {
+func newUsageHostedFixture(t *testing.T, configure ...func(*Config)) usageHostedFixture {
 	t.Helper()
-	f := usageHostedFixture{newBrowserHostedFixture(t, true)}
+	f := usageHostedFixture{newBrowserHostedOrganizationFixture(t, true, "org_browser_preview", configure...)}
 	prices := UsageConfig{Currency: "USD", Prices: map[string]UsagePrice{
 		"gpt-6-astra":   {Input: 1.25, CachedInput: 0.125, Output: 10},
 		"claude-opus-5": {Input: 5, CachedInput: 0.5, Output: 25},

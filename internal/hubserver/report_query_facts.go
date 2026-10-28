@@ -57,16 +57,10 @@ func prepareReportsQuery(ctx context.Context, q nativeQueryer, scope nativeScope
 			}
 		}
 	}
-	rollup, projected := q.(analyticsRollupReader)
-	if projected {
-		q = rollup.nativeQueryer
-	}
+	q = analyticsSourceReader(q)
 	prepared, err := prepareNativePageQuery(ctx, q, scope, "", families...)
 	if err != nil {
 		return nil, err
-	}
-	if projected {
-		return analyticsRollupReader{prepared}, nil
 	}
 	return prepared, nil
 }

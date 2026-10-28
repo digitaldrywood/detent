@@ -152,14 +152,6 @@ func nativeFailureClass(f tracker.NativeTerminalFailure) string {
 	return "attempt"
 }
 
-const analyticsRollupFailures = `SELECT a.id,a.work_item_id,a.status,a.started_at,a.updated_at,a.failed_at,
-a.data_json,
-(SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id),
-(SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id)
-FROM (SELECT r.organization_id,r.project_id,r.dimension AS id,r.work_item_id,r.lease_id,r.status,
-r.started_at,r.updated_at,r.data_json,r.failed_at,r.failed_day,n.runner_id,n.role,n.report_requested_model,n.report_resolved_model
-FROM analytics_hourly_rollups r CROSS JOIN report_attempts n ON n.id=r.dimension AND n.organization_id=r.organization_id AND n.project_id=r.project_id WHERE r.metric='attempt' AND r.failed_at IS NOT NULL) a WHERE a.organization_id=? AND a.project_id=?`
-
 func readNativeFailures(ctx context.Context, q nativeQueryer, scope nativeScope, item string, w *operatortool.AnalyticsWindow) ([]nativeFailure, bool, error) {
 	q, err := prepareReportsQuery(ctx, q, scope, "report_attempts")
 	if err != nil {
@@ -171,23 +163,17 @@ a.data_json,
 (SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id)
 FROM report_attempts a WHERE a.organization_id=? AND a.project_id=? AND a.report_failed_at IS NOT NULL`
 	failedAt := "a.report_failed_at"
-	_, projected := q.(analyticsRollupReader)
-	if projected {
-		query, failedAt = analyticsRollupFailures, "a.failed_day"
-	}
+
 	args := []any{scope.organization, scope.project}
 	if item != "" {
 		query += " AND a.work_item_id=?"
 		args = append(args, item)
 	}
 	if w != nil {
-		if projected {
-			query += " AND " + failedAt + ">=julianday(?) AND " + failedAt + "<julianday(?)"
-			args = append(args, formatHubTime(w.From), formatHubTime(w.To))
-		} else {
-			query += " AND " + failedAt + ">=? AND " + failedAt + "<?"
-			args = append(args, changeColumnTime(w.From), changeColumnTime(w.To))
-		}
+
+		query += " AND " + failedAt + ">=? AND " + failedAt + "<?"
+		args = append(args, changeColumnTime(w.From), changeColumnTime(w.To))
+
 	}
 	scoped, scopedArgs, err := reportsScopedClause(ctx, "a")
 	if err != nil {

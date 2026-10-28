@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -16,12 +17,9 @@ type nativeAnalyticsAttemptPopulation struct {
 	Clipped   bool
 }
 
-func analyticsAttemptsInStartedOrder(q nativeQueryer) string {
-	if _, projected := q.(analyticsRollupReader); !projected {
-		return "report_attempts"
-	}
-	return `(SELECT r.organization_id,r.project_id,r.dimension AS id,r.work_item_id,r.lease_id,r.status,r.started_at,r.updated_at,r.data_json,n.runner_id,n.role,n.execution_role,n.report_requested_model,n.report_resolved_model
-FROM analytics_hourly_rollups r INDEXED BY analytics_attempt_started CROSS JOIN report_attempts n ON n.id=r.dimension AND n.organization_id=r.organization_id AND n.project_id=r.project_id WHERE r.metric='attempt')`
+func analyticsAttemptsInStartedOrder(_ nativeQueryer) string {
+	return `(SELECT n.organization_id,n.project_id,n.id,n.work_item_id,n.lease_id,n.status,n.started_at,n.updated_at,p.data_json,p.runner_id,p.role,p.execution_role,p.report_requested_model,p.report_resolved_model
+FROM native_attempts n INDEXED BY native_attempts_analytics_order CROSS JOIN report_attempts p ON p.id=n.id AND p.organization_id=n.organization_id AND p.project_id=n.project_id)`
 }
 
 func loadNativeAnalyticsAttempts(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow, runner string) (nativeAnalyticsAttemptPopulation, error) {
@@ -33,8 +31,8 @@ func loadNativeAnalyticsAttempts(ctx context.Context, q nativeQueryer, scope nat
 	if err != nil {
 		return nativeAnalyticsAttemptPopulation{}, err
 	}
-	rows, err := queryAnalyticsPopulation(ctx, q, "attempts", `SELECT a.id, a.work_item_id, a.status, a.started_at, a.updated_at, (SELECT count(*) FROM attempt_usage u WHERE u.attempt_id=a.id AND u.organization_id=a.organization_id AND u.project_id=a.project_id AND julianday(u.period)>=julianday(?) AND julianday(u.period)<julianday(?)), a.data_json,a.role,a.report_requested_model,a.report_resolved_model
-FROM `+analyticsAttemptsInStartedOrder(q)+` a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.organization_id=? AND a.project_id=? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND (?='' OR coalesce(lr.runner_id,a.runner_id,'')=?)`+scoped+` ORDER BY a.started_at,a.id LIMIT ? OFFSET ?`, append([]any{formatHubTime(w.From), formatHubTime(w.To), scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From), runner, runner}, scopedArgs...)...)
+	rows, err := queryAnalyticsPopulation(ctx, q, "attempts", `SELECT a.id, a.work_item_id, a.status, a.started_at, a.updated_at, (SELECT count(*) FROM attempt_usage u WHERE u.attempt_id=a.id AND +u.organization_id=a.organization_id AND +u.project_id=a.project_id AND julianday(u.period)>=julianday(?) AND julianday(u.period)<julianday(?)), a.data_json,a.role,a.report_requested_model,a.report_resolved_model
+FROM `+analyticsAttemptsInStartedOrder(q)+` a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.organization_id=? AND a.project_id=? AND julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND (?='' OR coalesce(lr.runner_id,a.runner_id,'')=?) AND a.started_at<?`+scoped+` ORDER BY a.started_at,a.id LIMIT ? OFFSET ?`, append([]any{formatHubTime(w.From), formatHubTime(w.To), scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From), runner, runner, w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly)}, scopedArgs...)...)
 	if err != nil {
 		return nativeAnalyticsAttemptPopulation{}, err
 	}

@@ -45,7 +45,6 @@ func (s *Service) maintainNativeRetention(ctx context.Context, now time.Time) er
 		{"expire native records", func(ctx context.Context) error { return s.expireNativeRecords(ctx, now) }},
 		{"archive closed issues", func(ctx context.Context) error { return s.archiveClosedNativeIssues(ctx, now) }},
 		{"compact retained events", func(ctx context.Context) error { return s.compactRetainedEvents(ctx, now) }},
-		{"compact analytics samples", func(ctx context.Context) error { return s.database.compactAnalyticsSamples(ctx, now) }},
 		{"reclaim storage", s.database.reclaimStorage},
 	})
 	return errors.Join(backfillErr, cleanupErr)

@@ -32,7 +32,7 @@ func TestNativeRetentionWebhookMaintenanceCadence(t *testing.T) {
 	if _, err := persistNativeIssue(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, now.Add(-31*24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,?,'slots','example',3,'{}')`, f.project.OrganizationID, f.project.ID, now.Add(-31*24*time.Hour).Unix()); err != nil {
+	if _, err := tx.ExecContext(t.Context(), `INSERT INTO analytics_rollup_legacy(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,?,'slots','example',3,'{}')`, f.project.OrganizationID, f.project.ID, now.Add(-31*24*time.Hour).Unix()); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -102,19 +102,24 @@ VALUES(?,?,'POST /example',?,'hash','{}',?,?)`, f.project.OrganizationID, defaul
 			}
 			var samples, summaries int
 			if err := s.database.reader.QueryRowContext(t.Context(), `SELECT
-(SELECT count(*) FROM analytics_hourly_rollups WHERE project_id=? AND metric='slots'),
+(SELECT count(*) FROM analytics_rollup_legacy WHERE project_id=? AND metric='slots'),
 (SELECT count(*) FROM analytics_sample_hours WHERE project_id=? AND metric='slots')`, f.project.ID, f.project.ID).Scan(&samples, &summaries); err != nil {
 				t.Fatal(err)
 			}
 			wantSamples, wantSummaries := 1, 0
-			if test.after >= time.Hour {
-				wantSamples, wantSummaries = 0, 1
-			}
 			if samples != wantSamples || summaries != wantSummaries {
 				t.Errorf("samples=%d summaries=%d, want %d and %d", samples, summaries, wantSamples, wantSummaries)
 			}
 		})
 	}
+	if err := s.discoverStorageFamily(t.Context(), storageConversionFamilies[2], now); err != nil {
+		t.Fatal(err)
+	}
+	var remaining int
+	if err := s.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_rollup_legacy`).Scan(&remaining); err != nil || remaining != 0 {
+		t.Fatalf("conversion owner left rows=%d error=%v", remaining, err)
+	}
+
 }
 
 func TestNativeRetentionCompletedBackfillsAvoidWriter(t *testing.T) {

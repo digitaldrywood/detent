@@ -76,11 +76,8 @@ type qualityDiscussion struct {
 	tracker.ChangeDiscussion
 }
 
-func analyticsEventsInRecordedOrder(q nativeQueryer) string {
-	if _, projected := q.(analyticsRollupReader); !projected {
-		return "collaboration_events INDEXED BY collaboration_events_analytics_order"
-	}
-	return `(SELECT r.organization_id,r.project_id,r.dimension AS id,r.work_item_id AS work_item_id,r.sequence AS sequence,r.type AS type,r.recorded_at AS recorded_at,e.data_json,e.from_state,e.to_state FROM analytics_hourly_rollups r INDEXED BY analytics_event_order CROSS JOIN main.collaboration_events e ON e.id=r.dimension WHERE r.metric='event') AS collaboration_events`
+func analyticsEventsInRecordedOrder(_ nativeQueryer) string {
+	return "collaboration_events INDEXED BY collaboration_events_analytics_order"
 }
 
 func readQualityLandings(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) ([]nativeAnalyticsLanding, error) {
@@ -295,10 +292,7 @@ WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND e.escap
 	}
 	role := "coalesce(nullif(role,''),execution_role)"
 	workedSource := analyticsAttemptsInStartedOrder(q)
-	if _, projected := q.(analyticsRollupReader); projected {
-		role = "attempt_role"
-		workedSource = "(SELECT organization_id,project_id,dimension AS id,work_item_id,started_at,attempt_role FROM analytics_hourly_rollups INDEXED BY analytics_attempt_started WHERE metric='attempt')"
-	}
+
 	workedIssues, workedArgs := reportsIssueClause(ctx, "work_item_id")
 	rows, err = queryAnalyticsPopulation(ctx, q, "quality_worked", `SELECT work_item_id,started_at FROM `+workedSource+` a WHERE organization_id=? AND project_id=? AND `+role+` IN ('code','rework') AND julianday(started_at)>=julianday(?) AND julianday(started_at)<julianday(?) AND started_at>=? AND started_at<?`+workedIssues+` ORDER BY started_at,id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, changeColumnTime(w.From), changeColumnTime(w.To), w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly)}, workedArgs...)...)
 	if err != nil {

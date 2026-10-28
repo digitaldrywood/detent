@@ -314,43 +314,7 @@ func analyticsCommitPlanViolation(detail string, tables map[string]string, scann
 // over ninety days.
 func seedProductionShapedRollups(t *testing.T, s *Service, scope nativeScope, attempts, usage, events int) {
 	t.Helper()
-	now := s.config.now().UTC().Format(usagePeriodLayout)
-	statements := []struct {
-		query string
-		args  []any
-	}{
-		{`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM n WHERE i<?-1),
-items AS (SELECT native_id,row_number() OVER (ORDER BY native_id)-1 AS k,count(*) OVER () AS total FROM issues WHERE organization_id=? AND project_id=? AND native_id IS NOT NULL),
-shaped AS (SELECT i,strftime('%Y-%m-%dT%H:%M:%SZ',?,'-'||(i*7776000/?)||' seconds') AS at FROM n)
-INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at,analytics_from_state,analytics_to_state,analytics_projection_version)
-SELECT 'bench_event_'||i,?,?,(SELECT native_id FROM items WHERE k=i%total),1000000+i,'workflow.transitioned',1,'{}',json_object('from_state',CASE WHEN i%5=0 THEN 'Done' ELSE 'Todo' END,'to_state','In Progress'),at,CASE WHEN i%5=0 THEN 'Done' ELSE 'Todo' END,'In Progress',1 FROM shaped`,
-			[]any{events, scope.organization, scope.project, now, events, scope.organization, scope.project}},
-		{analyticsSourceEvents + `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,work_item_id,sequence,type,recorded_at,projection_version) SELECT organization_id,project_id,hour,metric,dimension,value,data_json,work_item_id,sequence,type,recorded_at,1 FROM analytics_source_events WHERE organization_id=? AND project_id=? AND dimension LIKE 'bench_event_%'`,
-			[]any{scope.organization, scope.project}},
-		{`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM n WHERE i<?-1),
-items AS (SELECT native_id,row_number() OVER (ORDER BY native_id)-1 AS k,count(*) OVER () AS total FROM issues WHERE organization_id=? AND project_id=? AND native_id IS NOT NULL),
-shaped AS (SELECT i,strftime('%Y-%m-%dT%H:%M:%SZ',?,'-'||(i*7776000/?)||' seconds') AS at FROM n)
-INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json)
-SELECT ?,?,unixepoch(at)/3600*3600,'attempt','bench_attempt_'||i,1,json_object('id','bench_attempt_'||i,'work_item_id',(SELECT native_id FROM items WHERE k=i%total),'lease_id','bench_lease_'||i,
- 'status',CASE WHEN i%7=0 THEN 'failed' ELSE 'succeeded' END,'started_at',at,'updated_at',strftime('%Y-%m-%dT%H:%M:%SZ',at,'+30 minutes'),
- 'failed_at',CASE WHEN i%7=0 THEN strftime('%Y-%m-%dT%H:%M:%SZ',at,'+30 minutes') END,
- 'runtime',json_object('identity',json_object('role','code'),'phases',json_array(json_object('name','code','padding',hex(zeroblob(1500))))))
-FROM shaped`,
-			[]any{attempts, scope.organization, scope.project, now, attempts, scope.organization, scope.project}},
-		{`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i+1 FROM n WHERE i<?-1),
-shaped AS (SELECT i,'bench_attempt_'||(i%?) AS attempt,strftime('%Y-%m-%dT%H:00:00Z',?,'-'||(i*7776000/?)||' seconds') AS period FROM n)
-INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json)
-SELECT ?,?,unixepoch(period),'usage',json_array(attempt,period,'openai','gpt-6-astra','USD'),0.25,json_object('attempt_id',attempt,'period',period,'provider','openai','model','gpt-6-astra','input',1000,'cached_input',0,'output',200,'cost_estimate',0.25,'currency','USD','updated_at',period)
-FROM shaped`,
-			[]any{usage, attempts, now, usage, scope.organization, scope.project}},
-	}
-	for _, statement := range statements {
-		if _, err := s.database.db.ExecContext(t.Context(), statement.query, statement.args...); err != nil {
-			t.Fatalf("seed production-shaped rollups: %v\n%s", err, statement.query)
-		}
-	}
-	projectTestChangeColumns(t, s)
-	convertTestAnalyticsProjections(t, s)
+	seedProductionProject(t, s, scope, productionProjectShape{issues: 60, attempts: attempts, usage: usage, leases: 60, comments: events / 3, days: 90})
 }
 
 type explainedPlanLine struct {
@@ -432,10 +396,10 @@ func rollupRepeatedReadViolations(statement string, plan []explainedPlanLine) []
 // ordered by its index carries the window in the index's own columns, so it
 // reads no payload outside the window and has no bound in its search.
 var windowedRollupReads = []struct{ name, fragment, index, bound string }{
-	{"usage rows", "FROM analytics_attempt_usage u LEFT JOIN analytics_native_attempts a ON a.id = u.attempt_id", "analytics_usage_window", ">?"},
-	{"attempts in window", "julianday(a.started_at)<julianday(?) AND julianday(a.updated_at)>=julianday(?) AND (?=''", "analytics_attempt_started", ""},
-	{"failed attempts in window", "WHERE r.metric='attempt' AND r.failed_at IS NOT NULL", "analytics_attempt_failed", ">?"},
-	{"residence transitions", "type='workflow.transitioned' AND julianday(recorded_at)>=julianday(?)", "analytics_event_order", ">?"},
+	{"usage rows", "FROM attempt_usage u LEFT JOIN native_attempts a ON a.id = u.attempt_id", "attempt_usage_analytics_window", ">?"},
+	{"attempts in window", "a.data_json,a.role,a.report_requested_model,a.report_resolved_model", "native_attempts_analytics_order", "<?"},
+	{"failed attempts in window", "a.report_failed_at IS NOT NULL", "native_attempts_report_failures", ">?"},
+	{"residence transitions", "type='workflow.transitioned' AND julianday(recorded_at)>=julianday(?)", "collaboration_events_analytics_order", ">?"},
 }
 
 // TestAnalyticsRollupReportPlans reads Reports over production-shaped

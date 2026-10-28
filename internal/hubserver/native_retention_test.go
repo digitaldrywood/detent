@@ -188,24 +188,27 @@ func TestNativeRetention(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if _, err := tx.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,?,'slots','example',3,'{}')`, f.project.OrganizationID, f.project.ID, at.Truncate(time.Hour).Unix()); err != nil {
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO analytics_rollup_legacy(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,?,'slots','example',3,'{}')`, f.project.OrganizationID, f.project.ID, at.Truncate(time.Hour).Unix()); err != nil {
 			t.Fatal(err)
 		}
 		f.commit(t, tx)
 		if err := f.service.maintainNativeRetention(t.Context(), f.now); !errors.Is(err, archiveErr) {
 			t.Fatalf("retention error=%v", err)
 		}
+		if err := f.service.discoverStorageFamily(t.Context(), storageConversionFamilies[2], f.now); err != nil {
+			t.Fatal(err)
+		}
 		var deltas, samples, summaries int
 		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_events WHERE conversation_id=? AND type='message.delta'", record.ID).Scan(&deltas); err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_hourly_rollups WHERE project_id=? AND metric='slots'", f.project.ID).Scan(&samples); err != nil {
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_rollup_legacy WHERE project_id=? AND metric='slots'", f.project.ID).Scan(&samples); err != nil {
 			t.Fatal(err)
 		}
 		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM analytics_sample_hours WHERE project_id=? AND metric='slots'", f.project.ID).Scan(&summaries); err != nil {
 			t.Fatal(err)
 		}
-		if deltas != 0 || samples != 0 || summaries != 1 {
+		if deltas != 0 || samples != 0 || summaries != 0 {
 			t.Fatalf("deltas=%d samples=%d summaries=%d", deltas, samples, summaries)
 		}
 	})

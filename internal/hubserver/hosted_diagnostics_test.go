@@ -55,22 +55,20 @@ func TestDiagnosticsTodoHistory(t *testing.T) {
 func TestDiagnosticsProjectionReadBound(t *testing.T) {
 	f := newUsageHostedFixture(t)
 	now := f.service.config.now().UTC().Truncate(time.Hour)
-	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
 	w := operatortool.AnalyticsWindow{From: now.Add(-24 * time.Hour), To: now, Bucket: time.Hour}
-	const payload = `{"runtime":{"landing":{"landed":false,"refusal_kind":"conflict"}}}`
-	for _, project := range []string{f.project, "prj_diagnostics_other"} {
-		if project != f.project {
-			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) SELECT ?,organization_id,'Other project','native',states_json,created_at FROM projects WHERE id=?`, project, f.project); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='attempt'`, scope.organization, project); err != nil {
+	for _, project := range []string{f.project, f.privateProject} {
+		scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(project)}
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
 			t.Fatal(err)
 		}
+		defer tx.Rollback()
+		q := diagnosticsTestQuery(t, tx, scope)
 		for _, age := range []int{2, 2400} {
-			if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?)
-INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,started_at,updated_at,failed_at,failed_day,projection_version,status,work_item_id)
-SELECT ?,?,?,'attempt',?||x,1,?,?,?,?,julianday(?),1,'failed','example-item' FROM n`, 4*maxAnalyticsPopulation, scope.organization, project, now.Add(-time.Duration(age)*time.Hour).Unix(), fmt.Sprintf("diagnostics-%d-", age), payload, formatHubTime(now.Add(-time.Duration(age)*time.Hour)), formatHubTime(now.Add(-time.Duration(age)*time.Hour)), formatHubTime(now.Add(-time.Duration(age)*time.Hour)), formatHubTime(now.Add(-time.Duration(age)*time.Hour))); err != nil {
+			at := formatHubTime(now.Add(-time.Duration(age) * time.Hour))
+			if _, err := tx.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?)
+   INSERT INTO diagnostics_attempts(id,organization_id,project_id,work_item_id,status,started_at,updated_at,data_json,report_failed_at)
+   SELECT ?||x,?,?,'example-item','failed',?,?,?,? FROM n`, 4*maxAnalyticsPopulation, fmt.Sprintf("diagnostics-%d-", age), scope.organization, scope.project, at, at, `{"runtime":{"landing":{"landed":false,"refusal_kind":"conflict"}}}`, at); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -78,16 +76,17 @@ SELECT ?,?,?,'attempt',?||x,1,?,?,?,?,julianday(?),1,'failed','example-item' FRO
 			name, query, index string
 			args               []any
 		}{
-			{"attempts", diagnosticsAttemptsQuery, "analytics_attempt_reports_updated", []any{scope.organization, project, w.From.Add(-24 * time.Hour).Format(time.DateOnly), maxAnalyticsPopulation + 1}},
-			{"failures", diagnosticsFailuresQuery, "analytics_attempt_failed", []any{scope.organization, project, formatHubTime(w.From), formatHubTime(w.To), maxAnalyticsPopulation + 1}},
-			{"usage", diagnosticsUsageQuery, "analytics_usage_window", []any{scope.organization, project, w.From.Format(usagePeriodLayout), w.To.Format(usagePeriodLayout), maxAnalyticsPopulation + 1}},
+			{"attempts", diagnosticsAttemptsQuery, "native_attempts_reports_updated", []any{scope.organization, scope.project, w.From.Add(-24 * time.Hour).Format(time.DateOnly), maxAnalyticsPopulation + 1}},
+			{"failures", diagnosticsFailuresQuery, "native_attempts_report_failures", []any{scope.organization, scope.project, changeColumnTime(w.From), changeColumnTime(w.To), maxAnalyticsPopulation + 1}},
+			{"usage", diagnosticsUsageQuery, "attempt_usage_analytics_window", []any{scope.organization, scope.project, w.From.Format(usagePeriodLayout), w.To.Format(usagePeriodLayout), maxAnalyticsPopulation + 1}},
 		} {
 			t.Run(project+"/"+test.name, func(t *testing.T) {
-				plan := strings.Join(explainQueryPlan(t, f.service.database.reader, test.query, test.args), "\n")
-				if !strings.Contains(plan, "SEARCH") || !strings.Contains(plan, test.index) || strings.Contains(plan, "USE TEMP B-TREE") {
-					t.Fatalf("unindexed diagnostics read: %s", plan)
+				source := strings.ReplaceAll(test.query, "report_attempts", "native_attempts")
+				plan := strings.Join(explainQueryPlan(t, f.service.database.reader, source, test.args), "\n")
+				if !strings.Contains(plan, test.index) || strings.Contains(plan, "USE TEMP B-TREE") {
+					t.Fatalf("unindexed source diagnostics read: %s", plan)
 				}
-				rows, err := f.service.database.reader.QueryContext(t.Context(), test.query, test.args...)
+				rows, err := q.QueryContext(t.Context(), test.query, test.args...)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -99,25 +98,28 @@ SELECT ?,?,?,'attempt',?||x,1,?,?,?,?,julianday(?),1,'failed','example-item' FRO
 				if err := rows.Err(); err != nil {
 					t.Fatal(err)
 				}
-				if count > maxAnalyticsPopulation+1 || (test.name != "usage" && count != maxAnalyticsPopulation+1) {
-					t.Fatalf("rows=%d, want at most %d and a full page for attempts/failures", count, maxAnalyticsPopulation+1)
+				if count > maxAnalyticsPopulation+1 || test.name != "usage" && count != maxAnalyticsPopulation+1 {
+					t.Fatalf("unbounded diagnostics rows=%d", count)
 				}
 			})
 		}
-	}
-	recorded := &diagnosticsRecordedReader{nativeQueryer: f.service.database.reader}
-	project, err := readNativeDiagnostics(t.Context(), analyticsRollupReader{recorded}, scope, operatortool.AnalyticsRequest{Limit: 100}, w)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	for _, query := range recorded.queries {
-		if strings.Contains(query, "a.data_json") {
-			t.Fatalf("diagnostics fetched full attempt details: %s", query)
+		recorded := &diagnosticsRecordedReader{nativeQueryer: q.nativeQueryer}
+		q.nativeQueryer = recorded
+		out, err := readNativeDiagnostics(t.Context(), q, scope, operatortool.AnalyticsRequest{Limit: 100}, w)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	if project.AttemptsObserved != maxAnalyticsPopulation || !project.Partial || len(project.FailureSignatures.Items) != 1 || project.FailureSignatures.Items[0].Count != maxAnalyticsPopulation {
-		t.Fatalf("bounded diagnostics population: %+v", project)
+		for _, query := range recorded.queries {
+			if strings.Contains(query, "a.data_json") {
+				t.Fatalf("diagnostics fetched full attempt population: %s", query)
+			}
+		}
+		if out.AttemptsObserved != maxAnalyticsPopulation || !out.Partial || len(out.FailureSignatures.Items) != 1 || out.FailureSignatures.Items[0].Count != maxAnalyticsPopulation {
+			t.Fatalf("bounded diagnostics population: %+v", out)
+		}
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -153,16 +155,14 @@ func TestDiagnosticsAttemptCandidatesBound(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer tx.Rollback()
-				if _, err := tx.ExecContext(t.Context(), `DELETE FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='attempt'`, scope.organization, scope.project); err != nil {
-					t.Fatal(err)
-				}
+				q := diagnosticsTestQuery(t, tx, scope)
 				if _, err := tx.ExecContext(t.Context(), `WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<?)
-INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,started_at,updated_at,projection_version)
-SELECT ?,?,0,'attempt','candidate-'||x,1,'{"runtime":{"phases":[{"name":"implement"}]}}',?,?,1 FROM n`, population, scope.organization, scope.project, formatHubTime(test.started), formatHubTime(test.updated)); err != nil {
+    INSERT INTO diagnostics_attempts(id,organization_id,project_id,started_at,updated_at,data_json)
+    SELECT 'candidate-'||x,?,?,?,?,'{"runtime":{"phases":[{"name":"implement"}]}}' FROM n`, population, scope.organization, scope.project, formatHubTime(test.started), formatHubTime(test.updated)); err != nil {
 					t.Fatal(err)
 				}
 				out := nativeAnalyticsProject{Window: w}
-				if err := readDiagnosticsAttempts(t.Context(), analyticsRollupReader{tx}, scope, &out); err != nil {
+				if err := readDiagnosticsAttempts(t.Context(), q, scope, &out); err != nil {
 					t.Fatal(err)
 				}
 				if out.AttemptsObserved != test.observed || !out.Partial {
@@ -207,9 +207,7 @@ func TestDiagnosticsRefusalPageByteParity(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(t.Context(), `DELETE FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric IN ('attempt','usage')`, scope.organization, scope.project); err != nil {
-		t.Fatal(err)
-	}
+	q := diagnosticsTestQuery(t, tx, scope)
 	for i, signature := range signatures {
 		attempt := fmt.Sprintf("boundary-%d", i)
 		payload := tracker.NativeRunData{TerminalFailure: &tracker.NativeTerminalFailure{Error: signature.Example}}
@@ -220,12 +218,10 @@ func TestDiagnosticsRefusalPageByteParity(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,started_at,updated_at,failed_at,failed_day,status,work_item_id,projection_version)
-VALUES(?,?,0,'attempt',?,1,?,?,?,?,julianday(?),'failed',?,1)`, scope.organization, scope.project, attempt, string(raw), formatHubTime(now.Add(-2*time.Hour)), formatHubTime(signature.LastSeen), formatHubTime(signature.LastSeen), formatHubTime(signature.LastSeen), signature.WorkItems[0]); err != nil {
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO diagnostics_attempts(id,organization_id,project_id,work_item_id,status,started_at,updated_at,data_json,report_failed_at) VALUES(?,?,?,?,'failed',?,?,?,?)`, attempt, scope.organization, scope.project, signature.WorkItems[0], formatHubTime(now.Add(-2*time.Hour)), formatHubTime(signature.LastSeen), string(raw), changeColumnTime(signature.LastSeen)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.ExecContext(t.Context(), `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json,attempt_id,period,provider,model,input,output,projection_version)
-VALUES(?,?,0,'usage',?,?,'{}',?,?,'provider','model',?,0,1)`, scope.organization, scope.project, attempt, signature.Cost, attempt, formatHubTime(signature.LastSeen), signature.Tokens); err != nil {
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO temp.attempt_usage(attempt_id,organization_id,project_id,period,provider,model,input,cached_input,output,cost_estimate,currency) VALUES(?,?,?,?,'provider','model',?,0,0,?,'USD')`, attempt, scope.organization, scope.project, formatHubTime(signature.LastSeen), signature.Tokens, signature.Cost); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -244,10 +240,9 @@ VALUES(?,?,0,'usage',?,?,'{}',?,?,'provider','model',?,0,1)`, scope.organization
 			expected := append([]nativeFailureSignature(nil), signatures...)
 			firstItem := signatures[0].WorkItems[0]
 			expected[0].WorkItems = []string{firstItem[:len(firstItem)-test.trim]}
-			if _, err := tx.ExecContext(t.Context(), `UPDATE analytics_hourly_rollups SET work_item_id=? WHERE organization_id=? AND project_id=? AND metric='attempt' AND dimension='boundary-0'`, expected[0].WorkItems[0], scope.organization, scope.project); err != nil {
+			if _, err := tx.ExecContext(t.Context(), `UPDATE diagnostics_attempts SET work_item_id=? WHERE organization_id=? AND project_id=? AND id='boundary-0'`, expected[0].WorkItems[0], scope.organization, scope.project); err != nil {
 				t.Fatal(err)
 			}
-			q := analyticsRollupReader{tx}
 			qPrepared, err := prepareReportsQuery(t.Context(), q, scope, "report_attempts")
 			if err != nil {
 				t.Fatal(err)
@@ -283,4 +278,18 @@ VALUES(?,?,0,'usage',?,?,'{}',?,?,'provider','model',?,0,1)`, scope.organization
 			}
 		})
 	}
+}
+
+func diagnosticsTestQuery(t *testing.T, tx *sql.Tx, scope nativeScope) *nativePageQuery {
+	t.Helper()
+	for _, statement := range []string{
+		`CREATE TEMP TABLE diagnostics_attempts(id TEXT PRIMARY KEY,organization_id TEXT,project_id TEXT,work_item_id TEXT,lease_id TEXT,status TEXT,started_at TEXT,updated_at TEXT,data_json TEXT,runner_id TEXT,role TEXT,execution_role TEXT,report_requested_model TEXT,report_resolved_model TEXT,report_failed_at TEXT,has_landing_receipt INTEGER)`,
+		`CREATE TEMP TABLE attempt_usage(attempt_id TEXT,organization_id TEXT,project_id TEXT,period TEXT,provider TEXT,model TEXT,input INTEGER,cached_input INTEGER,output INTEGER,cost_estimate REAL,currency TEXT)`,
+	} {
+		if _, err := tx.ExecContext(t.Context(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	columns := "id,organization_id,project_id,work_item_id,lease_id,status,started_at,updated_at,data_json,runner_id,role,execution_role,report_requested_model,report_resolved_model,report_failed_at,has_landing_receipt"
+	return &nativePageQuery{nativeQueryer: tx, organization: scope.organization, project: scope.project, facts: map[string]nativePageFact{"report_attempts": {name: "report_attempts", columns: columns, known: "SELECT " + columns + " FROM temp.diagnostics_attempts", override: true}}}
 }

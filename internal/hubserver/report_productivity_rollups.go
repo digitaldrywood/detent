@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"slices"
 	"time"
 
@@ -30,7 +31,7 @@ func requireProductivityChangeColumns(ctx context.Context, query nativeQueryer, 
 		return err
 	}
 	if !pending {
-		err = query.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND report_projection_version IS NULL) OR EXISTS(SELECT 1 FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='completion' AND projection_version IS NULL)`, scope.organization, scope.project, id, scope.organization, scope.project).Scan(&pending)
+		err = query.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND report_projection_version IS NULL)`, scope.organization, scope.project, id).Scan(&pending)
 		if err != nil {
 			return err
 		}
@@ -103,18 +104,19 @@ func refreshProductivitySummary(ctx context.Context, tx projectionQuery, scope n
 		}
 	}
 	var cycle any
-	var sampleRaw string
-	err = tx.QueryRowContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='completion' AND sample_id=? ORDER BY hour DESC LIMIT 1`, scope.organization, scope.project, id).Scan(&sampleRaw)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	states, err := analyticsResidenceStates(ctx, tx, scope)
+	if err != nil {
 		return err
 	}
-	if err == nil {
-		var sample analyticsResidenceSample
-		if err := json.Unmarshal([]byte(sampleRaw), &sample); err != nil {
-			return err
-		}
-		if !sample.Partial && sample.Started != nil && sample.LastDone != nil {
-			cycle = sample.LastDone.Sub(*sample.Started).Seconds()
+	latest := time.Unix(0, math.MaxInt64).UTC()
+	issues, err := readShippedResidenceIssues(ctx, tx, scope, []string{id}, latest)
+	if err != nil {
+		return err
+	}
+	for _, issue := range issues {
+		timeline := buildAnalyticsResidenceTimeline(issue, states, latest)
+		if !timeline.issue.partial && timeline.started != nil && len(timeline.done) > 0 {
+			cycle = timeline.done[len(timeline.done)-1].Sub(*timeline.started).Seconds()
 		}
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO report_issue_summaries VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(organization_id,project_id,work_item_id) DO UPDATE SET created_ns=excluded.created_ns,closed_ns=excluded.closed_ns,state=excluded.state,issue_type=excluded.issue_type,priority=excluded.priority,filer_id=excluded.filer_id,filer_kind=excluded.filer_kind,completed_kind=excluded.completed_kind,completed_id=excluded.completed_id,completed_name=excluded.completed_name,cycle_seconds=excluded.cycle_seconds`, scope.organization, scope.project, id, createdAt.UnixNano(), closedNS, state, kind, priority, actor.PrincipalID, filerKind, completedKind, completedID, completedName, cycle)

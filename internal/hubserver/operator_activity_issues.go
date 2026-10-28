@@ -15,9 +15,8 @@ import (
 
 const activityIssueHistoryLimit = 1000
 
-const activityIssueSamplesQuery = `SELECT data_json FROM analytics_hourly_rollups
-WHERE organization_id=? AND project_id=? AND metric='residence_edge'
-AND substr(dimension,1,instr(dimension,':')-1)=? ORDER BY hour DESC,value DESC LIMIT ?`
+const activityIssueSamplesQuery = `SELECT sequence,recorded_at,analytics_from_state,analytics_to_state,CASE WHEN analytics_projection_version IS NULL THEN data_json END FROM collaboration_events
+WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='workflow.transitioned' ORDER BY sequence DESC LIMIT ?`
 
 const activityIssueCandidatesQuery = `WITH live AS MATERIALIZED (
  SELECT a.work_item_id FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id
@@ -259,6 +258,15 @@ func activityIssueWork(issue *operatortool.ActivityIssue, attempts []activityIss
 }
 
 func readActivityIssueSamples(ctx context.Context, q nativeQueryer, organization, project, id string) ([]analyticsResidenceSample, bool, error) {
+	var created, initial string
+	err := q.QueryRowContext(ctx, `SELECT i.created_at,coalesce((SELECT e.analytics_from_state FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' ORDER BY sequence LIMIT 1),ws.detent_state) FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND i.native_id=?`, organization, project, id).Scan(&created, &initial)
+	if err != nil {
+		return nil, false, err
+	}
+	createdAt, err := parseTimeValue(created)
+	if err != nil {
+		return nil, false, err
+	}
 	rows, err := q.QueryContext(ctx, activityIssueSamplesQuery, organization, project, id, activityIssueHistoryLimit+1)
 	if err != nil {
 		return nil, false, err
@@ -266,21 +274,48 @@ func readActivityIssueSamples(ctx context.Context, q nativeQueryer, organization
 	defer rows.Close()
 	samples := []analyticsResidenceSample{}
 	for rows.Next() {
-		var raw string
 		var sample analyticsResidenceSample
-		if err := rows.Scan(&raw); err != nil {
+		var at string
+		var from, to, raw sql.NullString
+		if err := rows.Scan(&sample.Sequence, &at, &from, &to, &raw); err != nil {
 			return nil, false, err
 		}
-		if err := json.Unmarshal([]byte(raw), &sample); err != nil {
+		if raw.Valid {
+			var data tracker.CollaborationData
+			if err := decodeStorageJSON(ctx, []byte(raw.String), &data); err != nil {
+				return nil, false, err
+			}
+			from, to = sql.NullString{String: data.FromState, Valid: true}, sql.NullString{String: data.ToState, Valid: true}
+		}
+		sample.ID, sample.Created, sample.Initial = id, createdAt, initial
+		sample.At, err = parseTimeValue(at)
+		if err != nil {
 			return nil, false, err
 		}
+		sample.Entered, sample.State, sample.AtNS = sample.At, to.String, sample.At.UnixNano()
+		sample.Partial = !from.Valid || !to.Valid || to.String == "" || sample.At.Before(createdAt)
 		samples = append(samples, sample)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, false, err
 	}
 	partial := len(samples) > activityIssueHistoryLimit
 	if partial {
 		samples = samples[:activityIssueHistoryLimit]
 	}
-	return samples, partial, rows.Err()
+	if !partial {
+		if len(samples) > 0 && samples[len(samples)-1].Sequence > 0 {
+			var from string
+			if err := q.QueryRowContext(ctx, `SELECT coalesce(analytics_from_state,'') FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence=?`, organization, project, id, samples[len(samples)-1].Sequence).Scan(&from); err != nil {
+				return nil, false, err
+			}
+			if from != "" {
+				initial = from
+			}
+		}
+		samples = append(samples, analyticsResidenceSample{ID: id, Created: createdAt, At: createdAt, AtNS: createdAt.UnixNano(), Initial: initial, State: initial, Entered: createdAt, Partial: initial == ""})
+	}
+	return samples, partial, nil
 }
 
 func readActivityIssueAttempts(ctx context.Context, q nativeQueryer, organization, project, id string, start, now time.Time) ([]activityIssueAttempt, bool, error) {

@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -13,58 +12,6 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
-
-func refreshAnalyticsAttempts(ctx context.Context, tx *sql.Tx, statements analyticsStatements, organization, project, item string) error {
-	query := `SELECT id,work_item_id,lease_id,status,started_at,updated_at,data_json FROM native_attempts WHERE organization_id=? AND project_id=?`
-	args := []any{organization, project}
-	if item != "" {
-		query += " AND work_item_id=?"
-		args = append(args, item)
-	}
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("read analytics attempt sources: %w", err)
-	}
-	defer rows.Close()
-	type projectedAttempt struct {
-		id, payload string
-		hour        int64
-	}
-	var attempts []projectedAttempt
-	for rows.Next() {
-		var id, workItem, lease, status, started, updated, raw string
-		var failed sql.NullString
-		var observation analyticsAttemptProjection
-		if err := rows.Scan(&id, &workItem, &lease, &status, &started, &updated, &raw); err != nil {
-			return fmt.Errorf("scan analytics attempt source: %w", err)
-		}
-		if err := json.Unmarshal([]byte(raw), &observation); err != nil {
-			return err
-		}
-		failed = analyticsFailureTime(observation.Runtime.Landing, status, updated)
-		payload, err := projectAnalyticsAttempt(raw, id, workItem, lease, status, started, updated, failed)
-		if err != nil {
-			return err
-		}
-		at, err := parseTimeValue(started)
-		if err != nil {
-			return err
-		}
-		attempts = append(attempts, projectedAttempt{id, payload, at.Unix() / 3600 * 3600})
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	for _, attempt := range attempts {
-		if err := writeAnalyticsSample(ctx, tx, organization, project, attempt.hour, "attempt", attempt.id, 1, attempt.payload); err != nil {
-			return fmt.Errorf("write analytics attempt projection: %w", err)
-		}
-	}
-	return nil
-}
 
 type analyticsCommand struct {
 	TimingStage     string                 `json:"timing_stage,omitempty"`

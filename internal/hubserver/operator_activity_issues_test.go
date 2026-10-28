@@ -96,7 +96,7 @@ func TestActivityIssueRead(t *testing.T) {
 		{name: "runner filter excludes other issues", entries: []entry{{"Ready", 0}, {"Build", 20}}, live: true, attempts: 1, runner: "runner_other"},
 		{name: "reporter sees only their issue and baseline", entries: []entry{{"Ready", 0}, {"Shipped", 90}}, finished: true, attempts: 1, worked: 30, reporter: true},
 		{name: "expired attempt is not live", entries: []entry{{"Ready", 0}, {"Build", 20}}, live: true, attempts: 1, expired: true},
-		{name: "live issue remains visible without rollups", entries: []entry{{"Ready", 0}, {"Build", 20}}, live: true, attempts: 1, missing: true},
+		{name: "live issue remains visible without rollups", entries: []entry{{"Ready", 0}, {"Build", 20}}, live: true, attempts: 1, missing: true, worked: 80},
 		{name: "reset excludes earlier attempt phases", entries: []entry{{"Ready", 0}, {"Build", 10}, {"Ideas", 20}, {"Ready", 60}, {"Build", 70}}, live: true, attempts: 2, worked: 40, reset: true},
 		{name: "holding after active does not reset", entries: []entry{{"Ready", 0}, {"Waiting", 20}, {"Build", 60}}, live: true, attempts: 2, worked: 80},
 	} {
@@ -143,13 +143,13 @@ func TestActivityIssueRead(t *testing.T) {
 				}
 
 				for i, e := range tt.entries {
-					if tt.missing {
-						continue
-					}
+
 					at := base.Add(time.Duration(e.second) * time.Second)
-					sample := analyticsResidenceSample{ID: id, Created: base, At: at, Entered: at, Initial: tt.entries[0].lane, State: e.lane, Sequence: int64(i)}
-					if err := writeAnalyticsResidenceSample(t.Context(), tx, scope, "residence_edge", fmt.Sprintf("%s:%d", id, i), sample); err != nil {
-						t.Fatal(err)
+					if i > 0 {
+						data := tracker.CollaborationData{FromState: tt.entries[i-1].lane, ToState: e.lane}
+						if err := appendNativeHistory(t.Context(), tx, scope, id, "workflow.transitioned", data, at); err != nil {
+							t.Fatal(err)
+						}
 					}
 				}
 				for i := range tt.attempts {
@@ -191,7 +191,7 @@ func TestActivityIssueRead(t *testing.T) {
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}
-			assertActivityQueryPlan(t, db, activityIssueSamplesQuery, []any{scope.organization, project, ids[0], activityIssueHistoryLimit + 1}, "analytics_activity_issue_edges")
+			assertActivityQueryPlan(t, db, activityIssueSamplesQuery, []any{scope.organization, project, ids[0], activityIssueHistoryLimit + 1}, "collaboration_events")
 			assertActivityQueryPlan(t, db, activityIssueCandidatesQuery, []any{sql.Named("org", scope.organization), sql.Named("project", project), sql.Named("from", formatHubTime(base)), sql.Named("now", formatHubTime(now)), sql.Named("limit", 100)}, "issues_activity_terminal")
 			if tt.live && tt.finished {
 				slices.Sort(ids)
@@ -256,7 +256,7 @@ func TestActivityIssueRead(t *testing.T) {
 				t.Fatalf("running=%+v finished=%+v", out.RunningIssues, out.FinishedIssues)
 			}
 			for _, row := range rows {
-				if tt.missing && (!row.ClockStartedAt.IsZero() || !row.Partial) {
+				if tt.missing && (row.ClockStartedAt.IsZero() || row.Partial) {
 					t.Fatalf("missing timing=%+v", row)
 				}
 				if !reflect.DeepEqual([]string{row.Lanes[0].Name, row.Lanes[1].Name}, []string{"Ready", "Build"}) || row.WorkedSeconds != tt.worked {

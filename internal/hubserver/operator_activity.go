@@ -69,6 +69,7 @@ func (s *Service) hostedActivity(c echo.Context) error {
 }
 
 func (s *Service) readActivityReport(ctx context.Context, credential apiCredential, r operatortool.ActivityRequest, w operatortool.AnalyticsWindow) (operatortool.ActivityReport, error) {
+	ctx = s.runDetailContext(ctx)
 	ctx, reporterErr := prepareReporterReadContext(ctx, s.database.reader, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential})
 	if reporterErr != nil {
 		return operatortool.ActivityReport{}, reporterErr

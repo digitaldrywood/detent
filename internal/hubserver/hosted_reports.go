@@ -311,6 +311,7 @@ func (s *Service) readHostedReports(ctx context.Context, analytics nativeAnalyti
 }
 
 func (s *Service) readHostedReportsFrom(ctx context.Context, analytics nativeAnalyticsReport, q nativeQueryer) (hostedReportsReport, error) {
+	ctx = s.runDetailContext(ctx)
 	p := analytics.Projects[0]
 	w := analytics.Window
 	out := hostedReportsReport{Pipeline: p.Pipeline, Analytics: p, Stages: []reportsStage{}, Rework: []reportClassTotal{}, Failures: []reportClassTotal{}, Spend: []reportsSpend{}, Throughput: []reportsBucket{}, Series: []reportsSeriesBucket{}, Runners: []reportsRunner{}, Titles: map[string]string{}, Unavailable: append([]string{}, p.Unavailable...)}
@@ -611,9 +612,7 @@ func readReportsCompletion(ctx context.Context, q nativeQueryer, scope nativeSco
 }
 
 func readShippedCompletionTiming(ctx context.Context, q nativeQueryer, scope nativeScope, states map[string]tracker.NativeState, ids []string, to time.Time) (reportsCompletion, error) {
-	if _, projected := q.(analyticsRollupReader); projected {
-		return readReportsCompletionRollups(ctx, q, scope, states, ids, to)
-	}
+
 	issues, err := readShippedResidenceIssues(ctx, q, scope, ids, to)
 	if err != nil {
 		return reportsCompletion{}, err
