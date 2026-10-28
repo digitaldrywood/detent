@@ -93,7 +93,7 @@ func (e hostedOperatorExecutor) ListTools(ctx context.Context) ([]operatortool.D
 			if definition.Name != "list_threads" && definition.Name != "get_thread" {
 				required = apikey.ScopeWrite
 			}
-			if _, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: required, Action: definition.Name}); err == nil {
+			if _, err := e.service.authorizeCatalog(ctx, operatortool.Requirement{Scope: required, Action: definition.Name}); err == nil {
 				definitions = append(definitions, definition)
 			}
 		}
