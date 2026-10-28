@@ -129,7 +129,6 @@ func TestAnalyticsRollupIncremental(t *testing.T) {
 			t.Fatalf("rebuild differs from incremental: before=%v after=%v", rows, got)
 		}
 	}
-	drainTestAnalytics(t, f.service)
 	for _, project := range []tracker.NativeProject{f.project, other.project} {
 		count, err := readAnalyticsCounter(t.Context(), analyticsRollupReader{f.service.database.reader}, nativeScope{organization: project.OrganizationID, project: project.ID}, "ready", now.Truncate(time.Hour), now.Add(time.Hour))
 		if err != nil || count != 1 {
