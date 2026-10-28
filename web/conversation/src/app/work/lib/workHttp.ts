@@ -248,6 +248,7 @@ export interface WorkHttp {
     signal?: AbortSignal,
     cursor?: string,
     direction?: "newest",
+    view?: "detail",
   ) => Promise<AttemptPage>;
   readonly getExplanation: (projectId: string, itemId: string) => Promise<IssueExplanation>;
   /**
@@ -706,8 +707,8 @@ export function makeWorkHttp(options: WorkHttpOptions): WorkHttp {
         related_work_item_id: input.relatedWorkItemId,
         operation: input.operation,
       }),
-    listAttempts: (projectId, itemId, limit, signal, cursor, direction) =>
-      send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit, cursor, direction }), undefined, signal),
+    listAttempts: (projectId, itemId, limit, signal, cursor, direction, view) =>
+      send(AttemptPage, "GET", url(`${itemBase(projectId, itemId)}/attempts`, { limit, cursor, direction, view }), undefined, signal),
     getExplanation: (projectId, itemId) =>
       send(IssueExplanation, "GET", url(`${itemBase(projectId, itemId)}/explanation`)),
     getSourceRecovery: (projectId, itemId) =>

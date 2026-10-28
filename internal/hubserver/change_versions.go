@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -69,13 +68,9 @@ func requireChangeRun(ctx context.Context, tx *sql.Tx, scope nativeScope, change
 		}
 		return nil
 	}
-	var raw string
-	err := tx.QueryRowContext(ctx, `SELECT data_json FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND id = ? AND run_id = ?`, scope.organization, scope.project, change.WorkItemID, request.AttemptID, request.RunID).Scan(&raw)
-	if err != nil {
-		return err
-	}
 	var run tracker.NativeRunData
-	if err := json.Unmarshal([]byte(raw), &run); err != nil {
+	err := tx.QueryRowContext(ctx, `SELECT policy_id,lease_id,fencing_token FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND id = ? AND run_id = ?`, scope.organization, scope.project, change.WorkItemID, request.AttemptID, request.RunID).Scan(&run.PolicyID, &run.LeaseID, &run.FencingToken)
+	if err != nil {
 		return err
 	}
 	if run.PolicyID != request.PolicyID || scope.credential.Scope == apiScopeWorker && (run.LeaseID != request.LeaseID || run.FencingToken != request.FencingToken) {
@@ -92,7 +87,7 @@ func (s *Service) publishChangeVersion(c echo.Context) error {
 	if err := s.prepareChangeSource(c.Request().Context(), nativeRequestScope(c), c.Param("item"), c.Param("change"), c.Request().Method+" "+c.Request().URL.EscapedPath(), request); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	if content, ok := c.Request().Context().Value(changeContentKey{}).(*changeContent); ok && content.call != nil {
+	if content, ok := c.Request().Context().Value(changeContentKey{}).(*changeContent); ok && (content.call != nil || content.store != nil) {
 		ctx := c.Request().Context()
 		scope := nativeRequestScope(c)
 		if _, err := s.authorizeChangeSource(ctx, scope, c.Param("item"), c.Param("change"), c.Request().Method+" "+c.Request().URL.EscapedPath(), request); err != nil {
@@ -196,9 +191,9 @@ func (s *Service) prepareChangeVersion(ctx context.Context, tx *sql.Tx, scope na
 	if err := requireChangeRun(ctx, tx, scope, change, request); err != nil {
 		return nil, err
 	}
-	version := tracker.ChangeVersion{ChangeVersionInput: request.ChangeVersionInput, ID: newNativeID("version"), ChangeID: change.ID, Number: int64(change.Revision), Policy: approved.Policy, ReviewPolicy: rules, Actor: scope.actor(), CreatedAt: now, Checks: []tracker.ChangeCheckExpectation{}}
+	version := tracker.ChangeVersion{ChangeVersionInput: request.ChangeVersionInput, ID: payloadNativeID(ctx, "version"), ChangeID: change.ID, Number: int64(change.Revision), Policy: approved.Policy, ReviewPolicy: rules, Actor: scope.actor(), CreatedAt: payloadTimestamp(ctx, now), Checks: []tracker.ChangeCheckExpectation{}}
 	for _, spec := range rules.RequiredChecks {
-		version.Checks = append(version.Checks, tracker.ChangeCheckExpectation{ChangeCheckSpec: spec, CheckRunID: newNativeID("check")})
+		version.Checks = append(version.Checks, tracker.ChangeCheckExpectation{ChangeCheckSpec: spec, CheckRunID: payloadNativeID(ctx, "check")})
 	}
 	storedVersion := version
 	if version.Validation != nil {
@@ -252,12 +247,15 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 			return nil, nativeConflict(change.Revision)
 		}
 	}
-	var err error
 	var activityURL string
 	if version.External != nil {
 		activityURL = version.External.URL
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO change_versions (id, change_id, number, record_json, policy_revision_id, claim_head_sha, gate_github_pull_request, external_url, activity_external_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", version.ID, change.ID, version.Number, raw, version.PolicyID, version.HeadSHA, version.Policy.Gates.GitHubPullRequest, changeVersionExternalURL(version), activityURL); err != nil {
+	key, err := storedPayloadKey(ctx, string(scope.organization), []byte(raw))
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO change_versions (id, change_id, number, record_json, policy_revision_id, claim_head_sha, gate_github_pull_request, external_url, activity_external_url, payload_object_key, conversion_state) VALUES (?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, 2)", version.ID, change.ID, version.Number, version.PolicyID, version.HeadSHA, version.Policy.Gates.GitHubPullRequest, changeVersionExternalURL(version), activityURL, key); err != nil {
 		return nil, err
 	}
 	if version.Validation != nil {

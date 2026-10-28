@@ -123,18 +123,15 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 		}
 		return result, readErr
 	case operatortool.GetChange, operatortool.GetChangeVersion:
-		tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-		if err != nil {
-			return result, fmt.Errorf("begin snapshot: %w", err)
-		}
-		defer tx.Rollback()
+		readQuery := s.database.reader
+		var err error
 		if name == operatortool.GetChange {
-			result, err = readBoundedChange(ctx, tx, scope, args, result)
+			result, err = readBoundedChange(ctx, readQuery, scope, args, result)
 		} else {
-			if _, err = readChange(ctx, tx, scope, args.ItemID, args.ChangeID); err == nil {
+			if _, err = readChange(ctx, readQuery, scope, args.ItemID, args.ChangeID); err == nil {
 				var version tracker.ChangeVersion
 				var query nativeQueryer
-				query, err = archiveQuery(ctx, tx, args.ItemID, "change", args.ChangeID, 0)
+				query, err = archiveQuery(ctx, readQuery, args.ItemID, "change", args.ChangeID, 0)
 				if err == nil {
 					version, err = readChangeVersion(ctx, query, args.ChangeID, args.VersionID)
 				}
@@ -143,9 +140,6 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 		}
 		if err != nil {
 			return result, fmt.Errorf("load detail: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return result, fmt.Errorf("finish snapshot: %w", err)
 		}
 		return result, nil
 	case operatortool.GetChangeReviewPolicy:
@@ -351,25 +345,22 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 		result.Version = &version
 		readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 		defer cancelRead()
-		tx, err := s.database.reader.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
+		ctx = readCtx
+		readQuery := s.database.reader
+		change, err := readChange(ctx, readQuery, scope, args.ItemID, args.ChangeID)
 		if err != nil {
 			return result, err
 		}
-		defer tx.Rollback()
-		change, err := readChange(ctx, tx, scope, args.ItemID, args.ChangeID)
+		detail, err := readCurrentChangeDetail(ctx, readQuery, scope, change, s.config.now())
 		if err != nil {
 			return result, err
 		}
-		detail, err := readCurrentChangeDetail(ctx, tx, scope, change, s.config.now())
-		if err != nil {
-			return result, err
-		}
-		issue, _, err := readNativeIssue(ctx, tx, scope, args.ItemID)
+		issue, _, err := readNativeIssue(ctx, readQuery, scope, args.ItemID)
 		if err != nil {
 			return result, err
 		}
 		result.Detail, result.WorkItemState = &detail, issue.State
-		return result, tx.Commit()
+		return result, nil
 	}
 	if name == operatortool.CreateChange {
 		var change tracker.ChangeRequest

@@ -219,6 +219,9 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		config.ReconcileBackend = repositoryBackend[0]
 		config.ImportBackend, _ = repositoryBackend[0].(hubserver.ImportBackend)
 	}
+	if config.RunDetails == nil {
+		config.RunDetails = &archivedRunDetails{}
+	}
 	service, err := hubserver.Open(t.Context(), config)
 	if err != nil {
 		t.Fatal(err)

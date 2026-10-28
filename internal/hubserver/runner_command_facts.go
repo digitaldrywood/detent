@@ -17,6 +17,18 @@ func insertNativeCommandReceipt(ctx context.Context, tx *sql.Tx, organization tr
 	return tx.ExecContext(ctx, `INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,created_at,response_pending,response_request_id) VALUES(?,?,?,?,?,?,?,?,?)`, organization, actor, operation, key, hash, raw, at, pending, request)
 }
 
+func insertNativePayloadCommandReceipt(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, actor, operation, key, hash, raw, at string) (sql.Result, error) {
+	pending, request, err := commandResponseFacts(raw)
+	if err != nil {
+		return nil, err
+	}
+	object, err := storedPayloadKey(ctx, string(organization), []byte(raw))
+	if err != nil {
+		return nil, err
+	}
+	return tx.ExecContext(ctx, `INSERT INTO native_commands(organization_id,actor_id,operation,command_key,request_hash,response_json,response_object_key,created_at,response_pending,response_request_id) VALUES(?,?,?,?,?,'{}',?,?,?,?)`, organization, actor, operation, key, hash, object, at, pending, request)
+}
+
 func readUrgentCommandReceipt(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, request string) (string, error) {
 	var known string
 	err := q.QueryRowContext(ctx, `SELECT response_json FROM native_commands WHERE organization_id=? AND operation='urgent_runner_update' AND response_request_id=? AND response_pending IS NOT NULL LIMIT 1`, organization, request).Scan(&known)

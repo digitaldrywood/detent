@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"sync"
@@ -52,10 +53,23 @@ func authorizeStorageConversion(ctx context.Context, tx *sql.Tx, scope nativeSco
 		before = storageConversionDigest(raw, int64(0), "", "", "", "", int64(0), int64(0))
 		after = storageConversionDigest(converted, int64(1), "", "", ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize)
 	}
+	if family.name == "versions" || family.name == "evidence" {
+		before, after = storageConversionDigest(raw, ""), storageConversionDigest(converted, "")
+	}
 	if family.name == "sources" {
 		before = storageConversionDigest(raw, "", "", int64(0), int64(0))
 		after = storageConversionDigest([]byte{}, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize)
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE storage_conversion_progress SET conversion_rowid=?,conversion_before_sha256=?,conversion_after_sha256=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=? AND format_version=?`, row, before, after, scope.organization, scope.project, family.name, aggregate, storageConversionVersion)
+	var policyID string
+	if family.name == "versions" {
+		var version struct {
+			PolicyID string `json:"policy_id"`
+		}
+		if err := json.Unmarshal(raw, &version); err != nil {
+			return err
+		}
+		policyID = version.PolicyID
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE storage_conversion_progress SET conversion_rowid=?,conversion_before_sha256=?,conversion_after_sha256=?,conversion_policy_revision_id=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=? AND format_version=?`, row, before, after, policyID, scope.organization, scope.project, family.name, aggregate, storageConversionVersion)
 	return err
 }

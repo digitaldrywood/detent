@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -301,7 +300,7 @@ WHERE i.organization_id = `,
 
 const nativeCandidateCompletionEvidence = `
  SELECT page.id, page.priority, page.aging_boost, page.landing, page.created, page.identifier, ` + notAlreadyAnsweredClause + `, i.project_id,
- COALESCE(a.data_json, '{}') AS completion_evidence, COALESCE(a.checkpoint_json,'null'), a.claim_facts_known
+ COALESCE(COALESCE(NULLIF(a.payload_object_key,''),a.data_json), '{}') AS completion_evidence, COALESCE(COALESCE(NULLIF(a.checkpoint_object_key,''),a.checkpoint_json),'null'), a.claim_facts_known
  FROM page JOIN issues i ON i.id = page.id
  JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
  JOIN workflow_states ws ON ws.id = i.workflow_state_id
@@ -334,12 +333,12 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 			continue
 		}
 		var run tracker.NativeRunData
-		if err := json.Unmarshal([]byte(runRaw), &run); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(runRaw), &run); err != nil {
 			return nil, 0, 0, err
 		}
 		if !known.Valid && run.AttemptID != "" {
 			var checkpoint *tracker.NativeCheckpoint
-			if err := json.Unmarshal([]byte(checkpointRaw), &checkpoint); err != nil {
+			if checkpoint, err = decodeRunCheckpoint(ctx, q, checkpointRaw); err != nil {
 				return nil, 0, 0, err
 			}
 			if answeredClaimKind(run, checkpoint) != "" {
@@ -381,7 +380,7 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 func readPublishedReview(ctx context.Context, q nativeQueryer, id tracker.WorkItemID, now time.Time) (connector.ChangeReview, string, error) {
 	var scope nativeScope
 	var item, attempt, raw, checkpoint string
-	err := q.QueryRowContext(ctx, `SELECT i.organization_id, i.project_id, i.native_id, a.id, a.data_json, COALESCE(a.checkpoint_json, 'null')
+	err := q.QueryRowContext(ctx, `SELECT i.organization_id, i.project_id, i.native_id, a.id, COALESCE(NULLIF(a.payload_object_key,''),a.data_json), COALESCE(COALESCE(NULLIF(a.checkpoint_object_key,''),a.checkpoint_json), 'null')
  FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
  JOIN workflow_states ws ON ws.id = i.workflow_state_id
  JOIN native_attempts a ON a.organization_id = i.organization_id AND a.project_id = i.project_id AND a.work_item_id = i.native_id
@@ -396,11 +395,11 @@ func readPublishedReview(ctx context.Context, q nativeQueryer, id tracker.WorkIt
 		return connector.ChangeReview{}, "", err
 	}
 	var data tracker.NativeRunData
-	var source tracker.NativeCheckpoint
+	var source *tracker.NativeCheckpoint
 	if err := decodeRunDetail(ctx, q, raw, &data); err != nil {
 		return connector.ChangeReview{}, "", err
 	}
-	if err := json.Unmarshal([]byte(checkpoint), &source); err != nil {
+	if source, err = decodeRunCheckpoint(ctx, q, checkpoint); err != nil {
 		return connector.ChangeReview{}, "", err
 	}
 	disposition := data.Disposition
@@ -415,6 +414,9 @@ func readPublishedReview(ctx context.Context, q nativeQueryer, id tracker.WorkIt
 		return connector.ChangeReview{}, "", nil
 	}
 	if source.WorktreeState != "clean" && source.WorktreeState != "unpushed" || !validCommitID(source.HeadSHA) {
+		return connector.ChangeReview{}, "", nil
+	}
+	if source == nil {
 		return connector.ChangeReview{}, "", nil
 	}
 	if source.EffectState == "pending" || source.EffectState == "ambiguous" {
@@ -452,7 +454,7 @@ func nativeCandidateProjectRanks(ctx context.Context, q nativeQueryer, token str
 		return nil, err
 	}
 	var settings runnerSettings
-	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &settings); err != nil {
 		return nil, err
 	}
 	return settings.ProjectRanks, nil

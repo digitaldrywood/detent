@@ -138,7 +138,11 @@ func writeAnalyticsSample(ctx context.Context, tx nativeExecer, organization, pr
 	if err != nil {
 		return err
 	}
-	args := append([]any{organization, project, hour, metric, dimension, value, raw}, values...)
+	stored := raw
+	if metric == "attempt" {
+		stored = "{}"
+	}
+	args := append([]any{organization, project, hour, metric, dimension, value, stored}, values...)
 	_, err = tx.ExecContext(ctx, analyticsSampleUpsert, args...)
 	return err
 }

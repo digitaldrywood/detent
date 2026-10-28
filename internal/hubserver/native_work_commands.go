@@ -309,7 +309,7 @@ func (s *Service) updateNativeIssueCommand(ctx context.Context, scope nativeScop
 				if bodyChanged || !maps.Equal(contract.ConfirmedSections, confirmed) {
 					contract.ReleaseDelivery = nil
 					contract.ConfirmedSections = confirmed
-					contract.RecordedAt = now
+					contract.RecordedAt = payloadTimestamp(ctx, now)
 					issue.IssueContract = contract
 					contractChanged = true
 				}
@@ -495,14 +495,14 @@ func (s *Service) updateNativeCommentCommand(ctx context.Context, scope nativeSc
 			comment.Body = ""
 		}
 		comment.Revision++
-		comment.UpdatedAt = now
+		comment.UpdatedAt = payloadTimestamp(ctx, now)
 		editor := scope.actor()
 		comment.EditedBy = &editor
 		editedBy, err := marshalNative(editor)
 		if err != nil {
 			return nil, err
 		}
-		_, err = tx.ExecContext(ctx, "UPDATE native_comments SET body = ?, revision = ?, edited_by_json = ?,change_edited_by_kind = ?, updated_at = ?, deleted = ? WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND id = ?", comment.Body, comment.Revision, editedBy, scope.actor().Kind, formatHubTime(now), comment.Deleted, scope.organization, scope.project, comment.WorkItemID, comment.ID)
+		_, err = tx.ExecContext(ctx, "UPDATE native_comments SET body = ?, revision = ?, edited_by_json = ?,change_edited_by_kind = ?, updated_at = ?, deleted = ? WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND id = ?", comment.Body, comment.Revision, editedBy, scope.actor().Kind, formatHubTime(comment.UpdatedAt), comment.Deleted, scope.organization, scope.project, comment.WorkItemID, comment.ID)
 		if err != nil {
 			return nil, err
 		}

@@ -11,7 +11,7 @@ import (
 )
 
 func readRecoveryChangeCheck(ctx context.Context, q nativeQueryer, change, version, run string) (_ []tracker.ChangeCheck, resultErr error) {
-	rows, err := queryChangeLegacyRows(ctx, q, `SELECT record_json,check_run_id FROM change_evidence WHERE change_id=? AND kind='check' AND version_id=? AND (check_run_id=? OR check_run_id IS NULL) ORDER BY sequence DESC`, change, version, run)
+	rows, err := queryChangeLegacyRows(ctx, q, `SELECT COALESCE(NULLIF(payload_object_key,''),record_json),check_run_id FROM change_evidence WHERE change_id=? AND kind='check' AND version_id=? AND (check_run_id=? OR check_run_id IS NULL) ORDER BY sequence DESC`, change, version, run)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +45,7 @@ func readRecoveryChangeCheck(ctx context.Context, q nativeQueryer, change, versi
 }
 
 func legacyRecoveryReviews(ctx context.Context, q nativeQueryer, change, version string) (_ []tracker.ChangeReview, _ map[string]bool, resultErr error) {
-	rows, err := queryChangeLegacyRows(ctx, q, `SELECT sequence,record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' ORDER BY sequence DESC`, change, version)
+	rows, err := queryChangeLegacyRows(ctx, q, `SELECT sequence,COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' ORDER BY sequence DESC`, change, version)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -13,42 +13,131 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
-func readNativeBlockerHistory(ctx context.Context, q nativeQueryer, scope nativeScope, issue tracker.NativeIssue) ([]tracker.CollaborationEvent, error) {
-	rows, err := q.QueryContext(ctx, `SELECT sequence, type, actor_json, CASE WHEN page_projection_ready IS NULL THEN data_json ELSE '{}' END, recorded_at, page_projection_ready, event_revision,from_state,to_state,reason,run_present,run_attempt_id,run_fencing_token FROM collaboration_events
-WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND (event_revision IS NOT NULL OR page_projection_ready IS NULL) ORDER BY sequence`, scope.organization, scope.project, issue.WorkItemID)
+func readNativeBlockerHistory(ctx context.Context, q nativeQueryer, scope nativeScope, issue tracker.NativeIssue, attempt tracker.NativeAttempt) ([]tracker.CollaborationEvent, error) {
+	rows, err := q.QueryContext(ctx, `WITH report AS (
+ SELECT sequence FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='run.finished' ORDER BY sequence DESC LIMIT 1
+), lane AS (
+ SELECT sequence FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='workflow.transitioned' ORDER BY sequence DESC LIMIT 1
+), evidence AS (
+ SELECT sequence FROM report UNION SELECT sequence FROM lane
+)
+SELECT e.sequence,e.type,e.actor_json,`+collaborationPayloadColumn("e")+`,e.recorded_at,e.page_projection_ready,e.event_revision
+FROM evidence JOIN collaboration_events e ON e.organization_id=? AND e.project_id=? AND e.work_item_id=? AND e.sequence=evidence.sequence ORDER BY e.sequence`,
+		scope.organization, scope.project, issue.WorkItemID, scope.organization, scope.project, issue.WorkItemID,
+		scope.organization, scope.project, issue.WorkItemID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var events []tracker.CollaborationEvent
+	type record struct {
+		event           tracker.CollaborationEvent
+		actor, data, at string
+		ready, revision sql.NullInt64
+	}
+	var records []record
 	for rows.Next() {
-		event := tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: issue.WorkItemID}
-		var actor, data, at string
-		var ready, revision, run, fence sql.NullInt64
-		var from, to, reason, attempt sql.NullString
-		if err := rows.Scan(&event.AggregateSequence, &event.Type, &actor, &data, &at, &ready, &revision, &from, &to, &reason, &run, &attempt, &fence); err != nil {
+		row := record{event: tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: issue.WorkItemID}}
+		if err := rows.Scan(&row.event.AggregateSequence, &row.event.Type, &row.actor, &row.data, &row.at, &row.ready, &row.revision); err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal([]byte(actor), &event.Actor); err != nil {
+		records = append(records, row)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	var events []tracker.CollaborationEvent
+	for _, row := range records {
+		event := row.event
+		if err := json.Unmarshal([]byte(row.actor), &event.Actor); err != nil {
 			return nil, err
 		}
-		if ready.Valid && ready.Int64 == 1 {
-			event.Data = tracker.CollaborationData{Revision: tracker.Revision(revision.Int64), FromState: from.String, ToState: to.String, Reason: reason.String}
-			if run.Int64 == 1 {
-				event.Data.Run = &tracker.NativeRunData{AttemptID: attempt.String, FencingToken: tracker.FencingToken(fence.Int64)}
-			}
-		} else if err := decodePageEvent(data, &event.Data); err != nil {
+		if err := decodeRunHistory(ctx, q, row.data, &event.Data); err != nil {
 			return nil, err
+		}
+		if row.ready.Valid && row.ready.Int64 == 1 {
+			event.Data.Revision = tracker.Revision(row.revision.Int64)
 		}
 		if event.Data.Revision == 0 {
 			continue
 		}
-		if event.RecordedAt, err = parseTimeValue(at); err != nil {
+		if event.RecordedAt, err = parseTimeValue(row.at); err != nil {
 			return nil, err
 		}
 		events = append(events, event)
 	}
-	return events, rows.Err()
+	var reportSequence, laneSequence int64
+	reportRevision := attempt.WorkItemRevision
+	for _, event := range events {
+		switch event.Type {
+		case "run.finished":
+			reportSequence = event.AggregateSequence
+			if event.Actor.Kind == "runner" && event.Data.Run != nil && event.Data.Run.AttemptID == attempt.AttemptID && event.Data.Run.FencingToken == attempt.FencingToken {
+				reportRevision = max(reportRevision, event.Data.Revision)
+			}
+		case "workflow.transitioned":
+			laneSequence = event.AggregateSequence
+		}
+	}
+	if reportSequence == 0 {
+		return events, nil
+	}
+	var invalidatingSequence int64
+	err = q.QueryRowContext(ctx, `SELECT sequence FROM collaboration_events
+WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? AND sequence<>?
+AND (page_projection_ready IS NULL OR (event_revision>? AND event_revision<=?
+ AND (type<>'workflow.transitioned' OR actor_kind IS NOT 'runner' OR reason IS NOT 'worker_progress')))
+ORDER BY sequence LIMIT 1`, scope.organization, scope.project, issue.WorkItemID, reportSequence, laneSequence, reportRevision, issue.Revision).Scan(&invalidatingSequence)
+	if err == nil {
+		return nil, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	return events, nil
+}
+
+type nativeRecordedRecovery struct {
+	attempt tracker.NativeAttempt
+	prior   string
+}
+
+func (s *Service) prepareNativeRecordedRecovery(ctx context.Context, scope nativeScope, item string, request tracker.Transition) (nativeRecordedRecovery, error) {
+	ctx = s.freshRunDetailContext(ctx)
+	issue, _, err := readNativeIssue(ctx, s.database.reader, scope, item)
+	if err != nil {
+		return nativeRecordedRecovery{}, err
+	}
+	if err := requireNativeEdit(issue, request.ExpectedRevision); err != nil {
+		return nativeRecordedRecovery{}, err
+	}
+	var latest string
+	if err := s.database.reader.QueryRowContext(ctx, `SELECT id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY fencing_token DESC LIMIT 1`, scope.organization, scope.project, issue.WorkItemID).Scan(&latest); err != nil {
+		return nativeRecordedRecovery{}, err
+	}
+	if latest != request.BlockerAttemptID {
+		return nativeRecordedRecovery{}, tracker.ErrStaleFencingToken
+	}
+	attempt, err := readNativeAttemptRecord(ctx, s.database.reader, scope, string(issue.WorkItemID), request.BlockerAttemptID, s.config.now())
+	if err != nil {
+		return nativeRecordedRecovery{}, err
+	}
+	if attempt.Status != "succeeded" || attempt.Disposition == nil || attempt.Disposition.Status != workpad.StatusBlocked {
+		return nativeRecordedRecovery{}, nativePublicInvalid("Recorded blockers do not authorize recovery")
+	}
+	history, err := readNativeBlockerHistory(ctx, s.database.reader, scope, issue, attempt)
+	if err != nil {
+		return nativeRecordedRecovery{}, err
+	}
+	if !slices.ContainsFunc(history, func(event tracker.CollaborationEvent) bool {
+		return event.Type == "run.finished" && event.Data.Run != nil && event.Data.Run.AttemptID == attempt.AttemptID && event.Data.Run.FencingToken == attempt.FencingToken
+	}) {
+		return nativeRecordedRecovery{}, nativePublicInvalid("Recorded blockers do not authorize recovery")
+	}
+	_, prior, valid := tracker.RecordedNativeBlockers(issue, []tracker.NativeAttempt{attempt}, history)
+	if !valid {
+		return nativeRecordedRecovery{}, nativePublicInvalid("Recorded blockers do not authorize recovery")
+	}
+	return nativeRecordedRecovery{attempt: attempt, prior: prior}, nil
 }
 
 func resolveNativeBlockerReference(ctx context.Context, q nativeQueryer, scope nativeScope, reference string) (tracker.NativeIssue, error) {
@@ -133,17 +222,16 @@ func recordNativeDependencyBlockers(ctx context.Context, tx *sql.Tx, scope nativ
 	return issue, nil
 }
 
-func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, request tracker.Transition, now time.Time) error {
-	var latest string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ? ORDER BY fencing_token DESC LIMIT 1`, scope.organization, scope.project, issue.WorkItemID).Scan(&latest); err != nil {
+func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, request tracker.Transition, prepared nativeRecordedRecovery, now time.Time) error {
+	attempt := prepared.attempt
+	var latest, status string
+	var sequence int64
+	var revision tracker.Revision
+	if err := tx.QueryRowContext(ctx, `SELECT id,sequence,work_item_revision,status FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ? ORDER BY fencing_token DESC LIMIT 1`, scope.organization, scope.project, issue.WorkItemID).Scan(&latest, &sequence, &revision, &status); err != nil {
 		return err
 	}
-	if latest != request.BlockerAttemptID {
+	if latest != request.BlockerAttemptID || latest != attempt.AttemptID || sequence != attempt.Sequence || revision != attempt.WorkItemRevision || status != attempt.Status {
 		return tracker.ErrStaleFencingToken
-	}
-	attempt, err := readNativeAttempt(ctx, tx, scope, string(issue.WorkItemID), latest, now)
-	if err != nil {
-		return err
 	}
 	if request.LeaseID != attempt.LeaseID || request.FencingToken != attempt.FencingToken {
 		return tracker.ErrStaleFencingToken
@@ -166,14 +254,10 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 	if _, err := requireProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project)); err != nil {
 		return err
 	}
-	history, err := readNativeBlockerHistory(ctx, tx, scope, issue)
-	if err != nil {
-		return err
-	}
-	_, prior, valid := tracker.RecordedNativeBlockers(issue, []tracker.NativeAttempt{attempt}, history)
+	prior := prepared.prior
 	disposition := attempt.Disposition
 	reason := strings.ReplaceAll(request.ReasonDetail, " ", "_")
-	if !valid || prior != request.State || disposition.HumanAction || disposition.ReasonCode != "" && (disposition.ReasonCode != "instance_limitation" || !instanceOwnedBlockers(disposition)) || !disposition.Blockers || len(disposition.BlockerEvidence) == 0 || reason != "recorded_blocker_recovery" && reason != "dependency_auto_unblock" {
+	if prior != request.State || disposition.HumanAction || disposition.ReasonCode != "" && (disposition.ReasonCode != "instance_limitation" || !instanceOwnedBlockers(disposition)) || !disposition.Blockers || len(disposition.BlockerEvidence) == 0 || reason != "recorded_blocker_recovery" && reason != "dependency_auto_unblock" {
 		return nativePublicInvalid("Recorded blockers do not authorize recovery")
 	}
 	project, err := readNativeProject(ctx, tx, scope)

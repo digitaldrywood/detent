@@ -140,14 +140,14 @@ func encodeChangeReadCursor(cursor changeReadCursor) (string, error) {
 }
 
 func readChangeSection(ctx context.Context, query nativeQueryer, args operatortool.ChangeArguments, result *operatortool.ChangeResult, cursor changeReadCursor, budget int, single, omitHistory bool) (operatortool.ChangeReadPage, error) {
-	statement := "SELECT sequence, record_json FROM change_evidence WHERE change_id=? AND kind=? AND sequence>? AND sequence<=? AND version_id=? ORDER BY sequence LIMIT ?"
+	statement := "SELECT sequence, COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id=? AND kind=? AND sequence>? AND sequence<=? AND version_id=? ORDER BY sequence LIMIT ?"
 	parameters := []any{cursor.Change, cursor.Section[:len(cursor.Section)-1], cursor.After, cursor.Through, cursor.Version, changeLimit(args) + 1}
 	if cursor.Section == "discussion" {
-		statement = "SELECT sequence, record_json FROM change_evidence WHERE change_id=? AND kind='discussion' AND sequence>? AND sequence<=? AND (version_id=? OR version_id IS NULL OR version_id='') ORDER BY sequence LIMIT ?"
+		statement = "SELECT sequence, COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id=? AND kind='discussion' AND sequence>? AND sequence<=? AND (version_id=? OR version_id IS NULL OR version_id='') ORDER BY sequence LIMIT ?"
 		parameters = []any{cursor.Change, cursor.After, cursor.Through, cursor.Version, changeLimit(args) + 1}
 	}
 	if cursor.Section == "versions" {
-		statement = "SELECT number, record_json FROM change_versions WHERE change_id=? AND number>? AND number<=? AND id!=? ORDER BY number LIMIT ?"
+		statement = "SELECT number, COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_versions WHERE change_id=? AND number>? AND number<=? AND id!=? ORDER BY number LIMIT ?"
 		parameters = []any{cursor.Change, cursor.After, cursor.Through, cursor.Version, changeLimit(args) + 1}
 	}
 	rows, err := query.QueryContext(ctx, statement, parameters...)

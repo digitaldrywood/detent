@@ -1,7 +1,9 @@
 package hubserver
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -51,9 +53,16 @@ func (f dispatchGuardFixture) scope() nativeScope {
 func (f dispatchGuardFixture) candidate(t *testing.T) bool {
 	t.Helper()
 	scope := f.scope()
-	tx := f.tx(t)
+	ctx := f.service.runDetailContext(t.Context())
+	if _, err := readNativeAttemptRecord(ctx, f.service.database.reader, scope, string(f.issue.WorkItemID), f.attempt, f.service.config.now()); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal(err)
+	}
+	tx, err := f.service.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer tx.Rollback()
-	ids, err := claimCandidateIDs(t.Context(), tx, claimCandidateQuery{NativeScope: &scope, Scope: string(f.project.ID)}, nil, nil, nil, nil, nil, nil, nil, nil)
+	ids, err := claimCandidateIDs(ctx, tx, claimCandidateQuery{NativeScope: &scope, Scope: string(f.project.ID)}, nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("claimCandidateIDs() error = %v", err)
 	}
@@ -114,31 +123,37 @@ func (f dispatchGuardFixture) reload(t *testing.T) tracker.NativeIssue {
 // does, through the same acceptCommand path.
 func (f dispatchGuardFixture) continueConversation(t *testing.T, key string) {
 	t.Helper()
-	ctx := t.Context()
-	tx := f.tx(t)
-	record, err := f.chat.store.readConversation(ctx, tx, f.record.OrganizationID, f.record.ProjectID, f.record.ID)
+	ctx := f.service.runDetailContext(t.Context())
+	record, err := f.chat.store.readConversation(ctx, f.chat.store.reader, f.record.OrganizationID, f.record.ProjectID, f.record.ID)
 	if err != nil {
-		t.Fatalf("readConversation() error = %v", err)
+		t.Fatal(err)
 	}
-	command := conversation.Command{
-		Key: key, Kind: conversation.CommandContinue, Text: "Continue with the release notes.",
-		Expected: conversation.Expected{AttemptID: record.Execution.Owner.AttemptID},
+	command := conversation.Command{Key: key, Kind: conversation.CommandContinue, Text: "Continue with the release notes.", Expected: conversation.Expected{AttemptID: record.Execution.Owner.AttemptID}}
+	prepared, err := f.chat.prepareCommandContents(ctx, string(record.OrganizationID), string(record.ProjectID), record.OwnerPrincipalID, record.ID, command)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, _, err := f.chat.store.reserveCommand(ctx, tx, record.ID, key, command.Kind, "hash-"+key, f.service.config.now()); err != nil {
-		t.Fatalf("reserveCommand() error = %v", err)
+	plan, err := f.chat.newPublicationPlan(prepared, record.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := f.chat.acceptCommand(ctx, tx, f.scope(), &record, command, f.service.config.now()); err != nil {
-		t.Fatalf("acceptCommand(continue) error = %v", err)
+	if err := plan.command(prepared, f.scope(), command); err != nil {
+		t.Fatal(err)
 	}
-	if err := f.chat.saveConversation(ctx, tx, &record, f.service.config.now()); err != nil {
-		t.Fatalf("saveConversation() error = %v", err)
-	}
-	if err := tx.Commit(); err != nil {
+	ctx = plan.context(prepared)
+	if err := f.chat.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+		if _, _, err := f.chat.store.reserveCommand(ctx, tx, record.ID, key, command.Kind, "hash-"+key, now); err != nil {
+			return err
+		}
+		if _, err := f.chat.acceptCommand(ctx, tx, f.scope(), &record, command, now); err != nil {
+			return err
+		}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// Approved holds redesign Step 2: historical failures do not answer dispatchable work.
 func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 	t.Parallel()
 	instanceReport := "```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: instance:worker-loopback\n    reason: sandbox refused listener with EPERM\nhuman_action: null\n```"

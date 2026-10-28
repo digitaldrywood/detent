@@ -249,7 +249,7 @@ func (c *NativeConnector) FetchChange(ctx context.Context, item tracker.NativeWo
 func (c *NativeConnector) FetchNativeAttempts(ctx context.Context, item tracker.NativeWorkItemID) ([]tracker.NativeAttempt, error) {
 	result := []tracker.NativeAttempt{}
 	for cursor := ""; ; {
-		page, err := c.client.Attempts(ctx, item, cursor)
+		page, err := c.client.AttemptsDetailPage(ctx, item, cursor, 100)
 		if err != nil {
 			return nil, err
 		}

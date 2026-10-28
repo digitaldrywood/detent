@@ -278,7 +278,7 @@ func newBrowserHostedFixtureServing(t *testing.T, allocated bool, organization s
 		members: make(map[string]auth.Membership), sessions: make(map[string]auth.HostedIdentity), invitations: make(map[string]auth.Invitation), inviteRoles: make(map[string]string), authorizations: make(map[string]string), codes: make(map[string]auth.Identity),
 	}
 	legacyPlans := pilotHostedPlans()
-	cfg := Config{InitialAdminToken: []byte(testHubAdminToken), DatabasePath: filepath.Join(t.TempDir(), "hosted-browser.db"), GitHubDisabled: true, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Hosted: &HostedConfig{
+	cfg := Config{Content: (&changeObjectFixture{}).call, InitialAdminToken: []byte(testHubAdminToken), DatabasePath: filepath.Join(t.TempDir(), "hosted-browser.db"), GitHubDisabled: true, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Hosted: &HostedConfig{
 		Plans: &legacyPlans, OrganizationID: organization, BootstrapSubject: "user_browser_owner", PublicURL: base, Provider: provider,
 		StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
 		Directory: []HostedDestination{{OrganizationID: organization, WorkOSOrganizationID: "org_browser_provider", PublicURL: base}},

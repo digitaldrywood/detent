@@ -14,8 +14,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
+const analyticsAttemptPayload = `COALESCE(NULLIF(r.payload_object_key,''),NULLIF(r.data_json,'{}'),(SELECT COALESCE(NULLIF(n.payload_object_key,''),n.data_json) FROM main.native_attempts n WHERE n.organization_id=r.organization_id AND n.project_id=r.project_id AND n.id=r.dimension),'{}')`
+
 func refreshAnalyticsAttempts(ctx context.Context, tx *sql.Tx, statements analyticsStatements, organization, project, item string) error {
-	query := `SELECT id,work_item_id,lease_id,status,started_at,updated_at,data_json FROM native_attempts WHERE organization_id=? AND project_id=?`
+	query := `SELECT id,work_item_id,lease_id,status,started_at,updated_at,CASE WHEN payload_object_key='' THEN data_json ELSE '{}' END,payload_object_key,report_failed_at,coalesce(nullif(role,''),execution_role,'') FROM native_attempts WHERE organization_id=? AND project_id=?`
 	args := []any{organization, project}
 	if item != "" {
 		query += " AND work_item_id=?"
@@ -27,21 +29,29 @@ func refreshAnalyticsAttempts(ctx context.Context, tx *sql.Tx, statements analyt
 	}
 	defer rows.Close()
 	type projectedAttempt struct {
-		id, payload string
-		hour        int64
+		id, payload, key, role string
+		hour                   int64
 	}
 	var attempts []projectedAttempt
 	for rows.Next() {
-		var id, workItem, lease, status, started, updated, raw string
+		var id, workItem, lease, status, started, updated, raw, key, role string
 		var failed sql.NullString
 		var observation analyticsAttemptProjection
-		if err := rows.Scan(&id, &workItem, &lease, &status, &started, &updated, &raw); err != nil {
+		if err := rows.Scan(&id, &workItem, &lease, &status, &started, &updated, &raw, &key, &failed, &role); err != nil {
 			return fmt.Errorf("scan analytics attempt source: %w", err)
 		}
 		if err := json.Unmarshal([]byte(raw), &observation); err != nil {
 			return err
 		}
-		failed = analyticsFailureTime(observation.Runtime.Landing, status, updated)
+		if role == "" {
+			role = observation.Runtime.Identity.Role
+			if role == "" {
+				role = observation.Identity.Role
+			}
+		}
+		if !failed.Valid {
+			failed = analyticsFailureTime(observation.Runtime.Landing, status, updated)
+		}
 		payload, err := projectAnalyticsAttempt(raw, id, workItem, lease, status, started, updated, failed)
 		if err != nil {
 			return err
@@ -50,7 +60,7 @@ func refreshAnalyticsAttempts(ctx context.Context, tx *sql.Tx, statements analyt
 		if err != nil {
 			return err
 		}
-		attempts = append(attempts, projectedAttempt{id, payload, at.Unix() / 3600 * 3600})
+		attempts = append(attempts, projectedAttempt{id, payload, key, role, at.Unix() / 3600 * 3600})
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -61,6 +71,9 @@ func refreshAnalyticsAttempts(ctx context.Context, tx *sql.Tx, statements analyt
 	for _, attempt := range attempts {
 		if err := writeAnalyticsSample(ctx, tx, organization, project, attempt.hour, "attempt", attempt.id, 1, attempt.payload); err != nil {
 			return fmt.Errorf("write analytics attempt projection: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE analytics_hourly_rollups SET payload_object_key=?,attempt_role=? WHERE organization_id=? AND project_id=? AND metric='attempt' AND dimension=?", attempt.key, attempt.role, organization, project, attempt.id); err != nil {
+			return err
 		}
 	}
 	return nil

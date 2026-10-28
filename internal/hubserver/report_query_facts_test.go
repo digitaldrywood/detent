@@ -3,6 +3,7 @@ package hubserver
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +15,8 @@ import (
 
 func TestReportTypedQueryCompatibility(t *testing.T) {
 	now := time.Date(2026, 10, 25, 12, 0, 0, 7, time.UTC)
-	first := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	objects := &changeObjectFixture{}
+	first := newDefaultNativeFixture(t, Config{Content: objects.call, now: func() time.Time { return now }})
 	if err := first.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +60,7 @@ func TestReportTypedQueryCompatibility(t *testing.T) {
 		var attempts []attempt
 		for index, identity := range []struct{ role, requested, resolved, execution string }{{"code", "requested", "resolved", ""}, {"rework", "requested-only", "", ""}, {"", "", "", ""}, {"", "", "", "code"}} {
 			data := tracker.NativeRunData{RunnerID: fmt.Sprintf("runner-%s-%d", scope.project, index), Runtime: &tracker.NativeRuntimeObservation{Identity: agentidentity.Identity{Role: identity.role, RequestedModel: agentidentity.Value{Value: identity.requested}, ResolvedModel: agentidentity.Value{Value: identity.resolved}}}}
+			data.Runtime.Phases = []tracker.NativePhase{{Name: "implementation", StartedAt: now.Add(-time.Minute), FinishedAt: now}}
 			if identity.execution != "" {
 				data.Identity = &tracker.NativeExecutionIdentity{Role: identity.execution}
 			}
@@ -180,6 +183,70 @@ func TestReportTypedQueryCompatibility(t *testing.T) {
 				}
 			})
 		}
+		t.Run(string(scope.project)+"/archived detail", func(t *testing.T) {
+			ctx := f.service.runDetailContext(t.Context())
+			landings := []nativeAnalyticsLanding{{WorkItemID: issue.WorkItemID, Landing: tracker.ChangeLanding{LandedAt: window.To}}}
+			receipts, err := readLandingAttemptReceipts(ctx, f.service.database.reader, scope, landings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			population, err := loadNativeAnalyticsAttempts(ctx, f.service.database.reader, scope, window, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			diagnostics, err := readNativeDiagnostics(ctx, f.service.database.reader, scope, operatortool.AnalyticsRequest{Limit: 100}, window)
+			if err != nil {
+				t.Fatal(err)
+			}
+			failures, partial, err := readNativeFailures(ctx, f.service.database.reader, scope, "", &window)
+			if err != nil || partial {
+				t.Fatalf("read legacy failures: %v", err)
+			}
+			for _, family := range storageConversionFamilies {
+				if family.name == "attempts" {
+					if err := f.service.convertObjectPayloadFamily(ctx, family, now); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			f.service.database.reader.SetMaxOpenConns(1)
+			defer f.service.database.reader.SetMaxOpenConns(readerConnections)
+			for _, unknown := range []bool{false, true} {
+				if _, err := f.service.database.db.ExecContext(ctx, "UPDATE native_attempts SET report_projection_version=? WHERE project_id=?", map[bool]any{false: 1, true: nil}[unknown], scope.project); err != nil {
+					t.Fatal(err)
+				}
+				t.Run(fmt.Sprintf("receipts/unknown=%t", unknown), func(t *testing.T) {
+					got, err := readLandingAttemptReceipts(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, landings)
+					if err != nil || !reflect.DeepEqual(got, receipts) {
+						t.Fatalf("archiving changed landing receipts: got=%v want=%v error=%v", got, receipts, err)
+					}
+				})
+				t.Run(fmt.Sprintf("diagnostics report/unknown=%t", unknown), func(t *testing.T) {
+					got, err := readNativeDiagnostics(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, operatortool.AnalyticsRequest{Limit: 100}, window)
+					if err != nil || !reflect.DeepEqual(got, diagnostics) {
+						t.Fatalf("archiving changed Diagnostics report: error=%v", err)
+					}
+				})
+				t.Run(fmt.Sprintf("rollup diagnostics/unknown=%t", unknown), func(t *testing.T) {
+					got, err := readNativeDiagnostics(f.service.runDetailContext(t.Context()), analyticsRollupReader{f.service.database.reader}, scope, operatortool.AnalyticsRequest{Limit: 100}, window)
+					if err != nil || !reflect.DeepEqual(got, diagnostics) {
+						t.Fatalf("rollups changed archived Diagnostics report: error=%v", err)
+					}
+				})
+				t.Run(fmt.Sprintf("failures/unknown=%t", unknown), func(t *testing.T) {
+					got, partial, err := readNativeFailures(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, "", &window)
+					if err != nil || partial || !reflect.DeepEqual(got, failures) {
+						t.Fatalf("archiving changed failure detail: error=%v", err)
+					}
+				})
+				t.Run(fmt.Sprintf("diagnostics/unknown=%t", unknown), func(t *testing.T) {
+					got, err := loadNativeAnalyticsAttempts(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, window, "")
+					if err != nil || !reflect.DeepEqual(got, population) {
+						t.Fatalf("archiving changed Diagnostics attempt detail: error=%v", err)
+					}
+				})
+			}
+		})
 	}
 }
 

@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"strconv"
 
@@ -38,7 +37,7 @@ func readPendingLandingFact(ctx context.Context, q nativeQueryer, id tracker.Wor
 			return "", false, err
 		}
 		var change tracker.ChangeRequest
-		if err := json.Unmarshal([]byte(raw), &change); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &change); err != nil {
 			return "", false, err
 		}
 		version = change.CurrentVersion
@@ -48,11 +47,11 @@ func readPendingLandingFact(ctx context.Context, q nativeQueryer, id tracker.Wor
 		if version == "" {
 			return project, false, nil
 		}
-		if err := q.QueryRowContext(ctx, `SELECT record_json FROM change_versions WHERE change_id=? AND id=?`, changeID, version).Scan(&raw); err != nil {
+		if err := q.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_versions WHERE change_id=? AND id=?`, changeID, version).Scan(&raw); err != nil {
 			return "", false, err
 		}
 		var value tracker.ChangeVersion
-		if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &value); err != nil {
 			return "", false, err
 		}
 		head = value.HeadSHA
@@ -61,7 +60,7 @@ func readPendingLandingFact(ctx context.Context, q nativeQueryer, id tracker.Wor
 		return project, false, nil
 	}
 	var raw string
-	err = q.QueryRowContext(ctx, `SELECT a.data_json FROM issues i JOIN native_attempts a ON a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.work_item_id=i.native_id WHERE i.id=? AND a.work_item_revision>=i.revision AND a.dispatch_generation>=i.dispatch_generation AND a.fencing_token=(SELECT max(latest.fencing_token) FROM native_attempts latest WHERE latest.organization_id=i.organization_id AND latest.project_id=i.project_id AND latest.work_item_id=i.native_id)`, id).Scan(&raw)
+	err = q.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(a.payload_object_key,''),a.data_json) FROM issues i JOIN native_attempts a ON a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.work_item_id=i.native_id WHERE i.id=? AND a.work_item_revision>=i.revision AND a.dispatch_generation>=i.dispatch_generation AND a.fencing_token=(SELECT max(latest.fencing_token) FROM native_attempts latest WHERE latest.organization_id=i.organization_id AND latest.project_id=i.project_id AND latest.work_item_id=i.native_id)`, id).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return project, false, nil
 	}

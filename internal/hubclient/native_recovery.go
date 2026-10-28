@@ -36,7 +36,7 @@ func (c *NativeClient) Recovery(ctx context.Context, id tracker.NativeWorkItemID
 	if err != nil {
 		return result, err
 	}
-	err = c.client.requestWithHeaders(ctx, http.MethodGet, c.base()+path+"?view=recovery", http.Header{"X-Detent-Recovery-Projection": {"bounded"}, "X-Detent-Recovery-Body": {"fragments"}}, nil, &result)
+	err = c.client.requestWithHeaders(ctx, http.MethodGet, c.base()+path+"?view=recovery", http.Header{"X-Detent-Recovery-Detail": {"full"}, "X-Detent-Recovery-Projection": {"bounded"}, "X-Detent-Recovery-Body": {"fragments"}}, nil, &result)
 	if err == nil && result.Continuation != nil {
 		return tracker.NativeRecovery{}, errors.New("read recovery: unbounded detail continuation is not candidate hydration")
 	}

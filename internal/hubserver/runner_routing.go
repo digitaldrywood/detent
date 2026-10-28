@@ -204,7 +204,7 @@ LEFT JOIN project_policies pp ON pp.scope = lp.scope ` + nativeLandingCapacityJo
 				}
 				lease.ExpiresAt = end
 				if raw != "" {
-					if err := json.Unmarshal([]byte(raw), &lease.Policy); err != nil {
+					if err := decodeStorageJSON(ctx, []byte(raw), &lease.Policy); err != nil {
 						return r, err
 					}
 				}
@@ -460,7 +460,7 @@ func (s *Service) updateRunnerRoutingCommand(ctx context.Context, scope nativeSc
 			if err := tx.QueryRowContext(ctx, "SELECT routing_settings_json FROM runner_identities WHERE id=?", r.RunnerID).Scan(&raw); err != nil {
 				return nil, err
 			}
-			if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+			if err := decodeStorageJSON(ctx, []byte(raw), &settings); err != nil {
 				return nil, err
 			}
 			change.ProjectRanks = settings.ProjectRanks
@@ -785,7 +785,7 @@ func readRunnerProjectRanks(ctx context.Context, db nativeQueryer, runnerID stri
 	}
 	var settings runnerSettings
 	if legacy.Valid {
-		if err := json.Unmarshal([]byte(legacy.String), &settings); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(legacy.String), &settings); err != nil {
 			return nil, err
 		}
 	}
@@ -859,7 +859,7 @@ func readRunnerClaimState(ctx context.Context, db nativeQueryer, scope nativeSco
 	state.PolicyIDs = map[tracker.ProjectID]string{scope.project: approved}
 
 	released, err := db.QueryContext(ctx, `SELECT DISTINCT a.work_item_id FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id JOIN lease_runners lr ON lr.lease_id=l.lease_id
- WHERE a.organization_id=? AND a.project_id=? AND lr.runner_id=? AND l.machine_id=? AND l.released_at IS NOT NULL AND a.status IN ('running','interrupted') AND a.checkpoint_json IS NOT NULL ORDER BY a.work_item_id`, scope.organization, scope.project, snapshot.RunnerID, scope.credential.Runner.MachineID)
+ WHERE a.organization_id=? AND a.project_id=? AND lr.runner_id=? AND l.machine_id=? AND l.released_at IS NOT NULL AND a.status IN ('running','interrupted') AND COALESCE(NULLIF(a.checkpoint_object_key,''),a.checkpoint_json) IS NOT NULL ORDER BY a.work_item_id`, scope.organization, scope.project, snapshot.RunnerID, scope.credential.Runner.MachineID)
 	if err != nil {
 		return err
 	}

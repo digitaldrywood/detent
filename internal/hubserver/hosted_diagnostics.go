@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -89,12 +88,7 @@ func (s *Service) hostedDiagnostics(c echo.Context) error {
 func (s *Service) readCloudDiagnostics(ctx context.Context, credential apiCredential, w operatortool.AnalyticsWindow) (diagnosticsReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return diagnosticsReport{}, err
-	}
-	defer tx.Rollback()
-	q := analyticsRollupReader{tx}
+	q := analyticsRollupReader{s.database.reader}
 	analytics, err := s.readAnalyticsReportFor(ctx, credential, operatortool.AnalyticsRequest{Limit: 100}, w, q, true)
 	if err != nil {
 		return diagnosticsReport{}, err
@@ -105,12 +99,7 @@ func (s *Service) readCloudDiagnostics(ctx context.Context, credential apiCreden
 func (s *Service) readHostedDiagnostics(ctx context.Context, analytics nativeAnalyticsReport) (diagnosticsReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return diagnosticsReport{}, err
-	}
-	defer tx.Rollback()
-	return s.readHostedDiagnosticsFrom(ctx, analytics, analyticsRollupReader{tx})
+	return s.readHostedDiagnosticsFrom(ctx, analytics, analyticsRollupReader{s.database.reader})
 }
 
 func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativeAnalyticsReport, reader nativeQueryer) (diagnosticsReport, error) {

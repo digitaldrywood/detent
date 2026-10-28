@@ -61,7 +61,7 @@ func (s *Service) requestRunnerRepositories(c echo.Context) error {
 		if err := tx.QueryRowContext(ctx, `SELECT id FROM runner_identities WHERE id=? AND organization_id=? AND removed_at IS NULL`, request.RunnerID, scope.organization).Scan(&id); err != nil {
 			return nil, nativeNotFound()
 		}
-		requestID := newNativeID("repos")
+		requestID := payloadNativeID(ctx, "repos")
 		_, err := tx.ExecContext(ctx, `INSERT INTO runner_repository_lists(runner_id,request_id,pending) VALUES(?,?,1) ON CONFLICT(runner_id) DO UPDATE SET request_id=excluded.request_id,pending=1`, id, requestID)
 		return map[string]string{"request_id": requestID}, err
 	})

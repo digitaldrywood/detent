@@ -54,7 +54,7 @@ func readUnconvertedAnalyticsLandings(ctx context.Context, q nativeQueryer, scop
 		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 			return nil, err
 		}
-		discussions, err := queryChangeLegacyRows(ctx, q, `SELECT e.record_json FROM change_evidence e JOIN change_requests c ON c.id=e.change_id WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND ((e.escape_occurrence_id<>'' AND e.escape_observed_at>=? AND e.escape_observed_at<?) OR e.has_validator IS NULL) ORDER BY e.sequence`, scope.organization, scope.project, changeColumnTime(w.From), changeColumnTime(w.To))
+		discussions, err := queryChangeLegacyRows(ctx, q, `SELECT COALESCE(NULLIF(e.payload_object_key,''),e.record_json) FROM change_evidence e JOIN change_requests c ON c.id=e.change_id WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND ((e.escape_occurrence_id<>'' AND e.escape_observed_at>=? AND e.escape_observed_at<?) OR e.has_validator IS NULL) ORDER BY e.sequence`, scope.organization, scope.project, changeColumnTime(w.From), changeColumnTime(w.To))
 		if err != nil {
 			return nil, err
 		}
@@ -77,7 +77,7 @@ func readUnconvertedAnalyticsLandings(ctx context.Context, q nativeQueryer, scop
 		}
 	}
 	issues, issueArgs := reportsIssueClause(ctx, "c.work_item_id")
-	rows, err := queryChangeLegacyRows(ctx, q, `SELECT c.id,c.work_item_id,c.record_json,v.id,v.record_json,COALESCE(l.record_json,'') FROM change_requests c JOIN change_versions v ON v.change_id=c.id LEFT JOIN quality_landings l ON l.version_id=v.id WHERE c.organization_id=? AND c.project_id=?`+issues+` ORDER BY c.id,v.number`, append([]any{scope.organization, scope.project}, issueArgs...)...)
+	rows, err := queryChangeLegacyRows(ctx, q, `SELECT c.id,c.work_item_id,c.record_json,v.id,COALESCE(NULLIF(v.payload_object_key,''),v.record_json),COALESCE(l.record_json,'') FROM change_requests c JOIN change_versions v ON v.change_id=c.id LEFT JOIN quality_landings l ON l.version_id=v.id WHERE c.organization_id=? AND c.project_id=?`+issues+` ORDER BY c.id,v.number`, append([]any{scope.organization, scope.project}, issueArgs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +147,7 @@ func legacyQualityEvidenceMatches(ctx context.Context, q nativeQueryer, kind, ra
 	if review.Decision != "changes_requested" || review.CreatedAt.Before(w.From) || !review.CreatedAt.Before(w.To) {
 		return false, nil
 	}
-	versions, err := changeColumnRecords[tracker.ChangeVersion](ctx, q, `SELECT newer.record_json FROM change_versions current JOIN change_versions newer ON newer.change_id=current.change_id AND newer.number>current.number WHERE current.id=?`, review.VersionID)
+	versions, err := changeColumnRecords[tracker.ChangeVersion](ctx, q, `SELECT COALESCE(NULLIF(newer.payload_object_key,''),newer.record_json) FROM change_versions current JOIN change_versions newer ON newer.change_id=current.change_id AND newer.number>current.number WHERE current.id=?`, review.VersionID)
 	if err != nil {
 		return false, err
 	}

@@ -200,7 +200,7 @@ func readHealthRunners(ctx context.Context, q nativeQueryer, organization tracke
 		if err := rows.Scan(&r.ID, &r.MachineID, &routing, &heartbeat, &created, &capacity, &hostCapacity, &r.Leases, &activeLeases, &hostLeases, &state); err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal([]byte(routing), &r.Routing); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(routing), &r.Routing); err != nil {
 			return nil, err
 		}
 		r.Routing.State = state
@@ -315,7 +315,7 @@ func readHealthTimeEvents(ctx context.Context, q nativeQueryer, organization tra
 		}
 		var data tracker.CollaborationData
 		if !projected.Valid {
-			if err := json.Unmarshal([]byte(raw), &data); err != nil {
+			if err := decodeStorageJSON(ctx, []byte(raw), &data); err != nil {
 				return nil, err
 			}
 		} else if e.kind == "scheduler.decision" && present.Bool {
@@ -386,7 +386,7 @@ func readHealthEvents(ctx context.Context, q nativeQueryer, organization tracker
 	for _, event := range events {
 		id, project, item, kind, raw, observed := event.id, event.project, event.item, event.kind, event.raw, event.at
 		var data tracker.CollaborationData
-		if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &data); err != nil {
 			return err
 		}
 		for i := range snapshot.Projects {
@@ -453,7 +453,7 @@ func readHealthEvents(ctx context.Context, q nativeQueryer, organization tracker
 }
 
 func readHealthCurrentWaits(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, now time.Time, snapshot *healthSnapshot) error {
-	rows, err := q.QueryContext(ctx, `SELECT i.native_id,i.project_id,coalesce(a.id,''),coalesce(a.updated_at,''),CASE WHEN a.health_disposition_reason IS NULL THEN coalesce(a.data_json,'{}') ELSE '{}' END,coalesce(ws.detent_state,''),
+	rows, err := q.QueryContext(ctx, `SELECT i.native_id,i.project_id,coalesce(a.id,''),coalesce(a.updated_at,''),CASE WHEN a.health_disposition_reason IS NULL THEN coalesce(COALESCE(NULLIF(a.payload_object_key,''),a.data_json),'{}') ELSE '{}' END,coalesce(ws.detent_state,''),
  coalesce(e.id,''),coalesce(e.transition_reason,''),coalesce(e.transition_detail,''),coalesce(e.actor_kind,''),coalesce(e.recorded_at,''),
  coalesce(a.status='succeeded' AND e.actor_kind='runner' AND e.transition_reason='worker_progress' AND e.transition_revision=i.revision AND julianday(e.recorded_at)>=julianday(a.updated_at),0),
  coalesce(a.disposition_status,''),coalesce(a.disposition_human_action,0),a.health_disposition_reason,
@@ -484,10 +484,10 @@ func readHealthCurrentWaits(ctx context.Context, q nativeQueryer, organization t
 		if !eventProjected.Valid {
 			var data tracker.CollaborationData
 			var eventActor tracker.Actor
-			if err := json.Unmarshal([]byte(eventRaw), &data); err != nil {
+			if err := decodeStorageJSON(ctx, []byte(eventRaw), &data); err != nil {
 				return err
 			}
-			if err := json.Unmarshal([]byte(actorRaw), &eventActor); err != nil {
+			if err := decodeStorageJSON(ctx, []byte(actorRaw), &eventActor); err != nil {
 				return err
 			}
 			reason, detail, actor = data.Reason, data.ReasonDetail, eventActor.Kind
@@ -514,7 +514,7 @@ func readHealthCurrentWaits(ctx context.Context, q nativeQueryer, organization t
 			continue
 		}
 		var data tracker.NativeRunData
-		if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &data); err != nil {
 			return err
 		}
 		if dispositionReason.Valid {

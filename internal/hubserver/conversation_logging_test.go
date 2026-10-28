@@ -110,6 +110,9 @@ func requireConversationLogFields(t *testing.T, record map[string]any, want map[
 // It mirrors openTestService, which pins a discarding logger.
 func openConversationLogService(t *testing.T, cfg Config, sink *conversationLogSink) *Service {
 	t.Helper()
+	if cfg.Content == nil {
+		cfg.Content = (&changeObjectFixture{}).call
+	}
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
 	}

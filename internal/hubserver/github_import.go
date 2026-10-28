@@ -116,6 +116,7 @@ func (s *Service) startGitHubImport(c echo.Context) error {
 
 func (s *Service) startGitHubImportOperation(request startGitHubImportRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
 	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+		now = payloadTimestamp(ctx, now)
 		integration, err := readProjectIntegration(ctx, tx, scope)
 		if err != nil {
 			return nil, err
@@ -129,7 +130,7 @@ func (s *Service) startGitHubImportOperation(request startGitHubImportRequest) f
 			return nil, err
 		}
 		if id == "" {
-			id = newNativeID("imp")
+			id = payloadNativeID(ctx, "imp")
 			_, err = tx.ExecContext(ctx, "INSERT INTO github_imports (id, project_id, issue_number, observed_at) VALUES (?, ?, ?, ?)", id, scope.project, request.IssueNumber, formatHubTime(now))
 			if err != nil {
 				return nil, err
@@ -234,6 +235,7 @@ func (s *Service) advanceGitHubImportCommand(ctx context.Context, scope nativeSc
 	}
 	page, fetchErr := s.fetchImportPage(ctx, integration, current)
 	return s.executeNativeMutation(ctx, scope, options, tracker.Mutation{IdempotencyKey: key}, input, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
+		now = payloadTimestamp(ctx, now)
 		latest, err := readGitHubImport(ctx, tx, scope, current.ID)
 		if err != nil {
 			return nil, err
@@ -426,6 +428,7 @@ func importGitHubIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, integ
 }
 
 func importGitHubComment(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, record GitHubImportRecord, now time.Time) error {
+	now = payloadTimestamp(ctx, now)
 	var exists int
 	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM native_comments WHERE project_id = ? AND work_item_id = ? AND source_key = ?", scope.project, item, "github:"+record.Provenance.ExternalID).Scan(&exists); err != nil {
 		return err
@@ -433,7 +436,7 @@ func importGitHubComment(ctx context.Context, tx *sql.Tx, scope nativeScope, ite
 	if exists != 0 {
 		return nil
 	}
-	comment := tracker.NativeComment{ID: newNativeID("cmt"), OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(item), Revision: 1, Body: record.Body, Actor: scope.actor(), Provenance: &record.Provenance, CreatedAt: now, UpdatedAt: now}
+	comment := tracker.NativeComment{ID: payloadNativeID(ctx, "cmt"), OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(item), Revision: 1, Body: record.Body, Actor: scope.actor(), Provenance: &record.Provenance, CreatedAt: now, UpdatedAt: now}
 	if err := tx.QueryRowContext(ctx, "SELECT event_sequence + 1 FROM issues WHERE native_id = ?", item).Scan(&comment.Sequence); err != nil {
 		return err
 	}

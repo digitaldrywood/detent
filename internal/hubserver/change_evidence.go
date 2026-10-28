@@ -26,7 +26,15 @@ func insertChangeEvidence(ctx context.Context, tx *sql.Tx, changeID, versionID, 
 }
 
 func insertChangeEvidenceRecord(ctx context.Context, tx *sql.Tx, changeID, versionID, kind, sourceKey, raw string) error {
-	result, err := tx.ExecContext(ctx, "INSERT INTO change_evidence (change_id, version_id, kind, source_key, record_json) VALUES (?, NULLIF(?, ''), ?, NULLIF(?, ''), ?)", changeID, versionID, kind, sourceKey, raw)
+	var organization string
+	if err := tx.QueryRowContext(ctx, "SELECT organization_id FROM change_requests WHERE id=?", changeID).Scan(&organization); err != nil {
+		return err
+	}
+	key, err := storedPayloadKey(ctx, organization, []byte(raw))
+	if err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, "INSERT INTO change_evidence (change_id, version_id, kind, source_key, record_json, payload_object_key, conversion_state) VALUES (?, NULLIF(?, ''), ?, NULLIF(?, ''), '{}', ?, 2)", changeID, versionID, kind, sourceKey, key)
 	if err != nil {
 		return err
 	}
@@ -82,7 +90,7 @@ func (s *Service) submitChangeCheck(c echo.Context) error {
 			return nil, nativePublicInvalid("CI completion time cannot be in the future")
 		}
 		var previous string
-		err = tx.QueryRowContext(ctx, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'check' AND source_key = ?", change.ID, request.CheckRunID).Scan(&previous)
+		err = tx.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id = ? AND kind = 'check' AND source_key = ?", change.ID, request.CheckRunID).Scan(&previous)
 		if err == nil {
 			var result tracker.ChangeCheck
 			if err := decodeStorageJSON(ctx, []byte(previous), &result); err != nil {
@@ -111,7 +119,7 @@ func (s *Service) submitChangeCheck(c echo.Context) error {
 			return nil, err
 		}
 
-		check := tracker.ChangeCheck{ChangeCheckResult: request.ChangeCheckResult, VersionID: version.ID, Actor: scope.actor(), ReceivedAt: now}
+		check := tracker.ChangeCheck{ChangeCheckResult: request.ChangeCheckResult, VersionID: version.ID, Actor: scope.actor(), ReceivedAt: payloadTimestamp(ctx, now)}
 		if err := insertChangeEvidence(ctx, tx, change.ID, version.ID, "check", check.CheckRunID, check); err != nil {
 			return nil, err
 		}
@@ -226,7 +234,7 @@ func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 		return nil, err
 	}
 
-	review := tracker.ChangeReview{SecurityAudit: request.SecurityAudit, SessionMachineID: sessionMachineID, ImplementationReview: request.ImplementationReview, Validator: request.Validator, ID: newNativeID("review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: now}
+	review := tracker.ChangeReview{SecurityAudit: request.SecurityAudit, SessionMachineID: sessionMachineID, ImplementationReview: request.ImplementationReview, Validator: request.Validator, ID: payloadNativeID(ctx, "review"), VersionID: versionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: payloadTimestamp(ctx, now)}
 	if prepared := preparedChangeMutation(ctx); prepared != nil {
 		review = prepared.record
 	} else {
@@ -284,7 +292,7 @@ func (s *Service) discussChangeCommand(ctx context.Context, tx *sql.Tx, scope na
 	if request.Provenance != nil {
 		sourceKey = request.Provenance.Provider + ":" + request.Provenance.ExternalID
 		var raw string
-		err := tx.QueryRowContext(ctx, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'discussion' AND source_key = ?", change.ID, sourceKey).Scan(&raw)
+		err := tx.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id = ? AND kind = 'discussion' AND source_key = ?", change.ID, sourceKey).Scan(&raw)
 		if err == nil {
 			var existing tracker.ChangeDiscussion
 			err = decodeStorageJSON(ctx, []byte(raw), &existing)
@@ -302,7 +310,7 @@ func (s *Service) discussChangeCommand(ctx context.Context, tx *sql.Tx, scope na
 		return nil, err
 	}
 
-	comment := tracker.ChangeDiscussion{Escape: request.Escape, ID: newNativeID("cmt"), VersionID: request.VersionID, Body: request.Body, Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now}
+	comment := tracker.ChangeDiscussion{Escape: request.Escape, ID: payloadNativeID(ctx, "cmt"), VersionID: request.VersionID, Body: request.Body, Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: payloadTimestamp(ctx, now)}
 	return comment, insertChangeEvidence(ctx, tx, change.ID, comment.VersionID, "discussion", sourceKey, comment)
 }
 

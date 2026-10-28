@@ -647,7 +647,7 @@ func (w *workspaceService) recordActionRunReport(ctx context.Context, tx *sql.Tx
 			return actionRunRecord{}, nativePublicInvalid("Only a run-on-worktree-creation action may be reported without a run id")
 		}
 		run := actionRunRecord{
-			ID: newNativeID("actionrun"), ActionID: action.ID, OrganizationID: record.OrganizationID,
+			ID: payloadNativeID(ctx, "actionrun"), ActionID: action.ID, OrganizationID: record.OrganizationID,
 			ProjectID: record.ProjectID, WorkspaceID: record.ID, Command: action.Command,
 			Status: request.Status, ExitCode: request.ExitCode, Reason: request.Reason,
 			StartedAt: request.StartedAt, FinishedAt: request.FinishedAt, Output: output,

@@ -173,7 +173,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 		return "", invalid("validator verdict does not match the review decision", field)
 	}
 	var raw string
-	err = tx.QueryRowContext(ctx, "SELECT data_json FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND id=?", scope.organization, scope.project, change.WorkItemID, version.AttemptID).Scan(&raw)
+	err = tx.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND id=?", scope.organization, scope.project, change.WorkItemID, version.AttemptID).Scan(&raw)
 	if err != nil {
 		return "", err
 	}
@@ -188,7 +188,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 		return "", invalid("validator review requires the implementing session's recorded identity", "source.identity")
 	}
 	var current tracker.NativeRunData
-	if err := tx.QueryRowContext(ctx, "SELECT data_json FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND lease_id=?", scope.organization, scope.project, change.WorkItemID, request.LeaseID).Scan(&raw); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND lease_id=?", scope.organization, scope.project, change.WorkItemID, request.LeaseID).Scan(&raw); err != nil {
 		return "", err
 	}
 	if err := decodeRunDetail(ctx, tx, raw, &current); err != nil {
@@ -208,7 +208,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 		}
 		return "", invalid("validator review must come from a session separate from the implementing session under its active execution authority", "validator.session_id")
 	}
-	reviews, err := changeRows[tracker.ChangeReview](ctx, tx, "SELECT record_json FROM change_evidence WHERE change_id = ? AND version_id = ? AND kind = 'review' ORDER BY sequence", change.ID, version.ID)
+	reviews, err := changeRows[tracker.ChangeReview](ctx, tx, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id = ? AND version_id = ? AND kind = 'review' ORDER BY sequence", change.ID, version.ID)
 	if err != nil {
 		return "", err
 	}

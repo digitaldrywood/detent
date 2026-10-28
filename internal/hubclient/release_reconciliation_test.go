@@ -240,7 +240,7 @@ func TestNativeReleaseDeliveryReconciliation(t *testing.T) {
 			if candidates := h.candidatesIn(t, "Rework", "In Progress", "Todo"); len(candidates) != 0 {
 				t.Fatalf("delivery redispatched: %+v", candidates)
 			}
-			attempts, err := h.admin.Attempts(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+			attempts, err := h.admin.AttemptsDetailPage(t.Context(), tracker.NativeWorkItemID(issue.ID), "", 100)
 			if err != nil || len(attempts.Items) != 1 || attempts.Items[0].Runtime == nil || attempts.Items[0].Runtime.Identity.BackendKind != "git" {
 				t.Fatalf("unexpected provider attempt: %+v error=%v", attempts, err)
 			}

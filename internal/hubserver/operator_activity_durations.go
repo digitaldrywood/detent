@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -42,7 +41,7 @@ const activityDurationQuery = `WITH samples AS (
  WHERE d.organization_id=?1 AND d.project_id=?2 AND d.updated_at>=julianday(?3) AND d.started_at<julianday(?4)
  AND a.activity_projection_version IS NOT NULL AND (?5='' OR coalesce(lr.runner_id,a.runner_id,'')=?6)
  UNION ALL
- SELECT a.id,a.status,'',0,1,a.activity_started_at,a.work_item_id,a.activity_projection_version,a.data_json,
+ SELECT a.id,a.status,'',0,1,a.activity_started_at,a.work_item_id,a.activity_projection_version,COALESCE(NULLIF(a.payload_object_key,''),COALESCE(NULLIF(a.payload_object_key,''),COALESCE(NULLIF(a.payload_object_key,''),a.data_json))),
  coalesce(lr.runner_id,''),i.activity_actor_principal_id,CASE WHEN i.activity_actor_principal_id IS NULL THEN i.actor_json ELSE '' END
  FROM native_attempts a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id
  JOIN issues i ON i.organization_id=a.organization_id AND i.project_id=a.project_id AND i.native_id=a.work_item_id
@@ -70,7 +69,7 @@ func (s *Service) readActivityTypicalDurations(ctx context.Context, q nativeQuer
 				principal := c.actor.String
 				if !c.actor.Valid {
 					var actor tracker.Actor
-					if err := json.Unmarshal([]byte(c.actorRaw), &actor); err != nil {
+					if err := decodeStorageJSON(ctx, []byte(c.actorRaw), &actor); err != nil {
 						return nil, false, err
 					}
 					principal = actor.PrincipalID

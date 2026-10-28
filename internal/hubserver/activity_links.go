@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -49,7 +48,8 @@ func readActivityChangeLink(ctx context.Context, q nativeQueryer, organization s
 				return err
 			}
 			var c tracker.ChangeRequest
-			if err := json.Unmarshal([]byte(raw), &c); err != nil {
+			if err := decodeStorageJSON(ctx, []byte(raw), &c); err != nil {
+				rows.Close()
 				return err
 			}
 			day := float64(c.CreatedAt.Round(time.Millisecond).UnixMilli())/86400000 + 2440587.5
@@ -76,13 +76,13 @@ func readActivityChangeLink(ctx context.Context, q nativeQueryer, organization s
 	}
 	if !version.Valid {
 		var c tracker.ChangeRequest
-		if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &c); err != nil {
 			return err
 		}
 		version.String = c.CurrentVersion
 	}
 	var url sql.NullString
-	err = q.QueryRowContext(ctx, `SELECT activity_external_url,CASE WHEN activity_external_url IS NULL THEN record_json ELSE '' END FROM change_versions WHERE id=? AND change_id=?`, version.String, a.ChangeID).Scan(&url, &raw)
+	err = q.QueryRowContext(ctx, `SELECT activity_external_url,CASE WHEN activity_external_url IS NULL THEN COALESCE(NULLIF(payload_object_key,''),record_json) ELSE '' END FROM change_versions WHERE id=? AND change_id=?`, version.String, a.ChangeID).Scan(&url, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -94,7 +94,7 @@ func readActivityChangeLink(ctx context.Context, q nativeQueryer, organization s
 		return nil
 	}
 	var v tracker.ChangeVersion
-	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &v); err != nil {
 		return err
 	}
 	if v.External != nil {

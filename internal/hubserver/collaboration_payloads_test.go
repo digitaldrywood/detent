@@ -81,7 +81,7 @@ func appendLegacyNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScop
 
 func TestCollaborationPayloadInlineBytes(t *testing.T) {
 	store := &memoryRunDetails{}
-	f := newDefaultNativeFixture(t, Config{RunDetails: store, Conversation: &ConversationConfig{Enabled: true}, now: func() time.Time { return time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC) }})
+	f := newDefaultNativeFixture(t, Config{Content: (&changeObjectFixture{}).call, RunDetails: store, Conversation: &ConversationConfig{Enabled: true}, now: func() time.Time { return time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC) }})
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func collaborationInlineBytesQuery(t *testing.T, q nativeQueryer) string {
 		if err := rows.Scan(&column); err != nil {
 			t.Fatal(err)
 		}
-		columns = append(columns, `coalesce(length(CAST("`+column+`" AS BLOB)),0)`)
+		columns = append(columns, `CASE WHEN typeof("`+column+`") IN ('integer','real') THEN 8 ELSE coalesce(length(CAST("`+column+`" AS BLOB)),0) END`)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
@@ -623,7 +623,11 @@ func TestSchedulerPayloadRequiresArchive(t *testing.T) {
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{
 				PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: "scheduler-machine", SessionID: "scheduler-session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability},
 			})
-			requireNativeStatus(t, response, http.StatusInternalServerError)
+			status := http.StatusServiceUnavailable
+			if failure == "verification failed" {
+				status = http.StatusInternalServerError
+			}
+			requireNativeStatus(t, response, status)
 			var leases, events int
 			if err := f.service.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM leases WHERE session_id='scheduler-session'").Scan(&leases); err != nil || leases != 0 {
 				t.Fatalf("unverified scheduler payload committed %d leases: %v", leases, err)

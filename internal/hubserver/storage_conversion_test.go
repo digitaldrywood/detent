@@ -158,8 +158,8 @@ func TestStorageConversionResumesAcrossScopes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(objects.objects) != 615 {
-		t.Fatalf("objects=%d want 615 immutable row snapshots", len(objects.objects))
+	if count := len(storageTestArchiveObjects(t, f.service, objects.objects)); count != 615 {
+		t.Fatalf("objects=%d want 615 immutable row snapshots", count)
 	}
 }
 
@@ -367,7 +367,13 @@ func TestStorageConversionImmutability(t *testing.T) {
 	db := f.service.database
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	ctx := f.service.contentContext(t.Context())
-	raw := `{"policy_id":"legacy-policy","head_sha":"legacy-head","policy":{"gates":{"github_pull_request":false}},"actor":{"principal_id":"reviewer"},"decision":"approved","source":{"bytes":8192},"output":"` + strings.Repeat("x", 8192) + `"}`
+	bundle := []byte("# v2 git bundle\n-legacy-base prerequisite\nlegacy-head HEAD\n\n")
+	bundle = append(bundle, bytes.Repeat([]byte("x"), 8192-len(bundle))...)
+	source, err := json.Marshal(tracker.ChangeSource{Format: "git-bundle", BaseSHA: "legacy-base", HeadSHA: "legacy-head", BundleSHA256: tracker.ChangeSourceDigest(bundle), DiffSHA256: strings.Repeat("a", 64), Bytes: int64(len(bundle))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"policy_id":"legacy-policy","base_sha":"legacy-base","head_sha":"legacy-head","policy":{"gates":{"github_pull_request":false}},"actor":{"principal_id":"reviewer"},"decision":"approved","source":` + string(source) + `,"output":"` + strings.Repeat("x", 8192) + `"}`
 	for i := range 2 {
 		issue := f.nativeFixture.create(t, fmt.Sprintf("immutable history %d", i))
 		change, version := fmt.Sprintf("conversion-change-%d", i), fmt.Sprintf("conversion-version-%d", i)
@@ -380,7 +386,7 @@ func TestStorageConversionImmutability(t *testing.T) {
 			{`INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,1,?)`, []any{version, change, raw}},
 			{`INSERT INTO change_evidence(change_id,version_id,kind,source_key,record_json) VALUES(?,?,'review',NULL,?)`, []any{change, version, raw}},
 			{`INSERT INTO change_evidence(change_id,kind,source_key,record_json) VALUES(?,'discussion','source','{}')`, []any{change}},
-			{`INSERT INTO change_sources(version_id,bundle) VALUES(?,?)`, []any{version, bytes.Repeat([]byte("x"), 8192)}},
+			{`INSERT INTO change_sources(version_id,bundle) VALUES(?,?)`, []any{version, bundle}},
 		} {
 			if _, err := tx.ExecContext(t.Context(), insert.query, insert.args...); err != nil {
 				t.Fatal(err)
@@ -479,7 +485,7 @@ func TestStorageConversionImmutability(t *testing.T) {
 				t.Fatalf("%s delete: %v", table.name, err)
 			}
 		}
-		for _, assignment := range []string{"version_id=NULL", "source_key=NULL", "record_json='{}',claim_review_current=0"} {
+		for _, assignment := range []string{"version_id=NULL", "source_key=NULL", `record_json='{"tampered":true}',claim_review_current=0`} {
 			if _, err := db.db.ExecContext(t.Context(), "UPDATE change_evidence SET "+assignment+" WHERE kind='review' AND source_key IS NULL OR kind='discussion'"); err == nil || !strings.Contains(err.Error(), "immutable") {
 				t.Fatalf("evidence %s: %v", assignment, err)
 			}
@@ -501,7 +507,7 @@ func TestStorageConversionImmutability(t *testing.T) {
 		if mismatch {
 			prior = "wrong prior content"
 		}
-		if err := authorizeStorageConversion(t.Context(), tx, scope, family, aggregate, row, []byte(prior), converted, ref); err != nil {
+		if err := authorizeStorageConversion(t.Context(), tx, scope, family, aggregate, row, []byte(prior), converted, ref); err != nil && !mismatch {
 			t.Fatal(err)
 		}
 		for _, update := range []struct {
@@ -526,6 +532,9 @@ func TestStorageConversionImmutability(t *testing.T) {
 	}
 	assertImmutable()
 	before := storageSchemaVersion(t, db.reader)
+	if err := f.service.convertObjectPayloadFamily(ctx, storageConversionFamilies[5], f.now); err != nil {
+		t.Fatal(err)
+	}
 	if err := f.service.populateChangeColumns(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -534,12 +543,12 @@ func TestStorageConversionImmutability(t *testing.T) {
 		if err := db.reader.QueryRowContext(t.Context(), `SELECT policy_revision_id,head_sha,record_json FROM change_versions WHERE id=?`, fmt.Sprintf("conversion-version-%d", i)).Scan(&policy, &head, &stored); err != nil {
 			t.Fatal(err)
 		}
-		if policy != "legacy-policy" || head != "legacy-head" || stored != raw {
+		if policy != "legacy-policy" || head != "legacy-head" || stored != "{}" {
 			t.Fatalf("version %d backfill changed content or missed typed columns: policy=%q head=%q", i, policy, head)
 		}
 	}
 	assertImmutable()
-	if err := db.populateClaimFacts(t.Context()); err != nil {
+	if err := db.populateClaimFacts(ctx); err != nil {
 		t.Fatal(err)
 	}
 	for _, family := range storageConversionFamilies {
@@ -552,7 +561,11 @@ func TestStorageConversionImmutability(t *testing.T) {
 	}
 	assertImmutable()
 	for _, table := range []string{"change_versions", "change_evidence"} {
-		rows, err := db.reader.QueryContext(t.Context(), "SELECT record_json FROM "+table+" WHERE record_json<>'{}'")
+		filter := ""
+		if table == "change_evidence" {
+			filter = " AND kind='review'"
+		}
+		rows, err := db.reader.QueryContext(t.Context(), "SELECT payload_object_key FROM "+table+" WHERE payload_object_key<>''"+filter)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -563,7 +576,7 @@ func TestStorageConversionImmutability(t *testing.T) {
 			if err := rows.Scan(&stored); err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(stored, "_storage_archive") {
+			if !strings.HasPrefix(stored, "orgs/") {
 				t.Fatalf("%s was not converted", table)
 			}
 			resolved, err := resolveStorageJSON(ctx, []byte(stored))
@@ -595,7 +608,7 @@ func TestStorageConversionImmutability(t *testing.T) {
 			t.Fatal("source was not converted")
 		}
 		content, err := readChangeContent(ctx, string(scope.organization), ref)
-		if err != nil || !bytes.Equal(content, bytes.Repeat([]byte("x"), 8192)) {
+		if err != nil || !bytes.Equal(content, bundle) {
 			t.Fatalf("converted source changed: %v", err)
 		}
 		sources++
@@ -619,8 +632,8 @@ func TestStorageConversionDiscoveryBounded(t *testing.T) {
 	for i := range 2 {
 		issue := f.nativeFixture.create(t, fmt.Sprintf("converted history %d", i))
 		if _, err := db.db.ExecContext(t.Context(), `WITH RECURSIVE history(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM history WHERE n<6000)
-INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at)
-SELECT ?||n,?,?,?,n+100,'run.finished',1,'{}','{}',? FROM history`, fmt.Sprintf("converted-%d-", i), scope.organization, scope.project, issue.WorkItemID, formatHubTime(f.now)); err != nil {
+INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at,payload_object_key,payload_version)
+SELECT ?||n,?,?,?,n+100,'run.finished',1,'{}','{}',?,'example-object-'||n,1 FROM history`, fmt.Sprintf("converted-%d-", i), scope.organization, scope.project, issue.WorkItemID, formatHubTime(f.now)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -715,6 +728,7 @@ func TestStorageConversionDiscoveryInitialization(t *testing.T) {
 	if _, err := db.db.ExecContext(ctx, payloadDown); err != nil {
 		t.Fatal(err)
 	}
+	down = strings.ReplaceAll(down, "DROP TRIGGER storage_conversion_enqueue_analytics;", "")
 	if _, err := db.db.ExecContext(ctx, down); err != nil {
 		t.Fatal(err)
 	}
@@ -734,15 +748,18 @@ SELECT ?,?,n,'attempt','legacy-'||n,1,'{"obsolete":"payload"}' FROM history`, fi
 	if _, err := db.db.ExecContext(ctx, storedTextUp); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.db.ExecContext(ctx, "DROP TRIGGER storage_conversion_enqueue_analytics"); err != nil {
+		t.Fatal(err)
+	}
 	var progress int
 	if err := db.reader.QueryRowContext(ctx, "SELECT count(*) FROM storage_conversion_progress WHERE family='analytics'").Scan(&progress); err != nil || progress != 0 {
 		t.Fatalf("startup seeded progress=%d: %v", progress, err)
 	}
 	family := storageConversionFamilies[2]
-	if _, err := db.db.ExecContext(ctx, `CREATE TRIGGER interrupt_discovery BEFORE UPDATE OF conversion_state ON analytics_hourly_rollups WHEN NEW.conversion_state=1 BEGIN SELECT RAISE(ABORT,'interrupted discovery'); END`); err != nil {
+	if _, err := db.db.ExecContext(ctx, `CREATE TRIGGER interrupt_discovery BEFORE UPDATE OF conversion_state ON analytics_hourly_rollups WHEN NEW.conversion_state=2 BEGIN SELECT RAISE(ABORT,'interrupted discovery'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.discoverStorageFamily(ctx, family, time.Now()); err == nil {
+	if err := f.service.convertObjectPayloadFamily(f.service.runDetailContext(ctx), family, time.Now()); err == nil {
 		t.Fatal("discovery did not propagate interruption")
 	}
 	if err := db.reader.QueryRowContext(ctx, "SELECT count(*) FROM storage_conversion_progress WHERE family='analytics'").Scan(&progress); err != nil || progress != 0 {
@@ -753,22 +770,16 @@ SELECT ?,?,n,'attempt','legacy-'||n,1,'{"obsolete":"payload"}' FROM history`, fi
 	}
 	beforeSchema := storageSchemaVersion(t, db.reader)
 	for pass, want := range []int{310, 210, 110, 10, 0} {
-		if err := f.service.discoverStorageFamily(ctx, family, time.Now()); err != nil {
+		if err := f.service.convertObjectPayloadFamily(f.service.runDetailContext(ctx), family, time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		var remaining int
 		if err := db.reader.QueryRowContext(ctx, "SELECT count(*) FROM analytics_hourly_rollups WHERE conversion_state=0").Scan(&remaining); err != nil || remaining != want {
 			t.Fatalf("pass=%d undiscovered=%d want=%d: %v", pass, remaining, want, err)
 		}
-		for _, fixture := range []nativeFixture{f, other} {
-			scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
-			if err := f.service.convertStorageFamily(ctx, scope, family, time.Now()); err != nil {
-				t.Fatal(err)
-			}
-		}
 		if want > 0 {
 			var completed int
-			if err := db.reader.QueryRowContext(ctx, "SELECT count(*) FROM storage_conversion_progress WHERE family='analytics' AND complete=1").Scan(&completed); err != nil || completed != 0 {
+			if err := db.reader.QueryRowContext(ctx, "SELECT count(*) FROM storage_conversion_progress p WHERE family='analytics' AND complete=1 AND EXISTS(SELECT 1 FROM analytics_hourly_rollups r WHERE r.organization_id=p.organization_id AND r.project_id=p.project_id AND r.metric='attempt' AND r.payload_object_key='' AND r.data_json<>'{}')").Scan(&completed); err != nil || completed != 0 {
 				t.Fatalf("discovery completed prematurely=%d: %v", completed, err)
 			}
 		}
@@ -799,7 +810,7 @@ func TestStorageConversionReusedRowIDs(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			other := newNativeFixture(t, f.service, f.project.OrganizationID, "second")
 			db := f.service.database
-			ctx := t.Context()
+			ctx := f.service.runDetailContext(t.Context())
 			family := storageConversionFamilies[2]
 			for _, fixture := range []nativeFixture{f, other} {
 				scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}

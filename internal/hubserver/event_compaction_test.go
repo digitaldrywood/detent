@@ -80,7 +80,7 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 				}
 			}
 			if test.closedAgo > 0 {
-				if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, now.Add(-test.closedAgo)); err != nil {
+				if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, now.Add(-test.closedAgo)); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := tx.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=issues.project_id AND detent_state='Done') WHERE native_id=?`, issue.WorkItemID); err != nil {
@@ -520,15 +520,26 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 		t.Fatalf("running attempt was compacted: %v", counts)
 	}
 	a.finish(t)
-	if _, err := a.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.completion_body',?) WHERE id=?", strings.Repeat("legacy attempt detail", 2048), a.start.Data.AttemptID); err != nil {
+	var raw string
+	if err := a.service.database.reader.QueryRowContext(t.Context(), "SELECT payload_object_key FROM native_attempts WHERE id=?", a.start.Data.AttemptID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var legacy tracker.NativeRunData
+	if err := decodeRunDetail(a.service.freshRunDetailContext(t.Context()), a.service.database.reader, raw, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	legacy.CompletionBody = strings.Repeat("legacy attempt detail", 2048)
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=?,payload_object_key='',conversion_state=1 WHERE id=?", string(encoded), a.start.Data.AttemptID); err != nil {
 		t.Fatal(err)
 	}
 	a.advance(2 * time.Hour)
 	if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
 		t.Fatal(err)
 	}
-	objects := &changeObjectFixture{}
-	a.service.config.Content = objects.call
 	ctx := changeOperatorContext(t, a.service, a.token, string(a.project.OrganizationID))
 	executor := hostedOperatorExecutor{service: a.service}
 	reads := func() map[string]string {
@@ -598,7 +609,7 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.RemovedEvents != 0 || summary.CompactedActivityEvents != 26 {
+	if summary.RemovedEvents != 0 || summary.CompactedActivityEvents != 0 {
 		t.Fatalf("compaction receipt=%+v", summary)
 	}
 	after := reads()

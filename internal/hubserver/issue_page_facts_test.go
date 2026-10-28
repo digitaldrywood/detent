@@ -411,14 +411,23 @@ func TestBlockerHistoryUsesTypedPageFacts(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	issue := f.create(t, "Blocker history")
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Done", Reason: "opaque reason", Run: &tracker.NativeRunData{AttemptID: "opaque-attempt", FencingToken: 3}}, time.Now().UTC()); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
+	ctx := f.service.freshRunDetailContext(t.Context())
+	if err := f.service.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
+		data, err := marshalNative(tracker.CollaborationData{Revision: 2, FromState: "Todo", ToState: "Done", Reason: "opaque reason", Run: &tracker.NativeRunData{AttemptID: "opaque-attempt", FencingToken: 3}})
+		if err != nil {
+			return err
+		}
+		actor, err := marshalNative(scope.actor())
+		if err != nil {
+			return err
+		}
+		var sequence int64
+		if err := tx.QueryRowContext(ctx, "UPDATE issues SET event_sequence=event_sequence+1 WHERE native_id=? RETURNING event_sequence", issue.WorkItemID).Scan(&sequence); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, "INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) VALUES(?,?,?,?,?,'workflow.transitioned',1,?,?,?)", newNativeID("event"), scope.organization, scope.project, issue.WorkItemID, sequence, actor, data, formatHubTime(now))
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	for _, stage := range []string{"unknown", "typed"} {
@@ -447,7 +456,7 @@ func TestBlockerHistoryUsesTypedPageFacts(t *testing.T) {
 			if data.Revision != revision || data.FromState != from || data.ToState != to || data.Reason != reason || data.Run == nil || data.Run.AttemptID != attempt || data.Run.FencingToken != fence {
 				t.Fatalf("data=%+v", data)
 			}
-			events, err := readNativeBlockerHistory(t.Context(), f.service.database.reader, scope, issue)
+			events, err := readNativeBlockerHistory(f.service.freshRunDetailContext(t.Context()), f.service.database.reader, scope, issue, tracker.NativeAttempt{})
 			if err != nil || events[len(events)-1].Data.Revision != revision {
 				t.Fatalf("events=%v err=%v", events, err)
 			}

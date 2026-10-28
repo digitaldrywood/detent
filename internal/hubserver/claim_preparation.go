@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -201,7 +200,7 @@ WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? ORDER BY c.row
 		return tracker.ChangeRequest{}, false, err
 	}
 	var change tracker.ChangeRequest
-	if err := json.Unmarshal([]byte(raw), &change); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &change); err != nil {
 		return change, false, err
 	}
 	return reporterChange(ctx, q, scope, change)
@@ -287,7 +286,7 @@ func readClaimCheckpoint(ctx context.Context, q nativeQueryer, scope nativeScope
 	var raw sql.NullString
 	var sequence int64
 	var attachment string
-	err := q.QueryRowContext(ctx, `SELECT checkpoint_json,sequence,COALESCE(checkpoint_attachment_id,'') FROM native_attempts
+	err := q.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json),sequence,COALESCE(checkpoint_attachment_id,'') FROM native_attempts
 WHERE id=? AND organization_id=? AND project_id=? AND work_item_id=?`, attempt, scope.organization, scope.project, item).Scan(&raw, &sequence, &attachment)
 	if err != nil || !raw.Valid {
 		return nil, err
@@ -351,7 +350,7 @@ func readClaimLandingDetail(ctx context.Context, q nativeQueryer, scope nativeSc
 		return detail, err
 	}
 	for _, expected := range version.Checks {
-		checks, readErr := claimEvidenceRows[tracker.ChangeCheck](ctx, q, `SELECT record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='check' AND source_key=? ORDER BY sequence`, change.ID, version.ID, expected.CheckRunID)
+		checks, readErr := claimEvidenceRows[tracker.ChangeCheck](ctx, q, `SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id=? AND version_id=? AND kind='check' AND source_key=? ORDER BY sequence`, change.ID, version.ID, expected.CheckRunID)
 		if readErr != nil {
 			return detail, readErr
 		}
@@ -516,7 +515,7 @@ func readClaimReviews(ctx context.Context, q nativeQueryer, change, version stri
 		{kind: "audit", decision: "changes_requested"}, {kind: "landing_audit", decision: "changes_requested"},
 		{kind: "human", decision: "approved", current: true}, {kind: "human", decision: "changes_requested", current: true},
 	} {
-		statement := `SELECT sequence,record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' AND claim_review_kind=?`
+		statement := `SELECT sequence,COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' AND claim_review_kind=?`
 		args := []any{change, version, selection.kind}
 		if selection.current {
 			statement += ` AND claim_review_current=1`
@@ -565,7 +564,7 @@ func readLegacyClaimReviews(ctx context.Context, q nativeQueryer, change, versio
 			sequence int64
 			raw      string
 		}
-		records, err := readChangeLegacyPage(ctx, q, `SELECT sequence,record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' AND sequence>? ORDER BY sequence LIMIT ?`, func(rows *sql.Rows) (reviewRecord, error) {
+		records, err := readChangeLegacyPage(ctx, q, `SELECT sequence,COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' AND sequence>? ORDER BY sequence LIMIT ?`, func(rows *sql.Rows) (reviewRecord, error) {
 			var record reviewRecord
 			err := rows.Scan(&record.sequence, &record.raw)
 			return record, err

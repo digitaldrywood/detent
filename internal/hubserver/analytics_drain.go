@@ -182,7 +182,7 @@ func (d *database) planAnalyticsPage(ctx context.Context, plan *projectionPlan, 
 			err := plan.QueryRowContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_edge' AND dimension=?`, p.scope.organization, p.scope.project, id+":0").Scan(&raw)
 			if err == nil {
 				var sample analyticsResidenceSample
-				if err := json.Unmarshal([]byte(raw), &sample); err != nil {
+				if err := decodeStorageJSON(ctx, []byte(raw), &sample); err != nil {
 					return err
 				}
 				return writeAnalyticsResidenceSample(ctx, plan, p.scope, "residence_hour", id, sample)
@@ -341,7 +341,7 @@ func planAnalyticsResidenceCheckpoint(ctx context.Context, plan *projectionPlan,
 		return false, err
 	}
 	var sample analyticsResidenceSample
-	if err := json.Unmarshal([]byte(raw), &sample); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &sample); err != nil {
 		return false, err
 	}
 	if sample.Sequence > p.sequence {
@@ -361,23 +361,33 @@ func pageProjectionWrites(plan *projectionPlan, offset *int) bool {
 }
 
 func planAnalyticsAttempts(ctx context.Context, plan *projectionPlan, id string, p *analyticsDrainPosition) error {
-	rows, err := plan.QueryContext(ctx, `SELECT a.id,a.work_item_id,a.lease_id,a.status,a.started_at,a.updated_at,a.data_json,a.analytics_revision FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND NOT EXISTS(SELECT 1 FROM analytics_hourly_rollups r WHERE r.organization_id=a.organization_id AND r.project_id=a.project_id AND r.metric='attempt' AND r.work_item_id=a.work_item_id AND r.dimension=a.id AND r.source_revision=a.analytics_revision) ORDER BY a.fencing_token LIMIT ?`, p.scope.organization, p.scope.project, id, analyticsDrainWrites/2)
+	rows, err := plan.QueryContext(ctx, `SELECT a.id,a.work_item_id,a.lease_id,a.status,a.started_at,a.updated_at,CASE WHEN a.payload_object_key='' THEN a.data_json ELSE '{}' END,a.analytics_revision,a.payload_object_key,a.report_failed_at,coalesce(nullif(a.role,''),a.execution_role,'') FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND NOT EXISTS(SELECT 1 FROM analytics_hourly_rollups r WHERE r.organization_id=a.organization_id AND r.project_id=a.project_id AND r.metric='attempt' AND r.work_item_id=a.work_item_id AND r.dimension=a.id AND r.source_revision=a.analytics_revision) ORDER BY a.fencing_token LIMIT ?`, p.scope.organization, p.scope.project, id, analyticsDrainWrites/2)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	count := 0
 	for rows.Next() {
-		var attempt, item, lease, status, started, updated, raw string
+		var attempt, item, lease, status, started, updated, raw, key, role string
+		var failed sql.NullString
 		var revision int64
-		if err := rows.Scan(&attempt, &item, &lease, &status, &started, &updated, &raw, &revision); err != nil {
+		if err := rows.Scan(&attempt, &item, &lease, &status, &started, &updated, &raw, &revision, &key, &failed, &role); err != nil {
 			return err
 		}
 		var observation analyticsAttemptProjection
 		if err := json.Unmarshal([]byte(raw), &observation); err != nil {
 			return err
 		}
-		payload, err := projectAnalyticsAttempt(raw, attempt, item, lease, status, started, updated, analyticsFailureTime(observation.Runtime.Landing, status, updated))
+		if role == "" {
+			role = observation.Runtime.Identity.Role
+			if role == "" {
+				role = observation.Identity.Role
+			}
+		}
+		if !failed.Valid {
+			failed = analyticsFailureTime(observation.Runtime.Landing, status, updated)
+		}
+		payload, err := projectAnalyticsAttempt(raw, attempt, item, lease, status, started, updated, failed)
 		if err != nil {
 			return err
 		}
@@ -388,7 +398,7 @@ func planAnalyticsAttempts(ctx context.Context, plan *projectionPlan, id string,
 		if err := writeAnalyticsSample(ctx, plan, string(p.scope.organization), string(p.scope.project), at.Unix()/3600*3600, "attempt", attempt, 1, payload); err != nil {
 			return err
 		}
-		if _, err := plan.ExecContext(ctx, `UPDATE analytics_hourly_rollups SET source_revision=? WHERE organization_id=? AND project_id=? AND metric='attempt' AND dimension=?`, revision, p.scope.organization, p.scope.project, attempt); err != nil {
+		if _, err := plan.ExecContext(ctx, `UPDATE analytics_hourly_rollups SET source_revision=?,payload_object_key=?,attempt_role=? WHERE organization_id=? AND project_id=? AND metric='attempt' AND dimension=?`, revision, key, role, p.scope.organization, p.scope.project, attempt); err != nil {
 			return err
 		}
 		count++

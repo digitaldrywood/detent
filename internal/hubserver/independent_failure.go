@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -103,11 +102,11 @@ func recordIndependentRunFailure(ctx context.Context, tx *sql.Tx, scope nativeSc
 	}
 	command := data.Runtime.Validation
 	var raw string
-	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(checkpoint_json,'null') FROM native_attempts WHERE id=?", data.AttemptID).Scan(&raw); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json),'null') FROM native_attempts WHERE id=?", data.AttemptID).Scan(&raw); err != nil {
 		return err
 	}
-	var checkpoint *tracker.NativeCheckpoint
-	if err := json.Unmarshal([]byte(raw), &checkpoint); err != nil {
+	checkpoint, err := decodeRunCheckpoint(ctx, tx, raw)
+	if err != nil {
 		return fmt.Errorf("decode failure source: %w", err)
 	}
 	if checkpoint == nil || checkpoint.HeadSHA != command.HeadSHA || checkpoint.UncertainForgeEffect() {

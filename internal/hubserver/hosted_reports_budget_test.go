@@ -88,7 +88,7 @@ FROM change_requests c JOIN change_versions v ON v.change_id=c.id CROSS JOIN n W
 			}{
 				{"quality reopened items", "WITH reopened_items", "analytics_event_order"},
 				{"quality events", "coalesce((SELECT terminal FROM workflow_states", "analytics_event_order"},
-				{"quality evidence", "SELECT e.change_id,e.kind,e.record_json", "change_evidence_analytics_"},
+				{"quality evidence", "SELECT e.change_id,e.kind,COALESCE(NULLIF(e.payload_object_key", "change_evidence_analytics_"},
 				{"prior attempts", "SELECT count(*) FROM analytics_native_attempts a", "analytics_attempt_"},
 			} {
 				found := false

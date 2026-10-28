@@ -19,29 +19,27 @@ import (
 )
 
 func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, item string, projected ...bool) (tracker.NativeRecovery, error) {
+	ctx = s.runDetailContext(ctx)
 	ctx = s.contentContext(ctx)
 	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	bounded := len(projected) > 0 && projected[0]
 	var result tracker.NativeRecovery
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	query := s.database.reader
+	var err error
+	result.Issue, _, err = readNativeIssue(ctx, query, scope, item)
 	if err != nil {
 		return result, err
 	}
-	defer tx.Rollback()
-	result.Issue, _, err = readNativeIssue(ctx, tx, scope, item)
+	change, found, err := readLatestNativeChangeRequest(ctx, query, scope, item)
 	if err != nil {
 		return result, err
 	}
-	change, found, err := readLatestNativeChangeRequest(ctx, tx, scope, item)
-	if err != nil {
+	if err := query.QueryRowContext(ctx, `SELECT CASE WHEN recovery_runner_id != '' AND recovery_version_id = ? THEN recovery_version_id ELSE '' END FROM issues WHERE organization_id=? AND project_id=? AND native_id=?`, change.CurrentVersion, scope.organization, scope.project, item).Scan(&result.SourceVersionID); err != nil {
 		return result, err
 	}
-	if err := tx.QueryRowContext(ctx, `SELECT CASE WHEN recovery_runner_id != '' AND recovery_version_id = ? THEN recovery_version_id ELSE '' END FROM issues WHERE organization_id=? AND project_id=? AND native_id=?`, change.CurrentVersion, scope.organization, scope.project, item).Scan(&result.SourceVersionID); err != nil {
-		return result, err
-	}
-	source, err := readNativeSourceCheckpoint(ctx, tx, scope, item)
+	source, err := readNativeSourceCheckpoint(ctx, query, scope, item)
 	if err != nil {
 		return result, err
 	}
@@ -50,10 +48,12 @@ func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, ite
 	result.SourceAttemptID = sourceAttempt
 	if found {
 		var detail tracker.ChangeDetail
-		if bounded {
-			detail, err = s.readRecoveryChange(ctx, tx, scope, item, change)
+		if attemptSummaryRead(ctx) {
+			detail, err = readTypedRecoveryChange(ctx, query, change)
+		} else if bounded {
+			detail, err = s.readRecoveryChange(ctx, query, scope, item, change)
 		} else {
-			detail, err = readChangeDetailView(ctx, tx, scope, item, change.ID, s.config.now(), true)
+			detail, err = readChangeDetailView(ctx, query, scope, item, change.ID, s.config.now(), true)
 		}
 		if err != nil {
 			return result, err
@@ -89,15 +89,18 @@ func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, ite
 		}
 	}
 	discussionOrder := " ORDER BY sequence"
-	if bounded {
+	if bounded || attemptSummaryRead(ctx) {
 		discussionOrder = " ORDER BY sequence DESC LIMIT 33"
 	}
-	ids, err := readRecoveryCommentIDs(ctx, tx, scope, item, discussionOrder, bounded)
+	ids, err := readRecoveryCommentIDs(ctx, query, scope, item, discussionOrder, bounded)
 	if err != nil {
 		return result, err
 	}
-	if bounded {
+	if bounded || attemptSummaryRead(ctx) {
 		result.Read = &tracker.NativeRecoveryRead{DetailPath: "/api/v2/organizations/" + url.PathEscape(string(scope.organization)) + "/projects/" + url.PathEscape(string(scope.project)) + "/work-items/" + url.PathEscape(item) + "?view=recovery&limit=1"}
+		if attemptSummaryRead(ctx) {
+			result.Read.Omitted = append(result.Read.Omitted, "attempts", "change_detail.versions", "change_detail.reviews", "change_detail.checks", "change_detail.discussion")
+		}
 		if len(ids) == 33 {
 			result.Read.Omitted = append(result.Read.Omitted, "discussion")
 			ids = ids[:32]
@@ -105,7 +108,7 @@ func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, ite
 	}
 	discussionBytes := 0
 	for _, id := range ids {
-		comment, err := readNativeComment(ctx, tx, scope, item, id)
+		comment, err := readNativeComment(ctx, query, scope, item, id)
 		if err != nil {
 			return result, err
 		}
@@ -122,26 +125,41 @@ func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, ite
 		}
 		result.Discussion = append(result.Discussion, comment)
 	}
-	landingAttempt, err := latestRecoveryLandingAttempt(ctx, tx, scope, item)
+	landingAttempt, err := latestRecoveryLandingAttempt(ctx, query, scope, item)
 	if err != nil {
 		return result, err
 	}
 
-	rows, err := tx.QueryContext(ctx, `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
+	attemptQuery := `SELECT COALESCE(NULLIF(a.payload_object_key,''),a.data_json), a.status, a.started_at, a.updated_at, COALESCE(NULLIF(a.checkpoint_object_key,''),a.checkpoint_json), a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
 FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
 WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND (a.id = ? OR a.id = ? OR a.id = (
  SELECT id FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ? ORDER BY fencing_token DESC LIMIT 1)
  OR a.id = ?
  OR a.id = (SELECT id FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ?
- AND checkpoint_json IS NOT NULL ORDER BY fencing_token DESC LIMIT 1))
-ORDER BY a.fencing_token LIMIT 5`, scope.organization, scope.project, item, sourceAttempt, changeAttempt,
+ AND COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) IS NOT NULL ORDER BY fencing_token DESC LIMIT 1))
+ORDER BY a.fencing_token LIMIT 5`
+	if attemptSummaryRead(ctx) {
+		attemptQuery = typedAttemptSelection(attemptQuery)
+	}
+	rows, err := query.QueryContext(ctx, attemptQuery, scope.organization, scope.project, item, sourceAttempt, changeAttempt,
 		scope.organization, scope.project, item, landingAttempt, scope.organization, scope.project, item)
 	if err != nil {
 		return result, err
 	}
 	defer rows.Close()
+	var records []nativeAttemptRow
 	for rows.Next() {
-		attempt, err := scanNativeAttempt(ctx, tx, rows, s.config.now())
+		record, err := scanNativeAttemptRow(rows)
+		if err != nil {
+			return result, err
+		}
+		records = append(records, record)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return result, err
+	}
+	for _, record := range records {
+		attempt, err := record.hydrate(ctx, query, s.config.now())
 		if err != nil {
 			return result, err
 		}
@@ -154,7 +172,7 @@ ORDER BY a.fencing_token LIMIT 5`, scope.organization, scope.project, item, sour
 	if err := rows.Close(); err != nil {
 		return result, err
 	}
-	if exit, found, err := readLatestLandingExit(ctx, tx, scope, item); err != nil {
+	if exit, found, err := readLatestLandingExit(ctx, query, scope, item); err != nil {
 		return result, err
 	} else if found {
 		result.History = []tracker.CollaborationEvent{exit}
@@ -165,7 +183,7 @@ ORDER BY a.fencing_token LIMIT 5`, scope.organization, scope.project, item, sour
 			return result, err
 		}
 	}
-	return result, tx.Commit()
+	return result, nil
 }
 
 type recoveryEvidenceCursor struct {
@@ -184,16 +202,12 @@ func (s *Service) readNativeRecoveryPage(ctx context.Context, scope nativeScope,
 	if err != nil {
 		return tracker.NativeRecovery{}, err
 	}
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	query := s.database.reader
+	issue, _, err := readNativeIssueProjection(ctx, query, scope, item, true)
 	if err != nil {
 		return tracker.NativeRecovery{}, err
 	}
-	defer tx.Rollback()
-	issue, _, err := readNativeIssueProjection(ctx, tx, scope, item, true)
-	if err != nil {
-		return tracker.NativeRecovery{}, err
-	}
-	change, _, err := readLatestNativeChangeRequest(ctx, tx, scope, item)
+	change, _, err := readLatestNativeChangeRequest(ctx, query, scope, item)
 	if err != nil {
 		return tracker.NativeRecovery{}, err
 	}
@@ -213,7 +227,7 @@ func (s *Service) readNativeRecoveryPage(ctx context.Context, scope nativeScope,
 	page := &tracker.NativeRecoveryPage{NativeReference: issue.NativeReference, Section: "complete"}
 	for selection.Section < len(sections) {
 		section := sections[selection.Section]
-		sequence, id, version, content, err := s.readRecoveryEvidenceRecord(ctx, tx, scope, item, section, selection)
+		sequence, id, version, content, err := s.readRecoveryEvidenceRecord(ctx, query, scope, item, section, selection)
 		if errors.Is(err, sql.ErrNoRows) {
 			selection.Section++
 			selection.After, selection.Offset, selection.Digest = 0, 0, ""
@@ -243,7 +257,7 @@ func (s *Service) readNativeRecoveryPage(ctx context.Context, scope nativeScope,
 		}
 		break
 	}
-	return tracker.NativeRecovery{Continuation: page}, tx.Commit()
+	return tracker.NativeRecovery{Continuation: page}, nil
 }
 
 func recoveryRecordFragment(page *tracker.NativeRecoveryPage, content []byte, offset int64, expectedDigest string) error {
@@ -258,6 +272,7 @@ func recoveryRecordFragment(page *tracker.NativeRecoveryPage, content []byte, of
 }
 
 func (s *Service) readRecoveryEvidenceRecord(ctx context.Context, query nativeQueryer, scope nativeScope, item, section string, cursor recoveryEvidenceCursor) (int64, string, string, []byte, error) {
+	ctx = payloadQueryContext(ctx, query)
 	var sequence int64
 	var id, version string
 	var value any
@@ -274,7 +289,7 @@ func (s *Service) readRecoveryEvidenceRecord(ctx context.Context, query nativeQu
 	case "reviews", "checks", "change_discussion":
 		kind := map[string]string{"reviews": "review", "checks": "check", "change_discussion": "discussion"}[section]
 		var content []byte
-		err := query.QueryRowContext(ctx, `SELECT sequence, COALESCE(version_id,''), record_json FROM change_evidence WHERE change_id = ? AND kind = ? AND sequence > ? ORDER BY sequence LIMIT 1`, cursor.Change, kind, cursor.After).Scan(&sequence, &version, &content)
+		err := query.QueryRowContext(ctx, `SELECT sequence, COALESCE(version_id,''), COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id = ? AND kind = ? AND sequence > ? ORDER BY sequence LIMIT 1`, cursor.Change, kind, cursor.After).Scan(&sequence, &version, &content)
 		if err != nil {
 			return sequence, "", version, nil, err
 		}
@@ -283,7 +298,7 @@ func (s *Service) readRecoveryEvidenceRecord(ctx context.Context, query nativeQu
 			return sequence, "", version, nil, err
 		}
 		if _, archived := query.(*nativeArchiveQuery); archived {
-			err = query.QueryRowContext(ctx, "SELECT record_json FROM change_evidence WHERE change_id=? AND sequence=?", cursor.Change, sequence).Scan(&content)
+			err = query.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id=? AND sequence=?", cursor.Change, sequence).Scan(&content)
 		}
 		if err == nil {
 			content, err = resolveStorageJSON(ctx, content)
@@ -628,7 +643,7 @@ func (s *Service) readRecoveryChange(ctx context.Context, query nativeQueryer, s
 	if unknown {
 		detail.Reviews, legacyDecisions, err = legacyRecoveryReviews(ctx, query, change.ID, change.CurrentVersion)
 	} else {
-		detail.Reviews, err = changeRows[tracker.ChangeReview](ctx, query, `SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id = ? AND sequence IN (
+		detail.Reviews, err = changeRows[tracker.ChangeReview](ctx, query, `SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id = ? AND sequence IN (
  SELECT sequence FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id = ? ORDER BY sequence DESC LIMIT 32
 ) OR change_id = ? AND kind = 'review' AND version_id = ? AND sequence IN (
  SELECT MAX(sequence) FROM change_evidence WHERE change_id = ? AND kind = 'review' AND version_id = ? AND has_implementation_review=1
@@ -650,7 +665,7 @@ func (s *Service) readRecoveryChange(ctx context.Context, query nativeQueryer, s
 		}
 		detail.Checks = append(detail.Checks, checks...)
 	}
-	detail.Discussion, err = changeRows[tracker.ChangeDiscussion](ctx, query, `SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'discussion' AND (version_id = ? OR version_id IS NULL OR version_id = '') ORDER BY sequence DESC LIMIT 32`, change.ID, change.CurrentVersion)
+	detail.Discussion, err = changeRows[tracker.ChangeDiscussion](ctx, query, `SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id = ? AND kind = 'discussion' AND (version_id = ? OR version_id IS NULL OR version_id = '') ORDER BY sequence DESC LIMIT 32`, change.ID, change.CurrentVersion)
 	if err != nil {
 		return detail, err
 	}
@@ -739,7 +754,7 @@ func boundedRecoveryReviews(reviews []tracker.ChangeReview, budget int) ([]track
 
 // readLatestLandingExit returns the item's latest move out of Merging. Its
 // reason records why landing stopped, which the next attempt acts on.
-func readLatestLandingExit(ctx context.Context, tx *sql.Tx, scope nativeScope, item string) (tracker.CollaborationEvent, bool, error) {
+func readLatestLandingExit(ctx context.Context, tx nativeQueryer, scope nativeScope, item string) (tracker.CollaborationEvent, bool, error) {
 	event := tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "work_item", AggregateID: tracker.NativeWorkItemID(item)}
 	before := int64(1<<63 - 1)
 	for {

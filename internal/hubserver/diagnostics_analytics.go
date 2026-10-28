@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,13 +13,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-const diagnosticsAttemptsQuery = `SELECT r.dimension,r.started_at,r.updated_at,r.data_json
+const diagnosticsAttemptsQuery = `SELECT r.dimension,r.started_at,r.updated_at,` + analyticsAttemptPayload + `
 FROM analytics_hourly_rollups r INDEXED BY analytics_attempt_reports_updated
 WHERE r.organization_id=? AND r.project_id=? AND r.metric='attempt'
 AND r.updated_at>=?
 ORDER BY r.updated_at,r.started_at LIMIT ?`
 
-const diagnosticsFailuresQuery = `SELECT r.status,r.data_json,r.work_item_id,r.failed_at,r.started_at,r.updated_at,
+const diagnosticsFailuresQuery = `SELECT r.status,` + analyticsAttemptPayload + `,r.work_item_id,r.failed_at,r.started_at,r.updated_at,
 (SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=r.organization_id AND u.project_id=r.project_id AND u.attempt_id=r.dimension),
 (SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=r.organization_id AND u.project_id=r.project_id AND u.attempt_id=r.dimension)
 FROM analytics_hourly_rollups r INDEXED BY analytics_attempt_failed
@@ -85,19 +86,28 @@ ORDER BY r.updated_at,r.started_at LIMIT ?`
 		return err
 	}
 	defer rows.Close()
-	phases := map[string]int{}
-	observed := 0
+	type attemptRow struct {
+		attempt               nativeAnalyticsAttempt
+		started, updated, raw string
+	}
+	var batch []attemptRow
 	for rows.Next() {
-		if observed == maxAnalyticsPopulation {
+		if len(batch) == maxAnalyticsPopulation {
 			out.Partial = true
 			break
 		}
-		observed++
-		var attempt nativeAnalyticsAttempt
-		var started, updated, raw string
-		if err := rows.Scan(&attempt.AttemptID, &started, &updated, &raw); err != nil {
+		var row attemptRow
+		if err := rows.Scan(&row.attempt.AttemptID, &row.started, &row.updated, &row.raw); err != nil {
 			return err
 		}
+		batch = append(batch, row)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	phases := map[string]int{}
+	for _, row := range batch {
+		attempt, started, updated, raw := row.attempt, row.started, row.updated, row.raw
 		attempt.StartedAt, err = parseTimeValue(started)
 		if err != nil {
 			return err
@@ -110,6 +120,7 @@ ORDER BY r.updated_at,r.started_at LIMIT ?`
 			continue
 		}
 		var payload struct {
+			ID      string              `json:"id"`
 			Detail  *runDetailReference `json:"detail"`
 			Runtime struct {
 				Phases        analyticsPhases `json:"phases"`
@@ -117,7 +128,7 @@ ORDER BY r.updated_at,r.started_at LIMIT ?`
 				Activity      json.RawMessage `json:"activity"`
 			} `json:"runtime"`
 		}
-		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		if err := decodeStorageJSON(payloadQueryContext(ctx, q), []byte(raw), &payload); err != nil {
 			return err
 		}
 		if payload.Detail != nil {
@@ -138,7 +149,8 @@ ORDER BY r.updated_at,r.started_at LIMIT ?`
 		if payload.Runtime.Phases.malformed || len(payload.Runtime.Phases.items) == 0 || payload.Runtime.PhasesDropped > 0 {
 			out.Partial = true
 		}
-		_, attempt.publicActivity = q.(analyticsRollupReader)
+		_, projected := q.(analyticsRollupReader)
+		attempt.publicActivity = projected && payload.ID != ""
 		activity := string(payload.Runtime.Activity)
 		if activity == "" {
 			activity = "null"
@@ -176,19 +188,28 @@ ORDER BY r.report_failed_at DESC,r.id DESC LIMIT ?`
 		return err
 	}
 	defer rows.Close()
-	var failures []nativeFailure
-	observed := 0
+	type failureRow struct {
+		failure                           nativeFailure
+		status, raw, at, started, updated string
+	}
+	var batch []failureRow
 	for rows.Next() {
-		if observed == maxAnalyticsPopulation {
+		if len(batch) == maxAnalyticsPopulation {
 			out.Partial = true
 			break
 		}
-		observed++
-		var status, raw, at, started, updated string
-		var failure nativeFailure
-		if err := rows.Scan(&status, &raw, &failure.workItem, &at, &started, &updated, &failure.cost, &failure.tokens); err != nil {
+		var row failureRow
+		if err := rows.Scan(&row.status, &row.raw, &row.failure.workItem, &row.at, &row.started, &row.updated, &row.failure.cost, &row.failure.tokens); err != nil {
 			return err
 		}
+		batch = append(batch, row)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	var failures []nativeFailure
+	for _, row := range batch {
+		failure, status, raw, at, started, updated := row.failure, row.status, row.raw, row.at, row.started, row.updated
 		var payload struct {
 			Detail          *runDetailReference            `json:"detail"`
 			TerminalFailure *tracker.NativeTerminalFailure `json:"terminal_failure"`
@@ -198,7 +219,7 @@ ORDER BY r.report_failed_at DESC,r.id DESC LIMIT ?`
 				Validation *gate.CommandResult           `json:"validation"`
 			} `json:"runtime"`
 		}
-		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		if err := decodeStorageJSON(payloadQueryContext(ctx, q), []byte(raw), &payload); err != nil {
 			return err
 		}
 		data := tracker.NativeRunData{TerminalFailure: payload.TerminalFailure, Finalization: payload.Finalization}

@@ -382,6 +382,7 @@ type conversationRunnerHub struct {
 func newConversationRunnerHub(t *testing.T) *conversationRunnerHub {
 	t.Helper()
 	service, err := hubserver.Open(t.Context(), hubserver.Config{
+		RunDetails:        &archivedRunDetails{},
 		DatabasePath:      hubDatabasePath(t),
 		InitialAdminToken: []byte(conversationRunnerAdminToken),
 		Conversation:      &hubserver.ConversationConfig{Enabled: true, ArchiveContents: &conversationArchiveFixture{}},

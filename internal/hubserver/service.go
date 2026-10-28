@@ -172,8 +172,6 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		clientBuild:        conversationClientIdentity(conversationClientFS, cfg.Version, cfg.now()),
 		pullRequests:       newPullRequestCache(),
 	}
-	workerContext = service.contentContext(workerContext)
-	reconcileContext = service.contentContext(reconcileContext)
 	if cfg.Hosted == nil {
 		if err := database.reader.QueryRowContext(ctx, "SELECT id FROM organizations WHERE local=1").Scan(&service.localOrganization); err != nil {
 			workerCancel()
@@ -256,8 +254,8 @@ func Open(ctx context.Context, cfg Config) (*Service, error) {
 		return service, nil
 	}
 	service.maintainGitHubWebhooks(ctx)
-	go service.runGitHubWebhookMaintenance(workerContext)
-	go service.runGitHubReconciliation(reconcileContext)
+	go service.runGitHubWebhookMaintenance(service.runDetailContext(workerContext))
+	go service.runGitHubReconciliation(service.runDetailContext(reconcileContext))
 	service.ready.Store(true)
 	if service.outbox != nil {
 		service.outbox.start(ctx)
@@ -505,6 +503,7 @@ func (s *Service) CloseContext(ctx context.Context) error {
 }
 
 func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
+	ctx = s.runDetailContext(ctx)
 	defer close(s.workerDone)
 	s.maintainNativeBoard(ctx)
 	ticker := time.NewTicker(s.config.WebhookMaintenanceInterval)
@@ -520,7 +519,6 @@ func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
 		case <-ticker.C:
 			s.maintainNativeBoard(ctx)
 			s.maintainNativeSearch(ctx)
-			s.maintainChangeSources(ctx)
 			now := s.config.now()
 			retryAnalytics := now.Sub(lastAnalyticsRetry) >= time.Hour
 			s.maintainAnalyticsRollups(ctx, now, retryAnalytics)

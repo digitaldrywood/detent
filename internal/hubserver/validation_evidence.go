@@ -36,7 +36,7 @@ func readValidationAudit(ctx context.Context, query nativeQueryer, scope nativeS
 			rows.Close()
 			return nil, err
 		}
-		if err := json.Unmarshal([]byte(actor), &source.Actor); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(actor), &source.Actor); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -141,7 +141,7 @@ func readValidationCandidates(ctx context.Context, query nativeQueryer, scope na
 	ranked := []rankedCandidate{}
 	partial := false
 	for _, unknown := range []bool{false, true} {
-		statement := `SELECT c.work_item_id,v.record_json,COALESCE(a.id,''),COALESCE(a.run_id,''),COALESCE(a.local_attempt_id,0),COALESCE(r.record_json,''),c.record_json,v.rowid,COALESCE(a.fencing_token,0),r.merge_sha
+		statement := `SELECT c.work_item_id,COALESCE(NULLIF(v.payload_object_key,''),v.record_json),COALESCE(a.id,''),COALESCE(a.run_id,''),COALESCE(a.local_attempt_id,0),COALESCE(NULLIF(r.payload_object_key,''),r.record_json,''),c.record_json,v.rowid,COALESCE(a.fencing_token,0),r.merge_sha
  FROM change_versions v JOIN change_requests c ON c.id=v.change_id
  LEFT JOIN change_landing_receipts r ON r.version_id=v.id
  LEFT JOIN native_attempts a ON a.id=r.attempt_id AND a.organization_id=c.organization_id AND a.project_id=c.project_id
@@ -168,10 +168,10 @@ func readValidationCandidates(ctx context.Context, query nativeQueryer, scope na
 			}
 			var version tracker.ChangeVersion
 			var request tracker.ChangeRequest
-			if err := json.Unmarshal([]byte(versionRaw), &version); err != nil {
+			if err := decodeStorageJSON(ctx, []byte(versionRaw), &version); err != nil {
 				return nil, false, err
 			}
-			if err := json.Unmarshal([]byte(changeRaw), &request); err != nil {
+			if err := decodeStorageJSON(ctx, []byte(changeRaw), &request); err != nil {
 				return nil, false, err
 			}
 			if validationRepository(version.Repository) != scheduled.Repository {
@@ -184,7 +184,7 @@ func readValidationCandidates(ctx context.Context, query nativeQueryer, scope na
 			candidate.Local, candidate.ObservedAt = version.Validation, version.CreatedAt
 			if receiptRaw != "" {
 				var receipt tracker.NativeLandingReceipt
-				if err := json.Unmarshal([]byte(receiptRaw), &receipt); err != nil {
+				if err := decodeStorageJSON(ctx, []byte(receiptRaw), &receipt); err != nil {
 					return nil, false, err
 				}
 				if receipt.Gate != nil {

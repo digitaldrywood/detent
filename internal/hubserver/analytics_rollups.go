@@ -88,6 +88,7 @@ type analyticsRollupReader struct {
 }
 
 var analyticsRollupTables = strings.NewReplacer(
+	"main.native_attempts", "main.native_attempts",
 	"native_attempts", "analytics_native_attempts",
 	"attempt_usage", "analytics_attempt_usage",
 	"FROM issues", "FROM analytics_issues",

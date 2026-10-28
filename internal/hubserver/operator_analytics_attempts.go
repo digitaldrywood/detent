@@ -20,7 +20,7 @@ func analyticsAttemptsInStartedOrder(q nativeQueryer) string {
 	if _, projected := q.(analyticsRollupReader); !projected {
 		return "report_attempts"
 	}
-	return `(SELECT r.organization_id,r.project_id,r.dimension AS id,r.work_item_id,r.lease_id,r.status,r.started_at,r.updated_at,r.data_json,n.runner_id,n.role,n.execution_role,n.report_requested_model,n.report_resolved_model
+	return `(SELECT r.organization_id,r.project_id,r.dimension AS id,r.work_item_id,r.lease_id,r.status,r.started_at,r.updated_at,COALESCE(NULLIF(r.payload_object_key,''),NULLIF(r.data_json,'{}'),n.data_json) AS data_json,n.runner_id,n.role,n.execution_role,n.report_requested_model,n.report_resolved_model
 FROM analytics_hourly_rollups r INDEXED BY analytics_attempt_started CROSS JOIN report_attempts n ON n.id=r.dimension AND n.organization_id=r.organization_id AND n.project_id=r.project_id WHERE r.metric='attempt')`
 }
 
@@ -39,23 +39,40 @@ FROM `+analyticsAttemptsInStartedOrder(q)+` a LEFT JOIN lease_runners lr ON lr.l
 		return nativeAnalyticsAttemptPopulation{}, err
 	}
 	defer rows.Close()
-	attempts := []nativeAnalyticsAttempt{}
+	type attemptRow struct {
+		attempt                                            nativeAnalyticsAttempt
+		from, to, raw, role, requestedModel, resolvedModel string
+	}
+	var batch []attemptRow
 	partial, malformed, clipped := false, false, false
 	for rows.Next() {
-		if len(attempts) == maxAnalyticsPopulation {
+		if len(batch) == maxAnalyticsPopulation {
 			partial, clipped = true, true
 			break
 		}
-		var a nativeAnalyticsAttempt
-		var from, to string
-		raw, activityRaw, identityRaw, landingRaw, pipelineRaw, validationRaw := "[]", "null", "{}", "null", "[]", "null"
-		var dropped int
-		var runRaw string
-		var role, requestedModel, resolvedModel string
-		if err := rows.Scan(&a.AttemptID, &a.WorkItemID, &a.Status, &from, &to, &a.UsageRowsObserved, &runRaw, &role, &requestedModel, &resolvedModel); err != nil {
+		var row attemptRow
+		if err := rows.Scan(&row.attempt.AttemptID, &row.attempt.WorkItemID, &row.attempt.Status, &row.from, &row.to, &row.attempt.UsageRowsObserved, &row.raw, &row.role, &row.requestedModel, &row.resolvedModel); err != nil {
 			return nativeAnalyticsAttemptPopulation{}, err
 		}
+		batch = append(batch, row)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nativeAnalyticsAttemptPopulation{}, err
+	}
+	attempts := []nativeAnalyticsAttempt{}
+	for _, row := range batch {
+		a, from, to := row.attempt, row.from, row.to
+		role, requestedModel, resolvedModel := row.role, row.requestedModel, row.resolvedModel
+		resolved, err := resolveStorageJSON(payloadQueryContext(ctx, q), []byte(row.raw))
+		if err != nil {
+			return nativeAnalyticsAttemptPopulation{}, err
+		}
+		runRaw := string(resolved)
+		raw, activityRaw, identityRaw, landingRaw, pipelineRaw, validationRaw := "[]", "null", "{}", "null", "[]", "null"
+		var dropped int
 		var stored struct {
+			ID      string              `json:"id"`
 			Detail  *runDetailReference `json:"detail"`
 			Runtime json.RawMessage     `json:"runtime"`
 		}
@@ -148,13 +165,10 @@ FROM `+analyticsAttemptsInStartedOrder(q)+` a LEFT JOIN lease_runners lr ON lr.l
 		if dropped > 0 {
 			partial = true
 		}
-		_, a.publicActivity = q.(analyticsRollupReader)
+		_, projected := q.(analyticsRollupReader)
+		a.publicActivity = projected && stored.ID != ""
 		a.activityRaw = activityRaw
 		attempts = append(attempts, a)
 	}
-	if err := rows.Err(); err != nil {
-		return nativeAnalyticsAttemptPopulation{}, err
-	}
-	rows.Close()
-	return nativeAnalyticsAttemptPopulation{Items: attempts, Partial: partial, Malformed: malformed, Clipped: clipped}, rows.Err()
+	return nativeAnalyticsAttemptPopulation{Items: attempts, Partial: partial, Malformed: malformed, Clipped: clipped}, nil
 }

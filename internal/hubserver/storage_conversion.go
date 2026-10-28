@@ -36,6 +36,8 @@ var storageConversionFamilies = []storageConversionFamily{
 	{name: "evidence", update: "UPDATE change_evidence SET record_json=? WHERE rowid=?", column: "record_json", from: "change_evidence r JOIN change_requests c ON c.id=r.change_id", where: "1", aggregate: "c.work_item_id"},
 	{name: "sources", column: "bundle", from: "change_sources r JOIN change_versions v ON v.id=r.version_id JOIN change_requests c ON c.id=v.change_id", where: "r.object_key=''", aggregate: "c.work_item_id"},
 	{name: "diff_files", from: "attempt_diff_files r JOIN attempt_diffs c ON c.id=r.diff_id", where: "c.object_key=''", aggregate: "c.work_item_id"},
+	{name: "checkpoints", column: "checkpoint_json", from: "native_attempts r", where: "r.checkpoint_object_key='' AND r.checkpoint_json IS NOT NULL AND r.checkpoint_json<>'null'", aggregate: "r.work_item_id"},
+	{name: "landings", column: "record_json", from: "change_landing_receipts r JOIN native_attempts c ON c.id=r.attempt_id", where: "r.payload_object_key='' AND r.record_json<>'{}'", aggregate: "r.attempt_id"},
 	{name: "tool_revisions", column: "text", from: "conversation_tool_revisions r JOIN conversations c ON c.id=r.conversation_id", where: "r.content_attachment_id=''", aggregate: "r.conversation_id"},
 	{name: "conversation_records", column: "execution_json", from: "conversations r", where: "r.content_attachment_id=''", aggregate: "r.id"},
 	{name: "conversation_questions", column: "prompts_json", from: "conversation_questions r JOIN conversations c ON c.id=r.conversation_id", where: "r.content_attachment_id=''", aggregate: "r.conversation_id"},
@@ -44,7 +46,7 @@ var storageConversionFamilies = []storageConversionFamily{
 }
 
 func (f storageConversionFamily) scope() string {
-	if f.name == "messages" || f.name == "conversation_events" || f.name == "tool_revisions" || f.name == "conversation_questions" || f.name == "conversation_commands" || f.name == "conversation_attachments" || f.name == "versions" || f.name == "evidence" || f.name == "sources" || f.name == "diff_files" {
+	if f.name == "landings" || f.name == "messages" || f.name == "conversation_events" || f.name == "tool_revisions" || f.name == "conversation_questions" || f.name == "conversation_commands" || f.name == "conversation_attachments" || f.name == "versions" || f.name == "evidence" || f.name == "sources" || f.name == "diff_files" {
 		return "c"
 	}
 	return "r"
@@ -53,8 +55,9 @@ func (f storageConversionFamily) scope() string {
 func (f storageConversionFamily) selection() string {
 	column := "r." + f.column
 	if f.name == "diff_files" {
-		column = `json_object('diff_id',r.diff_id,'position',r.position,'file',json_object('path',r.path,'old_path',r.old_path,'status',r.status,'additions',r.additions,'deletions',r.deletions,'binary',json(CASE WHEN r.binary THEN 'true' ELSE 'false' END),'patch',r.patch,'truncated',json(CASE WHEN r.truncated THEN 'true' ELSE 'false' END),'denied',json(CASE WHEN r.denied THEN 'true' ELSE 'false' END),'patch_expired',json(CASE WHEN r.patch_expired THEN 'true' ELSE 'false' END),'patch_body',CASE WHEN r.patch_object<>'' AND r.patch_expired=0 THEN json_object('key',r.patch_object,'sha256',r.patch_sha256,'bytes',r.patch_size) ELSE NULL END))`
+		column = "r.patch"
 	}
+
 	return "SELECT r.rowid AS conversion_rowid," + f.aggregate + " AS aggregate_id," + column + " AS conversion_payload" + f.filter()
 }
 
@@ -70,7 +73,7 @@ const storageConversionDiscovery = `SELECT aggregate_id,through_rowid FROM stora
 WHERE organization_id=? AND project_id=? AND family=? AND (complete=0 OR format_version<>1)
 ORDER BY updated_at,aggregate_id LIMIT 4`
 
-const storageConversionSchedule = `SELECT organization_id,project_id,family,aggregate_id FROM storage_conversion_progress WHERE (complete=0 OR format_version<>1) AND family IN ('runs','attempts','analytics','conversation_events','messages','versions','evidence','sources','diff_files','tool_revisions','conversation_records','conversation_questions','conversation_commands','conversation_attachments') ORDER BY updated_at,organization_id,project_id,family,aggregate_id LIMIT 4`
+const storageConversionSchedule = `SELECT organization_id,project_id,family,aggregate_id FROM storage_conversion_progress WHERE (complete=0 OR format_version<>1) AND family IN ('runs','attempts','analytics','conversation_events','messages','versions','evidence','sources','diff_files','tool_revisions','conversation_records','conversation_questions','conversation_commands','conversation_attachments') AND family NOT IN ('attempts','analytics','versions','evidence','sources','diff_files') ORDER BY updated_at,organization_id,project_id,family,aggregate_id LIMIT 4`
 
 type storageConversionProgress struct {
 	Family    string `json:"family"`
@@ -148,14 +151,29 @@ func (s *Service) convertLegacyStorage(ctx context.Context, now time.Time) error
 			}
 		}
 	}
-	if s.storageArchiveContent() == nil {
+	if s.storageArchiveContent() == nil && s.runDetailStore() == nil {
 		return failures
 	}
-	ctx = s.runDetailContext(ctx)
+	ctx = s.freshRunDetailContext(ctx)
 	for _, family := range storageConversionFamilies {
+		if objectPayloadFamily(family.name) {
+			if err := s.convertObjectPayloadFamily(ctx, family, now); err != nil {
+				failures = errors.Join(failures, fmt.Errorf("convert legacy %s: %w", family.name, err))
+				if ctx.Err() != nil {
+					return failures
+				}
+			}
+			continue
+		}
+		if s.storageArchiveContent() == nil {
+			continue
+		}
 		if err := s.discoverStorageFamily(ctx, family, now); err != nil {
 			return err
 		}
+	}
+	if s.storageArchiveContent() == nil {
+		return failures
 	}
 	rows, err := s.database.reader.QueryContext(ctx, storageConversionSchedule)
 	if err != nil {
@@ -210,7 +228,7 @@ func (f storageConversionFamily) discoverySelection() string {
 	if f.name == "runs" {
 		return "SELECT rowid FROM collaboration_events WHERE payload_version=0 AND type IN ('run.started','run.checkpointed','run.observed','run.finished','scheduler.decision') AND conversion_state<>1 ORDER BY id LIMIT ?"
 	}
-	if f.name == "messages" || f.name == "conversation_events" {
+	if f.name == "landings" || f.name == "messages" || f.name == "conversation_events" {
 		return "SELECT rowid FROM " + f.table() + " WHERE " + f.pending() + " AND conversion_state<>1 ORDER BY rowid LIMIT ?"
 	}
 	return "SELECT rowid FROM " + f.table() + " WHERE conversion_state=0 ORDER BY rowid LIMIT ?"
@@ -218,7 +236,7 @@ func (f storageConversionFamily) discoverySelection() string {
 
 func (f storageConversionFamily) discoveryUpsert() string {
 	state := "r.conversion_state=0"
-	if f.name == "messages" || f.name == "conversation_events" {
+	if f.name == "landings" || f.name == "messages" || f.name == "conversation_events" {
 		state = f.where
 	}
 	return `INSERT INTO storage_conversion_progress(organization_id,project_id,family,aggregate_id,format_version,through_rowid,updated_at)
@@ -228,7 +246,7 @@ format_version=excluded.format_version,through_rowid=max(through_rowid,excluded.
 }
 
 func (f storageConversionFamily) stateUpdate() string {
-	if f.name == "messages" || f.name == "conversation_events" {
+	if f.name == "landings" || f.name == "messages" || f.name == "conversation_events" {
 		return "UPDATE " + f.table() + " SET conversion_state=? WHERE rowid=? AND " + f.pending() + " AND ?=0"
 	}
 	return "UPDATE " + f.table() + " SET conversion_state=? WHERE rowid=? AND conversion_state=?"
@@ -300,6 +318,9 @@ func (s *Service) discoverStorageRow(ctx context.Context, family storageConversi
 }
 
 func (s *Service) convertStorageFamily(ctx context.Context, scope nativeScope, family storageConversionFamily, now time.Time) error {
+	if objectPayloadFamily(family.name) {
+		return s.convertObjectPayloadFamily(ctx, family, now)
+	}
 	rows, err := s.database.reader.QueryContext(ctx, storageConversionDiscovery, scope.organization, scope.project, family.name)
 	if err != nil {
 		return err
@@ -483,7 +504,7 @@ func (s *Service) prepareStorageConversion(ctx context.Context, scope nativeScop
 	if family.name != "sources" && family.name != "diff_files" && (len(raw) < 2048 || bytes.Contains(raw, []byte(`"_storage_archive"`))) {
 		return nil, zero, nil
 	}
-	if family.name == "runs" && bytes.Contains(raw, []byte(`"detail"`)) || family.name == "attempts" && bytes.Contains(raw, []byte(`"detail"`)) {
+	if family.name == "attempts" && bytes.Contains(raw, []byte(`"detail"`)) {
 		return nil, zero, nil
 	}
 	data := raw
@@ -612,7 +633,7 @@ func (s *Service) applyStorageConversion(ctx context.Context, tx *sql.Tx, scope 
 	if _, err := tx.ExecContext(ctx, family.stateUpdate(), 2, row, 1); err != nil {
 		return false, err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE storage_conversion_progress SET conversion_rowid=0,conversion_before_sha256='',conversion_after_sha256='',cursor_rowid=?,converted_rows=converted_rows+?,reclaimed_bytes=reclaimed_bytes+?,updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=? AND format_version=?`, row, count, reclaimed, formatHubTime(now), scope.organization, scope.project, family.name, aggregate, storageConversionVersion)
+	_, err = tx.ExecContext(ctx, `UPDATE storage_conversion_progress SET conversion_policy_revision_id='',conversion_rowid=0,conversion_before_sha256='',conversion_after_sha256='',cursor_rowid=?,converted_rows=converted_rows+?,reclaimed_bytes=reclaimed_bytes+?,updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=? AND format_version=?`, row, count, reclaimed, formatHubTime(now), scope.organization, scope.project, family.name, aggregate, storageConversionVersion)
 	return err == nil, err
 }
 

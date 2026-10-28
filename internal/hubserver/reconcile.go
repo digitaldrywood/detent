@@ -125,6 +125,7 @@ type reconcileTarget struct {
 }
 
 func (s *Service) runGitHubReconciliation(ctx context.Context) {
+	ctx = s.runDetailContext(ctx)
 	defer close(s.reconcileDone)
 	if s.config.ReconcileBackend == nil {
 		return

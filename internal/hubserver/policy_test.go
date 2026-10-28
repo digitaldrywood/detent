@@ -307,12 +307,12 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 				event.Data.Outcome, event.Data.Disposition = "succeeded", &hold.disposition
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
-				issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(held.issue.WorkItemID))
+				issue, _, err := readNativeIssue(f.service.runDetailContext(t.Context()), f.service.database.db, scope, string(held.issue.WorkItemID))
 				if err != nil {
 					t.Fatal(err)
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "hold"}, ExpectedRevision: issue.Revision, State: "Blocked", Reason: "user_requested"}), http.StatusOK)
-				attempt, err := readNativeAttempt(t.Context(), f.service.database.db, scope, string(held.issue.WorkItemID), event.Data.AttemptID, f.service.config.now())
+				attempt, err := readNativeAttempt(f.service.runDetailContext(t.Context()), f.service.database.db, scope, string(held.issue.WorkItemID), event.Data.AttemptID, f.service.config.now())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -331,7 +331,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 			issuesBefore := make([]tracker.NativeIssue, len(changes))
 			for i, change := range changes {
 				before[i] = change.detail(t)
-				issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(change.issue.WorkItemID))
+				issue, _, err := readNativeIssue(f.service.runDetailContext(t.Context()), f.service.database.db, scope, string(change.issue.WorkItemID))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -345,13 +345,13 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 				expected = "policy_stale"
 			case "write":
 				statement := fmt.Sprintf("CREATE TRIGGER refuse_later_transition BEFORE UPDATE OF workflow_state_id ON issues WHEN OLD.native_id = '%s' BEGIN SELECT RAISE(ABORT, 'fixture transition failure'); END", changes[2].issue.WorkItemID)
-				if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
+				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), statement); err != nil {
 					t.Fatal(err)
 				}
 			}
 			drainTestNativeBoard(t, f.service)
 			var sequenceBefore, floorBefore int64
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sequence,replay_floor FROM native_board_sequences WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&sequenceBefore, &floorBefore); err != nil {
+			if err := f.service.database.reader.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT sequence,replay_floor FROM native_board_sequences WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&sequenceBefore, &floorBefore); err != nil {
 				t.Fatal(err)
 			}
 			succeeded := test.status >= 200 && test.status < 300
@@ -365,7 +365,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 			}
 			if !succeeded {
 				var sequenceAfter, floorAfter int64
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sequence,replay_floor FROM native_board_sequences WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&sequenceAfter, &floorAfter); err != nil {
+				if err := f.service.database.reader.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT sequence,replay_floor FROM native_board_sequences WHERE organization_id=? AND project_id=?", scope.organization, scope.project).Scan(&sequenceAfter, &floorAfter); err != nil {
 					t.Fatal(err)
 				}
 				if sequenceAfter != sequenceBefore || floorAfter != floorBefore {
@@ -376,13 +376,13 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 			if succeeded && test.mutation == "" {
 				wantPolicy = next.ID
 			}
-			approval, _, err := readProjectPolicy(t.Context(), f.service.database.db, string(scope.organization)+"/"+string(scope.project))
+			approval, _, err := readProjectPolicy(f.service.runDetailContext(t.Context()), f.service.database.db, string(scope.organization)+"/"+string(scope.project))
 			if err != nil || approval.Policy.ID != wantPolicy {
 				t.Fatalf("configuration = %+v, error = %v, want %s", approval, err, wantPolicy)
 			}
 
 			if test.mutation == "review" {
-				rules, err := readChangePolicy(t.Context(), f.service.database.db, scope)
+				rules, err := readChangePolicy(f.service.runDetailContext(t.Context()), f.service.database.db, scope)
 				wantRules := defaultChangeReviewPolicy(previous).ID
 				if succeeded {
 					wantRules = nextRules.ID
@@ -392,16 +392,16 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 				}
 			}
 			if test.barrier {
-				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				tx, err := f.service.database.db.BeginTx(f.service.runDetailContext(t.Context()), nil)
 				if err != nil {
 					t.Fatal(err)
 				}
 				defer tx.Rollback()
 				var id tracker.WorkItemID
-				if err := tx.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id = ?", current.issue.WorkItemID).Scan(&id); err != nil {
+				if err := tx.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT id FROM issues WHERE native_id = ?", current.issue.WorkItemID).Scan(&id); err != nil {
 					t.Fatal(err)
 				}
-				ready, evaluated, _, err := nativeLandingCandidateReady(t.Context(), tx, &scope, id, lease.MachineID, 0, f.service.config.now())
+				ready, evaluated, _, err := nativeLandingCandidateReady(f.service.runDetailContext(t.Context()), tx, &scope, id, lease.MachineID, 0, f.service.config.now())
 				if err != nil || ready || !evaluated {
 					t.Fatalf("stale landing eligibility = %t, evaluated = %t, error = %v", ready, evaluated, err)
 				}
@@ -410,7 +410,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 				}
 			}
 			for i, change := range changes {
-				issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(change.issue.WorkItemID))
+				issue, _, err := readNativeIssue(f.service.runDetailContext(t.Context()), f.service.database.db, scope, string(change.issue.WorkItemID))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -428,7 +428,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 				}
 				if i > test.stale {
 					prior := heldAttempts[i-test.stale-1]
-					attempt, err := readNativeAttempt(t.Context(), f.service.database.db, scope, string(issue.WorkItemID), prior.AttemptID, f.service.config.now())
+					attempt, err := readNativeAttempt(f.service.runDetailContext(t.Context()), f.service.database.db, scope, string(issue.WorkItemID), prior.AttemptID, f.service.config.now())
 					if err != nil || !reflect.DeepEqual(attempt.Disposition, prior.Disposition) {
 						t.Errorf("%s hold changed: %+v, error = %v", issue.Title, attempt.Disposition, err)
 					}
@@ -438,7 +438,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 					t.Errorf("%s immutable change or version changed", issue.Title)
 				}
 				var transitions int
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id = ? AND type = 'workflow.transitioned' AND json_extract(data_json, '$.reason') = 'stale_policy'", issue.WorkItemID).Scan(&transitions); err != nil {
+				if err := f.service.database.db.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT count(*) FROM collaboration_events WHERE work_item_id = ? AND type = 'workflow.transitioned' AND json_extract(data_json, '$.reason') = 'stale_policy'", issue.WorkItemID).Scan(&transitions); err != nil {
 					t.Fatal(err)
 				}
 				wantTransitions := 0
@@ -449,7 +449,7 @@ func TestConfigurationChangesPreserveLandingWork(t *testing.T) {
 					t.Errorf("%s stale_policy transitions = %d, want %d", issue.Title, transitions, wantTransitions)
 				}
 			}
-			pinned, err := f.service.database.leasePolicyID(t.Context(), lease.ID)
+			pinned, err := f.service.database.leasePolicyID(f.service.runDetailContext(t.Context()), lease.ID)
 			if err != nil || pinned != previous.ID {
 				t.Fatalf("active lease policy = %s, error = %v", pinned, err)
 			}

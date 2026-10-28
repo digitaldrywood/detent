@@ -19,6 +19,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -146,6 +147,14 @@ func (s *Service) nativeAPIError(c echo.Context, err error, attributes ...any) e
 		}{"allowance_exhausted", limit.Error(), limit})
 	}
 	var failure *nativeError
+	if errors.Is(err, artifact.ErrStorage) {
+		message := "Immutable content storage is unavailable; retry when storage is restored"
+		if errors.Is(err, errContentStorageUnconfigured) {
+			message = "Immutable content storage is not configured; configure object storage to persist payloads"
+		}
+		failure = &nativeError{Code: "storage_unreachable", Message: message, status: http.StatusServiceUnavailable, publicMessage: true}
+		return s.refusedAPIError(c, failure.status, failure.Code, failure.Message, failure, attributes...)
+	}
 	if errors.As(err, &failure) {
 		attributes = append(attributes, failure.logAttributes...)
 		message := failure.Message
@@ -498,7 +507,14 @@ type nativeCommandOptions struct {
 // executeNativeMutation owns the shared transaction, current native authority,
 // hosted allowances, audit history and durable business replay for all callers.
 func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error)) (result json.RawMessage, resultErr error) {
-	ctx = s.linkedSourceContext(ctx)
+	ctx = isolateContentContext(s.runDetailContext(s.linkedSourceContext(ctx)))
+	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
+		content.mu.Lock()
+		content.completion = options.Completion
+		content.mu.Unlock()
+	}
+	contentMutation(ctx, true)
+	defer contentMutation(ctx, false)
 	actor := scope.actor()
 	if metadata, ok := mutation.FromContext(ctx); ok {
 		metadata.ActorKind, metadata.PrincipalID, metadata.ViaKey = actor.Kind, actor.PrincipalID, actor.ViaKey
@@ -514,16 +530,24 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 		return nil, err
 	}
 	operationID := options.OperationID
-	preparedCtx, preparationErr := s.prepareHostedImportMutation(ctx, scope, operationID, input)
+	preparedCtx, preparationErr := prepareContentMutation(ctx, s.database.reader, func() (context.Context, error) { return s.prepareHostedImportMutation(ctx, scope, operationID, input) })
 	if preparationErr == nil {
 		ctx = preparedCtx
 	}
 	if preparationErr == nil {
-		preparedCtx, preparationErr = s.prepareChangeMutation(ctx, scope, options, command, input, requestHash)
+		preparedCtx, preparationErr = prepareContentMutation(ctx, s.database.reader, func() (context.Context, error) {
+			return s.prepareChangeMutation(ctx, scope, options, command, input, requestHash)
+		})
 		if preparationErr == nil {
 			ctx = preparedCtx
 		}
 	}
+	return prepareContentMutation(ctx, s.database.reader, func() (json.RawMessage, error) {
+		return s.commitNativeMutation(ctx, scope, options, command, input, operation, requestHash, preparationErr)
+	})
+}
+
+func (s *Service) commitNativeMutation(ctx context.Context, scope nativeScope, options nativeCommandOptions, command tracker.Mutation, input any, operation func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error), requestHash string, preparationErr error) (result json.RawMessage, resultErr error) {
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -552,7 +576,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	}
 	// Older hosted receipts included the originating session in operation.
 	// Read those records as the same business operation across reconnects.
-	response, found, err := nativeCommandReceipt(ctx, tx, scope, operationID, command.IdempotencyKey, requestHash)
+	response, found, err := nativeCommandReceipt(ctx, tx, scope, options.OperationID, command.IdempotencyKey, requestHash)
 	if err != nil {
 		return nil, err
 	}
@@ -569,11 +593,13 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	if err != nil {
 		return nil, err
 	}
-	if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
+	authorityTime := now
+	now = payloadTimestamp(ctx, now)
+	if err := requireRunnerAuthority(ctx, tx, scope, authorityTime); err != nil {
 		return nil, err
 	}
 	if scope.credential.Scope == apiScopeWorker && options.RequireLease {
-		if err := requireNativeMutationLease(ctx, tx, scope, options.Item, command, now); err != nil {
+		if err := requireNativeMutationLease(ctx, tx, scope, options.Item, command, authorityTime); err != nil {
 			return nil, err
 		}
 	}
@@ -600,6 +626,10 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 			return nil, err
 		}
 	}
+	if plan, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan); ok {
+		plan.messageCursor, plan.questionCursor, plan.insertedMessages = 0, 0, 0
+		plan.receiptLogs = make([][]any, 0, 1)
+	}
 	now = conversationWriteTime(ctx, now)
 	if err := validateConversationPublication(ctx, tx); err != nil {
 		return nil, err
@@ -612,7 +642,7 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	if err != nil {
 		return nil, err
 	}
-	if _, err := insertNativeCommandReceipt(ctx, tx, scope.organization, scope.credential.ID, operationID, command.IdempotencyKey, requestHash, response, formatHubTime(now)); err != nil {
+	if _, err := insertNativePayloadCommandReceipt(ctx, tx, scope.organization, scope.credential.ID, options.OperationID, command.IdempotencyKey, requestHash, response, formatHubTime(now)); err != nil {
 		return nil, err
 	}
 	if consolidateRunEvent {
@@ -637,6 +667,11 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 	}
 	if err := s.database.commit(ctx, tx); err != nil {
 		return nil, err
+	}
+	if plan, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan); ok {
+		for _, attributes := range plan.receiptLogs {
+			plan.service.logger.Info("conversation.receipt", attributes...)
+		}
 	}
 	select {
 	case s.boardRefresh <- struct{}{}:
@@ -680,8 +715,17 @@ func nativeCommandHash(input any) (string, error) {
 }
 
 func nativeCommandReceipt(ctx context.Context, query nativeQueryer, scope nativeScope, operation, key, hash string) (string, bool, error) {
+	response, found, err := nativeCommandReceiptReference(ctx, query, scope, operation, key, hash)
+	if !found || err != nil {
+		return "", found, err
+	}
+	resolved, err := resolveStorageJSON(ctx, []byte(response))
+	return string(resolved), true, err
+}
+
+func nativeCommandReceiptReference(ctx context.Context, query nativeQueryer, scope nativeScope, operation, key, hash string) (string, bool, error) {
 	var storedHash, response string
-	err := query.QueryRowContext(ctx, `SELECT request_hash, response_json FROM native_commands WHERE organization_id = ? AND actor_id = ? AND command_key = ? AND (operation = ? OR substr(operation, 1, length(?) + 1) = ? || ' ') ORDER BY created_at, operation LIMIT 1`, scope.organization, scope.credential.ID, key, operation, operation, operation).Scan(&storedHash, &response)
+	err := query.QueryRowContext(ctx, `SELECT request_hash, COALESCE(NULLIF(response_object_key,''),response_json) FROM native_commands WHERE organization_id = ? AND actor_id = ? AND command_key = ? AND (operation = ? OR substr(operation, 1, length(?) + 1) = ? || ' ') ORDER BY created_at, operation LIMIT 1`, scope.organization, scope.credential.ID, key, operation, operation, operation).Scan(&storedHash, &response)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
@@ -714,9 +758,13 @@ func (s *Service) nativeCommandReplay(ctx context.Context, scope nativeScope, op
 	if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 		return nil, false, err
 	}
-	response, found, err := nativeCommandReceipt(ctx, tx, scope, operation, key, hash)
+	response, found, err := nativeCommandReceiptReference(ctx, tx, scope, operation, key, hash)
 	if !found || err != nil {
 		return nil, found, err
 	}
-	return json.RawMessage(response), true, nil
+	if err := tx.Rollback(); err != nil {
+		return nil, false, err
+	}
+	resolved, err := resolveStorageJSON(s.contentContext(ctx), []byte(response))
+	return json.RawMessage(resolved), true, err
 }

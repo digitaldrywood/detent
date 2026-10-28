@@ -44,7 +44,7 @@ func TestAttemptEvidenceAcrossStorageUpgrade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=? WHERE id=?", string(encoded), start.Data.AttemptID); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=?,payload_object_key='' WHERE id=?", string(encoded), start.Data.AttemptID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET dispatch_generation=7 WHERE id=?", start.Data.AttemptID); err != nil {

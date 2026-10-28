@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -122,7 +121,7 @@ func readNativeChangeVersion(ctx context.Context, query nativeQueryer, request t
 		return version, false, nil
 	}
 	var record string
-	err := query.QueryRowContext(ctx, "SELECT record_json FROM change_versions WHERE id = ? AND change_id = ?",
+	err := query.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_versions WHERE id = ? AND change_id = ?",
 		request.CurrentVersion, request.ID).Scan(&record)
 	if errors.Is(err, sql.ErrNoRows) {
 		return version, false, nil
@@ -130,7 +129,7 @@ func readNativeChangeVersion(ctx context.Context, query nativeQueryer, request t
 	if err != nil {
 		return version, false, fmt.Errorf("read change version %s: %w", request.CurrentVersion, err)
 	}
-	if err := json.Unmarshal([]byte(record), &version); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(record), &version); err != nil {
 		return version, false, fmt.Errorf("decode change version %s: %w", request.CurrentVersion, err)
 	}
 	if err := hydrateChangeRecord(ctx, query, &version); err != nil {

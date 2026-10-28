@@ -321,8 +321,14 @@ func (s *Service) getNativeIssue(c echo.Context) error {
 	scope := nativeRequestScope(c)
 	if view := c.QueryParam("view"); view != "" {
 		params, err := nativeReadQuery(c)
-		if err != nil || view != "recovery" || validateNativeQuery(params, "view", "projection") != nil {
+		if err != nil || view != "recovery" || validateNativeQuery(params, "view", "projection", "detail") != nil {
 			return s.nativeAPIError(c, nativePublicInvalid("view supports recovery"))
+		}
+		if params.Get("detail") != "" && params.Get("detail") != "full" && params.Get("detail") != "summary" {
+			return s.nativeAPIError(c, nativePublicInvalid("detail supports full or summary"))
+		}
+		if params.Get("detail") == "summary" || params.Get("detail") == "" && c.Request().Header.Get("X-Detent-Recovery-Detail") == "summary" {
+			ctx = context.WithValue(ctx, attemptSummaryContextKey{}, true)
 		}
 		if params.Has("projection") || c.Request().Header.Get("X-Detent-Recovery-Projection") != "" {
 			if params.Get("projection") != "bounded" && c.Request().Header.Get("X-Detent-Recovery-Projection") != "bounded" || params.Has("limit") || params.Has("cursor") {
@@ -583,7 +589,7 @@ func nativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, projec
 	if scope.credential.HostedRole == "reporter" {
 		request.State = "Triage"
 	}
-	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Revision: 1, Profile: "native"},
+	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(payloadNativeID(ctx, "wi")), Revision: 1, Profile: "native"},
 		Type: request.Type, ReportContext: request.ReportContext, Title: request.Title, Body: request.Body, State: request.State, Priority: request.Priority, Labels: request.Labels, Assignees: request.Assignees,
 		Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, Dependencies: []tracker.NativeWorkItemID{}}
 	if allocation, ok := ctx.Value(conversationIssueAllocationKey{}).(conversationIssueAllocation); ok && allocation.organization == scope.organization && allocation.project == scope.project {
@@ -823,20 +829,10 @@ func appendNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScope, wor
 		return err
 	}
 	payload, err := marshalNative(data)
-	if data.Run != nil {
-		run, encodeErr := encodeRunDetail(ctx, *data.Run, true)
-		if encodeErr != nil {
-			return encodeErr
-		}
-		payload, err = marshalNative(struct {
-			tracker.CollaborationData
-			Run json.RawMessage `json:"run"`
-		}{CollaborationData: data, Run: json.RawMessage(run)})
-	}
 	if err != nil {
 		return err
 	}
-	id := newNativeID("evt")
+	id := payloadNativeID(ctx, "evt")
 	decision := tracker.NativeSchedulerDecision{}
 	if data.Decision != nil {
 		decision = *data.Decision
@@ -854,7 +850,7 @@ func appendNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScope, wor
 	if err != nil {
 		return err
 	}
-	storedPayload, payloadValues, err := collaborationPayloadValues(ctx, scope, workItemID, eventType, data, payload)
+	storedPayload, payloadValues, err := collaborationPayloadValues(ctx, tx, scope, workItemID, eventType, id, data, payload, now)
 	if err != nil {
 		return err
 	}
@@ -954,7 +950,7 @@ func persistNativeIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, issu
 		}
 	}
 	issue.Revision++
-	issue.UpdatedAt = now
+	issue.UpdatedAt = payloadTimestamp(ctx, now)
 	verificationState, verifiedBy, verifiedAt := any(nil), any(nil), any(nil)
 	if issue.Verification != nil {
 		verificationState = issue.Verification.State
@@ -1086,6 +1082,11 @@ func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scop
 	scope.action = operatortool.MoveItem
 	scope.actionItem, scope.actionTarget = item, request.State
 	recordedRecovery := request.Reason == "dependency_ready" && request.BlockerAttemptID != ""
+	var recovery nativeRecordedRecovery
+	var recoveryErr error
+	if recordedRecovery {
+		recovery, recoveryErr = s.prepareNativeRecordedRecovery(ctx, scope, item, request)
+	}
 	signal, contractHold := workpad.SignalFromComment(request.ReasonDetail, "", "")
 	contractHold = contractHold && signal != nil && signal.Invalid == nil && signal.Fields["issue_contract_return_state"] != ""
 	contractRecovery := strings.ReplaceAll(request.ReasonDetail, " ", "_") == "recorded_blocker_recovery" && !recordedRecovery
@@ -1182,7 +1183,10 @@ func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scop
 			}
 		}
 		if recordedRecovery {
-			if err := validateNativeRecordedRecovery(ctx, tx, scope, issue, request, now); err != nil {
+			if recoveryErr != nil {
+				return nil, recoveryErr
+			}
+			if err := validateNativeRecordedRecovery(ctx, tx, scope, issue, request, recovery, now); err != nil {
 				return nil, err
 			}
 		}
@@ -1206,7 +1210,7 @@ func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scop
 			}
 			issue.IssueContract.HumanAction = signal.HumanAction
 			issue.IssueContract.ReturnState = signal.Fields["issue_contract_return_state"]
-			issue.IssueContract.RecordedAt = now
+			issue.IssueContract.RecordedAt = payloadTimestamp(ctx, now)
 		}
 		if issue.IssueContract.ReturnState == request.State && issue.IssueContract.HumanAction == "" {
 			issue.IssueContract.ReturnState = ""

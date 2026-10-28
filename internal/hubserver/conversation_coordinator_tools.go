@@ -622,7 +622,7 @@ WHERE i.organization_id = ? AND i.project_id IN (SELECT value FROM json_each(?))
 	var attempt coordinatorAttempt
 	var data, expires string
 	var released sql.NullString
-	err = db.QueryRowContext(ctx, `SELECT a.id, a.status, a.data_json, a.started_at, a.updated_at, l.expires_at, l.released_at
+	err = db.QueryRowContext(ctx, `SELECT a.id, a.status, COALESCE(NULLIF(a.payload_object_key,''),a.data_json), a.started_at, a.updated_at, l.expires_at, l.released_at
 FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
 WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? ORDER BY a.fencing_token DESC LIMIT 1`, record.OrganizationID, issue.ProjectID, issue.WorkItemID).Scan(
 		&attempt.AttemptID, &attempt.Status, &data, &attempt.StartedAt, &attempt.UpdatedAt, &expires, &released)
@@ -632,7 +632,7 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? ORDER BY
 		return nil, fmt.Errorf("read latest attempt: %w", err)
 	default:
 		var run tracker.NativeRunData
-		if err := json.Unmarshal([]byte(data), &run); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(data), &run); err != nil {
 			return nil, fmt.Errorf("decode attempt: %w", err)
 		}
 		attempt.Outcome = run.Outcome
@@ -657,7 +657,7 @@ WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? ORDER BY
 			return nil, fmt.Errorf("list comments: %w", err)
 		}
 		var actor tracker.Actor
-		if err := json.Unmarshal([]byte(actorJSON), &actor); err == nil {
+		if err := decodeStorageJSON(ctx, []byte(actorJSON), &actor); err == nil {
 			comment.Author = strings.TrimSpace(actor.Kind + " " + actor.PrincipalID)
 		}
 		comment.Body = boundRunes(comment.Body, coordinatorCommentRunes)

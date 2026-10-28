@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"database/sql"
 	"database/sql/driver"
 	"reflect"
 	"strings"
@@ -40,12 +41,12 @@ func TestHotAttemptProjectionCompatibility(t *testing.T) {
 		issue := f.create(t, "projection observations")
 		projectItems[string(f.project.ID)] = issue.WorkItemID
 		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		tx, err := f.service.database.db.BeginTx(first.service.runDetailContext(t.Context()), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		machine := "projection-" + string(f.project.ID)
-		if _, err := tx.ExecContext(t.Context(), `INSERT INTO machines(id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES(?,'example-runner',1,'test',?,?,?)`, machine, formatHubTime(at), formatHubTime(at), formatHubTime(at)); err != nil {
+		if _, err := tx.ExecContext(first.service.runDetailContext(t.Context()), `INSERT INTO machines(id,hostname,capacity,version,last_heartbeat_at,registered_at,updated_at) VALUES(?,'example-runner',1,'test',?,?,?)`, machine, formatHubTime(at), formatHubTime(at), formatHubTime(at)); err != nil {
 			t.Fatal(err)
 		}
 		var projectIDs []string
@@ -61,41 +62,47 @@ func TestHotAttemptProjectionCompatibility(t *testing.T) {
 	for _, stage := range []string{"legacy", "mixed", "converted", "landing updated", "null landing updated"} {
 		t.Run(stage, func(t *testing.T) {
 			if stage == "mixed" {
-				if err := first.service.convertAttemptHotProjection(t.Context(), ids[0][0]); err != nil {
+				if err := first.service.convertAttemptHotProjection(first.service.runDetailContext(t.Context()), ids[0][0]); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if stage == "converted" {
-				if err := first.service.convertAttemptHotProjections(t.Context()); err != nil {
+				if err := first.service.convertAttemptHotProjections(first.service.runDetailContext(t.Context())); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if stage == "landing updated" || stage == "null landing updated" {
-				tx, err := first.service.database.db.BeginTx(t.Context(), nil)
+				ctx := first.service.runDetailContext(t.Context())
+				if err := first.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
+					if stage == "null landing updated" {
+						if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET data_json=?,payload_object_key='' WHERE id=?", "null", ids[0][3]); err != nil {
+							return err
+						}
+					}
+					return persistAttemptLanding(ctx, tx, ids[0][3], tracker.NativeLandingReceipt{Landed: true, ObservedAt: now.Add(-time.Minute)})
+				}); err != nil {
+					t.Fatal(err)
+				}
+				var key string
+				if err := first.service.database.reader.QueryRowContext(ctx, "SELECT payload_object_key FROM native_attempts WHERE id=?", ids[0][3]).Scan(&key); err != nil {
+					t.Fatal(err)
+				}
+				inline, err := resolveStorageJSON(ctx, []byte(key))
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer tx.Rollback()
-				if stage == "null landing updated" {
-					if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=? WHERE id=?", "null", ids[0][3]); err != nil {
-						t.Fatal(err)
-					}
-				}
-				if err := persistAttemptLanding(t.Context(), tx, ids[0][3], tracker.NativeLandingReceipt{Landed: true, ObservedAt: now.Add(-time.Minute)}); err != nil {
-					t.Fatal(err)
-				}
-				if err := tx.Commit(); err != nil {
+				if _, err := first.service.database.db.ExecContext(ctx, "UPDATE native_attempts SET data_json=?,payload_object_key='' WHERE id=?", string(inline), ids[0][3]); err != nil {
 					t.Fatal(err)
 				}
 			}
 			for _, f := range fixtures {
 				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 				for _, window := range []operatortool.AnalyticsWindow{window, {From: now.Add(-30 * time.Minute), To: now}, {From: at.Add(100 * time.Microsecond), To: now}} {
-					want, err := readJSONHealthRateAttempts(t.Context(), f.service.database.reader, scope, window)
+					want, err := readJSONHealthRateAttempts(first.service.runDetailContext(t.Context()), f.service.database.reader, scope, window)
 					if err != nil {
 						t.Fatal(err)
 					}
-					got, err := readHealthRateAttempts(t.Context(), f.service.database.reader, scope, window)
+					got, err := readHealthRateAttempts(first.service.runDetailContext(t.Context()), f.service.database.reader, scope, window)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -103,11 +110,11 @@ func TestHotAttemptProjectionCompatibility(t *testing.T) {
 						t.Fatalf("%s: typed=%+v legacy=%+v", f.project.ID, got, want)
 					}
 					if stage == "converted" {
-						tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+						tx, err := f.service.database.db.BeginTx(first.service.runDetailContext(t.Context()), nil)
 						if err != nil {
 							t.Fatal(err)
 						}
-						if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET data_json='{}' WHERE project_id=?`, f.project.ID); err != nil {
+						if _, err := tx.ExecContext(first.service.runDetailContext(t.Context()), `UPDATE native_attempts SET data_json='{}' WHERE project_id=?`, f.project.ID); err != nil {
 							tx.Rollback()
 							t.Fatal(err)
 						}
@@ -115,9 +122,11 @@ func TestHotAttemptProjectionCompatibility(t *testing.T) {
 							name string
 							run  func() ([]healthRateAttempt, error)
 						}{
-							{"typed", func() ([]healthRateAttempt, error) { return readHealthRateAttempts(t.Context(), tx, scope, window) }},
+							{"typed", func() ([]healthRateAttempt, error) {
+								return readHealthRateAttempts(first.service.runDetailContext(t.Context()), tx, scope, window)
+							}},
 							{"mixed", func() ([]healthRateAttempt, error) {
-								return readLegacyHealthRateAttempts(t.Context(), tx, scope, window)
+								return readLegacyHealthRateAttempts(first.service.runDetailContext(t.Context()), tx, scope, window)
 							}},
 						} {
 							observed, readErr := read.run()
@@ -131,7 +140,7 @@ func TestHotAttemptProjectionCompatibility(t *testing.T) {
 						}
 					}
 				}
-				matches, err := readLocalAttemptMatches(t.Context(), f.service.database.reader, scope, string(projectItems[string(f.project.ID)]), 42)
+				matches, err := readLocalAttemptMatches(first.service.runDetailContext(t.Context()), f.service.database.reader, scope, string(projectItems[string(f.project.ID)]), 42)
 
 				if err != nil || len(matches) != 1 {
 					t.Fatalf("scoped local identity: %v %v", matches, err)
@@ -140,13 +149,13 @@ func TestHotAttemptProjectionCompatibility(t *testing.T) {
 		})
 	}
 	var converted int
-	if err := first.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts WHERE hot_projection_version=1").Scan(&converted); err != nil || converted != len(cases)*len(fixtures) {
+	if err := first.service.database.reader.QueryRowContext(first.service.runDetailContext(t.Context()), "SELECT count(*) FROM native_attempts WHERE hot_projection_version=1").Scan(&converted); err != nil || converted != len(cases)*len(fixtures) {
 		t.Fatalf("converted=%d err=%v", converted, err)
 	}
 	t.Run("legacy history outside window", func(t *testing.T) {
 		scope := nativeScope{organization: first.project.OrganizationID, project: first.project.ID}
 		item := projectItems[string(first.project.ID)]
-		tx, err := first.service.database.db.BeginTx(t.Context(), nil)
+		tx, err := first.service.database.db.BeginTx(first.service.runDetailContext(t.Context()), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -165,20 +174,20 @@ func TestHotAttemptProjectionCompatibility(t *testing.T) {
 		}
 		for _, stage := range []string{"legacy", "partially backfilled"} {
 			if stage == "partially backfilled" {
-				if err := first.service.convertAttemptHotProjections(t.Context()); err != nil {
+				if err := first.service.convertAttemptHotProjections(first.service.runDetailContext(t.Context())); err != nil {
 					t.Fatal(err)
 				}
 				var after int
-				if err := first.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts WHERE hot_projection_version=1").Scan(&after); err != nil || after-converted != storageConversionRows {
+				if err := first.service.database.reader.QueryRowContext(first.service.runDetailContext(t.Context()), "SELECT count(*) FROM native_attempts WHERE hot_projection_version=1").Scan(&after); err != nil || after-converted != storageConversionRows {
 					t.Fatalf("bounded conversion: before=%d after=%d err=%v", converted, after, err)
 				}
 			}
-			want, err := readJSONHealthRateAttempts(t.Context(), first.service.database.reader, scope, window)
+			want, err := readJSONHealthRateAttempts(first.service.runDetailContext(t.Context()), first.service.database.reader, scope, window)
 			if err != nil {
 				t.Fatal(err)
 			}
 			var statements []string
-			ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+			ctx := withRequestTiming(first.service.runDetailContext(t.Context()), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
 				statements = append(statements, query)
 			}})
 			got, err := readHealthRateAttempts(ctx, first.service.database.reader, scope, window)
@@ -198,7 +207,7 @@ func TestHotAttemptProjectionCompatibility(t *testing.T) {
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("%s history changed observations", stage)
 			}
-			matches, err := readLocalAttemptMatches(t.Context(), first.service.database.reader, scope, string(item), 42)
+			matches, err := readLocalAttemptMatches(first.service.runDetailContext(t.Context()), first.service.database.reader, scope, string(item), 42)
 			if err != nil || len(matches) != 1 {
 				t.Fatalf("%s history changed local selection: %v %v", stage, matches, err)
 			}

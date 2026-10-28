@@ -44,6 +44,7 @@ func (s *Service) stopHealthDetector() {
 }
 
 func (s *Service) evaluateTenantHealth(ctx context.Context) error {
+	ctx = s.freshRunDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(s.runDetailContext(ctx), 45*time.Second)
 	defer cancel()
 	if s.requestMetrics != nil {

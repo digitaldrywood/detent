@@ -1142,6 +1142,10 @@ func (c *conversationService) recordReceipt(ctx context.Context, tx *sql.Tx, con
 	if receipt.Error != nil {
 		attributes = append(attributes, "error_code", receipt.Error.Code)
 	}
-	c.logger.Info("conversation.receipt", attributes...)
+	if plan, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan); ok && plan.receiptLogs != nil {
+		plan.receiptLogs = append(plan.receiptLogs, attributes)
+	} else {
+		c.logger.Info("conversation.receipt", attributes...)
+	}
 	return nil
 }

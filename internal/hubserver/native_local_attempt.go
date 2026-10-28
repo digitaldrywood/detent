@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -30,7 +29,7 @@ UNION SELECT subject_id FROM native_archive_sections WHERE organization_id=? AND
 	if len(matches) == 2 {
 		return matches, nil
 	}
-	rows, err = q.QueryContext(ctx, `SELECT id,data_json FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND hot_projection_version=0`, scope.organization, scope.project, item)
+	rows, err = q.QueryContext(ctx, `SELECT id,COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND hot_projection_version=0`, scope.organization, scope.project, item)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +40,7 @@ UNION SELECT subject_id FROM native_archive_sections WHERE organization_id=? AND
 			return nil, err
 		}
 		var data tracker.NativeRunData
-		if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &data); err != nil {
 			return nil, err
 		}
 		if data.Runtime != nil && data.Runtime.LocalAttemptID == local {

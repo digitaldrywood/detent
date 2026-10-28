@@ -3,6 +3,7 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -94,7 +95,7 @@ func nativeAttemptListingFixture(t *testing.T, count, bodyBytes int) (nativeFixt
 			t.Fatal(err)
 		}
 		if index == 0 {
-			_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = ? WHERE id = ?`, string(encoded), data.AttemptID)
+			_, err = f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET payload_object_key='',data_json = ? WHERE id = ?`, string(encoded), data.AttemptID)
 		} else {
 			_, err = f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_attempts
  (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, checkpoint_json, artifact_ids_json, started_at, updated_at, work_item_revision, dispatch_generation)
@@ -124,7 +125,7 @@ func TestNativeAttemptsSkipUnusedHydration(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = '{"attempt_id":42}' WHERE id = ?`, records[test.corrupt].AttemptID); err != nil {
 				t.Fatal(err)
 			}
-			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/attempts?limit="+strconv.Itoa(test.limit), f.token, nil)
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/attempts?view=detail&limit="+strconv.Itoa(test.limit), f.token, nil)
 			requireNativeStatus(t, response, http.StatusOK)
 			var page tracker.Page[tracker.NativeAttempt]
 			decodeHubResponse(t, response, &page)
@@ -155,7 +156,7 @@ func legacyNativeAttemptPage(attempts []tracker.NativeAttempt, limit, budget int
 		if err != nil {
 			return page, err
 		}
-		if len(encoded)+1 > budget && len(page.Items) == 0 && view != "" {
+		if len(encoded)+1 > budget && len(page.Items) == 0 && view != "" && view != "detail" {
 			candidate.Items[0] = nativeAttemptAuthorityProjection(attempt)
 			encoded, err = json.Marshal(candidate)
 			if err != nil {
@@ -186,11 +187,11 @@ func TestNativeAttemptPageByteBoundaryEquivalence(t *testing.T) {
 	f, issue, records := nativeAttemptListingFixture(t, 5, 0)
 	scope := nativeScope{organization: issue.OrganizationID, project: issue.ProjectID}
 	path := f.base + "/work-items/" + string(issue.WorkItemID) + "/attempts"
-	base, err := f.service.readAttempts(t.Context(), scope, string(issue.WorkItemID), url.Values{"limit": {"100"}})
+	base, err := f.service.readAttempts(t.Context(), scope, string(issue.WorkItemID), url.Values{"view": {"detail"}, "limit": {"100"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, view := range []string{"", "blockers", "recorded_blockers"} {
+	for _, view := range []string{"detail", "blockers", "recorded_blockers"} {
 		for _, direction := range []string{"oldest", "newest"} {
 			params := url.Values{"view": {view}, "direction": {direction}}
 			_, cursor, key, err := f.service.readNativePage(t.Context(), scope, path, params)
@@ -198,7 +199,7 @@ func TestNativeAttemptPageByteBoundaryEquivalence(t *testing.T) {
 				t.Fatal(err)
 			}
 			budget := 1 << 20
-			if view != "" {
+			if view != "" && view != "detail" {
 				budget = operatortool.WorkHistoryPageBytes
 			}
 			ordered := append([]tracker.NativeAttempt(nil), base.Items...)
@@ -228,7 +229,7 @@ func TestNativeAttemptPageByteBoundaryEquivalence(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = ? WHERE id = ?`, string(encoded), record.AttemptID); err != nil {
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET payload_object_key='',data_json = ? WHERE id = ?`, string(encoded), record.AttemptID); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -298,7 +299,7 @@ func TestNativeAttemptPageEncodesEachReturnedRecordOnce(t *testing.T) {
 				counts[attempt.AttemptID]++
 				return json.Marshal(attempt)
 			}
-			got, err := f.service.readNativeAttemptPage(t.Context(), nativeScope{organization: issue.OrganizationID, project: issue.ProjectID}, string(issue.WorkItemID), url.Values{"limit": {strconv.Itoa(test.limit)}}, marshal)
+			got, err := f.service.readNativeAttemptPage(t.Context(), nativeScope{organization: issue.OrganizationID, project: issue.ProjectID}, string(issue.WorkItemID), url.Values{"view": {"detail"}, "limit": {strconv.Itoa(test.limit)}}, marshal)
 			if err != nil || len(got.Items) != test.want || len(counts) != test.considered {
 				t.Fatalf("items=%d encodes=%v error=%v", len(got.Items), counts, err)
 			}
@@ -603,16 +604,14 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 			}
 			if test.retained {
 				var raw, checkpoint string
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT data_json,checkpoint_json FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&raw, &checkpoint); err != nil {
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT payload_object_key,checkpoint_object_key FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&raw, &checkpoint); err != nil {
 					t.Fatal(err)
 				}
-				var run storedRun
-				var storedCheckpoint storedRunCheckpoint
-				if err := json.Unmarshal([]byte(raw), &run); err != nil || run.Detail == nil {
-					t.Fatalf("attempt is not reference-backed: %v", err)
+				if raw == "" || checkpoint == "" {
+					t.Fatal("attempt or checkpoint is not reference-backed")
 				}
-				if err := json.Unmarshal([]byte(checkpoint), &storedCheckpoint); err != nil || storedCheckpoint.Detail == nil {
-					t.Fatalf("checkpoint is not reference-backed: %v", err)
+				if _, err := decodeRunCheckpoint(f.service.runDetailContext(t.Context()), f.service.database.reader, checkpoint); err != nil {
+					t.Fatal(err)
 				}
 			}
 			var evidence tracker.NativeRuntimeEvidence
@@ -637,6 +636,8 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 				}
 			}
 			if test.archive {
+				ctx := f.service.runDetailContext(t.Context())
+				previousContent := f.service.config.Content
 				f.service.config.Content = func(context.Context, entryauthority.ContentRequest) ([]byte, error) {
 					t.Error("unresolved source was archived")
 					return nil, errors.New("unexpected publication")
@@ -644,28 +645,24 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 				move := func(state string, at time.Time) {
 					t.Helper()
-					tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-					if err != nil {
-						t.Fatal(err)
-					}
-					defer tx.Rollback()
-					current, _, err := readNativeIssue(t.Context(), tx, scope, string(issue.WorkItemID))
-					if err != nil {
-						t.Fatal(err)
-					}
-					from := current.State
-					current.State = state
-					if _, err := persistNativeIssue(t.Context(), tx, scope, current, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: state}, at); err != nil {
-						t.Fatal(err)
-					}
-					if err := tx.Commit(); err != nil {
+					if err := f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
+						current, _, err := readNativeIssue(ctx, tx, scope, string(issue.WorkItemID))
+						if err != nil {
+							return err
+						}
+						from := current.State
+						current.State = state
+						_, err = persistNativeIssue(ctx, tx, scope, current, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: state}, at)
+						return err
+					}); err != nil {
 						t.Fatal(err)
 					}
 				}
 				move("Done", now.Add(-73*time.Hour))
-				if err := f.service.archiveClosedNativeIssues(t.Context(), now); err != nil {
+				if err := f.service.archiveClosedNativeIssues(ctx, now); err != nil {
 					t.Fatal(err)
 				}
+				f.service.config.Content = previousContent
 				var pointers int
 				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issue_storage_archives WHERE work_item_id=?", issue.WorkItemID).Scan(&pointers); err != nil {
 					t.Fatal(err)
@@ -935,12 +932,31 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			var raw, checkpointRaw string
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT COALESCE(NULLIF(payload_object_key,''),data_json),COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) FROM native_attempts WHERE lease_id=?", first.ID).Scan(&raw, &checkpointRaw); err != nil {
+				t.Fatal(err)
+			}
+			ctx := f.service.runDetailContext(t.Context())
+			var data tracker.NativeRunData
+			if err := decodeRunDetail(ctx, f.service.database.reader, raw, &data); err != nil {
+				t.Fatal(err)
+			}
+			data.AttemptID, data.LeaseID, data.FencingToken, data.RunID = fmt.Sprintf("attempt_historical_%d", index), tracker.LeaseID(id), tracker.FencingToken(fence), fmt.Sprintf("run_historical_%d", index)
+			encoded, err := json.Marshal(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkpoint, err := decodeRunCheckpoint(ctx, f.service.database.reader, checkpointRaw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkpointJSON, err := json.Marshal(checkpoint)
+			if err != nil {
+				t.Fatal(err)
+			}
 			_, err = f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_attempts
- (id, organization_id, project_id, work_item_id, lease_id, fencing_token, run_id, sequence, status, data_json, checkpoint_json, artifact_ids_json, started_at, updated_at, work_item_revision, dispatch_generation)
- SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status,
- json_set(data_json, '$.attempt_id', ?, '$.lease_id', ?, '$.fencing_token', ?, '$.run_id', ?),
- checkpoint_json, artifact_ids_json, started_at, updated_at, work_item_revision, dispatch_generation
- FROM native_attempts WHERE lease_id = ?`, fmt.Sprintf("attempt_historical_%d", index), id, fence, fmt.Sprintf("run_historical_%d", index), fmt.Sprintf("attempt_historical_%d", index), id, strconv.FormatInt(fence, 10), fmt.Sprintf("run_historical_%d", index), first.ID)
+ (id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,checkpoint_json,artifact_ids_json,started_at,updated_at,work_item_revision,dispatch_generation)
+ SELECT ?,organization_id,project_id,work_item_id,?,?,?,sequence,status,?,?,artifact_ids_json,started_at,updated_at,work_item_revision,dispatch_generation FROM native_attempts WHERE lease_id=?`, data.AttemptID, id, fence, data.RunID, string(encoded), string(checkpointJSON), first.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -980,7 +996,7 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 		fences = append(fences, lease.FencingToken)
 	}
 	var full []tracker.NativeAttempt
-	for _, view := range []string{"", "blockers", "recorded_blockers"} {
+	for _, view := range []string{"detail", "blockers", "recorded_blockers"} {
 		t.Run("view="+view, func(t *testing.T) {
 			params := url.Values{"limit": {"100"}}
 			if view != "" {
@@ -992,7 +1008,7 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 				response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?"+params.Encode(), worker, nil)
 				requireNativeStatus(t, response, http.StatusOK)
 				budget := 1 << 20
-				if view != "" {
+				if view != "" && view != "detail" {
 					budget = operatortool.WorkHistoryPageBytes
 				}
 				if response.Body.Len() > budget {
@@ -1006,7 +1022,7 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 					if attempt.Status != "succeeded" || attempt.Identity == nil || attempt.WorkItemRevision != issue.Revision || attempt.StartedAt.IsZero() || attempt.Disposition == nil || !attempt.Disposition.HumanAction || len(attempt.Disposition.FinalSummary) != workpad.MaxFinalSummaryBytes || !reflect.DeepEqual(attempt.Checkpoint, nativeTestCheckpoint()) {
 						t.Fatalf("lost authority/checkpoint at fence %d", attempt.FencingToken)
 					}
-					if view != "" {
+					if view != "" && view != "detail" {
 						if attempt.Runtime != nil || attempt.RuntimeFreshness != "unavailable" {
 							t.Fatal("blocker projection included runtime")
 						}
@@ -1157,10 +1173,16 @@ func TestNativeAttemptPageBounds(t *testing.T) {
 		t.Fatal("missing history continuation")
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?cursor="+url.QueryEscape(projected.NextCursor), worker, nil), http.StatusUnprocessableEntity)
-	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.runtime.validation.output', ?) WHERE lease_id = ?`, strings.Repeat("<", 256<<10), first.ID); err != nil {
+	oversized := full[0].NativeRunData
+	oversized.Runtime.Validation.Output = strings.Repeat("<", 256<<10)
+	encoded, err := json.Marshal(oversized)
+	if err != nil {
 		t.Fatal(err)
 	}
-	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?limit=1", worker, nil)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key='',data_json=? WHERE lease_id=?", string(encoded), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?view=detail&limit=1", worker, nil)
 	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
 	if len(full) == 0 {
 		t.Fatal("missing full attempt for oversized record identity check")

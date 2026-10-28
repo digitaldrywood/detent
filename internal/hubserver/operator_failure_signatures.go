@@ -157,7 +157,7 @@ a.data_json,
 (SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id),
 (SELECT coalesce(sum(u.input+u.output),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id)
 FROM (SELECT r.organization_id,r.project_id,r.dimension AS id,r.work_item_id,r.lease_id,r.status,
-r.started_at,r.updated_at,r.data_json,r.failed_at,r.failed_day,n.runner_id,n.role,n.report_requested_model,n.report_resolved_model
+r.started_at,r.updated_at,COALESCE(NULLIF(r.payload_object_key,''),NULLIF(r.data_json,'{}'),n.data_json) AS data_json,r.failed_at,r.failed_day,n.runner_id,n.role,n.report_requested_model,n.report_resolved_model
 FROM analytics_hourly_rollups r CROSS JOIN report_attempts n ON n.id=r.dimension AND n.organization_id=r.organization_id AND n.project_id=r.project_id WHERE r.metric='attempt' AND r.failed_at IS NOT NULL) a WHERE a.organization_id=? AND a.project_id=?`
 
 func readNativeFailures(ctx context.Context, q nativeQueryer, scope nativeScope, item string, w *operatortool.AnalyticsWindow) ([]nativeFailure, bool, error) {
@@ -201,18 +201,30 @@ FROM report_attempts a WHERE a.organization_id=? AND a.project_id=? AND a.report
 		return nil, false, err
 	}
 	defer rows.Close()
-	failures := []nativeFailure{}
-	observed := 0
+	type failureRow struct {
+		failure                   nativeFailure
+		status, from, to, at, raw string
+	}
+	var batch []failureRow
+	partial := false
 	for rows.Next() {
-		if observed == maxAnalyticsPopulation {
-			return failures, true, rows.Err()
+		if len(batch) == maxAnalyticsPopulation {
+			partial = true
+			break
 		}
-		observed++
-		var f nativeFailure
-		var status, from, to, at, raw string
-		if err := rows.Scan(&f.attemptID, &f.workItem, &status, &from, &to, &at, &raw, &f.cost, &f.tokens); err != nil {
+		var row failureRow
+		if err := rows.Scan(&row.failure.attemptID, &row.failure.workItem, &row.status, &row.from, &row.to, &row.at, &row.raw, &row.failure.cost, &row.failure.tokens); err != nil {
 			return nil, false, err
 		}
+		batch = append(batch, row)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	failures := []nativeFailure{}
+	for _, row := range batch {
+		f, status, from, to, at, raw := row.failure, row.status, row.from, row.to, row.at, row.raw
 		var stored struct {
 			Detail          *runDetailReference            `json:"detail"`
 			TerminalFailure *tracker.NativeTerminalFailure `json:"terminal_failure"`
@@ -222,7 +234,7 @@ FROM report_attempts a WHERE a.organization_id=? AND a.project_id=? AND a.report
 				Validation *gate.CommandResult           `json:"validation"`
 			} `json:"runtime"`
 		}
-		if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		if err := decodeStorageJSON(payloadQueryContext(ctx, q), []byte(raw), &stored); err != nil {
 			return nil, false, err
 		}
 		data := tracker.NativeRunData{TerminalFailure: stored.TerminalFailure, Finalization: stored.Finalization}
@@ -251,7 +263,7 @@ FROM report_attempts a WHERE a.organization_id=? AND a.project_id=? AND a.report
 		}
 		failures = append(failures, f)
 	}
-	return failures, false, rows.Err()
+	return failures, partial, nil
 }
 
 func groupNativeFailures(failures []nativeFailure) []nativeFailureSignature {

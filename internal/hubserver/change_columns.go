@@ -1,11 +1,13 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -15,6 +17,14 @@ import (
 
 type changeColumnFamily struct {
 	table, key, payload, pending string
+}
+
+func (f changeColumnFamily) payloadColumn() string {
+	switch f.table {
+	case "change_versions", "change_evidence", "change_landing_receipts", "native_attempts":
+		return "COALESCE(NULLIF(payload_object_key,'')," + f.payload + ")"
+	}
+	return f.payload
 }
 
 var changeColumnFamilies = []changeColumnFamily{
@@ -41,6 +51,9 @@ func (v *changeColumnValues) add(column string, value any) {
 }
 
 func decodeChangeColumnsJSON(ctx context.Context, raw []byte, result any) error {
+	if bytes.HasPrefix(raw, []byte("orgs/")) {
+		return decodeStorageJSON(ctx, raw, result)
+	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &object); err != nil {
 		return err
@@ -225,9 +238,26 @@ func writeChangeColumns(ctx context.Context, tx *sql.Tx, family changeColumnFami
 		return errors.New("unknown Change column family")
 	}
 	pending := len(pendingOnly) > 0 && pendingOnly[0]
-	args := append(append([]any{}, columns.values...), id, raw, pending)
+	values := append([]any(nil), columns.values...)
+	if owner == "change_versions" && pending {
+		statement = strings.Replace(statement, "policy_revision_id=?,", "", 1)
+		for index, column := range columns.columns {
+			if column == "policy_revision_id" {
+				values = append(values[:index], values[index+1:]...)
+				break
+			}
+		}
+	}
+	args := append(values, id)
+	if !pending && (owner == "change_versions" || owner == "change_evidence" || owner == "native_attempts") {
+		statement = strings.Replace(statement, " AND "+family.payload+"=?", "", 1)
+	} else {
+		statement = strings.Replace(statement, " AND "+family.payload+"=?", " AND "+family.payloadColumn()+"=?", 1)
+		args = append(args, raw)
+	}
+	args = append(args, pending)
 	if columns.checkpointSource != nil {
-		statement += " AND checkpoint_json IS ?"
+		statement += " AND COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) IS ?"
 		args = append(args, *columns.checkpointSource)
 	}
 	_, err := tx.ExecContext(ctx, statement, args...)
@@ -258,7 +288,7 @@ func readChangeColumnIdentity(ctx context.Context, query nativeQueryer, id, raw 
 	if change.CurrentVersion == "" {
 		return "", "", nil
 	}
-	if err := query.QueryRowContext(ctx, `SELECT record_json FROM change_versions WHERE change_id=? AND id=?`, id, change.CurrentVersion).Scan(&raw); err != nil {
+	if err := query.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_versions WHERE change_id=? AND id=?`, id, change.CurrentVersion).Scan(&raw); err != nil {
 		return "", "", err
 	}
 	var version struct {
@@ -303,7 +333,7 @@ func (s *Service) populateChangeColumn(ctx context.Context) (bool, error) {
 		family := changeColumnFamilies[s.changeColumnFamily]
 		var id any
 		var raw string
-		statement := "SELECT " + family.key + "," + family.payload + " FROM " + family.table + " WHERE " + family.pending + " IS NULL"
+		statement := "SELECT " + family.key + "," + family.payloadColumn() + " FROM " + family.table + " WHERE " + family.pending + " IS NULL"
 		var args []any
 		if s.changeColumnAfter != nil {
 			statement += " AND " + family.key + ">?"
@@ -333,7 +363,7 @@ func (s *Service) populateChangeColumn(ctx context.Context) (bool, error) {
 		}
 		if family.table == "native_attempts" {
 			var checkpoint sql.NullString
-			if err := s.database.reader.QueryRowContext(ctx, `SELECT checkpoint_json FROM native_attempts WHERE id=?`, id).Scan(&checkpoint); err != nil {
+			if err := s.database.reader.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) FROM native_attempts WHERE id=?`, id).Scan(&checkpoint); err != nil {
 				return true, err
 			}
 			checkpointID := ""
@@ -384,7 +414,7 @@ func readPriorChangeApproval(ctx context.Context, query nativeQueryer, change, v
 	if err != nil || found {
 		return found, err
 	}
-	reviews, err := changeColumnRecords[tracker.ChangeReview](ctx, query, `SELECT record_json FROM change_evidence WHERE change_id=? AND kind='review' AND version_id<>? AND has_validator IS NULL ORDER BY sequence`, change, version)
+	reviews, err := changeColumnRecords[tracker.ChangeReview](ctx, query, `SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id=? AND kind='review' AND version_id<>? AND has_validator IS NULL ORDER BY sequence`, change, version)
 	if err != nil {
 		return false, err
 	}

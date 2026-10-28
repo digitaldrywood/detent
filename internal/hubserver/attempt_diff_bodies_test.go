@@ -97,6 +97,12 @@ func TestAttemptDiffBodyMigrationAndRetention(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusAccepted)
 			var receipt tracker.AttemptDiffReceipt
 			decodeHubResponse(t, response, &receipt)
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE attempt_diffs SET object_key='',object_sha256='',object_bytes=0,content_bytes=0 WHERE id=?", receipt.DiffID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO attempt_diff_files(diff_id,position,path,old_path,status,additions,deletions,binary,patch,truncated,denied) VALUES(?,0,'legacy.go','','modified',7,3,0,?,0,0)", receipt.DiffID, "@@ legacy\n+preserved\n"); err != nil {
+				t.Fatal(err)
+			}
 			if !test.latest {
 				requireNativeStatus(t, f.post(t, f.request(3, tracker.AttemptDiffFile{Path: "new.go", Status: tracker.DiffStatusAdded, Patch: "+new"})), http.StatusAccepted)
 			}

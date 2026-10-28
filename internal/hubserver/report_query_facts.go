@@ -77,8 +77,8 @@ func readLegacyReportFact(ctx context.Context, q nativeQueryer, scope nativeScop
 	switch family {
 	case "report_attempts":
 		f.columns = "id,organization_id,project_id,work_item_id,lease_id,status,started_at,updated_at,data_json,runner_id,role,execution_role,report_requested_model,report_resolved_model,report_failed_at,has_landing_receipt"
-		f.known = "SELECT " + f.columns + " FROM main.native_attempts WHERE report_projection_version=1"
-		query = "SELECT id,organization_id,project_id,work_item_id,lease_id,status,started_at,updated_at,data_json FROM main.native_attempts WHERE report_projection_version IS NULL"
+		f.known = "SELECT " + strings.Replace(f.columns, "data_json", "COALESCE(NULLIF(payload_object_key,''),data_json) AS data_json", 1) + " FROM main.native_attempts WHERE report_projection_version=1"
+		query = "SELECT id,organization_id,project_id,work_item_id,lease_id,status,started_at,updated_at,COALESCE(NULLIF(payload_object_key,''),data_json) FROM main.native_attempts WHERE report_projection_version IS NULL"
 	case "report_events":
 		f.columns = "id,organization_id,project_id,work_item_id,sequence,type,recorded_at,data_json,scheduler_outcome,scheduler_source,scheduler_reason,analytics_from_state,analytics_to_state,from_state,to_state,analytics_projection_version"
 		f.known = "SELECT id,organization_id,project_id,work_item_id,sequence,type,recorded_at," + collaborationPayloadColumn("") + ",scheduler_outcome,scheduler_source,scheduler_reason,analytics_from_state,analytics_to_state,analytics_from_state,analytics_to_state,analytics_projection_version FROM main.collaboration_events WHERE analytics_projection_version=1"

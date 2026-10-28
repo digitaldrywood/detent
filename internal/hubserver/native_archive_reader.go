@@ -511,6 +511,17 @@ func archiveProjectionColumn(table, column string) bool {
 }
 
 func archiveProjectionDefault(table, column string) json.RawMessage {
+	if (table == "native_attempts" || table == "change_versions" || table == "change_evidence") && column == "payload_object_key" {
+		return json.RawMessage(`""`)
+	}
+	if table == "native_attempts" {
+		if column == "checkpoint_summary_ready" {
+			return json.RawMessage("0")
+		}
+		if column == "checkpoint_object_key" || strings.HasPrefix(column, "checkpoint_") && column != "checkpoint_json" && column != "checkpoint_attachment_id" && column != "checkpoint_preserves_source" && column != "checkpoint_change_id" {
+			return json.RawMessage(`""`)
+		}
+	}
 	switch table {
 	case "conversation_events":
 		if slices.Contains([]string{"content_attachment_id", "delta_offset", "delta_bytes", "message_revision"}, column) {

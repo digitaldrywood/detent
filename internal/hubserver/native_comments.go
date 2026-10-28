@@ -60,8 +60,9 @@ func insertNativeComment(ctx context.Context, tx *sql.Tx, scope nativeScope, iss
 	if err := validateCloudVisualReferences(ctx, tx, scope, cloudContentField{"body", body}); err != nil {
 		return tracker.NativeComment{}, err
 	}
-	comment := tracker.NativeComment{ID: newNativeID("cmt"), OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID,
-		Revision: 1, Body: body, Actor: scope.actor(), Provenance: provenance, CreatedAt: now, UpdatedAt: now}
+	createdAt := payloadTimestamp(ctx, now)
+	comment := tracker.NativeComment{ID: payloadNativeID(ctx, "cmt"), OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: issue.WorkItemID,
+		Revision: 1, Body: body, Actor: scope.actor(), Provenance: provenance, CreatedAt: createdAt, UpdatedAt: createdAt}
 	if err := tx.QueryRowContext(ctx, "SELECT event_sequence + 1 FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?", scope.organization, scope.project, issue.WorkItemID).Scan(&comment.Sequence); err != nil {
 		return comment, err
 	}
@@ -77,7 +78,7 @@ func insertNativeComment(ctx context.Context, tx *sql.Tx, scope nativeScope, iss
 	if comment.Provenance != nil {
 		sourceKey = comment.Provenance.Provider + ":" + comment.Provenance.ExternalID
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO native_comments (id, organization_id, project_id, work_item_id, revision, sequence, body, actor_json, provenance_json, source_key, created_at, updated_at,actor_kind,change_actor_kind,change_edited_by_kind) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?,?,?,'')", comment.ID, scope.organization, scope.project, issue.WorkItemID, comment.Sequence, comment.Body, actor, encodedProvenance, sourceKey, formatHubTime(now), formatHubTime(now), comment.Actor.Kind, comment.Actor.Kind)
+	_, err = tx.ExecContext(ctx, "INSERT INTO native_comments (id, organization_id, project_id, work_item_id, revision, sequence, body, actor_json, provenance_json, source_key, created_at, updated_at,actor_kind,change_actor_kind,change_edited_by_kind) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?,?,?,'')", comment.ID, scope.organization, scope.project, issue.WorkItemID, comment.Sequence, comment.Body, actor, encodedProvenance, sourceKey, formatHubTime(createdAt), formatHubTime(createdAt), comment.Actor.Kind, comment.Actor.Kind)
 	if err != nil {
 		return comment, err
 	}

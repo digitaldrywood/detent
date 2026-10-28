@@ -322,7 +322,7 @@ func (s *Service) checkReleasePickDelivery(ctx context.Context, tx *sql.Tx, scop
 	}
 	historicalSource := false
 	if publishing {
-		reviews, err := changeRows[tracker.ChangeReview](ctx, tx, "SELECT record_json FROM change_evidence WHERE change_id = ? AND version_id = ? AND kind = 'review' ORDER BY sequence DESC LIMIT 32", sourceChange.ID, sourceVersion.ID)
+		reviews, err := changeRows[tracker.ChangeReview](ctx, tx, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id = ? AND version_id = ? AND kind = 'review' ORDER BY sequence DESC LIMIT 32", sourceChange.ID, sourceVersion.ID)
 		if err != nil {
 			return err
 		}
