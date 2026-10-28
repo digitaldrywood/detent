@@ -345,6 +345,9 @@ func (o *Orchestrator) blockHumanOwnedWorkerFailure(
 	metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
 	metadata.BlockedRecovery.HoldReason = cause
 	metadata.BlockedRecovery.OperatorRemedy = humanAction
+	if issue.NativeLandingHeadSHA != "" {
+		metadata.BlockedRecovery.TargetState = autoPromoteMergingState
+	}
 	metadata.ReasonDetail = fmt.Sprintf("```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: %q\n```", humanAction)
 	metadata.BlockedRecovery.WorkAttemptID = running.WorkAttemptID
 	metadata.BlockedRecovery.AttemptNumber = running.Attempt
@@ -386,7 +389,7 @@ func (o *Orchestrator) blockHumanOwnedWorkerFailure(
 		AttemptError:        detail,
 		WorkAttemptID:       running.WorkAttemptID,
 		RecoveryReason:      humanAction,
-		RecoveryTarget:      autoPromoteReworkState,
+		RecoveryTarget:      metadata.BlockedRecovery.TargetState,
 		RecoveryRemedy:      humanAction,
 		NeedsHumanAttention: true,
 		BlockedAt:           event.CompletedAt,

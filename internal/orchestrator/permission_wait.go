@@ -139,6 +139,11 @@ func (o *Orchestrator) parkPermissionWait(ctx context.Context, state *State, eve
 		state.DiffStats[event.IssueID] = running.DiffStats
 	}
 	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalNoProgress, nil, cause, detail)
-	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalNoProgress, cause, detail, "blocked", wait.Question, map[string]any{cause: wait})
+	metadata := nativeLandingMetadata(event.Result.NativeLanding)
+	if metadata == nil {
+		metadata = make(map[string]any)
+	}
+	metadata[cause] = wait
+	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalNoProgress, cause, detail, "blocked", wait.Question, metadata)
 	return true
 }

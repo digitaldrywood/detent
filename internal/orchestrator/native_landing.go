@@ -45,6 +45,13 @@ func (o *Orchestrator) completeNativeLandingRun(
 	}
 	issue := running.Issue
 	issueID := strings.TrimSpace(event.IssueID)
+	if !landing.Landed && !landing.RequiresRework() && landing.RefusalKind == workspace.LandRefusalProtected {
+		if wait, reported := terminalPermissionWait(event.Result.FinalMessage); reported && wait.Source == "terminal_detent_status" && permissionWaitCompletionAllowed(event) {
+			running.Issue = cloneIssue(issue)
+			running.Issue.NativeLandingHeadSHA = landing.HeadSHA
+			return o.parkPermissionWait(ctx, state, event, running, wait)
+		}
+	}
 	if !landing.Landed && (landing.Waiting || (landing.Path == "batch_member" || landing.Path == "merge_resolution_pending") && landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending" || landing.RefusalKind == workspace.LandRefusalBaseMoved) {
 		if landing.Waiting && !mergeWorkerIssue(issue) {
 			issue.NativeLandingHeadSHA = landing.HeadSHA

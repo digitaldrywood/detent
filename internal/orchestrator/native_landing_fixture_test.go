@@ -254,7 +254,7 @@ func (j *nativeLandingJourney) run(t *testing.T) (runpkg.RunResult, error) {
 			t.Fatalf("base movement rewrote published branch %s: head %s, updates %s", j.publishedBranch, published, updates)
 		}
 	}
-	if result.NativeLanding.Landed && (result.NativeLanding.MergeSHA != j.merge || nativeLandingGit(t, t.Context(), j.remote, "rev-parse", "refs/heads/main") != j.merge) {
+	if result.NativeLanding.Landed && (j.target.GitHubPullRequest && result.NativeLanding.MergeSHA != j.merge || nativeLandingGit(t, t.Context(), j.remote, "rev-parse", "refs/heads/main") != result.NativeLanding.MergeSHA) {
 		t.Fatalf("landing receipt differs from actual base: %#v", result.NativeLanding)
 	}
 	return result, err

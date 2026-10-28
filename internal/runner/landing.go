@@ -281,6 +281,11 @@ func (r *Runner) landNativeChange(ctx context.Context, req RunRequest, landing L
 					telemetry.WorkAttemptIDKey, req.WorkAttemptID, "change", target.ChangeID, "version", target.VersionID, "kind", refusal.Kind, "reason", refusal.Reason)
 				refused := r.refusedLanding(req, target, refusal.Kind, refusal.Reason)
 				refused.NativeLanding.ConflictFiles = refusal.ConflictFiles
+				if refusal.Kind == workspace.LandRefusalProtected && refusal.TargetBranch != "" && !target.GitHubPullRequest {
+					action := fmt.Sprintf("Allow the runner to push to branch %s in repository %s, or enable GitHub pull request mode for this project. Then resume landing of the reviewed version.", refusal.TargetBranch, target.Repository)
+					refused.NativeLanding.BaseRef = refusal.TargetBranch
+					refused.FinalMessage = fmt.Sprintf("%s\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: %q\n```", action, action)
+				}
 				return refused, nil
 			}
 			return RunResult{WorkspaceBranch: info.Branch, NativeLanding: &NativeLanding{ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: target.HeadSHA}}, err

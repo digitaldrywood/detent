@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
@@ -45,7 +46,7 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 	}{
 		{name: "plain git by default"},
 		{name: "conflict receipt returns to Rework", refusal: "conflict"},
-		{name: "protected base receipt returns to review", refusal: "base_protected"},
+		{name: "protected base holds for a human and resumes the same version", refusal: "base_protected"},
 		{name: "landing command failure receipt returns to Rework", refusal: "validation"},
 		{name: "approved GitHub PR policy", github: true},
 		{name: "landing admission outage preserves claim and retries", github: true, refusal: "admission_unavailable"},
@@ -118,8 +119,9 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
 		{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "Human Review", "Done"}},
 		{Name: "Human Review", Transitions: []string{"Done", "In Progress", "Merging"}},
-		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "Rework"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "Human Review", "Rework", "Blocked"}},
 		{Name: "Rework", Dispatchable: true, Transitions: []string{"Human Review", "Merging"}},
+		{Name: "Blocked", Transitions: []string{"Merging"}},
 		{Name: "Done", Terminal: true, Transitions: []string{"Todo"}},
 	}, true, backend)
 	if batch {
@@ -596,6 +598,13 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		t.Fatalf("version refusal receipt = %#v, error %v", detail, err)
 	}
 	if len(refusalKinds) > 0 && refusalKinds[0] != "" {
+		action := fmt.Sprintf("Allow the runner to push to branch main in repository %s, or enable GitHub pull request mode for this project.", target.Repository)
+		message := fmt.Sprintf("%s\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: %q\n```", action, action)
+		if refusalKind == workspace.LandRefusalProtected {
+			if err := landing.(runner.CompletionExecution).PrepareFinish(guarded, "succeeded", message, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if err := nativeLanding.Finish(guarded, "succeeded"); err != nil {
 			t.Fatal(err)
 		}
@@ -603,7 +612,12 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		if refusalKind == "conflict" || gateFailed {
 			target = "Rework"
 		}
-		if err := h.connector.UpdateIssueState(t.Context(), issue.ID, target); err != nil {
+		transitionCtx := t.Context()
+		if refusalKind == workspace.LandRefusalProtected {
+			target = "Blocked"
+			transitionCtx = connector.WithLaneTransitionReason(transitionCtx, "human_action", message)
+		}
+		if err := h.connector.UpdateIssueState(transitionCtx, issue.ID, target); err != nil {
 			t.Fatal(err)
 		}
 		evidence, err = h.admin.RuntimeEvidence(t.Context(), item, "")
@@ -614,7 +628,50 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		if err != nil || !reflect.DeepEqual(detail.Versions[0].Landing, evidence.Attempt.Runtime.Landing) || detail.Change.Landed != nil {
 			t.Fatalf("version lost refusal destination = %#v, error %v", detail, err)
 		}
-		return
+		if refusalKind != workspace.LandRefusalProtected {
+			return
+		}
+		stop()
+		if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+			t.Fatal(err)
+		}
+		freshConnector, err := NewNativeConnector(h.native)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held, err := freshConnector.FetchIssueStatesByIDs(t.Context(), []string{issue.ID})
+		if err != nil || len(held) != 1 || held[0].State != "Blocked" || held[0].WorkpadSignal == nil || held[0].WorkpadSignal.HumanAction != action || len(h.candidatesIn(t, "Merging", "Rework")) != 0 {
+			t.Fatalf("durable human action lost or dispatched: %#v, %v", held, err)
+		}
+		current, err := h.admin.Issue(t.Context(), item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Merging", Reason: "user_requested"}); err != nil {
+			t.Fatal(err)
+		}
+		resumed := h.candidatesIn(t, "Merging")
+		if len(resumed) != 1 || resumed[0].ID != issue.ID {
+			t.Fatalf("human resume did not restore landing: %#v", resumed)
+		}
+		if _, err := h.scheduler.AdoptClaim(t.Context(), resumed[0], time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		landing = h.scheduler.RunExecution(issue.ID)
+		nativeLanding = landing
+		execution = landing.(runner.LandingExecution)
+		guarded, stop, err = landing.Guard(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stop()
+		if err := landing.(runner.LandingRuntimeExecution).StartLanding(guarded, 0, 0); err != nil {
+			t.Fatal(err)
+		}
+		resumedTarget, err := execution.LandingTarget(guarded)
+		if err != nil || resumedTarget.HeadSHA != head || resumedTarget.VersionID != change.VersionID || resumedTarget.ChangeID != change.ChangeID {
+			t.Fatalf("human resume lost reviewed version: %#v, %v", resumedTarget, err)
+		}
 	}
 	landed := runner.NativeLanding{Gate: &gate.CommandResult{Command: "make check-land", HeadSHA: head, TreeSHA: strings.Repeat("a", 40), DurationNS: 987654}, ChangeID: target.ChangeID, VersionID: target.VersionID, HeadSHA: head, Landed: true, MergeSHA: strings.Repeat("e", 40), BaseRef: "main", Method: target.Method, Rebased: true}
 	if github {

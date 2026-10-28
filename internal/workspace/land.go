@@ -148,6 +148,7 @@ type LandRefusal struct {
 	Kind          string
 	Reason        string
 	BaseSHA       string
+	TargetBranch  string
 }
 
 func (r *LandRefusal) Error() string {
@@ -683,7 +684,7 @@ func classifyLandingPush(err error, target string) error {
 		strings.Contains(output, "not allowed to push"),
 		strings.Contains(output, "permission denied"),
 		strings.Contains(output, "refusing to allow"):
-		return fmt.Errorf("%w: %w", refuse(LandRefusalProtected, "the base branch "+target+" refused the push: "+strings.TrimSpace(commandErrorOutput(err))+". Allow the runner to push to "+target+", or enable GitHub pull request mode for this project."), err)
+		return fmt.Errorf("%w: %w", &LandRefusal{Kind: LandRefusalProtected, TargetBranch: target, Reason: "the base branch " + target + " refused the push: " + strings.TrimSpace(commandErrorOutput(err)) + ". Allow the runner to push to " + target + ", or enable GitHub pull request mode for this project."}, err)
 	case strings.Contains(output, "fetch first"),
 		strings.Contains(output, "non-fast-forward"),
 		strings.Contains(output, "stale info"),

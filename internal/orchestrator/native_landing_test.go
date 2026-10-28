@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -97,7 +98,9 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 		codingLane         bool
 		priorOutage        string
 		baseMoves          int
+		protectedPush      bool
 	}{
+		{name: "GH013 requests branch permission and resumes the reviewed version", protectedPush: true, hubState: "Merging", states: workflow, wantState: "Blocked"},
 		{name: "absorbed Rework uses the existing landing completion owner", absorbed: true, landing: landed, hubState: "Done", states: workflow, wantState: "Done", wantComment: "Landed Change Request change_1", wantMoves: 0},
 		{name: "landed receipt retries an unavailable terminal transition", landing: landed, hubState: "Merging", states: workflow, updateErr: errors.New("hub unavailable"), wantDeferred: true},
 		{name: "landed receipt retries unavailable workflow evidence", landing: landed, hubState: "Merging", statesErr: errors.New("hub unavailable"), wantDeferred: true},
@@ -178,7 +181,20 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			branch := "detent/land"
 			landingHead := head
 			landed := *landed
-			if test.alreadyContains != "" {
+			if test.protectedPush {
+				journey = newNativeLandingJourney(t, issue, "", 0, false, true)
+				journey.target.GitHubPullRequest = false
+				journey.execution.target = journey.target
+				hook := filepath.Join(journey.remote, "hooks", "pre-receive")
+				if err := os.WriteFile(hook, []byte("#!/bin/sh\necho 'GH013: Repository rule violations: 3 of 3 required status checks are expected' >&2\nexit 1\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				result, runErr = journey.run(t)
+				if runErr != nil || result.NativeLanding.RefusalKind != workspace.LandRefusalProtected || !strings.Contains(result.NativeLanding.Refusal, "GH013") {
+					t.Fatalf("protected push was not classified: %#v, %v", result, runErr)
+				}
+				test.landing = result.NativeLanding
+			} else if test.alreadyContains != "" {
 				journey = newNativeLandingJourney(t, issue, "", 0, false, false)
 				journey.target.GitHubPullRequest = false
 				journey.execution.target = journey.target
@@ -284,7 +300,7 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 				cfg.AutoPromote.HumanReview = &humanReview
 			}
 			cfg.AutoPromote.ReworkState = test.reworkState
-			cfg.Policy.Gates.GitHubPullRequest = test.wantInfrastructure || test.wantLandingWait || journey != nil && test.alreadyContains == ""
+			cfg.Policy.Gates.GitHubPullRequest = test.wantInfrastructure || test.wantLandingWait || journey != nil && test.alreadyContains == "" && !test.protectedPush
 			attempts := &recordingWorkAttemptStore{}
 			scheduling := &hubSchedulingSource{}
 			var logs strings.Builder
@@ -332,6 +348,56 @@ func TestNativeLandingRunCompletion(t *testing.T) {
 			})
 			retry, retried := state.Retry[issue.ID]
 			_, deferred := state.deferredCompletions[issue.ID]
+			if test.protectedPush {
+				held, blocked := state.Blocked[issue.ID]
+				signal, typed := workpad.SignalFromComment(nativeTracker.reasonDetail, "", "")
+				if !blocked || retried || deferred || len(tick.updates) != 1 || tick.updates[0].state != "Blocked" || !typed || signal.Invalid != nil || signal.Status != workpad.StatusBlocked {
+					t.Fatalf("protected landing did not request human permission: blocked=%t retry=%t deferred=%t updates=%#v detail=%s", blocked, retried, deferred, tick.updates, nativeTracker.reasonDetail)
+				}
+				if len(attempts.completions) != 1 {
+					t.Fatalf("protected landing did not settle one attempt: %#v", attempts.completions)
+				}
+				var metadata map[string]any
+				if err := json.Unmarshal([]byte(attempts.completions[0].WorkerMetadataJSON), &metadata); err != nil {
+					t.Fatal(err)
+				}
+				if held.RecoveryTarget != "Merging" || held.Recovery.TargetState != "Merging" || metadata["native_version_id"] != journey.target.VersionID || metadata["native_head_sha"] != journey.target.HeadSHA || metadata["human_action"] == nil {
+					t.Fatalf("human hold lost reviewed landing recovery: target=%s recovery=%#v metadata=%#v", held.RecoveryTarget, held.Recovery, metadata)
+				}
+				for _, want := range []string{journey.target.Repository, "main", "Allow the runner to push", "enable GitHub pull request mode"} {
+					if !strings.Contains(signal.HumanAction, want) {
+						t.Fatalf("human_action %q lacks %q", signal.HumanAction, want)
+					}
+				}
+				if len(state.Running) != 0 || len(state.Claimed) != 0 || scheduling.releases != 1 || journey.provider.calls.Load() != 0 || len(journey.execution.recorded) != 0 || nativeLandingGit(t, t.Context(), journey.remote, "rev-parse", "refs/heads/main") != journey.base {
+					t.Fatal("protected landing retained execution, called a provider, or moved the base")
+				}
+				restarted := newState(cfg)
+				plan := newDispatchPlanner(cfg).plan(&restarted, []connector.Issue{held.Issue}, now, dispatchPlanHooks{})
+				if len(plan.Dispatches) != 0 {
+					t.Fatalf("human-held landing dispatched after restart: %#v", plan.Dispatches)
+				}
+				if err := os.Remove(filepath.Join(journey.remote, "hooks", "pre-receive")); err != nil {
+					t.Fatal(err)
+				}
+				resumed := cloneIssue(held.Issue)
+				resumed.State, resumed.WorkpadSignal = held.RecoveryTarget, nil
+				if orch.dispatchMode(t.Context(), &restarted, resumed) != runpkg.RunModeMerge {
+					t.Fatal("resumed reviewed version requested implementation")
+				}
+				landed, err := journey.run(t)
+				if err != nil || !landed.NativeLanding.Landed || journey.provider.calls.Load() != 0 || journey.execution.started != 2 || len(journey.execution.recorded) != 1 || journey.execution.recorded[0].HeadSHA != test.landing.HeadSHA || journey.execution.recorded[0].VersionID != test.landing.VersionID {
+					t.Fatalf("same reviewed version did not land without implementation: %#v, %v", landed, err)
+				}
+				tick.stateIssues[0].State = "Done"
+				restarted.Running[issue.ID] = Running{Issue: resumed, WorkAttemptID: 43, Mode: runpkg.RunModeMerge, StartedAt: now}
+				restarted.Claimed[issue.ID] = Claimed{Issue: resumed}
+				orch.handleRunResult(t.Context(), &restarted, runpkg.Completion{IssueID: issue.ID, CompletedAt: now.Add(time.Second), Request: runpkg.RunRequest{Mode: runpkg.RunModeMerge}, Result: landed})
+				if restarted.Completed[issue.ID].Issue.State != "Done" || len(attempts.completions) != 2 || len(tick.updates) != 1 {
+					t.Fatalf("resumed landing did not complete: %#v", restarted.Completed)
+				}
+				return
+			}
 			if test.wantLandingWait {
 				if !retried || retry.ForgeUnavailable || retry.ForgeRetry != nil || retry.Attempt != 2 || retry.Issue.State != issue.State || retry.DueAt.Sub(now) < 2*cfg.FailureRetryBaseDelay-2*cfg.FailureRetryBaseDelay/8 || retry.DueAt.Sub(now) > 2*cfg.FailureRetryBaseDelay || orch.dispatchMode(t.Context(), &state, retry.Issue) != runpkg.RunModeMerge || len(tick.updates) != 0 || len(tick.comments) != 0 || len(state.Completed) != 0 || len(state.Blocked) != 0 || scheduling.releases != 1 || len(state.Claimed) != 0 || len(state.Running) != 0 {
 					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)

@@ -850,6 +850,7 @@ func TestClassifyLandingPush(t *testing.T) {
 		want string
 	}{
 		{name: "github protected branch", out: "remote: error: GH006: Protected branch update failed for refs/heads/develop.", want: LandRefusalProtected},
+		{name: "github required checks rule", out: "remote: error: GH013: Repository rule violations: 3 of 3 required status checks are expected", want: LandRefusalProtected},
 		{name: "hook declined", out: "! [remote rejected] main -> main (pre-receive hook declined)", want: LandRefusalProtected},
 		{name: "base moved", out: "! [rejected] main -> main (fetch first)", want: LandRefusalBaseMoved},
 		{name: "stale lease", out: "! [rejected] main -> main (stale info)", want: LandRefusalBaseMoved},
@@ -862,6 +863,9 @@ func TestClassifyLandingPush(t *testing.T) {
 			var refusal *LandRefusal
 			if errors.As(err, &refusal) != (test.want != "") || refusal != nil && refusal.Kind != test.want {
 				t.Fatalf("classifyLandingPush(%q) = %v, want kind %q", test.out, err, test.want)
+			}
+			if test.want == LandRefusalProtected && refusal.TargetBranch != "main" {
+				t.Fatalf("protected refusal lost push target: %#v", refusal)
 			}
 			var recorded *CommandError
 			if !errors.As(err, &recorded) || recorded != command {
