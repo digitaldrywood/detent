@@ -409,6 +409,11 @@ func TestArtifactMetadataBoundary(t *testing.T) {
 		valid bool
 	}{
 		{"s3://bucket/artifact", true}, {"gs://bucket/artifact", true}, {"https://customer.example/artifact", true},
+		{"attachment:att_0123456789abcdef0123456789abcdef", true},
+		{"/organizations/org_example/api/v2/projects/prj_example/attachments/att_0123456789abcdef0123456789abcdef", true},
+		{"attachment:att_fake", false},
+		{"attachment:att_0123456789abcdef0123456789abcdef?secret=value", false},
+		{"https://example.test/organizations/org_example/api/v2/projects/prj_example/attachments/att_0123456789abcdef0123456789abcdef", true},
 		{"https://customer.example/artifact?token=secret", false}, {"https://user:secret@customer.example/artifact", false},
 		{"file:///workspace/main.go", false}, {"data:text/plain,source", false}, {"https://customer.example/artifact#secret", false}, {"https://", false},
 	} {

@@ -78,6 +78,24 @@ func TestChangeContentObjects(t *testing.T) {
 	input := changeTestInput()
 	bundle := changeTestSource(t, &input, bytes.Repeat([]byte("retained source\n"), 20000))
 	input.Validation = &gate.CommandResult{Attribution: "unknown", Command: "make check-land", HeadSHA: input.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 123, Output: strings.Repeat("validation output\n", 3000)}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	visualInput := input
+	visualInput.Artifacts = []tracker.ChangeArtifact{{Kind: "artifact", URI: "https://example.test/screen.png", SHA256: artifact.Digest([]byte("image")), Availability: "available"}}
+	refused := performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "visual-source-refusal"}, ChangeVersionInput: visualInput, SourceBundle: bundle})
+	requireNativeStatus(t, refused, http.StatusUnprocessableEntity)
+	var registered int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM change_content_objects").Scan(&registered); err != nil {
+		t.Fatal(err)
+	}
+	objects.mu.Lock()
+	writes := objects.writes
+	objects.mu.Unlock()
+	if registered != 0 || writes != 0 {
+		t.Fatalf("visual refusal published archives: registered=%d writes=%d", registered, writes)
+	}
+
 	versions := make([]tracker.ChangeVersion, 3)
 	expected := ""
 	for i := range versions {

@@ -515,6 +515,8 @@ func TestChangeVersionsAndEvidenceSurviveRestart(t *testing.T) {
 		t.Fatalf("draft = %#v", detail)
 	}
 	input := changeTestInput()
+	legacyVisual := tracker.ChangeArtifact{Kind: "artifact", URI: "https://example.test/screenshot.png", SHA256: policy.Digest([]byte("image")), Availability: "available"}
+	input.Artifacts = append(input.Artifacts, legacyVisual)
 	input.ReviewDispositions = []tracker.ReviewDisposition{
 		{HeadSHA: input.HeadSHA, ThreadID: "T1", Disposition: "fixed", Evidence: "source.go:17 and regression passes"},
 		{HeadSHA: input.HeadSHA, ThreadID: "T2", Disposition: "dismissed", Evidence: "source.go:29 already checks the head"},
@@ -532,8 +534,14 @@ func TestChangeVersionsAndEvidenceSurviveRestart(t *testing.T) {
 		t.Fatal("retry changed immutable identity")
 	}
 	path := f.path + "/versions/" + first.ID
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approval"}, Decision: "approved"}), http.StatusOK)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/checks", f.token, changeTestResult(first)), http.StatusOK)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approval"}, Decision: "approved", Body: "https://figma.com/design/example"}), http.StatusOK)
+	checkRequest := changeTestResult(first)
+	checkRequest.Evidence = append(checkRequest.Evidence, legacyVisual)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/checks", f.token, checkRequest), http.StatusOK)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, request), http.StatusOK)
 	if summary := f.detail(t).Summary; summary.NativeReview != "approved" || summary.Checks != "success" || summary.Status != "reviewed" || summary.ExternalReview != "not_linked" {
 		t.Fatalf("reviewed summary = %#v", summary)
 	}
@@ -554,7 +562,7 @@ func TestChangeVersionsAndEvidenceSurviveRestart(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: test.name}, ExpectedVersionID: test.expected, ChangeVersionInput: changeTestInput()}), test.status)
 		})
 	}
-	late := changeTestResult(first)
+	late := checkRequest
 	late.IdempotencyKey = "late-replay"
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/checks", f.token, late), http.StatusOK)
 	for _, statement := range []string{"UPDATE change_versions SET number = 10", "DELETE FROM change_versions", "UPDATE change_evidence SET kind = 'review'", "DELETE FROM change_evidence"} {
@@ -569,6 +577,9 @@ func TestChangeVersionsAndEvidenceSurviveRestart(t *testing.T) {
 	detail := f.detail(t)
 	if detail.Change.ID != f.change.ID || detail.Change.CurrentVersion != second.ID || len(detail.Versions) != 2 || detail.Summary.NativeReview != "stale" || detail.Summary.Checks != "missing" || len(detail.Checks) != 1 {
 		t.Fatalf("restarted version history = %#v", detail)
+	}
+	if !reflect.DeepEqual(detail.Versions[0].Artifacts, input.Artifacts) || !reflect.DeepEqual(detail.Checks[0].Evidence, checkRequest.Evidence) {
+		t.Fatal("policy toggle changed historical visual evidence")
 	}
 	if !reflect.DeepEqual(detail.Versions[0].ReviewDispositions, input.ReviewDispositions) || len(detail.Versions[1].ReviewDispositions) != 0 {
 		t.Fatalf("review dispositions lost their immutable version binding: %+v", detail.Versions)

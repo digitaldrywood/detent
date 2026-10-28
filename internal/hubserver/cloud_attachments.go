@@ -14,10 +14,12 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/projectsettings"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const attachmentMetadataBase = nativeBase + "/attachment-metadata"
@@ -51,6 +53,60 @@ func validateCloudVisualReferences(ctx context.Context, tx *sql.Tx, scope native
 		}
 		if err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func validateCloudChangeReferences(ctx context.Context, tx *sql.Tx, scope nativeScope, fields []cloudContentField, artifacts []tracker.ChangeArtifact, artifactName string) error {
+	settings, err := projectsettings.ReadContent(ctx, tx, scope.organization, scope.project)
+	if err != nil || !settings.RequireVisualAttachments || scope.importedContent {
+		return err
+	}
+	if err := validateCloudVisualReferences(ctx, tx, scope, fields...); err != nil {
+		return err
+	}
+	err = changerequest.ValidateVisualArtifacts(artifacts, string(scope.organization), string(scope.project), func(id string) (attachment.Metadata, error) {
+		record, err := readCloudAttachmentMetadata(ctx, tx, scope, id)
+		if isNativeNotFound(err) {
+			return attachment.Metadata{}, nil
+		}
+		return record, err
+	})
+	var refusal *attachment.VisualReferenceError
+	if errors.As(err, &refusal) {
+		return nativePublicInvalid(fmt.Sprintf("%s[%d]: %s", artifactName, refusal.Block-1, attachment.VisualReferenceMessage))
+	}
+	return err
+}
+
+func bindCloudChangeReferences(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, fields []cloudContentField, artifacts []tracker.ChangeArtifact, artifactName string) error {
+	settings, err := projectsettings.ReadContent(ctx, tx, scope.organization, scope.project)
+	if err != nil || !settings.RequireVisualAttachments || scope.importedContent {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, artifact := range artifacts {
+		if ref, ok := attachment.URIReference(artifact.URI, string(scope.organization), string(scope.project)); ok {
+			fields = append(fields, cloudContentField{name: artifactName, value: "[upload](" + ref.URL + ")"})
+		}
+	}
+	for _, field := range fields {
+		references, err := cloudContentAttachmentReferences(field.value, scope)
+		if err != nil {
+			return err
+		}
+		for _, ref := range references {
+			if seen[ref.ID] {
+				continue
+			}
+			seen[ref.ID] = true
+			if err := bindCloudAttachmentReference(ctx, tx, scope, item, "", ref.ID, true); err != nil {
+				if isNativeNotFound(err) {
+					return nativePublicInvalid(field.name + ": " + attachment.VisualReferenceMessage)
+				}
+				return err
+			}
 		}
 	}
 	return nil
@@ -105,7 +161,7 @@ func syncCloudAttachmentReferences(ctx context.Context, tx *sql.Tx, scope native
 			}
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM attachment_references WHERE work_item_id=? AND comment_id=? AND attachment_id IN (SELECT id FROM attachments WHERE organization_id=? AND project_id=?)`, itemID, commentID, scope.organization, scope.project); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM attachment_references WHERE work_item_id=? AND comment_id=? AND retain_with_work_item=0 AND attachment_id IN (SELECT id FROM attachments WHERE organization_id=? AND project_id=?)`, itemID, commentID, scope.organization, scope.project); err != nil {
 		return err
 	}
 	for id := range ids {
@@ -579,22 +635,29 @@ func bindCloudAttachmentReferences(ctx context.Context, tx *sql.Tx, scope native
 			continue
 		}
 		seen[ref.ID] = true
-		if scope.credential.HostedRole == "reporter" {
-			if _, err := readCloudAttachment(ctx, tx, scope, ref.ID); err != nil {
-				return err
-			}
-		}
-		result, err := tx.ExecContext(ctx, `INSERT INTO attachment_references(attachment_id,work_item_id,comment_id) SELECT id,?,? FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND kind='attachment' AND deleted_at IS NULL ON CONFLICT(attachment_id,work_item_id,comment_id) DO UPDATE SET attachment_id=excluded.attachment_id`, item, comment, scope.organization, scope.project, ref.ID)
-		if err != nil {
+		if err := bindCloudAttachmentReference(ctx, tx, scope, item, comment, ref.ID, false); err != nil {
 			return err
 		}
-		count, err := result.RowsAffected()
-		if err != nil {
+	}
+	return nil
+}
+
+func bindCloudAttachmentReference(ctx context.Context, tx *sql.Tx, scope nativeScope, item, comment, id string, retain bool) error {
+	if scope.credential.HostedRole == "reporter" {
+		if _, err := readCloudAttachmentMetadata(ctx, tx, scope, id); err != nil {
 			return err
 		}
-		if count != 1 {
-			return nativeNotFound()
-		}
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO attachment_references(attachment_id,work_item_id,comment_id,retain_with_work_item) SELECT id,?,?,? FROM attachments WHERE organization_id=? AND project_id=? AND id=? AND kind='attachment' AND deleted_at IS NULL ON CONFLICT(attachment_id,work_item_id,comment_id) DO UPDATE SET retain_with_work_item=max(attachment_references.retain_with_work_item,excluded.retain_with_work_item)`, item, comment, retain, scope.organization, scope.project, id)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return nativeNotFound()
 	}
 	return nil
 }

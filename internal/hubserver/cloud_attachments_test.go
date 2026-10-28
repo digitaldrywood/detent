@@ -16,7 +16,7 @@ import (
 
 func TestCloudAttachmentSavedReferences(t *testing.T) {
 	t.Parallel()
-	for _, source := range []string{"issue", "comment", "issue-path", "comment-path", "issue-path-other-item", "comment-path-other-item", "issue-visual-path", "comment-visual-path", "issue-visual-reference", "comment-visual-reference", "issue-visual-path-reference", "comment-visual-path-reference", "issue-visual-path-title"} {
+	for _, source := range []string{"change-visual-path", "change-visual-short", "issue", "comment", "issue-path", "comment-path", "issue-path-other-item", "comment-path-other-item", "issue-visual-path", "comment-visual-path", "issue-visual-reference", "comment-visual-reference", "issue-visual-path-reference", "comment-visual-path-reference", "issue-visual-path-title"} {
 		t.Run(source, func(t *testing.T) {
 			f := newHostedSharedFixture(t)
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
@@ -46,6 +46,9 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 				t.Fatal(err)
 			}
 			body := "![image](attachment:" + record.ID + ")\n[file](attachment:" + record.ID + ")\n![foreign](attachment:" + foreign + ")"
+			if strings.HasPrefix(source, "change") {
+				body = "![image](attachment:" + record.ID + ")"
+			}
 			if strings.Contains(source, "-path") {
 				body = record.Markdown("org_security")
 			}
@@ -67,7 +70,11 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 			}
 			issue := tracker.NativeIssue{}
 			comment := tracker.NativeComment{}
-			if strings.HasPrefix(source, "issue") {
+			if strings.HasPrefix(source, "change") {
+				issue.WorkItemID = f.seedIssue(t, 1)
+				issue.Revision = 1
+				send(http.MethodPost, "/work-items/"+string(issue.WorkItemID)+"/changes", tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "save-image"}, Title: "Visual change", Body: body}, http.StatusOK)
+			} else if strings.HasPrefix(source, "issue") {
 				title, issueBody := "Image issue", body+issueContractTestSections
 				if strings.HasSuffix(source, "-title") {
 					title, issueBody = body, issueContractTestSections
@@ -94,6 +101,26 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 				}
 			}
 			assertReference(record.ID, string(issue.WorkItemID), comment.ID)
+			if strings.HasPrefix(source, "change") {
+				replacement := "Replacement" + issueContractTestSections
+				send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "replace-issue"}, ExpectedRevision: issue.Revision, Body: &replacement}, http.StatusOK)
+				assertReference(record.ID, string(issue.WorkItemID), "")
+				raw = send(http.MethodPost, "/work-items/"+string(issue.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "reuse-image"}, Body: body}, http.StatusOK)
+				var reused tracker.NativeComment
+				if err := json.Unmarshal(raw, &reused); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM native_comments WHERE id=?", reused.ID); err != nil {
+					t.Fatal(err)
+				}
+				assertReference(record.ID, string(issue.WorkItemID), "")
+				response := f.serve(t, hostedSharedRequest{user: &owner, target: f.base + "/attachment-metadata/" + record.ID})
+				if response.Code != http.StatusOK {
+					t.Fatalf("retained Change source read=%d", response.Code)
+				}
+				return
+			}
+
 			if strings.HasSuffix(source, "-reference") {
 				if strings.HasPrefix(source, "issue") {
 					changed := "Updated " + body + issueContractTestSections
@@ -394,9 +421,10 @@ func TestCloudAttachmentRetention(t *testing.T) {
 func TestCloudAttachmentReferenceDeletion(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name    string
-		comment bool
-	}{{name: "issue"}, {name: "comment", comment: true}} {
+		name     string
+		comment  bool
+		retained bool
+	}{{name: "issue"}, {name: "retained work item", retained: true}, {name: "comment", comment: true}} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newHostedSharedFixture(t)
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
@@ -426,6 +454,12 @@ func TestCloudAttachmentReferenceDeletion(t *testing.T) {
 			if response.Code != 204 {
 				t.Fatalf("reference=%d %s", response.Code, response.Body.String())
 			}
+			if test.retained {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE attachment_references SET retain_with_work_item=1 WHERE attachment_id=?", id); err != nil {
+					t.Fatal(err)
+				}
+			}
+
 			statement, args := "DELETE FROM issues WHERE native_id=?", []any{item}
 			if test.comment {
 				statement, args = "DELETE FROM native_comments WHERE id=?", []any{comment}

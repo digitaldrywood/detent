@@ -683,6 +683,14 @@ func (s *Service) createChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 			return nil, err
 		}
 	}
+	fields := []cloudContentField{{name: "title", value: request.Title}, {name: "body", value: request.Body}}
+	if err := validateCloudChangeReferences(ctx, tx, scope, fields, nil, ""); err != nil {
+		return nil, err
+	}
+	if err := bindCloudChangeReferences(ctx, tx, scope, item, fields, nil, ""); err != nil {
+		return nil, err
+	}
+
 	raw, err := marshalNative(change)
 	if err != nil {
 		return nil, err

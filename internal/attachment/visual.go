@@ -234,6 +234,17 @@ func visualLabel(label string) bool {
 	}
 }
 
+func IsVisualURI(destination string) bool {
+	value, err := url.Parse(destination)
+	if err != nil {
+		return false
+	}
+	if value.Scheme == "s3" || value.Scheme == "gs" {
+		value.Scheme = "https"
+	}
+	return visualDestination(value.String(), false, false)
+}
+
 func visualDestination(destination string, image, explicit bool) bool {
 	value, err := url.Parse(destination)
 	if err != nil || value.Host == "" || !strings.EqualFold(value.Scheme, "https") && !strings.EqualFold(value.Scheme, "http") {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -56,6 +57,9 @@ func (s *Service) submitChangeCheck(c echo.Context) error {
 			return nil, err
 		}
 		if err := changerequest.ValidateResult(version, request.ChangeCheckResult, scope.credential.ID, scope.credential.Scope == apiScopeWorker); err != nil {
+			if policyErr := validateCloudChangeReferences(ctx, tx, scope, nil, request.Evidence, "evidence"); policyErr != nil {
+				return nil, policyErr
+			}
 			return nil, nativeInvalid(err.Error())
 		}
 		if request.CompletedAt.After(now) {
@@ -84,6 +88,13 @@ func (s *Service) submitChangeCheck(c echo.Context) error {
 		if !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
+		if err := validateCloudChangeReferences(ctx, tx, scope, nil, request.Evidence, "evidence"); err != nil {
+			return nil, err
+		}
+		if err := bindCloudChangeReferences(ctx, tx, scope, string(change.WorkItemID), nil, request.Evidence, "evidence"); err != nil {
+			return nil, err
+		}
+
 		check := tracker.ChangeCheck{ChangeCheckResult: request.ChangeCheckResult, VersionID: version.ID, Actor: scope.actor(), ReceivedAt: now}
 		if err := insertChangeEvidence(ctx, tx, change.ID, version.ID, "check", check.CheckRunID, check); err != nil {
 			return nil, err
@@ -148,6 +159,10 @@ func validateChangeReview(ctx context.Context, tx *sql.Tx, scope nativeScope, it
 	if change.CurrentLanding() != nil {
 		return tracker.ChangeRequest{}, "", nativeConflict(change.Revision)
 	}
+	if err := validateCloudChangeReferences(ctx, tx, scope, changeReviewContentFields(request), nil, ""); err != nil {
+		return tracker.ChangeRequest{}, "", err
+	}
+
 	sessionMachineID, err := validateNativeValidatorReview(ctx, tx, scope, change, version, request)
 	if err != nil {
 		return tracker.ChangeRequest{}, "", err
@@ -155,9 +170,30 @@ func validateChangeReview(ctx context.Context, tx *sql.Tx, scope nativeScope, it
 	return change, sessionMachineID, nil
 }
 
+func changeReviewContentFields(request tracker.ReviewChange) []cloudContentField {
+	fields := []cloudContentField{{name: "body", value: request.Body}}
+	for _, result := range []struct {
+		name  string
+		value *gate.ValidatorResult
+	}{{"validator", request.Validator}, {"implementation_review", request.ImplementationReview}} {
+		if result.value == nil {
+			continue
+		}
+		for i, evidence := range result.value.CriteriaEvidence {
+			fields = append(fields, cloudContentField{name: fmt.Sprintf("%s.criteria_evidence[%d].reference", result.name, i), value: evidence.Reference})
+		}
+	}
+	return fields
+}
+
 func (s *Service) reviewChangeCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID, versionID string, request tracker.ReviewChange, now time.Time) (any, error) {
+	fields := changeReviewContentFields(request)
 	change, sessionMachineID, err := validateChangeReview(ctx, tx, scope, item, changeID, versionID, request, now)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := bindCloudChangeReferences(ctx, tx, scope, string(change.WorkItemID), fields, nil, ""); err != nil {
 		return nil, err
 	}
 
@@ -220,6 +256,14 @@ func (s *Service) discussChangeCommand(ctx context.Context, tx *sql.Tx, scope na
 			return nil, err
 		}
 	}
+	fields := []cloudContentField{{name: "body", value: request.Body}}
+	if err := validateCloudChangeReferences(ctx, tx, scope, fields, nil, ""); err != nil {
+		return nil, err
+	}
+	if err := bindCloudChangeReferences(ctx, tx, scope, string(change.WorkItemID), fields, nil, ""); err != nil {
+		return nil, err
+	}
+
 	comment := tracker.ChangeDiscussion{Escape: request.Escape, ID: newNativeID("cmt"), VersionID: request.VersionID, Body: request.Body, Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now}
 	return comment, insertChangeEvidence(ctx, tx, change.ID, comment.VersionID, "discussion", sourceKey, comment)
 }

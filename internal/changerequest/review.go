@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -49,8 +50,32 @@ func ValidateArtifacts(artifacts []tracker.ChangeArtifact) error {
 		return errors.New("at most 64 artifact references are permitted")
 	}
 	for _, artifact := range artifacts {
-		if !slices.Contains([]string{"code", "manifest", "diff", "test", "log", "checkpoint", "artifact"}, artifact.Kind) || !ValidReference(artifact.URI) || !ValidHash(artifact.SHA256, 64) || !slices.Contains([]string{"unverified", "available", "missing", "inaccessible"}, artifact.Availability) {
+		_, uploaded := attachment.URIReference(artifact.URI, "", "")
+		if !slices.Contains([]string{"code", "manifest", "diff", "test", "log", "checkpoint", "artifact"}, artifact.Kind) || (!ValidReference(artifact.URI) && !uploaded) || !ValidHash(artifact.SHA256, 64) || !slices.Contains([]string{"unverified", "available", "missing", "inaccessible"}, artifact.Availability) {
 			return errors.New("artifacts require a typed location without credentials, SHA-256 digest, and availability")
+		}
+	}
+	return nil
+}
+
+func ValidateVisualArtifacts(artifacts []tracker.ChangeArtifact, organization, project string, resolve func(string) (attachment.Metadata, error)) error {
+	for i, artifact := range artifacts {
+		_, uploaded := attachment.URIReference(artifact.URI, "", "")
+		if !uploaded && !attachment.IsVisualURI(artifact.URI) {
+			continue
+		}
+		refusal := &attachment.VisualReferenceError{Block: i + 1}
+		reference, ok := attachment.URIReference(artifact.URI, organization, project)
+		if !ok {
+			return refusal
+		}
+		metadata, err := resolve(reference.ID)
+		if err != nil {
+			return err
+		}
+		visual := metadata.ContentType == "image/png" || metadata.ContentType == "image/jpeg" || metadata.ContentType == "application/pdf"
+		if metadata.ID != reference.ID || metadata.ProjectID != project || metadata.DeletedAt != nil || metadata.Validate() != nil || metadata.SHA256 != artifact.SHA256 || artifact.Availability != "available" || artifact.Kind == "artifact" && !visual {
+			return refusal
 		}
 	}
 	return nil

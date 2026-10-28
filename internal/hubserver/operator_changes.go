@@ -243,6 +243,9 @@ func hubSafeChangeError(err error) error {
 		return mutation.ErrUncertain
 	}
 	if errors.As(err, &failure) {
+		if failure.Code == "invalid_request" && failure.publicMessage {
+			return &operatortool.RequestError{Code: failure.Code, Message: failure.Message}
+		}
 		if failure.Code == "idempotency_conflict" {
 			return mutation.ErrConflict
 		}

@@ -1307,7 +1307,9 @@ configuration override, CLI command or settings UI. No runner or approved
 repository workflow is required to read or update this setting.
 
 When enabled, native issue filing/preflight, title/body edits, comment insertion
-and body edits apply the [visual reference pairing rule](api-mcp-setup.md#attachments)
+and body edits, Change creation, discussion/review bodies, authored criterion-evidence
+references, version artifacts and check-result evidence apply the
+[visual reference pairing rule](api-mcp-setup.md#attachments)
 inside their existing write transaction. REST, MCP, Cloud submissions and host
 content writes share the same owners. A failure returns HTTP 422
 `invalid_request`, including through structured MCP errors, and leaves content,
@@ -2349,6 +2351,47 @@ also supply their current `lease_id`, `fencing_token`, `run_id`, and `attempt_id
 | `POST /work-items/{item}/changes/{change}/versions/{version}/landing` | Worker under its lease: `merge_sha`, `base_ref`, `method`; records the landed commit and finishes the primary issue |
 | `GET /change-review-policy` | Inspect the approved native review/CI expectations |
 | `PUT /change-review-policy` | Self-hosted instance administrator, or hosted owner/admin with a target-project write grant; compare `expected_review_policy_id` and approve `policy` |
+
+With project `require_visual_attachments` enabled, new Change titles, bodies,
+discussion/review bodies and `criteria_evidence[].reference` fields use the
+[prose pairing rule](api-mcp-setup.md#attachments). Keep one visual source and
+its uploaded raster image or PDF in the same block, for example:
+
+```markdown
+[Design reference](https://figma.com/design/example) ![Upload](attachment:att_<uploaded-id>)
+```
+
+A visual entry in version `artifacts` or check-result `evidence` must identify
+a live, readable same-project upload. Supply the exact SHA-256 returned by the
+upload/metadata API and `availability: "available"`, for example (substitute the
+actual ID and digest):
+
+```json
+{"kind":"artifact","uri":"attachment:att_<uploaded-id>","sha256":"<64-character-upload-sha256>","availability":"available"}
+```
+
+The canonical URI `/organizations/org_example/api/v2/projects/prj_example/attachments/att_<uploaded-id>`
+is also accepted. Screenshots retain the generic `artifact` kind; no image kind
+is added. External image/design artifact destinations detected by the shared
+classifier must be replaced with an uploaded URI, even when another artifact
+is an upload. Nonvisual code/diff/manifest/test/log/checkpoint artifacts and
+ordinary repository, PR, CI and documentation links retain their behavior.
+
+Validation reads the current project policy in the mutation transaction and
+refuses with HTTP 422 `invalid_request` (the same structured MCP refusal), naming
+the field/block or artifact index and instructing the caller to upload without
+repeating submitted URLs. Refusal rolls back Change records, evidence,
+revisions, history, attachment bindings and success receipts. Accepted references
+bind to the primary native work item through the existing attachment owner;
+issue text edits cannot remove those immutable-evidence bindings. Existing
+work-item deletion, same-project reuse, access and quota rules still apply.
+Referencing a file does not approve its design or create an acceptance inspection.
+
+The policy defaults to false. Accepted idempotent and provenance replays remain
+replayable after toggles. Historical Change versions/reviews and imports remain
+readable without rescanning; source patches, raw command/log output, signatures
+and opaque archival records are outside author-supplied visual-reference prose.
+User-supplied provenance does not exempt a new native write.
 
 Hosted approval requires an active organization owner/admin membership, a valid
 human session and CSRF token, and a write grant for the target project. Runner

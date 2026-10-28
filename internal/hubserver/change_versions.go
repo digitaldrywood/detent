@@ -144,6 +144,9 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 		}
 		request.External = &external
 	}
+	if err := validateCloudChangeReferences(ctx, tx, scope, nil, request.Artifacts, "artifacts"); err != nil {
+		return nil, err
+	}
 	if err := validateChangeVersion(request.ChangeVersionInput); err != nil {
 		return nil, err
 	}
@@ -182,6 +185,10 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 	if err := requireChangeRun(ctx, tx, scope, change, request); err != nil {
 		return nil, err
 	}
+	if err := bindCloudChangeReferences(ctx, tx, scope, string(change.WorkItemID), nil, request.Artifacts, "artifacts"); err != nil {
+		return nil, err
+	}
+
 	version := tracker.ChangeVersion{ChangeVersionInput: request.ChangeVersionInput, ID: newNativeID("version"), ChangeID: change.ID, Number: int64(change.Revision), Policy: approved.Policy, ReviewPolicy: rules, Actor: scope.actor(), CreatedAt: now, Checks: []tracker.ChangeCheckExpectation{}}
 	for _, spec := range rules.RequiredChecks {
 		version.Checks = append(version.Checks, tracker.ChangeCheckExpectation{ChangeCheckSpec: spec, CheckRunID: newNativeID("check")})

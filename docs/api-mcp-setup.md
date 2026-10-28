@@ -398,8 +398,9 @@ Files are limited to 20 MiB. PNG, JPEG, GIF and WebP images (up to 16 megapixels
 
 Projects can opt in to `require_visual_attachments` through the project
 [content settings API](hub-api.md#project-content-settings). It defaults to false.
-When enabled, each external visual source in a new or changed issue title/body
-or comment body must share its paragraph, list item or table cell with a readable
+When enabled, each external visual source in a new or changed issue title/body,
+comment body, Change title/body, Change discussion/review body or authored review
+criterion-evidence reference must share its paragraph, list item or table cell with a readable
 uploaded image or PDF from that project. Put one source in each block, for example:
 
 ```markdown
@@ -436,8 +437,20 @@ The entire write rolls back. Metadata-only edits, unchanged content, comment
 deletion and previously accepted idempotency/provenance replays remain allowed.
 Changed fields are validated in full, including retained old visual sources.
 Changing the setting affects subsequent writes, never historical records or
-dispatch. This policy covers issue and comment writes. It does not cover Change evidence
-writes.
+dispatch. New Change version `artifacts` and check-result `evidence` also apply
+the policy. A visual artifact uses the existing `artifact` kind and a Detent
+attachment URI (`attachment:att_<uploaded-id>` or its canonical project attachment
+path), the uploaded file's recorded SHA-256 and `availability: "available"`.
+External visual URIs are refused even beside an unrelated uploaded artifact.
+Code, diff, manifest, test, log and checkpoint artifacts keep their existing
+meaning. Ordinary repository, PR, CI and documentation identities remain valid.
+
+Accepted Change references bind transactionally to the Change's primary work
+item, using the existing attachment access and retention rules. Those bindings
+survive issue text edits and subsequent policy toggles. Only newly submitted
+fields are inspected; stored versions/reviews, source patches, raw command/log
+output, signatures and archival records are not rescanned. A reference neither
+approves a design nor records acceptance inspection.
 
 `GET .../attachments/ATTACHMENT` reads the file under current organization and project authority; other organizations, other projects and requests without a session or valid key get 404, so a copied link grants no access. `offset` and `length` query parameters return a bounded base64 chunk instead of the file. `GET .../attachments/ATTACHMENT/metadata` returns type, size, SHA-256, dimensions and `referenced_by` without object bytes. `DELETE .../attachments/ATTACHMENT` hides the attachment and deletes the object. An attachment with no remaining references is removed after seven days; referenced attachments do not expire.
 

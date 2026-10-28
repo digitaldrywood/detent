@@ -76,6 +76,29 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		status string
 		stages *stageCase
 	}{
+		{"visual criterion paired upload", func(r *tracker.ReviewChange) {
+			r.Validator.CriteriaEvidence[0].Reference = "https://figma.com/design/example ![upload](attachment:att_0123456789abcdef0123456789abcdef)"
+		}, http.StatusOK, "reviewed", nil},
+		{"object-backed visual body refusal", func(r *tracker.ReviewChange) {
+			objectOutput(r)
+			r.Body = "https://figma.com/design/example?secret=hidden"
+		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
+
+		{"visual review body refused", func(r *tracker.ReviewChange) { r.Body = "https://figma.com/design/example?secret=hidden" }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"visual criterion reference refused", func(r *tracker.ReviewChange) {
+			r.Validator.CriteriaEvidence[0].Reference = "https://figma.com/design/example?secret=hidden"
+		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"visual discarded criterion reference refused", func(r *tracker.ReviewChange) {
+			r.Validator.CriteriaEvidence = append(r.Validator.CriteriaEvidence, gate.CriterionEvidence{Criterion: "Unrecognized criterion", Kind: "test", Reference: "https://figma.com/design/example?secret=hidden"})
+		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"implementation review visual reference refused", func(r *tracker.ReviewChange) {
+			implementationReview(r)
+			r.ImplementationReview.CriteriaEvidence[0].Reference = "https://figma.com/design/example?secret=hidden"
+		}, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"visual raw command output preserved", func(r *tracker.ReviewChange) {
+			r.Validator.Commands = []gate.CommandResult{{Command: "inspect", Output: "https://figma.com/design/example?secret=hidden"}}
+		}, http.StatusOK, "reviewed", nil},
+
 		{"required acceptance before source", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired}},
 		{"required acceptance after source pass", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", &stageCase{mode: gate.AutomatedReviewRequired, sourceVerdicts: []string{"pass"}}},
 		{"required acceptance after source rework", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence", &stageCase{mode: gate.AutomatedReviewRequired, sourceVerdicts: []string{"rework"}}},
@@ -400,6 +423,19 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				event = reconcile
 				request.LeaseID, request.FencingToken = lease.ID, lease.FencingToken
 			}
+			if strings.Contains(test.name, "visual") {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if test.name == "visual criterion paired upload" {
+				_, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO attachments(id,organization_id,project_id,uploader,name,content_type,size,sha256,width,height,created_at) SELECT 'att_0123456789abcdef0123456789abcdef',?,?,id,'upload.png','image/png',100,?,1,1,? FROM api_tokens WHERE name='operator-validator'`, f.project.OrganizationID, f.project.ID, policy.Digest([]byte("image")), formatHubTime(time.Now()))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
 			test.edit(&request)
 			stageReviews := 0
 			if test.stages != nil {
@@ -476,6 +512,19 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/versions/"+version.ID+"/reviews", worker, request)
 			requireNativeStatus(t, response, test.want)
+			if strings.Contains(test.name, "visual") && test.want == http.StatusUnprocessableEntity {
+				raw := response.Body.String()
+				if !strings.Contains(raw, "requires uploaded screenshots") || strings.Contains(raw, "hidden") || strings.Contains(raw, "figma.com") {
+					t.Fatalf("unsafe visual refusal: %s", raw)
+				}
+			}
+			if test.name == "visual criterion paired upload" {
+				var bound bool
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM attachment_references WHERE attachment_id='att_0123456789abcdef0123456789abcdef' AND work_item_id=? AND retain_with_work_item=1)", issue.WorkItemID).Scan(&bound); err != nil || !bound {
+					t.Fatalf("review reference not bound: %v", err)
+				}
+			}
+
 			if strings.HasPrefix(test.name, "Attribution") {
 				var outcome tracker.ChangeReview
 				decodeHubResponse(t, response, &outcome)

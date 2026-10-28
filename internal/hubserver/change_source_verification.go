@@ -68,7 +68,10 @@ func (s *Service) authorizeChangeSource(ctx context.Context, scope nativeScope, 
 	if change.WorkItemID != tracker.NativeWorkItemID(item) {
 		return false, nativePublicInvalid("Publish through the Change Request's primary issue")
 	}
-	return false, requireChangeRun(ctx, tx, scope, change, request)
+	if err := requireChangeRun(ctx, tx, scope, change, request); err != nil {
+		return false, err
+	}
+	return false, validateCloudChangeReferences(ctx, tx, scope, nil, request.Artifacts, "artifacts")
 }
 
 func (s *Service) verifyChangeSource(ctx context.Context, source tracker.ChangeSource, bundle []byte) error {
