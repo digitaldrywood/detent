@@ -104,11 +104,14 @@ AND a.status = 'running' AND l.released_at IS NULL AND julianday(l.renewed_at) <
 			return nil, err
 		}
 		if len(raw) > operatortool.WorkListPageBytes {
-			if len(work.Items) == 0 {
-				return nil, operatortool.ErrReadUnavailable
+			if len(work.Items) > 0 {
+				work.Truncated = true
+				break
 			}
-			work.Truncated = true
-			break
+			issue, err = operatortool.BoundNativeListIssue(issue)
+			if err != nil {
+				return nil, err
+			}
 		}
 		work.Items = append(work.Items, issue)
 	}

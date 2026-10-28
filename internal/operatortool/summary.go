@@ -1,6 +1,7 @@
 package operatortool
 
 import (
+	"slices"
 	"strconv"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 )
 
 type NativeItemSummary struct {
+	OmittedFields          []string         `json:"omitted_fields,omitempty"`
 	Identifier             string           `json:"identifier"`
 	Number                 int              `json:"number"`
 	State                  string           `json:"state"`
@@ -29,9 +31,16 @@ type NativeSummaryPage struct {
 func NativeSummaryPageView(page tracker.NativeIssuePage) NativeSummaryPage {
 	out := NativeSummaryPage{Page: tracker.Page[NativeItemSummary]{Items: []NativeItemSummary{}, NextCursor: page.NextCursor}, Total: page.Total}
 	for _, issue := range page.Items {
+		var omitted []string
+		for _, field := range []string{"title", "state", "priority", "type", "labels", "last_activity_at", "latest_transition_reason"} {
+			if slices.Contains(issue.OmittedFields, field) {
+				omitted = append(omitted, field)
+			}
+		}
 		out.Items = append(out.Items, NativeItemSummary{
-			Identifier: string(issue.ProjectID) + "#" + strconv.Itoa(issue.Number),
-			Number:     issue.Number, State: issue.State, Priority: issue.Priority,
+			OmittedFields: omitted,
+			Identifier:    string(issue.ProjectID) + "#" + strconv.Itoa(issue.Number),
+			Number:        issue.Number, State: issue.State, Priority: issue.Priority,
 			Title: issue.Title, Type: issue.Type, Labels: issue.Labels,
 			LastActivityAt: issue.LastActivityAt, Revision: issue.Revision,
 			LatestTransitionReason: issue.LatestTransitionReason,

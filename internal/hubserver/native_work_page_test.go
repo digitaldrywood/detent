@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -15,6 +16,134 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	other := newNativeFixture(t, f.service, f.project.OrganizationID, "example-library")
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO token_grants(token_id,organization_id,project_id) VALUES(?,?,?)", defaultHubOperatorID, f.project.OrganizationID, other.project.ID); err != nil {
+		t.Fatal(err)
+	}
+	now := f.service.config.now().Truncate(time.Second)
+	closed := map[tracker.NativeWorkItemID]time.Time{}
+	items := map[tracker.ProjectID][]tracker.NativeIssue{}
+	for _, fixture := range []nativeFixture{f, other} {
+		scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
+		seedNativeFixturePolicy(t, f.service, string(scope.organization)+"/"+string(scope.project))
+		var issues []tracker.NativeIssue
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { tx.Rollback() })
+		for index := range 2 {
+			issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: fmt.Sprintf("Example %d", index), Body: nativeContractTestBody, State: "Todo"}, now.Add(-24*time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			at := now.Add(-time.Duration(index+1) * time.Hour)
+			issue.State = "Done"
+			updated, err := persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			issues = append(issues, updated)
+			closed[issue.WorkItemID] = at
+		}
+		for range 400 {
+			if err := appendNativeHistory(t.Context(), tx, scope, string(issues[0].WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: "Done", ToState: "Done"}, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		items[fixture.project.ID] = issues
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE collaboration_events SET page_projection_ready=NULL,from_state=NULL,to_state=NULL WHERE type='workflow.transitioned'"); err != nil {
+		t.Fatal(err)
+	}
+	unknown := func() int {
+		t.Helper()
+		var count int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE type='workflow.transitioned' AND page_projection_ready IS NULL").Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	for _, stage := range []string{"legacy", "partially converted", "converted"} {
+		t.Run(stage, func(t *testing.T) {
+			before := unknown()
+			switch stage {
+			case "partially converted":
+				if err := f.service.convertIssuePageFacts(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if got := unknown(); got != before-storageConversionRows || got <= 100 {
+					t.Fatalf("partial backfill unknown=%d before=%d", got, before)
+				}
+			case "converted":
+				for remaining := before; remaining > 0; remaining -= storageConversionRows {
+					if err := f.service.convertIssuePageFacts(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if got := unknown(); got != 0 {
+					t.Fatalf("backfill left %d legacy transitions", got)
+				}
+			default:
+				if before != 804 {
+					t.Fatalf("legacy transitions=%d want=804", before)
+				}
+			}
+			before = unknown()
+			for _, fixture := range []nativeFixture{f, other} {
+				ctx := changeOperatorContext(t, f.service, f.token, string(fixture.project.OrganizationID))
+				call := hostedContextProtocol(t, f.service, ctx, "http")
+				for _, include := range []string{"default", "summary", "work"} {
+					t.Run(string(fixture.project.ID)+"/"+include, func(t *testing.T) {
+						args := map[string]any{"project_id": string(fixture.project.ID), "limit": 1}
+						if include != "default" {
+							args["include"] = []string{include}
+						}
+						for index, want := range items[fixture.project.ID] {
+							raw := hostedContextData(t, call("tools/call", operatortool.WorkList, args), false)
+							var result operatortool.WorkReadResult[operatortool.NativeWorkPage]
+							if err := json.Unmarshal(raw, &result); err != nil {
+								t.Fatal(err)
+							}
+							page := result.Data
+							if page.Total != 2 || len(page.Items) != 1 || page.Items[0].Identifier != string(fixture.project.ID)+"#"+strconv.Itoa(want.Number) || page.Items[0].State != "Done" {
+								t.Fatalf("page %d: total=%d items=%d want number=%d", index, page.Total, len(page.Items), want.Number)
+							}
+							if include == "work" && (page.Items[0].ClosedAt == nil || !page.Items[0].ClosedAt.Equal(closed[want.WorkItemID])) {
+								t.Fatalf("closed at=%v want=%v", page.Items[0].ClosedAt, closed[want.WorkItemID])
+							}
+							if (page.NextCursor == "") != (index == 1) {
+								t.Fatalf("page %d cursor=%q", index, page.NextCursor)
+							}
+							args["cursor"] = page.NextCursor
+						}
+					})
+				}
+				params := url.Values{"sort": {"closed"}, "limit": {"2"}}
+				scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
+				page, err := f.service.readIssues(t.Context(), scope, params)
+				if err != nil || len(page.Items) != 2 {
+					t.Fatalf("closed page=%+v err=%v", page, err)
+				}
+				for index, issue := range page.Items {
+					want := items[fixture.project.ID][index]
+					if issue.WorkItemID != want.WorkItemID || issue.ClosedAt == nil || !issue.ClosedAt.Equal(closed[want.WorkItemID]) {
+						t.Fatalf("closed item=%+v want=%s at=%v", issue, want.WorkItemID, closed[want.WorkItemID])
+					}
+				}
+			}
+			if got := unknown(); got != before {
+				t.Fatalf("list read converted history: unknown=%d before=%d", got, before)
+			}
+		})
+	}
+}
 
 func TestNativeWorkPageOperationalScope(t *testing.T) {
 	t.Parallel()
@@ -380,7 +509,11 @@ func TestNativeWorkPageCompletedWindow(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET updated_at = ?, native_updated_at = ?, archived = ? WHERE native_id = ?", formatHubTime(now), formatHubTime(now), seed.archived, issue.WorkItemID); err != nil {
+		var terminalEnteredAt any
+		if seed.state != "Todo" && seed.from == "Todo" && len(seed.entries) > 0 {
+			terminalEnteredAt = formatHubTime(seed.entries[len(seed.entries)-1])
+		}
+		if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET updated_at = ?, native_updated_at = ?, archived = ?, terminal_entered_at = ? WHERE native_id = ?", formatHubTime(now), formatHubTime(now), seed.archived, terminalEnteredAt, issue.WorkItemID); err != nil {
 			t.Fatal(err)
 		}
 		if err := f.service.database.commit(t.Context(), tx); err != nil {
@@ -443,7 +576,11 @@ func TestNativeWorkClosedOrdering(t *testing.T) {
 	}
 	var expected []tracker.NativeWorkItemID
 	for index, state := range []string{"Cancelled", "Done", "Done", "Done", "Done"} {
-		issue := seedArchiveIssues(t, f.service, scope, 1, state)[0]
+		initial := "Todo"
+		if index == 4 {
+			initial = state
+		}
+		issue := seedArchiveIssues(t, f.service, scope, 1, initial)[0]
 		expected = append(expected, issue.WorkItemID)
 		if index == 4 {
 			continue
@@ -452,7 +589,8 @@ func TestNativeWorkClosedOrdering(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: state}, now.Add(-time.Duration(index+1)*time.Hour)); err != nil {
+		issue.State = state
+		if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: state}, now.Add(-time.Duration(index+1)*time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 		if err := tx.Commit(); err != nil {

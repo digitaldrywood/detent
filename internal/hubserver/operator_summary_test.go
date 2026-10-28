@@ -12,6 +12,130 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestOperatorWorkListOversizedFirstItem(t *testing.T) {
+	for _, test := range []struct {
+		field   string
+		include []string
+		links   int
+	}{
+		{field: "title"},
+		{field: "labels"},
+		{field: "issue_contract"},
+		{field: "related"},
+		{field: "related", links: 300},
+		{field: "title", include: []string{"summary"}},
+		{field: "labels", include: []string{"summary"}},
+		{field: "latest_transition_reason", include: []string{"summary"}},
+		{field: "title", include: []string{"work"}},
+		{field: "related", include: []string{"work"}},
+	} {
+		t.Run(fmt.Sprintf("%s/%s/links=%d", test.field, strings.Join(test.include, ","), test.links), func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			issues := seedArchiveIssues(t, f.service, scope, 2, "Todo")
+			for i, issue := range issues {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override=? WHERE issue_id=(SELECT id FROM issues WHERE native_id=?)", i, issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			large := strings.Repeat("<界", operatortool.WorkListPageBytes/4)
+			column, value := test.field, large
+			switch test.field {
+			case "labels":
+				column = "labels_json"
+				raw, err := json.Marshal([]string{large})
+				if err != nil {
+					t.Fatal(err)
+				}
+				value = string(raw)
+			case "issue_contract":
+				column = "issue_contract_json"
+				raw, err := json.Marshal(map[string]string{"human_action": large})
+				if err != nil {
+					t.Fatal(err)
+				}
+				value = string(raw)
+			case "related":
+				column, value = "title", "Example item"
+				if test.links > 0 {
+					seedArchiveIssues(t, f.service, scope, test.links, "Todo")
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET archived=1 WHERE project_id=? AND number>?", f.project.ID, issues[1].Number); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO issue_relationships(first_issue_id,second_issue_id,relationship_type,created_at) SELECT a.id,b.id,'related',? FROM issues a,issues b WHERE a.native_id=? AND b.project_id=a.project_id AND b.number>?`, formatHubTime(f.service.config.now()), issues[0].WorkItemID, issues[1].Number); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET title=? WHERE native_id=?", large, issues[1].WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO issue_relationships(first_issue_id,second_issue_id,relationship_type,created_at) SELECT a.id,b.id,'related',? FROM issues a,issues b WHERE a.native_id=? AND b.native_id=?`, formatHubTime(f.service.config.now()), issues[0].WorkItemID, issues[1].WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "latest_transition_reason":
+				column, value = "title", "Example item"
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				if err := appendNativeHistory(t.Context(), tx, scope, string(issues[0].WorkItemID), "workflow.transitioned", tracker.CollaborationData{ReasonDetail: large}, f.service.config.now()); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.service.database.commit(t.Context(), tx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET "+column+"=? WHERE native_id=?", value, issues[0].WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			ctx := changeOperatorContext(t, f.service, f.token, string(f.project.OrganizationID))
+			call := hostedContextProtocol(t, f.service, ctx, "http")
+			args := map[string]any{"project_id": string(f.project.ID), "limit": 1}
+			if len(test.include) > 0 {
+				args["include"] = test.include
+			}
+			for i, want := range issues {
+				raw := hostedContextData(t, call("tools/call", operatortool.WorkList, args), false)
+				var page operatortool.WorkReadResult[tracker.Page[struct {
+					Number        int      `json:"number"`
+					OmittedFields []string `json:"omitted_fields"`
+				}]]
+				if err := json.Unmarshal(raw, &page); err != nil {
+					t.Fatal(err)
+				}
+				if len(raw) > operatortool.MaxResultBytes || len(page.Data.Items) != 1 || page.Data.Items[0].Number != want.Number || i == 0 && !slices.Contains(page.Data.Items[0].OmittedFields, test.field) {
+					t.Fatalf("bounded item: bytes=%d page=%+v", len(raw), page.Data)
+				}
+				var envelope struct {
+					Data operatortool.NativeWorkPage `json:"data"`
+				}
+				if err := json.Unmarshal(raw, &envelope); err != nil {
+					t.Fatal(err)
+				}
+				projections := []any{envelope.Data.Page}
+				if work := envelope.Data.Work; work != nil {
+					if len(work.Items) == 0 {
+						t.Fatal("oversized work summary lost its first item")
+					}
+					projections = append(projections, tracker.Page[operatortool.NativeItem]{Items: work.Items})
+				}
+				for _, projection := range projections {
+					bounded, err := json.Marshal(projection)
+					if err != nil || len(bounded) > operatortool.WorkListPageBytes {
+						t.Fatalf("projection exceeds budget: bytes=%d error=%v", len(bounded), err)
+					}
+				}
+				if (page.Data.NextCursor == "") != (i == len(issues)-1) {
+					t.Fatalf("page %d cursor=%q", i, page.Data.NextCursor)
+				}
+				args["cursor"] = page.Data.NextCursor
+			}
+		})
+	}
+}
+
 func TestOperatorWorkListSummary(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	now := time.Date(2026, time.October, 20, 12, 0, 0, 0, time.UTC)
