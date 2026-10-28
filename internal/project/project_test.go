@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,7 +27,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/scheduleowner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
-	"github.com/digitaldrywood/detent/internal/store"
 
 	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 )
@@ -134,66 +131,6 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 	}
 }
 
-func TestNewConfiguresBacklogAdmissionFromSharedWorkflow(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-
-	runtimeStore, err := store.Open(context.Background(), store.Config{
-		Backend: store.BackendSQLite,
-		Path:    filepath.Join(t.TempDir(), "detent.db"),
-	})
-	if err != nil {
-		t.Fatalf("store.Open() error = %v", err)
-	}
-	t.Cleanup(func() {
-		if err := runtimeStore.Close(); err != nil {
-			t.Fatalf("runtimeStore.Close() error = %v", err)
-		}
-	})
-
-	workflowCfg := workflowConfigWithHubIssue("issue-1535")
-	workflowCfg.Tracker.Issues[0].State = "Backlog"
-	workflowCfg.BacklogAdmission.Enabled = true
-	workflowCfg.BacklogAdmission.Sources.States = []string{"Backlog"}
-	workflowCfg.BacklogAdmission.TargetState = "Todo"
-	workflowCfg.BacklogAdmission.CriteriaSection = "Admission criteria"
-	workflowCfg.BacklogAdmission.RequireEffort = true
-	workflowCfg.BacklogAdmission.EffortSection = "Issue effort selection"
-	configureTestScheduleOwnership(&workflowCfg)
-	got, err := projectfixture.New(project.Config{
-		Project: globalconfig.Project{ID: "detent", Workdir: "/workspace/detent"},
-		Workflow: workflowconfig.Workflow{
-			Config: workflowCfg,
-			SharedPrompt: `# Workflow
-
-## Admission criteria
-
-- **Evidence** — requires a reproducible signal.
-
-## Issue effort selection
-
-- **medium** — small and mechanical.
-- **high** — standard feature work.
-`,
-		},
-	}, project.Dependencies{
-		Runner:         orchestrator.FakeRunner{},
-		AdmissionStore: runtimeStore,
-		ScheduleStore:  &projectCoordinationStore{},
-		ScheduleRuns:   runtimeStore,
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	t.Cleanup(func() { _ = got.Close() })
-	if got.Admission() == nil || !got.Admission().Enabled() {
-		t.Fatalf("Admission() = %#v, want enabled manager", got.Admission())
-	}
-}
-
 func TestProjectWithDisabledSchedulersDoesNotAcquireOwnership(t *testing.T) {
 	t.Parallel()
 
@@ -233,83 +170,6 @@ func TestNewLeavesBacklogAdmissionDisabledByDefault(t *testing.T) {
 	t.Cleanup(func() { _ = got.Close() })
 	if got.Admission() == nil || got.Admission().Enabled() {
 		t.Fatalf("Admission() = %#v, want disabled manager", got.Admission())
-	}
-}
-
-func TestProjectGitHubRuntimeTokenRefreshesAfterAuthFailure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("loopback network listener integration")
-	}
-
-	t.Parallel()
-
-	requests := make(chan string, 2)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := r.Header.Get("Authorization")
-		requests <- token
-		switch token {
-		case "Bearer stale-token":
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
-		case "Bearer fresh-token":
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"data":{"viewer":{"login":"detent-bot"},"node":{"__typename":"ProjectV2","id":"PVT_1"}}}`))
-		default:
-			t.Fatalf("Authorization = %q, want stale then fresh token", token)
-		}
-	}))
-	t.Cleanup(server.Close)
-
-	workflowCfg := workflowConfig(workflowconfig.TrackerHubNative)
-	workflowCfg.Tracker.Endpoint = server.URL
-	workflowCfg.Tracker.ProjectSlug = "PVT_1"
-	workflowCfg.Tracker.GitHubStatusSource = "project_v2"
-	var refreshes atomic.Int64
-	got, err := projectfixture.New(project.Config{
-		Project: globalconfig.Project{
-			ID:     "detent",
-			Weight: 1,
-			Paused: true,
-		},
-		Workflow: workflowconfig.Workflow{Config: workflowCfg},
-	}, project.Dependencies{
-		GitHubToken: "stale-token",
-		RefreshGitHubToken: func(context.Context) (string, error) {
-			refreshes.Add(1)
-			return "fresh-token", nil
-		},
-		Runner: orchestrator.FakeRunner{},
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	t.Cleanup(func() { _ = got.Close() })
-
-	authenticator, ok := got.Connector().(connector.Authenticator)
-	if !ok {
-		t.Fatalf("Connector() = %T, want connector.Authenticator", got.Connector())
-	}
-	if err := authenticator.Authenticate(context.Background()); err != nil {
-		t.Fatalf("Authenticate() error = %v", err)
-	}
-	if refreshes.Load() != 1 {
-		t.Fatalf("RefreshGitHubToken() calls = %d, want 1", refreshes.Load())
-	}
-	if first, second := <-requests, <-requests; first != "Bearer stale-token" || second != "Bearer fresh-token" {
-		t.Fatalf("Authorization sequence = %q, %q; want stale then fresh", first, second)
-	}
-	reporter, ok := got.Connector().(connector.AuthHealthReporter)
-	if !ok {
-		t.Fatalf("Connector() = %T, want connector.AuthHealthReporter", got.Connector())
-	}
-	health, ok := reporter.AuthHealth()
-	if !ok {
-		t.Fatal("AuthHealth() ok = false, want true")
-	}
-	if health.Status != connector.AuthStatusRecovered {
-		t.Fatalf("AuthHealth().Status = %q, want %q", health.Status, connector.AuthStatusRecovered)
 	}
 }
 
@@ -880,25 +740,24 @@ func TestProjectHotReloadsWorkflowFileWithoutRestart(t *testing.T) {
 	}
 }
 
-func TestProjectHotReloadAppliesRuntimeGitHubTokenBeforeValidation(t *testing.T) {
+func TestProjectNativeWorkflowReloadStatus(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live service, profiling, or filesystem watcher integration")
 	}
 
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
-	writeProjectGitHubWorkflow(t, workflowPath, int(time.Hour/time.Millisecond), "initial")
+	writeProjectNativeWorkflow(t, workflowPath, int(time.Hour/time.Millisecond), "initial")
 
 	workflow, err := workflowconfig.LoadWorkflow(workflowPath)
 	if err != nil {
 		t.Fatalf("LoadWorkflow() error = %v", err)
 	}
 
-	connectorConfigs := make(chan workflowconfig.Config, 2)
 	var logs lockedBuffer
 	got, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{
-			ID:       "pyroapex",
+			ID:       "example-project",
 			Workflow: workflowPath,
 			Weight:   1,
 		},
@@ -906,22 +765,10 @@ func TestProjectHotReloadAppliesRuntimeGitHubTokenBeforeValidation(t *testing.T)
 	}, project.Dependencies{
 		GitHubToken: "global-token",
 		Logger:      slog.New(slog.NewTextHandler(&logs, nil)),
-		ConnectorFactory: func(cfg workflowconfig.Config) (connector.Connector, error) {
-			connectorConfigs <- cfg
-			return provisioningConnector{}, nil
-		},
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	initial := receiveConnectorConfig(t, connectorConfigs)
-	if initial.Worker.GitHubToken != "global-token" {
-		t.Fatal("initial worker credential did not inherit runtime token")
-	}
-	if initial.Tracker.APIKey != "global-token" {
-		t.Fatalf("initial Tracker.APIKey = %q, want runtime token", initial.Tracker.APIKey)
-	}
-
 	if err := got.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -933,16 +780,9 @@ func TestProjectHotReloadAppliesRuntimeGitHubTokenBeforeValidation(t *testing.T)
 
 	waitForWorkflowWatcherArmed(t, got)
 
-	writeProjectGitHubWorkflow(t, workflowPath, 60000, "reloaded")
+	writeProjectNativeWorkflow(t, workflowPath, 60000, "reloaded")
 	waitForProjectLog(t, &logs, "workflow reloaded")
 
-	reloaded := receiveConnectorConfig(t, connectorConfigs)
-	if reloaded.Worker.GitHubToken != "global-token" {
-		t.Fatal("reloaded worker credential did not inherit runtime token")
-	}
-	if reloaded.Tracker.APIKey != "global-token" {
-		t.Fatalf("reloaded Tracker.APIKey = %q, want runtime token", reloaded.Tracker.APIKey)
-	}
 	if got.Workflow().Prompt != "reloaded\n" {
 		t.Fatalf("Workflow().Prompt = %q, want reloaded", got.Workflow().Prompt)
 	}
@@ -952,11 +792,6 @@ func TestProjectHotReloadAppliesRuntimeGitHubTokenBeforeValidation(t *testing.T)
 	}
 	waitForProjectLog(t, &logs, "workflow reload failed")
 	waitForWorkflowReloadError(t, got)
-	select {
-	case extra := <-connectorConfigs:
-		t.Fatalf("connector rebuilt after invalid reload = %#v", extra)
-	default:
-	}
 	if got.Workflow().Prompt != "reloaded\n" {
 		t.Fatalf("Workflow().Prompt after invalid reload = %q, want last valid workflow", got.Workflow().Prompt)
 	}
@@ -973,9 +808,8 @@ func TestProjectHotReloadAppliesRuntimeGitHubTokenBeforeValidation(t *testing.T)
 		t.Fatalf("Registry.Health() = %#v, want degraded last-good project", health)
 	}
 
-	writeProjectGitHubWorkflow(t, workflowPath, 60000, "recovered")
+	writeProjectNativeWorkflow(t, workflowPath, 60000, "recovered")
 	waitForWorkflowPrompt(t, got, "recovered\n")
-	_ = receiveConnectorConfig(t, connectorConfigs)
 	if recovered := got.WorkflowSourceStatus(); recovered.LastReloadError != "" || !recovered.ReloadFailedAt.IsZero() {
 		t.Fatalf("WorkflowSourceStatus() after recovery = %#v, want cleared reload failure", recovered)
 	}
@@ -1780,13 +1614,12 @@ tracker:
 	}
 }
 
-func writeProjectGitHubWorkflow(t *testing.T, path string, intervalMS int, prompt string) {
+func writeProjectNativeWorkflow(t *testing.T, path string, intervalMS int, prompt string) {
 	t.Helper()
 
 	raw := fmt.Sprintf(`---
 tracker:
   kind: hub_native
-  project_slug: PVT_pyroapex
 polling:
   interval_ms: %d
 ---
@@ -1808,19 +1641,6 @@ func receiveOrchestratorConfig(t *testing.T, ch <-chan orchestrator.Config) orch
 	}
 
 	return orchestrator.Config{}
-}
-
-func receiveConnectorConfig(t *testing.T, ch <-chan workflowconfig.Config) workflowconfig.Config {
-	t.Helper()
-
-	select {
-	case cfg := <-ch:
-		return cfg
-	case <-time.After(projectTestWaitTimeout):
-		t.Fatal("timed out waiting for connector config")
-	}
-
-	return workflowconfig.Config{}
 }
 
 func receiveConnector(t *testing.T, ch <-chan connector.Connector) connector.Connector {

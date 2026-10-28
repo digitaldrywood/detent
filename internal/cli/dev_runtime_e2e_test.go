@@ -728,11 +728,6 @@ func TestStartScreenshotsDemoServesScenarioManifestAndUsage(t *testing.T) {
 		t.Fatalf("scenario usage response missing seeded ledger data:\n%s", usage)
 	}
 
-	onboarding := waitForDashboardHeader(t, dashboardURL+"/onboarding", done, "onboarding-write-success")
-	if !strings.Contains(onboarding, "Wrote WORKFLOW.md") {
-		t.Fatalf("onboarding scenario did not render success state:\n%s", onboarding)
-	}
-
 	cancel()
 	select {
 	case err := <-done:

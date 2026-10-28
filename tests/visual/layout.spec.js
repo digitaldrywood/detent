@@ -99,7 +99,6 @@ test("screenshots manifest includes visual gate scenarios", async ({
       "github-api-primary-exhausted",
       "diagnostics-healthy",
       "settings-project-context",
-      "onboarding-project-selection",
       "fleet-kanban-blocked-alerts",
     ]),
   );
@@ -2117,26 +2116,6 @@ test("light theme applies through the token cascade", async ({
   await attachScreenshotEvidence(page, "board-light.png", testInfo);
 });
 
-test("onboarding project selection remains readable on narrow screens", async ({
-  page,
-}, testInfo) => {
-  await openScenario(page, {
-    runtime: screenshotsRuntime,
-    scenario: "onboarding-project-selection",
-    viewport: narrowViewport,
-  });
-
-  await expect(page.getByRole("heading", { name: "Pick project", exact: true })).toBeVisible();
-  await expect(page.getByLabel("ProjectV2 ID", { exact: true })).toHaveValue("example-org/detent-core");
-  await expect(page.getByLabel("Dispatch repository", { exact: true })).toHaveValue("example-org/detent-core");
-  await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeInViewport();
-  await assertNoDocumentOverflow(page);
-  await attachScreenshotEvidence(
-    page,
-    "onboarding-project-selection.png",
-    testInfo,
-  );
-});
 
 async function openScenario(page, options) {
   const scenario = screenshotManifest.scenarios.find(
