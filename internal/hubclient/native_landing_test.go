@@ -658,6 +658,9 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 			t.Fatal(err)
 		}
 		landing = h.scheduler.RunExecution(issue.ID)
+		if landing == nil {
+			t.Fatal("resumed landing has no execution")
+		}
 		nativeLanding = landing
 		execution = landing.(runner.LandingExecution)
 		guarded, stop, err = landing.Guard(t.Context())
