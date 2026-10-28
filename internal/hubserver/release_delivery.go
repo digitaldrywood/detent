@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"slices"
 	"strconv"
@@ -23,6 +24,38 @@ var ErrReleasePickMismatch = errors.New("release pick provenance mismatch")
 type ReleasePickVerifier interface {
 	VerifyReleasePick(context.Context, tracker.ReleasePickInput) error
 	VerifyReleasePickRefresh(context.Context, tracker.ReleasePickInput, tracker.ReleasePickInput) error
+}
+
+type ReleaseDeliveryVerifier interface {
+	ReleaseDeliveryStatus(context.Context, tracker.ReleasePickInput) (tracker.ReleaseDeliveryStatus, error)
+}
+
+func (s *Service) getReleaseDeliveryStatus(c echo.Context) error {
+	ctx := c.Request().Context()
+	scope := nativeRequestScope(c)
+	issue, _, err := readNativeIssue(ctx, s.database.reader, scope, c.Param("item"))
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if issue.ReleaseDelivery == nil {
+		return s.nativeAPIError(c, nativeNotFound())
+	}
+	verifier, ok := s.config.ReconcileBackend.(ReleaseDeliveryVerifier)
+	if !ok {
+		return s.nativeAPIError(c, errors.New("release repository transport is unavailable"))
+	}
+	status, err := verifier.ReleaseDeliveryStatus(ctx, issue.ReleaseDelivery.ReleasePickInput)
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	current, _, err := readNativeIssue(ctx, s.database.reader, scope, c.Param("item"))
+	if err != nil {
+		return s.nativeAPIError(c, err)
+	}
+	if current.Revision != issue.Revision || current.ReleaseDelivery == nil || *current.ReleaseDelivery != *issue.ReleaseDelivery {
+		return s.nativeAPIError(c, nativeConflict(current.Revision))
+	}
+	return c.JSON(http.StatusOK, status)
 }
 
 var releaseBranchPattern = regexp.MustCompile(`^release/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)

@@ -1648,6 +1648,15 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	}
 	workflow, agentRuntime, budgetChecker, dispatchEstimator, runWorkspace := r.runtimeSnapshotWithWorkspace()
 	mode := normalizeRunMode(req.Mode)
+	if execution, ok := req.Execution.(ReleaseDeliveryExecution); ok && req.Execution.Recovery().Issue.ReleaseDelivery != nil && (mode == RunModeImplement || mode == RunModeMerge) {
+		result, err := execution.ReconcileReleaseDelivery(ctx, req.WorkAttemptID, req.Generation)
+		if err != nil {
+			return RunResult{}, err
+		}
+		if result.Settled {
+			return result.Result, nil
+		}
+	}
 	landing, nativeLanding := req.Execution.(LandingExecution)
 	nativeLanding = nativeLanding && mode == RunModeMerge
 	if nativeLanding {

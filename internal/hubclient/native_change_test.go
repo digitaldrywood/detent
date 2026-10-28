@@ -3361,6 +3361,15 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			if test.delivered == "release" {
 				current := expected.Versions[len(expected.Versions)-1]
 				execution.(*nativeExecution).claim.recovery.Issue.ReleaseDelivery = &tracker.ReleaseDelivery{ReleasePickInput: tracker.ReleasePickInput{Repository: current.Repository, PRNumber: 7, BaseRef: "release/v1.2", BaseSHA: current.BaseSHA, HeadSHA: current.HeadSHA, HeadRef: deliveryHeadRef, SourceMergeSHA: current.HeadSHA}, ChangeID: expected.Change.ID, VersionID: current.ID}
+				next := h.native.client.httpClient.Transport
+				h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/release-pick") {
+						status := tracker.ReleaseDeliveryStatus{ReleasePickInput: execution.Recovery().Issue.ReleaseDelivery.ReleasePickInput, ReleaseHeadSHA: current.HeadSHA}
+						raw, err := json.Marshal(status)
+						return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(raw))), Request: request}, err
+					}
+					return next.RoundTrip(request)
+				})
 			}
 			if test.enrolled {
 				h.connector, err = NewNativeConnector(h.native)

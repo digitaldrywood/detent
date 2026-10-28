@@ -269,6 +269,7 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.GET(nativeBase+"/work-items/:item/diff", s.getWorkItemDiff, read)
 	e.GET(nativeBase+"/work-items/:item/pull-requests", s.listWorkItemPullRequests, read)
 	e.POST(nativeBase+"/work-items/:item/release-pick", s.associateReleasePick, write)
+	e.GET(nativeBase+"/work-items/:item/release-pick", s.getReleaseDeliveryStatus, read)
 	e.POST(nativeBase+"/work-items/:item/release-pick/publication", s.publishReleasePick, write)
 	// Workspace sessions. The reads follow the
 	// issue's read rule; the writes need write on the project, and a

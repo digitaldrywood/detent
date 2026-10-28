@@ -40,3 +40,10 @@ type ReleaseDelivery struct {
 	Actor        Actor     `json:"actor"`
 	AssociatedAt time.Time `json:"associated_at"`
 }
+
+type ReleaseDeliveryStatus struct {
+	ReleasePickInput
+	ReleaseHeadSHA string `json:"release_head_sha"`
+	DeliveredSHA   string `json:"delivered_sha,omitempty"`
+	Closed         bool   `json:"closed"`
+}

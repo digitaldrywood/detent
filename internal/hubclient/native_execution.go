@@ -89,6 +89,7 @@ type nativeExecution struct {
 	sourceRequired  bool
 	recoveredSource *tracker.NativeChangeReference
 	mergeResolution bool
+	releaseDelivery *tracker.ReleaseDeliveryStatus
 }
 
 func (e *nativeExecution) RetainCompletion() {
@@ -591,7 +592,7 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 			}
 			finish = e.data.Sequence + 1
 		}
-		if e.storedSeq != finish {
+		if e.storedSeq != finish && e.releaseDelivery == nil {
 			if err := e.postDiff(ctx, finish); err != nil && e.ownsChangeCompletion() {
 				err = e.executionError(ctx, err)
 				if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
@@ -924,7 +925,7 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 	if kind == "run.finished" {
 		data.CompletionBody = e.preparedMessage
 	}
-	if (kind == "run.checkpointed" || kind == "run.finished") && e.storedSeq != data.Sequence {
+	if (kind == "run.checkpointed" || kind == "run.finished") && e.storedSeq != data.Sequence && e.releaseDelivery == nil {
 		if err := e.postDiff(ctx, data.Sequence); err != nil {
 			slog.Default().Warn("attempt diff not stored", "work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", data.Sequence, "error", err)
 		}

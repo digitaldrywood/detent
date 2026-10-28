@@ -35,6 +35,15 @@ type Execution interface {
 	Recovery() tracker.NativeRecovery
 }
 
+type ReleaseDeliveryExecution interface {
+	ReconcileReleaseDelivery(context.Context, int64, uint64) (ReleaseDeliveryResult, error)
+}
+
+type ReleaseDeliveryResult struct {
+	Settled bool
+	Result  RunResult
+}
+
 type WorkerLifetimeExecution interface {
 	KeepWorker(func(context.Context) error, func(context.Context, RunRequest) (RunResult, error)) error
 	WorkerLauncher() func(context.Context, RunRequest) (RunResult, error)

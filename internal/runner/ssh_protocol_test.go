@@ -388,6 +388,65 @@ func TestResolveSSHWorkflowPreservesHookShell(t *testing.T) {
 	}
 }
 
+type sshReleaseDeliveryTestExecution struct {
+	*readToolTestExecution
+	result ReleaseDeliveryResult
+	refuse bool
+}
+
+func (e *sshReleaseDeliveryTestExecution) ReconcileReleaseDelivery(ctx context.Context, attempt int64, generation uint64) (ReleaseDeliveryResult, error) {
+	if err := ctx.Err(); err != nil {
+		return ReleaseDeliveryResult{}, err
+	}
+	if attempt != 7 || generation != 11 {
+		return ReleaseDeliveryResult{}, errors.New("release delivery lost attempt identity")
+	}
+	if e.refuse {
+		return ReleaseDeliveryResult{}, ErrExecutionAuthorityUnavailable
+	}
+	return e.result, nil
+}
+
+func TestSSHReleaseDeliveryReconciliation(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		settled bool
+		message string
+		refuse  bool
+	}{
+		{name: "open delivery continues"},
+		{name: "delivered source settles", settled: true, message: "Source verified on release branch"},
+		{name: "closed delivery retains human action", settled: true, message: "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Reopen the delivery PR\n```"},
+		{name: "expired authority refuses reconciliation", refuse: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			owner := &sshReleaseDeliveryTestExecution{readToolTestExecution: &readToolTestExecution{}, result: ReleaseDeliveryResult{Settled: test.settled, Result: RunResult{FinalMessage: test.message}}, refuse: test.refuse}
+			request := RunRequest{Execution: owner}
+			wire := NewSSHRunRequest(request)
+			wire.Native = true
+			left, right := net.Pipe()
+			t.Cleanup(func() { left.Close(); right.Close() })
+			central := NewSSHPeer(t.Context(), left, left, NewSSHCallbackHandler(request, nil, nil, nil))
+			t.Cleanup(central.Close)
+			remote := NewSSHPeer(t.Context(), right, right, nil)
+			t.Cleanup(remote.Close)
+			execution := wire.Bind(t.Context(), remote).Execution.(ReleaseDeliveryExecution)
+			result, err := execution.ReconcileReleaseDelivery(t.Context(), 7, 11)
+			if test.refuse {
+				if !errors.Is(err, ErrExecutionAuthorityUnavailable) {
+					t.Fatalf("release delivery lost authority refusal: %v", err)
+				}
+				return
+			}
+			if err != nil || result.Settled != test.settled || result.Result.FinalMessage != test.message {
+				t.Fatalf("release delivery lost settlement: %+v, %v", result, err)
+			}
+		})
+	}
+}
+
 type sshSourceIterationTestExecution struct {
 	*readToolTestExecution
 	iterations int

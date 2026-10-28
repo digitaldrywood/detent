@@ -209,6 +209,9 @@ func nativeLandingMetadata(landing *runpkg.NativeLanding) map[string]any {
 func nativeLandingComment(landing *runpkg.NativeLanding, from, to string) string {
 	from, to = displayStateName(from), displayStateName(to)
 	if landing.Landed {
+		if landing.ChangeID == "" {
+			return fmt.Sprintf("Verified source %s already delivered on %s as %s. Moved from %s to %s.", shortCommit(landing.HeadSHA), landing.BaseRef, shortCommit(landing.MergeSHA), from, to)
+		}
 		return fmt.Sprintf("Landed Change Request %s (head %s) on %s as %s by %s. Moved from %s to %s.",
 			landing.ChangeID, shortCommit(landing.HeadSHA), landing.BaseRef, shortCommit(landing.MergeSHA), landing.Method, from, to)
 	}

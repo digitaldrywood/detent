@@ -4,10 +4,66 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func (e *nativeExecution) ReconcileReleaseDelivery(ctx context.Context, localAttempt int64, generation uint64) (runner.ReleaseDeliveryResult, error) {
+	delivery := e.claim.recovery.Issue.ReleaseDelivery
+	if delivery == nil || e.conversationContinuation {
+		return runner.ReleaseDeliveryResult{}, nil
+	}
+	if err := e.Validate(ctx); err != nil {
+		return runner.ReleaseDeliveryResult{}, err
+	}
+	path, err := nativeItemPath(e.claim.lease.WorkItemID)
+	if err != nil {
+		return runner.ReleaseDeliveryResult{}, err
+	}
+	var status tracker.ReleaseDeliveryStatus
+	if err := e.claim.source.client.client.request(ctx, http.MethodGet, e.claim.source.client.base()+path+"/release-pick", nil, &status); err != nil {
+		return runner.ReleaseDeliveryResult{}, err
+	}
+	if status.ReleasePickInput != delivery.ReleasePickInput || status.ReleaseHeadSHA == "" {
+		return runner.ReleaseDeliveryResult{}, errors.New("release delivery verification identity mismatch")
+	}
+	if status.DeliveredSHA == "" && !status.Closed {
+		return runner.ReleaseDeliveryResult{}, nil
+	}
+	identity := tracker.NativeExecutionIdentity{Role: runner.RoleMerge, Backend: "git", Model: "none"}
+	if reservation := e.claim.lease.ProviderReservation; reservation != nil {
+		identity.Role, identity.Backend, identity.Model = reservation.Role, reservation.Backend, reservation.Model
+	}
+	e.mu.Lock()
+	if e.data.Identity != nil {
+		identity = *e.data.Identity
+	}
+	e.mu.Unlock()
+	if err := e.Start(ctx, identity); err != nil {
+		return runner.ReleaseDeliveryResult{}, err
+	}
+	e.mu.Lock()
+	e.role = runner.RoleMerge
+	e.releaseDelivery = &status
+	e.mu.Unlock()
+	at := e.scheduler.now().UTC()
+	runtimeIdentity := runner.NativeLandingIdentity(at)
+	if err := e.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: localAttempt, Generation: generation, Phase: "merging", HeartbeatAt: at, Identity: runtimeIdentity}); err != nil {
+		return runner.ReleaseDeliveryResult{}, err
+	}
+	result := runner.RunResult{FinalState: runner.FinalStateCompleted, RuntimeIdentity: runtimeIdentity}
+	if status.DeliveredSHA != "" {
+		result.NativeLanding = &runner.NativeLanding{HeadSHA: delivery.SourceMergeSHA, BaseSHA: delivery.FrozenSHA, BaseRef: delivery.BaseRef, MergeSHA: status.DeliveredSHA, Landed: true}
+		result.FinalMessage = fmt.Sprintf("Verified source commit %s on %s as %s at release head %s.", delivery.SourceMergeSHA, delivery.BaseRef, status.DeliveredSHA, status.ReleaseHeadSHA)
+	} else {
+		action := "The delivery PR is closed without merge and its source is absent from the release branch. Reopen the delivery PR or confirm that this release delivery should be cancelled."
+		result.FinalMessage = "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: " + strconv.Quote(action) + "\n```"
+	}
+	return runner.ReleaseDeliveryResult{Settled: true, Result: result}, nil
+}
 
 // LandingTarget names the reviewed version a landing run puts on the base
 // branch: the item's Change Request, its current version, and the merge

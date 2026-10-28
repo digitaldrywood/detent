@@ -63,7 +63,7 @@ func (r *nativeCompletionRunner) Run(ctx context.Context, request runner.RunRequ
 	return result, err
 }
 
-func runNativeCompletionOrchestrator(t *testing.T, h *nativeChangeHub, agent *runner.Runner, request runner.RunRequest) (runner.RunResult, error) {
+func runNativeCompletionOrchestrator(t *testing.T, h *nativeChangeHub, agent *runner.Runner, request runner.RunRequest, targets ...string) (runner.RunResult, error) {
 	t.Helper()
 	if state := h.state(t, request.Issue.ID); state != "Rework" {
 		t.Fatalf("no-change settlement must start from active work: %s", state)
@@ -106,16 +106,24 @@ func runNativeCompletionOrchestrator(t *testing.T, h *nativeChangeHub, agent *ru
 		t.Fatal(err)
 	}
 	state, err := orch.State(t.Context())
+	target := "Done"
+	if len(targets) > 0 {
+		target = targets[0]
+	}
 	landed := false
 	for _, event := range state.RecentEvents {
 		landed = landed || event.Event == "completed_native_landing"
 	}
-	if err != nil || !landed || h.state(t, request.Issue.ID) != "Done" || len(state.Retry) != 0 || len(state.Blocked) != 0 || len(state.Claimed) != 0 || len(state.Running) != 0 {
+	if err != nil || target == "Done" && !landed || h.state(t, request.Issue.ID) != target || len(state.Retry) != 0 || len(state.Claimed) != 0 || len(state.Running) != 0 {
 		t.Fatalf("delivery did not complete through the orchestrator: retry=%+v blocked=%+v running=%+v events=%+v error=%v", state.Retry, state.Blocked, state.Running, state.RecentEvents, err)
 	}
 	completed := <-backend.completed
-	if change := completed.result.NativeChange; completed.err != nil || change == nil || change.Landing == nil || !change.Landing.Landed || backend.calls.Load() != 1 {
-		t.Fatalf("no-change settlement did not reconcile delivery: change=%+v calls=%d error=%v", change, backend.calls.Load(), completed.err)
+	landing := completed.result.NativeLanding
+	if change := completed.result.NativeChange; change != nil && change.Landing != nil {
+		landing = change.Landing
+	}
+	if completed.err != nil || target == "Done" && (landing == nil || !landing.Landed || len(state.Blocked) != 0) || backend.calls.Load() != 1 {
+		t.Fatalf("no-change settlement did not reconcile delivery: landing=%+v calls=%d error=%v", landing, backend.calls.Load(), completed.err)
 	}
 	return completed.result, completed.err
 }

@@ -23,6 +23,58 @@ type releaseVerifierFixture struct {
 	calls  int
 	refuse bool
 	verify func(tracker.ReleasePickInput) error
+	status func(tracker.ReleasePickInput) (tracker.ReleaseDeliveryStatus, error)
+}
+
+func (v *releaseVerifierFixture) ReleaseDeliveryStatus(_ context.Context, input tracker.ReleasePickInput) (tracker.ReleaseDeliveryStatus, error) {
+	return v.status(input)
+}
+
+func TestNativeReleaseDeliveryStatus(t *testing.T) {
+	for _, name := range []string{"delivered", "closed", "open", "changed issue", "transport unavailable"} {
+		t.Run(name, func(t *testing.T) {
+			f := newReleaseDeliveryFixture(t, true)
+			f.associate(t, f.request)
+			var before tracker.NativeIssue
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.itemPath, f.token, nil), &before)
+			f.verifier.status = func(input tracker.ReleasePickInput) (tracker.ReleaseDeliveryStatus, error) {
+				if input != f.request.ReleasePickInput {
+					t.Fatalf("delivery identity changed: %+v", input)
+				}
+				if name == "changed issue" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET revision = revision + 1 WHERE native_id = ?", f.delivery.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				status := tracker.ReleaseDeliveryStatus{ReleasePickInput: input, ReleaseHeadSHA: input.HeadSHA, Closed: name == "closed"}
+				if name == "delivered" {
+					status.DeliveredSHA = input.HeadSHA
+				}
+				return status, nil
+			}
+			if name == "transport unavailable" {
+				f.service.config.ReconcileBackend = nil
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodGet, f.itemPath+"/release-pick", f.token, nil)
+			switch name {
+			case "changed issue":
+				requireNativeStatus(t, response, http.StatusConflict)
+			case "transport unavailable":
+				requireNativeStatus(t, response, http.StatusInternalServerError)
+			default:
+				var status tracker.ReleaseDeliveryStatus
+				decodeHubResponse(t, response, &status)
+				if status.ReleasePickInput != f.request.ReleasePickInput || (status.DeliveredSHA != "") != (name == "delivered") || status.Closed != (name == "closed") {
+					t.Fatalf("status=%+v", status)
+				}
+				var after tracker.NativeIssue
+				decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.itemPath, f.token, nil), &after)
+				if after.Revision != before.Revision || after.State != before.State {
+					t.Fatalf("status read mutated issue: before=%+v after=%+v", before, after)
+				}
+			}
+		})
+	}
 }
 
 func (v *releaseVerifierFixture) Reconcile(context.Context, ReconcileRequest) (ReconcileSnapshot, error) {

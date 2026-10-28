@@ -445,3 +445,9 @@ func (e *sshSourceIterationExecution) SourceReview(ctx context.Context) (NativeC
 	err := e.peer.Call(ctx, "execution.SourceReview", &result)
 	return result, err
 }
+
+func (e *sshNativeExecution) ReconcileReleaseDelivery(ctx context.Context, attempt int64, generation uint64) (ReleaseDeliveryResult, error) {
+	var result ReleaseDeliveryResult
+	err := e.peer.Call(ctx, "execution.ReconcileReleaseDelivery", &result, attempt, generation)
+	return result, err
+}
