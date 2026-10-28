@@ -120,6 +120,7 @@ DROP INDEX collaboration_events_terminal_transition;
 DROP INDEX collaboration_events_page_unknown;
 DROP INDEX collaboration_events_transition_unknown;
 DROP INDEX daily_summary_rework_window;
+DROP INDEX native_progress_human_input;
 ALTER TABLE collaboration_events DROP COLUMN edited_body;
 ALTER TABLE collaboration_events DROP COLUMN edited_title;
 ALTER TABLE collaboration_events DROP COLUMN run_present;
@@ -187,6 +188,9 @@ ALTER TABLE collaboration_events DROP COLUMN page_projection_ready;
 		t.Fatal(err)
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE INDEX daily_summary_rework_window ON collaboration_events(organization_id,project_id,work_item_id,analytics_recorded_ns,to_state) WHERE type='workflow.transitioned'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE INDEX native_progress_human_input ON collaboration_events(organization_id, project_id, work_item_id, sequence DESC) WHERE actor_kind = 'human' AND type IN ('comment.created', 'comment.edited')`); err != nil {
 		t.Fatal(err)
 	}
 	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", f.token, nil), &after)
