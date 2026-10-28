@@ -166,6 +166,9 @@ func TestCacheProgramGoBuild(t *testing.T) {
 		cmd := exec.CommandContext(t.Context(), "go", "build", "-x", "-o", filepath.Join(module, "output.a"), ".")
 		cmd.Dir = module
 		variables := ManagedEnvironment(cache.WithContext(t.Context()))
+		if variables == nil {
+			t.Fatal("managed cache environment is missing")
+		}
 		variables["GOCOVERDIR"] = t.TempDir()
 		variables["GOENV"], variables["GOFLAGS"], variables["GOWORK"], variables["GOTOOLCHAIN"] = "off", "", "off", "local"
 		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: variables})
