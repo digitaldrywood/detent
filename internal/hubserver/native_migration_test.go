@@ -110,11 +110,11 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(t.Context(), `DROP VIEW native_transition_facts;
 DROP INDEX IF EXISTS collaboration_events_change_unknown;
 DROP INDEX IF EXISTS collaboration_events_change_conversion;
-DROP INDEX IF EXISTS collaboration_events_health_transition_unknown;
 DROP INDEX collaboration_events_comment_actor;
 DROP INDEX collaboration_events_terminal_transition;
 DROP INDEX collaboration_events_page_unknown;
 DROP INDEX collaboration_events_transition_unknown;
+DROP INDEX daily_summary_rework_window;
 ALTER TABLE collaboration_events DROP COLUMN edited_body;
 ALTER TABLE collaboration_events DROP COLUMN edited_title;
 ALTER TABLE collaboration_events DROP COLUMN run_present;
@@ -179,6 +179,9 @@ ALTER TABLE collaboration_events DROP COLUMN page_projection_ready;
 		t.Fatalf("failed rollback changed schema: %d %v", version, err)
 	}
 	if _, err := provider.Up(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE INDEX daily_summary_rework_window ON collaboration_events(organization_id,project_id,work_item_id,analytics_recorded_ns,to_state) WHERE type='workflow.transitioned'`); err != nil {
 		t.Fatal(err)
 	}
 	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", f.token, nil), &after)
