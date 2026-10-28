@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,6 +15,86 @@ import (
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestNativeWorkSearchCost(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	target := f.create(t, "Repository association hangs")
+	var words []string
+	for i := range 4000 {
+		words = append(words, fmt.Sprintf("symptom%04dx", i))
+	}
+	reversed := slices.Clone(words)
+	slices.Reverse(reversed)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", strings.Join(reversed, " "), target.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	var steps int64
+	pool := sql.OpenDB(duplicateCostConnector{timedConnector: timedConnector{driver: f.service.database.reader.Driver(), dsn: sqliteReaderDSN(f.service.database.path, f.service.config.BusyTimeout)}, steps: &steps})
+	pool.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	var bodies []string
+	var bodyArgs []any
+	for missing := range 16 {
+		bodies = append(bodies, "WHEN "+strconv.Itoa(missing)+" THEN ?")
+		partial := append(slices.Clone(words[:missing]), words[missing+1:16]...)
+		bodyArgs = append(bodyArgs, strings.Join(partial, " "))
+	}
+	count := 0
+	for _, size := range []int{300, 3000, 6000} {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
+			seedArgs := append([]any{count + 2, size + 1}, bodyArgs...)
+			seedArgs = append(seedArgs, target.WorkItemID)
+			if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE seed(n) AS (
+SELECT ? UNION ALL SELECT n+1 FROM seed WHERE n<?)
+INSERT INTO issues(native_id,organization_id,project_id,number,workflow_state_id,title,body,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,actor_kind,actor_principal_id)
+SELECT 'wi_search_cost_'||i.project_id||'_'||seed.n,i.organization_id,i.project_id,seed.n,i.workflow_state_id,
+'Unrelated history',CASE seed.n%16 `+strings.Join(bodies, " ")+` END,'','open','','','',i.created_at,i.updated_at,i.actor_kind,i.actor_principal_id
+FROM seed CROSS JOIN issues i WHERE i.native_id=?`, seedArgs...); err != nil {
+				t.Fatal(err)
+			}
+			count = size
+			query, args, err := nativeIssueSelection(scope, url.Values{"q": {strings.Join(words[:16], " ")}}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			steps = 0
+			rows, err := pool.QueryContext(t.Context(), query, args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var ids []tracker.NativeWorkItemID
+			for rows.Next() {
+				var id tracker.NativeWorkItemID
+				if err := rows.Scan(&id); err != nil {
+					t.Fatal(err)
+				}
+				ids = append(ids, id)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if err := rows.Close(); err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("issues=%d matches=%d VM steps=%d", size, len(ids), steps)
+			if !slices.Contains(ids, target.WorkItemID) || len(ids) > 200 {
+				t.Errorf("expected the older full match and bounded partial candidates, got %d issues, target present=%v", len(ids), slices.Contains(ids, target.WorkItemID))
+			}
+			if steps == 0 || steps > 1000000 {
+				t.Errorf("native work search used %d VM steps, budget 1000000", steps)
+			}
+		})
+	}
+}
 
 func TestNativeWorkSearch(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "ranked-search")
@@ -189,6 +270,27 @@ No safety-critical path is touched; onboarding repository binding and runner che
 	for _, transport := range []string{"stdio", "http"} {
 		protocols[transport] = hostedContextProtocol(t, f.service, ctx, transport)
 	}
+	var longTerms []string
+	for index := range 501 {
+		longTerms = append(longTerms, "w"+strconv.Itoa(index))
+	}
+	t.Run("long query", func(t *testing.T) {
+		page := list(url.Values{"q": {strings.Join(longTerms, " ") + " fixture"}, "label": {"search-fixture"}})
+		if len(page.Items) != 1 || page.Items[0].WorkItemID != target.WorkItemID {
+			t.Fatalf("long query lost matching issue: %+v", page.Items)
+		}
+	})
+	t.Run("long query with many filters", func(t *testing.T) {
+		params := url.Values{"q": {strings.Join(longTerms, " ") + " fixture"}}
+		for _, field := range []string{"state", "label", "assignee", "priority"} {
+			for index := range 32 {
+				params.Add(field, "unmatched-filter-"+strconv.Itoa(index))
+			}
+		}
+		if page := list(params); len(page.Items) != 0 {
+			t.Fatalf("unmatched filters returned issues: %+v", page.Items)
+		}
+	})
 	for _, test := range []struct {
 		name, query, matched string
 		want                 tracker.NativeWorkItemID
