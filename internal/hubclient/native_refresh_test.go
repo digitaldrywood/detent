@@ -111,6 +111,13 @@ func TestNativeRefreshOversizedAttemptDetails(t *testing.T) {
 				switch {
 				case strings.HasSuffix(r.URL.Path, "/attempts"):
 					reads++
+					if r.URL.Query().Get("limit") != "1" || r.URL.Query().Get("direction") != "newest" || r.URL.Query().Get("cursor") != "" {
+						t.Error("blocker attempts must read only the newest attempt")
+					}
+					if r.URL.Query().Get("cursor") != "" {
+						result = tracker.Page[tracker.NativeAttempt]{Items: []tracker.NativeAttempt{}}
+						break
+					}
 					if mode == "attempt read denied" {
 						w.WriteHeader(http.StatusForbidden)
 						return
@@ -126,16 +133,11 @@ func TestNativeRefreshOversizedAttemptDetails(t *testing.T) {
 						_, _ = w.Write(full)
 						return
 					}
-					from, to := 0, 2
-					cursor := "next"
-					if r.URL.Query().Get("cursor") == "next" {
-						from, to, cursor = 2, 4, ""
-					}
-					projected := append([]tracker.NativeAttempt(nil), attempts[from:to]...)
+					projected := append([]tracker.NativeAttempt(nil), attempts[len(attempts)-1:]...)
 					for index := range projected {
 						projected[index].Runtime = nil
 					}
-					result = tracker.Page[tracker.NativeAttempt]{Items: projected, NextCursor: cursor}
+					result = tracker.Page[tracker.NativeAttempt]{Items: projected, NextCursor: "older-attempts"}
 				case strings.HasSuffix(r.URL.Path, "/history"):
 					if r.URL.Query().Get("view") != "blockers" {
 						t.Error("blocker history must retain revision authority without runtime")
@@ -195,7 +197,7 @@ func TestNativeRefreshOversizedAttemptDetails(t *testing.T) {
 				t.Fatalf("refresh count=%d error=%v", len(issues), err)
 			}
 			issue := issues[0]
-			if reads != 2 || issue.State != "Blocked" || issue.Description != native.Body || issue.WorkpadSignal == nil || issue.WorkpadSignal.HumanAction != "Operator approval required" || issue.Metadata["hub_disposition_attempt_id"] != "attempt_3" || issue.Metadata["hub_disposition_return_state"] != "In Progress" {
+			if reads != 1 || issue.State != "Blocked" || issue.Description != native.Body || issue.WorkpadSignal == nil || issue.WorkpadSignal.HumanAction != "Operator approval required" || issue.Metadata["hub_disposition_attempt_id"] != "attempt_3" || issue.Metadata["hub_disposition_return_state"] != "In Progress" {
 				t.Fatalf("refresh lost current authority: reads=%d issue=%+v", reads, issue)
 			}
 			t.Logf("full attempt payload=%d bytes; refresh preserved operator hold", len(full))

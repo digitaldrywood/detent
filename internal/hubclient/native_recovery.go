@@ -27,6 +27,10 @@ func (c *NativeClient) blockerPage(ctx context.Context, id tracker.NativeWorkIte
 		view = "recorded_blockers"
 	}
 	params := url.Values{"view": {view}, "limit": {"100"}, "cursor": {cursor}}
+	if kind == "attempts" {
+		params.Set("limit", "1")
+		params.Set("direction", "newest")
+	}
 	return c.client.request(ctx, http.MethodGet, c.base()+path+"/"+kind+"?"+params.Encode(), nil, target)
 }
 

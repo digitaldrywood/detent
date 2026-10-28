@@ -220,20 +220,12 @@ func (c *NativeConnector) issueWithLanding(ctx context.Context, native tracker.N
 }
 
 func (c *NativeConnector) recordedBlockerContext(ctx context.Context, id tracker.NativeWorkItemID) ([]tracker.NativeAttempt, []tracker.CollaborationEvent, error) {
-	var attempts []tracker.NativeAttempt
-	var history []tracker.CollaborationEvent
-	for cursor := ""; ; {
-		var page tracker.Page[tracker.NativeAttempt]
-		err := c.client.blockerPage(ctx, id, "attempts", cursor, &page)
-		if err != nil {
-			return nil, nil, err
-		}
-		attempts = append(attempts, page.Items...)
-		if page.NextCursor == "" {
-			break
-		}
-		cursor = page.NextCursor
+	var page tracker.Page[tracker.NativeAttempt]
+	if err := c.client.blockerPage(ctx, id, "attempts", "", &page); err != nil {
+		return nil, nil, err
 	}
+	attempts := page.Items
+	var history []tracker.CollaborationEvent
 	for cursor := ""; ; {
 		var page tracker.Page[tracker.CollaborationEvent]
 		err := c.client.blockerPage(ctx, id, "history", cursor, &page)
