@@ -166,6 +166,13 @@ func TestHubCatalogProviderCalls(t *testing.T) {
 									t.Fatalf("project tool %s visibility=%v, want %v", name, visible, writable)
 								}
 							}
+							for _, name := range []string{"list_threads", "get_thread", "create_thread", "post_to_thread", "resolve_thread"} {
+								visible := slices.ContainsFunc(definitions, func(d operatortool.Definition) bool { return d.Name == name })
+								allowed := name == "list_threads" || name == "get_thread" || test.role != "viewer" && test.scope != apikey.ScopeRead
+								if visible != allowed {
+									t.Fatalf("thread tool %s visibility=%v, want %v", name, visible, allowed)
+								}
+							}
 							if test.role != "owner" {
 								for _, name := range []string{operatortool.ApproveChangeReviewPolicy, operatortool.InvitationSend, "create_hosted_project"} {
 									if slices.ContainsFunc(definitions, func(d operatortool.Definition) bool { return d.Name == name }) {
