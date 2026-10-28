@@ -1631,6 +1631,16 @@ func (r *Runner) recoverRunChangeSource(ctx context.Context, req RunRequest, run
 }
 
 func restoreRunWorkspaceCheckpoint(req RunRequest, runWorkspace workspace.Backend, issue *workspace.Issue, nativeLanding bool) {
+	if req.Execution != nil && !nativeLanding && issue.Source != nil {
+		previous := req.Execution.Recovery().SourceAttempt()
+		if previous != nil && previous.Checkpoint != nil && previous.Checkpoint.WorktreeState == "clean" && !previous.Checkpoint.UncertainForgeEffect() && previous.Checkpoint.HeadSHA != issue.Source.Version.HeadSHA && previous.Finalization != nil {
+			f, v := previous.Finalization, issue.Source.Version
+			if ref := f.SourceVersion; ref != nil && ref.ChangeID == v.ChangeID && ref.VersionID == v.ID && ref.HeadSHA == v.HeadSHA && f.ChangeID == ref.ChangeID && f.VersionID == ref.VersionID && f.HeadSHA == ref.HeadSHA {
+				issue.Checkpoint, issue.FreshCheckout = nil, true
+				return
+			}
+		}
+	}
 	if req.Execution != nil && !nativeLanding && !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), *issue) {
 		issue.Checkpoint = nativeRestorableCheckpoint(req.Execution.Recovery(), issue.Source)
 		if previous := req.Execution.Recovery().SourceAttempt(); previous != nil && cleanLocalCheckpoint(previous.Checkpoint) {
@@ -1746,7 +1756,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	restoreRunWorkspaceCheckpoint(req, runWorkspace, &workspaceIssue, nativeLanding)
 	var landingTarget NativeLandingTarget
 	if nativeLanding {
-		if runtime, ok := req.Execution.(LandingRuntimeExecution); ok {
+		initialTarget, initialErr := landing.LandingTarget(ctx)
+		deferLandingStart := initialErr == nil && initialTarget.MergeResolution && !initialTarget.GitHubPullRequest
+		if runtime, ok := req.Execution.(LandingRuntimeExecution); ok && !deferLandingStart {
 			if err := runtime.StartLanding(ctx, req.WorkAttemptID, req.Generation); err != nil {
 				var refusal *workspace.LandRefusal
 				if errors.As(err, &refusal) {
