@@ -30,6 +30,14 @@ func (s *Service) convertConversationPayload(ctx context.Context, scope nativeSc
 	if err != nil {
 		return err
 	}
+	if family.name == "tool_revisions" {
+		var messageID string
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT message_id FROM conversation_tool_revisions WHERE rowid=?", row).Scan(&messageID); err != nil {
+			return err
+		}
+		_, err := s.convertConversationToolPayload(ctx, scope, family, id, messageID, stamp, now)
+		return err
+	}
 	var data []byte
 	var original, oldContent, actor string
 	var message conversationMessageRecord
@@ -39,7 +47,7 @@ func (s *Service) convertConversationPayload(ctx context.Context, scope nativeSc
 		if err != nil {
 			return err
 		}
-		converted, err := s.convertConversationToolPayload(ctx, scope, id, message.ID, now)
+		converted, err := s.convertConversationToolPayload(ctx, scope, family, id, message.ID, stamp, now)
 		if err != nil || converted {
 			return err
 		}
@@ -124,10 +132,10 @@ func (s *Service) convertConversationPayload(ctx context.Context, scope nativeSc
 	return s.database.commit(ctx, tx)
 }
 
-func (s *Service) convertConversationToolPayload(ctx context.Context, scope nativeScope, id, messageID string, now time.Time) (bool, error) {
-	var revision int64
+func (s *Service) convertConversationToolPayload(ctx context.Context, scope nativeScope, family storageConversionFamily, id, messageID, stamp string, now time.Time) (bool, error) {
+	var row, revision int64
 	var text, tool, item, status string
-	err := s.database.reader.QueryRowContext(ctx, `SELECT revision,text,tool,item_id,status FROM conversation_tool_revisions WHERE conversation_id=? AND message_id=? AND content_attachment_id='' ORDER BY revision LIMIT 1`, id, messageID).Scan(&revision, &text, &tool, &item, &status)
+	err := s.database.reader.QueryRowContext(ctx, `SELECT rowid,revision,text,tool,item_id,status FROM conversation_tool_revisions WHERE conversation_id=? AND message_id=? AND content_attachment_id='' ORDER BY revision LIMIT 1`, id, messageID).Scan(&row, &revision, &text, &tool, &item, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -147,6 +155,9 @@ func (s *Service) convertConversationToolPayload(ctx context.Context, scope nati
 	if err != nil {
 		return false, err
 	}
+	if err := ref.Validate(string(scope.organization)); err != nil {
+		return false, err
+	}
 	verified, err := store.contents.ReadContent(ctx, string(scope.organization), ref)
 	if err != nil {
 		return false, err
@@ -163,10 +174,27 @@ func (s *Service) convertConversationToolPayload(ctx context.Context, scope nati
 		return false, err
 	}
 	defer tx.Rollback()
+	current, safe, err := storageConversionStamp(ctx, tx, scope, family, id, now)
+	if err != nil || !safe || current != stamp {
+		return false, err
+	}
 	if err := store.recordContentArchive(ctx, tx, string(scope.organization), string(scope.project), uploader, ref, now); err != nil {
 		return false, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE conversation_tool_revisions SET text='',content_attachment_id=? WHERE conversation_id=? AND message_id=? AND revision=? AND text=? AND content_attachment_id=''`, contentArchiveID(string(scope.organization), ref), id, messageID, revision, text); err != nil {
+	result, err := tx.ExecContext(ctx, `UPDATE conversation_tool_revisions SET text='',content_attachment_id=?,conversion_state=2 WHERE conversation_id=? AND message_id=? AND revision=? AND text=? AND tool=? AND item_id=? AND status=? AND content_attachment_id=''`, contentArchiveID(string(scope.organization), ref), id, messageID, revision, text, tool, item, status)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil || changed == 0 {
+		return false, err
+	}
+	if family.name == "tool_revisions" {
+		if _, err := tx.ExecContext(ctx, `UPDATE storage_conversion_progress SET cursor_rowid=?,converted_rows=converted_rows+1,reclaimed_bytes=reclaimed_bytes+?,complete=NOT EXISTS(SELECT 1 FROM conversation_tool_revisions WHERE conversation_id=? AND content_attachment_id=''),updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=?`, row, len(text), id, formatHubTime(now), scope.organization, scope.project, family.name, id); err != nil {
+			return false, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE attempt_diff_body_migration SET vacuum_pending=1 WHERE singleton=1"); err != nil {
 		return false, err
 	}
 	return true, s.database.commit(ctx, tx)
