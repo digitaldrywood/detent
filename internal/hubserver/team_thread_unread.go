@@ -84,10 +84,6 @@ func (s *Service) requestTeamUnread(ctx context.Context, scope nativeScope, proj
 	if err != nil {
 		return result, err
 	}
-	scopeHash, err := nativeCommandHash(projects)
-	if err != nil {
-		return result, err
-	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return result, fmt.Errorf("begin unread request: %w", err)
@@ -96,7 +92,21 @@ func (s *Service) requestTeamUnread(ctx context.Context, scope nativeScope, proj
 	if err := s.recheckHostedAuthority(ctx, tx, &scope, apikey.ScopeRead); err != nil {
 		return result, err
 	}
-	created, err := tx.ExecContext(ctx, "INSERT INTO team_thread_unread_summaries(id,organization_id,principal_id,scope_hash,turn) VALUES(?,?,?,?,(SELECT COALESCE(MAX(turn),0)+1 FROM team_thread_unread_summaries)) ON CONFLICT(organization_id,principal_id) DO NOTHING", id, scope.organization, principal, scopeHash)
+	reporter := ""
+	if scope.credential.HostedRole == "reporter" {
+		reporter = scope.actor().PrincipalID
+		if reporter == "" {
+			return result, operatortool.ErrAccessDenied
+		}
+	}
+	scopeHash, err := nativeCommandHash(struct {
+		Projects []string
+		Reporter string
+	}{projects, reporter})
+	if err != nil {
+		return result, err
+	}
+	created, err := tx.ExecContext(ctx, "INSERT INTO team_thread_unread_summaries(id,organization_id,principal_id,scope_hash,reporter_principal,turn) VALUES(?,?,?,?,?,(SELECT COALESCE(MAX(turn),0)+1 FROM team_thread_unread_summaries)) ON CONFLICT(organization_id,principal_id) DO NOTHING", id, scope.organization, principal, scopeHash, reporter)
 	if err != nil {
 		return result, fmt.Errorf("request unread summary: %w", err)
 	}
@@ -104,7 +114,7 @@ func (s *Service) requestTeamUnread(ctx context.Context, scope nativeScope, proj
 	if err != nil {
 		return result, fmt.Errorf("read unread request result: %w", err)
 	}
-	changed, err := tx.ExecContext(ctx, "UPDATE team_thread_unread_summaries SET scope_hash=?,requested_revision=requested_revision+1,scan_revision=0,after_thread='',through_thread='',partial_count=0,unread_count=NULL WHERE id=? AND scope_hash<>?", scopeHash, id, scopeHash)
+	changed, err := tx.ExecContext(ctx, "UPDATE team_thread_unread_summaries SET scope_hash=?,reporter_principal=?,requested_revision=requested_revision+1,scan_revision=0,after_thread='',through_thread='',partial_count=0,unread_count=NULL WHERE id=? AND scope_hash<>?", scopeHash, reporter, id, scopeHash)
 	if err != nil {
 		return result, fmt.Errorf("replace unread scope: %w", err)
 	}
@@ -157,9 +167,9 @@ func (s *Service) maintainTeamUnread(ctx context.Context) error {
 }
 
 func (d *database) advanceTeamUnread(ctx context.Context) (bool, int, error) {
-	var id, organization, principal, after, through string
+	var id, organization, principal, reporter, after, through string
 	var requested, scan, partial int64
-	err := d.reader.QueryRowContext(ctx, `SELECT id,organization_id,principal_id,requested_revision,scan_revision,after_thread,through_thread,partial_count FROM team_thread_unread_summaries WHERE requested_revision>completed_revision ORDER BY turn,id LIMIT 1`).Scan(&id, &organization, &principal, &requested, &scan, &after, &through, &partial)
+	err := d.reader.QueryRowContext(ctx, `SELECT id,organization_id,principal_id,reporter_principal,requested_revision,scan_revision,after_thread,through_thread,partial_count FROM team_thread_unread_summaries WHERE requested_revision>completed_revision ORDER BY turn,id LIMIT 1`).Scan(&id, &organization, &principal, &reporter, &requested, &scan, &after, &through, &partial)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, 0, nil
 	}
@@ -173,19 +183,19 @@ func (d *database) advanceTeamUnread(ctx context.Context) (bool, int, error) {
 			return false, 0, fmt.Errorf("bound unread scan: %w", err)
 		}
 	}
-	rows, err := d.reader.QueryContext(ctx, `SELECT t.id,CASE WHEN t.scope='general' OR EXISTS(SELECT 1 FROM team_thread_unread_projects p WHERE p.summary_id=? AND p.project_id=t.project_id) THEN t.post_count>COALESCE(r.last_seq,0) ELSE 0 END FROM (SELECT id,scope,project_id,post_count FROM team_threads WHERE organization_id=? AND id>? AND id<=? ORDER BY id LIMIT ?) t LEFT JOIN team_thread_reads r ON r.thread_id=t.id AND r.principal_id=? ORDER BY t.id`, id, organization, after, through, teamUnreadPageSize+1, principal)
+	rows, err := d.reader.QueryContext(ctx, `SELECT t.id,CASE WHEN t.scope='general' OR EXISTS(SELECT 1 FROM team_thread_unread_projects p WHERE p.summary_id=? AND p.project_id=t.project_id) THEN t.post_count>COALESCE(r.last_seq,0) ELSE 0 END,COALESCE(t.project_id,''),COALESCE(t.work_item_id,'') FROM (SELECT id,scope,project_id,post_count,work_item_id FROM team_threads WHERE organization_id=? AND id>? AND id<=? ORDER BY id LIMIT ?) t LEFT JOIN team_thread_reads r ON r.thread_id=t.id AND r.principal_id=? ORDER BY t.id`, id, organization, after, through, teamUnreadPageSize+1, principal)
 	if err != nil {
 		return false, 0, fmt.Errorf("scan unread page: %w", err)
 	}
 	defer rows.Close()
 	type row struct {
-		id     string
-		unread bool
+		id, project, issue string
+		unread             bool
 	}
 	page := make([]row, 0, teamUnreadPageSize+1)
 	for rows.Next() {
 		var item row
-		if err := rows.Scan(&item.id, &item.unread); err != nil {
+		if err := rows.Scan(&item.id, &item.unread, &item.project, &item.issue); err != nil {
 			return false, 0, fmt.Errorf("decode unread page: %w", err)
 		}
 		page = append(page, item)
@@ -200,6 +210,15 @@ func (d *database) advanceTeamUnread(ctx context.Context) (bool, int, error) {
 	for _, item := range page {
 		after = item.id
 		if item.unread {
+			if reporter != "" && item.issue != "" {
+				scope := nativeScope{organization: tracker.OrganizationID(organization), project: tracker.ProjectID(item.project), credential: apiCredential{HostedRole: "reporter"}, sourceActor: &tracker.Actor{PrincipalID: reporter}}
+				if err := requireReporterItem(ctx, d.reader, scope, item.issue); err != nil {
+					if errors.Is(err, sql.ErrNoRows) || isNativeNotFound(err) {
+						continue
+					}
+					return false, 0, fmt.Errorf("authorize unread issue: %w", err)
+				}
+			}
 			partial++
 		}
 	}
