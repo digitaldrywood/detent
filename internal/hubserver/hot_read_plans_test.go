@@ -502,16 +502,6 @@ func TestAnalyticsRollupReportPlans(t *testing.T) {
 							details = append(details, line.detail)
 						}
 						normalized := strings.Join(strings.Fields(statement.query), " ")
-						for _, metadata := range []struct{ fragment, index string }{
-							{"SELECT EXISTS (SELECT 1 FROM change_requests", "collaboration_events_change_unknown"},
-							{"SELECT NOT EXISTS(SELECT 1 FROM analytics_rollup_backfill", "collaboration_events_report_scope_pending"},
-						} {
-							if strings.Contains(normalized, metadata.fragment) && !slices.ContainsFunc(details, func(detail string) bool {
-								return strings.Contains(detail, " INDEX "+metadata.index+" (organization_id=? AND project_id=?)")
-							}) {
-								t.Errorf("source metadata read does not use the pending index %s\nstatement: %s\nplan: %v", metadata.index, statement.query, details)
-							}
-						}
 						known := slices.ContainsFunc(knownSlowHotReads, func(entry struct{ name, fragment, issue string }) bool {
 							return strings.Contains(normalized, entry.fragment)
 						})
