@@ -17,10 +17,10 @@ export function readDiagnostics(api: AccountApi, range: DiagnosticsWindow) {
 export function readDiagnosticsFleet(api: AccountApi) {
   return async () => {
     try {
-      return (await api.fleet()).runners;
+      return { runners: (await api.fleet()).runners };
     } catch (error) {
       console.error("Diagnostics fleet read failed", accountErrorDiagnostic(error));
-      return null;
+      return { runners: null };
     }
   };
 }

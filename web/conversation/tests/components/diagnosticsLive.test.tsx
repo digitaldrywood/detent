@@ -463,3 +463,22 @@ it("renders runner capacity while the diagnostics report is pending", async () =
   await act(async () => release(decodeDiagnostics(report)));
   expect(screen.queryByLabelText("Loading diagnostics")).toBeNull();
 });
+
+it.each(["success", "failure"] as const)("keeps pending fleet capacity out of the error state before %s", async (outcome) => {
+  let finish!: () => void;
+  mocks.api.fleet.mockImplementation(() => new Promise((resolve, reject) => {
+    finish = () => outcome === "success" ? resolve({ runners }) : reject(new Error("offline"));
+  }));
+  pendingBarriers.push(() => finish());
+  render(<DiagnosticsRoute />, { wrapper: ({ children }) => <HealthFindingsProvider projects={mocks.bootstrap.projects}>{children}</HealthFindingsProvider> });
+  await screen.findByRole("region", { name: "Capacity and throughput history" });
+  expect(screen.queryByLabelText("Loading diagnostics")).toBeNull();
+  expect(screen.queryByText("Runner capacity is unavailable. Refresh to try again.")).toBeNull();
+  await act(async () => finish());
+  if (outcome === "success") {
+    expect(within(await screen.findByRole("region", { name: "Capacity right now" })).getByRole("link", { name: "Example desktop" })).toBeTruthy();
+    expect(screen.queryByText("Runner capacity is unavailable. Refresh to try again.")).toBeNull();
+  } else {
+    expect(await screen.findByText("Runner capacity is unavailable. Refresh to try again.")).toBeTruthy();
+  }
+});

@@ -105,10 +105,11 @@ export function DiagnosticsRoute(): React.ReactElement {
 
   const state = {
     report: reportQuery.data ?? null,
-    runners: fleetQuery.data ?? null,
+    runners: fleetQuery.data?.runners ?? null,
     appUpdates: updatesQuery.data ?? null,
     ...findingsState,
     pending: reportQuery.pending,
+    fleetPending: fleetQuery.pending,
     error: reportQuery.error !== null && reportQuery.data === undefined ? "Diagnostics are temporarily unavailable." : null,
   };
   const projectFor = (finding: DiagnosticFinding) =>
@@ -176,6 +177,7 @@ export function DiagnosticsView({
   findings: findingRows = report?.findings ?? null,
   detectorTick = report?.detector_tick ?? null,
   pending,
+  fleetPending = false,
   error,
   scope,
   range,
@@ -195,6 +197,7 @@ export function DiagnosticsView({
   readonly findings?: readonly DiagnosticFinding[] | null;
   readonly detectorTick?: string | null;
   readonly pending: boolean;
+  readonly fleetPending?: boolean;
   readonly error: string | null;
   readonly scope: string;
   readonly range: Window;
@@ -254,7 +257,7 @@ export function DiagnosticsView({
       </WorkspacePageHeader>
       <ScrollArea className="min-h-0 flex-1">
         <WorkspacePageContainer width="wide">
-          {runners !== null ? <CapacityPanel runners={runners} appUpdates={appUpdates} /> : !pending ? <Section title="Capacity right now"><Unavailable>Runner capacity is unavailable. Refresh to try again.</Unavailable></Section> : null}
+          {runners !== null ? <CapacityPanel runners={runners} appUpdates={appUpdates} /> : !fleetPending ? <Section title="Capacity right now"><Unavailable>Runner capacity is unavailable. Refresh to try again.</Unavailable></Section> : null}
           {pending ? (
             <div
               aria-label="Loading diagnostics"
