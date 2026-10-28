@@ -743,16 +743,6 @@ func nativeIssueSelection(scope nativeScope, params url.Values, includeWorkspace
 WHERE i.organization_id = ? AND i.project_id = ? `
 	args := []any{scope.organization, scope.project}
 	searchQuery := strings.TrimSpace(params.Get("q"))
-	if searchQuery != "" {
-		expressions := nativeSearchExpressions(searchQuery)
-		terms, err := json.Marshal(expressions)
-		if err != nil {
-			return "", nil, err
-		}
-		number, project := nativeSearchNumber(searchQuery)
-		query = strings.Replace(query, "WHERE i.organization_id", nativeSearchJoin+nativeNumberSearchJoin+"WHERE i.organization_id", 1)
-		args = append([]any{strings.Join(expressions, " OR "), scope.organization, scope.project, string(terms), number, project, -float64(len(expressions)) - 1}, args...)
-	}
 	var dateClauses strings.Builder
 	for _, filter := range []struct{ name, column, operator string }{
 		{"created_after", "native_created_at", ">="}, {"created_before", "native_created_at", "<"}, {"updated_after", "native_updated_at", ">="},
@@ -829,6 +819,14 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 		}
 	}
 	query += filterClauses.String()
+	if searchQuery != "" {
+		expressions := nativeSearchExpressions(searchQuery)
+		join, searchArgs := nativeSearchJoin(query, args, expressions)
+		number, project := nativeSearchNumber(searchQuery)
+		query = strings.Replace(query, "WHERE i.organization_id", join+nativeNumberSearchJoin+"WHERE i.organization_id", 1)
+		searchArgs = append(searchArgs, number, project, -float64(len(expressions))-1)
+		args = append(searchArgs, args...)
+	}
 	workIncluded := slices.ContainsFunc(strings.Split(params.Get("include"), ","), func(name string) bool { return strings.TrimSpace(name) == "work" })
 	if value := strings.TrimSpace(params.Get("q")); value != "" {
 		text := "i.title"
