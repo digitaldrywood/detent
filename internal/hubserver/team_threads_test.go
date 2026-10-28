@@ -659,9 +659,10 @@ func TestTeamThreadAuthorizationRoutes(t *testing.T) {
 				var summary teamUnreadSummary
 				decodeHubResponse(t, r, &summary)
 				want := int64(4)
-				if role == "reporter" {
+				switch role {
+				case "reporter":
 					want = 3
-				} else if role == "ungranted" {
+				case "ungranted":
 					want = 1
 				}
 				if summary.Pending || summary.Count == nil || *summary.Count != want {
