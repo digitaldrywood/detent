@@ -1,0 +1,1522 @@
+package orchestrator
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/workpad"
+)
+
+func TestEvaluateAutoPromote(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	oldActivity := now.Add(-20 * time.Minute)
+	recentActivity := now.Add(-30 * time.Second)
+	finding := AutoPromoteFinding{
+		Attribution: "unknown",
+		Body:        "![P1 Badge](https://example.test/p1.svg) The migration drops rows.",
+		URL:         "https://github.test/comment/p1",
+		Path:        "db/migrations/example.sql",
+		Line:        7,
+	}
+
+	enabled := AutoPromoteConfig{
+		Enabled:       true,
+		QuietDuration: 10 * time.Minute,
+		OptoutLabel:   "requires-human-review",
+	}
+	ready := AutoPromoteSummary{
+		PullRequestURL: "https://github.test/pull/42",
+		CIStatus:       "green",
+		ReviewState:    "COMMENTED",
+		LastActivityAt: &oldActivity,
+	}
+
+	tests := []struct {
+		name  string
+		issue connector.Issue
+		cfg   AutoPromoteConfig
+		input AutoPromoteSummary
+		want  AutoPromoteDecision
+	}{
+		{
+			name:  "disabled",
+			issue: autoPromoteTestIssue("issue-disabled", nil),
+			cfg:   AutoPromoteConfig{Enabled: false},
+			input: ready,
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionSkip,
+				Reason: AutoPromoteReasonDisabled,
+			},
+		},
+		{
+			name:  "opt-out label awaits human review",
+			issue: autoPromoteTestIssue("issue-optout", []string{"Requires-Human-Review", "docs"}),
+			cfg: AutoPromoteConfig{
+				Enabled:            true,
+				QuietDuration:      10 * time.Minute,
+				OptoutLabel:        "requires-human-review",
+				AllowedIssueLabels: []string{"docs"},
+			},
+			input: ready,
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionAwaitReview,
+				Reason: AutoPromoteReasonOptoutLabel,
+			},
+		},
+		{
+			name:  "allowed label miss awaits human review",
+			issue: autoPromoteTestIssue("issue-label-miss", []string{"enhancement"}),
+			cfg: AutoPromoteConfig{
+				Enabled:            true,
+				QuietDuration:      10 * time.Minute,
+				OptoutLabel:        "requires-human-review",
+				AllowedIssueLabels: []string{"docs"},
+			},
+			input: ready,
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionAwaitReview,
+				Reason: AutoPromoteReasonLabelNotAllowed,
+			},
+		},
+		{
+			name:  "missing pull request skips",
+			issue: autoPromoteTestIssue("issue-missing-pr", nil),
+			cfg:   enabled,
+			input: AutoPromoteSummary{},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionSkip,
+				Reason: AutoPromoteReasonMissingPullRequest,
+			},
+		},
+		{
+			name: "draft pull request skips",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-draft-pr", nil)
+				issue.PullRequest = &connector.PullRequest{
+					State: "OPEN",
+					Draft: true,
+				}
+				return issue
+			}(),
+			cfg:   enabled,
+			input: ready,
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionSkip,
+				Reason: AutoPromoteReasonDraftPullRequest,
+			},
+		},
+		{
+			name:  "red ci reworks by default",
+			issue: autoPromoteTestIssue("issue-red-ci", nil),
+			cfg:   enabled,
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "red",
+			},
+			want: AutoPromoteDecision{
+				Action:   AutoPromoteActionRework,
+				Reason:   AutoPromoteReasonCINotGreen,
+				CIStatus: "red",
+			},
+		},
+		{
+			name:  "unresolved review threads rework before other gates",
+			issue: autoPromoteTestIssue("issue-unresolved-review-threads", nil),
+			cfg:   enabled,
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				UnresolvedReviewThreads: []connector.PullRequestReviewThread{{
+					Path: "internal/orchestrator/autopromote.go",
+					Line: 181,
+				}},
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionRework,
+				Reason: AutoPromoteReasonUnresolvedReviewThreads,
+			},
+		},
+		{
+			name:  "red ci skips when configured",
+			issue: autoPromoteTestIssue("issue-red-ci-skip", nil),
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				OptoutLabel:   "requires-human-review",
+				Gate:          gate.Config{Kind: gate.KindCommand, CIFailureAction: gate.CIFailureActionSkip},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "red",
+			},
+			want: AutoPromoteDecision{
+				Action:   AutoPromoteActionSkip,
+				Reason:   AutoPromoteReasonCINotGreen,
+				CIStatus: "red",
+			},
+		},
+		{
+			name:  "missing automated review awaits review",
+			issue: autoPromoteTestIssue("issue-missing-review", nil),
+			cfg:   enabled,
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionAwaitReview,
+				Reason: AutoPromoteReasonCodexReviewMissing,
+			},
+		},
+		{
+			name:  "automated review disabled promotes after green ci and quiet period",
+			issue: autoPromoteTestIssue("issue-no-review-required", nil),
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				OptoutLabel:   "requires-human-review",
+				Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
+			name: "workpad blocker awaits review",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-workpad-blocker", nil)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n### Blockers\n- Gate A/B/C owner listening approval is still required before approved audio assets are copied and committed.",
+				}}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				OptoutLabel:   "requires-human-review",
+				Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionAwaitReview,
+				Reason: AutoPromoteReasonWorkpadBlocker,
+			},
+		},
+		{
+			name: "workpad no blocker promotes",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-workpad-no-blocker", nil)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n### Blockers\n- None currently.\n\n### Validation\n- make check passed.",
+				}}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				OptoutLabel:   "requires-human-review",
+				Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
+			name: "workpad none first clause promotes",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-workpad-none-first-clause", nil)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n### Blockers\n- None. Dependency #1013 is closed with detent:done; branch rebased onto current origin/main before implementation.\n\n### Validation\n- make check passed.",
+				}}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				OptoutLabel:   "requires-human-review",
+				Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
+			name: "workpad removed blocked by prose promotes",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-workpad-removed-blocked-by", nil)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n### Blockers\n- The previous dependency blocker regressions now pass locally on the rebased head,\n  so stale `Blocked by: #1462` / `Blocked by: #1463` lines were removed from the issue body.\n\n### Validation\n- make check passed.",
+				}}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				OptoutLabel:   "requires-human-review",
+				Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
+			name: "workpad resolved dependency prose promotes",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-workpad-resolved-dependency-prose", nil)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n### Blockers\n- Dependency blocker #1462 merged via PR #1482 and issue #1462 is closed/Done; #1463 was already closed. Removed the stale `Blocked by: #1462` line from #1476.\n\n### Validation\n- make check passed.",
+				}}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				OptoutLabel:   "requires-human-review",
+				Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
+			name: "workpad closed blocked by line promotes",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-workpad-closed-blocked-by", nil)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n### Blockers\n- Blocked by: #1462\n\n### Validation\n- make check passed.",
+				}}
+				issue.BlockedBy = []connector.BlockedRef{{
+					Identifier: "digitaldrywood/detent#1462",
+					State:      "Done",
+				}}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled:        true,
+				QuietDuration:  10 * time.Minute,
+				OptoutLabel:    "requires-human-review",
+				TerminalStates: []string{"Done", "Cancelled"},
+				Gate:           gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action:                  AutoPromoteActionPromote,
+				Reason:                  AutoPromoteReasonReady,
+				ResolvedWorkpadBlockers: []string{"digitaldrywood/detent#1462"},
+			},
+		},
+		{
+			name: "workpad open blocked by line awaits review",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-workpad-open-blocked-by", nil)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n### Blockers\n- Blocked by: #1462\n\n### Validation\n- make check passed.",
+				}}
+				issue.BlockedBy = []connector.BlockedRef{{
+					Identifier: "digitaldrywood/detent#1462",
+					State:      "In Progress",
+				}}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled:        true,
+				QuietDuration:  10 * time.Minute,
+				OptoutLabel:    "requires-human-review",
+				TerminalStates: []string{"Done", "Cancelled"},
+				Gate:           gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionAwaitReview,
+				Reason: AutoPromoteReasonWorkpadBlocker,
+			},
+		},
+		{
+			name: "workpad blocker phrase awaits review",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-workpad-blocker-phrase", nil)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Codex Workpad\n\n### Notes\n- Owner listening approval is still required before approved audio assets are copied and committed.",
+				}}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				OptoutLabel:   "requires-human-review",
+				Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionAwaitReview,
+				Reason: AutoPromoteReasonWorkpadBlocker,
+			},
+		},
+		{
+			name:  "P1 findings move to rework",
+			issue: autoPromoteTestIssue("issue-p1", nil),
+			cfg:   enabled,
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "APPROVED",
+				P1Findings:     []AutoPromoteFinding{finding},
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action:   AutoPromoteActionRework,
+				Reason:   AutoPromoteReasonP1Findings,
+				Findings: []AutoPromoteFinding{finding},
+			},
+		},
+		{
+			name:  "GitHub changes requested review counts as submitted",
+			issue: autoPromoteTestIssue("issue-github-changes-requested", nil),
+			cfg:   enabled,
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "CHANGES_REQUESTED",
+				P1Findings:     []AutoPromoteFinding{finding},
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action:   AutoPromoteActionRework,
+				Reason:   AutoPromoteReasonP1Findings,
+				Findings: []AutoPromoteFinding{finding},
+			},
+		},
+		{
+			name:  "recent Codex activity awaits quiet window",
+			issue: autoPromoteTestIssue("issue-recent", nil),
+			cfg:   enabled,
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "REQUESTED_CHANGES",
+				LastActivityAt: &recentActivity,
+			},
+			want: AutoPromoteDecision{
+				Action:         AutoPromoteActionAwaitReview,
+				Reason:         AutoPromoteReasonCodexReviewNotQuiet,
+				QuietRemaining: 570 * time.Second,
+			},
+		},
+		{
+			name:  "missing last activity awaits full quiet window",
+			issue: autoPromoteTestIssue("issue-missing-activity", nil),
+			cfg:   enabled,
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "COMMENTED",
+			},
+			want: AutoPromoteDecision{
+				Action:         AutoPromoteActionAwaitReview,
+				Reason:         AutoPromoteReasonCodexReviewNotQuiet,
+				QuietRemaining: 10 * time.Minute,
+			},
+		},
+		{
+			name:  "quiet validated pull request promotes",
+			issue: autoPromoteTestIssue("issue-promote", nil),
+			cfg:   enabled,
+			input: ready,
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
+			name:  "zero quiet duration promotes without activity timestamp",
+			issue: autoPromoteTestIssue("issue-zero-quiet", nil),
+			cfg: AutoPromoteConfig{
+				Enabled:     true,
+				OptoutLabel: "requires-human-review",
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "COMMENTED",
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
+			name:  "human review gate waits for approval label",
+			issue: autoPromoteTestIssue("issue-human-wait", []string{"strategy"}),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate:    gate.Config{Kind: gate.KindHumanReview, ApprovalLabel: "approved-by-human"},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "red",
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionAwaitReview,
+				Reason: AutoPromoteReasonHumanApprovalMissing,
+			},
+		},
+		{
+			name:  "human review gate promotes with approval label without ci",
+			issue: autoPromoteTestIssue("issue-human-ready", []string{"Approved-By-Human"}),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate:    gate.Config{Kind: gate.KindHumanReview, ApprovalLabel: "approved-by-human"},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "red",
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
+			name: "artifact gate promotes from summary without pull request",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-artifact-summary", nil)
+				issue.PullRequest = nil
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate:    gate.Config{Kind: gate.KindArtifact},
+			},
+			input: AutoPromoteSummary{
+				ArtifactStatus: "valid",
+				MergeableState: "dirty",
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
+			name: "artifact gate promotes from configured work item field",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-artifact-field", nil)
+				issue.Fields = map[string]string{"render_status": "Ready"}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate: gate.Config{
+					Kind: gate.KindArtifact,
+					Artifact: gate.ArtifactConfig{
+						StatusField:    "render_status",
+						PassStatuses:   []string{"ready"},
+						WaitStatuses:   []string{"queued"},
+						ReworkStatuses: []string{"recut"},
+					},
+				},
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
+			name: "artifact gate routes configured rework field over stale summary",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-artifact-configured-rework", nil)
+				issue.Fields = map[string]string{"render_status": "recut"}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate: gate.Config{
+					Kind: gate.KindArtifact,
+					Artifact: gate.ArtifactConfig{
+						StatusField:    "render_status",
+						PassStatuses:   []string{"approved"},
+						WaitStatuses:   []string{"pending_review"},
+						ReworkStatuses: []string{"recut"},
+					},
+				},
+			},
+			input: AutoPromoteSummary{ArtifactStatus: "pending_review"},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionRework,
+				Reason: AutoPromoteReasonArtifactStatusRework,
+			},
+		},
+		{
+			name: "artifact gate promotes configured pass field over stale summary",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-artifact-configured-pass", nil)
+				issue.Fields = map[string]string{"render_status": "approved"}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate: gate.Config{
+					Kind: gate.KindArtifact,
+					Artifact: gate.ArtifactConfig{
+						StatusField:    "render_status",
+						PassStatuses:   []string{"approved"},
+						WaitStatuses:   []string{"pending_review"},
+						ReworkStatuses: []string{"recut"},
+					},
+				},
+			},
+			input: AutoPromoteSummary{ArtifactStatus: "pending_review"},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
+			name: "artifact gate ignores stale summary when configured field is missing",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-artifact-configured-missing", nil)
+				issue.Deliverable = &connector.Deliverable{ValidationStatus: "invalid"}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate: gate.Config{
+					Kind: gate.KindArtifact,
+					Artifact: gate.ArtifactConfig{
+						StatusField:    "render_status",
+						PassStatuses:   []string{"approved"},
+						WaitStatuses:   []string{"pending_review"},
+						ReworkStatuses: []string{"invalid"},
+					},
+				},
+			},
+			input: AutoPromoteSummary{ArtifactStatus: "invalid"},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionAwaitReview,
+				Reason: AutoPromoteReasonArtifactStatusMissing,
+			},
+		},
+		{
+			name: "artifact gate routes rework from deliverable validation status",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-artifact-deliverable", nil)
+				issue.Deliverable = &connector.Deliverable{ValidationStatus: "invalid"}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate:    gate.Config{Kind: gate.KindArtifact},
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionRework,
+				Reason: AutoPromoteReasonArtifactStatusRework,
+			},
+		},
+		{
+			name:  "artifact gate waits when status is missing",
+			issue: autoPromoteTestIssue("issue-artifact-missing", nil),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate:    gate.Config{Kind: gate.KindArtifact},
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionAwaitReview,
+				Reason: AutoPromoteReasonArtifactStatusMissing,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := EvaluateAutoPromote(tt.issue, tt.input, tt.cfg, now)
+			if got.Action != tt.want.Action {
+				t.Fatalf("Action = %q, want %q", got.Action, tt.want.Action)
+			}
+			if got.Reason != tt.want.Reason {
+				t.Fatalf("Reason = %q, want %q", got.Reason, tt.want.Reason)
+			}
+			if got.CIStatus != tt.want.CIStatus {
+				t.Fatalf("CIStatus = %q, want %q", got.CIStatus, tt.want.CIStatus)
+			}
+			if got.QuietRemaining != tt.want.QuietRemaining {
+				t.Fatalf("QuietRemaining = %s, want %s", got.QuietRemaining, tt.want.QuietRemaining)
+			}
+			if len(got.Findings) != len(tt.want.Findings) {
+				t.Fatalf("Findings len = %d, want %d", len(got.Findings), len(tt.want.Findings))
+			}
+			if len(got.ResolvedWorkpadBlockers) != len(tt.want.ResolvedWorkpadBlockers) {
+				t.Fatalf("ResolvedWorkpadBlockers len = %d, want %d", len(got.ResolvedWorkpadBlockers), len(tt.want.ResolvedWorkpadBlockers))
+			}
+			for i := range tt.want.ResolvedWorkpadBlockers {
+				if got.ResolvedWorkpadBlockers[i] != tt.want.ResolvedWorkpadBlockers[i] {
+					t.Fatalf("ResolvedWorkpadBlockers[%d] = %q, want %q", i, got.ResolvedWorkpadBlockers[i], tt.want.ResolvedWorkpadBlockers[i])
+				}
+			}
+			for i := range tt.want.Findings {
+				if got.Findings[i] != tt.want.Findings[i] {
+					t.Fatalf("Findings[%d] = %#v, want %#v", i, got.Findings[i], tt.want.Findings[i])
+				}
+			}
+		})
+	}
+}
+
+func TestAutoPromoteUsesCurrentHeadSummaryOverStaleFormalReview(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 2, 23, 0, 0, 0, time.UTC)
+	reviewedAt := now.Add(-20 * time.Minute)
+	issue := autoPromoteTestIssue("issue-summary-review", nil)
+	issue.PullRequest = &connector.PullRequest{
+		Number:                       389,
+		URL:                          "https://github.com/gopherguides/gopher-ai/pull/389",
+		State:                        "OPEN",
+		MergeableState:               "clean",
+		HeadSHA:                      "79f9eb2d4ad5317af5ff46f29aba3b91f4b413a0",
+		CIStatus:                     "success",
+		CodexReviewState:             "COMMENTED",
+		CodexReviewSource:            connector.PullRequestReviewSourceSummaryComment,
+		CodexReviewSubmittedAt:       &reviewedAt,
+		LatestCodexReviewState:       "P1",
+		LatestCodexReviewCommitSHA:   "f236cc46fbb1a0e6821f16001e97ce07e0d483cd",
+		LatestCodexReviewSubmittedAt: new(reviewedAt.Add(-time.Minute)),
+	}
+
+	tests := []struct {
+		name       string
+		mutate     func(*connector.PullRequest)
+		wantAction AutoPromoteAction
+		wantReason AutoPromoteReason
+	}{
+		{
+			name:       "trusted clean summary promotes",
+			wantAction: AutoPromoteActionPromote,
+			wantReason: AutoPromoteReasonReady,
+		},
+		{
+			name: "current head p1 reworks",
+			mutate: func(pullRequest *connector.PullRequest) {
+				pullRequest.CodexReviewState = "P1"
+				pullRequest.CodexReviewSource = connector.PullRequestReviewSourceFormal
+				pullRequest.CodexReviewFindings = []connector.PullRequestFinding{{Body: "[P1] Current-head defect."}}
+			},
+			wantAction: AutoPromoteActionRework,
+			wantReason: AutoPromoteReasonP1Findings,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			candidate := issue
+			pullRequest := *issue.PullRequest
+			candidate.PullRequest = &pullRequest
+			if tt.mutate != nil {
+				tt.mutate(candidate.PullRequest)
+			}
+			decision := EvaluateAutoPromote(candidate, AutoPromoteSummaryFromIssue(candidate), AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+			}, now)
+			if decision.Action != tt.wantAction || decision.Reason != tt.wantReason {
+				t.Fatalf("decision = %s/%s, want %s/%s", decision.Action, decision.Reason, tt.wantAction, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestEvaluateAutoPromoteOperationalCompletion(t *testing.T) {
+	t.Parallel()
+
+	cfg := AutoPromoteConfig{
+		Enabled:        true,
+		TerminalStates: []string{"Done", "Cancelled"},
+		Gate:           gate.Config{Kind: gate.KindCommand},
+	}
+	tests := []struct {
+		name         string
+		body         string
+		authorized   bool
+		accepted     bool
+		pullRequest  *connector.PullRequest
+		wantAction   AutoPromoteAction
+		wantReason   AutoPromoteReason
+		wantEvidence string
+	}{
+		{
+			name:         "declared operational completion",
+			body:         operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+			authorized:   true,
+			accepted:     true,
+			wantAction:   AutoPromoteActionComplete,
+			wantReason:   AutoPromoteReasonOperationalCompletion,
+			wantEvidence: "Runner service is healthy and accepting jobs.",
+		},
+		{
+			name:       "authorization without accepted attempt",
+			body:       operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+			authorized: true,
+			wantAction: AutoPromoteActionSkip,
+			wantReason: AutoPromoteReasonMissingPullRequest,
+		},
+		{
+			name:       "undeclared operational assertion",
+			body:       operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+			wantAction: AutoPromoteActionSkip,
+			wantReason: AutoPromoteReasonMissingPullRequest,
+		},
+		{
+			name:       "ordinary no diff completion",
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```",
+			wantAction: AutoPromoteActionSkip,
+			wantReason: AutoPromoteReasonMissingPullRequest,
+		},
+		{
+			name:       "operational declaration without evidence",
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nfields:\n  completion_kind: operational\nblockers: []\nhuman_action: null\n```",
+			wantAction: AutoPromoteActionSkip,
+			wantReason: AutoPromoteReasonMissingPullRequest,
+		},
+		{
+			name:        "operational declaration with pull request placeholder",
+			body:        operationalCompletionWorkpadBody("Runner service is healthy and accepting jobs."),
+			authorized:  true,
+			accepted:    true,
+			pullRequest: &connector.PullRequest{HydrationUnavailableReason: "rate_limited"},
+			wantAction:  AutoPromoteActionSkip,
+			wantReason:  AutoPromoteReasonPullRequestHydrationUnavailable,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := autoPromoteTestIssue("issue-operational-completion", nil)
+			if tt.authorized {
+				issue.Description = operationalCompletionAuthorizationBody()
+			}
+			issue.PullRequest = tt.pullRequest
+			issue.Comments = []connector.IssueComment{{
+				Body: tt.body,
+				URL:  "https://github.test/comment/operational-completion",
+			}}
+			got := EvaluateAutoPromote(issue, AutoPromoteSummary{
+				PullRequestHydrationUnavailableReason: pullRequestHydrationUnavailableReason(tt.pullRequest),
+				OperationalCompletionAccepted:         tt.accepted,
+			}, cfg, time.Now())
+
+			if got.Action != tt.wantAction {
+				t.Fatalf("Action = %q, want %q", got.Action, tt.wantAction)
+			}
+			if got.Reason != tt.wantReason {
+				t.Fatalf("Reason = %q, want %q", got.Reason, tt.wantReason)
+			}
+			if got.OperationalEvidence != tt.wantEvidence {
+				t.Fatalf("OperationalEvidence = %q, want %q", got.OperationalEvidence, tt.wantEvidence)
+			}
+			if tt.wantAction == AutoPromoteActionComplete && got.WorkpadCommentURL != "https://github.test/comment/operational-completion" {
+				t.Fatalf("WorkpadCommentURL = %q", got.WorkpadCommentURL)
+			}
+		})
+	}
+}
+
+func TestEvaluateAutoPromoteOperationalCompletionHonorsHumanReview(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		labels     []string
+		wantAction AutoPromoteAction
+		wantReason AutoPromoteReason
+	}{
+		{name: "awaits approval", wantAction: AutoPromoteActionAwaitReview, wantReason: AutoPromoteReasonHumanApprovalMissing},
+		{name: "approved completion", labels: []string{"approved-by-human"}, wantAction: AutoPromoteActionComplete, wantReason: AutoPromoteReasonOperationalCompletion},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := autoPromoteTestIssue("issue-operational-human-review", tt.labels)
+			issue.Description = operationalCompletionAuthorizationBody()
+			issue.PullRequest = nil
+			issue.Comments = []connector.IssueComment{{Body: operationalCompletionWorkpadBody("Backfill verified.")}}
+			decision := EvaluateAutoPromote(issue, AutoPromoteSummary{OperationalCompletionAccepted: true}, AutoPromoteConfig{
+				Enabled:        true,
+				TerminalStates: []string{"Done"},
+				Gate:           gate.Config{Kind: gate.KindHumanReview, ApprovalLabel: "approved-by-human"},
+			}, time.Now())
+
+			if decision.Action != tt.wantAction || decision.Reason != tt.wantReason {
+				t.Fatalf("decision = %#v, want action %q reason %q", decision, tt.wantAction, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestArtifactStatusFromIssue(t *testing.T) {
+	t.Parallel()
+
+	issue := autoPromoteTestIssue("issue-artifact-status", nil)
+	issue.Fields = map[string]string{"render_status": "recut"}
+	issue.Deliverable = &connector.Deliverable{ValidationStatus: "invalid"}
+
+	tests := []struct {
+		name        string
+		statusField string
+		want        string
+	}{
+		{name: "configured field", statusField: "render_status", want: "recut"},
+		{name: "missing configured field", statusField: "publish_status"},
+		{name: "default field falls back to deliverable", statusField: gate.DefaultArtifactStatusField, want: "invalid"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := artifactStatusFromIssue(issue, tt.statusField); got != tt.want {
+				t.Fatalf("artifactStatusFromIssue() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAutoPromoteNormalizeWorkpadBlockerText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			name: "none sentinel remains non-blocking",
+			text: "- None",
+		},
+		{
+			name: "none currently sentinel remains non-blocking",
+			text: "- None currently.",
+		},
+		{
+			name: "n/a sentinel remains non-blocking",
+			text: "- N/A",
+		},
+		{
+			name: "no blockers sentinel remains non-blocking",
+			text: "- No blockers;",
+		},
+		{
+			name: "none first clause is non-blocking",
+			text: "- None. Dependency #123 is closed; rebased onto main.",
+		},
+		{
+			name: "none currently first clause is non-blocking",
+			text: "- None currently. Waiting on nothing.",
+		},
+		{
+			name: "n/a first clause is non-blocking",
+			text: "- N/A: covered by #456.",
+		},
+		{
+			name: "none starting a real sentence is blocking",
+			text: "- None of the tests pass.",
+			want: "None of the tests pass.",
+		},
+		{
+			name: "blocked first clause remains blocking",
+			text: "- Blocked: needs schema decision.",
+			want: "Blocked: needs schema decision.",
+		},
+		{
+			name: "must be resolved remains blocking",
+			text: "- Blocked by: #123 must be resolved before merge.",
+			want: "Blocked by: #123 must be resolved before merge.",
+		},
+		{
+			name: "removed stale blocked by prose is non-blocking",
+			text: "- The previous dependency blocker regressions now pass locally on the rebased head,\n  so stale `Blocked by: #1462` / `Blocked by: #1463` lines were removed from the issue body.",
+		},
+		{
+			name: "resolved dependency prose is non-blocking",
+			text: "- Dependency blocker #1462 merged via PR #1482 and issue #1462 is closed/Done; #1463 was already closed. Removed the stale `Blocked by: #1462` line from #1476.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := autoPromoteNormalizeWorkpadBlockerText(tt.text)
+			if got != tt.want {
+				t.Fatalf("autoPromoteNormalizeWorkpadBlockerText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEvaluateAutoPromoteStructuredWorkpad(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	oldActivity := now.Add(-20 * time.Minute)
+	ready := AutoPromoteSummary{
+		PullRequestURL: "https://github.test/pull/42",
+		CIStatus:       "green",
+		LastActivityAt: &oldActivity,
+	}
+	cfg := AutoPromoteConfig{
+		Enabled:        true,
+		QuietDuration:  10 * time.Minute,
+		OptoutLabel:    "requires-human-review",
+		TerminalStates: []string{"Done", "Cancelled"},
+		Gate:           gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+	}
+
+	tests := []struct {
+		comments              []connector.IssueComment
+		wantURL               string
+		wantStatus            string
+		wantNil               bool
+		name                  string
+		body                  string
+		cfg                   AutoPromoteConfig
+		blockedBy             []connector.BlockedRef
+		wantAction            AutoPromoteAction
+		wantReason            AutoPromoteReason
+		wantBlocker           string
+		wantResolved          []string
+		wantSource            string
+		wantInvalid           string
+		wantProseDisabled     bool
+		wantVerificationParts []string
+	}{
+		{name: "earlier created edited complete supersedes stale in progress", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: &oldActivity, UpdatedAt: &now}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: &oldActivity, UpdatedAt: &oldActivity}}, wantURL: "https://github.test/comment/earlier", wantStatus: "complete", wantAction: AutoPromoteActionPromote, wantReason: AutoPromoteReasonReady, wantSource: "structured", wantBlocker: "", wantInvalid: "", wantNil: false},
+		{name: "earlier edited human hold supersedes complete", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/earlier", CreatedAt: &oldActivity, UpdatedAt: &now}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: &oldActivity, UpdatedAt: &oldActivity}}, wantURL: "https://github.test/comment/earlier", wantStatus: "blocked", wantAction: AutoPromoteActionAwaitReview, wantReason: AutoPromoteReasonWorkpadBlocker, wantSource: "structured", wantBlocker: "Need owner approval.", wantInvalid: "", wantNil: false},
+		{name: "earlier edited invalid supersedes complete", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: &oldActivity, UpdatedAt: &now}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: &oldActivity, UpdatedAt: &oldActivity}}, wantURL: "https://github.test/comment/earlier", wantStatus: "blocked", wantAction: AutoPromoteActionAwaitReview, wantReason: AutoPromoteReasonWorkpadStatusInvalid, wantSource: "structured", wantBlocker: "", wantInvalid: "status blocked requires", wantNil: false},
+		{name: "edited clearing suppresses prior and body receipt", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\nCurrent status cleared.", URL: "https://github.test/comment/earlier", CreatedAt: &oldActivity, UpdatedAt: &now}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: &oldActivity, UpdatedAt: &oldActivity}}, wantURL: "https://github.test/comment/earlier", wantStatus: "", wantAction: AutoPromoteActionPromote, wantReason: AutoPromoteReasonReady, wantSource: "structured", wantBlocker: "", wantInvalid: "", wantNil: true},
+		{name: "equal edit time retains reverse input precedence", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: &oldActivity, UpdatedAt: &now}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later", CreatedAt: &now, UpdatedAt: &now}}, wantURL: "https://github.test/comment/later", wantStatus: "in_progress", wantAction: AutoPromoteActionPromote, wantReason: AutoPromoteReasonReady, wantSource: "structured", wantBlocker: "", wantInvalid: "", wantNil: false},
+		{name: "zero edit timestamp falls back to created time", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: &oldActivity, UpdatedAt: &now}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/later", CreatedAt: &now, UpdatedAt: new(time.Time{})}}, wantURL: "https://github.test/comment/later", wantStatus: "blocked", wantAction: AutoPromoteActionAwaitReview, wantReason: AutoPromoteReasonWorkpadBlocker, wantSource: "structured", wantBlocker: "Need owner approval.", wantInvalid: "", wantNil: false},
+		{name: "zero dates retain input precedence", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: &oldActivity, UpdatedAt: &now}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/later", CreatedAt: new(time.Time{}), UpdatedAt: new(time.Time{})}}, wantURL: "https://github.test/comment/later", wantStatus: "blocked", wantAction: AutoPromoteActionAwaitReview, wantReason: AutoPromoteReasonWorkpadBlocker, wantSource: "structured", wantBlocker: "Need owner approval.", wantInvalid: "", wantNil: false},
+		{name: "undated later human hold keeps input precedence", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier", CreatedAt: &oldActivity, UpdatedAt: &now}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Need owner approval.\n```", URL: "https://github.test/comment/later"}}, wantURL: "https://github.test/comment/later", wantStatus: "blocked", wantAction: AutoPromoteActionAwaitReview, wantReason: AutoPromoteReasonWorkpadBlocker, wantSource: "structured", wantBlocker: "Need owner approval.", wantInvalid: "", wantNil: false},
+		{name: "no dates keep reverse input precedence", comments: []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/earlier"}, {Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", URL: "https://github.test/comment/later"}}, wantURL: "https://github.test/comment/later", wantStatus: "in_progress", wantAction: AutoPromoteActionPromote, wantReason: AutoPromoteReasonReady, wantSource: "structured", wantBlocker: "", wantInvalid: "", wantNil: false},
+		{
+			name: "open structured blocker holds",
+			body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: \"#1462\"\n    reason: \"needs migration\"\nhuman_action: null\n```",
+			blockedBy: []connector.BlockedRef{{
+				Identifier: "digitaldrywood/detent#1462",
+				State:      "In Progress",
+			}},
+			wantAction:  AutoPromoteActionAwaitReview,
+			wantReason:  AutoPromoteReasonWorkpadBlocker,
+			wantBlocker: "digitaldrywood/detent#1462: needs migration",
+			wantSource:  "structured",
+			wantVerificationParts: []string{
+				"digitaldrywood/detent#1462",
+				"In Progress",
+				"active",
+			},
+		},
+		{
+			name: "resolved structured blocker releases",
+			body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: \"#1462\"\n    reason: \"needs migration\"\nhuman_action: null\n```",
+			blockedBy: []connector.BlockedRef{{
+				Identifier: "digitaldrywood/detent#1462",
+				State:      "Done",
+			}},
+			wantAction:   AutoPromoteActionPromote,
+			wantReason:   AutoPromoteReasonReady,
+			wantResolved: []string{"digitaldrywood/detent#1462"},
+			wantSource:   "structured",
+			wantVerificationParts: []string{
+				"digitaldrywood/detent#1462",
+				"Done",
+				"resolved",
+			},
+		},
+		{
+			name:       "structured block suppresses prose",
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```\n\n### Blockers\n- Blocked by: #999",
+			wantAction: AutoPromoteActionPromote,
+			wantReason: AutoPromoteReasonReady,
+			wantSource: "structured",
+		},
+		{
+			name:        "malformed structured block awaits review",
+			body:        "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\n```",
+			wantAction:  AutoPromoteActionAwaitReview,
+			wantReason:  AutoPromoteReasonWorkpadStatusInvalid,
+			wantSource:  "structured",
+			wantInvalid: "status blocked requires",
+		},
+		{
+			name:        "prose fallback preserved",
+			body:        "## Codex Workpad\n\n### Blockers\n- Owner approval is still required before merge.",
+			wantAction:  AutoPromoteActionAwaitReview,
+			wantReason:  AutoPromoteReasonWorkpadBlocker,
+			wantBlocker: "Owner approval is still required before merge.",
+			wantSource:  "prose_section",
+		},
+		{
+			name: "structured only disables prose fallback",
+			body: "## Codex Workpad\n\n### Blockers\n- Owner approval is still required before merge.",
+			cfg: func() AutoPromoteConfig {
+				cfg := cfg
+				cfg.WorkpadStructuredOnly = true
+				return cfg
+			}(),
+			wantAction:        AutoPromoteActionPromote,
+			wantReason:        AutoPromoteReasonReady,
+			wantSource:        "prose_section",
+			wantProseDisabled: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := autoPromoteTestIssue("issue-structured-workpad", nil)
+			issue.Identifier = "digitaldrywood/detent#1069"
+			issue.Comments = []connector.IssueComment{{
+				Body: tt.body,
+				URL:  "https://github.test/comment/structured",
+			}}
+			wantURL := "https://github.test/comment/structured"
+			if tt.comments != nil {
+				issue.Comments = tt.comments
+				issue.Description = "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"
+				wantURL = tt.wantURL
+			}
+			if tt.comments != nil {
+				var current connector.IssueComment
+				for _, comment := range tt.comments {
+					if comment.URL == tt.wantURL {
+						current = comment
+					}
+				}
+				if got := artifactCompletionReceiptHash(issue.Comments); got != workpad.ContentHash(strings.TrimSpace(current.Body)) {
+					t.Fatalf("receipt hash chose a different Workpad: %q", got)
+				}
+				wantHash := ""
+				if content, ok := workpad.LastStatusBlock(current.Body); ok {
+					wantHash = workpad.ContentHash(content)
+				}
+				if got := artifactGateWorkpadStatusHash(issue.Comments); got != wantHash {
+					t.Fatalf("status hash = %q, want current Workpad %q", got, wantHash)
+				}
+				tracker := &autoPromoteTickConnector{issueComments: map[string][]connector.IssueComment{issue.ID: issue.Comments}}
+				orch := &Orchestrator{connector: tracker}
+				got, err := orch.sessionProgressProbe(issue)(t.Context())
+				if err != nil || got != workpad.ContentHash(strings.TrimSpace(current.Body)) {
+					t.Fatalf("progress hash = %q, %v, want current Workpad", got, err)
+				}
+			}
+			signal, _ := rawIssueWorkpadSignal(issue)
+			if tt.wantNil {
+				if signal != nil {
+					t.Fatalf("selected cleared Workpad retained older signal: %#v", signal)
+				}
+				return
+			}
+			if tt.wantStatus != "" && tt.wantInvalid == "" && (signal == nil || signal.Status != tt.wantStatus) {
+				t.Fatalf("selected status = %#v, want %q", signal, tt.wantStatus)
+			}
+			issue.BlockedBy = append([]connector.BlockedRef(nil), tt.blockedBy...)
+			testCfg := cfg
+			if tt.cfg.Enabled {
+				testCfg = tt.cfg
+			}
+
+			got := EvaluateAutoPromote(issue, ready, testCfg, now)
+			if got.Action != tt.wantAction {
+				t.Fatalf("Action = %q, want %q", got.Action, tt.wantAction)
+			}
+			if got.Reason != tt.wantReason {
+				t.Fatalf("Reason = %q, want %q", got.Reason, tt.wantReason)
+			}
+			if got.WorkpadBlocker != tt.wantBlocker {
+				t.Fatalf("WorkpadBlocker = %q, want %q", got.WorkpadBlocker, tt.wantBlocker)
+			}
+			if got.WorkpadSignalSource != tt.wantSource {
+				t.Fatalf("WorkpadSignalSource = %q, want %q", got.WorkpadSignalSource, tt.wantSource)
+			}
+			if got.WorkpadCommentURL != wantURL {
+				t.Fatalf("WorkpadCommentURL = %q, want structured comment URL", got.WorkpadCommentURL)
+			}
+			if tt.wantInvalid != "" && !strings.Contains(got.WorkpadStatusInvalid, tt.wantInvalid) {
+				t.Fatalf("WorkpadStatusInvalid = %q, want containing %q", got.WorkpadStatusInvalid, tt.wantInvalid)
+			}
+			if got.WorkpadProseFallbackDisabled != tt.wantProseDisabled {
+				t.Fatalf("WorkpadProseFallbackDisabled = %v, want %v", got.WorkpadProseFallbackDisabled, tt.wantProseDisabled)
+			}
+			if len(got.ResolvedWorkpadBlockers) != len(tt.wantResolved) {
+				t.Fatalf("ResolvedWorkpadBlockers = %#v, want %#v", got.ResolvedWorkpadBlockers, tt.wantResolved)
+			}
+			for index, want := range tt.wantResolved {
+				if got.ResolvedWorkpadBlockers[index] != want {
+					t.Fatalf("ResolvedWorkpadBlockers[%d] = %q, want %q", index, got.ResolvedWorkpadBlockers[index], want)
+				}
+			}
+			verificationText := strings.Join(autoPromoteWorkpadBlockerVerificationStrings(got.WorkpadBlockerVerifications), " ")
+			for _, want := range tt.wantVerificationParts {
+				if !strings.Contains(verificationText, want) {
+					t.Fatalf("verification text %q missing %q", verificationText, want)
+				}
+			}
+		})
+	}
+}
+
+func TestEvaluateAutoPromoteStructuredWorkpadStatusPolicy(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 9, 13, 45, 0, 0, time.UTC)
+	oldActivity := now.Add(-20 * time.Minute)
+	ready := AutoPromoteSummary{
+		PullRequestURL: "https://github.test/pull/42",
+		CIStatus:       "green",
+		LastActivityAt: &oldActivity,
+	}
+	cfg := AutoPromoteConfig{
+		Enabled:        true,
+		QuietDuration:  10 * time.Minute,
+		TerminalStates: []string{"Done", "Cancelled"},
+		Gate:           gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+	}
+
+	tests := []struct {
+		name                string
+		body                string
+		completedFinalState string
+		structuredOnly      bool
+		wantAction          AutoPromoteAction
+		wantReason          AutoPromoteReason
+		wantBlocker         string
+		wantSource          string
+		wantInvalid         string
+		wantProseDisabled   bool
+	}{
+		{
+			name:       "valid complete promotes",
+			body:       "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```",
+			wantAction: AutoPromoteActionPromote,
+			wantReason: AutoPromoteReasonReady,
+			wantSource: "structured",
+		},
+		{
+			name:                "invalid status after success routes to rework",
+			body:                "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: human-review\nblockers: []\nhuman_action: null\n```",
+			completedFinalState: FinalStateCompleted,
+			wantAction:          AutoPromoteActionRework,
+			wantReason:          AutoPromoteReasonWorkpadStatusInvalid,
+			wantSource:          "structured",
+			wantInvalid:         `status "human-review"`,
+		},
+		{
+			name:                "invalid status after failure awaits review",
+			body:                "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: human_review\nblockers: []\nhuman_action: null\n```",
+			completedFinalState: "failed",
+			wantAction:          AutoPromoteActionAwaitReview,
+			wantReason:          AutoPromoteReasonWorkpadStatusInvalid,
+			wantSource:          "structured",
+			wantInvalid:         `status "human_review"`,
+		},
+		{
+			name:        "missing structured block uses prose fallback",
+			body:        "## Codex Workpad\n\n### Blockers\n- Owner approval is still required before merge.",
+			wantAction:  AutoPromoteActionAwaitReview,
+			wantReason:  AutoPromoteReasonWorkpadBlocker,
+			wantBlocker: "Owner approval is still required before merge.",
+			wantSource:  "prose_section",
+		},
+		{
+			name:              "missing structured block with structured only ignores prose",
+			body:              "## Codex Workpad\n\n### Blockers\n- Owner approval is still required before merge.",
+			structuredOnly:    true,
+			wantAction:        AutoPromoteActionPromote,
+			wantReason:        AutoPromoteReasonReady,
+			wantSource:        "prose_section",
+			wantProseDisabled: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := autoPromoteTestIssue("issue-workpad-status-policy", nil)
+			issue.Identifier = "digitaldrywood/detent#1107"
+			issue.Comments = []connector.IssueComment{{
+				Body: tt.body,
+				URL:  "https://github.test/comment/workpad-status-policy",
+			}}
+			testCfg := cfg
+			testCfg.WorkpadStructuredOnly = tt.structuredOnly
+			summary := ready
+			summary.CompletedFinalState = tt.completedFinalState
+
+			got := EvaluateAutoPromote(issue, summary, testCfg, now)
+			if got.Action != tt.wantAction {
+				t.Fatalf("Action = %q, want %q", got.Action, tt.wantAction)
+			}
+			if got.Reason != tt.wantReason {
+				t.Fatalf("Reason = %q, want %q", got.Reason, tt.wantReason)
+			}
+			if got.WorkpadBlocker != tt.wantBlocker {
+				t.Fatalf("WorkpadBlocker = %q, want %q", got.WorkpadBlocker, tt.wantBlocker)
+			}
+			if got.WorkpadSignalSource != tt.wantSource {
+				t.Fatalf("WorkpadSignalSource = %q, want %q", got.WorkpadSignalSource, tt.wantSource)
+			}
+			if tt.wantInvalid != "" && !strings.Contains(got.WorkpadStatusInvalid, tt.wantInvalid) {
+				t.Fatalf("WorkpadStatusInvalid = %q, want containing %q", got.WorkpadStatusInvalid, tt.wantInvalid)
+			}
+			if got.WorkpadProseFallbackDisabled != tt.wantProseDisabled {
+				t.Fatalf("WorkpadProseFallbackDisabled = %v, want %v", got.WorkpadProseFallbackDisabled, tt.wantProseDisabled)
+			}
+		})
+	}
+}
+
+func TestAutoPromoteWaitsForFreshPullRequestActivityWithoutAutomatedReview(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC)
+	oldActivity := now.Add(-30 * time.Minute)
+	recentPullRequestActivity := now.Add(-30 * time.Second)
+	issue := autoPromoteTestIssue("issue-fresh-pr-activity", []string{"bug"})
+	issue.UpdatedAt = &oldActivity
+	issue.PullRequest = &connector.PullRequest{
+		Number:     42,
+		URL:        "https://github.test/digitaldrywood/detent/pull/42",
+		State:      "OPEN",
+		CIStatus:   "pass",
+		ActivityAt: &recentPullRequestActivity,
+	}
+
+	summary := AutoPromoteSummaryFromIssue(issue)
+	if summary.LastActivityAt == nil || !summary.LastActivityAt.Equal(recentPullRequestActivity) {
+		t.Fatalf("LastActivityAt = %v, want pull request activity %v", summary.LastActivityAt, recentPullRequestActivity)
+	}
+
+	got := EvaluateAutoPromote(issue, summary, AutoPromoteConfig{
+		Enabled:       true,
+		QuietDuration: 10 * time.Minute,
+		OptoutLabel:   "requires-human-review",
+		Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+	}, now)
+	if got.Action != AutoPromoteActionAwaitReview {
+		t.Fatalf("Action = %q, want %q", got.Action, AutoPromoteActionAwaitReview)
+	}
+	if got.Reason != AutoPromoteReasonCodexReviewNotQuiet {
+		t.Fatalf("Reason = %q, want %q", got.Reason, AutoPromoteReasonCodexReviewNotQuiet)
+	}
+	if got.QuietRemaining != 570*time.Second {
+		t.Fatalf("QuietRemaining = %s, want 570s", got.QuietRemaining)
+	}
+}
+
+func TestEvaluateAutoPromoteRoutesConflictingPullRequestToRework(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name           string
+		mergeableState string
+	}{
+		{
+			name:           "rest dirty state",
+			mergeableState: "dirty",
+		},
+		{
+			name:           "graphql conflicting state",
+			mergeableState: "CONFLICTING",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := autoPromoteTestIssue("issue-conflicting", []string{"bug"})
+			issue.PullRequest = &connector.PullRequest{
+				Number:         614,
+				URL:            "https://github.test/digitaldrywood/detent/pull/614",
+				State:          "OPEN",
+				MergeableState: tt.mergeableState,
+			}
+
+			got := EvaluateAutoPromote(issue, AutoPromoteSummaryFromIssue(issue), AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 0,
+				OptoutLabel:   "requires-human-review",
+				Gate: gate.Config{
+					Kind:            gate.KindCommand,
+					CIFailureAction: gate.CIFailureActionRework,
+				},
+			}, now)
+			if got.Action != AutoPromoteActionRework {
+				t.Fatalf("Action = %q, want %q", got.Action, AutoPromoteActionRework)
+			}
+			if string(got.Reason) != "merge_conflicts" {
+				t.Fatalf("Reason = %q, want merge_conflicts", got.Reason)
+			}
+		})
+	}
+}
+
+func autoPromoteTestIssue(id string, labels []string) connector.Issue {
+	issue := connector.NewIssue()
+	issue.ID = id
+	issue.Identifier = "digitaldrywood/detent#15"
+	issue.Title = "Auto promote"
+	issue.State = "Human Review"
+	issue.Labels = append([]string(nil), labels...)
+	return issue
+}
+
+func TestEvaluateAutoPromoteMalformedBlockerRefs(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, mergeable, ci, extra string
+		want                       AutoPromoteAction
+	}{
+		{"green", "clean", "pass", "", AutoPromoteActionPromote},
+		{"dirty", "dirty", "pass", "", AutoPromoteActionRework},
+		{"red", "clean", "fail", "", AutoPromoteActionRework},
+		{"open dependency", "clean", "pass", "  - ref: '#42'\n    reason: waiting\n", AutoPromoteActionAwaitReview},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := autoPromoteTestIssue("malformed", nil)
+			issue.Identifier = "digitaldrywood/detent#2640"
+			issue.PullRequest = &connector.PullRequest{Number: 2641, State: "OPEN", MergeableState: tt.mergeable, CIStatus: tt.ci}
+			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n  - ref: malformed-local-ref\n    reason: local check\n  - ref: malformed-worker-ref\n    reason: auth\n" + tt.extra + "human_action: null\n```"}}
+			summary := AutoPromoteSummaryFromIssue(issue)
+			summary.CompletedFinalState = FinalStateCompleted
+			got := EvaluateAutoPromote(issue, summary, AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}}, time.Now())
+			if got.Action != tt.want {
+				t.Fatalf("decision = %#v, want action %s", got, tt.want)
+			}
+			if tt.ci == "fail" && got.Reason != AutoPromoteReasonCINotGreen {
+				t.Fatalf("reason = %s, want CI reason for transient retry", got.Reason)
+			}
+			if !strings.Contains(got.WorkpadStatusInvalid, `blockers[0].ref "malformed-local-ref" must be #N or owner/repo#N`) {
+				t.Fatalf("missing verbatim diagnostic: %#v", got)
+			}
+		})
+	}
+}
+
+func TestSymbolicBlockerPromotion(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, blockers string
+		want           AutoPromoteAction
+	}{
+		{"instance", "  - ref: instance:chrome-devtools\n    reason: tool unavailable\n", AutoPromoteActionAwaitReview},
+		{"workflow", "  - ref: go-workflow:ship-state-bootstrap\n    reason: step unavailable\n", AutoPromoteActionAwaitReview},
+		{"mixed malformed", "  - ref: malformed-text\n  - ref: instance:chrome-devtools\n    reason: tool unavailable\n", AutoPromoteActionAwaitReview},
+		{"cleared", "", AutoPromoteActionPromote},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := autoPromoteTestIssue("symbolic", nil)
+			issue.PullRequest = &connector.PullRequest{Number: 42, State: "OPEN", MergeableState: "clean", CIStatus: "pass"}
+			body := "## Codex Workpad\n```detent-status\nschema: 1\nstatus: blocked\nblockers:\n" + tt.blockers + "```"
+			if tt.blockers == "" {
+				body = "## Codex Workpad\n```detent-status\nschema: 1\nstatus: complete\nblockers: []\n```"
+			}
+			issue.Comments = []connector.IssueComment{{Body: body}}
+			summary := AutoPromoteSummaryFromIssue(issue)
+			summary.CompletedFinalState = FinalStateCompleted
+			got := EvaluateAutoPromote(issue, summary, AutoPromoteConfig{Enabled: true, Gate: gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)}}, time.Now())
+			if got.Action != tt.want {
+				t.Fatalf("decision = %#v, want %s", got, tt.want)
+			}
+			if tt.name != "mixed malformed" && got.WorkpadStatusInvalid != "" {
+				t.Fatalf("invalid = %s", got.WorkpadStatusInvalid)
+			}
+		})
+	}
+}
+
+func TestOperationalCompletionAuthorizationSnapshot(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name                            string
+		dispatch, current, merged, want bool
+	}{
+		{name: "ordinary authorized", dispatch: true, current: true, want: true},
+		{name: "ordinary revoked", dispatch: true},
+		{name: "ordinary added after dispatch", current: true},
+		{name: "merged without authorization", merged: true, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			issue := autoPromoteTestIssue("completion", nil)
+			if tt.current {
+				issue.Description = operationalCompletionAuthorizationBody()
+			}
+			body := operationalCompletionWorkpadBody("Acceptance passed.")
+			if tt.merged {
+				body = mergedCompletionWorkpadBody()
+			}
+			issue.Comments = []connector.IssueComment{{Body: body}}
+			if _, got := operationalCompletionWithAuthorization(issue, tt.dispatch); got != tt.want {
+				t.Fatalf("accepted=%v want=%v", got, tt.want)
+			}
+		})
+	}
+}

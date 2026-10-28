@@ -1,0 +1,1612 @@
+package orchestrator
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/activity"
+	"github.com/digitaldrywood/detent/internal/budget"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/dispatchpriority"
+	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workpad"
+	"github.com/digitaldrywood/detent/internal/workspace"
+)
+
+func (o *Orchestrator) dispatchPlanner() dispatchPlanner {
+	planner := newDispatchPlanner(o.cfg)
+	planner.nativeWorkflow = o.nativeWorkflow()
+	planner.nativeLandingBatch = o.nativeLandingBatch
+	planner.boundedAdmission = o.scheduling != nil
+	return planner
+}
+
+// liveDispatchPlanner shares recorded blocker evidence with recovery. The plain
+// planner remains usable for previews that cannot perform remote reads.
+func (o *Orchestrator) liveDispatchPlanner(ctx context.Context, blockerCache map[string]dependencyBlocker) dispatchPlanner {
+	planner := o.dispatchPlanner()
+	if o.workerHostChecker != nil {
+		planner.workerHostAvailable = func(host string) bool { return o.workerHostChecker.WorkerHostAvailable(ctx, host) }
+	}
+	planner.operatorRejectedHead = func(issue connector.Issue) (bool, error) {
+		return o.operatorRejectedHead(ctx, issue)
+	}
+	planner.recordedBlockers = func(issue connector.Issue, state *State, now time.Time) (recordedBlockerEvaluation, error) {
+		issue, err := o.refreshDependencyAutoUnblockComments(ctx, issue)
+		if err != nil {
+			o.observeTrackerReadFailure(state, telemetry.RefreshSourceCandidates, err, now)
+			markRefreshError(state, "fetch dispatch Workpad comments failed: "+err.Error(), now)
+			return recordedBlockerEvaluation{}, err
+		}
+		if o.workpadHoldSupersededByLaneEntry(ctx, issue) {
+			return recordedBlockerEvaluation{}, nil
+		}
+		resolved := make(map[string]connector.Issue, len(blockerCache))
+		for _, blocker := range blockerCache {
+			if identifier := normalizedIssueIdentifier(blocker.Issue.Identifier); blocker.Resolved && identifier != "" {
+				resolved[identifier] = blocker.Issue
+			}
+		}
+		return o.evaluateRecordedBlockers(ctx, state, issue, resolved, now, false), nil
+	}
+	return planner
+}
+
+func (o *Orchestrator) pruneBudgetRefusals(ctx context.Context, state *State, now time.Time) {
+	o.dispatchPlanner().pruneBudgetRefusals(
+		state,
+		now,
+		o.currentDailyBudgetStatus(ctx, state, now),
+		o.currentIssueBudgetStatuses(ctx, state),
+	)
+}
+
+func (o *Orchestrator) currentIssueBudgetStatuses(ctx context.Context, state *State) map[string]IssueBudgetStatus {
+	if o.issueBudgetStatus == nil {
+		return nil
+	}
+
+	statuses := make(map[string]IssueBudgetStatus)
+	for issueID, refusal := range state.BudgetRefusals {
+		if refusal.Code != string(budget.ReasonPerIssueMaxUSD) {
+			continue
+		}
+		status, known, err := o.issueBudgetStatus.IssueBudgetStatus(ctx, refusal.Issue)
+		if err != nil {
+			if o.logger != nil {
+				o.logger.Warn("per-issue budget hold re-evaluation failed", "issue_id", issueID, "error", err)
+			}
+			continue
+		}
+		if known {
+			statuses[issueID] = status
+		}
+	}
+	return statuses
+}
+
+func (o *Orchestrator) currentDailyBudgetStatus(ctx context.Context, state *State, now time.Time) *DailyBudgetStatus {
+	if o.dailyBudgetStatus == nil || !hasActiveDailyBudgetRefusal(state, now) {
+		return nil
+	}
+
+	status, known, err := o.dailyBudgetStatus.DailyBudgetStatus(ctx, now)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("daily budget refusal re-evaluation failed", "error", err)
+		}
+		return nil
+	}
+	if !known {
+		return nil
+	}
+	return &status
+}
+
+func hasActiveDailyBudgetRefusal(state *State, now time.Time) bool {
+	for _, refusal := range state.BudgetRefusals {
+		if refusal.Code == "per_day_max_usd" && refusal.ResetAt != nil && now.Before(*refusal.ResetAt) {
+			return true
+		}
+	}
+	return false
+}
+
+func (o *Orchestrator) selectWorkerHost(state *State, preferredWorkerHost string) (string, bool) {
+	return o.dispatchPlanner().selectWorkerHost(state, preferredWorkerHost)
+}
+
+func leastLoadedWorkerHost(state *State, hosts []string) string {
+	selected := hosts[0]
+	selectedCount := runningWorkerHostCount(state, selected)
+	for _, host := range hosts[1:] {
+		count := runningWorkerHostCount(state, host)
+		if count < selectedCount {
+			selected = host
+			selectedCount = count
+		}
+	}
+	return selected
+}
+
+func runningWorkerHostCount(state *State, workerHost string) int {
+	count := 0
+	for _, running := range state.Running {
+		if running.WorkerHost == workerHost {
+			count++
+		}
+	}
+	return count
+}
+
+func normalizeWorkerHosts(hosts []string) []string {
+	normalized := make([]string, 0, len(hosts))
+	seen := make(map[string]struct{}, len(hosts))
+	for _, host := range hosts {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			continue
+		}
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		normalized = append(normalized, host)
+	}
+	return normalized
+}
+
+func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, issues []connector.Issue, now time.Time, maintenanceIssues ...connector.Issue) {
+	defer o.releaseDeferredSchedulingClaims(context.WithoutCancel(ctx), state, issues)
+	for _, issue := range issues {
+		if stateIn(issue.State, o.cfg.ActiveStates) && !o.currentBlockedHumanIntent(ctx, state, issue) && !o.currentBlockedOperatorStop(ctx, state, issue) {
+			clearBlockedStatusIssue(state, issue)
+		}
+	}
+	o.beginGlobalProjectCycle()
+	defer o.endGlobalProjectCycle()
+	if state.Draining || o.dispatchQuiesced() {
+		o.cancelPendingGlobalDispatches()
+		return
+	}
+	if err := o.prepareDispatchProject(ctx); err != nil {
+		o.cancelPendingGlobalDispatches()
+		for _, issue := range issues {
+			o.recordPostSelectionDispatchRefusal(ctx, state, now, dispatchPlanDecision{Issue: issue}, dispatchIssueOutcome{reason: dispatchIssueFailureWorkerHostUnavailable, waitReason: err.Error()})
+		}
+		return
+	}
+	issues = o.localIntakeIssues(state, issues)
+	if o.nativeWorkflow() && !o.cfg.Policy.Gates.GitHubPullRequest {
+		batch := &nativeLandingDispatchBatch{batch: workspace.NewLandingBatch(ctx)}
+		o.nativeLandingBatch = batch
+		defer func() { batch.batch.Seal(); o.nativeLandingBatch = nil }()
+	}
+	rankingIssues := issues
+	// Refresh retains closed snapshots for lane reconciliation, not dispatch.
+	issues = slices.DeleteFunc(slices.Clone(issues), func(issue connector.Issue) bool { return issue.Closed })
+	issues = o.prepareDispatchCandidates(ctx, state, issues, now)
+	blockerCache := make(map[string]dependencyBlocker)
+	planner := o.liveDispatchPlanner(ctx, blockerCache)
+	o.logOwnershipEligibilityStartup(planner, issues)
+	var lastDispatchFailure string
+	decisions := make([]dispatchPlanDecision, 0, len(issues))
+	outcomes := make(map[string]dispatchIssueOutcome, len(issues))
+	selections := make(map[string]dispatchPlanDecision, len(issues))
+	planner.plan(state, issues, now, dispatchPlanHooks{
+		rankingIssues: rankingIssues,
+		hydrate: func(issue connector.Issue) (connector.Issue, bool) {
+			hydrated, ok := o.hydrateDispatchIssue(ctx, state, issue, now)
+			if ok {
+				hydrated = o.hydrateDispatchDependencies(ctx, hydrated, blockerCache)
+				if blocked, exists := state.Blocked[hydrated.ID]; exists && blockedFromDependency(blocked) && !issueBlockedByNonTerminal(hydrated, o.cfg.TerminalStates) {
+					delete(state.Blocked, hydrated.ID)
+				}
+			}
+			return hydrated, ok
+		},
+		beforeDispatch: func(_ connector.Issue, continuationIndex int) bool {
+			if continuationIndex < 0 {
+				return true
+			}
+			return waitForDispatchBackoff(ctx, continuationDelay(continuationIndex))
+		},
+		dispatch: func(action dispatchAction) bool {
+			defer clear(blockerCache)
+			outcome := o.dispatchIssueWithAction(ctx, state, action, now)
+			if identity := workflowIssueIdentityKey(action.issue); identity != "" {
+				outcomes[identity] = outcome
+				if !outcome.dispatched {
+					if selection, ok := selections[identity]; ok {
+						o.recordPostSelectionDispatchRefusal(ctx, state, now, selection, outcome)
+					}
+				}
+			}
+			if !outcome.dispatched {
+				lastDispatchFailure = outcome.reason
+			} else {
+				lastDispatchFailure = ""
+			}
+			return outcome.dispatched
+		},
+		dispatchFailed: func(issue connector.Issue) bool {
+			return !mergeWorkerIssue(issue) || lastDispatchFailure != dispatchIssueFailureGlobalSlotUnavailable
+		},
+		retryDispatchFailed: func(issue connector.Issue, retry Retry) {
+			if _, pending := o.globalDispatchPending[issue.ID]; pending {
+				state.Retry[issue.ID] = retry
+				return
+			}
+			releaseForgeAvailabilityProbe(state, issue.ID, "deferred", dispatchFailureRetryReason(lastDispatchFailure), now)
+			planner.scheduleRetry(state, issue, retry.Attempt, now, dispatchFailureRetryReason(lastDispatchFailure), false, retry.WorkerHost)
+			rescheduled := state.Retry[issue.ID]
+			rescheduled.RecoveryAttemptID = retry.RecoveryAttemptID
+			rescheduled.RetryMode = retry.RetryMode
+			rescheduled.ResumeState = retry.ResumeState
+			rescheduled.Policy = retry.Policy
+			rescheduled.MergePrecheck = cloneMergePrecheck(retry.MergePrecheck)
+			rescheduled.ForgeUnavailable = retry.ForgeUnavailable
+			rescheduled.ForgeHost = retry.ForgeHost
+			rescheduled.ForgeRetry = cloneForgeRetry(retry.ForgeRetry)
+			rescheduled.Wait = retry.Wait
+			rescheduled.Wait.PendingChecks = append([]string(nil), retry.Wait.PendingChecks...)
+			state.Retry[issue.ID] = rescheduled
+		},
+		pollRetryWait: func(issue connector.Issue, retry Retry) (Retry, bool, string) {
+			defer clear(blockerCache)
+			if retry.Wait.Kind == retryWaitWorkspaceBranchHeld {
+				return o.pollWorkspaceBranchHold(ctx, state, issue, retry, now)
+			}
+			return o.pollMergeWorkerCurrentHeadCI(ctx, state, issue, retry, now)
+		},
+		preserveMissingDueRetry: func(retry Retry) bool {
+			// The tick's existing blocked maintenance still needs retry ownership
+			// to distinguish started work from new work. Its missing-retry cleanup
+			// runs after maintenance; refill and other callers clean up here.
+			return slices.ContainsFunc(maintenanceIssues, func(issue connector.Issue) bool { return issue.ID == retry.Issue.ID }) ||
+				o.preserveMissingDueRetry(state, retry)
+		},
+		decision: func(decision dispatchPlanDecision) {
+			decisions = append(decisions, decision)
+			o.logDispatchPlanDecision(ctx, state, now, decision)
+			if decision.Selected {
+				if identity := workflowIssueIdentityKey(decision.Issue); identity != "" {
+					selections[identity] = decision
+				}
+			}
+		},
+	})
+	o.reconcilePendingGlobalDispatches(issues, decisions, outcomes)
+	o.reconcileMergeControlDemand(decisions, outcomes)
+	o.observeProjectDispatchStatus(ctx, state, issues, decisions, outcomes, now)
+}
+
+func (o *Orchestrator) prepareDispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) []connector.Issue {
+	issues = o.reconcileOrphanedSessionRetries(ctx, state, issues, now)
+	issues = o.localIntakeIssues(state, issues)
+	o.reconcileIssueConfigurationHolds(ctx, state, issues, now)
+	issues = o.filterIssueContracts(ctx, state, issues, now)
+	issues = o.filterImplementDependencyDeferrals(ctx, issues)
+	return issues
+}
+
+// refillProjectSlots runs on the event loop, using the same planner and
+// pre-dispatch checks as a tick.
+func (o *Orchestrator) refillProjectSlots(ctx context.Context, state *State, now time.Time) {
+	o.refillProjectSlotsExcluding(ctx, state, now, "")
+}
+
+func (o *Orchestrator) refillProjectSlotsExcluding(ctx context.Context, state *State, now time.Time, excludedIssueIDs ...string) {
+	if o.dispatchPlanner().hardAvailableSlots(state) == 0 ||
+		state.Draining || o.dispatchQuiesced() {
+		return
+	}
+	o.publishState(ctx, state)
+	fresh, err := o.fetchCandidateIssuesForTick(ctx, state)
+	if err != nil {
+		o.observeTrackerReadFailure(state, telemetry.RefreshSourceCandidates, err, now)
+		if o.logger != nil {
+			o.logger.Warn("refill candidate read failed", "error", err)
+		}
+		return
+	}
+	candidates := make([]connector.Issue, 0, len(fresh))
+	for _, current := range fresh {
+		if slices.Contains(excludedIssueIDs, current.ID) {
+			o.releaseDeferredSchedulingClaims(ctx, state, []connector.Issue{current})
+			continue
+		}
+		candidates = append(candidates, current)
+	}
+	candidates = overlayIssueStateSnapshots(candidates, o.restoreWorkAttemptRetryIntents(ctx, state, candidates, now))
+	o.dispatchReadyIssues(ctx, state, candidates, now)
+}
+
+func (o *Orchestrator) releaseDeferredSchedulingClaims(ctx context.Context, state *State, issues []connector.Issue) {
+	if o.scheduling == nil {
+		return
+	}
+	for _, issue := range issues {
+		if _, running := state.Running[issue.ID]; running {
+			continue
+		}
+		if err := o.scheduling.ReleaseClaim(ctx, issue.ID, "dispatch_deferred"); err != nil && o.logger != nil {
+			o.logger.Warn("release deferred Hub claim failed", "issue_id", issue.ID, "error", err)
+		}
+	}
+}
+
+func (o *Orchestrator) logOwnershipEligibilityStartup(planner dispatchPlanner, issues []connector.Issue) {
+	if o == nil || o.ownershipStartupLogged || o.logger == nil || !planner.cfg.Claiming.OwnershipSet || planner.cfg.Claiming.OwnershipMode != workflowconfig.IdentityOwnershipAssignee {
+		return
+	}
+	o.ownershipStartupLogged = true
+	candidates := planner.assigneeEligibilityCandidates(issues)
+	identifiers := make([]string, 0, len(candidates))
+	for _, issue := range candidates {
+		identifier := strings.TrimSpace(issue.Identifier)
+		if identifier == "" {
+			identifier = strings.TrimSpace(issue.ID)
+		}
+		identifiers = append(identifiers, identifier)
+	}
+	message := "ownership eligibility compatibility grace active"
+	if planner.cfg.Claiming.AssigneeRequired {
+		message = "ownership eligibility enforcement active"
+	}
+	o.logger.Warn(
+		message,
+		"project_id", strings.TrimSpace(o.projectID),
+		"config_key", "identity.assignee_required",
+		"ownership_mode", workflowconfig.IdentityOwnershipAssignee,
+		"enforced", planner.cfg.Claiming.AssigneeRequired,
+		"blocked_issue_count", len(candidates),
+		"affected_issues", strings.Join(identifiers, ","),
+	)
+}
+
+func dispatchFailureRetryReason(reason string) string {
+	switch reason {
+	case dispatchIssueFailureClaimFailed:
+		return "claim verification failed"
+	case dispatchIssueFailureGlobalSlotUnavailable:
+		return scheduler.DispatchGateReasonGlobalCapacityFull
+	default:
+		return reason
+	}
+}
+
+func (o *Orchestrator) preserveMissingDueRetry(state *State, retry Retry) bool {
+	if retry.TrackerUnavailable && retry.ResumeState.Orphaned {
+		return true
+	}
+	if normalizeState(retry.Issue.State) != normalizeState(autoPromoteMergingState) {
+		return false
+	}
+	return !o.mergeWorkerLocalSlotsAvailable(state)
+}
+
+// hydrateDispatchDependencies shares blocker reads across candidates in one dispatch refresh.
+func (o *Orchestrator) hydrateDispatchDependencies(ctx context.Context, issue connector.Issue, cache map[string]dependencyBlocker) connector.Issue {
+	issue = cloneIssue(o.issueWithDependencyRefs(issue))
+	if signal, ok := autoPromoteIssueWorkpadSignal(issue); ok && signal != nil && signal.Invalid == nil && signal.Source == workpad.SourceStructured &&
+		(signal.Status == workpad.StatusInProgress || signal.Status == workpad.StatusBlocked) && issue.DependencySource != connector.BlockedRefSourceNative {
+		issue.WorkpadSignal = signal
+		issue.BlockedBy = mergeDependencyBlockedRefs(issue.BlockedBy, workpadDependencyRefs(issue))
+		issue.BlockedBy = dependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
+	}
+	pending := connector.Issue{ID: issue.ID, Identifier: issue.Identifier}
+	for _, ref := range issue.BlockedBy {
+		if len(dispatchWorkpadDependencyStates(issue, ref)) == 0 && dependencyBlockerReady(dependencyBlocker{Ref: ref}, DependencyAutoUnblockConfig{Readiness: DependencyReadinessTerminal}, o.cfg.TerminalStates) {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(firstNonBlank(ref.Identifier, ref.ID)))
+		if _, cached := cache[key]; !cached {
+			pending.BlockedBy = append(pending.BlockedBy, ref)
+			cache[key] = dependencyBlocker{Ref: ref}
+		}
+	}
+	if len(pending.BlockedBy) > 0 {
+		for _, blocker := range o.resolveDependencyBlockers(ctx, pending) {
+			cache[dependencyAutoUnblockBlockerKey(blocker)] = blocker
+		}
+	}
+	for i, ref := range issue.BlockedBy {
+		key := strings.ToLower(strings.TrimSpace(firstNonBlank(ref.Identifier, ref.ID)))
+		if blocker := cache[key]; blocker.Resolved {
+			resolved := blocker.Ref
+			resolved.Source = ref.Source
+			issue.BlockedBy[i] = resolved
+		}
+	}
+	return issue
+}
+
+func (o *Orchestrator) hydrateDispatchIssue(ctx context.Context, state *State, issue connector.Issue, now time.Time) (connector.Issue, bool) {
+	if strings.TrimSpace(issue.ID) == "" || len(issue.Fields) > 0 || o.connector == nil {
+		return issue, true
+	}
+	if retry, ok := state.Retry[issue.ID]; ok {
+		if _, outage, active := matchingBackendOutage(state.BackendOutages, retry.CapacityScope); active {
+			probeAt := outage.NextProbeAt
+			if probeAt.IsZero() {
+				probeAt = outage.ResumeAt
+			}
+			if strings.TrimSpace(outage.ProbeIssueID) != "" || now.Before(probeAt) {
+				return issue, true
+			}
+		}
+	}
+	issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issue.ID})
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("hydrate dispatch issue failed", "issue_id", issue.ID, "error", err)
+		}
+		return issue, false
+	}
+	for _, hydrated := range issues {
+		if hydrated.ID == issue.ID {
+			return mergeIssueTrackerFields(issue, hydrated), true
+		}
+	}
+	return issue, false
+}
+
+func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
+	o.beginGlobalProjectCycle()
+	defer o.endGlobalProjectCycle()
+	if state.Draining || o.dispatchQuiesced() {
+		return
+	}
+	issues = o.localIntakeIssues(state, issues)
+	issues = o.filterImplementDependencyDeferrals(ctx, issues)
+	blockerCache := make(map[string]dependencyBlocker)
+	for _, issue := range issues {
+		if o.dispatchPlanner().hardAvailableSlots(state) == 0 {
+			return
+		}
+		issue, ok := o.hydrateDispatchIssue(ctx, state, issue, now)
+		if !ok {
+			continue
+		}
+		issue = o.hydrateDispatchDependencies(ctx, issue, blockerCache)
+		if !o.liveDispatchPlanner(ctx, nil).dispatchable(issue, state, now) {
+			continue
+		}
+
+		o.dispatchIssue(ctx, state, issue, 0, now, "")
+	}
+}
+
+func dueRetriesByIssue(state *State, now time.Time) map[string]Retry {
+	retries := make(map[string]Retry, len(state.Retry))
+	for _, retry := range state.Retry {
+		if !retry.DueAt.After(now) {
+			retries[retry.Issue.ID] = retry
+		}
+	}
+	return retries
+}
+
+func (o *Orchestrator) dispatchable(issue connector.Issue, state *State, now time.Time) bool {
+	return o.dispatchPlanner().dispatchable(issue, state, now)
+}
+
+const (
+	dispatchIssueFailureDraining              = "dispatch_draining"
+	dispatchIssueFailureLocalSlotUnavailable  = "local_slot_unavailable"
+	dispatchIssueFailureWorkerHostUnavailable = "worker_host_unavailable"
+	dispatchIssueFailureGlobalSlotUnavailable = "global_slot_unavailable"
+	dispatchIssueFailureClaimFailed           = "claim_failed"
+	dispatchIssueFailureWorkAttemptStart      = "work_attempt_start_failed"
+	dispatchIssueFailureStartStateTransition  = "start_state_transition_failed"
+	dispatchIssueFailureBackendCapacityPaused = "backend_capacity_paused"
+	dispatchIssueFailureGitHubRESTPaused      = "github_rest_capacity_paused"
+	dispatchIssueFailureGitHubLookupPaused    = "github_lookup_backoff"
+	dispatchIssueFailureTrackerUnavailable    = "tracker_unavailable"
+	dispatchIssueFailureForgeUnavailable      = "forge_unavailable"
+	dispatchIssueFailureCIUnavailable         = "ci_unavailable"
+	dispatchIssueFailureMemoryPressure        = "memory_pressure_high"
+	dispatchIssueFailureIOPressure            = "io_pressure_high"
+	dispatchIssueFailureCPUPressure           = "cpu_pressure_high"
+	dispatchIssueFailureRecoveryRamp          = "dispatch_recovery_ramp"
+)
+
+type dispatchIssueOutcome struct {
+	mergeControl   bool
+	dispatched     bool
+	reason         string
+	waitReason     string
+	waitReasonCode string
+}
+
+func (o *Orchestrator) dispatchIssue(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	now time.Time,
+	preferredWorkerHost string,
+) bool {
+	return o.dispatchIssueWithOutcome(ctx, state, issue, attempt, now, preferredWorkerHost).dispatched
+}
+
+func (o *Orchestrator) dispatchIssueWithAction(
+	ctx context.Context,
+	state *State,
+	action dispatchAction,
+	now time.Time,
+) dispatchIssueOutcome {
+	return o.dispatchIssueWithMergeControl(
+		ctx,
+		state,
+		action.issue,
+		action.attempt,
+		now,
+		action.workerHost,
+		action.modelPermitRequired,
+		action.allowMergeControl,
+		action.retryState,
+	)
+}
+
+func (o *Orchestrator) dispatchIssueWithOutcome(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	now time.Time,
+	preferredWorkerHost string,
+) dispatchIssueOutcome {
+	return o.dispatchIssueWithAdmission(
+		ctx,
+		state,
+		issue,
+		attempt,
+		now,
+		preferredWorkerHost,
+		o.dispatchPlanner().modelPermitRequiredAtDispatch(issue),
+		nil,
+	)
+}
+
+func (o *Orchestrator) dispatchIssueWithAdmission(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	now time.Time,
+	preferredWorkerHost string,
+	modelPermitRequired bool,
+	retryState *Retry,
+) dispatchIssueOutcome {
+	return o.dispatchIssueWithMergeControl(ctx, state, issue, attempt, now, preferredWorkerHost, modelPermitRequired, true, retryState)
+}
+
+func (o *Orchestrator) dispatchIssueWithMergeControl(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	now time.Time,
+	preferredWorkerHost string,
+	modelPermitRequired bool,
+	allowMergeControl bool,
+	retryState *Retry,
+) dispatchIssueOutcome {
+	return o.dispatchIssueWithGlobalGrant(ctx, state, issue, attempt, now, preferredWorkerHost, modelPermitRequired, allowMergeControl, retryState, nil)
+}
+
+func (o *Orchestrator) dispatchIssueWithGlobalGrant(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	now time.Time,
+	preferredWorkerHost string,
+	modelPermitRequired bool,
+	allowMergeControl bool,
+	retryState *Retry,
+	grant *scheduler.DispatchResult,
+) dispatchIssueOutcome {
+	if grant != nil {
+		defer func() { o.releaseGlobalDispatchSlot(grant.Slot) }()
+	}
+	if mergeWorkerIssue(issue) && nativeMergeQueueOwnsIssue(state, issue, o.cfg) {
+		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: "waiting for native merge queue"}
+	}
+	if err := o.checkDispatchPolicy(ctx); err != nil {
+		return dispatchIssueOutcome{reason: "policy_mismatch", waitReason: err.Error()}
+	}
+	if err := o.prepareDispatchProject(ctx); err != nil {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureWorkerHostUnavailable, waitReason: err.Error()}
+	}
+	if o.issueContractApplies(issue) && strings.EqualFold(issue.State, firstNonBlank(o.cfg.AdmissionTargetState, "Todo")) {
+		allowed, err := o.enforceIssueContract(ctx, state, issue, issue.State, now)
+		if err != nil {
+			return dispatchIssueOutcome{reason: dispatchIssueFailureTrackerUnavailable, waitReason: err.Error()}
+		}
+		if !allowed {
+			return dispatchIssueOutcome{reason: dispatchSkipBlockedByDependency, waitReason: "issue contract requires human action"}
+		}
+	}
+	if reason := connector.NonExecutableReason(issue); reason != "" {
+		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: reason}
+	}
+	if reason := humanDependencyWaitReason(issue.BlockedBy); reason != "" {
+		return dispatchIssueOutcome{reason: dispatchSkipBlockedByDependency, waitReason: reason}
+	}
+	if !o.localIntakeAllows(state, issue) {
+		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: "local intake disabled"}
+	}
+	if !o.beginDispatchStart() {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureDraining}
+	}
+	defer o.finishDispatchStart()
+	if state.Draining {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureDraining}
+	}
+	queuedRetry, retryQueued := state.Retry[issue.ID]
+	if retryState != nil {
+		queuedRetry = *retryState
+		retryQueued = true
+	}
+	if activeTrackerUnavailable(state) && (trackerDependentDispatch(issue) || trackerUnavailableRetry(state, issue.ID)) {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureTrackerUnavailable}
+	}
+	if activeCIUnavailable(state) && (ciDependentDispatch(issue) || ciUnavailableRetry(state, issue.ID)) {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureCIUnavailable}
+	}
+	if o.dispatchPlanner().forgeAvailabilityBlocks(state, issue, queuedRetry, now) {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureForgeUnavailable}
+	}
+	if _, paused := activeGitHubRESTCapacityOutage(state, now); paused && o.dispatchPlanner().githubRESTDependent(issue) {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubRESTPaused}
+	}
+	if !projectFailureBreakerAllowsDispatch(state, now) {
+		return dispatchIssueOutcome{reason: projectFailureBreakerDispatchPaused}
+	}
+	o.observeHostPressure(ctx, state, o.clockNow())
+	if state.MemoryPressure.DispatchHeld {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureMemoryPressure}
+	}
+	if state.IOPressure.DispatchHeld {
+		return dispatchIssueOutcome{
+			reason:     dispatchIssueFailureIOPressure,
+			waitReason: hostPressureWaitReason(state, dispatchIssueFailureIOPressure),
+		}
+	}
+	if state.CPUPressure.DispatchHeld {
+		return dispatchIssueOutcome{
+			reason:     dispatchIssueFailureCPUPressure,
+			waitReason: hostPressureWaitReason(state, dispatchIssueFailureCPUPressure),
+		}
+	}
+	pressureConstraint, pressureConstrained := activeHostPressureConstraint(state)
+	if reason := dispatchRecoveryBlockReason(state, now); reason != "" {
+		return dispatchIssueOutcome{reason: reason}
+	}
+	runMode := o.dispatchMode(ctx, state, issue)
+	if runMode == runpkg.RunModePlan && o.nativeWorkflow() {
+		if _, err := o.nativePlanLanes(ctx, issue); err != nil {
+			return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: err.Error()}
+		}
+	}
+	capacityRequest := runpkg.RunRequest{Issue: issue, Mode: runMode, SelectorContext: o.selectorContext()}
+	capacityScope, capacityProbeKey, capacityPaused := o.backendCapacityDispatch(state, capacityRequest, now)
+	if o.scheduling == nil && !githubLookupBackoffAllowsDispatch(state, capacityProbeKey) {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureGitHubLookupPaused}
+	}
+	if capacityPaused {
+		return dispatchIssueOutcome{reason: dispatchIssueFailureBackendCapacityPaused}
+	}
+	targetState := dispatchStartTransitionState(issue, runMode, o.cfg.ActiveStates)
+	slotIssue := issue
+	if targetState != "" {
+		slotIssue = cloneIssue(issue)
+		slotIssue.State = targetState
+		if !o.dispatchPlanner().slotsAvailableForModelRequirement(slotIssue, state, preferredWorkerHost, modelPermitRequired) {
+			return dispatchIssueOutcome{reason: dispatchIssueFailureLocalSlotUnavailable}
+		}
+	}
+	batchMember := o.dispatchPlanner().joinsNativeLandingBatch(issue)
+	mergeControlEligible := allowMergeControl && !modelPermitRequired && queuedRetry.MergePrecheck == nil && o.dispatchPlanner().readyMergeControlCandidate(state, issue)
+	mergeControl := mergeControlEligible
+	if !batchMember && !mergeControlEligible && o.dispatchPlanner().hardAvailableSlots(state) == 0 {
+		return dispatchIssueOutcome{reason: dispatchSkipProjectCapacityFull}
+	}
+	projectStats := o.projectStateSlotStats(slotIssue, state)
+
+	workerHost, ok := o.liveDispatchPlanner(ctx, nil).selectWorkerHost(state, preferredWorkerHost)
+	if batchMember {
+		workerHost, ok = o.nativeLandingBatch.host, true
+	}
+	if !ok && !mergeControlEligible {
+		o.logMergeWorkerFailure(issue, "worker_host_unavailable", nil)
+		o.recordMergeFailed(state, issue, now, "worker_host_unavailable", nil)
+		return dispatchIssueOutcome{reason: dispatchIssueFailureWorkerHostUnavailable}
+	}
+
+	mergeControl = mergeControl || !ok && mergeControlEligible
+	pressureCapacity := 0
+	if pressureConstrained {
+		pressureCapacity = pressureConstraint.capacity
+	}
+	var globalSlot scheduler.Slot
+	var decision scheduler.DispatchGateDecision
+	if grant != nil {
+		if normalizeState(grant.Slot.State) != normalizeState(slotIssue.State) || grant.Slot.Host != workerHost {
+			return dispatchIssueOutcome{reason: dispatchIssueFailureGlobalSlotUnavailable}
+		}
+		globalSlot, decision, ok = grant.Slot, grant.Decision, grant.Err == nil
+		grant.Slot = scheduler.Slot{}
+	} else if batchMember {
+		ok = true
+	} else {
+		action := dispatchAction{issue: issue, attempt: attempt, workerHost: preferredWorkerHost, modelPermitRequired: modelPermitRequired, allowMergeControl: allowMergeControl, retryState: retryState}
+		globalSlot, ok, decision = o.acquireOrQueueGlobalDispatchSlot(ctx, state, action, slotIssue, workerHost, now, pressureCapacity, mergeControlEligible)
+		if ok && globalSlot != (scheduler.Slot{}) {
+			workerHost = globalSlot.Host
+		}
+	}
+	if !ok && mergeControlEligible && decision.Reason == scheduler.DispatchGateReasonGlobalCapacityFull {
+		mergeControl = true
+		ok = true
+	}
+	if !ok {
+		o.recordDispatchGateRefusal(ctx, state, issue, attempt, workerHost, now, decision, projectStats)
+		o.logSchedulerSlotDecision(issue, "waiting", decision, projectStats)
+		if mergeWorkerIssue(issue) {
+			o.logMergeBaseRefreshDeferred(issue, mergeBaseRefreshGlobalUnavailable)
+			o.logMergeWorkerSlotWait(issue, decision, projectStats)
+		} else {
+			o.logDispatchSlotWait(issue, decision, projectStats)
+			o.recordDispatchSlotWait(state, issue, decision, projectStats, now)
+		}
+		if decision.Reason == scheduler.DispatchGateReasonPressureCapacityFull && pressureConstrained {
+			return dispatchIssueOutcome{
+				reason:     pressureConstraint.reason,
+				waitReason: hostPressureWaitReason(state, pressureConstraint.reason),
+			}
+		}
+		return dispatchIssueOutcome{reason: dispatchIssueFailureGlobalSlotUnavailable, waitReason: decision.Reason, waitReasonCode: decision.Reason}
+	}
+	runCtx := ctx
+	cancelDurationLimit := func() {}
+	if mergeWorkerIssue(slotIssue) || runMode == runpkg.RunModeMerge {
+		limit := o.mergeWorkerLimit
+		if limit == nil {
+			limit = context.WithTimeoutCause
+		}
+		runCtx, cancelDurationLimit = limit(
+			ctx,
+			o.cfg.MergeWorkerMaxDuration,
+			runpkg.ErrMergeWorkerDurationExceeded,
+		)
+	}
+	durationLimitTransferred := false
+	defer func() {
+		if !durationLimitTransferred {
+			cancelDurationLimit()
+		}
+	}()
+	if mergeControl {
+		decision.Reason = mergeControlCheckedHeadOutput
+	}
+	mergeTiming := o.markMergeWorkerSlotAcquired(state, issue, now)
+	o.logSchedulerSlotDecision(issue, "acquired", decision, projectStats)
+	o.logMergeWorkerSlotAcquired(issue, decision, projectStats, mergeTiming)
+	o.logWorkerLifecycle(issue, "worker_slot_acquired",
+		"attempt", attempt,
+		"worker_host", strings.TrimSpace(workerHost),
+	)
+	recovery, allowed, recoveryReason := tryReserveDispatchRecovery(state, issue.ID, now)
+	if !allowed {
+		o.releaseGlobalDispatchSlot(globalSlot)
+		if recoveryReason == "" {
+			recoveryReason = dispatchIssueFailureRecoveryRamp
+		}
+		return dispatchIssueOutcome{reason: recoveryReason}
+	}
+	canary, allowed := tryReserveProjectFailureBreakerCanary(state, issue.ID, now)
+	if !allowed {
+		if recovery {
+			releaseDispatchRecoveryAdmission(state, issue.ID)
+		}
+		o.releaseGlobalDispatchSlot(globalSlot)
+		return dispatchIssueOutcome{reason: projectFailureBreakerDispatchPaused}
+	}
+
+	o.dispatchStartMu.Lock()
+	if !o.localIntakeAllows(state, issue) {
+		o.dispatchStartMu.Unlock()
+		if recovery {
+			releaseDispatchRecoveryAdmission(state, issue.ID)
+		}
+		if canary {
+			releaseProjectFailureBreakerCanary(state, issue.ID)
+		}
+		o.releaseGlobalDispatchSlot(globalSlot)
+		return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: "local intake disabled"}
+	}
+	claimedIssue, claim, ok := o.claimIssue(runCtx, issue, now)
+	if !ok {
+		o.dispatchStartMu.Unlock()
+		if recovery {
+			releaseDispatchRecoveryAdmission(state, issue.ID)
+		}
+		if canary {
+			releaseProjectFailureBreakerCanary(state, issue.ID)
+		}
+		o.releaseGlobalDispatchSlot(globalSlot)
+		o.logWorkerLifecycle(issue, "worker_capacity_released",
+			"attempt", attempt,
+			"worker_host", strings.TrimSpace(workerHost),
+			"reason", dispatchIssueFailureClaimFailed,
+		)
+		o.logMergeWorkerFailure(issue, "claim_failed", nil)
+		o.recordMergeFailed(state, issue, now, "claim_failed", nil)
+		return dispatchIssueOutcome{reason: dispatchIssueFailureClaimFailed}
+	}
+
+	issue = cloneIssue(claimedIssue)
+	priorAttempt := state.PriorAttempts[issue.ID]
+	completionSourceStart := newCompletionSourceStartRecord(issue, runMode)
+	if (runMode == runpkg.RunModeImplement || runMode == runpkg.RunModeMerge && !mergeWorkerIssue(issue)) && issue.PullRequest != nil {
+		completionSourceStart.PRDiffFingerprint = o.implementCompletionDiffFingerprint(runCtx, issue)
+		completionSourceStart.PRMergeableState = issue.PullRequest.MergeableState
+	}
+	attemptPolicy := o.dispatchAttemptPolicy(queuedRetry, workerHost)
+	workAttemptID, ok := o.startDurableWorkAttempt(runCtx, state, issue, attempt, now, workerHost, runMode, completionSourceStart, attemptPolicy)
+	if ok {
+		if state.localAdmitted == nil {
+			state.localAdmitted = map[string]struct{}{}
+		}
+		state.localAdmitted[issue.ID] = struct{}{}
+	}
+	o.dispatchStartMu.Unlock()
+	if !ok {
+		if recovery {
+			releaseDispatchRecoveryAdmission(state, issue.ID)
+		}
+		if canary {
+			releaseProjectFailureBreakerCanary(state, issue.ID)
+		}
+		o.releaseGlobalDispatchSlot(globalSlot)
+		o.logWorkerLifecycle(issue, "worker_capacity_released",
+			"attempt", attempt,
+			"worker_host", strings.TrimSpace(workerHost),
+			"reason", dispatchIssueFailureWorkAttemptStart,
+		)
+		if abandonErr := o.abandonClaim(ctx, issue.ID); abandonErr != nil && o.logger != nil {
+			o.logger.Warn("abandon claim after work attempt start failed", "issue_id", issue.ID, "error", abandonErr)
+		}
+		o.logMergeWorkerFailure(issue, "work_attempt_start_failed", nil)
+		o.recordMergeFailed(state, issue, now, "work_attempt_start_failed", nil)
+		return dispatchIssueOutcome{reason: dispatchIssueFailureWorkAttemptStart}
+	}
+	dispatchSourceState := ""
+	dispatchTargetState := ""
+	dispatchStartSourceState := ""
+	dispatchStartTargetState := ""
+	if targetState != "" {
+		sourceState := issue.State
+		if err := o.updateIssueState(runCtx, state, issue, targetState, now, "dispatch_start"); err != nil {
+			if recovery {
+				releaseDispatchRecoveryAdmission(state, issue.ID)
+			}
+			if canary {
+				releaseProjectFailureBreakerCanary(state, issue.ID)
+			}
+			o.releaseGlobalDispatchSlot(globalSlot)
+			o.completeDurableWorkAttempt(ctx, state, Running{
+				Issue:                 issue,
+				Attempt:               attempt,
+				WorkAttemptID:         workAttemptID,
+				Mode:                  runMode,
+				CompletionSourceStart: completionSourceStart,
+				StartedAt:             now,
+				WorkerHost:            workerHost,
+			}, now, store.WorkAttemptTerminalFailure, workAttemptErrorStartTransition, err.Error(), "starting", "start state transition failed")
+			o.logWorkerLifecycle(issue, "worker_capacity_released",
+				telemetry.WorkAttemptIDKey, workAttemptID,
+				"attempt", attempt,
+				"worker_host", strings.TrimSpace(workerHost),
+				"reason", dispatchIssueFailureStartStateTransition,
+			)
+			if abandonErr := o.abandonClaim(ctx, issue.ID); abandonErr != nil && o.logger != nil {
+				o.logger.Warn("abandon claim after start state transition failed", "issue_id", issue.ID, "error", abandonErr)
+			}
+			if o.logger != nil {
+				o.logger.Warn("start state transition failed", "issue_id", issue.ID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
+			}
+			o.logMergeWorkerFailure(issue, "start_state_transition_failed", err)
+			o.recordMergeFailed(state, issue, now, "start_state_transition_failed", err)
+			return dispatchIssueOutcome{reason: dispatchIssueFailureStartStateTransition}
+		}
+		issue.State = targetState
+		dispatchSourceState = sourceState
+		dispatchTargetState = targetState
+		dispatchStartSourceState = sourceState
+		dispatchStartTargetState = targetState
+	}
+	if dispatchSourceState == "" || dispatchTargetState == "" {
+		dispatchSourceState, dispatchTargetState = o.dispatchTimelineTransitionContext(runCtx, issue)
+	}
+	o.markMergeStarted(state, issue, now)
+	claim.Issue = issue
+	runCtx, stop := context.WithCancelCause(runCtx)
+	var startupTimer mergeWorkerStartupTimer
+	var cancelOnce sync.Once
+	cancelRun := func(cause error) {
+		cancelOnce.Do(func() {
+			requested := cause != nil
+			source := "orchestrator.stop"
+			if !requested {
+				source = "orchestrator.completion_cleanup"
+			}
+			first := runpkg.NewCancellationCause(cause, source)
+			cause = first
+			stop(cause)
+			cancelDurationLimit()
+			if requested && errors.Is(context.Cause(runCtx), cause) && o.logger != nil {
+				o.logger.Info("worker_cancellation_requested", "project_id", o.cfg.Project.ID,
+					"issue_id", issue.ID, "issue_identifier", issue.Identifier,
+					"work_attempt_id", workAttemptID, "cancellation_reason", first.Reason,
+					"cancellation_source", first.Source)
+			}
+		})
+	}
+	if runMode == runpkg.RunModeMerge && !mergeControl {
+		timerFactory := o.mergeWorkerStartupTimer
+		if timerFactory == nil {
+			timerFactory = newMergeWorkerStartupTimer
+		}
+		startupTimer = timerFactory(o.cfg.MergeWorkerStartupTimeout, func() {
+			if o.logger != nil {
+				o.logger.Warn(
+					"merge worker startup deadline expired",
+					"issue_id", issue.ID,
+					"identifier", issue.Identifier,
+					"attempt", attempt,
+					"configured_timeout", o.cfg.MergeWorkerStartupTimeout,
+				)
+			}
+			cancelRun(runpkg.ErrMergeWorkerStartupTimeout)
+		})
+	}
+	cancelCause := func(cause error) {
+		if startupTimer != nil {
+			startupTimer.Stop()
+		}
+		cancelRun(cause)
+	}
+	cancel := func() {
+		cancelCause(nil)
+	}
+	o.markBackendCapacityProbe(state, capacityProbeKey, issue.ID, now)
+	dispatchWorkpadHash, dispatchComments, dispatchWorkpadRead := o.artifactGateDispatchWorkpadSnapshot(runCtx, issue)
+	dispatchProgress := implementProgressArtifactSnapshotFromIssue(issue, false)
+	dispatchArtifactStatus := ""
+	artifactStatusField := ""
+	if o.cfg.DeliverableKind == workflowconfig.DeliverableArtifact {
+		artifactStatusField = gate.Effective(o.cfg.AutoPromote.Gate).Artifact.StatusField
+		dispatchArtifactStatus, _ = artifactStatusFieldFromIssue(issue, artifactStatusField)
+	}
+	if runMode == runpkg.RunModeImplement {
+		if dispatchWorkpadRead {
+			progressIssue := cloneIssue(issue)
+			progressIssue.Comments = append([]connector.IssueComment(nil), dispatchComments...)
+			dispatchProgress = implementProgressArtifactSnapshotFromIssue(progressIssue, true)
+		} else {
+			dispatchProgress = o.implementProgressDispatchArtifactSnapshot(runCtx, issue)
+		}
+	}
+	if runMode == runpkg.RunModeImplement {
+		dispatchProgress.PullRequestDiffFingerprint = completionSourceStart.PRDiffFingerprint
+	}
+	reserveCredentialCanaryForDispatch(state, issue.ID, now)
+	generation := o.workerGeneration.Add(1)
+	state.Running[issue.ID] = Running{
+		Issue:                  issue,
+		Attempt:                attempt,
+		WorkAttemptID:          workAttemptID,
+		Policy:                 attemptPolicy,
+		ClaimPolicy:            o.cfg.Policy,
+		Generation:             generation,
+		Mode:                   runMode,
+		DispatchSourceState:    dispatchStartSourceState,
+		DispatchTargetState:    dispatchStartTargetState,
+		DispatchWorkpadHash:    dispatchWorkpadHash,
+		DispatchWorkpadRead:    dispatchWorkpadRead,
+		DispatchProgress:       dispatchProgress,
+		DispatchArtifactStatus: strings.TrimSpace(dispatchArtifactStatus),
+		ArtifactStatusField:    strings.TrimSpace(artifactStatusField),
+		DeliverableKind:        o.cfg.DeliverableKind,
+		CompletionSourceStart:  completionSourceStart,
+		StartedAt:              now,
+		WorkerHost:             workerHost,
+		CapacityScope:          capacityScope,
+		CapacityProbe:          capacityProbeKey != "",
+		ForgeProbeHost:         reservedForgeProbeHost(state, issue.ID),
+		ModelPermitExempt:      !modelPermitRequired,
+		StopDestination:        o.cfg.StopRunTargetState,
+		StopPriorityOptions:    stopRunPriorityOptions(o.cfg.StopRunPriorityNames),
+		globalSlot:             globalSlot,
+		cancel:                 cancel,
+		stop:                   cancelCause,
+	}
+	state.Claimed[issue.ID] = claim
+	delete(state.Retry, issue.ID)
+	delete(state.Blocked, issue.ID)
+	delete(state.BudgetRefusals, issue.ID)
+	delete(state.ReapedWorkspaces, issue.ID)
+	delete(state.Completed, issue.ID)
+
+	runningProgress := state.Running[issue.ID]
+	progress := newWorkerProgress(runningProgress, o.runningWorkAttemptHeartbeat(state, runningProgress, now), o.workAttempts, o.cfg.OutputTruncationMaxBytes)
+	runningProgress.progress = progress
+	state.Running[issue.ID] = runningProgress
+
+	reservation := reserveMergeCandidate(state, issue, now)
+	request := RunRequest{
+		Policy:              attemptPolicy,
+		ProjectID:           strings.TrimSpace(o.cfg.Project.ID),
+		Issue:               issue,
+		Attempt:             attempt,
+		WorkAttemptID:       workAttemptID,
+		Generation:          generation,
+		Mode:                runMode,
+		DispatchSourceState: dispatchSourceState,
+		DispatchTargetState: dispatchTargetState,
+		PriorAttempt:        priorAttempt,
+		StartedAt:           now,
+		WorkerHost:          workerHost,
+		SelectorContext:     o.selectorContext(),
+		OnUsageUpdate:       o.usageUpdateHandler(runCtx, issue.ID, startupTimer, progress),
+		OnActivityUpdate:    o.activityUpdateHandler(runCtx, issue),
+		OnOverrideRejected:  o.agentOverrideRejectionHandler(runCtx, issue),
+		ProgressProbe:       o.sessionProgressProbe(issue),
+		CheckpointValidate:  o.checkpointValidator(issue.ID, workAttemptID, generation),
+		MergePrecheck:       cloneMergePrecheck(queuedRetry.MergePrecheck),
+		MergeRefreshHeadSHA: reservation.RefreshHeadSHA,
+		ForgeRetry:          cloneForgeRetry(queuedRetry.ForgeRetry),
+	}
+	if runMode != runpkg.RunModeTriage {
+		o.attachMachineIssueTool(&request)
+	}
+	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
+		request.Execution = source.RunExecution(issue.ID)
+		_, request.DeferExecutionFinish = request.Execution.(runpkg.CompletionExecution)
+	}
+	if !modelPermitRequired {
+		request.AcquireModelPermit = o.modelPermitAcquirer(issue.ID)
+	}
+	if retryQueued {
+		request.RetryMode = queuedRetry.RetryMode
+		request.RecoveryAttemptID = queuedRetry.RecoveryAttemptID
+		request.ResumeState = queuedRetry.ResumeState
+		if queuedRetry.WorkerHost != workerHost && !o.nativeWorkflow() {
+			request.RetryMode = runpkg.RetryModeFresh
+			request.ResumeState = store.AgentResumeState{}
+		}
+	}
+	o.logMergeWorkerAttempt(issue, attempt, workerHost)
+	o.logWorkerLifecycle(issue, "worker_attempt_started",
+		telemetry.WorkAttemptIDKey, workAttemptID,
+		"attempt", attempt,
+		"worker_host", strings.TrimSpace(workerHost),
+		"mode", strings.TrimSpace(runMode),
+	)
+	o.publishRuntimeState(state)
+	running := state.Running[issue.ID]
+	if mergeControl {
+		completionCtx, cancelCompletion := context.WithTimeout(ctx, min(o.cfg.MergeWorkerMaxDuration, 30*time.Second))
+		defer cancelCompletion()
+		o.handleRunResult(completionCtx, state, runpkg.Completion{
+			IssueID: issue.ID, Request: request, CompletedAt: now,
+			Result: runpkg.RunResult{FinalState: runpkg.FinalStateCompleted, Output: mergeControlCheckedHeadOutput},
+		})
+		return dispatchIssueOutcome{dispatched: true, mergeControl: true}
+	}
+	if o.nativeLandingBatch != nil && mergeWorkerIssue(issue) && o.nativeWorkflow() && !o.cfg.Policy.Gates.GitHubPullRequest {
+		request.LandingBatch = o.nativeLandingBatch.batch.Add()
+		o.nativeLandingBatch.host = workerHost
+		o.nativeLandingBatch.members++
+	}
+	running.done = o.supervisor.Dispatch(runCtx, request, o.runResults)
+	state.Running[issue.ID] = running
+	durationLimitTransferred = true
+	o.trackRunningHeartbeat(state, running, claim, now)
+	return dispatchIssueOutcome{dispatched: true}
+}
+
+func (o *Orchestrator) dispatchTimelineTransitionContext(ctx context.Context, issue connector.Issue) (string, string) {
+	match, ok := o.latestWorkflowLaneEntry(ctx, issue)
+	if !ok {
+		return "", ""
+	}
+	sourceState := strings.TrimSpace(match.Event.PreviousPhaseName)
+	targetState := strings.TrimSpace(match.Event.PhaseName)
+	if sourceState == "" || targetState == "" {
+		return "", ""
+	}
+	if normalizeState(targetState) != normalizeState(issue.State) {
+		return "", ""
+	}
+	return sourceState, targetState
+}
+
+// dispatchWorkingStates lists the active-state names recognized as the
+// "agent is working" lane, in preference order: "In Progress" is the GitHub
+// Projects convention, "Production" the non-code artifact template's. Without
+// this resolution, projects using the template vocabulary never leave Todo
+// while an agent works them and the board shows nothing running.
+var dispatchWorkingStates = []string{planImplementationState, "Production"}
+
+func dispatchStartTransitionState(issue connector.Issue, mode string, activeStates []string) string {
+	if mode != runpkg.RunModeImplement {
+		return ""
+	}
+	if normalizeState(issue.State) != "todo" {
+		return ""
+	}
+	for _, working := range dispatchWorkingStates {
+		if stateIn(working, activeStates) {
+			return working
+		}
+	}
+	return ""
+}
+
+func (o *Orchestrator) dispatchMode(ctx context.Context, state *State, issue connector.Issue) string {
+	// A hub-native item in the landing lane is a reviewed Change Request the
+	// runner lands with plain git; there is no fast path to enable.
+	pendingNativeLanding := o.nativeWorkflow() && issue.NativeLandingHeadSHA != "" && !autoPromoteOptoutLabel(issue, normalizeAutoPromoteConfig(o.cfg.AutoPromote))
+	if normalizeState(issue.State) == normalizeState(autoPromoteMergingState) && (o.cfg.MergeFastPathEnabled || o.nativeWorkflow()) || pendingNativeLanding {
+		return runpkg.RunModeMerge
+	}
+	// Conflict repair uses the merge precheck and verified fallback even before
+	// the card is ready for Merging, independently of programmatic merge policy.
+	switch normalizeState(issue.State) {
+	case "in progress":
+		if issue.PullRequest != nil && !issue.PullRequest.Draft && connector.PullRequestConflicts(issue.PullRequest.MergeableState) {
+			return runpkg.RunModeMerge
+		}
+	}
+	cfg := gate.EffectivePlan(o.cfg.Plan)
+	if !cfg.Enabled {
+		return runpkg.RunModeImplement
+	}
+	if implementProgressLinkedPullRequest(issue) {
+		return runpkg.RunModeImplement
+	}
+	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
+		if execution := source.RunExecution(issue.ID); execution != nil {
+			recovery := execution.Recovery()
+			if recovery.Change != nil && recovery.Change.VersionID != "" {
+				return runpkg.RunModeImplement
+			}
+		}
+	}
+	switch normalizeState(issue.State) {
+	case "todo":
+		return runpkg.RunModePlan
+	case normalizeState(autoPromoteReworkState):
+		if match, ok := o.latestWorkflowLaneEntry(ctx, issue); ok {
+			if normalizeState(match.Event.PhaseName) == normalizeState(autoPromoteReworkState) &&
+				workflowLaneMetadataHasAction(match.Metadata, workflowActionPlanReviewRework) {
+				return runpkg.RunModePlan
+			}
+			return runpkg.RunModeImplement
+		}
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID != "" {
+			if _, ok := state.planRework[issueID]; ok {
+				return runpkg.RunModePlan
+			}
+		}
+	}
+	return runpkg.RunModeImplement
+}
+
+func (o *Orchestrator) markGlobalProjectIdle() {
+	if o.globalDispatchGate == nil {
+		return
+	}
+	o.globalDispatchGate.MarkIdle(o.cfg.Project)
+}
+
+type projectCycleDispatchGate interface {
+	BeginProjectCycle(scheduler.ProjectCandidate)
+	EndProjectCycle(string)
+}
+
+func (o *Orchestrator) beginGlobalProjectCycle() {
+	if gate, ok := o.globalDispatchGate.(projectCycleDispatchGate); ok {
+		gate.BeginProjectCycle(o.cfg.Project)
+	}
+}
+
+func (o *Orchestrator) endGlobalProjectCycle() {
+	if gate, ok := o.globalDispatchGate.(projectCycleDispatchGate); ok {
+		gate.EndProjectCycle(o.cfg.Project.ID)
+	}
+}
+
+type projectStateSlotStats struct {
+	capacity  int
+	used      int
+	available int
+}
+
+type detailedProjectDispatchGate interface {
+	TryAcquireWithDecision(context.Context, scheduler.ProjectCandidate, scheduler.SlotRequest, time.Time) (
+		scheduler.Slot,
+		bool,
+		scheduler.DispatchGateDecision,
+		error,
+	)
+}
+
+func (o *Orchestrator) acquireGlobalDispatchSlot(
+	ctx context.Context,
+	issue connector.Issue,
+	workerHost string,
+	now time.Time,
+	pressureCapacity int,
+) (scheduler.Slot, bool, scheduler.DispatchGateDecision) {
+	if o.globalDispatchGate == nil {
+		return scheduler.Slot{}, true, scheduler.DispatchGateDecision{
+			PoolName: scheduler.DefaultPoolName,
+			Reason:   scheduler.DispatchGateReasonGranted,
+		}
+	}
+
+	req := scheduler.SlotRequest{
+		State:            issue.State,
+		Host:             workerHost,
+		Priority:         dispatchpriority.Priority(issue.Priority),
+		PressureCapacity: pressureCapacity,
+	}
+	if issue.CreatedAt != nil {
+		req.CreatedAt = *issue.CreatedAt
+	}
+	req.IssueID = issue.Identifier
+	var (
+		slot     scheduler.Slot
+		ok       bool
+		decision scheduler.DispatchGateDecision
+		err      error
+	)
+	if detailed, hasDecision := o.globalDispatchGate.(detailedProjectDispatchGate); hasDecision {
+		slot, ok, decision, err = detailed.TryAcquireWithDecision(ctx, o.dispatchProjectCandidate(), req, now)
+	} else {
+		slot, ok, err = o.globalDispatchGate.TryAcquire(ctx, o.dispatchProjectCandidate(), req, now)
+		if ok {
+			decision.Reason = scheduler.DispatchGateReasonGranted
+		}
+	}
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("global dispatch slot unavailable", "project_id", o.cfg.Project.ID, "issue_id", issue.ID, "error", err)
+		}
+		return scheduler.Slot{}, false, decision
+	}
+	return slot, ok, decision
+}
+
+func (o *Orchestrator) dispatchPoolSnapshot() scheduler.PoolSnapshot {
+	if o == nil {
+		return scheduler.PoolSnapshot{Name: scheduler.DefaultPoolName}
+	}
+	fallback := scheduler.PoolSnapshot{
+		Name:       scheduler.DefaultPoolName,
+		Capacity:   o.cfg.MaxConcurrentAgents,
+		Guaranteed: o.cfg.MaxConcurrentAgents,
+		BurstTo:    o.cfg.MaxConcurrentAgents,
+		Available:  o.cfg.MaxConcurrentAgents,
+	}
+	if o.globalDispatchGate == nil {
+		return fallback
+	}
+	if snapshotter, ok := o.globalDispatchGate.(scheduler.ProjectPoolSnapshotter); ok {
+		snapshot := snapshotter.PoolSnapshotFor(o.cfg.Project.ID)
+		if snapshot.Capacity > 0 {
+			return snapshot
+		}
+	}
+	if snapshotter, ok := o.globalDispatchGate.(scheduler.PoolSnapshotter); ok {
+		snapshot := snapshotter.PoolSnapshot()
+		if snapshot.Capacity > 0 {
+			return snapshot
+		}
+	}
+	return fallback
+}
+
+func (o *Orchestrator) projectStateSlotStats(issue connector.Issue, state *State) projectStateSlotStats {
+	limit := o.cfg.MaxConcurrentAgents
+	normalized := normalizeState(issue.State)
+	if stateLimit, ok := o.cfg.MaxConcurrentAgentsByState[normalized]; ok {
+		limit = stateLimit
+	}
+
+	used := 0
+	if state != nil {
+		for _, running := range state.Running {
+			if normalizeState(running.Issue.State) == normalized {
+				used++
+			}
+		}
+	}
+	available := limit - used
+	if available < 0 {
+		available = 0
+	}
+	return projectStateSlotStats{capacity: limit, used: used, available: available}
+}
+
+func (o *Orchestrator) releaseGlobalDispatchSlot(slot scheduler.Slot) {
+	if o.globalDispatchGate == nil || slot == (scheduler.Slot{}) {
+		return
+	}
+	if err := o.globalDispatchGate.Release(slot); err != nil && o.logger != nil {
+		o.logger.Warn("release global dispatch slot failed", "project_id", o.cfg.Project.ID, "error", err)
+	}
+}
+
+func (o *Orchestrator) selectorContext() selector.Context {
+	ctx := selector.Context{
+		Persona: o.cfg.SelectorPersona,
+	}
+	if identifier, ok := o.connector.(connector.InstanceIdentifier); ok {
+		ctx.InstanceLogin = identifier.InstanceLogin()
+	}
+	return ctx
+}
+
+func (o *Orchestrator) usageUpdateHandler(
+	ctx context.Context,
+	issueID string,
+	startupTimer mergeWorkerStartupTimer,
+	progresses ...*workerProgress,
+) runpkg.UsageUpdateHandler {
+	var progress *workerProgress
+	if len(progresses) > 0 {
+		progress = progresses[0]
+	}
+	return func(update runpkg.UsageUpdate) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if startupTimer != nil {
+			startupTimer.Stop()
+		}
+		if progress != nil {
+			if err := progress.observe(ctx, update); err != nil {
+				return err
+			}
+		}
+		if update.CompletionSourceStart != nil && progress == nil {
+			applied := make(chan struct{})
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case o.runUpdates <- runUpdate{issueID: issueID, usage: update, applied: applied}:
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-applied:
+				return nil
+			}
+		}
+		if strings.TrimSpace(update.WorkerGitHubActor.Login) != "" && progress == nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case o.runUpdates <- runUpdate{issueID: issueID, usage: update, progress: progress}:
+				return nil
+			}
+		}
+
+		select {
+		case o.runUpdates <- runUpdate{issueID: issueID, usage: update, progress: progress}:
+			return nil
+		default:
+			return nil
+		}
+	}
+}
+
+func (o *Orchestrator) activityUpdateHandler(ctx context.Context, issue connector.Issue) runpkg.AgentActivityUpdateHandler {
+	return func(update runpkg.AgentActivityUpdate) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if o.activity == nil {
+			return nil
+		}
+		o.activity.Publish(activity.Key{ProjectID: o.cfg.Project.ID, IssueID: issue.ID}, activity.Event{
+			At:                update.At,
+			DetentSessionID:   update.DetentSessionID,
+			ProviderSessionID: update.ProviderSessionID,
+			TurnID:            update.TurnID,
+			ItemID:            update.ItemID,
+			Kind:              string(update.Type),
+			Title:             activityUpdateTitle(update),
+			Content:           update.Content,
+			Status:            update.Status,
+			Model:             update.Model,
+			TotalTokens:       update.TotalTokens,
+		})
+		return nil
+	}
+}
+
+func activityUpdateTitle(update runpkg.AgentActivityUpdate) string {
+	switch update.Type {
+	case runpkg.AgentUpdateMessageDelta:
+		return "Agent"
+	case runpkg.AgentUpdateToolStarted:
+		return "Tool started · " + strings.TrimSpace(update.Tool)
+	case runpkg.AgentUpdateToolOutput:
+		return "Tool output · " + strings.TrimSpace(update.Tool)
+	case runpkg.AgentUpdateToolCompleted:
+		return "Tool finished · " + strings.TrimSpace(update.Tool)
+	case runpkg.AgentUpdateMCPElicitation:
+		if tool := strings.TrimSpace(update.Tool); tool != "" {
+			return "MCP elicitation · " + tool
+		}
+		return "MCP elicitation"
+	case runpkg.AgentUpdateTokenUsage:
+		return "Usage"
+	case runpkg.AgentUpdateTurnStarted:
+		return "Turn started"
+	case runpkg.AgentUpdateTurnCompleted:
+		return "Turn finished"
+	case runpkg.AgentUpdateProcessStarted:
+		return "Worker started"
+	case runpkg.AgentUpdateModelUpdated:
+		return "Model updated"
+	default:
+		return strings.TrimSpace(string(update.Type))
+	}
+}
+
+func validCandidate(issue connector.Issue) bool {
+	return issue.ID != "" &&
+		issue.Identifier != "" &&
+		issue.Title != "" &&
+		issue.State != "" &&
+		!issue.Closed &&
+		issue.AssignedToWorker
+}
+
+func (p dispatchPlanner) duplicatePullRequestWork(issue connector.Issue) bool {
+	if issue.PullRequest == nil {
+		return false
+	}
+	switch normalizePullRequestState(issue.PullRequest.State) {
+	case "merged":
+		return !staleMergedPullRequestHasFailedCIEvidence(issue.PullRequest, staleMergedPullRequestSummaryFromIssue(issue))
+	case "open":
+		return !p.nativeWorkflow && normalizeState(issue.State) == "todo" && !issue.PullRequest.HasMissingLocalStatus(gate.Effective(p.cfg.AutoPromote.Gate).LocalStatus)
+	default:
+		return false
+	}
+}
+
+func mergedPullRequestReconciliationPending(issue connector.Issue, cfg Config) bool {
+	if issue.PullRequest == nil || normalizePullRequestState(issue.PullRequest.State) != "merged" {
+		return false
+	}
+	summary := staleMergedPullRequestSummaryFromIssue(issue)
+	decision := staleMergedPullRequestDecision(issue, summary)
+	targetState := staleMergedPullRequestTargetState(decision, cfg.AutoPromote, cfg.TerminalStates)
+	return targetState != "" && normalizeState(targetState) != normalizeState(issue.State)
+}
+
+func continuationDispatch(issue connector.Issue) bool {
+	state := normalizeState(issue.State)
+	return state != "" && state != "todo"
+}
+
+func continuationDelay(index int) time.Duration {
+	if index <= 0 {
+		return 0
+	}
+	return continuationDispatchBackoff
+}
+
+func waitForDispatchBackoff(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// dispatchWorkpadDependencyStates preserves explicit open predicates alongside
+// ordinary dependency refs, including refs also declared in the issue body.
+func dispatchWorkpadDependencyStates(issue connector.Issue, ref connector.BlockedRef) []string {
+	if issue.DependencySource == connector.BlockedRefSourceNative || issue.WorkpadSignal == nil ||
+		issue.WorkpadSignal.Invalid != nil || issue.WorkpadSignal.Source != workpad.SourceStructured ||
+		(issue.WorkpadSignal.Status != workpad.StatusInProgress && issue.WorkpadSignal.Status != workpad.StatusBlocked) {
+		return nil
+	}
+	for _, blocker := range issue.WorkpadSignal.Blockers {
+		if blocker.Predicate == nil || blocker.Predicate.Type != workpad.PredicateIssueState || !stateIn("open", blocker.Predicate.States) {
+			continue
+		}
+		identifier := firstNonBlank(blocker.Identifier, blocker.Predicate.Identifier)
+		if identifier == "" {
+			parsed, err := workpad.ParseRef(blocker.Ref, dependencyIssueRepo(issue.Identifier))
+			if err != nil {
+				continue
+			}
+			identifier = parsed
+		}
+		if strings.EqualFold(strings.TrimSpace(identifier), strings.TrimSpace(ref.Identifier)) {
+			return blocker.Predicate.States
+		}
+	}
+	return nil
+}
+
+func issueBlockedByNonTerminal(issue connector.Issue, terminalStates []string) bool {
+	for _, blocker := range issue.BlockedBy {
+		if states := dispatchWorkpadDependencyStates(issue, blocker); len(states) > 0 {
+			if blocker.TrackerState == "" || issueStateMatches(connector.Issue{State: blocker.State, Closed: blocker.TrackerState == connector.BlockedRefTrackerStateClosed}, states) {
+				return true
+			}
+			continue
+		}
+		if blocker.HumanOwned {
+			if !blocker.HumanCompletionReady {
+				return true
+			}
+			continue
+		}
+		if strings.TrimSpace(blocker.State) == "" {
+			// An unresolved dependency is still waiting, including when its
+			// state lookup failed transiently during candidate refresh.
+			return true
+		}
+		if !dependencyBlockerReady(dependencyBlocker{Ref: blocker}, DependencyAutoUnblockConfig{Readiness: DependencyReadinessTerminal}, terminalStates) {
+			return true
+		}
+	}
+	return false
+}
+
+func availableSlots(state *State) int {
+	available := state.MaxConcurrentAgents - len(state.Running)
+	if available < 0 {
+		return 0
+	}
+	return available
+}

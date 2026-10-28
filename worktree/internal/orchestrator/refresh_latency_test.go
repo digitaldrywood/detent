@@ -1,0 +1,420 @@
+package orchestrator
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/store/storetest"
+	"github.com/digitaldrywood/detent/internal/workpad"
+)
+
+// Replay the actual authorization and blocked owners with many excluded active
+// cards and genuinely unresolved dependencies, using SQLite rather than a no-op
+// evidence writer. Counters separate store time from provider fanout.
+func BenchmarkRefreshMaintenance(b *testing.B) {
+	backend := storetest.Open(b)
+	metrics := &maintenanceStore{Store: backend}
+	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "latency"}, ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}, Authorization: selector.Selector{Labels: selector.Labels{Include: []string{"owned"}}}, DependencyAutoUnblock: DependencyAutoUnblockConfig{Enabled: true}})
+	var excluded, blocked []connector.Issue
+	for i := range 100 {
+		excluded = append(excluded, connector.Issue{ID: fmt.Sprintf("excluded-%d", i), Identifier: fmt.Sprintf("owner/repo#%d", i+1), State: "In Progress"})
+		issue := connector.Issue{ID: fmt.Sprintf("blocked-%d", i), Identifier: fmt.Sprintf("owner/repo#%d", i+101), State: "Blocked", Labels: []string{"owned"}, BlockedBy: []connector.BlockedRef{{ID: "dependency", Identifier: "owner/repo#1000", State: "In Progress", Source: connector.BlockedRefSourceNative}}, DependencySource: connector.BlockedRefSourceNative}
+		blocked = append(blocked, issue)
+		_, err := backend.RecordWorkflowPhaseEvent(b.Context(), store.WorkflowPhaseEvent{ProjectID: "latency", IssueID: issue.ID, Identifier: issue.Identifier, PhaseType: store.WorkflowPhaseTypeLane, PhaseName: "Blocked", Status: "entered", StartedAt: time.Now().Add(-time.Hour)})
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+	tracker := &autoPromoteTickConnector{stateIssues: blocked, resolvedIssues: append(cloneIssues(blocked), connector.Issue{ID: "dependency", Identifier: "owner/repo#1000", State: "In Progress"})}
+	orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: metrics, workflowMetrics: metrics}
+	for _, phase := range []string{"authorize", "retired", "dependencies"} {
+		b.Run(phase, func(b *testing.B) {
+			metrics.reads, metrics.writes, metrics.readTime, metrics.writeTime = 0, 0, 0, 0
+			metrics.batches = 0
+			tracker.fetchComments = nil
+			tracker.fetchIdentifiers = nil
+			cycles := 0
+			b.ReportAllocs()
+			for b.Loop() {
+				state := newState(cfg)
+				switch phase {
+				case "authorize":
+					previous := tickPreviousState{pipeline: excluded}
+					orch.filterAuthorizedTickIssues(b.Context(), &state, tickFetchedIssues{candidates: excluded, status: excluded}, &previous, time.Now())
+				case "retired":
+					orch.recoverBlockedIssues(b.Context(), &state, blocked, time.Now())
+				case "dependencies":
+					orch.operatorClearClosedDependencies(b.Context(), &state, blocked, time.Now())
+				}
+				cycles++
+			}
+			b.ReportMetric(float64(metrics.reads)/float64(cycles), "timeline_reads/op")
+			b.ReportMetric(float64(metrics.writes)/float64(cycles), "decision_writes/op")
+			b.ReportMetric(float64(metrics.batches)/float64(cycles), "batch_commits/op")
+			b.ReportMetric(float64(metrics.readTime.Nanoseconds())/float64(cycles), "store_read_ns/op")
+			b.ReportMetric(float64(metrics.writeTime.Nanoseconds())/float64(cycles), "store_write_ns/op")
+			b.ReportMetric(float64(len(tracker.fetchComments))/float64(cycles), "comment_calls/op")
+			b.ReportMetric(float64(len(tracker.fetchIdentifiers))/float64(cycles), "identity_calls/op")
+		})
+	}
+}
+
+type maintenanceStore struct {
+	store.Store
+	batches             int
+	reads, writes       int
+	readTime, writeTime time.Duration
+}
+
+func (s *maintenanceStore) IssueWorkflowTimeline(ctx context.Context, id store.IssueIdentity) (store.WorkflowTimeline, error) {
+	start := time.Now()
+	s.reads++
+	v, e := s.Store.IssueWorkflowTimeline(ctx, id)
+	s.readTime += time.Since(start)
+	return v, e
+}
+func (s *maintenanceStore) RecordSchedulerDecision(ctx context.Context, d store.SchedulerDecision) (int64, error) {
+	start := time.Now()
+	s.writes++
+	v, e := s.Store.RecordSchedulerDecision(ctx, d)
+	s.writeTime += time.Since(start)
+	return v, e
+}
+
+func (s *maintenanceStore) RecordSchedulerDecisions(ctx context.Context, d []store.SchedulerDecision) ([]int64, error) {
+	start := time.Now()
+	s.batches++
+	s.writes += len(d)
+	ids, e := s.Store.(store.SchedulerDecisionBatchStore).RecordSchedulerDecisions(ctx, d)
+	s.writeTime += time.Since(start)
+	return ids, e
+}
+
+// Catch per-card autocommit regression and lost refusals beyond the bounded live
+// snapshot; every exclusion must still have durable per-issue evidence.
+func TestAuthorizationBatchRetainsEveryRefusal(t *testing.T) {
+	backend := storetest.Open(t)
+	evidence := &maintenanceStore{Store: backend}
+	cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "latency"}, ActiveStates: []string{"In Progress"}, Authorization: selector.Selector{Labels: selector.Labels{Include: []string{"owned"}}}})
+	state := newState(cfg)
+	var issues []connector.Issue
+	for i := range 300 {
+		issues = append(issues, connector.Issue{ID: fmt.Sprintf("excluded-%d", i), State: "In Progress"})
+	}
+	previous := tickPreviousState{pipeline: issues}
+	orch := &Orchestrator{cfg: cfg, workAttempts: evidence}
+	got := orch.filterAuthorizedTickIssues(t.Context(), &state, tickFetchedIssues{candidates: issues, status: issues}, &previous, time.Now())
+	if len(got.candidates) != 0 || len(got.status) != 0 || len(previous.pipeline) != 0 || evidence.batches != 1 || evidence.writes != 300 {
+		t.Fatalf("authorization batch: candidates=%d status=%d retained=%d batches=%d writes=%d", len(got.candidates), len(got.status), len(previous.pipeline), evidence.batches, evidence.writes)
+	}
+	reader := backend.(store.IssueSchedulerDecisionStore)
+	for _, issue := range issues {
+		rows, err := reader.ListIssueSchedulerDecisions(t.Context(), store.IssueSchedulerDecisionQuery{Identity: store.IssueIdentity{ProjectID: "latency", IssueID: issue.ID}})
+		if err != nil || len(rows) != 1 || rows[0].Reason != dispatchSkipAuthorizationSelector || rows[0].MetadataJSON == "{}" {
+			t.Fatalf("lost refusal for %s: %v %v", issue.ID, rows, err)
+		}
+	}
+}
+
+// Hold the actual dependency provider call indefinitely. Eligible unrelated
+// implementation must already have been admitted when maintenance reaches it.
+func TestTickDispatchPrecedesBlockedMaintenance(t *testing.T) {
+	for _, early := range []bool{false, true} {
+		t.Run(fmt.Sprintf("priority_%t", early), func(t *testing.T) {
+			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "latency"}, ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}, MaxConcurrentAgents: 2, DependencyAutoUnblock: DependencyAutoUnblockConfig{Enabled: true}})
+			ready := connector.Issue{ID: "ready", AssignedToWorker: true, Title: "Approved implementation", Identifier: "owner/repo#1", State: "In Progress"}
+			dependent := connector.Issue{ID: "dependent", AssignedToWorker: true, Title: "Unresolved implementation", Identifier: "owner/repo#2", State: "In Progress", BlockedBy: []connector.BlockedRef{{ID: "dependency", Identifier: "owner/repo#1000", State: "In Progress", Source: connector.BlockedRefSourceNative}}}
+			issues := []connector.Issue{ready, dependent}
+			for i := range 100 {
+				issues = append(issues, connector.Issue{ID: fmt.Sprintf("blocked-%03d", i), Identifier: fmt.Sprintf("owner/repo#%d", i+100), State: "Blocked", BlockedBy: dependent.BlockedBy, DependencySource: connector.BlockedRefSourceNative})
+			}
+			base := &autoPromoteTickConnector{stateIssues: issues, resolvedIssues: append(cloneIssues(issues), connector.Issue{ID: "dependency", Identifier: "owner/repo#1000", State: "In Progress"})}
+			state := newState(cfg)
+			state.BoardIssues = cloneIssues(issues)
+			state.dependencyUnblockEarly = early
+			held := make(chan struct{})
+			release := make(chan struct{})
+			finished := make(chan struct{})
+			tracker := &heldMaintenanceConnector{autoPromoteTickConnector: base, entered: held, release: release, observe: func() {
+				if _, ok := state.Running[ready.ID]; !ok {
+					t.Error("approved implementation was still waiting when full blocked maintenance began")
+				}
+				if _, ok := state.Running[dependent.ID]; ok {
+					t.Error("unresolved dependent dispatched")
+				}
+			}, priority: early}
+			runner := newWorkerHostRunner()
+			orch := &Orchestrator{cfg: cfg, connector: tracker, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion, 2)}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			orch.publishState(ctx, &state)
+			orch.startTick(&state, time.Now())
+			go func() {
+				defer close(finished)
+				defer orch.finishTick(ctx, &state)
+				orch.tick(ctx, &state, time.Now())
+			}()
+			defer func() {
+				cancel()
+				select {
+				case <-finished:
+				case <-time.After(10 * time.Second):
+					t.Error("tick did not finish after cancellation")
+				}
+			}()
+			select {
+			case <-held:
+			case <-time.After(10 * time.Second):
+				t.Fatal("maintenance did not reach held provider")
+			}
+			readCtx, cancelRead := context.WithTimeout(ctx, 5*time.Second)
+			published, err := orch.State(readCtx)
+			cancelRead()
+			if err != nil {
+				t.Fatalf("published runtime blocked behind provider: %v", err)
+			}
+			if _, ok := published.Running[ready.ID]; !ok {
+				t.Fatal("admitted worker was not published during blocked maintenance")
+			}
+			if _, ok := published.Running[dependent.ID]; ok {
+				t.Fatal("published an unresolved dependent as running")
+			}
+			request := receiveWorkerHostRunRequest(t, runner.started)
+			if request.Issue.ID != ready.ID {
+				t.Fatalf("dispatched %s", request.Issue.ID)
+			}
+			close(release)
+			select {
+			case <-finished:
+			case <-time.After(10 * time.Second):
+				t.Fatal("tick did not finish")
+			}
+			cancel()
+			if len(base.updates) != 0 {
+				t.Fatalf("unresolved cards advanced: %v", base.updates)
+			}
+		})
+	}
+}
+
+type heldMaintenanceConnector struct {
+	*autoPromoteTickConnector
+	entered  chan struct{}
+	release  <-chan struct{}
+	observe  func()
+	priority bool
+	held     bool
+}
+
+func (c *heldMaintenanceConnector) FetchIssueStatesByIdentifiers(ctx context.Context, refs []string) ([]connector.Issue, error) {
+	// The one pre-fetch priority recovery may look up its own issue and dependency.
+	// All other blocked-card self hydration belongs to the full maintenance pass.
+	if len(refs) == 1 && refs[0] != "owner/repo#1000" && !c.held {
+		if c.priority {
+			c.priority = false
+		} else {
+			c.held = true
+			c.observe()
+			close(c.entered)
+			select {
+			case <-c.release:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
+	return c.autoPromoteTickConnector.FetchIssueStatesByIdentifiers(ctx, refs)
+}
+
+// Catch admission using an active candidate when the same fresh status batch
+// says Blocked, and stale project-status evidence delaying a released candidate.
+func TestDispatchCandidateStatusBeforeMaintenance(t *testing.T) {
+	for _, blocked := range []bool{true, false} {
+		t.Run(fmt.Sprintf("blocked_%t", blocked), func(t *testing.T) {
+			cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}, MaxConcurrentAgents: 1})
+			issue := dispatchTestIssue("ready", "In Progress")
+			issue.AssignedToWorker = true
+			status := cloneIssue(issue)
+			if blocked {
+				status.State = "Blocked"
+				status.Metadata = map[string]string{"hub_profile": "native"}
+				status.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "Approve requested scope"}
+			}
+			state := newState(cfg)
+			state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceProjectStatus, Reason: "blocked by project status"}
+			runner := newWorkerHostRunner()
+			orch := &Orchestrator{cfg: cfg, connector: &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}, supervisor: newTestSupervisor(t, runner, cfg), runResults: make(chan runpkg.Completion, 1)}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			orch.dispatchTickIssues(ctx, &state, tickFetchedIssues{candidates: []connector.Issue{issue}, status: []connector.Issue{status}, statusOK: true}, tickTransitionRefresh{blockedRefreshOK: true}, tickPreviousState{}, nil, time.Now(), nil)
+			_, running := state.Running[issue.ID]
+			if running == blocked {
+				t.Fatalf("running=%t with current blocked status=%t; decisions=%+v", running, blocked, state.SchedulerDecisions)
+			}
+		})
+	}
+}
+
+func TestRetiredParkReferenceCohort(t *testing.T) {
+	for _, mode := range []string{"id-only", "inline", "fresh", "expired", "missing", "failure", "partial failure", "independent failure", "independent forbidden", "discovery failure", "missing identity", "human", "budget", "reserve", "cancelled"} {
+		t.Run(mode, func(t *testing.T) {
+			independentFailure := mode == "independent failure" || mode == "independent forbidden"
+			readRecovered := false
+			tracker := &phaseReferenceConnector{autoPromoteTickConnector: &autoPromoteTickConnector{}}
+			tracker.resolve = func(ctx context.Context, refs []string) ([]connector.Issue, error) {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				if mode == "failure" && !readRecovered || mode == "budget" || mode == "discovery failure" {
+					return nil, errors.New("reference lookup unavailable")
+				}
+				var issues []connector.Issue
+				for _, ref := range refs {
+					if mode == "missing" || (mode == "partial failure" || independentFailure || mode == "missing identity") && ref == "owner/repo#2" {
+						continue
+					}
+					closed := independentFailure || mode == "human"
+					issue := connector.Issue{ID: ref, Identifier: ref, State: "In Progress", Closed: closed}
+					if closed {
+						issue.State = "Done"
+					}
+					if mode == "human" {
+						issue.Labels = []string{"human-owned"}
+					}
+					issues = append(issues, issue)
+				}
+				return issues, nil
+			}
+
+			cfg := normalizeConfig(Config{TerminalStates: []string{"Done"}})
+			var evidenceLog bytes.Buffer
+			orch := &Orchestrator{cfg: cfg, connector: tracker, logger: slog.New(slog.NewJSONHandler(&evidenceLog, nil))}
+			if mode == "id-only" || mode == "inline" {
+				ref := connector.BlockedRef{ID: "native-id", State: "Done", TrackerState: connector.BlockedRefTrackerStateClosed, HumanOwned: true, HumanCompletionReady: true, Source: connector.BlockedRefSourceNative}
+				if mode == "inline" {
+					ref.Identifier = "owner/repo#1"
+					orch.connector = struct{ connector.Connector }{tracker}
+				}
+				issue := connector.Issue{ID: "root", State: "Blocked", BlockedBy: []connector.BlockedRef{ref}}
+				blockers, err := orch.resolveDependencyBlockersWithError(t.Context(), issue)
+				if err != nil || len(blockers) != 1 || blockers[0].Ref != ref || !dependencyBlockerReady(blockers[0], normalizeDependencyAutoUnblockConfig(cfg.DependencyAutoUnblock), cfg.TerminalStates) {
+					t.Fatalf("inline authority changed: %+v, error %v", blockers, err)
+				}
+				if mode == "id-only" {
+					evidence := orch.resolveBlockedRecoveryDependencies(t.Context(), nil, []connector.Issue{issue})[issue.ID]
+					if evidence == nil || len(evidence.blockers) != 1 || evidence.blockers[0].Ref != ref {
+						t.Fatalf("ID-only phase authority changed: %+v", evidence)
+					}
+				}
+				if len(tracker.fetchIdentifiers) != 0 {
+					t.Fatalf("inline authority queried references: %v", tracker.fetchIdentifiers)
+				}
+				return
+			}
+			var roots []connector.Issue
+			for i, refs := range [][]string{{"owner/repo#1"}, {"owner/repo#1", "owner/repo#2"}, {"owner/other#1"}} {
+				issue := connector.Issue{ID: fmt.Sprint("root-", i), Identifier: fmt.Sprintf("owner/repo#%d", i+100), State: "Blocked", DependencySource: connector.BlockedRefSourceNative}
+				for _, ref := range refs {
+					issue.BlockedBy = append(issue.BlockedBy, connector.BlockedRef{Identifier: ref, State: "Done", TrackerState: connector.BlockedRefTrackerStateClosed, HumanOwned: true, HumanCompletionReady: true, Source: connector.BlockedRefSourceNative})
+				}
+				roots = append(roots, issue)
+			}
+			roots[0].WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Identifier: "owner/repo#1", Owner: workpad.BlockerOwnerOrchestrator, Predicate: &workpad.Predicate{Type: workpad.PredicateIssueState, Identifier: "owner/repo#1", States: []string{"open"}}}}}
+			if mode == "expired" {
+				expired := time.Now().Add(-time.Hour)
+				roots[0].WorkpadSignal.Blockers[0].ExpiresAt = &expired
+			}
+			roots[2].WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, Blockers: []workpad.Blocker{{Identifier: "owner/repo#2", Owner: workpad.BlockerOwnerOrchestrator, Predicate: &workpad.Predicate{Type: workpad.PredicatePullRequestState, Identifier: "owner/repo#2", States: []string{"missing"}}}}}
+			ctx := t.Context()
+			if mode == "cancelled" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			state := newState(cfg)
+			got := orch.recoverBlockedIssues(ctx, &state, roots, time.Now())
+			_, dependencyRecovered := got[roots[0].ID]
+			unverifiable := mode == "missing" || mode == "failure" || mode == "budget" || mode == "discovery failure" || mode == "cancelled" || mode == "expired"
+			if dependencyRecovered != (independentFailure || unverifiable) {
+				t.Fatalf("dependency recovery = %t, unavailable = %t", dependencyRecovered, unverifiable)
+			}
+			if !dependencyRecovered {
+				held := state.Blocked[roots[0].ID]
+				want := blockerEvidenceStatusHolds
+				if mode == "human" {
+					want = blockerEvidenceStatusCleared
+				}
+				if len(held.BlockerEvidence) != 1 || held.BlockerEvidence[0].Status != want {
+					t.Fatalf("dependency evidence = %+v, want %s", held.BlockerEvidence, want)
+				}
+			}
+			if unverifiable {
+				if !strings.Contains(evidenceLog.String(), `"blocker_evidence":[`) || !strings.Contains(evidenceLog.String(), `"status":"unverifiable"`) {
+					t.Fatalf("unavailable evaluation evidence was not recorded: %s", evidenceLog.String())
+				}
+				retry, ok := state.Retry[roots[0].ID]
+				if !ok || !stateIn(retry.Issue.State, cfg.ActiveStates) || len(retry.Issue.BlockedBy) != len(roots[0].BlockedBy) || retry.Issue.WorkpadSignal == nil {
+					t.Fatalf("unavailable dependency did not retain references in dispatchable retry: %+v", retry)
+				}
+				if _, parked := state.Blocked[roots[0].ID]; parked {
+					t.Fatal("unavailable dependency retained a blocked park")
+				}
+			}
+			if mode == "failure" {
+				readRecovered = true
+				later := orch.recoverBlockedIssues(ctx, &state, roots[:1], time.Now())
+				if _, recovered := later[roots[0].ID]; recovered {
+					t.Fatal("successful read released an unfinished dependency")
+				}
+				held := state.Blocked[roots[0].ID]
+				if len(held.BlockerEvidence) != 1 || held.BlockerEvidence[0].Status != blockerEvidenceStatusHolds {
+					t.Fatalf("successful read did not recompute evidence: %+v", held.BlockerEvidence)
+				}
+			}
+			if mode == "missing" {
+				again := orch.recoverBlockedIssues(ctx, &state, roots[:1], time.Now())
+				if _, recovered := again[roots[0].ID]; !recovered || state.Retry[roots[0].ID].Attempt != 2 {
+					t.Fatal("repeated unresolvable reference did not continue machine retry")
+				}
+			}
+			for _, root := range roots[1:] {
+				if _, ok := got[root.ID]; !ok {
+					t.Fatalf("machine condition retained retired park: %s", root.ID)
+				}
+				retry, ok := state.Retry[root.ID]
+				if !ok || len(retry.Issue.BlockedBy) != len(root.BlockedBy) {
+					t.Fatalf("retry lost dependency evidence for %s", root.ID)
+				}
+			}
+			for _, refs := range tracker.fetchIdentifiers {
+				for _, ref := range refs {
+					if ref != "owner/repo#1" {
+						t.Fatalf("machine park queried retired predicate: %s", ref)
+					}
+				}
+			}
+
+		})
+	}
+}
+
+type phaseReferenceConnector struct {
+	*autoPromoteTickConnector
+	resolve func(context.Context, []string) ([]connector.Issue, error)
+}
+
+func (c *phaseReferenceConnector) FetchIssueStatesByIdentifiers(ctx context.Context, refs []string) ([]connector.Issue, error) {
+	c.fetchIdentifiers = append(c.fetchIdentifiers, append([]string(nil), refs...))
+	return c.resolve(ctx, refs)
+}

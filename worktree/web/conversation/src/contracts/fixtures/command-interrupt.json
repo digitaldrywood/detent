@@ -1,0 +1,8 @@
+{
+  "key": "cmd_01J8Z0V6C3N7",
+  "kind": "interrupt",
+  "expected": {
+    "attempt_id": "att_18f4",
+    "turn_id": null
+  }
+}

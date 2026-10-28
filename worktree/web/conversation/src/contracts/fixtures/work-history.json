@@ -1,0 +1,81 @@
+{
+  "items": [
+    {
+      "event_id": "evt_5a9c1e2d3f4a4b5c6d7e8f9a0b1c2d3e",
+      "organization_id": "org_4d1f2a3b4c5d6e7f8091a2b3c4d5e6f7",
+      "project_id": "prj_8c1d4e5f6a7b4c8d9e0f1a2b3c4d5e6f",
+      "aggregate_type": "work_item",
+      "aggregate_id": "wi_3363aa10bb4f4c2d8e7f6a5b4c3d2e1f",
+      "aggregate_sequence": "3",
+      "type": "workflow.transitioned",
+      "schema_version": 1,
+      "recorded_at": "2026-09-09T10:02:44Z",
+      "actor": {
+        "kind": "human",
+        "principal_id": "tok_7b21"
+      },
+      "data": {
+        "revision": "5",
+        "from_state": "Todo",
+        "to_state": "In Progress",
+        "reason": "user_requested"
+      }
+    },
+    {
+      "event_id": "evt_6b0d2f3e4a5b4c6d7e8f9a0b1c2d3e4f",
+      "organization_id": "org_4d1f2a3b4c5d6e7f8091a2b3c4d5e6f7",
+      "project_id": "prj_8c1d4e5f6a7b4c8d9e0f1a2b3c4d5e6f",
+      "aggregate_type": "work_item",
+      "aggregate_id": "wi_3363aa10bb4f4c2d8e7f6a5b4c3d2e1f",
+      "aggregate_sequence": "4",
+      "type": "run.started",
+      "schema_version": 1,
+      "recorded_at": "2026-09-09T10:03:00Z",
+      "actor": {
+        "kind": "runner",
+        "principal_id": "tok_runner_1"
+      },
+      "data": {
+        "run": {
+          "sequence": "3",
+          "identity": {
+            "role": "implementer",
+            "backend": "codex",
+            "model": "gpt-6-astra"
+          },
+          "machine_id": "mac_studio",
+          "runner_id": "rnr_mac_studio",
+          "session_id": "sess_91",
+          "lease_id": "lease_7f2a",
+          "fencing_token": "7",
+          "run_id": "run_2c9a1b3d4e5f6a7b8c9d0e1f2a3b4c5d",
+          "attempt_id": "att_18f4a1b2c3d4e5f6a7b8c9d0e1f2a3b4",
+          "policy_id": "policy_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        }
+      }
+    },
+    {
+      "event_id": "evt_7c1e3a4b5c6d4e7f8a9b0c1d2e3f4a5b",
+      "organization_id": "org_4d1f2a3b4c5d6e7f8091a2b3c4d5e6f7",
+      "project_id": "prj_8c1d4e5f6a7b4c8d9e0f1a2b3c4d5e6f",
+      "aggregate_type": "work_item",
+      "aggregate_id": "wi_3363aa10bb4f4c2d8e7f6a5b4c3d2e1f",
+      "aggregate_sequence": "5",
+      "type": "change.version_published",
+      "schema_version": 1,
+      "recorded_at": "2026-09-09T10:40:00Z",
+      "actor": {
+        "kind": "runner",
+        "principal_id": "tok_runner_1"
+      },
+      "data": {
+        "change": {
+          "change_id": "change_9988776655443322110011223344556677",
+          "version_id": "version_aabbccddeeff00112233445566778899",
+          "head_sha": "a41f0c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b"
+        }
+      }
+    }
+  ],
+  "next_cursor": "eyJ2IjoyLCJzY29wZSI6InRva183YjIxIGhpc3RvcnkiLCJhZnRlciI6IjUiLCJleHBpcmVzIjoxNzg4OTk5OTk5fQ.aGlzdG9yeXNpZ25hdHVyZXBsYWNlaG9sZGVyMDE"
+}

@@ -1,0 +1,1495 @@
+openapi: 3.0.3
+info:
+  title: Detent Stable JSON API
+  version: 1.0.0
+  description: |
+    The stable, machine-readable JSON API for Detent operators and integrations.
+    Dashboard HTML, HTMX fragments, and server-sent event streams are outside this
+    catalog. Some cataloged operations also support an HTMX representation; this
+    document describes only their non-HTMX JSON contract. All operations except
+    discovery are registered only while Detent is in running mode.
+servers:
+  - url: /
+tags:
+  - name: discovery
+  - name: telemetry
+  - name: projects
+  - name: operations
+  - name: administration
+  - name: webhooks
+paths:
+  /api/v1/openapi.yaml:
+    get:
+      operationId: getOpenAPI
+      summary: Download this OpenAPI document
+      tags: [discovery]
+      security: []
+      x-detent-access: public
+      x-detent-echo-path: /api/v1/openapi.yaml
+      responses:
+        "200":
+          description: The deterministic OpenAPI 3 document.
+          content:
+            application/vnd.oai.openapi+yaml:
+              schema:
+                type: string
+  /api/v1/operations:
+    get:
+      operationId: getOperations
+      summary: Get durable operations statistics, applied actions, and human decisions
+      tags: [telemetry]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/operations
+      parameters:
+        - name: since
+          in: query
+          description: Exclusive action timestamp cursor; defaults to 24 hours ago.
+          schema: {type: string, format: date-time}
+      responses:
+        "200":
+          description: Data time, producing instance, 24-hour and 7-day stats, actions and decisions. Unavailable measurements are null. Blocked nights use UTC dates.
+          content:
+            application/json:
+              schema: {type: object, additionalProperties: true}
+        "400": {$ref: "#/components/responses/Problem"}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "429": {$ref: "#/components/responses/Problem"}
+  /api/v1/state:
+    get:
+      operationId: getFleetState
+      summary: Get the fleet telemetry snapshot
+      parameters:
+        - name: fields
+          in: query
+          description: Return only update status and the running attempt count for coordinated updates.
+          schema:
+            type: string
+            enum: ["update,counts"]
+        - $ref: "#/components/parameters/StateProjection"
+      tags: [telemetry]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/state
+      responses:
+        "200":
+          description: Fleet state, or a degraded snapshot-unavailable response.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/State"
+                  - $ref: "#/components/schemas/UpdateState"
+                  - $ref: "#/components/schemas/SnapshotUnavailable"
+                  - $ref: "#/components/schemas/BoundedState"
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "429": {$ref: "#/components/responses/Problem"}
+  /api/v1/demo/scenarios:
+    get:
+      operationId: listDemoScenarios
+      summary: List enabled deterministic demo scenarios
+      tags: [telemetry]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/demo/scenarios
+      responses:
+        "200":
+          description: Demo scenario manifest.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GenericObject"}
+        "404":
+          description: Demo mode is not enabled.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Problem"}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+  /api/v1/timeseries:
+    get:
+      operationId: getFleetTimeSeries
+      summary: Get fleet time-series samples
+      tags: [telemetry]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/timeseries
+      parameters:
+        - $ref: "#/components/parameters/Window"
+        - $ref: "#/components/parameters/Bucket"
+      responses:
+        "200":
+          description: Fleet time-series samples.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TimeSeries"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+  /api/v1/operator-connections:
+    post:
+      operationId: createOperatorConnection
+      summary: Establish a local MCP stdio operator connection
+      description: Binds a new connection to the authenticated operator identity. Authorized calls execute directly after checking key scope, project access and current grants through the application owner. Clients own confirmation.
+      tags: [operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/operator-connections
+      responses:
+        "201":
+          description: Authenticated operator connection identifier.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [connection_id]
+                properties:
+                  connection_id: {type: string}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "500": {$ref: "#/components/responses/Problem"}
+  /api/v1/operator-tools:
+    get:
+      operationId: listOperatorTools
+      summary: List operator tools available to the current identity
+      description: Returns tool definitions filtered by current authority. Mutation tools are included only for identities with write scope; discovery does not authorize a later call.
+      tags: [telemetry, operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/operator-tools
+      responses:
+        "200":
+          description: Authorized tool catalog with input schemas, annotations, and toolset metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tools]
+                properties:
+                  tools:
+                    type: array
+                    items: {$ref: "#/components/schemas/GenericObject"}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+  /api/v1/operator-tools/{tool_name}:
+    parameters:
+      - in: path
+        name: tool_name
+        required: true
+        description: Name from the shared read-only operator tool catalog.
+        schema: {type: string, minLength: 1}
+    post:
+      operationId: callReadOnlyOperatorTool
+      summary: Call a shared read-only operator tool
+      description: Executes only tools in the shared read-only catalog against the daemon's live read model. The POST body contains the tool arguments and cannot dispatch dashboard proposal mutations.
+      tags: [telemetry, operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/operator-tools/:tool_name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/GenericObject"}
+      responses:
+        "200":
+          description: Exact structured result produced by the shared operator tool executor.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GenericObject"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "409": {$ref: "#/components/responses/Problem"}
+        "413": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/projects/{project_id}/work-items:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+    post:
+      operationId: createProjectWorkItem
+      summary: Create a runtime work item
+      tags: [projects]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: project-scoped
+      x-detent-scope: write
+      x-detent-project-parameter: project_id
+      x-detent-echo-path: /api/v1/projects/:project_id/work-items
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/WorkItemRequest"}
+      responses:
+        "201":
+          description: Work item created.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/WorkItem"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "409": {$ref: "#/components/responses/Problem"}
+        "422": {$ref: "#/components/responses/Problem"}
+        "501": {$ref: "#/components/responses/Problem"}
+        "502": {$ref: "#/components/responses/Problem"}
+  /api/v1/projects/{project_id}/state:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+    get:
+      operationId: getProjectState
+      summary: Get a project telemetry snapshot
+      parameters:
+        - $ref: "#/components/parameters/StateProjection"
+      tags: [projects, telemetry]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/projects/*
+      responses:
+        "200":
+          description: Project state, or a degraded snapshot-unavailable response.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: "#/components/schemas/State"
+                  - $ref: "#/components/schemas/SnapshotUnavailable"
+                  - $ref: "#/components/schemas/BoundedState"
+        "404": {$ref: "#/components/responses/Problem"}
+  /api/v1/projects/{project_id}/issues/explanation:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+    get:
+      operationId: getIssueExplanation
+      summary: Explain an issue's current orchestration state
+      description: Returns the versioned issue explanation read model, including degraded source states when live evidence is unavailable.
+      tags: [projects, telemetry]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/projects/:project_id/issues/explanation
+      parameters:
+        - in: query
+          name: reference
+          required: true
+          description: Issue ID, canonical identifier, issue URL, bare number, or hash-prefixed number.
+          schema: {type: string, minLength: 1}
+        - in: query
+          name: schema
+          description: Requested response schema version. Omit to use the current version.
+          schema: {type: integer, enum: [3]}
+      responses:
+        "200":
+          description: Versioned issue explanation, possibly containing degraded or last-known evidence.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/IssueExplanation"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "409": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+
+
+  /api/v1/projects/{project_id}/staleness-warnings/acknowledge:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+    post:
+      operationId: acknowledgeStalenessWarnings
+      summary: Dismiss an explicit set of active staleness warning conditions
+      description: Acknowledges only the warning IDs supplied by the caller in one transactional operation.
+      tags: [projects, operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: project-scoped
+      x-detent-scope: write
+      x-detent-project-parameter: project_id
+      x-detent-echo-path: /api/v1/projects/:project_id/staleness-warnings/acknowledge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [warning_ids]
+              properties:
+                warning_ids:
+                  type: array
+                  minItems: 1
+                  items: {type: string, minLength: 1}
+      responses:
+        "200":
+          description: The explicit warning conditions were acknowledged.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GenericObject"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/projects/{project_id}/staleness-warnings/{warning_id}/acknowledge:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - in: path
+        name: warning_id
+        required: true
+        schema: {type: string, minLength: 1}
+    post:
+      operationId: acknowledgeStalenessWarning
+      summary: Dismiss an active staleness warning condition
+      tags: [projects, operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: project-scoped
+      x-detent-scope: write
+      x-detent-project-parameter: project_id
+      x-detent-echo-path: /api/v1/projects/:project_id/staleness-warnings/:warning_id/acknowledge
+      responses:
+        "200":
+          description: The warning condition was acknowledged.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GenericObject"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "401": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/projects/{project_id}/timeseries:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/Window"
+      - $ref: "#/components/parameters/Bucket"
+    get:
+      operationId: getProjectTimeSeries
+      summary: Get project time-series samples
+      tags: [projects, telemetry]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/projects/*
+      responses:
+        "200":
+          description: Project time-series samples.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/TimeSeries"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
+  /api/v1/projects/{project_id}/work-attempts/{attempt_id}:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/AttemptID"
+    get:
+      operationId: getWorkAttempt
+      summary: Get a persisted work-attempt receipt
+      tags: [projects, operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/projects/:project_id/work-attempts/:attempt_id
+      responses:
+        "200":
+          description: Work-attempt receipt.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/WorkAttempt"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/projects/{project_id}/work-attempts/{attempt_id}/recovery:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/AttemptID"
+    post:
+      operationId: recoverWorkAttempt
+      summary: Apply a confirmed work-attempt recovery action
+      tags: [projects, operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: project-scoped
+      x-detent-scope: write
+      x-detent-project-parameter: project_id
+      x-detent-echo-path: /api/v1/projects/:project_id/work-attempts/:attempt_id/recovery
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/RecoveryRequest"}
+      responses:
+        "200":
+          description: Recovery result.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GenericObject"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "409": {$ref: "#/components/responses/Problem"}
+        "422": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/projects/{project_id}/runs/{attempt}/stop:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - $ref: "#/components/parameters/Attempt"
+    post:
+      operationId: stopProjectRun
+      summary: Stop an active run and continue board routing
+      tags: [projects, operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: project-scoped
+      x-detent-scope: write
+      x-detent-project-parameter: project_id
+      x-detent-echo-path: /api/v1/projects/:project_id/runs/:attempt/stop
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/StopRunRequest"}
+      responses:
+        "200":
+          description: Stop result.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GenericObject"}
+        "409": {$ref: "#/components/responses/Problem"}
+        "422": {$ref: "#/components/responses/Problem"}
+        "428": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/keys:
+    get:
+      operationId: listAPIKeys
+      summary: List API key metadata
+      tags: [administration]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: admin
+      x-detent-scope: admin
+      x-detent-echo-path: /api/v1/keys
+      responses:
+        "200":
+          description: API key metadata. Secret key values are never returned.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/APIKeyList"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+    post:
+      operationId: createAPIKey
+      summary: Create an API key
+      tags: [administration]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: admin
+      x-detent-scope: admin
+      x-detent-echo-path: /api/v1/keys
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/APIKeyCreateRequest"}
+      responses:
+        "201":
+          description: API key metadata plus the one-time token value.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/APIKeyCreated"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "422": {$ref: "#/components/responses/Problem"}
+  /api/v1/keys/{id}/rotate:
+    parameters:
+      - $ref: "#/components/parameters/APIKeyID"
+    post:
+      operationId: rotateAPIKey
+      summary: Rotate an API key
+      tags: [administration]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: admin
+      x-detent-scope: admin
+      x-detent-echo-path: /api/v1/keys/:id/rotate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                grace: {type: string, example: 24h}
+      responses:
+        "201":
+          description: Replacement key metadata and one-time token value.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/APIKeyCreated"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "422": {$ref: "#/components/responses/Problem"}
+  /api/v1/keys/{id}:
+    parameters:
+      - $ref: "#/components/parameters/APIKeyID"
+    delete:
+      operationId: revokeAPIKey
+      summary: Revoke an API key
+      tags: [administration]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: admin
+      x-detent-scope: admin
+      x-detent-echo-path: /api/v1/keys/:id
+      responses:
+        "204": {description: API key revoked.}
+        "404": {$ref: "#/components/responses/Problem"}
+  /api/v1/refresh:
+    get:
+      operationId: rejectRefreshGET
+      summary: Report that refresh requires POST
+      tags: [operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/refresh
+      responses:
+        "405": {$ref: "#/components/responses/Problem"}
+    post:
+      operationId: requestRefresh
+      summary: Request an orchestrator refresh
+      tags: [operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: write
+      x-detent-scope: write
+      x-detent-echo-path: /api/v1/refresh
+      responses:
+        "202":
+          description: Refresh accepted or coalesced.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Refresh"}
+        "429":
+          description: Refresh refused by a degraded upstream rate-limit state.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Refresh"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/update/apply:
+    post:
+      operationId: applyUpdate
+      summary: Drain active attempts and apply a Detent update
+      tags: [administration]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: admin
+      x-detent-scope: admin
+      x-detent-echo-path: /api/v1/update/apply
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                confirm: {type: boolean}
+                release: {type: boolean, description: Explicitly apply a release even when automatic updates are disabled.}
+                from_release: {type: boolean, description: Replace a go-install-managed binary with a release asset.}
+      responses:
+        "202":
+          description: Update application started.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Status"}
+        "409": {$ref: "#/components/responses/Problem"}
+        "422": {$ref: "#/components/responses/Problem"}
+        "428": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/capacity/clear:
+    post:
+      operationId: clearCapacityOutages
+      summary: Clear recorded backend-capacity outages
+      tags: [administration]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: admin
+      x-detent-scope: admin
+      x-detent-echo-path: /api/v1/capacity/clear
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                project_id: {type: string}
+                scope: {type: string}
+                recovery: {type: string, enum: [ramping, immediate], default: ramping}
+      responses:
+        "202":
+          description: Capacity outage clear requested.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, requested, recovery_requested, recovery_applied]
+                properties:
+                  status: {type: string, enum: [requested]}
+                  project: {type: string}
+                  scope: {type: string}
+                  requested: {type: integer}
+                  recovery_requested: {type: string, enum: [ramping, immediate]}
+                  recovery_applied: {type: string, enum: [pending]}
+        "400": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/projects/{project_id}/security-audits/dispositions:
+    post:
+      operationId: recordSecurityAuditDisposition
+      summary: Record an evidenced false-positive disposition for an exact-head trusted audit
+      tags: [administration]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: admin
+      x-detent-scope: admin
+      x-detent-echo-path: /api/v1/projects/:project_id/security-audits/dispositions
+      parameters:
+        - {$ref: "#/components/parameters/ProjectID"}
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: {$ref: "#/components/schemas/SecurityAuditDispositionRequest"}
+          application/json:
+            schema: {$ref: "#/components/schemas/SecurityAuditDispositionRequest"}
+      responses:
+        "201":
+          description: Immutable disposition recorded by the trusted Detent service.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SecurityAuditDisposition"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "409": {$ref: "#/components/responses/Problem"}
+        "422": {$ref: "#/components/responses/Problem"}
+        "428": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/tracker/availability/clear:
+    post:
+      operationId: clearTrackerAvailability
+      summary: Clear recorded tracker-availability conditions
+      tags: [administration]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: admin
+      x-detent-scope: admin
+      x-detent-echo-path: /api/v1/tracker/availability/clear
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                project_id: {type: string}
+      responses:
+        "200":
+          description: Tracker availability records cleared.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Status"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/forge/availability/clear:
+    post:
+      operationId: clearForgeAvailability
+      summary: Clear recorded forge-write availability conditions
+      tags: [administration]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: admin
+      x-detent-scope: admin
+      x-detent-echo-path: /api/v1/forge/availability/clear
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                project_id: {type: string}
+                host: {type: string}
+      responses:
+        "200":
+          description: Forge availability records cleared.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Status"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/failure-breaker/canary:
+    post:
+      operationId: requestFailureBreakerCanary
+      summary: Request failure-breaker canaries
+      tags: [administration]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: admin
+      x-detent-scope: admin
+      x-detent-echo-path: /api/v1/failure-breaker/canary
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                project_id: {type: string}
+      responses:
+        "200":
+          description: Canary request result.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Status"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/webhooks/github:
+    post:
+      operationId: receiveGitHubWebhook
+      summary: Receive a signed GitHub webhook
+      tags: [webhooks]
+      security:
+        - githubSignature: []
+      x-detent-access: public
+      x-detent-echo-path: /api/v1/webhooks/github
+      parameters:
+        - in: header
+          name: X-GitHub-Event
+          required: true
+          schema: {type: string}
+        - in: header
+          name: X-GitHub-Delivery
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/GenericObject"}
+      responses:
+        "202":
+          description: Webhook accepted.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Refresh"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "401": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "503": {$ref: "#/components/responses/Unavailable"}
+  /api/v1/usage:
+    get:
+      operationId: getUsage
+      summary: Get usage aggregates
+      tags: [telemetry]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/usage
+      parameters:
+        - in: query
+          name: by
+          schema: {type: string, enum: [day, project, issue, pr, model]}
+        - in: query
+          name: from
+          schema: {type: string, format: date}
+        - in: query
+          name: to
+          schema: {type: string, format: date}
+      responses:
+        "200":
+          description: Usage report.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GenericObject"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "500": {$ref: "#/components/responses/Problem"}
+  /api/v1/workflow/timeline:
+    get:
+      operationId: getWorkflowTimeline
+      summary: Get persisted workflow phase events for an issue
+      tags: [operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/workflow/timeline
+      parameters:
+        - in: query
+          name: project_id
+          required: true
+          schema: {type: string}
+        - in: query
+          name: issue_id
+          schema: {type: string}
+        - in: query
+          name: identifier
+          schema: {type: string}
+        - in: query
+          name: issue_url
+          schema: {type: string, format: uri}
+      responses:
+        "200":
+          description: Ordered workflow events.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items: {$ref: "#/components/schemas/GenericObject"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "500": {$ref: "#/components/responses/Problem"}
+  /api/v1/projects/{project_id}/issues/{issue_id}/priority:
+    parameters:
+      - $ref: "#/components/parameters/ProjectID"
+      - in: path
+        name: issue_id
+        required: true
+        schema: {type: string}
+    post:
+      operationId: setIssuePriority
+      summary: Set a configured issue priority
+      tags: [projects, operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: project-scoped
+      x-detent-scope: write
+      x-detent-project-parameter: project_id
+      x-detent-echo-path: /api/v1/projects/:project_id/issues/:issue_id/priority
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [priority]
+              properties:
+                priority: {type: string}
+      responses:
+        "200":
+          description: Priority updated.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Status"}
+        "422": {$ref: "#/components/responses/Problem"}
+        "501": {$ref: "#/components/responses/Problem"}
+        "502": {$ref: "#/components/responses/Problem"}
+  /api/v1/kanban/comment:
+    post:
+      operationId: createKanbanComment
+      summary: Create an issue or pull-request comment
+      tags: [operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: project-scoped
+      x-detent-scope: write
+      x-detent-project-parameter: project_id
+      x-detent-echo-path: /api/v1/kanban/comment
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: {$ref: "#/components/schemas/KanbanCommentRequest"}
+      responses:
+        "200":
+          description: Comment submitted.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Status"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
+        "502": {$ref: "#/components/responses/Problem"}
+    delete:
+      operationId: deleteKanbanComment
+      summary: Delete a local Detent issue comment
+      tags: [operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: project-scoped
+      x-detent-scope: write
+      x-detent-project-parameter: project_id
+      x-detent-echo-path: /api/v1/kanban/comment
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: {$ref: "#/components/schemas/KanbanCommentMutation"}
+      responses:
+        "200":
+          description: Comment deleted.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Status"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
+  /api/v1/kanban/comment/edit:
+    post:
+      operationId: editKanbanComment
+      summary: Edit a local Detent issue comment
+      tags: [operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: project-scoped
+      x-detent-scope: write
+      x-detent-project-parameter: project_id
+      x-detent-echo-path: /api/v1/kanban/comment/edit
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: {$ref: "#/components/schemas/KanbanCommentMutation"}
+      responses:
+        "200":
+          description: Comment edited.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Status"}
+        "400": {$ref: "#/components/responses/Problem"}
+        "403": {$ref: "#/components/responses/Problem"}
+        "404": {$ref: "#/components/responses/Problem"}
+  /api/v1/{issue}:
+    parameters:
+      - in: path
+        name: issue
+        required: true
+        description: Issue identifier captured by the final API wildcard, for example owner/repository#1642.
+        allowReserved: true
+        schema: {type: string, minLength: 1}
+    get:
+      operationId: getIssue
+      summary: Get a running, retrying, or blocked issue
+      tags: [operations]
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      x-detent-access: read
+      x-detent-scope: read
+      x-detent-echo-path: /api/v1/*
+      responses:
+        "200":
+          description: Issue runtime detail.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/GenericObject"}
+        "404": {$ref: "#/components/responses/Problem"}
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Detent static API token or scoped API key.
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    githubSignature:
+      type: apiKey
+      in: header
+      name: X-Hub-Signature-256
+      description: HMAC-SHA256 signature over the exact request body.
+  parameters:
+    StateProjection:
+      in: query
+      name: projection
+      description: The CLI projection bounds state data arrays to at most 100 entries, compact JSON including metadata to 768 KiB, and encoded scalar values to 16 KiB. Truncation metadata reports omitted fields and original collection totals. Counts and freshness use the complete scoped snapshot. The updater's fields projection takes precedence on the fleet route.
+      schema: {type: string, enum: [cli]}
+    ProjectID:
+      in: path
+      name: project_id
+      required: true
+      schema: {type: string, minLength: 1}
+    AttemptID:
+      in: path
+      name: attempt_id
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    Attempt:
+      in: path
+      name: attempt
+      required: true
+      schema: {type: integer, minimum: 0}
+    APIKeyID:
+      in: path
+      name: id
+      required: true
+      schema: {type: string, minLength: 1}
+    Window:
+      in: query
+      name: window
+      schema: {type: string, example: 10m}
+    Bucket:
+      in: query
+      name: bucket
+      schema: {type: string, example: 1m}
+  responses:
+    Problem:
+      description: Request failed.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Problem"}
+    Unavailable:
+      description: A required orchestrator or backing service is degraded or unavailable.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Problem"}
+  schemas:
+    GenericObject:
+      type: object
+      additionalProperties: true
+    APIError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: string}
+            message: {type: string}
+    CLIProblem:
+      type: object
+      description: RFC 9457-style Detent CLI JSON error envelope documented in docs/cli.md.
+      required: [type, code, title, detail, exit_code]
+      properties:
+        type: {type: string, format: uri}
+        code: {type: string}
+        title: {type: string}
+        detail: {type: string}
+        exit_code: {type: integer}
+        suggested_fix: {type: string}
+        did_you_mean:
+          type: array
+          items: {type: string}
+        docs_url: {type: string, format: uri}
+    Problem:
+      description: Stable Detent machine-error forms. HTTP API routes emit APIError; CLI JSON commands emit CLIProblem.
+      oneOf:
+        - $ref: "#/components/schemas/APIError"
+        - $ref: "#/components/schemas/CLIProblem"
+    SnapshotUnavailable:
+      type: object
+      required: [generated_at, error]
+      properties:
+        generated_at: {type: string, format: date-time}
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: string, enum: [snapshot_unavailable]}
+            message: {type: string}
+    IssueExplanation:
+      type: object
+      description: Version 3 issue state assembled from tracker, runtime, session, pull-request, gate, provenance trust, and cumulative park evidence.
+      required: [schema, found, observed_at, identity, current_lane, eligibility, sessions, required_gate, reasons, sources, evidence]
+      properties:
+        schema: {type: integer, enum: [3]}
+        found: {type: boolean}
+        observed_at: {type: string, format: date-time}
+        identity: {$ref: "#/components/schemas/IssueExplanationIdentity"}
+        current_lane: {$ref: "#/components/schemas/IssueExplanationLane"}
+        latest_transition: {$ref: "#/components/schemas/GenericObject"}
+        dependencies:
+          type: array
+          items: {$ref: "#/components/schemas/IssueDependency"}
+        dependency_notes:
+          type: array
+          items: {type: string}
+        eligibility: {$ref: "#/components/schemas/GenericObject"}
+        attempt: {$ref: "#/components/schemas/GenericObject"}
+        sessions: {$ref: "#/components/schemas/GenericObject"}
+        pull_request: {$ref: "#/components/schemas/GenericObject"}
+        required_gate: {$ref: "#/components/schemas/GenericObject"}
+        reasons:
+          type: array
+          items: {$ref: "#/components/schemas/IssueExplanationReason"}
+        sources:
+          type: array
+          items: {$ref: "#/components/schemas/IssueExplanationSource"}
+        evidence:
+          type: array
+          items: {$ref: "#/components/schemas/IssueExplanationEvidence"}
+    IssueDependency:
+      type: object
+      required: [identifier]
+      properties:
+        identifier: {type: string}
+        id: {type: string}
+        state: {type: string}
+        tracker_state: {type: string}
+        source: {type: string}
+        human_owned: {type: boolean}
+        human_completion_ready: {type: boolean}
+    IssueExplanationIdentity:
+      type: object
+      required: [project_id]
+      properties:
+        project_id: {type: string}
+        issue_id: {type: string}
+        identifier: {type: string}
+        issue_url: {type: string, format: uri}
+        number: {type: integer}
+        title: {type: string}
+    IssueExplanationLane:
+      type: object
+      required: [freshness, degraded]
+      properties:
+        name: {type: string}
+        observed_at: {type: string, format: date-time}
+        freshness: {$ref: "#/components/schemas/IssueExplanationSourceState"}
+        degraded: {type: boolean}
+        evidence_id: {type: string}
+    IssueExplanationReason:
+      type: object
+      required: [code, detail]
+      properties:
+        code: {type: string}
+        detail: {type: string}
+        action: {type: string}
+    IssueExplanationSource:
+      type: object
+      required: [name, state]
+      properties:
+        name: {type: string}
+        state: {$ref: "#/components/schemas/IssueExplanationSourceState"}
+        code: {type: string}
+    IssueExplanationEvidence:
+      type: object
+      required: [id, kind]
+      properties:
+        id: {type: string}
+        kind:
+          type: string
+          enum: [snapshot, workflow, attempt, scheduler, admission, session, provider_session, pull_request]
+        observed_at: {type: string, format: date-time}
+    IssueExplanationSourceState:
+      type: string
+      enum: [available, live, last_known, expired, unavailable, corrupt]
+    State:
+      type: object
+      required: [generated_at, snapshot_age_seconds, enrichment, status, shutdown, instance, projects, stats, board]
+      properties:
+        generated_at: {type: string, format: date-time}
+        snapshot_age_seconds: {type: integer, format: int64, minimum: 0}
+        enrichment: {$ref: "#/components/schemas/StateEnrichment"}
+        status: {type: string, enum: [running, draining]}
+        shutdown: {$ref: "#/components/schemas/GenericObject"}
+        instance: {$ref: "#/components/schemas/GenericObject"}
+        projects:
+          type: array
+          items: {$ref: "#/components/schemas/GenericObject"}
+        stats: {$ref: "#/components/schemas/GenericObject"}
+        board: {$ref: "#/components/schemas/BoardState"}
+      additionalProperties: true
+    BoundedState:
+      type: object
+      description: CLI projection of State or SnapshotUnavailable. Collection and byte limits apply before transport; omitted data is explicit and aggregate counts use the original scoped snapshot.
+      required: [generated_at, truncation]
+      properties:
+        generated_at: {type: string, format: date-time}
+        truncation:
+          type: object
+          required: [limit, max_bytes, value_max_bytes, truncated, collections]
+          properties:
+            limit: {type: integer, enum: [100]}
+            max_bytes: {type: integer, enum: [786432]}
+            value_max_bytes: {type: integer, enum: [16384]}
+            truncated: {type: boolean}
+            collections:
+              type: array
+              items:
+                type: object
+                required: [path, omitted, total, returned]
+                properties:
+                  path: {type: string, description: JSON Pointer to the returned array.}
+                  omitted: {type: integer, minimum: 1}
+                  total: {type: integer, minimum: 1}
+                  returned: {type: integer, minimum: 0, maximum: 100}
+            omitted_fields:
+              type: array
+              items:
+                type: object
+                required: [path, reason]
+                properties:
+                  path: {type: string, description: JSON Pointer to the omitted field.}
+                  reason: {type: string, enum: [byte_limit]}
+                  total: {type: integer, minimum: 0, description: Original total when the omitted field is an array.}
+      additionalProperties: true
+    UpdateState:
+      type: object
+      required: [update, counts]
+      properties:
+        update:
+          type: object
+          required: [active_attempts]
+          properties:
+            active_attempts: {type: integer, minimum: 0}
+          additionalProperties: true
+        counts:
+          type: object
+          required: [running]
+          properties:
+            running: {type: integer, minimum: 0}
+    BoardState:
+      type: object
+      properties:
+        cards:
+          type: array
+          items: {$ref: "#/components/schemas/BoardCardFacts"}
+      additionalProperties: true
+    BoardCardFacts:
+      type: object
+      description: Active card facts. Daily attempt counts use UTC; null evidence is unavailable.
+      properties:
+        project_id: {type: string}
+        issue_id: {type: string}
+        identifier: {type: string}
+        state: {type: string}
+        has_pr: {type: boolean}
+        head_sha: {type: string}
+        head_committed_at: {type: string, format: date-time, nullable: true}
+        ci: {type: string, enum: ["", queued, running, green, red, skipped, unknown]}
+        mergeability: {type: string}
+        has_session: {type: boolean}
+        session_started_at: {type: string, format: date-time, nullable: true}
+        session_tokens: {type: integer, format: int64}
+        attempts_today: {type: integer, format: int64, nullable: true}
+        lane_reason: {type: string}
+        lane_reason_at: {type: string, format: date-time, nullable: true}
+    StateEnrichment:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ready, pending, omitted]
+        completed_snapshot_generated_at: {type: string, format: date-time}
+        degraded_reason: {type: string}
+    TimeSeries:
+      type: object
+      description: Bucketed time-series response; metric arrays evolve additively.
+      additionalProperties: true
+    WorkItemRequest:
+      type: object
+      required: [title, description]
+      properties:
+        title: {type: string, minLength: 1}
+        description: {type: string, minLength: 1}
+        state: {type: string}
+        labels:
+          type: array
+          items: {type: string}
+        fields:
+          type: object
+          additionalProperties: {type: string}
+        priority: {type: integer}
+        model_override: {type: string}
+        deliverable: {$ref: "#/components/schemas/GenericObject"}
+        identifier: {type: string}
+    WorkItem:
+      type: object
+      required: [id, identifier, url]
+      properties:
+        id: {type: string}
+        identifier: {type: string}
+        number: {type: integer}
+        url: {type: string, format: uri}
+    WorkAttempt:
+      type: object
+      required: [attempt_id, receipt_url, recovery_url]
+      properties:
+        attempt_id: {type: integer, format: int64}
+        project_id: {type: string}
+        issue_id: {type: string}
+        identifier: {type: string}
+        status: {type: string}
+        receipt_url: {type: string}
+        recovery_url: {type: string}
+      additionalProperties: true
+    RecoveryRequest:
+      type: object
+      required: [action, confirm]
+      properties:
+        action: {type: string}
+        confirm: {type: boolean}
+        reason: {type: string}
+        operator: {type: string}
+    StopRunRequest:
+      type: object
+      required: [issue_id, confirm]
+      properties:
+        issue_id: {type: string}
+        work_attempt_id: {type: integer, format: int64}
+        detent_session_id: {type: integer, format: int64}
+        provider_session_id: {type: string}
+        destination: {type: string}
+        priority: {type: integer}
+        reason: {type: string}
+        confirm: {type: boolean}
+    SecurityAuditDispositionRequest:
+      type: object
+      required: [repository, pull_request, base_sha, head_sha, finding_id, status, evidence, confirm]
+      properties:
+        repository: {type: string, minLength: 1}
+        pull_request: {type: integer, minimum: 1}
+        base_sha: {type: string, minLength: 1}
+        head_sha: {type: string, minLength: 1}
+        finding_id: {type: string, minLength: 1}
+        status: {type: string, enum: [false_positive]}
+        evidence: {type: string, minLength: 1, maxLength: 16384}
+        confirm: {type: boolean}
+    SecurityAuditDisposition:
+      type: object
+      required: [id, audit_run_id, finding_id, status, evidence, service_identity, recorded_at]
+      properties:
+        id: {type: integer, format: int64}
+        audit_run_id: {type: integer, format: int64}
+        finding_id: {type: string}
+        status: {type: string, enum: [false_positive]}
+        evidence: {type: string}
+        service_identity: {type: string}
+        recorded_at: {type: string, format: date-time}
+    APIKey:
+      type: object
+      required: [id, name, prefix_last4, scopes, project_ids, status, created_at]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        prefix_last4: {type: string}
+        scopes:
+          type: array
+          items: {type: string, enum: [read, write, admin]}
+        project_ids:
+          type: array
+          items: {type: string}
+        status: {type: string}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+        last_used_at: {type: string, format: date-time}
+        revoked_at: {type: string, format: date-time}
+    APIKeyList:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items: {$ref: "#/components/schemas/APIKey"}
+    APIKeyCreateRequest:
+      type: object
+      required: [name, scopes]
+      properties:
+        name: {type: string}
+        scopes:
+          type: array
+          items: {type: string, enum: [read, write, admin]}
+        project_ids:
+          type: array
+          items: {type: string}
+        expires_in: {type: string, example: 90d}
+    APIKeyCreated:
+      type: object
+      required: [key, token]
+      properties:
+        key: {$ref: "#/components/schemas/APIKey"}
+        token:
+          type: string
+          description: Returned once. Store it securely; it cannot be retrieved later.
+    Refresh:
+      type: object
+      required: [queued, coalesced, refused, requested_at, operations]
+      properties:
+        request_id: {type: string}
+        status: {type: string}
+        queued: {type: boolean}
+        coalesced: {type: boolean}
+        refused: {type: boolean}
+        requested_at: {type: string, format: date-time}
+        last_error: {type: string}
+        last_error_at: {type: string, format: date-time}
+        retry_at: {type: string, format: date-time}
+        operations:
+          type: array
+          items: {type: string}
+    Status:
+      type: object
+      additionalProperties: true
+    KanbanCommentRequest:
+      type: object
+      required: [project_id, target, body]
+      properties:
+        project_id: {type: string}
+        target: {type: string, enum: [issue, pr]}
+        issue_id: {type: string}
+        pr_repository: {type: string}
+        pr_number: {type: integer}
+        body: {type: string}
+    KanbanCommentMutation:
+      type: object
+      required: [project_id, issue_id, comment_id]
+      properties:
+        project_id: {type: string}
+        issue_id: {type: string}
+        comment_id: {type: string}
+        body: {type: string}
