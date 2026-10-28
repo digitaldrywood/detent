@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"slices"
@@ -423,6 +424,76 @@ func TestNativeWorkSearchRanking(t *testing.T) {
 			}
 		})
 	}
+	t.Run("fallback BM25 matches SQLite", func(t *testing.T) {
+		for _, name := range []string{"Café relational runners", "Unrelated sentence", "Another subject", "Separate topic", "Different subject", "Empty document"} {
+			item := f.create(t, name)
+			content := ""
+			if name == "Café relational runners" {
+				content = "Relational runners prefix\x00café " + strings.Repeat("unrelated ", 20)
+			}
+			if name == "Empty document" {
+				name = ""
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET title=?,body=? WHERE native_id=?", name, content, item.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts;
+UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE VIRTUAL TABLE fallback_rank_probe USING fts5(title,body,tokenize='porter unicode61');
+INSERT INTO fallback_rank_probe(rowid,title,body)
+SELECT c.id,c.title,c.body FROM native_work_search_content c JOIN native_work_documents d ON d.id=c.id
+JOIN issues i ON i.id=d.issue_id WHERE i.organization_id=? AND i.project_id=?`, scope.organization, scope.project); err != nil {
+			t.Fatal(err)
+		}
+		for _, query := range []string{"repository association", "repos associ", "repo repository", "cafe relation run", "prefix", "no matching terms", ""} {
+			t.Run(query, func(t *testing.T) {
+				expressions := nativeSearchExpressions(query)
+				for _, plain := range []bool{false, true} {
+					if plain {
+						for i := range expressions {
+							expressions[i] = strings.TrimSuffix(expressions[i], "*")
+						}
+					}
+					readScores := func(statement string, args ...any) map[int64]float64 {
+						t.Helper()
+						rows, err := f.service.database.reader.QueryContext(t.Context(), statement, args...)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer rows.Close()
+						scores := map[int64]float64{}
+						for rows.Next() {
+							var id int64
+							var score float64
+							if err := rows.Scan(&id, &score); err != nil {
+								t.Fatal(err)
+							}
+							scores[id] = score
+						}
+						if err := rows.Err(); err != nil {
+							t.Fatal(err)
+						}
+						return scores
+					}
+					want := readScores("SELECT rowid,bm25(fallback_rank_probe,5.0,1.0) FROM fallback_rank_probe WHERE fallback_rank_probe MATCH ?", strings.Join(expressions, " OR "))
+					statement, args := nativeSearchHits(scope, "", expressions)
+					got := readScores(statement+"SELECT id/2,score FROM ranked WHERE hit=1", args...)
+					if len(got) != len(want) {
+						t.Fatalf("plain=%t fallback scores=%v SQLite scores=%v", plain, got, want)
+					}
+					for id, score := range want {
+						actual, ok := got[id]
+						if !ok || math.Abs(actual-score) > 1e-12 {
+							t.Errorf("plain=%t document=%d fallback BM25=%g SQLite BM25=%g", plain, id, actual, score)
+						}
+					}
+				}
+			})
+		}
+	})
 }
 
 func nativeSearchProbe(t *testing.T) *sql.DB {

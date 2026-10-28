@@ -82,6 +82,9 @@ func nativeSearchTokenizerInit(tls *libc.TLS, database, _, _ uintptr) int32 {
 	}
 	code := registerNativeSearchSnippet(tls, database, module)
 	if code == sqlite3.SQLITE_OK {
+		code = registerNativeSearchFallback(tls, database, module)
+	}
+	if code == sqlite3.SQLITE_OK {
 		code = nativeSearchTokenizerRegister(tls, api, module)
 	}
 	if code != sqlite3.SQLITE_OK {

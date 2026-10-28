@@ -88,31 +88,44 @@ func nativeSearchHits(scope nativeScope, archived string, expressions []string) 
 	case "all":
 		archiveFilter = ""
 	}
-	args = append(args, nativeScopedExpression(scopes, expressions, " OR "), strings.Join(expressions, " OR "))
 	values := make([]string, len(expressions))
 	for i, expression := range expressions {
 		values[i] = "(?,?)"
 		args = append(args, expression, nativeScopedExpression(scopes, []string{expression}, " OR "))
 	}
+	args = append(args, nativeScopedExpression(scopes, expressions, " OR "))
 	return `WITH index_state AS MATERIALIZED (SELECT ` + pending + ` AS incomplete), fallback_issues AS MATERIALIZED (
  SELECT i.id FROM index_state CROSS JOIN issues i
  WHERE index_state.incomplete AND i.organization_id=? AND i.project_id=? AND (` + visibility + `)` + archiveFilter + `
+ ), terms(matched,expression) AS (VALUES ` + strings.Join(values, ",") + `), fallback_documents AS MATERIALIZED (
+ SELECT d.id,d.issue_id,c.title,c.body,native_search_tokens(c.title,'')+native_search_tokens(c.body,'') AS tokens
+ FROM fallback_issues i CROSS JOIN native_work_documents d CROSS JOIN native_work_search_content c
+ WHERE d.issue_id=i.id AND c.id=d.id
+ ), fallback_population AS MATERIALIZED (
+ SELECT count(*) AS documents,avg(tokens) AS average FROM fallback_documents
+ ), fallback_matches AS MATERIALIZED (
+ SELECT d.id,d.issue_id,d.tokens,terms.matched,
+ 5*native_search_tokens(d.title,terms.matched)+native_search_tokens(d.body,terms.matched) AS frequency
+ FROM fallback_documents d CROSS JOIN terms
+ ), fallback_frequencies AS MATERIALIZED (
+ SELECT matched,count(*) AS documents FROM fallback_matches WHERE frequency>0 GROUP BY matched
+ ), fallback_scores AS MATERIALIZED (
+ SELECT m.id,m.issue_id,count(*) AS terms,group_concat(m.matched,', ') AS matched,
+ sum(native_search_bm25(m.frequency,m.tokens,p.average,p.documents,f.documents)) AS score
+ FROM fallback_matches m CROSS JOIN fallback_population p JOIN fallback_frequencies f ON f.matched=m.matched
+ WHERE m.frequency>0 GROUP BY m.id
  ), hits AS MATERIALIZED (
  SELECT d.issue_id,native_work_scoped_fts.rowid AS id,bm25(native_work_scoped_fts,5.0,1.0,0.0) AS score
  FROM index_state CROSS JOIN native_work_scoped_fts CROSS JOIN native_work_documents d
  WHERE NOT index_state.incomplete AND native_work_scoped_fts MATCH ? AND d.id=native_work_scoped_fts.rowid/2
  UNION ALL
- SELECT i.id,d.id*2,bm25(native_work_fts,5.0,1.0)
- FROM fallback_issues i CROSS JOIN native_work_documents d CROSS JOIN native_work_fts
- WHERE d.issue_id=i.id AND native_work_fts.rowid=d.id AND native_work_fts MATCH ?
- ), terms(matched,expression) AS (VALUES ` + strings.Join(values, ",") + `), coverage AS MATERIALIZED (
+ SELECT issue_id,id*2,score FROM fallback_scores
+ ), coverage AS MATERIALIZED (
  SELECT native_work_scoped_fts.rowid AS id,count(*) AS terms,group_concat(terms.matched,', ') AS matched
  FROM index_state CROSS JOIN terms CROSS JOIN native_work_scoped_fts
  WHERE NOT index_state.incomplete AND native_work_scoped_fts MATCH terms.expression GROUP BY native_work_scoped_fts.rowid
  UNION ALL
- SELECT d.id*2,count(*),group_concat(terms.matched,', ')
- FROM fallback_issues i CROSS JOIN native_work_documents d CROSS JOIN terms CROSS JOIN native_work_fts
- WHERE d.issue_id=i.id AND native_work_fts.rowid=d.id AND native_work_fts MATCH terms.matched GROUP BY d.id
+ SELECT id*2,terms,matched FROM fallback_scores
  ), ranked AS (
  SELECT hits.*,coverage.terms,coverage.matched,-coverage.terms+hits.score/(1-hits.score) AS search_score,
  row_number() OVER (PARTITION BY hits.issue_id ORDER BY coverage.terms DESC,hits.score,hits.id) AS hit
