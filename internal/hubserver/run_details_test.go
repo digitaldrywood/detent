@@ -450,6 +450,24 @@ func TestNativeRunDetailUploadFailures(t *testing.T) {
 				t.Fatal("failed upload changed the attempt or stored an inline fallback")
 			}
 			store.fail = false
+			for _, failure := range []string{"verification unavailable", "verification mismatch"} {
+				t.Run(failure, func(t *testing.T) {
+					if failure == "verification unavailable" {
+						store.beforeRead = func(context.Context) error { return errors.New("read unavailable") }
+					} else {
+						store.afterStore = func(ref attachment.ArchiveReference) {
+							store.mu.Lock()
+							defer store.mu.Unlock()
+							store.data[ref.Key] = []byte("different payload")
+						}
+					}
+					t.Cleanup(func() { store.beforeRead, store.afterStore = nil, nil })
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusInternalServerError)
+					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(group_concat(data_json), '') FROM native_attempts").Scan(&after); err != nil || before != after {
+						t.Fatalf("unverified upload changed the attempt: %v", err)
+					}
+				})
+			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 			var raw string
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT data_json FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&raw); err != nil {
@@ -854,7 +872,7 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 				}
 				objects := &changeObjectFixture{objects: map[string][]byte{ref.Key: compressed}}
 				contentReads := 0
-				f.service.config.content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+				f.service.config.Content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
 					contentReads++
 					return objects.call(ctx, request)
 				}

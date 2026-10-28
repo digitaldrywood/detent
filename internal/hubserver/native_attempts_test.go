@@ -637,7 +637,7 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 				}
 			}
 			if test.archive {
-				f.service.config.content = func(context.Context, entryauthority.ContentRequest) ([]byte, error) {
+				f.service.config.Content = func(context.Context, entryauthority.ContentRequest) ([]byte, error) {
 					t.Error("unresolved source was archived")
 					return nil, errors.New("unexpected publication")
 				}

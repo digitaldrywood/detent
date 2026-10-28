@@ -96,7 +96,7 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := appendNativeHistory(t.Context(), decisionTx, scope, string(f.issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped", Reason: "recorded refusal", At: now}}, now); err != nil {
+				if err := appendLegacyNativeHistory(t.Context(), decisionTx, scope, string(f.issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped", Reason: "recorded refusal", At: now}}, now); err != nil {
 					decisionTx.Rollback()
 					t.Fatal(err)
 				}

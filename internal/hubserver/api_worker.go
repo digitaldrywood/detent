@@ -714,6 +714,9 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 				if _, err := readClaimReference(ctx, tx, *query.NativeScope, item); err != nil {
 					return tracker.Lease{}, err
 				}
+				if err := recordNativeSchedulingOutcome(ctx, tx, query.NativeScope, id, tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", Reason: "The scheduler granted a fenced lease"}, now); err != nil {
+					return tracker.Lease{}, err
+				}
 			}
 			return tracker.Lease{}, &claimSelected{id: id, revision: revision}
 		}

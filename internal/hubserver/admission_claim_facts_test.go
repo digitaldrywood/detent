@@ -323,7 +323,7 @@ func TestLandingClaimFactsUnknown(t *testing.T) {
 			}
 			t.Run("archived legacy policy", func(t *testing.T) {
 				objects := &changeObjectFixture{}
-				f.service.config.content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+				f.service.config.Content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
 					if !request.Write && f.service.database.db.Stats().InUse != 0 {
 						return nil, errors.New("archive read with writer connection held")
 					}

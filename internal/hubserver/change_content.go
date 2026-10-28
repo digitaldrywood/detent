@@ -34,8 +34,8 @@ func (s *Service) contentContext(ctx context.Context) context.Context {
 	if ctx.Value(changeContentKey{}) != nil {
 		return ctx
 	}
-	if s.config.content != nil {
-		return context.WithValue(ctx, changeContentKey{}, &changeContent{call: s.config.content, register: s.registerChangeContent})
+	if s.config.Content != nil {
+		return context.WithValue(ctx, changeContentKey{}, &changeContent{call: s.config.Content, register: s.registerChangeContent})
 	}
 	if s.config.Hosted == nil || s.config.Hosted.SharedEntry == nil || s.config.Hosted.SharedEntry.Content == nil {
 		return ctx

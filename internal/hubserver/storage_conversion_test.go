@@ -107,7 +107,7 @@ func TestStorageConversionResumesAcrossScopes(t *testing.T) {
 	other := newNativeFixture(t, f.service, f.project.OrganizationID, "second")
 	tenant := newNativeFixture(t, f.service, "", "other-tenant")
 	objects := &changeObjectFixture{}
-	f.service.config.content = objects.call
+	f.service.config.Content = objects.call
 	for _, fixture := range []nativeFixture{f, other, tenant} {
 		fixture.service = f.service
 		issue := fixture.create(t, "legacy history")

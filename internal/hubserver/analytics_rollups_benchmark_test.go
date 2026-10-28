@@ -97,7 +97,7 @@ func BenchmarkAnalyticsRollupAppend(b *testing.B) {
 				if err != nil {
 					b.Fatal(err)
 				}
-				if err := appendNativeHistory(b.Context(), tx, scope, id, "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "ready"}}, f.service.config.now()); err != nil {
+				if err := appendLegacyNativeHistory(b.Context(), tx, scope, id, "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "ready"}}, f.service.config.now()); err != nil {
 					b.Fatal(err)
 				}
 				err = f.service.database.commit(b.Context(), tx)

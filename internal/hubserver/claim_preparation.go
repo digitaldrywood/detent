@@ -9,6 +9,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -40,10 +42,11 @@ type claimHydration struct {
 func (*claimHydration) Error() string { return "claim content requires preparation" }
 
 type preparedClaimDecision struct {
-	scope nativeScope
-	id    tracker.WorkItemID
-	item  string
-	data  tracker.CollaborationData
+	scope   nativeScope
+	id      tracker.WorkItemID
+	item    string
+	data    tracker.CollaborationData
+	payload attachment.ArchiveReference
 }
 
 type preparedClaimReference struct {
@@ -112,6 +115,9 @@ func (d *database) claimNativePrepared(ctx context.Context, request tracker.Clai
 		default:
 			return tracker.Lease{}, err
 		}
+		if err := prepareClaimDecisionPayloads(pass, prepared); err != nil {
+			return tracker.Lease{}, err
+		}
 		lease, err = d.claimNextOn(pass, d.db, nil, mode, request, query, interval)
 		if !errors.Is(err, errClaimHintStale) {
 			return lease, err
@@ -125,6 +131,36 @@ func (d *database) claimNativePrepared(ctx context.Context, request tracker.Clai
 		prepared.selected = 0
 	}
 	return tracker.Lease{}, ErrNoClaimableWork
+}
+
+func prepareClaimDecisionPayloads(ctx context.Context, prepared *claimPreparation) error {
+	for i := range prepared.decisions {
+		value := &prepared.decisions[i]
+		if value.payload.Key != "" {
+			continue
+		}
+		raw, err := marshalNative(value.data)
+		if err != nil {
+			return err
+		}
+		encoded, err := schedulerPayloadArchive(value.scope, raw)
+		if err != nil {
+			return err
+		}
+		ref, err := prepareChangeContent(ctx, string(value.scope.organization), encoded)
+		if err != nil {
+			return err
+		}
+		verified, err := readChangeContent(ctx, string(value.scope.organization), ref)
+		if err != nil {
+			return err
+		}
+		if string(verified) != string(encoded) {
+			return artifact.ErrIntegrity
+		}
+		value.payload = ref
+	}
+	return nil
 }
 
 func (d *database) prepareClaim(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, interval time.Duration) (tracker.Lease, error) {

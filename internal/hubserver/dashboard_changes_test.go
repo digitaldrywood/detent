@@ -119,7 +119,7 @@ VALUES('finding_dashboard',?,'dashboard','example','flow','{}','[]',?,?,'attenti
 					return exec(tx, "UPDATE workflow_states SET updated_at=? WHERE id=?", formatHubTime(now.Add(time.Second)), laneID)
 				}},
 				{"activity", "", 0, func(tx *sql.Tx) error {
-					return appendNativeHistory(t.Context(), tx, scope, string(issues[i].WorkItemID), "scheduler.decision", tracker.CollaborationData{}, now)
+					return appendLegacyNativeHistory(t.Context(), tx, scope, string(issues[i].WorkItemID), "scheduler.decision", tracker.CollaborationData{}, now)
 				}},
 				{"workspace", "ws_dashboard_" + id, 10, func(tx *sql.Tx) error {
 					return exec(tx, "UPDATE workspace_sessions SET revision=10,state='ready' WHERE id=?", "ws_dashboard_"+id)

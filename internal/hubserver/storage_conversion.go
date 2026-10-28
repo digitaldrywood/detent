@@ -565,6 +565,9 @@ func (s *Service) applyStorageConversion(ctx context.Context, tx *sql.Tx, scope 
 	}
 	var count, reclaimed int64
 	if converted != nil {
+		if family.name == "runs" && ref.Validate(string(scope.organization)) != nil {
+			return false, artifact.ErrIntegrity
+		}
 		if err := authorizeStorageConversion(ctx, tx, scope, family, aggregate, row, raw, converted, ref); err != nil {
 			return false, err
 		}

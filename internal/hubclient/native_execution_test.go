@@ -1565,6 +1565,7 @@ func TestNativeCacheWaitRuntimeRecovery(t *testing.T) {
 			issue := h.createInProgress(t, "Cache wait recovery")
 			h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			execution.claim.lease.RunDetailBatching = false
 			ctx := t.Context()
 			if err := execution.Start(ctx, tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
 				t.Fatal(err)

@@ -108,7 +108,7 @@ func TestChangeMutationsBoundWriterWork(t *testing.T) {
 	for _, files := range []int{1, 128} {
 		t.Run(fmt.Sprintf("files_%d", files), func(t *testing.T) {
 			objects := &changeObjectFixture{}
-			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), content: objects.call})
+			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Content: objects.call})
 			f := newChangeFixture(t, service)
 			input := changeTestInput()
 			bundle := changeMutationSource(t, &input, files)

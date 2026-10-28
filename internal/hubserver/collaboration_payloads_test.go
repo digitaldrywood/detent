@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -97,6 +99,12 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 				if kind == "scheduler.decision" {
 					data.Decision = &tracker.NativeSchedulerDecision{RunnerID: "runner", Source: "native_claim", Outcome: "claimed", Reason: "ready", At: f.service.config.now(), WorkItemRevision: issue.Revision}
 					data.Change = &tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "head"}
+					data.ReasonDetail = "retain scheduler audit context"
+					prepared := &claimPreparation{decisions: []preparedClaimDecision{{scope: scope, item: string(issue.WorkItemID), data: data}}}
+					ctx = context.WithValue(ctx, claimPreparationKey{}, prepared)
+					if err := prepareClaimDecisionPayloads(ctx, prepared); err != nil {
+						t.Fatal(err)
+					}
 				} else {
 					run := tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), LeaseID: "lease", PolicyID: "policy", FencingToken: 1, Sequence: 1, CompletionBody: strings.Repeat("x", size)}
 					data.Run = &run
@@ -134,7 +142,7 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 					t.Fatal(err)
 				}
 				sizes = append(sizes, inline)
-				page, err := f.service.readHistory(ctx, scope, string(issue.WorkItemID), url.Values{"limit": {"100"}})
+				page, err := f.service.readHistory(f.service.freshRunDetailContext(t.Context()), scope, string(issue.WorkItemID), url.Values{"limit": {"100"}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -252,7 +260,7 @@ func restoreLegacyCollaborationPayloads(t *testing.T, service *Service, scope na
 func TestCollaborationPayloadConversion(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC) }})
 	objects := &changeObjectFixture{}
-	f.service.config.content = objects.call
+	f.service.config.Content = objects.call
 	f.service.database.reader.SetMaxOpenConns(1)
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	ctx := f.service.runDetailContext(t.Context())
@@ -268,6 +276,7 @@ func TestCollaborationPayloadConversion(t *testing.T) {
 			if kind == "scheduler.decision" {
 				data.Decision = &tracker.NativeSchedulerDecision{RunnerID: "runner", Source: "native_provider_capacity", Outcome: "skipped", Reason: "full", At: f.service.config.now(), WorkItemRevision: issue.Revision}
 				data.Change = &tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "head"}
+				data.ReasonDetail = strings.Repeat("scheduler context", size)
 			} else {
 				data.Run = &tracker.NativeRunData{AttemptID: newNativeID("attempt"), RunID: newNativeID("run"), Sequence: 1, CompletionBody: strings.Repeat("x", size)}
 				data.ReasonDetail = strings.Repeat("legacy context", size)
@@ -373,6 +382,13 @@ func TestCollaborationPayloadConversion(t *testing.T) {
 			if inline != 2 || version != 1 {
 				t.Fatalf("inline bytes=%d version=%d, want 2 and 1", inline, version)
 			}
+			ref := contentReference()
+			if err := f.service.database.reader.QueryRowContext(ctx, "SELECT payload_object_key,payload_sha256,payload_bytes,payload_content_bytes FROM collaboration_events WHERE id=?", expected.id).Scan(&ref.Key, &ref.SHA256, &ref.CompressedSize, &ref.UncompressedSize); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readChangeContent(ctx, string(scope.organization), ref); err != nil {
+				t.Fatalf("converted payload has no readable archive: %v", err)
+			}
 			var got tracker.CollaborationData
 			if err := decodeRunHistory(f.service.freshRunDetailContext(t.Context()), f.service.database.reader, raw, &got); err != nil {
 				t.Fatal(err)
@@ -391,5 +407,82 @@ func TestCollaborationPayloadConversion(t *testing.T) {
 	}
 	if objects.writes != before {
 		t.Fatal("completed conversion uploaded duplicate objects")
+	}
+}
+
+func TestSchedulerPayloadRequiresArchive(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	issue := f.create(t, "scheduler archive required")
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	worker := f.worker(t, "scheduler-archive")
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "scheduler-machine", "hostname": "scheduler-machine", "version": "test", "capacity": 1}), http.StatusOK)
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	data := tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped", Reason: "capacity"}, ReasonDetail: "retain complete scheduler context"}
+	t.Run("write without prepared archive", func(t *testing.T) {
+		err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, now time.Time) error {
+			return appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", data, now)
+		})
+		if err == nil {
+			t.Fatal("scheduler write succeeded without an archive")
+		}
+		var count int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("failed write committed %d scheduler events: %v", count, err)
+		}
+	})
+	ctx := f.service.runDetailContext(t.Context())
+	if err := f.service.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
+		return appendLegacyNativeHistory(ctx, tx, scope, string(issue.WorkItemID), "scheduler.decision", data, now)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var row int64
+	var raw string
+	if err := f.service.database.reader.QueryRowContext(ctx, "SELECT rowid,data_json FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&row, &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, failure := range []string{"missing storage", "upload rejected", "verification failed"} {
+		t.Run(failure, func(t *testing.T) {
+			objects := &changeObjectFixture{}
+			original := f.service.config.Content
+			t.Cleanup(func() { f.service.config.Content = original })
+			f.service.config.Content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+				if failure == "upload rejected" && request.Write {
+					return nil, errors.New("upload rejected")
+				}
+				if failure == "verification failed" && !request.Write {
+					return []byte("invalid archive"), nil
+				}
+				return objects.call(ctx, request)
+			}
+			ctx := t.Context()
+			if failure != "missing storage" {
+				ctx = f.service.contentContext(ctx)
+			} else {
+				f.service.config.Content = nil
+			}
+			if _, _, err := f.service.prepareCollaborationConversion(ctx, scope, row, []byte(raw)); err == nil {
+				t.Fatal("scheduler conversion succeeded without a verified archive")
+			}
+			prepared := &claimPreparation{decisions: []preparedClaimDecision{{scope: scope, item: string(issue.WorkItemID), data: data}}}
+			if err := prepareClaimDecisionPayloads(ctx, prepared); err == nil || prepared.decisions[0].payload.Key != "" {
+				t.Fatalf("scheduler write preparation accepted an unverified archive: %v", err)
+			}
+			var retained string
+			if err := f.service.database.reader.QueryRowContext(ctx, "SELECT data_json FROM collaboration_events WHERE rowid=?", row).Scan(&retained); err != nil || retained != raw {
+				t.Fatalf("failed conversion changed original payload: %v", err)
+			}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", worker, tracker.NativeClaim{
+				PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: "scheduler-machine", SessionID: "scheduler-session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability},
+			})
+			requireNativeStatus(t, response, http.StatusInternalServerError)
+			var leases, events int
+			if err := f.service.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM leases WHERE session_id='scheduler-session'").Scan(&leases); err != nil || leases != 0 {
+				t.Fatalf("unverified scheduler payload committed %d leases: %v", leases, err)
+			}
+			if err := f.service.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision'", issue.WorkItemID).Scan(&events); err != nil || events != 1 {
+				t.Fatalf("unverified scheduler payload changed event count to %d: %v", events, err)
+			}
+		})
 	}
 }

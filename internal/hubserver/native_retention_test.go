@@ -696,7 +696,7 @@ func TestNativeStorageArchiveRetention(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 			objects := map[string][]byte{}
-			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, content: func(_ context.Context, r entryauthority.ContentRequest) ([]byte, error) {
+			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, Content: func(_ context.Context, r entryauthority.ContentRequest) ([]byte, error) {
 				if r.Write {
 					objects[r.Reference.Key] = slices.Clone(r.Data)
 					return nil, nil

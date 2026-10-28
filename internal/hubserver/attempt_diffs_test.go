@@ -598,7 +598,7 @@ func TestAttemptDiffValidation(t *testing.T) {
 				service := &Service{database: f.service.database, config: Config{
 					Hosted: &HostedConfig{SharedEntry: &HostedSharedEntry{}},
 					Logger: slog.New(hostedLogHandler{output: slog.NewJSONHandler(&logs, nil)}),
-					now:    f.service.config.now, content: objects.call,
+					now:    f.service.config.now, Content: objects.call,
 				}}
 				credential, _, err := f.service.authenticateAPIToken(t.Context(), f.worker, "", "")
 				if err != nil {
@@ -700,7 +700,7 @@ func TestAttemptDiffManifest(t *testing.T) {
 	legacy := *f
 	legacy.service = legacyChangeService(t, f.service)
 	objects := &changeObjectFixture{}
-	f.service.config.content = objects.call
+	f.service.config.Content = objects.call
 	files := make([]tracker.AttemptDiffFile, 300)
 	for i := range files {
 		files[i] = tracker.AttemptDiffFile{Path: fmt.Sprintf("file-%03d.go", i), Status: tracker.DiffStatusModified, Additions: i, Deletions: i / 2, Patch: "@@ preserved\n+change\n"}
@@ -761,7 +761,7 @@ func TestAttemptDiffManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacy.service.config.content = objects.call
+	legacy.service.config.Content = objects.call
 	if _, err := legacy.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET status='succeeded' WHERE id=?", f.attempt); err != nil {
 		t.Fatal(err)
 	}

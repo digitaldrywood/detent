@@ -73,12 +73,12 @@ func TestAnalyticsRollupIncremental(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer tx.Rollback()
-		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "ready", Source: "native_claim", At: now}}, now); err != nil {
+		if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "ready", Source: "native_claim", At: now}}, now); err != nil {
 			t.Fatal(err)
 		}
 		for _, delta := range []time.Duration{5 * time.Nanosecond, 25 * time.Nanosecond} {
 			at := now.Add(delta)
-			if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped", Source: "native_claim", Reason: "capacity", At: at}}, at); err != nil {
+			if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped", Source: "native_claim", Reason: "capacity", At: at}}, at); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -230,7 +230,7 @@ func TestAnalyticsRollupFailurePreservesEvent(t *testing.T) {
 			}
 			commitTestAnalytics(t, f.service, func(tx *sql.Tx) {
 				for _, id := range []tracker.NativeWorkItemID{issue.WorkItemID, healthy.WorkItemID} {
-					if err := appendNativeHistory(t.Context(), tx, scope, string(id), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "ready"}}, f.service.config.now()); err != nil {
+					if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(id), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "ready"}}, f.service.config.now()); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -752,7 +752,7 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 	}
 	for i := range maxAnalyticsPopulation + 1 {
 		at := now.Add(-10*time.Minute + time.Duration(i)*time.Nanosecond)
-		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_provider_capacity", Outcome: "skipped", Reason: "capacity", At: at}}, at); err != nil {
+		if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_provider_capacity", Outcome: "skipped", Reason: "capacity", At: at}}, at); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1454,7 +1454,7 @@ func TestAnalyticsRollupResidenceCleanupSourceChange(t *testing.T) {
 			for i := range 2*analyticsDrainWrites + 1 {
 				at := start.Add(time.Duration(i+1) * time.Hour)
 				decision := &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", At: at}
-				if err := appendNativeHistory(t.Context(), tx, scope, id, "scheduler.decision", tracker.CollaborationData{Decision: decision}, at); err != nil {
+				if err := appendLegacyNativeHistory(t.Context(), tx, scope, id, "scheduler.decision", tracker.CollaborationData{Decision: decision}, at); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1561,7 +1561,7 @@ func TestAnalyticsRollupLargeItemWriterBound(t *testing.T) {
 		if _, err := tx.ExecContext(t.Context(), `INSERT INTO attempt_usage(attempt_id,organization_id,project_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at) SELECT ?,organization_id,project_id,period,provider,model,input,cached_input,output,cost_estimate,currency,updated_at FROM attempt_usage WHERE attempt_id='attempt_browser_usage_0_0' LIMIT 1`, id); err != nil {
 			t.Fatal(err)
 		}
-		if err := appendNativeHistory(t.Context(), tx, scope, item, "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "ready", Source: "native_claim"}}, f.service.config.now()); err != nil {
+		if err := appendLegacyNativeHistory(t.Context(), tx, scope, item, "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "ready", Source: "native_claim"}}, f.service.config.now()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1576,7 +1576,7 @@ func TestAnalyticsRollupLargeItemWriterBound(t *testing.T) {
 		{Outcome: "skipped", Source: "native_provider_capacity", Reason: "capacity", RunnerID: "example-runner", WorkItemRevision: 1, At: start},
 		{Outcome: "claimed", Source: "native_claim", RunnerID: "example-runner", WorkItemRevision: 1, At: f.service.config.now()},
 	} {
-		if err := appendNativeHistory(t.Context(), tx, scope, item, "scheduler.decision", tracker.CollaborationData{Decision: &decision}, decision.At); err != nil {
+		if err := appendLegacyNativeHistory(t.Context(), tx, scope, item, "scheduler.decision", tracker.CollaborationData{Decision: &decision}, decision.At); err != nil {
 			t.Fatal(err)
 		}
 	}

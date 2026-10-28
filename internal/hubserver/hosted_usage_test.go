@@ -449,7 +449,7 @@ func TestHostedUsageReportAccess(t *testing.T) {
 		defer tx.Rollback()
 		for _, outcome := range []string{"ready", "skipped"} {
 			data := tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: outcome, Reason: "host_capacity", At: now}}
-			if err := appendNativeHistory(t.Context(), tx, scope, item, "scheduler.decision", data, now); err != nil {
+			if err := appendLegacyNativeHistory(t.Context(), tx, scope, item, "scheduler.decision", data, now); err != nil {
 				t.Fatal(err)
 			}
 		}

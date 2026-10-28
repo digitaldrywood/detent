@@ -46,7 +46,8 @@ func TestNativeSourcePlacement(t *testing.T) {
 		{name: "newer clean startup does not hide source", state: "dirty", newerClean: true, owner: true, destination: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}))
+			objects := &changeObjectFixture{}
+			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Content: objects.call}))
 			worker := f.worker(t, "source-worker")
 			lease := claimNativeAttempt(t, f.nativeFixture, worker, "source-machine", "source-session", f.issue.WorkItemID)
 			event := nativeStartedEvent(lease)
@@ -84,19 +85,20 @@ func TestNativeSourcePlacement(t *testing.T) {
 			if test.source {
 				input.AttemptID, input.RunID = event.Data.AttemptID, event.Data.RunID
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.path+"/versions", f.token, tracker.PublishChangeVersion{Mutation: tracker.Mutation{IdempotencyKey: "source-version"}, ChangeVersionInput: input, SourceBundle: bundle}), http.StatusOK)
-				if test.corrupt || test.missing {
-					statement := "DROP TRIGGER change_sources_no_update"
-					if test.missing {
-						statement = "DROP TRIGGER change_sources_no_delete"
-					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
+				if test.corrupt {
+					var key string
+					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT object_key FROM change_sources ORDER BY rowid DESC LIMIT 1").Scan(&key); err != nil {
 						t.Fatal(err)
 					}
-					statement = "UPDATE change_sources SET bundle=x'00'"
-					if test.missing {
-						statement = "DELETE FROM change_sources"
+					objects.mu.Lock()
+					objects.objects[key] = []byte{0}
+					objects.mu.Unlock()
+				}
+				if test.missing {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER change_sources_no_delete"); err != nil {
+						t.Fatal(err)
 					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM change_sources"); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -128,7 +130,7 @@ func TestNativeSourcePlacement(t *testing.T) {
 				machine tracker.MachineID
 				allowed bool
 			}{{"source-machine", test.owner}, {"destination-machine", test.destination}} {
-				allowed, reason, err := nativeSourceClaimAllowed(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, candidate.machine, id)
+				allowed, reason, err := nativeSourceClaimAllowed(f.service.runDetailContext(t.Context()), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, candidate.machine, id)
 				if err != nil || allowed != candidate.allowed {
 					t.Fatalf("%s allowed=%v reason=%q error=%v", candidate.machine, allowed, reason, err)
 				}
@@ -169,7 +171,7 @@ func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 			details := &memoryRunDetails{}
 			cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}
 			if test.objects {
-				cfg.content, cfg.RunDetails = objects.call, details
+				cfg.Content, cfg.RunDetails = objects.call, details
 			}
 			f := newChangeFixture(t, openTestService(t, cfg))
 			owner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events, runnerauth.Collaborate)
@@ -330,6 +332,9 @@ func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 					if !errors.As(err, &selected) {
 						t.Fatalf("unknown preparation: %v", err)
 					}
+					if err := prepareClaimDecisionPayloads(ctx, prepared); err != nil {
+						t.Fatal(err)
+					}
 					restored, err := db.claimNextOn(ctx, db.db, nil, claimMode{hint: selected}, request, query, time.Hour)
 					if err != nil {
 						t.Fatalf("unknown writer: %v", err)
@@ -351,6 +356,9 @@ func TestNativeSourceOwnerRunnerPlacement(t *testing.T) {
 					released := make(chan struct{})
 					var first sync.Once
 					details.beforeRead = func(ctx context.Context) error {
+						if claimPrepared(ctx) == nil {
+							return nil
+						}
 						first.Do(func() {
 							entered <- struct{}{}
 							select {

@@ -199,7 +199,7 @@ func TestReportUnknownFactsServeDuringBackfill(t *testing.T) {
 			defer tx.Rollback()
 			if family == "report_events" {
 				for index := range storageConversionRows + 1 {
-					if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", Reason: strings.Repeat("x", 11000)}}, f.service.config.now().Add(time.Duration(index)*time.Nanosecond)); err != nil {
+					if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", Reason: strings.Repeat("x", 11000)}}, f.service.config.now().Add(time.Duration(index)*time.Nanosecond)); err != nil {
 						t.Fatal(err)
 					}
 				}

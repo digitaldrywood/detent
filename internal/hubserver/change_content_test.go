@@ -73,7 +73,7 @@ func TestChangeContentObjects(t *testing.T) {
 	t.Parallel()
 	objects := &changeObjectFixture{}
 	now := time.Now().UTC()
-	cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), content: objects.call, now: func() time.Time { return now }}
+	cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Content: objects.call, now: func() time.Time { return now }}
 	f := newChangeFixture(t, openTestService(t, cfg))
 	legacy := f
 	legacy.service = legacyChangeService(t, f.service)
@@ -198,7 +198,7 @@ func TestChangeContentObjects(t *testing.T) {
 	}
 
 	requireUsageCountersMatchRecount(t, f.service.database)
-	legacy.service.config.content = objects.call
+	legacy.service.config.Content = objects.call
 	conversionContext := legacy.service.contentContext(t.Context())
 	conversionScope := nativeScope{organization: legacy.project.OrganizationID, project: legacy.project.ID}
 	for _, family := range storageConversionFamilies {

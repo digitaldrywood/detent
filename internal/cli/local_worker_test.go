@@ -27,6 +27,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/hubserver"
@@ -260,7 +261,28 @@ func localWorkerHubFixture(t *testing.T, expose func(http.Handler, tracker.Organ
 	if err := os.WriteFile(databasePath, localWorkerHubTemplate.data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: databasePath, InitialAdminToken: []byte(adminToken)})
+	var contentMu sync.Mutex
+	contentObjects := make(map[string][]byte)
+	content := func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if err := request.Reference.Validate(request.Organization); err != nil {
+			return nil, err
+		}
+		contentMu.Lock()
+		defer contentMu.Unlock()
+		if request.Write {
+			contentObjects[request.Reference.Key] = bytes.Clone(request.Data)
+			return nil, nil
+		}
+		data, found := contentObjects[request.Reference.Key]
+		if !found {
+			return nil, errors.New("archive unavailable")
+		}
+		return bytes.Clone(data), nil
+	}
+	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: databasePath, InitialAdminToken: []byte(adminToken), Content: content})
 	if err != nil {
 		t.Fatal(err)
 	}

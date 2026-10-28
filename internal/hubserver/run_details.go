@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -331,6 +332,13 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 	}
 	if ref.Validate(string(scope.organization)) != nil {
 		return ctx, fmt.Errorf("validate stored run detail reference: %w", artifact.ErrIntegrity)
+	}
+	verified, err := owner.store.ReadDetail(ctx, string(scope.organization), ref)
+	if err != nil {
+		return ctx, fmt.Errorf("verify stored run detail archive: %w", err)
+	}
+	if !bytes.Equal(raw, verified) {
+		return ctx, fmt.Errorf("verify stored run detail archive: %w", artifact.ErrIntegrity)
 	}
 	owner.reference, owner.runs = &ref, runs
 	owner.organization = string(scope.organization)

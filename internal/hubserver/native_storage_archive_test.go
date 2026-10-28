@@ -39,7 +39,7 @@ func newStorageArchiveFixture(t *testing.T) *storageArchiveFixture {
 	t.Cleanup(func() { f.service.conversations = nil })
 	f.service.config.now = func() time.Time { return f.now }
 	f.service.database.now = f.service.config.now
-	f.service.config.content = func(_ context.Context, r entryauthority.ContentRequest) ([]byte, error) {
+	f.service.config.Content = func(_ context.Context, r entryauthority.ContentRequest) ([]byte, error) {
 		if r.Write {
 			f.objects[r.Reference.Key] = slices.Clone(r.Data)
 		}
@@ -526,10 +526,11 @@ func TestNativeStorageArchiveSafety(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			before := len(f.objects)
 			if err := f.service.archiveClosedNativeIssues(t.Context(), f.now); err != nil {
 				t.Fatal(err)
 			}
-			if len(f.objects) != 0 {
+			if len(f.objects) != before {
 				t.Fatal("protected work published an archive")
 			}
 		})
@@ -609,13 +610,14 @@ func TestNativeStorageArchiveRunTimeline(t *testing.T) {
 	a.finish(t)
 	a.advance(74 * time.Hour)
 	objects := map[string][]byte{}
-	a.service.config.content = func(_ context.Context, r entryauthority.ContentRequest) ([]byte, error) {
+	previousContent := a.service.config.Content
+	a.service.config.Content = func(ctx context.Context, r entryauthority.ContentRequest) ([]byte, error) {
 		if r.Write {
 			objects[r.Reference.Key] = slices.Clone(r.Data)
 		}
 		data, ok := objects[r.Reference.Key]
 		if !ok {
-			return nil, errors.New("object missing")
+			return previousContent(ctx, r)
 		}
 		return data, nil
 	}

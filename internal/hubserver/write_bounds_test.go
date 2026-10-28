@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql/driver"
 	"go/ast"
 	"go/parser"
@@ -57,8 +58,16 @@ func TestINV18RequestCommitDoesNoDerivedWork(t *testing.T) {
 		t.Fatalf("migration retained expiry=%d want 2 err=%v", retainedExpiry, err)
 	}
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	prepared := &claimPreparation{}
+	for _, id := range expired {
+		prepared.decisions = append(prepared.decisions, preparedClaimDecision{scope: scope, item: string(id), data: tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "ready"}}})
+	}
+	payloadContext := context.WithValue(f.service.runDetailContext(t.Context()), claimPreparationKey{}, prepared)
+	if err := prepareClaimDecisionPayloads(payloadContext, prepared); err != nil {
+		t.Fatal(err)
+	}
 	var statements []string
-	ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+	ctx := withRequestTiming(payloadContext, &requestTiming{trace: func(query string, _ []driver.NamedValue) {
 		statements = append(statements, query)
 	}})
 	tx, err := f.service.database.db.BeginTx(ctx, nil)
@@ -78,6 +87,7 @@ func TestINV18RequestCommitDoesNoDerivedWork(t *testing.T) {
 	if err := f.service.database.commit(ctx, tx); err != nil {
 		t.Fatal(err)
 	}
+	ctx = context.WithValue(ctx, claimPreparationKey{}, nil)
 	for _, statement := range statements {
 		if strings.Contains(statement, "analytics_") || strings.Contains(statement, "native_board") {
 			t.Fatalf("request commit ran derived projection work: %s", statement)

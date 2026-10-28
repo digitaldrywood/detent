@@ -1006,7 +1006,7 @@ func TestHealthDetectorChangeContent(t *testing.T) {
 			cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "health.db")}
 			if test.archived {
 				objects := &changeObjectFixture{}
-				cfg.content = objects.call
+				cfg.Content = objects.call
 			}
 			service := openTestService(t, cfg)
 			service.stopHealthDetector()

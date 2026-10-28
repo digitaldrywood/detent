@@ -644,6 +644,24 @@ func recordNativeSchedulingOutcome(ctx context.Context, tx *sql.Tx, scope *nativ
 		}
 		return nil
 	}
+	if prepared := claimPrepared(ctx); prepared != nil {
+		matched := false
+		for _, value := range prepared.decisions {
+			if value.id != id || value.item != item || value.scope.organization != scope.organization || value.scope.project != scope.project || value.data.Decision == nil {
+				continue
+			}
+			before, after := *value.data.Decision, decision
+			before.At, after.At = time.Time{}, time.Time{}
+			if before == after && reflect.DeepEqual(value.data.Change, data.Change) {
+				data = value.data
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return errClaimHintStale
+		}
+	}
 	return appendNativeHistory(ctx, tx, *scope, item, "scheduler.decision", data, now)
 }
 

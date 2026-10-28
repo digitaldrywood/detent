@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -20,10 +21,26 @@ func collaborationPayloadColumn(alias string) string {
 	return "CASE WHEN " + alias + "payload_version=1 THEN 'event:' || " + alias + "id ELSE " + alias + "data_json END"
 }
 
-func collaborationPayloadValues(kind string, data tracker.CollaborationData, raw string) (string, []any, error) {
+func schedulerPayloadArchive(scope nativeScope, raw string) ([]byte, error) {
+	return json.Marshal(storageJSONPayload{Organization: string(scope.organization), Project: string(scope.project), Family: "scheduler.decision", Data: json.RawMessage(raw)})
+}
+
+func collaborationPayloadValues(ctx context.Context, scope nativeScope, item, kind string, data tracker.CollaborationData, raw string) (string, []any, error) {
 	version := 0
 	attachmentID, entry := "", ""
+	ref := contentReference()
 	if kind == "scheduler.decision" {
+		if prepared := claimPrepared(ctx); prepared != nil {
+			for _, value := range prepared.decisions {
+				if value.scope.organization == scope.organization && value.scope.project == scope.project && value.item == item && reflect.DeepEqual(value.data, data) {
+					ref = value.payload
+					break
+				}
+			}
+		}
+		if ref.Validate(string(scope.organization)) != nil {
+			return "", nil, errors.New("scheduler payload archive was not prepared")
+		}
 		version, raw = 1, "{}"
 	}
 	if strings.HasPrefix(kind, "run.") {
@@ -51,7 +68,7 @@ func collaborationPayloadValues(kind string, data tracker.CollaborationData, raw
 	if run.Handoff != nil {
 		checkpoint = *run.Handoff
 	}
-	return raw, []any{version, attachmentID, entry, change.ChangeID, change.VersionID, change.HeadSHA, data.Change != nil, run.Outcome, run.MachineID, run.SessionID, run.RunnerID, checkpoint.EffectID, checkpoint.HeadSHA}, nil
+	return raw, []any{version, attachmentID, entry, change.ChangeID, change.VersionID, change.HeadSHA, data.Change != nil, run.Outcome, run.MachineID, run.SessionID, run.RunnerID, checkpoint.EffectID, checkpoint.HeadSHA, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize}, nil
 }
 
 func resolveCollaborationPayload(ctx context.Context, q nativeQueryer, raw string) (string, error) {
@@ -80,8 +97,26 @@ FROM collaboration_events WHERE id=? AND payload_version=1`, id).Scan(&organizat
 	if err != nil {
 		return "", err
 	}
+	if ref.Key != "" && !explanationRead(ctx) && (kind != "scheduler.decision" || claimPrepared(ctx) == nil) {
+		payload, err := readChangeContent(ctx, organization, ref)
+		if err != nil {
+			return "", err
+		}
+		var archived storageJSONPayload
+		if err := json.Unmarshal(payload, &archived); err != nil {
+			return "", err
+		}
+		bound := archived.Family == "runs" && archived.Row == row || kind == "scheduler.decision" && archived.Family == kind && archived.Row == 0
+		if archived.Organization != organization || archived.Project != project || !bound || !json.Valid(archived.Data) {
+			return "", artifact.ErrIntegrity
+		}
+		return string(archived.Data), nil
+	}
 	data := tracker.CollaborationData{Revision: tracker.Revision(revision)}
 	if kind == "scheduler.decision" {
+		if ref.Key == "" {
+			return "", artifact.ErrIntegrity
+		}
 		if schedulerPresent {
 			if schedulerAt != "" {
 				scheduler.At, err = parseTimeValue(schedulerAt)
@@ -94,22 +129,7 @@ FROM collaboration_events WHERE id=? AND payload_version=1`, id).Scan(&organizat
 		if changePresent {
 			data.Change = &change
 		}
-	} else if ref.Key != "" {
-		if !explanationRead(ctx) {
-			payload, err := readChangeContent(ctx, organization, ref)
-			if err != nil {
-				return "", err
-			}
-			var archived storageJSONPayload
-			if err := json.Unmarshal(payload, &archived); err != nil {
-				return "", err
-			}
-			if archived.Organization != organization || archived.Project != project || archived.Family != "runs" || archived.Row != row || !json.Valid(archived.Data) {
-				return "", artifact.ErrIntegrity
-			}
-			return string(archived.Data), nil
-		}
-	} else if attachmentID != "" && entry != "" {
+	} else if ref.Key == "" && attachmentID != "" && entry != "" {
 		if !explanationRead(ctx) {
 			runs, err := readRunDetailSegment(ctx, q, &runDetailReference{AttachmentID: attachmentID, Organization: organization, Entry: entry})
 			if err != nil {
@@ -123,20 +143,13 @@ FROM collaboration_events WHERE id=? AND payload_version=1`, id).Scan(&organizat
 			run.MachineID, run.SessionID, run.RunnerID = tracker.MachineID(machine), session, runner
 			data.Run = &run
 		}
-	} else {
+	} else if ref.Key == "" {
 		return "", errors.Join(artifact.ErrIntegrity, sql.ErrNoRows)
 	}
 	return marshalNative(data)
 }
 
 func (s *Service) prepareCollaborationConversion(ctx context.Context, scope nativeScope, row int64, raw []byte) ([]byte, attachment.ArchiveReference, error) {
-	var kind string
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT type FROM collaboration_events WHERE rowid=?", row).Scan(&kind); err != nil {
-		return nil, attachment.ArchiveReference{}, err
-	}
-	if kind == "scheduler.decision" {
-		return []byte("{}"), attachment.ArchiveReference{}, nil
-	}
 	payload, err := resolveStorageJSON(ctx, raw)
 	if err != nil {
 		return nil, attachment.ArchiveReference{}, err

@@ -528,7 +528,7 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	objects := &changeObjectFixture{}
-	a.service.config.content = objects.call
+	a.service.config.Content = objects.call
 	ctx := changeOperatorContext(t, a.service, a.token, string(a.project.OrganizationID))
 	executor := hostedOperatorExecutor{service: a.service}
 	reads := func() map[string]string {
