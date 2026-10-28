@@ -125,7 +125,10 @@ func NativeRequest(recovery tracker.NativeRecovery, policy, instance string) Req
 		r.Comments = slices.Clone(r.Comments[len(r.Comments)-MaxComments:])
 	}
 	for range 12 {
-		encoded, _ := json.Marshal(r)
+		encoded, err := json.Marshal(r)
+		if err != nil {
+			break
+		}
 		if len(encoded) <= MaxInputBytes {
 			break
 		}

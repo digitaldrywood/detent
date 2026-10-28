@@ -9,9 +9,10 @@ import (
 	"slices"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
-	"github.com/labstack/echo/v4"
 )
 
 type nativeProgressView struct {
@@ -38,11 +39,11 @@ func (s *Service) nativeProgressRequest(ctx context.Context, scope nativeScope, 
 	if err != nil {
 		return progresscheck.Request{}, 0, err
 	}
+	defer rows.Close()
 	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			_ = rows.Close()
 			return progresscheck.Request{}, 0, err
 		}
 		ids = append(ids, id)
@@ -65,11 +66,11 @@ func (s *Service) nativeProgressRequest(ctx context.Context, scope nativeScope, 
 	if err != nil {
 		return progresscheck.Request{}, 0, err
 	}
+	defer rows.Close()
 	ids = nil
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			_ = rows.Close()
 			return progresscheck.Request{}, 0, err
 		}
 		ids = append(ids, id)

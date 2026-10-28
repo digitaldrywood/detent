@@ -759,7 +759,9 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	}
 	orchestrator.setLocalIntakeDisabled(cfg.LocalIntakeDisabled)
 	orchestrator.heartbeats = newHeartbeatManager(cfg, deps.Connector, deps.WorkAttempts, now, logger, deps.Scheduling)
-	orchestrator.progressRunner, _ = runner.(retryProgressRunner)
+	if progressRunner, ok := runner.(retryProgressRunner); ok {
+		orchestrator.progressRunner = progressRunner
+	}
 	return orchestrator, nil
 }
 
