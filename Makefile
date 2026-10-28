@@ -30,6 +30,7 @@ DATABASE_URL ?= tmp/detent.db
 NILAWAY_VERSION ?= v0.0.0-20260612163715-2d8907f431ca
 NILAWAY ?= go run go.uber.org/nilaway/cmd/nilaway@$(NILAWAY_VERSION)
 NILAWAY_INCLUDE_PKGS ?= github.com/digitaldrywood/detent
+NILAWAY_PACKAGES ?= ./...
 GOVULNCHECK_VERSION ?= v1.6.0
 GOVULNCHECK ?= go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 # Upstream issue: https://github.com/securego/gosec/issues/1712
@@ -165,6 +166,11 @@ HUB_SLICE_3 := -run '^Test[CGS]'
 HUB_SLICE_4 := -skip '^Test[ABCDEFGHILMNPQSTUV]'
 HUB_SLICE_5 := -run '^Test(A|Native[I-Z])'
 
+.PHONY: test-landing-hub
+test-landing-hub:
+	@set -e; source scripts/check-evidence.sh; \
+	$(foreach slice,$(sort $(filter HUB_SLICE_%,$(.VARIABLES))),check_with_evidence unit-full-hub-$(patsubst HUB_SLICE_%,%,$(slice)) $(GO_TEST) ./internal/hubserver $($(slice));)
+
 # RACE_SHARD=i/n races one balanced slice of the packages outside the hub server; RACE_SHARD=hub-N races hub server slice N.
 RACE_SHARD ?=
 RACE_HUB_SLICE := $(patsubst hub-%,%,$(filter hub-%,$(RACE_SHARD)))
@@ -265,7 +271,7 @@ nilaway-audit:
 	$(NILAWAY) -include-pkgs=$(NILAWAY_INCLUDE_PKGS) ./...
 
 nilaway-changed:
-	python3 scripts/nilaway-changed.py $(NILAWAY_VERSION) $(NILAWAY_INCLUDE_PKGS)
+	python3 scripts/nilaway-changed.py $(NILAWAY_VERSION) $(NILAWAY_INCLUDE_PKGS) $(NILAWAY_PACKAGES)
 
 check: check-invariants check-migrations check-generated check-app build lint vet nilaway-audit test-race test-cover
 	@echo "All checks passed."

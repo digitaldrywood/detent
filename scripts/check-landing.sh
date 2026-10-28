@@ -70,24 +70,45 @@ while True:
 selected = set(packages) if wide else direct | propagated
 if wide:
     print("wide\t./...")
-for scope, names in (("test", selected), ("lint", set(packages) if wide else lint)):
+full = set(packages) if wide else direct
+for scope, names in (("full", full), ("short", selected - full), ("nilaway", selected), ("lint", set(packages) if wide else lint)):
     for name in sorted(names):
         directory = Path(packages[name]["Dir"]).relative_to(root).as_posix()
         print(scope + "\t" + ("." if directory == "." else "./" + directory))
 PY
 )
-test_packages=()
+full_packages=()
+short_packages=()
+nilaway_packages=()
 lint_packages=()
+hub_full=false
 lint_scope=(--new-from-rev="$base" --whole-files)
 while IFS=$'\t' read -r scope package; do
     case "$scope" in
-        test) test_packages+=("$package") ;;
+        full)
+            if [ "$package" = ./internal/hubserver ]; then
+                hub_full=true
+            else
+                full_packages+=("$package")
+            fi
+            ;;
+        short) short_packages+=("$package") ;;
+        nilaway) nilaway_packages+=("$package") ;;
         lint) lint_packages+=("$package") ;;
         wide) lint_scope=() ;;
     esac
 done <<< "$selection"
-if [ "${#test_packages[@]}" -gt 0 ]; then
-    check_with_evidence unit-short env -u DETENT_API_TOKEN go test -p "$procs" -short -timeout=10m "${test_packages[@]}"
+if [ "${#full_packages[@]}" -gt 0 ]; then
+    check_with_evidence unit-full env -u DETENT_API_TOKEN go test -p "$procs" -timeout=10m "${full_packages[@]}"
+fi
+if [ "$hub_full" = true ]; then
+    check_with_evidence unit-full-hub make -j1 test-landing-hub TEST_PROCS="$procs"
+fi
+if [ "${#short_packages[@]}" -gt 0 ]; then
+    check_with_evidence unit-short env -u DETENT_API_TOKEN go test -p "$procs" -short -timeout=10m "${short_packages[@]}"
+fi
+if [ "${#nilaway_packages[@]}" -gt 0 ]; then
+    check_with_evidence nilaway env -u DETENT_API_TOKEN make -j1 nilaway-changed TEST_PROCS="$procs" "NILAWAY_PACKAGES=${nilaway_packages[*]}"
 fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then
     make -j1 "$linter" TEST_PROCS="$procs"
