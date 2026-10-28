@@ -85,7 +85,12 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	reportAttempts, err := migrationFiles.ReadFile("migrations/20261028075830_report_attempt_columns.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
 	migrations := fstest.MapFS{
+		"20261028075830_report_attempt_columns.sql":           &fstest.MapFile{Data: reportAttempts},
 		"20261027230218_health_transition_recovery_index.sql": &fstest.MapFile{Data: healthTransitionIndex},
 		"20261026003000_archive_facts.sql":                    &fstest.MapFile{Data: archiveProjection},
 		"20261025220000_admission_claim_facts.sql":            &fstest.MapFile{Data: facts},
@@ -104,7 +109,7 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if _, _, err := provider.GetVersions(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+versionTable+" (version_id,is_applied) VALUES (59,1),(20261023234600,1),(20261025220000,1),(20261025230900,1),(20261025233000,1),(20261026003000,1),(20261026041522,1),(20261026090910,1),(20261027230218,1)"); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+versionTable+" (version_id,is_applied) VALUES (59,1),(20261023234600,1),(20261025220000,1),(20261025230900,1),(20261025233000,1),(20261026003000,1),(20261026041522,1),(20261026090910,1),(20261027230218,1),(20261028075830,1)"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), `DROP VIEW native_transition_facts;
