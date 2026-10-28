@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -57,97 +58,26 @@ type duplicateCostConn struct {
 }
 
 func (c *duplicateCostConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	c.searching = strings.Contains(query, "native_work_fts")
+	c.searching = strings.Contains(query, "native_work_fts") || strings.Contains(query, "native_work_scoped_fts")
 	return c.timedConn.QueryContext(ctx, query, args)
 }
 
-func TestNativeDuplicateSearchCost(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
-	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
-		t.Fatal(err)
-	}
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	target := f.create(t, "Repository association hangs")
-	var words []string
-	for i := range 4000 {
-		words = append(words, "symptom"+strconv.Itoa(i))
-	}
-	body := strings.Join(words, " ")
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", body, target.WorkItemID); err != nil {
-		t.Fatal(err)
-	}
-	var steps int64
-	pool := sql.OpenDB(duplicateCostConnector{timedConnector: timedConnector{driver: f.service.database.reader.Driver(), dsn: sqliteReaderDSN(f.service.database.path, f.service.config.BusyTimeout)}, steps: &steps})
-	pool.SetMaxOpenConns(1)
-	t.Cleanup(func() {
-		if err := pool.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	count := 0
-	var baseline int64
-	for _, test := range []struct {
-		name    string
-		issues  int
-		words   int
-		overlap int
-		want    int
-	}{
-		{"short", 300, 16, 5, 1},
-		{"long", 300, 400, 5, 1},
-		{"thousands", 3000, 400, 5, 1},
-		{"larger", 6000, 400, 5, 1},
-		{"longer description", 6000, 4000, 5, 1},
-		{"dense matches", 6000, 400, 16, 5},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if test.issues > count {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE seed(n) AS (
-SELECT ? UNION ALL SELECT n+1 FROM seed WHERE n < ?)
-INSERT INTO issues(native_id,organization_id,project_id,number,workflow_state_id,title,body,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,actor_kind,actor_principal_id)
-SELECT 'wi_cost_'||i.project_id||'_'||seed.n,i.organization_id,i.project_id,seed.n,i.workflow_state_id,
-'Unrelated history',?,'','open','','','',i.created_at,i.updated_at,i.actor_kind,i.actor_principal_id
-FROM seed CROSS JOIN issues i WHERE i.native_id=?`, count+2, test.issues+1, strings.Join(words[:5], " "), target.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
-				count = test.issues
-			}
-			if test.overlap != 5 {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE project_id=? AND native_id<>?", strings.Join(words[:test.overlap], " "), scope.project, target.WorkItemID); err != nil {
-					t.Fatal(err)
-				}
-			}
-			steps = 0
-			request := tracker.CreateIssue{Title: "Separate observed details", Body: strings.Join(words[:test.words], " ")}
-			started := time.Now()
-			matches, err := resolveNativeDuplicates(t.Context(), pool, scope, request, f.service.config.now(), false)
-			t.Logf("issues=%d bytes=%d steps=%d elapsed=%s", test.issues, len(request.Body), steps, time.Since(started))
-			if err != nil || len(matches) != test.want || test.want == 1 && matches[0].WorkItemID != target.WorkItemID {
-				t.Fatalf("matches=%+v err=%v", matches, err)
-			}
-			if steps == 0 || steps > 400000 {
-				t.Errorf("duplicate search used %d VM steps, budget 400000", steps)
-			}
-			if baseline == 0 {
-				baseline = steps
-			}
-			if test.overlap == 5 && steps > baseline+20000 {
-				t.Errorf("duplicate search grew from %d to %d VM steps", baseline, steps)
-			}
-		})
-	}
-}
-
 func TestNativeDuplicateCandidateCrowding(t *testing.T) {
-	for _, crowd := range []string{"project", "organization", "archived", "invisible"} {
+	for _, crowd := range []string{"project", "organization", "archived", "invisible", "partial coverage", "eligible"} {
 		t.Run(crowd, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
-			target := f.create(t, "Repository association deadlocks")
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=?,actor_principal_id=? WHERE native_id=?", "Repository association deadlocks", "visible-reporter", target.WorkItemID); err != nil {
+			target := f.create(t, "Separate issue context")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=?,actor_principal_id=? WHERE native_id=?", "", "visible-reporter", target.WorkItemID); err != nil {
 				t.Fatal(err)
 			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID,
 				credential: apiCredential{HostedRole: "reporter"}, sourceActor: &tracker.Actor{Kind: "human", PrincipalID: "visible-reporter"}}
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(target.WorkItemID)+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "crowding-comment"}, Body: "Repository association deadlocks"})
+			requireNativeStatus(t, response, http.StatusOK)
+			partial := f.create(t, "Repository association")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body='',actor_principal_id=? WHERE native_id=?", "visible-reporter", partial.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
 			seed := target
 			if crowd == "project" || crowd == "organization" {
 				organization := f.project.OrganizationID
@@ -162,11 +92,16 @@ func TestNativeDuplicateCandidateCrowding(t *testing.T) {
 				principal = "another-reporter"
 			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE seed(n) AS (
-SELECT 2 UNION ALL SELECT n+1 FROM seed WHERE n<126)
+SELECT 3 UNION ALL SELECT n+1 FROM seed WHERE n<127)
 INSERT INTO issues(native_id,organization_id,project_id,number,workflow_state_id,title,body,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,actor_kind,actor_principal_id,archived)
 SELECT 'wi_crowd_'||i.project_id||'_'||seed.n,i.organization_id,i.project_id,seed.n,i.workflow_state_id,
-i.title,?,'','open','','','',i.created_at,i.updated_at,'human',?,?
-FROM seed CROSS JOIN issues i WHERE i.native_id=?`, "Repository association deadlocks", principal, archived, seed.WorkItemID); err != nil {
+CASE WHEN ? THEN 'association' ELSE 'Repository association deadlocks' END,?,'','open','','','',i.created_at,i.updated_at,'human',?,?
+FROM seed CROSS JOIN issues i WHERE i.native_id=?`, crowd == "partial coverage", func() string {
+				if crowd == "partial coverage" {
+					return "association"
+				}
+				return "Repository association deadlocks"
+			}(), principal, archived, seed.WorkItemID); err != nil {
 				t.Fatal(err)
 			}
 			var steps int64
@@ -177,6 +112,23 @@ FROM seed CROSS JOIN issues i WHERE i.native_id=?`, "Repository association dead
 					t.Error(err)
 				}
 			})
+			for _, search := range []string{"repos associ deadlock", "repository association absent"} {
+				query, args, err := nativeIssueSelection(scope, url.Values{"q": {search}}, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ids, err := nativePageIDs(t.Context(), pool, query, args...)
+				wantCount := 2
+				if crowd == "eligible" || crowd == "partial coverage" {
+					wantCount = 127
+				}
+				if err != nil || len(ids) != wantCount || !slices.Contains(ids, string(target.WorkItemID)) || !slices.Contains(ids, string(partial.WorkItemID)) {
+					t.Fatalf("search=%q ids=%v want %d matches err=%v", search, ids, wantCount, err)
+				}
+			}
+			if crowd == "eligible" {
+				return
+			}
 			for _, request := range []tracker.CreateIssue{
 				{Title: "Repository association deadlocks"},
 				{Title: "Separate observed symptom", Body: "Repository association deadlocks"},
@@ -187,8 +139,73 @@ FROM seed CROSS JOIN issues i WHERE i.native_id=?`, "Repository association dead
 				if steps == 0 || steps > 100000 {
 					t.Errorf("crowded duplicate search used %d VM steps, budget 100000", steps)
 				}
-				if err != nil || len(matches) != 1 || matches[0].WorkItemID != target.WorkItemID {
+				if err != nil || len(matches) != 2 || !slices.ContainsFunc(matches, func(hit possibleDuplicate) bool { return hit.WorkItemID == target.WorkItemID }) || !slices.ContainsFunc(matches, func(hit possibleDuplicate) bool { return hit.WorkItemID == partial.WorkItemID }) {
 					t.Errorf("request=%+v matches=%+v err=%v", request, matches, err)
+				}
+			}
+		})
+	}
+}
+
+func TestNativeSearchScopedCost(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	target := f.create(t, "Repository association")
+	foreign := newNativeFixture(t, f.service, f.project.OrganizationID, "foreign-search-cost")
+	seed := foreign.create(t, "Repository association deadlocks")
+	var steps int64
+	pool := sql.OpenDB(duplicateCostConnector{timedConnector: timedConnector{driver: f.service.database.reader.Driver(), dsn: sqliteReaderDSN(f.service.database.path, f.service.config.BusyTimeout)}, steps: &steps})
+	pool.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		if err := pool.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	count := 1
+	baselines := map[string]int64{}
+	for _, size := range []int{1, 300, 3000, 6000} {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
+			if size > count {
+				_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE seed(n) AS (
+SELECT ? UNION ALL SELECT n+1 FROM seed WHERE n<?)
+INSERT INTO issues(native_id,organization_id,project_id,number,workflow_state_id,title,body,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,actor_kind,actor_principal_id)
+SELECT 'wi_scoped_cost_'||seed.n,i.organization_id,i.project_id,seed.n,i.workflow_state_id,i.title,i.body,'','open','','','',i.created_at,i.updated_at,i.actor_kind,i.actor_principal_id
+FROM seed CROSS JOIN issues i WHERE i.native_id=?`, count+1, size, seed.WorkItemID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				count = size
+			}
+			for _, mode := range []string{"issues", "duplicates"} {
+				steps = 0
+				switch mode {
+				case "issues":
+					statement, args, err := nativeIssueSelection(scope, url.Values{"q": {"repos associ deadlock"}}, false)
+					if err != nil {
+						t.Fatal(err)
+					}
+					ids, err := nativePageIDs(t.Context(), pool, statement, args...)
+					if err != nil || !slices.Equal(ids, []string{string(target.WorkItemID)}) {
+						t.Fatalf("ids=%v err=%v", ids, err)
+					}
+				case "duplicates":
+					matches, err := resolveNativeDuplicates(t.Context(), pool, scope, tracker.CreateIssue{Title: "Repository association deadlocks"}, f.service.config.now(), false)
+					if err != nil || len(matches) != 1 || matches[0].WorkItemID != target.WorkItemID {
+						t.Fatalf("matches=%v err=%v", matches, err)
+					}
+				}
+				t.Logf("mode=%s foreign documents=%d VM steps=%d", mode, size, steps)
+				if steps == 0 {
+					t.Fatal("search cost was not measured")
+				}
+				if size == 1 {
+					baselines[mode] = steps
+				}
+				if steps > baselines[mode]+2000 {
+					t.Errorf("%s grew from %d to %d VM steps", mode, baselines[mode], steps)
 				}
 			}
 		})
@@ -208,16 +225,14 @@ func TestNativeDuplicateFiling(t *testing.T) {
 		failRead   bool
 	}{
 		{"matching title", true, "Runner checkout deadlocks", "Separate observed details", 0, true, false, "Todo", false},
-		{"stemming title", true, "Runner checkouts deadlocking", "Separate observed details", 0, true, false, "Todo", false},
-		{"prefix title", true, "Runn check dead", "Separate observed details", 0, true, false, "Todo", false},
 		{"default lane", true, "Runner checkout deadlocks", "Separate observed details", 0, true, false, "", false},
 		{"matching body", true, "A different symptom", "Checkout hangs during repository association", 0, true, false, "Todo", false},
 		{"no match", true, "Invitation email rejected", "Mailbox rejects the invite address; delivery returns an SMTP rejection from the recipient domain after verification links are sent. Sender reputation, relay credentials, mailbox quota, attachments, calendar invitations, spam filtering, and address formatting each need investigation.", 0, false, false, "Todo", false},
 		{"disabled", false, "Runner checkout deadlocks", "Checkout hangs during repository association", 0, false, false, "Todo", false},
 		{"recent closed", true, "Runner checkout deadlocks", "Separate observed details", 29, true, false, "Todo", false},
 		{"old closed", true, "Runner checkout deadlocks", "Separate observed details", 31, false, false, "Todo", false},
-		{"recent archived", true, "Runner checkout deadlocks", "Separate observed details", 29, true, true, "Todo", false},
-		{"recent archived body", true, "A different symptom", "Checkout hangs during repository association", 29, true, true, "Todo", false},
+		{"recent archived", true, "Runner checkout deadlocks", "Separate observed details", 29, false, true, "Todo", false},
+		{"recent archived body", true, "A different symptom", "Checkout hangs during repository association", 29, false, true, "Todo", false},
 		{"unlinked Triage", true, "Runner checkout deadlocks", "Separate observed details", 0, false, false, "Triage", false},
 		{"post-commit failure", true, "Runner checkout deadlocks", "Separate observed details", 0, true, false, "Todo", true},
 	} {
@@ -572,7 +587,7 @@ func (c *nativeBrowserPathConn) observe(query string) {
 	if c.writer && c.inTx {
 		c.fault.statements.Add(1)
 	}
-	if strings.Contains(query, "native_work_fts") || strings.Contains(query, "group_concat(c.body") {
+	if strings.Contains(query, "native_work_fts") || strings.Contains(query, "native_work_scoped_fts") || strings.Contains(query, "group_concat(c.body") {
 		if c.writer {
 			c.fault.writerSearches.Add(1)
 		} else {

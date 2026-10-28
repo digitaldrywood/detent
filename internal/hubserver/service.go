@@ -514,6 +514,7 @@ func (s *Service) runGitHubWebhookMaintenance(ctx context.Context) {
 			s.maintainNativeBoard(ctx)
 		case <-ticker.C:
 			s.maintainNativeBoard(ctx)
+			s.maintainNativeSearch(ctx)
 			s.maintainChangeSources(ctx)
 			now := s.config.now()
 			retryAnalytics := now.Sub(lastAnalyticsRetry) >= time.Hour

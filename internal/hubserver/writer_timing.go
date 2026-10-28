@@ -94,6 +94,9 @@ func openTimedReader(dsn string) (*sql.DB, error) {
 }
 
 func openTimedDB(dsn string, writer bool, logger *slog.Logger, committed ...chan struct{}) (*sql.DB, error) {
+	if err := registerNativeSearchText(); err != nil {
+		return nil, err
+	}
 	if err := registerStorageConversionDigest(); err != nil {
 		return nil, err
 	}
