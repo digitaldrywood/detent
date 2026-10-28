@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/dispatchpriority"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -697,6 +698,17 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 		return dispatchIssueOutcome{reason: reason}
 	}
 	runMode := o.dispatchMode(ctx, state, issue)
+	var progressDecision progresscheck.Record
+	if mode, allowed, err := o.retryProgress(ctx, issue, runMode, &progressDecision); err != nil {
+		if errors.Is(err, progresscheck.ErrBackend) {
+			return dispatchIssueOutcome{reason: dispatchIssueFailureWorkerHostUnavailable, waitReason: err.Error()}
+		}
+		return dispatchIssueOutcome{reason: dispatchIssueFailureTrackerUnavailable, waitReason: err.Error()}
+	} else if !allowed {
+		return dispatchIssueOutcome{reason: dispatchSkipBlockedByDependency, waitReason: "progress check identified a system defect"}
+	} else {
+		runMode = mode
+	}
 	if runMode == runpkg.RunModePlan && o.nativeWorkflow() {
 		if _, err := o.nativePlanLanes(ctx, issue); err != nil {
 			return dispatchIssueOutcome{reason: dispatchSkipInactiveState, waitReason: err.Error()}
@@ -861,6 +873,10 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 
 	issue = cloneIssue(claimedIssue)
 	priorAttempt := state.PriorAttempts[issue.ID]
+	if progressDecision.RequestID != "" {
+		priorAttempt.Source = "Progress check comment " + progressDecision.CommentID
+		priorAttempt.Reason = strings.TrimSpace(priorAttempt.Reason + "\n" + progressDecision.Decision.Reason)
+	}
 	completionSourceStart := newCompletionSourceStartRecord(issue, runMode)
 	if (runMode == runpkg.RunModeImplement || runMode == runpkg.RunModeMerge && !mergeWorkerIssue(issue)) && issue.PullRequest != nil {
 		completionSourceStart.PRDiffFingerprint = o.implementCompletionDiffFingerprint(runCtx, issue)
@@ -1060,6 +1076,7 @@ func (o *Orchestrator) dispatchIssueWithGlobalGrant(
 
 	reservation := reserveMergeCandidate(state, issue, now)
 	request := RunRequest{
+		ProgressDecision:    progressDecision,
 		Policy:              attemptPolicy,
 		ProjectID:           strings.TrimSpace(o.cfg.Project.ID),
 		Issue:               issue,

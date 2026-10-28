@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -331,11 +332,13 @@ func TestNativeCompletedTurnRetry(t *testing.T) {
 		rejectedGate, rejectedReview                bool
 		independentGate                             bool
 		repeatedRefusal                             bool
+		progressReroute                             bool
 		turns, commits, validations                 int
 	}{
 		{name: "commit", stage: "commit", turns: 1, commits: 2},
 		{name: "publication", stage: "publication", turns: 1, commits: 1},
 		{name: "repeated publication refusal on unchanged source", stage: "publication", repeatedRefusal: true, turns: 1, commits: 1},
+		{name: "AI reroute to implementation runs a new turn", stage: "publication", progressReroute: true, turns: 2, commits: 1},
 		{name: "checkpoint recovery", stage: "checkpoint_recovery", turns: 1, commits: 1},
 		{name: "validation publication", stage: "validation", turns: 1, commits: 1, validations: 1},
 		{name: "changed source", stage: "publication", changedSource: true, turns: 2, commits: 2},
@@ -420,6 +423,9 @@ func TestNativeCompletedTurnRetry(t *testing.T) {
 				second = third
 			}
 			request.Execution = second
+			if test.progressReroute {
+				request.ProgressDecision = progresscheck.Record{RequestID: "progress-decision", Decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: RunModeImplement}}
+			}
 			result, err := r.Run(t.Context(), request)
 			if err != nil || result.FinalState != FinalStateCompleted || !second.published || agent.calls != test.turns || backend.finalizationCalls != test.commits || test.validations > 0 && backend.validationCalls != test.validations {
 				t.Fatalf("retry error=%v state=%s published=%t provider turns=%d commits=%d validations=%d", err, result.FinalState, second.published, agent.calls, backend.finalizationCalls, backend.validationCalls)

@@ -1682,7 +1682,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 	var reviewRecovery *tracker.NativeAttempt
 	repairResume := false
 	var turnRecovery *tracker.NativeAttempt
-	if req.Execution != nil && mode == RunModeImplement {
+	if req.Execution != nil && mode == RunModeImplement && !req.rerouteImplementation() {
 		recovery := req.Execution.Recovery()
 		reviewRecovery = nativeReviewResumeAttempt(recovery, gate.Effective(workflow.Config.Gate).Run)
 		repairResume = reviewRecovery != nil && recovery.ChangeDetail != nil && len(changerequest.IndependentRepairDependencies(*recovery.ChangeDetail)) != 0
