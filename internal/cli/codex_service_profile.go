@@ -28,6 +28,7 @@ var workerCodexConfigKeys = map[string]bool{
 	"model":                              true,
 	"model_provider":                     true,
 	"model_providers":                    true,
+	"mcp_servers":                        true,
 	"model_reasoning_effort":             true,
 	"model_reasoning_summary":            true,
 	"model_verbosity":                    true,
