@@ -33,7 +33,11 @@ type duplicateChallenge struct {
 	ChallengeToken     string              `json:"challenge_token"`
 }
 
-const duplicateCandidateLimit = 100
+const (
+	duplicateCandidateLimit = 100
+	duplicateTitleTermLimit = 8
+	duplicateBodyTermLimit  = 16
+)
 
 type nativeDuplicateSearch struct {
 	latestNumber int
@@ -152,8 +156,11 @@ WHERE i.organization_id=? AND i.project_id=?`+window+` ORDER BY ws.terminal,i.nu
 	if machine || len(matches) == 5 {
 		return matches, nil
 	}
-	for _, content := range []string{request.Title, request.Body} {
+	for index, content := range []string{request.Title, request.Body} {
 		expressions := duplicateSearchExpressions(content)
+		if index == 0 {
+			expressions = expressions[:min(duplicateTitleTermLimit, len(expressions))]
+		}
 		if len(expressions) == 0 {
 			continue
 		}
@@ -161,37 +168,43 @@ WHERE i.organization_id=? AND i.project_id=?`+window+` ORDER BY ws.terminal,i.nu
 		if len(expressions) == 1 && content == request.Title {
 			minimum = 1
 		}
-		values := make([]string, len(expressions))
-		searchArgs := []any{strings.Join(expressions, " OR ")}
-		searchArgs = append(searchArgs, args...)
-		searchArgs = append(searchArgs, duplicateCandidateLimit)
-		candidateSQL := `SELECT d.issue_id,d.id,native_work_fts.rank AS score
-FROM native_work_fts JOIN native_work_documents d ON d.id=native_work_fts.rowid
-JOIN issues i ON i.id=d.issue_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
-WHERE native_work_fts MATCH ? AND i.organization_id=? AND i.project_id=?` + window + `
-AND native_work_fts.rank MATCH 'bm25(5.0,1.0)' ORDER BY native_work_fts.rank LIMIT ?`
-		candidateCTEs := "partial_hits AS MATERIALIZED (" + candidateSQL + ")"
-		candidateUnion := "SELECT issue_id,id,score FROM partial_hits"
-		if len(expressions) > 1 {
-			candidateCTEs += ",full_hits AS MATERIALIZED (" + candidateSQL + ")"
-			candidateUnion += " UNION SELECT issue_id,id,score FROM full_hits"
-			searchArgs = append(searchArgs, strings.Join(expressions, " AND "))
+		var candidateCTEs, candidateUnion []string
+		var searchArgs []any
+		candidateSQL := `SELECT d.issue_id,d.id,hits.score FROM (
+SELECT native_work_fts.rowid AS id,
+-1.0-4.0*(length(highlight(native_work_fts,0,char(1),''))-length(native_work_fts.title)) AS score
+FROM native_work_fts WHERE native_work_fts MATCH ? ORDER BY native_work_fts.rowid DESC LIMIT ?
+) hits CROSS JOIN native_work_documents d CROSS JOIN issues i CROSS JOIN workflow_states ws
+WHERE d.id=hits.id AND i.id=d.issue_id AND ws.id=i.workflow_state_id
+AND i.organization_id=? AND i.project_id=?` + window
+		for index, expression := range expressions {
+			name := "term" + strconv.Itoa(index)
+			candidateCTEs = append(candidateCTEs, name+" AS MATERIALIZED ("+candidateSQL+")")
+			candidateUnion = append(candidateUnion, "SELECT issue_id,id,score,1 AS terms,? AS matched FROM "+name)
+			searchArgs = append(searchArgs, expression, duplicateCandidateLimit)
 			searchArgs = append(searchArgs, args...)
-			searchArgs = append(searchArgs, duplicateCandidateLimit)
 		}
-		for i, expression := range expressions {
-			values[i] = "(?)"
+		if len(expressions) > 1 {
+			candidateCTEs = append(candidateCTEs, "full_hits AS MATERIALIZED ("+candidateSQL+")")
+			searchArgs = append(searchArgs, strings.Join(expressions, " AND "), duplicateCandidateLimit)
+			searchArgs = append(searchArgs, args...)
+		}
+		for _, expression := range expressions {
 			searchArgs = append(searchArgs, expression)
+		}
+		coverageUnion := "SELECT issue_id,id,sum(score) AS score,sum(terms) AS terms,group_concat(matched,', ') AS matched FROM term_hits GROUP BY issue_id,id"
+		if len(expressions) > 1 {
+			coverageUnion += " UNION ALL SELECT issue_id,id,score,?,? FROM full_hits"
+			searchArgs = append(searchArgs, len(expressions), strings.Join(expressions, ", "))
 		}
 		searchArgs = append(searchArgs, args...)
 		searchArgs = append(searchArgs, -minimum)
-		rows, err := query.QueryContext(ctx, `WITH `+candidateCTEs+`, hits AS MATERIALIZED (`+candidateUnion+`), terms(expression) AS (VALUES `+strings.Join(values, ",")+`), coverage AS MATERIALIZED (
-SELECT hits.id,count(*) AS terms,group_concat(terms.expression,', ') AS matched
-FROM hits CROSS JOIN terms CROSS JOIN native_work_fts
-WHERE native_work_fts.rowid=hits.id AND native_work_fts MATCH terms.expression GROUP BY hits.id), ranked AS (
-SELECT hits.issue_id,coverage.matched,-coverage.terms+hits.score/(1-hits.score) AS score,
-row_number() OVER (PARTITION BY hits.issue_id ORDER BY coverage.terms DESC,hits.score,hits.id) AS hit
-FROM hits JOIN coverage ON coverage.id=hits.id)
+		rows, err := query.QueryContext(ctx, `WITH `+strings.Join(candidateCTEs, ",")+`,
+term_hits AS MATERIALIZED (`+strings.Join(candidateUnion, " UNION ALL ")+`),
+coverage AS MATERIALIZED (`+coverageUnion+`), ranked AS (
+SELECT coverage.issue_id,coverage.matched,-coverage.terms+coverage.score/(1-coverage.score) AS score,
+row_number() OVER (PARTITION BY coverage.issue_id ORDER BY coverage.terms DESC,coverage.score,coverage.id) AS hit
+FROM coverage)
 SELECT i.native_id,i.number,i.title,ws.detent_state,i.revision,search.matched
 FROM ranked search JOIN issues i ON i.id=search.issue_id JOIN workflow_states ws ON ws.id=i.workflow_state_id
 WHERE search.hit=1 AND i.organization_id=? AND i.project_id=?`+window+`
@@ -269,7 +282,7 @@ func duplicateSearchExpressions(content string) []string {
 			continue
 		}
 		expressions = append(expressions, expression)
-		if len(expressions) == 32 {
+		if len(expressions) == duplicateBodyTermLimit {
 			break
 		}
 	}
