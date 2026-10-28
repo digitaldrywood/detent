@@ -309,6 +309,11 @@ func TestTeamThreadHostedAgentAttribution(t *testing.T) {
 		t.Fatal(err)
 	}
 	hostedContextData(t, send("tools/call", "post_to_thread", teamThreadInput{ThreadID: thread.ID, Kind: "note", Body: "Must be denied"}), true)
+	keyCredential, _, err = f.service.authenticateAPIToken(ctx, key.Token, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = f.service.withOperatorCatalog(ctx, keyCredential, "org_security")
 	tools, err = (hostedOperatorExecutor{f.service}).ListTools(ctx)
 	if err != nil {
 		t.Fatal(err)
