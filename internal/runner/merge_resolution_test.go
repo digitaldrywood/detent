@@ -222,7 +222,7 @@ func TestNativeLandingMergeResolution(t *testing.T) {
 				}
 			default:
 				landing := result.NativeLanding
-				if landing == nil || !landing.Landed || landing.HeadSHA != head || landing.VersionID != "version_1" || !landing.Rebased || landing.Path != "merge_resolution" || landing.Gate == nil || landing.Gate.Command != command || landing.Gate.ExitCode != 0 || remoteHead == base || len(execution.recorded) != 1 || execution.publication {
+				if landing == nil || !landing.Landed || !execution.started || landing.HeadSHA != head || landing.VersionID != "version_1" || !landing.Rebased || landing.Path != "merge_resolution" || landing.Gate == nil || landing.Gate.Command != command || landing.Gate.ExitCode != 0 || remoteHead == base || len(execution.recorded) != 1 || execution.publication {
 					t.Fatalf("equivalent resolution invalidated reviewed source: %#v", result)
 				}
 				if content := runRunnerGit(t, remote, "show", "refs/heads/main:feature.txt"); content != test.content {

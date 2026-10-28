@@ -57,6 +57,59 @@ func TestNativeRestorableCheckpoint(t *testing.T) {
 	}
 }
 
+func TestIncorporationRefusalRestoresPublishedSource(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		gitRef     bool
+		retained   bool
+		dirty      bool
+		uncertain  bool
+		stale      bool
+		wantFresh  bool
+		wantPushed bool
+	}{
+		{name: "clean integration git checkpoint yields to published source", gitRef: true, wantFresh: true},
+		{name: "clean local integration checkpoint yields to published source", wantFresh: true},
+		{name: "retained clean integration workspace yields to published source", gitRef: true, retained: true, wantFresh: true},
+		{name: "dirty checkpoint preserves unpublished edits", gitRef: true, dirty: true, wantPushed: true},
+		{name: "uncertain publication retains custody", gitRef: true, uncertain: true},
+		{name: "different version cannot redirect recovery", gitRef: true, stale: true, wantPushed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			checkpoint := &tracker.NativeCheckpoint{Storage: "local_only", Availability: "available", Resume: "fresh_checkout", WorktreeState: "clean", HeadSHA: "integration", ExternalEffect: "none", EffectState: "none"}
+			if test.gitRef {
+				remoteCheckpoint(checkpoint)
+				checkpoint.HeadSHA = "integration"
+			}
+			if test.dirty {
+				checkpoint.WorktreeState = "dirty"
+			}
+			if test.uncertain {
+				checkpoint.ExternalEffect, checkpoint.EffectState = "git_push", "ambiguous"
+			}
+			ref := &tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "published"}
+			if test.stale {
+				ref.VersionID = "previous"
+			}
+			recovery := tracker.NativeRecovery{Lease: tracker.NativeLease{MachineID: "machine"}, Attempts: []tracker.NativeAttempt{{
+				NativeRunData: tracker.NativeRunData{MachineID: "machine", Finalization: &tracker.NativeFinalization{ChangeID: ref.ChangeID, VersionID: ref.VersionID, HeadSHA: ref.HeadSHA, SourceVersion: ref}},
+				Checkpoint:    checkpoint,
+			}}}
+			backend := existingWorkspaceBackend{err: workspace.ErrMissingWorkspace}
+			if test.retained {
+				backend.err = nil
+			}
+			issue := workspace.Issue{Source: &workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "version", ChangeID: "change", ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "published"}}}}
+			restoreRunWorkspaceCheckpoint(RunRequest{Execution: &testExecution{recovery: recovery}}, backend, &issue, false)
+			if issue.FreshCheckout != test.wantFresh || (issue.Checkpoint != nil) != test.wantPushed {
+				t.Fatalf("recovery replayed integration checkpoint: fresh=%t checkpoint=%+v", issue.FreshCheckout, issue.Checkpoint)
+			}
+		})
+	}
+}
+
 type checkpointFinalizingWorkspace struct {
 	*wipExecutionWorkspace
 	onFinalize func() error

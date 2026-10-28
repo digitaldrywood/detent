@@ -34,12 +34,17 @@ type nativeCompletionState struct {
 	PreparedMessage          string                         `json:"prepared_message"`
 	PreparedDisposition      *tracker.NativeDisposition     `json:"prepared_disposition,omitempty"`
 	PreparedFinalization     *tracker.NativeFinalization    `json:"prepared_finalization,omitempty"`
+	PreparedLanding          *runner.NativeLanding          `json:"prepared_landing,omitempty"`
 	PreparedFailure          *tracker.NativeTerminalFailure `json:"prepared_failure,omitempty"`
 }
 
 func (e *nativeExecution) CompletionState() json.RawMessage {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	var landing *runner.NativeLanding
+	if e.change != nil {
+		landing = e.change.Landing
+	}
 	data, err := json.Marshal(nativeCompletionState{
 		Publication: e.publication, Observations: e.observations,
 		Lease: e.claim.lease, Data: e.data, Pending: e.pending,
@@ -51,6 +56,7 @@ func (e *nativeExecution) CompletionState() json.RawMessage {
 		PreparedOutcome: e.preparedOutcome, PreparedMessage: e.preparedMessage,
 		PreparedDisposition:  e.preparedDisposition,
 		PreparedFinalization: e.preparedFinalization(), PreparedFailure: e.preparedFailure,
+		PreparedLanding: landing,
 	})
 	if err != nil {
 		return nil
@@ -70,6 +76,12 @@ func (s *Scheduler) RestoreCompletion(ctx context.Context, request orchestrator.
 	if len(saved) != 0 {
 		if err := json.Unmarshal(saved, &state); err != nil {
 			return orchestrator.Claimed{}, errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+		}
+		if landing := state.PreparedLanding; landing != nil {
+			f := state.PreparedFinalization
+			if f == nil || landing.ChangeID != f.ChangeID || landing.VersionID != f.VersionID || landing.HeadSHA != f.HeadSHA {
+				return orchestrator.Claimed{}, runner.ErrExecutionAuthorityUnavailable
+			}
 		}
 	} else {
 		fence, err := strconv.ParseInt(issue.Metadata["hub_fencing_token"], 10, 64)
@@ -179,6 +191,7 @@ func (s *Scheduler) RestoreCompletion(ctx context.Context, request orchestrator.
 	}
 	if finalization := state.PreparedFinalization; finalization != nil {
 		execution.change = &runner.NativeChange{
+			Landing: state.PreparedLanding,
 			Changed: finalization.Changed, Files: finalization.Files,
 			ChangeID: finalization.ChangeID, VersionID: finalization.VersionID,
 			BaseSHA: finalization.BaseSHA, HeadSHA: finalization.HeadSHA,
