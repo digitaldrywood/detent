@@ -99,7 +99,7 @@ while IFS=$'\t' read -r scope package; do
     esac
 done <<< "$selection"
 if [ "${#full_packages[@]}" -gt 0 ]; then
-    check_with_evidence unit-full env -u DETENT_API_TOKEN go test -p "$procs" -timeout=10m "${full_packages[@]}"
+    check_with_evidence unit-full env -u DETENT_API_TOKEN GOMAXPROCS="$procs" go test -p 1 -timeout=10m "${full_packages[@]}"
 fi
 if [ "$hub_full" = true ]; then
     check_with_evidence unit-full-hub make -j1 test-landing-hub TEST_PROCS="$procs"

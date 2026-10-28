@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/store/storetest"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -736,7 +737,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					owner.recovery.Discussion = []tracker.NativeComment{{ID: "feedback_issue", Body: "The source has an actual defect; inspect it before acceptance.", Actor: tracker.Actor{Kind: "human", PrincipalID: "operator"}, CreatedAt: time.Unix(300, 0)}}
 				}
 				agent.reviewVerdict = test.reviewResume
-				db, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "sessions.db")})
+				db, err := store.Open(t.Context(), store.Config{Path: storetest.NewDatabasePath(t)})
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -169,7 +169,7 @@ HUB_SLICE_5 := -run '^Test(A|Native[I-Z])'
 .PHONY: test-landing-hub
 test-landing-hub:
 	@set -e; source scripts/check-evidence.sh; \
-	$(foreach slice,$(sort $(filter HUB_SLICE_%,$(.VARIABLES))),check_with_evidence unit-full-hub-$(patsubst HUB_SLICE_%,%,$(slice)) $(GO_TEST) ./internal/hubserver $($(slice));)
+	$(foreach slice,$(sort $(filter HUB_SLICE_%,$(.VARIABLES))),check_with_evidence unit-full-hub-$(patsubst HUB_SLICE_%,%,$(slice)) env -u DETENT_API_TOKEN python3 scripts/test-landing-hub.py $(patsubst HUB_SLICE_%,%,$(slice)) $(TEST_PROCS) $(TEST_TIMEOUT) $($(slice));)
 
 # RACE_SHARD=i/n races one balanced slice of the packages outside the hub server; RACE_SHARD=hub-N races hub server slice N.
 RACE_SHARD ?=
