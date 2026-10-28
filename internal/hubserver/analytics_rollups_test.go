@@ -128,6 +128,12 @@ func TestAnalyticsRollupIncremental(t *testing.T) {
 		if got := readTestRollupRows(t, f.service.database.reader, scope); !reflect.DeepEqual(rows, got) {
 			t.Fatalf("rebuild differs from incremental: before=%v after=%v", rows, got)
 		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO collaboration_events(id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) VALUES(?,?,?,?,1000000,'issue.created',1,'{}','{}',?)`, "unprojected_"+string(scope.project), scope.organization, scope.project, issue.WorkItemID, formatHubTime(now)); err != nil {
+			t.Fatal(err)
+		}
+		if analyticsRollupsServed(t, f.service, scope) {
+			t.Fatal("rollup reader ignored an unprojected source event without a rollup row")
+		}
 	}
 	for _, project := range []tracker.NativeProject{f.project, other.project} {
 		count, err := readAnalyticsCounter(t.Context(), analyticsRollupReader{f.service.database.reader}, nativeScope{organization: project.OrganizationID, project: project.ID}, "ready", now.Truncate(time.Hour), now.Add(time.Hour))

@@ -18,11 +18,11 @@ func analyticsChangeColumnsPending(ctx context.Context, q nativeQueryer, scope n
 		q = rollup.nativeQueryer
 	}
 	var pending bool
-	err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_requests c WHERE c.organization_id=? AND c.project_id=? AND c.created_at IS NULL)
+	err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_requests c INDEXED BY change_requests_policy_unknown WHERE c.organization_id=? AND c.project_id=? AND c.created_at IS NULL)
  OR EXISTS (SELECT 1 FROM change_versions v JOIN change_requests c ON c.id=v.change_id WHERE c.organization_id=? AND c.project_id=? AND v.head_sha IS NULL)
  OR EXISTS (SELECT 1 FROM change_evidence e JOIN change_requests c ON c.id=e.change_id WHERE c.organization_id=? AND c.project_id=? AND e.has_validator IS NULL)
  OR EXISTS (SELECT 1 FROM quality_landings l JOIN change_versions v ON v.id=l.version_id JOIN change_requests c ON c.id=v.change_id WHERE c.organization_id=? AND c.project_id=? AND l.landed_at IS NULL)
- OR EXISTS (SELECT 1 FROM collaboration_events WHERE organization_id=? AND project_id=? AND type='workflow.transitioned' AND from_state IS NULL)`, scope.organization, scope.project, scope.organization, scope.project, scope.organization, scope.project, scope.organization, scope.project, scope.organization, scope.project).Scan(&pending)
+ OR EXISTS (SELECT 1 FROM main.collaboration_events INDEXED BY collaboration_events_change_unknown WHERE organization_id=? AND project_id=? AND type='workflow.transitioned' AND (from_state IS NULL OR to_state IS NULL))`, scope.organization, scope.project, scope.organization, scope.project, scope.organization, scope.project, scope.organization, scope.project, scope.organization, scope.project).Scan(&pending)
 	return pending, err
 }
 
