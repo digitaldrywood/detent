@@ -568,13 +568,15 @@ Hub and store SQL never use JSON functions or operators over stored data:
 constructing JSON from stored columns. Every field SQL filters, joins, orders,
 aggregates, projects or updates is a typed column.
 
-A JSON-shaped value may only be stored as an opaque payload that the application
-decodes after reading it whole. New code adds none; [INV-18](#inv-18--hub-writes-stay-small)
-already forbids new Hub JSON columns. Existing uses are migration debt: no change
-may add one, and a change that edits a query using one moves that query to typed
-columns.
+Hub rows hold typed columns only. Audit, history and runtime payloads (attempt
+detail, run events, checkpoints, evidence, conversation streams and similar
+records kept for audit or history) are written compressed to object storage at
+write time, and the row keeps only a typed reference to the object. JSON and
+other payload blobs are never stored inline in Hub rows, and no derived table
+copies them. Existing inline payload columns are migration debt to move to object
+storage; no change may add one, and a change that touches one moves it.
 
-**Enforcement:** `TestINV20NoSQLOverJSON` in `internal/hubserver` scans non-test
+**Enforcement:** Review enforces payload placement in object storage. `TestINV20NoSQLOverJSON` in `internal/hubserver` scans non-test
 Go files in Hub and store (including generated SQL), and `db/queries` SQL sources.
 Per-file function counts must equal `testdata/inv20_json_sql_baseline.txt`;
 reductions must lower the baseline in the same change, and increases are forbidden.
