@@ -404,8 +404,15 @@ func TestStorageConversionImmutability(t *testing.T) {
 			name    string
 			allowed map[string]bool
 		}{
-			{"change_versions", map[string]bool{"claim_head_sha": true, "gate_github_pull_request": true, "external_url": true, "activity_external_url": true}},
-			{"change_evidence", map[string]bool{"claim_review_kind": true, "claim_review_actor": true, "claim_review_decision": true, "claim_review_current": true}},
+			{"change_versions", map[string]bool{
+				"claim_head_sha": true, "gate_github_pull_request": true, "external_url": true, "activity_external_url": true,
+				"created_at": true, "attempt_id": true, "head_sha": true, "repository": true, "external_provider": true, "external_id": true,
+			}},
+			{"change_evidence", map[string]bool{
+				"claim_review_kind": true, "claim_review_actor": true, "claim_review_decision": true, "claim_review_current": true,
+				"has_implementation_review": true, "has_validator": true, "has_security_audit": true, "security_audit_landing": true,
+				"check_run_id": true, "created_at": true, "received_at": true, "escape_occurrence_id": true, "escape_observed_at": true,
+			}},
 			{"change_sources", nil},
 			{"collaboration_events", map[string]bool{
 				"scheduler_outcome": true, "scheduler_reason": true, "scheduler_source": true, "scheduler_runner_id": true,
