@@ -184,11 +184,11 @@ func TestNativeRetention(t *testing.T) {
 		record = f.create(t, record)
 		tx := f.tx(t)
 		message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "final answer", Delivery: conversation.DeliveryCompleted, CreatedAt: at, UpdatedAt: at, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "example-runner"}}
-		if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+		if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
 			t.Fatal(err)
 		}
 		for range 2 {
-			if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventMessageDelta, conversationDeltaBody(message.ID, 0, "fragment"), at); err != nil {
+			if _, err := f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventMessageDelta, conversationDeltaBody(message.ID, 0, "fragment"), at); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -453,7 +453,7 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 				if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_issue_links(change_id,organization_id,project_id,work_item_id) VALUES(?,?,?,?)", change.ID, scope.organization, scope.project, issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
-				versionRaw, err := marshalNative(tracker.ChangeVersion{ID: change.CurrentVersion, ChangeID: change.ID, Policy: hubTestPolicy()})
+				versionRaw, err := marshalNative(tracker.ChangeVersion{ID: change.CurrentVersion, ChangeID: change.ID, ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: strings.Repeat("a", 40)}, Policy: hubTestPolicy()})
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"database/sql"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -195,15 +196,10 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 				if err != nil || linked.DependencyReady || len(linked.Dependencies) != 1 {
 					t.Fatalf("missing dependency before %s: %v", eventType, err)
 				}
-				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := appendNativeHistory(t.Context(), tx, scope, request.IssueID, eventType, tracker.CollaborationData{}, clock); err != nil {
-					_ = tx.Rollback()
-					t.Fatal(err)
-				}
-				if err := tx.Commit(); err != nil {
+				ctx := f.service.runDetailContext(t.Context())
+				if err := f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
+					return appendNativeHistory(ctx, tx, scope, request.IssueID, eventType, tracker.CollaborationData{}, clock)
+				}); err != nil {
 					t.Fatal(err)
 				}
 				reopened, _, err := readNativeIssue(t.Context(), f.service.database.reader, scope, request.IssueID)

@@ -79,7 +79,7 @@ func TestNativeIssueContractPolicyDriftKeepsCurrentAuthority(t *testing.T) {
 	}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: "policy_stale", Policy: descriptor}), http.StatusConflict)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/policy", testHubAdminToken, policy.Change{ExpectedID: drifted.ID, Policy: descriptor}), http.StatusOK)
-	evidence, err := readNativeRuntime(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(issue.WorkItemID), "", f.service.config.now())
+	evidence, err := readNativeRuntime(f.service.runDetailContext(t.Context()), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(issue.WorkItemID), "", f.service.config.now())
 	if err != nil || slices.Contains(evidence.Unavailable, "approved_dispatch_policy") {
 		t.Fatalf("runtime did not recover after policy approval: %+v, %v", evidence, err)
 	}

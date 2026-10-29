@@ -101,6 +101,19 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 		"20261025230900_analytics_event_columns.sql":          &fstest.MapFile{Data: analytics},
 		"20261025233000_conversation_query_columns.sql":       &fstest.MapFile{Data: metadata},
 	}
+	for _, name := range []string{
+		"20261028195844_conversation_payload_references.sql",
+		"20261028195951_collaboration_event_payload_references.sql",
+		"20261028233138_analytics_attempt_object_references.sql",
+		"20261029031758_analytics_attempt_pending_scope.sql",
+		"20261029061743_conversation_stored_text_bytes.sql",
+	} {
+		data, err := migrationFiles.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		migrations[name] = &fstest.MapFile{Data: data}
+	}
 	const versionTable = "runtime_migration_test_version"
 	provider, err := goose.NewProvider(goose.DialectSQLite3, f.service.database.db, migrations, goose.WithDisableGlobalRegistry(true), goose.WithTableName(versionTable), goose.WithSlog(discardLogger()))
 	if err != nil {
@@ -109,7 +122,7 @@ func TestNativeRuntimeMigrationPreservesHistory(t *testing.T) {
 	if _, _, err := provider.GetVersions(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+versionTable+" (version_id,is_applied) VALUES (59,1),(20261023234600,1),(20261025220000,1),(20261025230900,1),(20261025233000,1),(20261026003000,1),(20261026041522,1),(20261026090910,1),(20261027230218,1),(20261028075830,1)"); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO "+versionTable+" (version_id,is_applied) VALUES (59,1),(20261023234600,1),(20261025220000,1),(20261025230900,1),(20261025233000,1),(20261026003000,1),(20261026041522,1),(20261026090910,1),(20261027230218,1),(20261028075830,1),(20261028195844,1),(20261028195951,1),(20261028233138,1),(20261029031758,1),(20261029061743,1)"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), `DROP VIEW native_transition_facts;
@@ -120,7 +133,6 @@ DROP INDEX collaboration_events_terminal_transition;
 DROP INDEX collaboration_events_page_unknown;
 DROP INDEX collaboration_events_transition_unknown;
 DROP INDEX daily_summary_rework_window;
-DROP INDEX native_progress_human_input;
 ALTER TABLE collaboration_events DROP COLUMN edited_body;
 ALTER TABLE collaboration_events DROP COLUMN edited_title;
 ALTER TABLE collaboration_events DROP COLUMN run_present;
@@ -176,6 +188,7 @@ ALTER TABLE collaboration_events DROP COLUMN page_projection_ready;
 	runtime.Phase = "validation"
 	observed.Data.Runtime = &runtime
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, observed), http.StatusOK)
+	restoreLegacyCollaborationPayloads(t, f.service, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
 	if _, err := provider.DownTo(t.Context(), 58); err == nil {
 		t.Fatal("rollback discarded native runtime evidence")
 	}
@@ -190,9 +203,6 @@ ALTER TABLE collaboration_events DROP COLUMN page_projection_ready;
 	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE INDEX daily_summary_rework_window ON collaboration_events(organization_id,project_id,work_item_id,analytics_recorded_ns,to_state) WHERE type='workflow.transitioned'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE INDEX native_progress_human_input ON collaboration_events(organization_id, project_id, work_item_id, sequence DESC) WHERE actor_kind = 'human' AND type IN ('comment.created', 'comment.edited')`); err != nil {
-		t.Fatal(err)
-	}
 	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/history", f.token, nil), &after)
 	if len(after.Items) != 4 || after.Items[0].ID != before.Items[0].ID || after.Items[1].Type != "scheduler.decision" || after.Items[2].Type != "run.started" || after.Items[3].Type != "run.observed" {
 		t.Fatalf("failed rollback changed evidence: %#v", after)
@@ -202,7 +212,14 @@ ALTER TABLE collaboration_events DROP COLUMN page_projection_ready;
 		worker := f.worker(t, "activity-migration-worker")
 		lease := claimNativeAttempt(t, f.nativeFixture, worker, "activity-machine", "activity-session", f.issue.WorkItemID)
 		requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", worker, nativeStartedEvent(lease)), http.StatusOK)
-		version := f.publishExternal(t, "activity-version")
+		version := tracker.ChangeVersion{ID: "activity-external-version", ChangeID: f.change.ID, Number: 1, CreatedAt: f.now, ChangeVersionInput: tracker.ChangeVersionInput{External: &tracker.ChangeExternalReference{Provider: "github", ID: "1", URL: pullRequestTestURL}}}
+		versionRaw, err := marshalNative(version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,?,?)", version.ID, version.ChangeID, version.Number, versionRaw); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER change_versions_linked_activity"); err != nil {
 			t.Fatal(err)
 		}
