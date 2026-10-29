@@ -691,7 +691,7 @@ func TestLocalProviderRevalidation(t *testing.T) {
 			r.Availability = "exhausted"
 			r.ObservedAt = now.Add(-providercapacity.MaxAge)
 		}, "sol", true},
-		{"exhaustion", func(r *providercapacity.Report) { r.Availability = "exhausted" }, "sol", false},
+		{"exhaustion", func(r *providercapacity.Report) { r.Availability = "exhausted" }, "sol", true},
 		{"account change", func(r *providercapacity.Report) { r.AccountAlias = "other" }, "sol", false},
 		{"shared pool change", func(r *providercapacity.Report) { r.SharedAccountAlias = "other" }, "sol", false},
 		{"model changed", func(*providercapacity.Report) {}, "astra", false},

@@ -727,7 +727,7 @@ func TestScopeProviderUsage(t *testing.T) {
 	local := codex
 	local.SharedAccountAlias = ""
 	full := "Shared provider concurrency is fully reserved; wait for lease release or expiry"
-	available := "Bounded concurrency available; quota is an observation, not transferable credit"
+	available := "Declared provider concurrency is available"
 	for _, test := range []struct {
 		name         string
 		state        string
@@ -742,7 +742,7 @@ func TestScopeProviderUsage(t *testing.T) {
 		{name: "one visible reservation", state: "available", reservations: []scopedProviderAccount{{runnerID: "other", Report: codex}}, used: 1, reason: available},
 		{name: "other accounts and providers do not count", state: "available", reservations: []scopedProviderAccount{{runnerID: "runner", Report: other}, {runnerID: "runner", Report: claude}}, used: 0, reason: available},
 		{name: "visible reservations fill the account", state: "available", reservations: []scopedProviderAccount{{runnerID: "other", Report: codex}, {runnerID: "runner", Report: codex}}, used: 2, reason: full},
-		{name: "an exhausted account keeps its reason", state: "exhausted", reservations: []scopedProviderAccount{{runnerID: "other", Report: codex}}, used: 1, reason: "exhausted"},
+		{name: "an exhausted account uses its declared concurrency", state: "exhausted", reservations: []scopedProviderAccount{{runnerID: "other", Report: codex}}, used: 1, reason: available},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

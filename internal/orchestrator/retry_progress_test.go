@@ -279,7 +279,7 @@ func TestRetryProgressRespectsBackendCapacity(t *testing.T) {
 	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
 	o := &Orchestrator{cfg: cfg, scheduling: source, progressRunner: checker, capacityController: backendCapacityTestController{scope: scope}}
 	state := newState(cfg)
-	state.BackendOutages[scope.Key()] = BackendOutage{Scope: scope, NextProbeAt: time.Now().Add(time.Hour)}
+	state.BackendOutages[scope.Key()] = BackendOutage{Scope: scope, Kind: "http_503", NextProbeAt: time.Now().Add(time.Hour)}
 	outcome := o.dispatchIssueWithOutcome(t.Context(), &state, issue, 2, time.Now(), "worker-a")
 	if outcome.dispatched || outcome.reason != dispatchIssueFailureBackendCapacityPaused || checker.calls != 0 {
 		t.Fatalf("capacity refusal ran a progress turn: %+v calls=%d", outcome, checker.calls)

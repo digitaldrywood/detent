@@ -241,7 +241,7 @@ func spritePoolProviderFree(ctx context.Context, q nativeQueryer, scope nativeSc
 			return 0, false, err
 		}
 		for _, view := range runner.ProviderCapacity {
-			if view.MaxConcurrent <= 0 && view.State != "exhausted" {
+			if view.MaxConcurrent <= 0 {
 				continue
 			}
 			candidate := scopedProviderAccount{runnerID: runner.RunnerID, Report: view.Report}
@@ -253,9 +253,6 @@ func spritePoolProviderFree(ctx context.Context, q nativeQueryer, scope nativeSc
 				}
 			}
 			limit := view.MaxConcurrent
-			if view.State == "exhausted" {
-				limit = 0
-			}
 			if index < 0 {
 				accounts = append(accounts, account{scopedProviderAccount: candidate, limit: limit})
 				index = len(accounts) - 1

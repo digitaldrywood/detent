@@ -108,7 +108,7 @@ func TestClaudeCapacityResetAtUsesReachedWindow(t *testing.T) {
 	}
 }
 
-func TestCapacityStatusClassifiesRejectedSubscriptionWindow(t *testing.T) {
+func TestCapacityStatusIgnoresSubscriptionWindow(t *testing.T) {
 	t.Parallel()
 
 	resetAt := time.Date(2026, 8, 15, 21, 10, 0, 0, time.UTC)
@@ -120,7 +120,7 @@ func TestCapacityStatusClassifiesRejectedSubscriptionWindow(t *testing.T) {
 		},
 	}
 	status, ok := CapacityStatus(limits)
-	if !ok || !status.Exhausted || status.Available || status.Details.ResetAt == nil || !status.Details.ResetAt.Equal(resetAt) {
-		t.Fatalf("CapacityStatus() = %#v, %v, want exhausted subscription reset at %s", status, ok, resetAt)
+	if !ok || status.Exhausted || !status.Available || status.Details.ResetAt != nil {
+		t.Fatalf("CapacityStatus() = %#v, %v, want available capacity regardless of subscription reset at %s", status, ok, resetAt)
 	}
 }

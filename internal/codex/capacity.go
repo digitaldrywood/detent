@@ -3,7 +3,6 @@ package codex
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"regexp"
@@ -14,8 +13,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
-
-const codexCapacityAvailableThresholdPercent = 5
 
 var codexProviderOutageStatusPattern = regexp.MustCompile(`(?i)(?:http(?:/[0-9.]+)?\s+|status(?:[\s_-]*code)?["']?\s*[:=]?\s*)(404|5[0-9]{2})\b`)
 var codexResponsesEndpointPattern = regexp.MustCompile(`(?i)(?:/responses(?:[?,"'\s]|$)|responses endpoint)`)
@@ -259,45 +256,7 @@ func CapacityStatus(limits *telemetry.RateLimits) (runner.CapacityStatus, bool) 
 	if limits == nil {
 		return runner.CapacityStatus{}, false
 	}
-	if strings.TrimSpace(limits.ReachedType) != "" {
-		return codexExhaustedCapacityStatus(limits, "live provider status still reports an exhausted subscription window"), true
-	}
-	minimumRemaining := int64(101)
-	found := false
-	for _, bucket := range []*telemetry.RateLimitBucket{limits.Primary, limits.Secondary} {
-		if bucket == nil || bucket.Limit <= 0 {
-			continue
-		}
-		found = true
-		remaining := bucket.Remaining * 100 / bucket.Limit
-		minimumRemaining = min(minimumRemaining, remaining)
-		if bucket.Status == telemetry.RateLimitStatusExhausted {
-			return codexExhaustedCapacityStatus(limits, fmt.Sprintf("live provider status reports an exhausted subscription window with %d%% capacity remaining", remaining)), true
-		}
-		if remaining < codexCapacityAvailableThresholdPercent {
-			return runner.CapacityStatus{Detail: fmt.Sprintf("live provider status reports %d%% capacity remaining", remaining)}, true
-		}
-	}
-	if !found {
-		return runner.CapacityStatus{}, false
-	}
-	return runner.CapacityStatus{
-		Available: true,
-		Detail:    fmt.Sprintf("live provider status reports %d%% capacity remaining", minimumRemaining),
-	}, true
-}
-
-func codexExhaustedCapacityStatus(limits *telemetry.RateLimits, detail string) runner.CapacityStatus {
-	return runner.CapacityStatus{
-		Exhausted: true,
-		Detail:    detail,
-		Details: backendcapacity.Details{
-			Type:    backendcapacity.ErrorTypeUsageLimit,
-			Kind:    "subscription_window_exhausted",
-			Reason:  "subscription window exhausted",
-			ResetAt: codexCapacityResetAt(limits),
-		},
-	}
+	return runner.CapacityStatus{Available: true, Detail: "Provider usage is diagnostic only"}, true
 }
 
 func codexCapacityErrorText(err error) string {

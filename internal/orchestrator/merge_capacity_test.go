@@ -221,7 +221,7 @@ func TestReadyMergeCapacitySafety(t *testing.T) {
 		}},
 		{name: "provider hold", setup: func(s *State, _ connector.Issue) {
 			scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
-			s.BackendOutages[scope.Key()] = BackendOutage{Scope: scope, ResumeAt: time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)}
+			s.BackendOutages[scope.Key()] = BackendOutage{Scope: scope, Kind: "http_503", ResumeAt: time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)}
 		}},
 		{name: "already claimed", setup: func(s *State, i connector.Issue) { s.Claimed[i.ID] = Claimed{Issue: i} }},
 		{name: "human hold", setup: func(s *State, i connector.Issue) { s.Blocked[i.ID] = Blocked{Issue: i, Reason: "human hold"} }},

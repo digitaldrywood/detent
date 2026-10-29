@@ -269,7 +269,7 @@ func providerView(ctx context.Context, query nativeQueryer, organization tracker
 }
 
 func (snapshot providerCapacitySnapshot) view(runnerID string, report providercapacity.Report, now time.Time, joining ...string) providercapacity.View {
-	view := providercapacity.View{Report: report, State: report.State(now), Reason: "Bounded concurrency available; quota is an observation, not transferable credit"}
+	view := providercapacity.View{Report: report, State: report.State(now), Reason: "Declared provider concurrency is available"}
 	account := scopedProviderAccount{runnerID: runnerID, Report: report}
 	var freshReports []scopedProviderAccount
 	for _, other := range snapshot.reports {
@@ -307,14 +307,10 @@ func (snapshot providerCapacitySnapshot) view(runnerID string, report providerca
 		}
 	}
 	switch {
-	case view.State == "exhausted":
-		view.Reason = "Provider account is exhausted; wait for a fresh observation or reset hint"
 	case view.MaxConcurrent > 0 && view.Used >= view.MaxConcurrent:
 		view.Reason = "Shared provider concurrency is fully reserved; wait for lease release or expiry"
 	case view.MaxConcurrent == 0:
 		view.Reason = "No provider account concurrency limit is configured; runner and host limits apply"
-	case view.State == "unknown":
-		view.Reason = "Quota is unknown or stale; only the declared concurrency bound is available"
 	}
 	return view
 }
@@ -423,7 +419,7 @@ func validateProviderAttempt(ctx context.Context, tx nativeQueryer, scope native
 		if err != nil {
 			return err
 		}
-		if view.State == "exhausted" || view.MaxConcurrent > 0 && view.Used > view.MaxConcurrent {
+		if view.MaxConcurrent > 0 && view.Used > view.MaxConcurrent {
 			return providerWait("provider_capacity", "Provider capacity changed after reservation; release the lease and wait")
 		}
 		return nil

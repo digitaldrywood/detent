@@ -439,7 +439,7 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 }
 
-func TestPlanDispatchSubscriptionRateWindowBackpressure(t *testing.T) {
+func TestPlanDispatchSubscriptionUsageDoesNotLimitConcurrency(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -450,13 +450,14 @@ func TestPlanDispatchSubscriptionRateWindowBackpressure(t *testing.T) {
 		want        int
 	}{
 		{name: "metered ignores provider window", billingMode: workflowconfig.BillingModeMetered, limits: providerRateLimits(20, 100), want: 10},
-		{name: "subscription scales to primary remaining", billingMode: workflowconfig.BillingModeSubscription, limits: providerRateLimits(50, 100), want: 5},
-		{name: "subscription uses lower secondary remaining", billingMode: workflowconfig.BillingModeSubscription, limits: providerPrimarySecondaryRateLimits(80, 30), want: 3},
-		{name: "subscription preserves one soft slot at exhaustion", billingMode: workflowconfig.BillingModeSubscription, limits: providerRateLimits(0, 100), want: 1},
+		{name: "subscription ignores primary remaining", billingMode: workflowconfig.BillingModeSubscription, limits: providerRateLimits(50, 100), want: 10},
+		{name: "subscription ignores secondary remaining", billingMode: workflowconfig.BillingModeSubscription, limits: providerPrimarySecondaryRateLimits(80, 30), want: 10},
+		{name: "subscription ignores exhausted primary", billingMode: workflowconfig.BillingModeSubscription, limits: providerRateLimits(0, 100), want: 10},
+		{name: "subscription at 100 percent weekly usage", billingMode: workflowconfig.BillingModeSubscription, limits: providerPrimarySecondaryRateLimits(100, 0), want: 10},
 		{name: "subscription without snapshot uses configured capacity", billingMode: workflowconfig.BillingModeSubscription, want: 10},
 		{name: "off ignores provider window", billingMode: workflowconfig.BillingModeSubscription, pacing: workflowconfig.RateWindowPacing{Mode: workflowconfig.RateWindowPacingOff}, limits: providerRateLimits(10, 100), want: 10},
 		{name: "floor preserves capacity above threshold", billingMode: workflowconfig.BillingModeSubscription, pacing: workflowconfig.RateWindowPacing{Mode: workflowconfig.RateWindowPacingFloor, FloorPercent: 25}, limits: providerRateLimits(30, 100), want: 10},
-		{name: "floor scales below threshold", billingMode: workflowconfig.BillingModeSubscription, pacing: workflowconfig.RateWindowPacing{Mode: workflowconfig.RateWindowPacingFloor, FloorPercent: 25}, limits: providerRateLimits(20, 100), want: 2},
+		{name: "floor ignores quota below threshold", billingMode: workflowconfig.BillingModeSubscription, pacing: workflowconfig.RateWindowPacing{Mode: workflowconfig.RateWindowPacingFloor, FloorPercent: 25}, limits: providerRateLimits(20, 100), want: 10},
 		{name: "stale snapshot uses configured capacity", billingMode: workflowconfig.BillingModeSubscription, limits: staleProviderRateLimits(10, 100), want: 10},
 	}
 
@@ -473,7 +474,7 @@ func TestPlanDispatchSubscriptionRateWindowBackpressure(t *testing.T) {
 			})
 			state := newState(cfg)
 			state.RateLimits = tt.limits
-			issues := make([]connector.Issue, 10)
+			issues := make([]connector.Issue, 12)
 			for index := range issues {
 				issues[index] = dispatchTestIssue(fmt.Sprintf("issue-%02d", index), "Todo")
 			}
@@ -2175,7 +2176,7 @@ func TestDispatchableIssueDecisionCapacityReason(t *testing.T) {
 			want: dispatchSkipWorkerHostUnavailable,
 		},
 		{
-			name: "provider rate window",
+			name: "provider rate window does not constrain capacity",
 			cfg: Config{
 				MaxConcurrentAgents: 10,
 				ActiveStates:        []string{"Todo"},
@@ -2189,7 +2190,7 @@ func TestDispatchableIssueDecisionCapacityReason(t *testing.T) {
 					state.Running[running.ID] = Running{Issue: running}
 				}
 			},
-			want: dispatchSkipRateWindowBackpressure,
+			want: "",
 		},
 	}
 
@@ -2202,7 +2203,7 @@ func TestDispatchableIssueDecisionCapacityReason(t *testing.T) {
 			tt.state(&state)
 			issue := dispatchTestIssue("candidate", "Todo")
 			decision := newDispatchPlanner(cfg).dispatchableIssueDecision(issue, &state, false, time.Now(), "")
-			if decision.dispatchable || decision.reason != tt.want {
+			if decision.dispatchable != (tt.want == "") || decision.reason != tt.want {
 				t.Fatalf("dispatchable decision = %#v, want skipped for %q", decision, tt.want)
 			}
 		})

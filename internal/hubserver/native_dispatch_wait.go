@@ -57,7 +57,9 @@ func runnerDispatchFingerprint(ctx context.Context, tx *sql.Tx, scope nativeScop
 		return "", err
 	}
 	for index := range reports {
-		reports[index].Availability = reports[index].State(now)
+		reports[index].Availability = ""
+		reports[index].ResetAt = time.Time{}
+		reports[index].UsageWindows = nil
 		reports[index].ObservedAt = time.Time{}
 	}
 	providers, err := marshalNative(reports)

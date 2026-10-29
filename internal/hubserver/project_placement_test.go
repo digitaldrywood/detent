@@ -84,7 +84,7 @@ func TestPlacementClaims(t *testing.T) {
 		{"managed sprites_only local desired 0", "sprites_only", "free", "local", 3, http.StatusConflict, 0},
 		{"managed local preserves runner capacity", "blended", "runner_full", "local", 3, http.StatusConflict, 2},
 		{"managed local preserves host capacity", "blended", "host_full", "local", 3, http.StatusConflict, 2},
-		{"managed local preserves provider capacity", "blended", "provider_full", "local", 3, http.StatusConflict, 2},
+		{"managed local ignores quota exhaustion", "blended", "provider_full", "local", 3, http.StatusOK, 2},
 		{"managed local preserves policy approval", "blended", "policy", "local", 3, http.StatusConflict, 2},
 		{"managed local preserves project grant", "blended", "grant", "local", 3, http.StatusNotFound, 2},
 		{"managed local preserves source refusal", "blended", "source", "local", 3, http.StatusConflict, 2},
@@ -511,7 +511,7 @@ func TestPlacementConcurrentClaims(t *testing.T) {
 	}
 }
 
-func TestPlacementExhaustedSpriteBudget(t *testing.T) {
+func TestPlacementIgnoresExhaustedSubscriptionQuota(t *testing.T) {
 	for _, claimant := range []string{"local", "sprite"} {
 		t.Run(claimant, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
@@ -528,12 +528,12 @@ func TestPlacementExhaustedSpriteBudget(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if decision.Provisionable != 0 || decision.LocalFree != 1 {
+			if decision.Provisionable != 1 || decision.LocalFree != 1 {
 				t.Fatalf("exhausted Sprite account decision=%+v", decision.placementDecision)
 			}
 			r, status := local, http.StatusOK
 			if claimant == "sprite" {
-				r, status = sprite, http.StatusConflict
+				r, status = sprite, http.StatusOK
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "budget")), status)
 		})
@@ -553,7 +553,7 @@ func TestPlacementWake(t *testing.T) {
 		{"local-first yields to free local", "local_first", 3, true, false, 0},
 		{"Sprites-only ignores free local", "sprites_only", 1, true, false, 1},
 		{"blended unmet demand", "blended", 2, true, false, 1},
-		{"exhausted account does not wake", "sprites_only", 3, false, true, 0},
+		{"exhausted account wakes within declared capacity", "sprites_only", 3, false, true, 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var calls atomic.Int32

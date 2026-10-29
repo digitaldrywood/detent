@@ -681,10 +681,9 @@ func (s *AppServer) ReadCapacity(ctx context.Context) (observation runner.Capaci
 		return observation, err
 	}
 	var response struct {
-		AccountID            string                              `json:"accountId"`
-		RateLimits           *rateLimitSnapshotPayload           `json:"rateLimits"`
-		RateLimitsByLimitID  map[string]rateLimitSnapshotPayload `json:"rateLimitsByLimitId"`
-		OrdinaryUsageAllowed json.RawMessage                     `json:"ordinaryUsageAllowed"`
+		AccountID           string                              `json:"accountId"`
+		RateLimits          *rateLimitSnapshotPayload           `json:"rateLimits"`
+		RateLimitsByLimitID map[string]rateLimitSnapshotPayload `json:"rateLimitsByLimitId"`
 	}
 	if err := json.Unmarshal(result, &response); err != nil {
 		return observation, fmt.Errorf("%w: decode account/rateLimits/read result: %w", ErrInvalidResponse, err)
@@ -699,18 +698,7 @@ func (s *AppServer) ReadCapacity(ctx context.Context) (observation runner.Capaci
 		observation.RateLimits = rateLimitsFromCodex(response.RateLimits.snapshot())
 		observation.Status, _ = CapacityStatus(observation.RateLimits)
 	}
-	if len(response.OrdinaryUsageAllowed) > 0 {
-		var allowed *bool
-		if err := json.Unmarshal(response.OrdinaryUsageAllowed, &allowed); err != nil {
-			return runner.CapacityObservation{}, fmt.Errorf("%w: decode ordinary usage permission: %w", ErrInvalidResponse, err)
-		}
-		observation.Status.Available = allowed != nil && *allowed
-		if allowed != nil {
-			observation.Status.Exhausted = !*allowed
-		} else {
-			observation.Status = runner.CapacityStatus{}
-		}
-	}
+
 	return observation, nil
 }
 

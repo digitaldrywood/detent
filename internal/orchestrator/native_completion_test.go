@@ -1755,7 +1755,7 @@ func TestNativeReviewContinuationRespectsProviderCapacity(t *testing.T) {
 		unavailableHost   string
 		wantHost          string
 	}{
-		{name: "scaled provider capacity", running: 3, capacity: 5, blocked: true},
+		{name: "quota does not scale provider capacity", running: 3, capacity: 5},
 		{name: "below provider capacity", running: 2, capacity: 5},
 		{name: "one slot replaces restored owner", capacity: 1},
 		{name: "hard capacity", running: 1, capacity: 1, blocked: true},

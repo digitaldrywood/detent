@@ -1,7 +1,6 @@
 package orchestrator
 
 import (
-	"math"
 	"slices"
 	"strings"
 	"time"
@@ -895,9 +894,6 @@ func (p dispatchPlanner) dispatchableIssueDecisionForModelRequirement(
 		return dispatchableDecision{reason: dispatchSkipProjectCapacityFull}
 	}
 	if modelPermitRequired && p.availableSlots(state) == 0 {
-		if p.rateWindowBackpressureActive(state) {
-			return dispatchableDecision{reason: dispatchSkipRateWindowBackpressure}
-		}
 		return dispatchableDecision{reason: dispatchSkipProjectCapacityFull}
 	}
 	if !p.stateSlotsAvailable(issue, state) {
@@ -1090,30 +1086,7 @@ func (p dispatchPlanner) providerModelPermitSlots(state *State) int {
 	if state == nil {
 		return 0
 	}
-	// A depleted rate window is intentionally floored to one permit, serializing project dispatch instead of stopping it.
-	evaluation := evaluateProviderRateWindowPacing(
-		p.cfg.BillingMode,
-		p.cfg.RateWindowPacing,
-		state.MaxConcurrentAgents,
-		state.RateLimits,
-		p.now,
-	)
-	available := evaluation.permitCeiling - modelPermitsUsed(state)
-	return max(0, available)
-}
-
-func (p dispatchPlanner) rateWindowBackpressureActive(state *State) bool {
-	if state == nil {
-		return false
-	}
-	evaluation := evaluateProviderRateWindowPacing(
-		p.cfg.BillingMode,
-		p.cfg.RateWindowPacing,
-		state.MaxConcurrentAgents,
-		state.RateLimits,
-		p.now,
-	)
-	return evaluation.scalingApplied && p.hardAvailableSlots(state) > 0 && p.providerModelPermitSlots(state) == 0
+	return max(0, state.MaxConcurrentAgents-modelPermitsUsed(state))
 }
 
 func (p dispatchPlanner) modelPermitRequiredAtDispatch(issue connector.Issue) bool {
@@ -1167,15 +1140,7 @@ func evaluateProviderRateWindowPacing(
 	evaluation.bucketStatus = status
 	evaluation.observedRemainingPercent = remaining
 	evaluation.observedAt = observedAt
-	evaluation.applicable = !strings.EqualFold(strings.TrimSpace(billingMode), workflowconfig.BillingModeMetered) && pacing.Mode != workflowconfig.RateWindowPacingOff
-	if !evaluation.applicable || status != telemetry.RateWindowBucketFresh || remaining == nil || maxConcurrent <= 0 {
-		return evaluation
-	}
-	if pacing.Mode == workflowconfig.RateWindowPacingFloor && *remaining >= pacing.FloorPercent {
-		return evaluation
-	}
-	evaluation.permitCeiling = max(1, int(math.Ceil(float64(maxConcurrent)*(*remaining)/100)))
-	evaluation.scalingApplied = evaluation.permitCeiling < maxConcurrent
+
 	return evaluation
 }
 

@@ -84,7 +84,7 @@ func (r Runner) CapacityRequiresApplication(capacity int) bool {
 }
 
 func (r Runner) CapacityView(backend string, now time.Time) CapacityView {
-	view := CapacityView{Scope: "runner_configuration_ceiling", DispatchConstraint: "Actual claims also require current project, pool, lane, policy, provider quota and plan admission.", RunnerID: r.RunnerID, Revision: r.Revision, Desired: r.CapacityLimit, Status: "unknown"}
+	view := CapacityView{Scope: "runner_configuration_ceiling", DispatchConstraint: "Actual claims also require current project, pool, lane, policy, declared provider concurrency and plan admission.", RunnerID: r.RunnerID, Revision: r.Revision, Desired: r.CapacityLimit, Status: "unknown"}
 	add := func(owner string, limit *int, constraint string, observed time.Time) {
 		view.Limits = append(view.Limits, CapacityLimit{Owner: owner, Limit: limit, Constraint: constraint, ObservedAt: observed})
 	}
@@ -114,7 +114,7 @@ func (r Runner) CapacityView(backend string, now time.Time) CapacityView {
 	add("client_configuration", &client, "", config.ObservedAt)
 	add("runtime_configuration", &runtime, "", config.ObservedAt)
 	effective = min(effective, local, client, runtime)
-	knownProvider, unknownProvider := false, false
+	knownProvider := false
 	matchingProviders := 0
 	for _, provider := range r.ProviderCapacity {
 		if backend != "" && provider.Backend != backend {
@@ -123,11 +123,7 @@ func (r Runner) CapacityView(backend string, now time.Time) CapacityView {
 		knownProvider = true
 		matchingProviders++
 		owner := "provider:" + provider.Backend + ":" + provider.AccountAlias
-		if now.Before(provider.ObservedAt) || !now.Before(provider.ObservedAt.Add(providercapacity.MaxAge)) {
-			unknownProvider = true
-			add(owner, nil, "Provider report is stale; wait for the runner or its configured producer to refresh it.", provider.ObservedAt)
-			continue
-		}
+
 		limit := provider.MaxConcurrent
 		if limit == 0 {
 			add(owner, nil, "No provider account concurrency limit is configured; runner and host limits apply.", provider.ObservedAt)
@@ -135,16 +131,12 @@ func (r Runner) CapacityView(backend string, now time.Time) CapacityView {
 			add(owner, &limit, "The configured external provider-capacity producer is unmanaged. Change its concurrency setting and let its normal refresh publish evidence; editing the report is ineffective.", provider.ObservedAt)
 		}
 		view.Limits[len(view.Limits)-1].Availability = provider.State
-		if provider.State == "exhausted" {
-			view.Limits[len(view.Limits)-1].Constraint = "Provider account is exhausted; wait for a fresh observation or reset hint."
-			limit = 0
-		}
-		if limit > 0 || provider.State == "exhausted" {
+		if limit > 0 {
 			effective = min(effective, limit)
 		}
 	}
-	if !knownProvider || unknownProvider || matchingProviders > 1 {
-		add("provider", nil, "Select a backend with a single fresh provider report; a combined account or provider ceiling is unknown.", time.Time{})
+	if !knownProvider || matchingProviders > 1 {
+		add("provider", nil, "Select a backend with a single provider report; a combined account or provider ceiling is unknown.", time.Time{})
 		return view
 	}
 	view.Effective = &effective
