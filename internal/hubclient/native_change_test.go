@@ -573,6 +573,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		restoreRefusal          string
 		failCreate              bool
 		retainSource            bool
+		recoverSource           bool
 		sourceRefusal           bool
 		failDiff                bool
 		failDetail              bool
@@ -705,6 +706,12 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "rework publishes a new head as the next version", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: nativeChangeFixtureHead("b"),
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 2},
+		{name: "rework removing the entire delta publishes captured empty source for review", role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head), existing: true, published: nativeChangeFixtureHead("b"), retainSource: true, recoverSource: true, reviewer: true,
+			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head}, wantChanges: 1, wantVersions: 2},
+		{name: "empty rework without recovered source retains the mismatch", role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head), existing: true, published: nativeChangeFixtureHead("b"), retainSource: true,
+			wantDiagnostic: "the final attempt diff does not identify the current Change Request head", wantChanges: 1, wantVersions: 1},
+		{name: "empty recovered rework without source capture retains the mismatch", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head), existing: true, published: nativeChangeFixtureHead("b"), recoverSource: true,
+			wantDiagnostic: "the final attempt diff does not identify the current Change Request head", wantChanges: 1, wantVersions: 1},
 		{name: "rework keeps the version that already carries its head", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head, Files: 1}, wantChanges: 1, wantVersions: 1},
 		{name: "clean preserved current head retains its deliverable with an empty attempt diff", role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: func(context.Context) (tracker.AttemptDiffRequest, bool) {
@@ -1177,7 +1184,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			if test.source != nil {
 				execution.(runner.DiffExecution).SetDiffSource(test.source)
 			}
-			if test.mergeResolution {
+			if test.mergeResolution || test.recoverSource {
 				if _, err := execution.(runner.ChangeSourceExecution).RecoverChangeSource(guarded); err != nil {
 					t.Fatal(err)
 				}
@@ -1185,6 +1192,9 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			var retainedCapture tracker.ChangeSourceCapture
 			if test.retainSource {
 				retainedCapture = nativeChangeSourceFixture(t.Context(), t, base, head)
+				if test.recoverSource {
+					retainedCapture.Source.DiffSHA256 = tracker.ChangeSourceDigest(nil)
+				}
 				execution.(runner.ChangeSourceExecution).SetChangeSource(func(_ context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 					return retainedCapture, nil
 				})
@@ -2256,6 +2266,15 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 							}
 						} else {
 							current := detail.Versions[len(detail.Versions)-1]
+							if test.recoverSource && test.retainSource {
+								if current.Source == nil || current.Source.DiffSHA256 != tracker.ChangeSourceDigest(nil) || detail.Versions[0].HeadSHA != test.published {
+									t.Fatalf("empty revision lost captured source or rewrote its predecessor: %+v", detail.Versions)
+								}
+								bundle, err := h.admin.ChangeSource(t.Context(), item, got.ChangeID, current.ID)
+								if err != nil || !bytes.Equal(bundle, retainedCapture.Bundle) {
+									t.Fatalf("empty revision lost its retained bundle: %v", err)
+								}
+							}
 							if test.reviewDispositions {
 								want := []tracker.ReviewDisposition{{HeadSHA: head, ThreadID: "T1", Disposition: "fixed", Evidence: "regression passes"}}
 								if !reflect.DeepEqual(current.ReviewDispositions, want) {

@@ -60,21 +60,24 @@ func TestNativeRestorableCheckpoint(t *testing.T) {
 func TestIncorporationRefusalRestoresPublishedSource(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name        string
-		gitRef      bool
-		retained    bool
-		dirty       bool
-		uncertain   bool
-		stale       bool
-		unpublished bool
-		unpushed    bool
-		files       int
-		wantFresh   bool
-		wantPushed  bool
+		name           string
+		gitRef         bool
+		retained       bool
+		dirty          bool
+		uncertain      bool
+		stale          bool
+		unpublished    bool
+		noFinalization bool
+		unpushed       bool
+		files          int
+		wantFresh      bool
+		wantPushed     bool
 	}{
 		{name: "clean integration git checkpoint yields to published source", gitRef: true, wantFresh: true},
 		{name: "clean local integration checkpoint yields to published source", wantFresh: true},
 		{name: "retained clean integration workspace yields to published source", gitRef: true, retained: true, wantFresh: true},
+		{name: "retained clean local checkpoint without finalization restores current source", retained: true, noFinalization: true, wantFresh: true},
+		{name: "retained unpushed checkpoint without finalization preserves source", retained: true, noFinalization: true, unpushed: true},
 		{name: "dirty checkpoint preserves unpublished edits", gitRef: true, dirty: true, wantPushed: true},
 		{name: "uncertain publication retains custody", gitRef: true, uncertain: true},
 		{name: "different version cannot redirect recovery", gitRef: true, stale: true, wantPushed: true},
@@ -113,6 +116,9 @@ func TestIncorporationRefusalRestoresPublishedSource(t *testing.T) {
 			if test.unpublished {
 				f := recovery.Attempts[0].Finalization
 				f.VersionID, f.Settled, f.Changed, f.Files = "", true, true, test.files
+			}
+			if test.noFinalization {
+				recovery.Attempts[0].Finalization = nil
 			}
 			backend := existingWorkspaceBackend{err: workspace.ErrMissingWorkspace}
 			if test.retained {
