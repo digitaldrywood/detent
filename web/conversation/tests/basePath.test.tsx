@@ -17,6 +17,7 @@ import {
   readBasePath,
   resetHubPaths,
   routerBasePath,
+  routerHref,
   signInPath,
   withoutBasePath,
 } from "../src/runtime/basePath.ts";
@@ -108,6 +109,7 @@ describe("hubPath", () => {
   it("gives the router `/` at the root and the base otherwise", () => {
     expect(routerBasePath("")).toBe("/");
     expect(routerBasePath(SHARED)).toBe(SHARED);
+    expect(routerHref("/projects/prj_1/setup", "/")).toBe("/projects/prj_1/setup");
   });
 
   it("keeps authenticated API paths when the browser uses an organization slug", () => {
@@ -119,6 +121,7 @@ describe("hubPath", () => {
     expect(hubPath("/app/bootstrap")).toBe(`${SHARED}/app/bootstrap`);
     expect(routerBasePath()).toBe("/example-org");
     expect(withoutBasePath("/example-org/settings", routerBasePath())).toBe("/settings");
+    expect(routerHref("/projects/prj_1/setup")).toBe("/example-org/projects/prj_1/setup");
     const router = makeRouter(createMemoryHistory({ initialEntries: ["/example-org/settings"] }));
     expect(router.options.basepath).toBe("/example-org");
   });

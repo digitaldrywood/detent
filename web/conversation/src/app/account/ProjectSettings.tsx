@@ -17,7 +17,7 @@ import { AlertDialog, AlertDialogTrigger, AlertDialogPopup, AlertDialogHeader, A
 import { useRefreshBootstrap } from "../client.ts";
 import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
-import { hubPath } from "../../runtime/basePath.ts";
+import { hubPath, routerHref } from "../../runtime/basePath.ts";
 import { Textarea } from "../../components/ui/textarea.tsx";
 import type { ObservedPolicy, PolicyApproval, ProjectIntegration, Onboarding, WorkflowState } from "../../contracts/account.ts";
 import {
@@ -537,7 +537,7 @@ export function ProjectSettingsRoute({ projectId, tab, onboarding, onNavigate }:
       saveError={saveMessage(save.error)}
       deletion={canManage && project?.can_write === true ? <ProjectDeletionSettings key={projectId} projectName={project.name} pending={remove.pending} error={remove.error?.message ?? null} onDelete={() => void remove.call()} onDismiss={remove.clearError} /> : null}
       onOpenFleet={() => onNavigate?.("/settings/runners")}
-      intakeHref={`/projects/${projectId}/setup`}
+      intakeHref={routerHref(`/projects/${projectId}/setup`)}
       onOpenSetup={onNavigate ? () => onNavigate(`/projects/${projectId}/setup`) : undefined}
       sprites={<><ProjectSpriteControls key={projectId} projectId={projectId} canManage={canManage && project?.can_write === true} /><SpritesCard key={`token-${projectId}`} projectId={projectId} canManage={canManage} /></>}
       identity={<ProjectIdentitySettings integration={integration.value} fallbackName={project?.name ?? ""} canManage={canManage} projectId={projectId} onSaved={integration.set} onReload={(current) => {

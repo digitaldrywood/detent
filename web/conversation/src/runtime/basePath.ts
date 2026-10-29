@@ -46,6 +46,10 @@ export function routerBasePath(prefix: string = basePath()): string {
   return normalizeBasePath(readMeta("detent-router-base", globalThis.document)) || (prefix === "" ? "/" : prefix);
 }
 
+export function routerHref(path: string, prefix: string = routerBasePath()): string {
+  return prefix === "/" ? path : hubPath(path, prefix);
+}
+
 export function signInPath(): string {
   signIn ??= readMeta(SIGN_IN_META, globalThis.document) ?? "";
   return signIn.startsWith("/") && !signIn.startsWith("//") ? signIn : hubPath("/login");
