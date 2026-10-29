@@ -7,33 +7,27 @@ import (
 	"errors"
 	"slices"
 
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func readNativeEditedOwnership(ctx context.Context, q nativeQueryer, item tracker.NativeWorkItemID) (bool, bool, error) {
 	var title, body bool
-	if err := q.QueryRowContext(ctx, `SELECT title_supplied OR EXISTS(SELECT 1 FROM collaboration_events WHERE work_item_id=s.work_item_id AND type='issue.edited' AND edited_title=1),body_supplied OR EXISTS(SELECT 1 FROM collaboration_events WHERE work_item_id=s.work_item_id AND type='issue.edited' AND edited_body=1) FROM linked_issue_sources s WHERE work_item_id=?`, item).Scan(&title, &body); err != nil {
+	const ownershipQuery = `SELECT title_supplied OR EXISTS(SELECT 1 FROM collaboration_events WHERE work_item_id=s.work_item_id AND type='issue.edited' AND edited_title=1),body_supplied OR EXISTS(SELECT 1 FROM collaboration_events WHERE work_item_id=s.work_item_id AND type='issue.edited' AND edited_body=1) FROM linked_issue_sources s WHERE work_item_id=?`
+	if err := q.QueryRowContext(ctx, ownershipQuery, item).Scan(&title, &body); err != nil {
 		return false, false, err
 	}
 	if title && body {
 		return title, body, nil
 	}
-	rows, err := q.QueryContext(ctx, "SELECT data_json FROM collaboration_events WHERE work_item_id=? AND type='issue.edited' AND page_projection_ready IS NULL ORDER BY sequence LIMIT ?", item, storageConversionRows+1)
+	rows, err := queryLegacyPageRows(ctx, q, "SELECT data_json FROM collaboration_events WHERE work_item_id=? AND type='issue.edited' AND page_projection_ready IS NULL", "sequence", item)
 	if err != nil {
 		return false, false, err
 	}
 	defer rows.Close()
-	count, bytes := 0, 0
 	for rows.Next() {
 		var raw string
 		if err := rows.Scan(&raw); err != nil {
 			return false, false, err
-		}
-		count++
-		bytes += len(raw)
-		if count > storageConversionRows || bytes > storageConversionBytes {
-			return false, false, operatortool.ErrReadUnavailable
 		}
 		var data tracker.CollaborationData
 		if err := decodePageEvent(raw, &data); err != nil {
@@ -44,7 +38,17 @@ func readNativeEditedOwnership(ctx context.Context, q nativeQueryer, item tracke
 			body = body || field == "body"
 		}
 	}
-	return title, body, rows.Err()
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return false, false, err
+	}
+	if title && body {
+		return title, body, nil
+	}
+	var typedTitle, typedBody bool
+	if err := q.QueryRowContext(ctx, ownershipQuery, item).Scan(&typedTitle, &typedBody); err != nil {
+		return false, false, err
+	}
+	return title || typedTitle, body || typedBody, nil
 }
 
 func readIssueEmailParticipants(ctx context.Context, q nativeQueryer, event issueEmailEvent, item, organization, after string, limit int) (map[string]bool, string, error) {
@@ -65,22 +69,15 @@ func readIssueEmailParticipants(ctx context.Context, q nativeQueryer, event issu
 	if kind.String == "human" && principal.String > after {
 		participants[principal.String] = true
 	}
-	rows, err := q.QueryContext(ctx, `SELECT actor_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='comment.created' AND page_projection_ready IS NULL AND julianday(recorded_at)<=julianday(?) AND (?<>? OR sequence<=?) LIMIT ?`, organization, project, item, formatHubTime(event.at), item, event.item, event.sequence, storageConversionRows+1)
+	rows, err := queryLegacyPageRows(ctx, q, `SELECT actor_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='comment.created' AND page_projection_ready IS NULL AND julianday(recorded_at)<=julianday(?) AND (?<>? OR sequence<=?)`, "sequence", organization, project, item, formatHubTime(event.at), item, event.item, event.sequence)
 	if err != nil {
 		return nil, "", err
 	}
 	defer rows.Close()
-	count, bytes := 0, 0
 	for rows.Next() {
 		if err := rows.Scan(&raw); err != nil {
 			rows.Close()
 			return nil, "", err
-		}
-		count++
-		bytes += len(raw)
-		if count > storageConversionRows || bytes > storageConversionBytes {
-			rows.Close()
-			return nil, "", operatortool.ErrReadUnavailable
 		}
 		var actor tracker.Actor
 		if err := json.Unmarshal([]byte(raw), &actor); err != nil {
@@ -96,21 +93,21 @@ func readIssueEmailParticipants(ctx context.Context, q nativeQueryer, event issu
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, "", err
 	}
-	rows, err = q.QueryContext(ctx, `SELECT actor_principal_id FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='comment.created' AND actor_kind='human' AND actor_principal_id>? AND page_projection_ready=1 AND julianday(recorded_at)<=julianday(?) AND (?<>? OR sequence<=?) GROUP BY actor_principal_id ORDER BY actor_principal_id LIMIT ?`, organization, project, item, after, formatHubTime(event.at), item, event.item, event.sequence, limit+1)
+	typedRows, err := q.QueryContext(ctx, `SELECT actor_principal_id FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='comment.created' AND actor_kind='human' AND actor_principal_id>? AND page_projection_ready=1 AND julianday(recorded_at)<=julianday(?) AND (?<>? OR sequence<=?) GROUP BY actor_principal_id ORDER BY actor_principal_id LIMIT ?`, organization, project, item, after, formatHubTime(event.at), item, event.item, event.sequence, limit+1)
 	if err != nil {
 		return nil, "", err
 	}
-	defer rows.Close()
-	for rows.Next() {
+	defer typedRows.Close()
+	for typedRows.Next() {
 		var id string
-		if err := rows.Scan(&id); err != nil {
+		if err := typedRows.Scan(&id); err != nil {
 			return nil, "", err
 		}
 		if _, exists := participants[id]; !exists {
 			participants[id] = false
 		}
 	}
-	if err := rows.Err(); err != nil {
+	if err := typedRows.Err(); err != nil {
 		return nil, "", err
 	}
 	principals := make([]string, 0, len(participants))

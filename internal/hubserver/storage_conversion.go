@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -79,29 +80,73 @@ type storageConversionProgress struct {
 	Complete  bool   `json:"complete"`
 }
 
+type storageProjectionRow struct {
+	id     string
+	cursor []any
+}
+
+func (s *Service) storageProjectionPage(ctx context.Context, family, selection, key string, limit int, args ...any) ([]storageProjectionRow, error) {
+	cursor, _ := s.projectionCursors.Load(family)
+	query := strings.Replace(selection, "SELECT ", "SELECT "+key+",", 1)
+	pageArgs := append([]any{}, args...)
+	keys := strings.Split(key, ",")
+	if cursor != nil {
+		position, ok := cursor.([]any)
+		if !ok || len(position) != len(keys) {
+			return nil, errors.New("invalid storage projection cursor")
+		}
+		query += " AND (" + key + ")>(" + strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",") + ")"
+		pageArgs = append(pageArgs, position...)
+	}
+	pageArgs = append(pageArgs, limit)
+	rows, err := s.database.reader.QueryContext(ctx, query+" ORDER BY "+key+" LIMIT ?", pageArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var candidates []storageProjectionRow
+	for rows.Next() {
+		row := storageProjectionRow{cursor: make([]any, len(keys))}
+		columns := make([]any, 0, len(keys)+1)
+		for index := range row.cursor {
+			columns = append(columns, &row.cursor[index])
+		}
+		if err := rows.Scan(append(columns, &row.id)...); err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, row)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 && cursor != nil {
+		s.projectionCursors.Delete(family)
+		return s.storageProjectionPage(ctx, family, selection, key, limit, args...)
+	}
+	return candidates, nil
+}
+
 func (s *Service) convertLegacyStorage(ctx context.Context, now time.Time) error {
 	ctx, cancel := context.WithTimeout(ctx, backgroundStorageBudget)
 	defer cancel()
-	if err := s.convertIssuePageFacts(ctx); err != nil {
-		return err
-	}
-	if err := s.convertActivityProjections(ctx); err != nil {
-		return err
-	}
-	if err := s.convertAttemptHotProjections(ctx); err != nil {
-		return err
-	}
-	if err := s.convertNativeBoardRanks(ctx); err != nil {
-		return err
-	}
-	if err := s.convertHealthProjections(ctx); err != nil {
-		return err
-	}
-	if err := s.convertRunnerBoardProjections(ctx); err != nil {
-		return err
+	var failures error
+	for _, convert := range []func(context.Context) error{
+		s.convertIssuePageFacts,
+		s.convertActivityProjections,
+		s.convertAttemptHotProjections,
+		s.convertNativeBoardRanks,
+		s.convertHealthProjections,
+		s.convertRunnerBoardProjections,
+	} {
+		if err := convert(ctx); err != nil {
+			failures = errors.Join(failures, err)
+			if ctx.Err() != nil {
+				return failures
+			}
+		}
 	}
 	if s.storageArchiveContent() == nil {
-		return nil
+		return failures
 	}
 	ctx = s.contentContext(ctx)
 	for _, family := range storageConversionFamilies {
@@ -125,7 +170,6 @@ func (s *Service) convertLegacyStorage(ctx context.Context, now time.Time) error
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
 	}
-	var failures error
 	for _, scope := range scopes {
 		for _, family := range storageConversionFamilies {
 			if err := s.convertStorageFamily(ctx, scope, family, now); err != nil {
@@ -264,74 +308,81 @@ func (s *Service) convertStorageAggregate(ctx context.Context, scope nativeScope
 	if err != nil {
 		return err
 	}
-	rows, err := s.database.reader.QueryContext(ctx, family.positions()+" AND "+family.aggregate+"=? ORDER BY r.rowid LIMIT ?", scope.organization, scope.project, aggregate, storageConversionRows)
+	cursorKey := "archive-" + string(scope.organization) + "/" + string(scope.project) + "/" + family.name + "/" + aggregate
+	selection := "SELECT r.rowid" + family.filter() + " AND r.conversion_state=1 AND " + family.aggregate + "=?"
+	candidates, err := s.storageProjectionPage(ctx, cursorKey, selection, "r.rowid", storageConversionRows, scope.organization, scope.project, aggregate)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	type candidate struct {
-		row       int64
-		aggregate string
-	}
-	var candidates []candidate
-	for rows.Next() {
-		var c candidate
-		if err := rows.Scan(&c.row, &c.aggregate); err != nil {
-			return err
-		}
-		candidates = append(candidates, c)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return err
-	}
-	written := 0
-	for _, c := range candidates {
+	convertRow := func(cursor, row int64, written int) (int, bool, error) {
 		var raw []byte
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT conversion_payload FROM ("+family.selection()+") WHERE conversion_rowid=?", scope.organization, scope.project, c.row).Scan(&raw); err != nil {
+		if err := s.database.reader.QueryRowContext(ctx, "SELECT conversion_payload FROM ("+family.selection()+") WHERE conversion_rowid=?", scope.organization, scope.project, row).Scan(&raw); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return nil
+				return 0, false, nil
 			}
-			return err
+			return 0, false, err
 		}
-		stamp, safe, err := storageConversionStamp(ctx, s.database.reader, scope, family, c.aggregate, now)
+		stamp, safe, err := storageConversionStamp(ctx, s.database.reader, scope, family, aggregate, now)
 		if err != nil || !safe {
-			return err
+			return 0, false, err
 		}
-		converted, ref, err := s.prepareStorageConversion(ctx, scope, family, c.row, raw)
+		converted, ref, err := s.prepareStorageConversion(ctx, scope, family, row, raw)
 		if err != nil {
-			return err
+			return 0, false, err
 		}
 		writeBytes := len(converted) + 4096
 		if written > 0 && written+writeBytes > storageConversionBytes {
-			return nil
+			return 0, false, nil
 		}
-		metadata, err := s.prepareStorageConversionQueryMetadata(ctx, family, c.row, raw, converted)
+		metadata, err := s.prepareStorageConversionQueryMetadata(ctx, family, row, raw, converted)
 		if err != nil {
-			return err
+			return 0, false, err
 		}
 		tx, err := s.database.db.BeginTx(ctx, nil)
 		if err != nil {
-			return err
+			return 0, false, err
 		}
-		applied, err := s.applyStorageConversion(ctx, tx, scope, family, p.Cursor, c.row, c.aggregate, stamp, raw, converted, ref, metadata, now)
+		applied, err := s.applyStorageConversion(ctx, tx, scope, family, cursor, row, aggregate, stamp, raw, converted, ref, metadata, now)
 		if err == nil && applied {
 			err = s.database.commit(ctx, tx)
 		}
 		rollback := tx.Rollback()
-		if err != nil {
-			return err
-		}
 		if rollback != nil && !errors.Is(rollback, sql.ErrTxDone) {
-			return rollback
+			err = errors.Join(err, rollback)
+		}
+		return writeBytes, applied, err
+	}
+	written := 0
+	var failures error
+	for _, candidate := range candidates {
+		row, err := strconv.ParseInt(candidate.id, 10, 64)
+		if err != nil {
+			return errors.Join(failures, err)
+		}
+		s.projectionCursors.Store(cursorKey, candidate.cursor)
+		writeBytes, applied, err := convertRow(p.Cursor, row, written)
+		if err != nil {
+			failures = errors.Join(failures, err)
+			if ctx.Err() != nil {
+				return failures
+			}
+			continue
 		}
 		if !applied {
-			return nil
+			return failures
 		}
 		written += writeBytes
-		p.Cursor = c.row
+		p.Cursor = row
 	}
-	_, err = s.database.db.ExecContext(ctx, family.completionUpdate(), formatHubTime(now), scope.organization, scope.project, family.name, aggregate, p.Version, scope.organization, scope.project, aggregate)
-	return err
+	result, err := s.database.db.ExecContext(ctx, family.completionUpdate(), formatHubTime(now), scope.organization, scope.project, family.name, aggregate, p.Version, scope.organization, scope.project, aggregate)
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	completed, err := result.RowsAffected()
+	if completed != 0 {
+		s.projectionCursors.Delete(cursorKey)
+	}
+	return errors.Join(failures, err)
 }
 
 func storageConversionStamp(ctx context.Context, q nativeQueryer, scope nativeScope, family storageConversionFamily, aggregate string, now time.Time) (string, bool, error) {

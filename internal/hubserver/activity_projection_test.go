@@ -309,8 +309,8 @@ func TestActivityBackfillBoundAndTransactions(t *testing.T) {
 				}
 				return n
 			}
-			if got := count(); got != 1 {
-				t.Fatalf("first item must commit independently: %d", got)
+			if got := count(); got != storageConversionRows-1 {
+				t.Fatalf("failed item blocks healthy conversions: %d", got)
 			}
 			if _, err := first.service.database.db.ExecContext(t.Context(), `DROP TRIGGER activity_conversion_failure`); err != nil {
 				t.Fatal(err)
@@ -318,8 +318,12 @@ func TestActivityBackfillBoundAndTransactions(t *testing.T) {
 			if err := first.service.convertActivityProjections(t.Context()); err != nil {
 				t.Fatal(err)
 			}
-			if got := count(); got != 1+storageConversionRows {
-				t.Fatalf("tick exceeded or missed fixed budget: %d", got)
+			want := 2 * (storageConversionRows/2 + 1)
+			if reportsOnly {
+				want = 1 + storageConversionRows
+			}
+			if got := count(); got != want {
+				t.Fatalf("tick exceeded or missed fixed budget: %d want=%d", got, want)
 			}
 			if err := first.service.convertActivityProjections(t.Context()); err != nil {
 				t.Fatal(err)

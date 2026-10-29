@@ -799,3 +799,61 @@ func TestStorageConversionReusedRowIDs(t *testing.T) {
 		})
 	}
 }
+
+func TestStorageConversionSkipsFailedRowsAndRetries(t *testing.T) {
+	f := newStorageArchiveFixture(t)
+	issue := f.nativeFixture.create(t, "Failed storage rows")
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	tx := f.tx(t)
+	for range storageConversionRows + 3 {
+		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("example", 4096)}}, f.now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.commit(t, tx)
+	family := storageConversionFamilies[0]
+	for range 2 {
+		if err := f.service.discoverStorageFamily(t.Context(), family, f.now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failed := 0
+	f.hook = func(r entryauthority.ContentRequest) error {
+		if r.Write && failed < storageConversionRows {
+			failed++
+			return errors.New("example publication failure")
+		}
+		return nil
+	}
+	for tick, want := range []int{0, 3, storageConversionRows + 3} {
+		err := f.service.convertStorageAggregate(f.service.contentContext(t.Context()), scope, family, string(issue.WorkItemID), f.now)
+		if (err != nil) != (tick == 0) {
+			t.Fatalf("tick=%d error=%v", tick, err)
+		}
+		var converted int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='run.finished' AND conversion_state=2", issue.WorkItemID).Scan(&converted); err != nil || converted != want {
+			t.Fatalf("failed storage rows block progress or retry: tick=%d converted=%d want=%d error=%v", tick, converted, want, err)
+		}
+	}
+}
+
+func TestStorageConversionContinuesAfterProjectionFailure(t *testing.T) {
+	f := newStorageArchiveFixture(t)
+	issue := f.nativeFixture.create(t, "Projection failure before storage")
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	tx := f.tx(t)
+	if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("example", 4096)}}, f.now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET actor_principal_id=NULL,actor_json='[]' WHERE native_id=?", issue.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	f.commit(t, tx)
+	if err := f.service.convertLegacyStorage(t.Context(), f.now); err == nil {
+		t.Fatal("projection failure was not reported")
+	}
+	var converted int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='run.finished' AND conversion_state=2", issue.WorkItemID).Scan(&converted); err != nil || converted != 1 {
+		t.Fatalf("projection failure stopped storage conversion: converted=%d error=%v", converted, err)
+	}
+}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -68,24 +67,20 @@ func readLegacyPageFilterValues(ctx context.Context, q nativeQueryer, scope nati
 		query += " AND " + keyColumn + "=?"
 		args = append(args, item)
 	}
-	query += " LIMIT ?"
-	args = append(args, storageConversionRows+1)
-	rows, err := q.QueryContext(ctx, query, args...)
+	order := "organization_id,project_id,id"
+	if board {
+		order = "organization_id,project_id,work_item_id"
+	}
+	rows, err := queryLegacyPageRows(ctx, q, query, order, args...)
 	if err != nil {
 		return f, err
 	}
 	defer rows.Close()
-	count, bytes := 0, 0
 	for rows.Next() {
 		var id any
 		var raw, assigneesRaw string
 		if err := rows.Scan(&id, &raw, &assigneesRaw); err != nil {
 			return f, err
-		}
-		count++
-		bytes += len(raw) + len(assigneesRaw)
-		if count > storageConversionRows || bytes > storageConversionBytes {
-			return f, operatortool.ErrReadUnavailable
 		}
 		var labels, assignees []string
 		if board {
