@@ -88,6 +88,9 @@ func TestStorageConversionHistoricalConversations(t *testing.T) {
 		if len(after) != 1 || after[0].Text != before[0].Text || !bytes.Equal(after[0].Data, before[0].Data) {
 			t.Fatal("latest message changed")
 		}
+		if converted && (!after[0].StoredTextBytes.Valid || after[0].StoredTextBytes.Int64 != int64(len(latest))) {
+			t.Fatalf("converted message stored text length=%+v, want %d", after[0].StoredTextBytes, len(latest))
+		}
 		afterEvents, err := f.store.listEvents(t.Context(), f.store.reader, record.ID, 0, 100)
 		if err != nil {
 			t.Fatal(err)

@@ -503,7 +503,7 @@ func archiveProjectionColumn(table, column string) bool {
 	case "conversation_events":
 		return slices.Contains([]string{"content_attachment_id", "delta_offset", "delta_bytes", "message_revision"}, column)
 	case "conversation_messages":
-		return slices.Contains([]string{"actor_principal_id", "text_bytes"}, column)
+		return slices.Contains([]string{"actor_principal_id", "text_bytes", "stored_text_bytes"}, column)
 	case "collaboration_events":
 		return slices.Contains([]string{"archive_operation", "archive_from_state", "archive_to_state", "archive_attempt_id", "archive_outcome", "archive_landed_commit"}, column)
 	default:

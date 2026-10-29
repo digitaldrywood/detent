@@ -226,6 +226,164 @@ func TestConversationPayloadRequiresPublication(t *testing.T) {
 	}
 }
 
+type conversationDeltaQueryRecorder struct {
+	nativeQueryer
+	statements []string
+	arguments  [][]any
+}
+
+func (q *conversationDeltaQueryRecorder) QueryContext(ctx context.Context, statement string, args ...any) (*sql.Rows, error) {
+	if strings.Contains(statement, "type='message.delta'") {
+		q.statements = append(q.statements, statement)
+		q.arguments = append(q.arguments, args)
+	}
+	return q.nativeQueryer.QueryContext(ctx, statement, args...)
+}
+
+func TestConversationSnapshotIgnoresStoredDeltas(t *testing.T) {
+	for _, endpoint := range []string{"snapshot", "messages"} {
+		for _, tt := range []struct {
+			name      string
+			completed bool
+			legacy    bool
+		}{
+			{name: "active"},
+			{name: "completed", completed: true},
+			{name: "legacy active", legacy: true},
+			{name: "legacy completed", completed: true, legacy: true},
+		} {
+			t.Run(endpoint+"/"+tt.name, func(t *testing.T) {
+				f := newStorageArchiveFixture(t)
+				objects := &conversationContentFixture{}
+				f.store.contents = objects
+				record := f.create(t, f.record(f.owner, "retained deltas", f.now))
+				message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.owner}, CreatedAt: f.now, UpdatedAt: f.now}
+				tx := f.tx(t)
+				if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
+					t.Fatal(err)
+				}
+				f.commit(t, tx)
+				for _, text := range []string{"stored ", "prefix 🌍"} {
+					tx = f.tx(t)
+					if err := f.appendDelta(t, f.service.conversations, t.Context(), tx, &message, text, f.now); err != nil {
+						t.Fatal(err)
+					}
+					f.commit(t, tx)
+				}
+				storedBytes := len(message.Text)
+				if tt.completed {
+					message.Delivery = conversation.DeliveryCompleted
+				}
+				tx = f.tx(t)
+				if err := f.updateChatMessage(t, f.service.conversations, t.Context(), tx, message, f.now); err != nil {
+					t.Fatal(err)
+				}
+				f.commit(t, tx)
+				if !tt.completed {
+					tx = f.tx(t)
+					if err := f.appendDelta(t, f.service.conversations, t.Context(), tx, &message, " and suffix", f.now); err != nil {
+						t.Fatal(err)
+					}
+					f.commit(t, tx)
+				}
+				if tt.legacy {
+					if _, err := f.store.db.ExecContext(t.Context(), "UPDATE conversation_messages SET stored_text_bytes=NULL WHERE id=?", message.ID); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					messages, err := f.store.listMessageRows(t.Context(), f.store.reader, record.ID, 0, 10)
+					if err != nil {
+						t.Fatal(err)
+					}
+					query := &conversationDeltaQueryRecorder{nativeQueryer: f.store.reader}
+					batch := newConversationReadBatch(string(f.organization))
+					if err := batch.captureMessages(t.Context(), query, messages); err != nil {
+						t.Fatal(err)
+					}
+					if tt.completed {
+						if len(query.statements) != 0 {
+							t.Fatalf("completed message queried retained delta history %d times", len(query.statements))
+						}
+					} else {
+						if len(query.statements) != 1 || len(query.arguments[0]) != 5 || query.arguments[0][2] != int64(storedBytes) || query.arguments[0][4] != int64(len(" and suffix")+1) {
+							t.Fatalf("delta query did not bound the missing suffix: %+v", query.arguments)
+						}
+						rows, err := f.store.reader.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+query.statements[0], query.arguments[0]...)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer rows.Close()
+						var plan strings.Builder
+						for rows.Next() {
+							var id, parent, unused int
+							var detail string
+							if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+								t.Fatal(err)
+							}
+							plan.WriteString(detail)
+						}
+						if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+							t.Fatal(err)
+						}
+						if !strings.Contains(plan.String(), "delta_offset>? AND delta_offset<?") || strings.Contains(plan.String(), "TEMP B-TREE") {
+							t.Fatalf("delta suffix query scans or sorts retained history: %s", plan.String())
+						}
+					}
+				}
+				if _, err := f.store.db.ExecContext(t.Context(), `DELETE FROM attachments WHERE id IN
+(SELECT content_attachment_id FROM conversation_events WHERE conversation_id=? AND message_id=? AND type='message.delta' AND delta_offset<?)`, record.ID, message.ID, storedBytes); err != nil {
+					t.Fatal(err)
+				}
+				scope := nativeScope{organization: f.organization, project: f.project.ID, credential: apiCredential{ID: f.owner, Scope: apiScopeOperator}}
+				objects.onIO = func() error {
+					if occupied := f.store.reader.Stats().InUse + f.store.db.Stats().InUse; occupied != 0 {
+						t.Errorf("object read holds %d database connections", occupied)
+					}
+					return nil
+				}
+				var raw json.RawMessage
+				var err error
+				if endpoint == "snapshot" {
+					raw, err = f.service.readConversationSnapshot(t.Context(), scope, record.ID)
+				} else {
+					raw, err = f.service.readConversationMessages(t.Context(), scope, record.ID, 0, 10)
+				}
+				if err != nil {
+					t.Fatalf("read touched retained deltas already in the archive: %v", err)
+				}
+				var response conversationSnapshot
+				if err := json.Unmarshal(raw, &response); err != nil {
+					t.Fatal(err)
+				}
+				if len(response.Messages) != 1 || response.Messages[0].Text != message.Text {
+					t.Fatalf("message content changed: %+v", response.Messages)
+				}
+			})
+		}
+	}
+}
+
+func TestConversationDeltaReadRejectsRowsBeyondMissingBytes(t *testing.T) {
+	f := newStorageArchiveFixture(t)
+	f.store.contents = &conversationContentFixture{}
+	record := f.create(t, f.record(f.owner, "invalid delta history", f.now))
+	message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.owner}, CreatedAt: f.now, UpdatedAt: f.now}
+	tx := f.tx(t)
+	if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
+		t.Fatal(err)
+	}
+	for range 4 {
+		if _, err := f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventMessageDelta, conversationDeltaFact{MessageID: message.ID, Text: "x", Offset: 0, Bytes: 1}, f.now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.commit(t, tx)
+	message.TextBytes = 1
+	if _, err := readConversationMessageDeltas(t.Context(), f.store.reader, message); err == nil {
+		t.Fatal("delta rows exceeding the missing byte count were accepted")
+	}
+}
+
 func TestConversationObjectReadsReleaseDatabaseTransactions(t *testing.T) {
 	for _, endpoint := range []string{"snapshot", "messages"} {
 		t.Run(endpoint, func(t *testing.T) {

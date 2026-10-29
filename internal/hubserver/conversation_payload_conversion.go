@@ -65,6 +65,7 @@ func (s *Service) convertConversationPayload(ctx context.Context, scope nativeSc
 		}
 		metadata.add("actor_principal_id", message.Actor.PrincipalID)
 		metadata.add("text_bytes", len(message.Text))
+		metadata.add("stored_text_bytes", len(message.Text))
 	} else {
 		if err := s.database.reader.QueryRowContext(ctx, "SELECT body_json,content_attachment_id FROM conversation_events WHERE rowid=?", row).Scan(&original, &oldContent); err != nil {
 			return err

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -380,7 +381,22 @@ type conversationReadDelta struct {
 }
 
 func readConversationMessageDeltas(ctx context.Context, q nativeQueryer, message conversationMessageRecord) ([]conversationReadDelta, error) {
-	rows, err := q.QueryContext(ctx, `SELECT body_json,content_attachment_id,delta_offset FROM conversation_events WHERE conversation_id=? AND message_id=? AND type='message.delta' AND delta_offset>=? AND delta_offset<? ORDER BY seq`, message.ConversationID, message.ID, len(message.Text), message.TextBytes)
+	return readConversationMessageDeltaSuffix(ctx, q, message, int64(len(message.Text)))
+}
+
+func readConversationMessageDeltaSuffix(ctx context.Context, q nativeQueryer, message conversationMessageRecord, offset int64) ([]conversationReadDelta, error) {
+	if offset < 0 || offset > message.TextBytes {
+		return nil, errors.New("message stored text boundary is invalid")
+	}
+	remaining := message.TextBytes - offset
+	if remaining == 0 {
+		return nil, nil
+	}
+	limit := remaining
+	if limit < math.MaxInt64 {
+		limit++
+	}
+	rows, err := q.QueryContext(ctx, `SELECT body_json,content_attachment_id,delta_offset FROM conversation_events WHERE conversation_id=? AND message_id=? AND type='message.delta' AND delta_offset>=? AND delta_offset<? ORDER BY delta_offset,seq LIMIT ?`, message.ConversationID, message.ID, offset, message.TextBytes, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -392,6 +408,9 @@ func readConversationMessageDeltas(ctx context.Context, q nativeQueryer, message
 			return nil, err
 		}
 		batch = append(batch, d)
+		if int64(len(batch)) > remaining {
+			return nil, errors.New("message delta rows exceed missing text bytes")
+		}
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err
@@ -502,21 +521,47 @@ func (b *conversationReadBatch) captureMessages(ctx context.Context, query nativ
 		if err := b.capture(ctx, query, message.ContentID); err != nil {
 			return err
 		}
-		if message.Role != conversation.RoleAssistant || message.TextBytes <= int64(len(message.Text)) {
+		if message.Role != conversation.RoleAssistant {
 			continue
 		}
-		deltas, err := readConversationMessageDeltas(ctx, query, message)
-		if err != nil {
+		offset := int64(len(message.Text))
+		if message.ContentID != "" {
+			if !message.StoredTextBytes.Valid {
+				continue
+			}
+			offset = message.StoredTextBytes.Int64
+		}
+		if err := b.captureMessageDeltaSuffix(ctx, query, message, offset); err != nil {
 			return err
 		}
-		for _, delta := range deltas {
-			if err := b.capture(ctx, query, delta.contentID); err != nil {
-				return err
-			}
-		}
-		b.deltas[message.ID] = deltas
 	}
 	return nil
+}
+
+func (b *conversationReadBatch) captureMessageDeltaSuffix(ctx context.Context, query nativeQueryer, message conversationMessageRecord, offset int64) error {
+	deltas, err := readConversationMessageDeltaSuffix(ctx, query, message, offset)
+	if err != nil {
+		return err
+	}
+	for _, delta := range deltas {
+		if err := b.capture(ctx, query, delta.contentID); err != nil {
+			return err
+		}
+	}
+	b.deltas[message.ID] = deltas
+	return nil
+}
+
+func (b *conversationReadBatch) captureLegacyMessageDeltas(ctx context.Context, store *conversationStore, message conversationMessageRecord) error {
+	tx, err := store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := b.captureMessageDeltaSuffix(ctx, tx, message, int64(len(message.Text))); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (b *conversationReadBatch) read(ctx context.Context, store *conversationStore, contentID string) ([]byte, error) {
@@ -568,9 +613,17 @@ func (b *conversationReadBatch) hydrateMessages(ctx context.Context, store *conv
 				return err
 			}
 			message.Text, message.Data, message.contentHash = content.Text, content.Data, artifact.Digest(raw)
+			if message.StoredTextBytes.Valid && message.StoredTextBytes.Int64 != int64(len(message.Text)) {
+				return errors.New("message stored text length does not match content")
+			}
 		}
 		if message.Role != conversation.RoleAssistant || message.TextBytes <= int64(len(message.Text)) {
 			continue
+		}
+		if message.ContentID != "" && !message.StoredTextBytes.Valid {
+			if err := b.captureLegacyMessageDeltas(ctx, store, *message); err != nil {
+				return err
+			}
 		}
 		deltas := b.deltas[message.ID]
 		for j := range deltas {

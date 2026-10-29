@@ -118,24 +118,25 @@ type conversationRecord struct {
 }
 
 type conversationMessageRecord struct {
-	Revision       int64
-	ID             string
-	ContentID      string
-	contentHash    string
-	TextBytes      int64
-	ConversationID string
-	Seq            int64
-	Role           conversation.Role
-	Kind           conversation.MessageKind
-	Text           string
-	Data           json.RawMessage
-	Delivery       conversation.Delivery
-	AttemptID      string
-	ThreadID       string
-	TurnID         string
-	ProviderItemID string
-	Actor          conversation.Actor
-	CommandKey     string
+	Revision        int64
+	ID              string
+	ContentID       string
+	contentHash     string
+	TextBytes       int64
+	StoredTextBytes sql.NullInt64
+	ConversationID  string
+	Seq             int64
+	Role            conversation.Role
+	Kind            conversation.MessageKind
+	Text            string
+	Data            json.RawMessage
+	Delivery        conversation.Delivery
+	AttemptID       string
+	ThreadID        string
+	TurnID          string
+	ProviderItemID  string
+	Actor           conversation.Actor
+	CommandKey      string
 	// References are the issues and conversations the message names, filled
 	// by every read that projects the message.
 	References []conversationMessageReference
@@ -609,13 +610,13 @@ WHERE id = ? AND organization_id = ? AND project_id = ? AND revision = ?`,
 
 const conversationMessageColumns = `id, conversation_id, seq, role, kind, text, data_json, delivery, attempt_id, thread_id, turn_id, provider_item_id, actor_json, command_key, created_at, updated_at, content_attachment_id, revision`
 
-const conversationMessageReadColumns = `id, conversation_id, seq, role, kind, text, data_json, delivery, attempt_id, thread_id, turn_id, provider_item_id, CASE WHEN actor_principal_id IS NULL THEN actor_json ELSE '{}' END, command_key, created_at, updated_at, content_attachment_id, revision, actor_kind, actor_principal_id, COALESCE(text_bytes,length(CAST(text AS BLOB)))`
+const conversationMessageReadColumns = `id, conversation_id, seq, role, kind, text, data_json, delivery, attempt_id, thread_id, turn_id, provider_item_id, CASE WHEN actor_principal_id IS NULL THEN actor_json ELSE '{}' END, command_key, created_at, updated_at, content_attachment_id, revision, actor_kind, actor_principal_id, COALESCE(text_bytes,length(CAST(text AS BLOB))), stored_text_bytes`
 
 func scanConversationMessage(row conversationScanner) (conversationMessageRecord, error) {
 	var message conversationMessageRecord
 	var data, actor, created, updated string
 	var actorKind, actorPrincipal sql.NullString
-	if err := row.Scan(&message.ID, &message.ConversationID, &message.Seq, &message.Role, &message.Kind, &message.Text, &data, &message.Delivery, &message.AttemptID, &message.ThreadID, &message.TurnID, &message.ProviderItemID, &actor, &message.CommandKey, &created, &updated, &message.ContentID, &message.Revision, &actorKind, &actorPrincipal, &message.TextBytes); err != nil {
+	if err := row.Scan(&message.ID, &message.ConversationID, &message.Seq, &message.Role, &message.Kind, &message.Text, &data, &message.Delivery, &message.AttemptID, &message.ThreadID, &message.TurnID, &message.ProviderItemID, &actor, &message.CommandKey, &created, &updated, &message.ContentID, &message.Revision, &actorKind, &actorPrincipal, &message.TextBytes, &message.StoredTextBytes); err != nil {
 		return message, err
 	}
 	message.Data = json.RawMessage(data)
@@ -705,6 +706,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		metadata.add("actor_principal_id", nil)
 	}
 	metadata.add("text_bytes", len(message.Text))
+	metadata.add("stored_text_bytes", len(message.Text))
 	if contentID != "" {
 		metadata.add("conversion_state", 2)
 	}
@@ -761,6 +763,7 @@ WHERE id = ? AND conversation_id = ?`,
 		metadata.add("actor_principal_id", nil)
 	}
 	metadata.add("text_bytes", len(message.Text))
+	metadata.add("stored_text_bytes", len(message.Text))
 	if contentID != "" {
 		metadata.add("conversion_state", 2)
 	}
