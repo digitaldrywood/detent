@@ -2147,10 +2147,35 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				})
 			}
 		}
-		if conversation := r.bindConversation(ctx, req, backend, resumeState.ProviderThreadID); conversation != nil {
-			ctx = conversation.attach(ctx)
-			defer func() { conversation.close(ctx, returnValue, returnErr) }()
+		preStartBinding := true
+		if _, binds := req.Execution.(ConversationExecution); binds {
+			if live, ok := backend.(AgentLiveBackend); ok && live.SupportsLiveControl() {
+				preStartBinding = false
+				if capabilities, ok := req.Execution.(PreStartConversationExecution); ok {
+					preStartBinding, err = capabilities.SupportsPreStartConversationBinding(ctx)
+					if err != nil {
+						return RunResult{}, err
+					}
+				}
+			}
 		}
+		executionIdentity := tracker.NativeExecutionIdentity{Role: role, Backend: selection.BackendID, Model: sessionModel}
+		if !preStartBinding {
+			if err := req.Execution.Start(ctx, executionIdentity); err != nil {
+				return RunResult{}, err
+			}
+			afterRunPending = true
+		}
+		resumeThreadID := ""
+		if preStartBinding {
+			resumeThreadID = resumeState.ProviderThreadID
+		}
+		conversation, err := r.bindConversation(ctx, req, backend, resumeThreadID)
+		if err != nil {
+			return RunResult{}, err
+		}
+		ctx = conversation.attach(ctx)
+		defer func() { conversation.close(ctx, returnValue, returnErr) }()
 		if conversation := conversationRunFromContext(ctx); conversation != nil {
 			turnRequest = applyConversationPreferences(turnRequest, conversation.session.Preferences())
 			if (reviewRecovery != nil || turnRecovery != nil) && conversation.session.Continuation() {
@@ -2162,28 +2187,32 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				}
 			}
 		}
-		executionIdentity := tracker.NativeExecutionIdentity{
-			Role:            role,
-			Backend:         selection.BackendID,
-			Model:           effectiveModel("", turnRequest.Model, "provider_default"),
-			ReasoningEffort: turnRequest.ReasoningEffort,
+		if preStartBinding {
+			executionIdentity = tracker.NativeExecutionIdentity{
+				Role:            role,
+				Backend:         selection.BackendID,
+				Model:           effectiveModel("", turnRequest.Model, "provider_default"),
+				ReasoningEffort: turnRequest.ReasoningEffort,
+			}
 		}
 		if reviewRecovery == nil && turnRecovery == nil {
-			resumeState, err = r.nativeResume(ctx, &req, backend, processRequest, recoveryState, resumeState, executionIdentity, runWorkspace, info, workspaceIssue)
+			resumeState, err = r.nativeResume(ctx, &req, backend, processRequest, recoveryState, resumeState, executionIdentity, preStartBinding, runWorkspace, info, workspaceIssue)
 			if err != nil {
 				return RunResult{}, err
 			}
 		}
 		sessionModel = turnRequest.Model
 		runtimeIdentity.RequestedModel = agentidentity.NewValue(turnRequest.Model, agentidentity.ProvenanceConfigured)
-		runtimeIdentity.ReasoningEffort = agentidentity.NewValue(executionIdentity.ReasoningEffort, agentidentity.ProvenanceConfigured)
+		runtimeIdentity.ReasoningEffort = agentidentity.NewValue(turnRequest.ReasoningEffort, agentidentity.ProvenanceConfigured)
 		if runtime, ok := req.Execution.(RuntimeExecution); ok {
 			if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Identity: runtimeIdentity}); err != nil {
 				return RunResult{}, err
 			}
 		}
-		if err := req.Execution.Start(ctx, executionIdentity); err != nil {
-			return RunResult{}, err
+		if preStartBinding {
+			if err := req.Execution.Start(ctx, executionIdentity); err != nil {
+				return RunResult{}, err
+			}
 		}
 		afterRunPending = true
 		if artifacts, ok := req.Execution.(ArtifactExecution); ok {

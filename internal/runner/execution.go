@@ -1104,20 +1104,20 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 	return "fresh_checkout", "session_restart_required"
 }
 
-func (r *Runner) nativeResume(ctx context.Context, req *RunRequest, backend AgentBackend, process AgentProcessRequest, local *workspace.RecoveryState, state store.AgentResumeState, identity tracker.NativeExecutionIdentity, source workspace.Backend, info workspace.Info, issue workspace.Issue) (store.AgentResumeState, error) {
+func (r *Runner) nativeResume(ctx context.Context, req *RunRequest, backend AgentBackend, process AgentProcessRequest, local *workspace.RecoveryState, state store.AgentResumeState, identity tracker.NativeExecutionIdentity, resumeIdentityComplete bool, source workspace.Backend, info workspace.Info, issue workspace.Issue) (store.AgentResumeState, error) {
 	if req.Execution == nil {
 		return state, nil
 	}
 	if state.DetentSessionID == 0 && req.ResumeState.DetentSessionID > 0 {
 		state = req.ResumeState
 	}
-	sessionAvailable := !agentResumeStateEmpty(state) && verifyAgentResume(ctx, backend, process, agentResumeFromState(state)) == nil
+	sessionAvailable := resumeIdentityComplete && !agentResumeStateEmpty(state) && verifyAgentResume(ctx, backend, process, agentResumeFromState(state)) == nil
 	if issue.Source != nil {
 		if err := req.Execution.Validate(ctx); err != nil {
 			return store.AgentResumeState{}, err
 		}
 	}
-	action, reason := nativeRecoveryAction(req.Execution.Recovery(), local, sessionAvailable, state, identity, req.operatorFreshRetry(), issue.Source)
+	action, reason := nativeRecoveryAction(req.Execution.Recovery(), local, sessionAvailable, state, identity, req.operatorFreshRetry() || !resumeIdentityComplete, issue.Source)
 	if reason == "publication_reconciliation_required" && !nativePublicationRecovery(req.Execution.Recovery(), local, identity, issue.Source) {
 		return store.AgentResumeState{}, fmt.Errorf("%w: publication requires verified current source before reconciliation", ErrNativeRecoveryRequired)
 	}
@@ -1150,7 +1150,7 @@ func (r *Runner) nativeResume(ctx context.Context, req *RunRequest, backend Agen
 						break
 					}
 				}
-				action, reason = nativeRecoveryAction(recovery, local, sessionAvailable, state, identity, req.operatorFreshRetry(), issue.Source)
+				action, reason = nativeRecoveryAction(recovery, local, sessionAvailable, state, identity, req.operatorFreshRetry() || !resumeIdentityComplete, issue.Source)
 				if action != "manual_recovery" {
 					if err := req.Execution.Start(ctx, identity); err != nil {
 						return store.AgentResumeState{}, err

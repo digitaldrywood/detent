@@ -209,6 +209,10 @@ func conversationError(err error) error {
 	}
 }
 
+func (e *nativeExecution) SupportsPreStartConversationBinding(ctx context.Context) (bool, error) {
+	return e.claim.source.client.HubFeature(ctx, tracker.NativePreStartConversationBindingCapability)
+}
+
 // BindConversation implements runner.ConversationExecution for the native
 // execution: the attempt binds with its own lease and fencing token.
 func (e *nativeExecution) BindConversation(ctx context.Context, capabilities runner.ConversationCapabilities, resumeThreadID string) (runner.ConversationSession, error) {

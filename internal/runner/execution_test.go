@@ -1304,7 +1304,7 @@ func TestNativeReworkRefusesSourceLostDuringValidation(t *testing.T) {
 			verified := false
 			source := &resumedExecutionWorkspace{afterVerification: func() { verified = true }}
 			r := &Runner{}
-			state, err := r.nativeResume(t.Context(), &RunRequest{Execution: execution}, nil, AgentProcessRequest{}, &local, store.AgentResumeState{}, identity, source, workspace.Info{}, workspace.Issue{NativeRework: true})
+			state, err := r.nativeResume(t.Context(), &RunRequest{Execution: execution}, nil, AgentProcessRequest{}, &local, store.AgentResumeState{}, identity, true, source, workspace.Info{}, workspace.Issue{NativeRework: true})
 			if !errors.Is(err, ErrNativeRecoveryRequired) {
 				t.Fatalf("missing refreshed source was not refused: %v", err)
 			}
