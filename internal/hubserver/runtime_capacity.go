@@ -73,13 +73,13 @@ func readRuntimeRunners(ctx context.Context, query nativeQueryer, scope nativeSc
 	}
 	leaseStatement := `SELECT l.machine_id, coalesce(lr.runner_id, ''), l.expires_at, l.session_id, l.lease_id, coalesce(i.project_id, ''), ` + nativeLandingCapacityProject + `
 FROM leases l JOIN issues i ON i.id = l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id ` + nativeLandingCapacityJoins + `
-WHERE l.machine_id IN (` + placeholders(len(machines)) + `) AND l.released_at IS NULL`
-	leaseArgs := machines
+WHERE l.machine_id IN (` + placeholders(len(machines)) + `) AND l.released_at IS NULL AND julianday(l.renewed_at)<=julianday(?) AND julianday(l.expires_at)>julianday(?)`
+	leaseArgs := append(append([]any(nil), machines...), formatHubTime(now), formatHubTime(now))
 	if explanationRead(ctx) {
 		leaseStatement = `SELECT l.machine_id,coalesce(lr.runner_id,''),l.expires_at,l.session_id,l.lease_id,coalesce(i.project_id,''),''
 FROM leases l INDEXED BY health_active_host JOIN issues i ON i.id=l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id
-WHERE l.machine_id IN (` + placeholders(len(machines)) + `) AND l.released_at IS NULL AND l.expires_at>? ORDER BY l.machine_id,l.expires_at,l.lease_id LIMIT 1025`
-		leaseArgs = append(append([]any(nil), machines...), formatHubTime(now))
+WHERE l.machine_id IN (` + placeholders(len(machines)) + `) AND l.released_at IS NULL AND julianday(l.renewed_at)<=julianday(?) AND julianday(l.expires_at)>julianday(?) ORDER BY l.machine_id,l.expires_at,l.lease_id LIMIT 1025`
+		leaseArgs = append(append([]any(nil), machines...), formatHubTime(now), formatHubTime(now))
 	}
 	rows, err := query.QueryContext(ctx, leaseStatement, leaseArgs...)
 	if err != nil {

@@ -103,10 +103,12 @@ func readNativeBoardSummary(ctx context.Context, q nativeQueryer, scope nativeSc
 	}
 	summary := &tracker.NativeWorkSummary{Items: []tracker.NativeIssue{}, Lanes: []tracker.NativeWorkLane{}, AsOf: now}
 	filtered := scope.credential.HostedRole == "reporter" || strings.TrimSpace(params.Get("created_by")) != "" || strings.TrimSpace(params.Get("q")) != "" || len(params["type"])+len(params["verification"])+len(params["label"])+len(params["assignee"])+len(params["priority"]) > 0
-	statement := "SELECT b.state,count(*),sum(b.running) FROM native_board_items b WHERE " + where + " GROUP BY b.state"
+	currentLease := `EXISTS(SELECT 1 FROM issues i JOIN leases l ON l.issue_id=i.id WHERE i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id AND l.fencing_token=c.execution_fence AND l.released_at IS NULL AND julianday(c.expires_at)>julianday(?) AND julianday(l.renewed_at)<=julianday(?) AND julianday(l.expires_at)>julianday(?))`
+	statement := "SELECT b.state,count(*),sum(b.running AND " + strings.ReplaceAll(currentLease, "c.", "b.") + ") FROM native_board_items b WHERE " + where + " GROUP BY b.state"
 	if !filtered {
-		statement = "SELECT state,total,running FROM native_board_counts b WHERE " + where + " AND total>0"
+		statement = "SELECT b.state,b.total,(SELECT count(*) FROM native_board_items c WHERE c.organization_id=b.organization_id AND c.project_id=b.project_id AND c.archived=b.archived AND c.state=b.state AND c.running=1 AND " + currentLease + ") FROM native_board_counts b WHERE " + where + " AND b.total>0"
 	}
+	args = append([]any{formatHubTime(now), formatHubTime(now), formatHubTime(now)}, args...)
 	pageQuery, pageErr := prepareNativePageStatement(ctx, q, scope, "", statement)
 	if pageErr != nil {
 		return nil, pageErr

@@ -857,3 +857,47 @@ func TestStorageConversionContinuesAfterProjectionFailure(t *testing.T) {
 		t.Fatalf("projection failure stopped storage conversion: converted=%d error=%v", converted, err)
 	}
 }
+
+func TestStorageConversionAttemptLeaseBudget(t *testing.T) {
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	items := []tracker.NativeIssue{f.create(t, "First expired execution"), f.create(t, "Second expired execution")}
+	worker := f.worker(t, "repair worker")
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "repair-machine", "hostname": "repair-machine", "version": "test", "capacity": 2}), http.StatusOK)
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for i := range storageConversionRows + 3 {
+		data := tracker.NativeRunData{PolicyID: "example-policy", Sequence: 1}
+		id := seedHealthRateAttempt(t, tx, scope, items[i%len(items)], "repair-machine", "running", data, now.Add(-time.Hour), -1)
+		data.AttemptID = id
+		if err := tx.QueryRowContext(t.Context(), "SELECT lease_id,fencing_token,run_id FROM native_attempts WHERE id=?", id).Scan(&data.LeaseID, &data.FencingToken, &data.RunID); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=? WHERE id=?", string(raw), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for tick, want := range []int{storageConversionRows, storageConversionRows + 3, storageConversionRows + 3} {
+		if err := f.service.convertLegacyStorage(t.Context(), now); err != nil {
+			t.Fatal(err)
+		}
+		var cancelled int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts WHERE status='cancelled'").Scan(&cancelled); err != nil {
+			t.Fatal(err)
+		}
+		if cancelled != want {
+			t.Fatalf("tick %d cancelled %d attempts, want %d", tick, cancelled, want)
+		}
+	}
+}

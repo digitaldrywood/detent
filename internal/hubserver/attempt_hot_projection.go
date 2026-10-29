@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -137,4 +138,53 @@ func (s *Service) convertAttemptHotProjection(ctx context.Context, id string) er
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Service) convertAttemptLease(ctx context.Context, id tracker.LeaseID, now time.Time) error {
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	lease, found, err := readLeaseByID(ctx, tx, id)
+	if err != nil || !found {
+		return err
+	}
+	var superseded bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM leases WHERE issue_id=? AND fencing_token>?)", lease.issueID, lease.session.FencingToken).Scan(&superseded); err != nil {
+		return err
+	}
+	if lease.session.ReleasedAt == nil {
+		if !superseded && lease.session.ExpiresAt.After(now) {
+			return nil
+		}
+		if err := expireLease(ctx, tx, lease, now); err != nil {
+			return err
+		}
+	} else if err := cancelNativeLeaseAttempt(ctx, tx, lease, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Service) convertAttemptLeases(ctx context.Context) error {
+	now, err := s.database.currentTime()
+	if err != nil {
+		return err
+	}
+	candidates, err := s.storageProjectionPage(ctx, "attempt_leases", "SELECT a.lease_id FROM native_attempts a WHERE a.status='running'", "a.id", storageConversionRows)
+	if err != nil {
+		return err
+	}
+	var failures error
+	for _, candidate := range candidates {
+		if err := s.convertAttemptLease(ctx, tracker.LeaseID(candidate.id), now); err != nil {
+			failures = errors.Join(failures, err)
+			if ctx.Err() != nil {
+				return failures
+			}
+		}
+		s.projectionCursors.Store("attempt_leases", candidate.cursor)
+	}
+	return failures
 }

@@ -850,6 +850,9 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 }
 
 func cancelNativeReleasedAttempt(ctx context.Context, client *NativeClient, item tracker.NativeWorkItemID, attempt tracker.NativeAttempt) error {
+	if attempt.Status == "cancelled" || attempt.Outcome == "cancelled" {
+		return nil
+	}
 	data := tracker.NativeRunData{AttemptID: attempt.AttemptID, RunID: attempt.RunID, LeaseID: attempt.LeaseID,
 		FencingToken: attempt.FencingToken, PolicyID: attempt.PolicyID, Identity: attempt.Identity,
 		Sequence: attempt.Sequence + 1, Outcome: "cancelled"}

@@ -141,14 +141,14 @@ func readRunnerFactsWithClock(ctx context.Context, db nativeQueryer, organizatio
 	r.ProjectUsed = make(map[tracker.ProjectID]int)
 	runnerSlots := make(map[string]bool)
 	leaseQuery := `SELECT l.expires_at, coalesce(lr.runner_id, ''), l.lease_id, coalesce(i.project_id, ''), l.session_id, ` + nativeLandingCapacityProject + `
-FROM leases l JOIN issues i ON i.id = l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id ` + nativeLandingCapacityJoins + ` WHERE l.machine_id = ? AND l.released_at IS NULL ORDER BY l.fencing_token`
+FROM leases l JOIN issues i ON i.id = l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id ` + nativeLandingCapacityJoins + ` WHERE l.machine_id = ? AND l.released_at IS NULL AND julianday(l.renewed_at)<=julianday(?) AND julianday(l.expires_at)>julianday(?) ORDER BY l.fencing_token`
 	if display {
 		leaseQuery = `SELECT l.expires_at, coalesce(lr.runner_id, ''), l.lease_id, l.fencing_token, coalesce(i.native_id, ''), i.title, coalesce(i.project_id, ''), coalesce(p.metadata_json, ''), coalesce(pp.policy_id, ''), l.session_id, ` + nativeLandingCapacityProject + `
 FROM leases l JOIN issues i ON i.id = l.issue_id LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id
 LEFT JOIN lease_policies lp ON lp.lease_id = l.lease_id LEFT JOIN policy_revisions p ON p.scope = lp.scope AND p.policy_id = lp.policy_id
-LEFT JOIN project_policies pp ON pp.scope = lp.scope ` + nativeLandingCapacityJoins + ` WHERE l.machine_id = ? AND l.released_at IS NULL ORDER BY l.fencing_token`
+LEFT JOIN project_policies pp ON pp.scope = lp.scope ` + nativeLandingCapacityJoins + ` WHERE l.machine_id = ? AND l.released_at IS NULL AND julianday(l.renewed_at)<=julianday(?) AND julianday(l.expires_at)>julianday(?) ORDER BY l.fencing_token`
 	}
-	rows, err := db.QueryContext(ctx, leaseQuery, r.MachineID)
+	rows, err := db.QueryContext(ctx, leaseQuery, r.MachineID, formatHubTime(now), formatHubTime(now))
 	if err != nil {
 		return r, err
 	}
@@ -859,7 +859,7 @@ func readRunnerClaimState(ctx context.Context, db nativeQueryer, scope nativeSco
 	state.PolicyIDs = map[tracker.ProjectID]string{scope.project: approved}
 
 	released, err := db.QueryContext(ctx, `SELECT DISTINCT a.work_item_id FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id JOIN lease_runners lr ON lr.lease_id=l.lease_id
- WHERE a.organization_id=? AND a.project_id=? AND lr.runner_id=? AND l.machine_id=? AND l.released_at IS NOT NULL AND a.status IN ('running','interrupted') AND a.checkpoint_json IS NOT NULL ORDER BY a.work_item_id`, scope.organization, scope.project, snapshot.RunnerID, scope.credential.Runner.MachineID)
+ WHERE a.organization_id=? AND a.project_id=? AND lr.runner_id=? AND l.machine_id=? AND l.released_at IS NOT NULL AND a.status IN ('running','interrupted','cancelled') AND a.checkpoint_json IS NOT NULL ORDER BY a.work_item_id`, scope.organization, scope.project, snapshot.RunnerID, scope.credential.Runner.MachineID)
 	if err != nil {
 		return err
 	}
@@ -883,7 +883,7 @@ func readRunnerClaimState(ctx context.Context, db nativeQueryer, scope nativeSco
 		if err != nil {
 			return err
 		}
-		if source.Released.Valid && source.MachineID == scope.credential.Runner.MachineID && source.RunnerID == snapshot.RunnerID && (source.Status == "running" || source.Status == "interrupted") {
+		if source.Released.Valid && source.MachineID == scope.credential.Runner.MachineID && source.RunnerID == snapshot.RunnerID && (source.Status == "running" || source.Status == "interrupted" || source.Status == "cancelled") {
 			state.ReleasedExecutions = append(state.ReleasedExecutions, runnerauth.ReleasedExecution{ProjectID: scope.project, WorkItemID: item, AttemptID: source.AttemptID})
 		}
 	}

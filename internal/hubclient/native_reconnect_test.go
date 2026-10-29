@@ -288,7 +288,11 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				}
 				unrelated := h.createInProgress(t, "Independent execution")
 				before, err := h.admin.Recovery(t.Context(), current.WorkItemID)
-				if err != nil || len(before.Attempts) != 2 {
+				wantReleasedOutcome := test.outcome
+				if wantReleasedOutcome == "" {
+					wantReleasedOutcome = "cancelled"
+				}
+				if err != nil || len(before.Attempts) != 2 || before.Attempts[0].Outcome != wantReleasedOutcome {
 					t.Fatalf("before restart = %+v, %v", before.Attempts, err)
 				}
 				h.scheduler = newScheduler()
@@ -296,7 +300,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 					t.Fatal(err)
 				}
 				live, err := h.admin.Recovery(t.Context(), current.WorkItemID)
-				if err != nil || live.Attempts[0].Outcome != test.outcome {
+				if err != nil || live.Attempts[0].Outcome != wantReleasedOutcome {
 					t.Fatalf("live writer acknowledged: %+v, %v", live.Attempts, err)
 				}
 				if test.staleLaunch {
@@ -309,7 +313,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				}
 
 				uncertain, err := h.admin.Recovery(t.Context(), current.WorkItemID)
-				if err != nil || uncertain.Attempts[0].Outcome != test.outcome {
+				if err != nil || uncertain.Attempts[0].Outcome != wantReleasedOutcome {
 					t.Fatalf("unresolved provider writer acknowledged: %+v, %v", uncertain.Attempts, err)
 				}
 				providersStopped.Store(true)
@@ -320,7 +324,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				after, err := h.admin.Recovery(t.Context(), current.WorkItemID)
 				want := "cancelled"
 				if test.missingLaunch || test.missingProcessProof || test.stopCheckFails || runtime.GOOS == "windows" || runtime.GOOS == "plan9" || runtime.GOOS == "js" || runtime.GOOS == "wasip1" {
-					want = test.outcome
+					want = wantReleasedOutcome
 				}
 				if err != nil || len(after.Attempts) != 2 || after.Attempts[0].Outcome != want || !reflect.DeepEqual(after.Attempts[0].Checkpoint, before.Attempts[0].Checkpoint) || !reflect.DeepEqual(after.Attempts[1].NativeRunData, before.Attempts[1].NativeRunData) || after.Issue.Revision != current.Revision || after.Issue.State != current.State {
 					t.Fatalf("released restart reconciliation = %+v, %v", after, err)

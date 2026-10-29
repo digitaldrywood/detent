@@ -576,8 +576,8 @@ func TestNativeStopEffectBoundary(t *testing.T) {
 					t.Fatal("unconfirmed worker cleanup accepted")
 				}
 				before, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
-				if err != nil || len(before.Attempts) != 1 || before.Attempts[0].Outcome != "" || before.Attempts[0].Checkpoint.EffectState != "confirmed" {
-					t.Fatalf("live stopped writer lost source or received terminal acknowledgment: %+v, %v", before.Attempts, err)
+				if err != nil || len(before.Attempts) != 1 || before.Attempts[0].Outcome != "cancelled" || before.Attempts[0].Checkpoint.EffectState != "confirmed" {
+					t.Fatalf("released writer lost source or lease cancellation: %+v, %v", before.Attempts, err)
 				}
 				writerStopped = true
 				finished := make(chan error, 1)
@@ -618,14 +618,17 @@ func TestNativeStopEffectBoundary(t *testing.T) {
 					return response, err
 				})
 				resumeCleanup()
-				if err := <-finished; err == nil {
-					t.Fatal("lost terminal acknowledgment response was not reported")
+				if err := <-finished; err != nil {
+					t.Fatalf("cancelled lease required another terminal acknowledgment: %v", err)
 				}
-				if h.scheduler.RunExecution(issue.ID) != execution {
-					t.Fatal("pending terminal acknowledgment lost its execution owner")
+				h.scheduler.mu.Lock()
+				_, retained := h.scheduler.nativeClaims[issue.ID]
+				h.scheduler.mu.Unlock()
+				if retained {
+					t.Fatal("completed cleanup retained its execution owner")
 				}
-				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "cancelled"); err != nil || acknowledgments != 1 {
-					t.Fatalf("terminal acknowledgment retry lost or duplicated completion: acknowledgments=%d error=%v", acknowledgments, err)
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "cancelled"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || acknowledgments != 0 {
+					t.Fatalf("cancelled lease duplicated terminal completion: acknowledgments=%d error=%v", acknowledgments, err)
 				}
 				evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
 				if err != nil || evidence.CurrentLease == nil || evidence.CurrentLease.ID != replacement.ID {

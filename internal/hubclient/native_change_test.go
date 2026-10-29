@@ -2612,11 +2612,6 @@ func TestNativeExecutionResumedVersionPublication(t *testing.T) {
 	}
 }
 
-// TestNativeExecutionSettlesBeforeFinishing checks the order a crash cannot
-// strand: the Change Request exists before run.finished is published, so a
-// finish that dies in between leaves the attempt running, where the lease's
-// expiry re-offers the item, and a retried finish publishes the outcome
-// without opening a second change.
 func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 	for _, test := range []struct {
 		name           string
@@ -2697,6 +2692,9 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 					}
 					recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
 					wantOutcome := ""
+					if test.outage {
+						wantOutcome = "cancelled"
+					}
 					if test.ackLost {
 						wantOutcome = "succeeded"
 					}
@@ -2746,6 +2744,20 @@ func TestNativeExecutionSettlesBeforeFinishing(t *testing.T) {
 				} else {
 					h.failChanges.failEvents.Store(false)
 					h.failChanges.failVersions.Store(false)
+				}
+				if test.outage {
+					if err := execution.Validate(guarded); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+						t.Fatalf("expired execution retained authority: %v", err)
+					}
+					recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+					if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "cancelled" || recovery.Attempts[0].Checkpoint == nil || recovery.Attempts[0].Checkpoint.WorktreeState != "unpushed" {
+						t.Fatalf("expired execution lost recovery evidence: %+v, %v", recovery.Attempts, err)
+					}
+					replacement, err := h.native.Claim(t.Context(), tracker.NativeClaim{PolicyID: h.descriptor.ID, WorkItemID: tracker.NativeWorkItemID(issue.ID), MachineID: originalLease.MachineID, SessionID: "outage-retry", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+					if err != nil || replacement.ID == originalLease.ID || replacement.FencingToken <= originalLease.FencingToken {
+						t.Fatalf("expired execution did not return to claim eligibility: %+v, %v", replacement, err)
+					}
+					return
 				}
 				if err := execution.Validate(guarded); err != nil {
 					t.Fatal(err)

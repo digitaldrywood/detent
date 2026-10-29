@@ -191,7 +191,7 @@ func (s *Service) releaseNativeLease(c echo.Context) error {
 	if request.CancelAttempt && request.Reason != "cancelled" || !slices.Contains([]string{"completed", "cancelled", "failed", "work_item_hydration_failed", "work_item_identity_missing", "released"}, request.Reason) {
 		return s.nativeAPIError(c, nativePublicInvalid("Release reason is invalid"))
 	}
-	if err := s.database.releaseLease(c.Request().Context(), tracker.ReleaseRequest{LeaseID: tracker.LeaseID(c.Param("lease")), FencingToken: request.FencingToken, Reason: request.Reason}, request.CancelAttempt, nativeRequestScope(c)); err != nil {
+	if err := s.database.releaseLease(c.Request().Context(), tracker.ReleaseRequest{LeaseID: tracker.LeaseID(c.Param("lease")), FencingToken: request.FencingToken, Reason: request.Reason}); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	s.notifyNativeDispatch(c.Request().Context(), nativeRequestScope(c), request)
