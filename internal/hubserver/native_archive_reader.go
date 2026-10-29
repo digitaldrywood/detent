@@ -500,6 +500,8 @@ func archiveConversationQuery(ctx context.Context, query nativeQueryer, id strin
 
 func archiveProjectionColumn(table, column string) bool {
 	switch table {
+	case "native_attempts":
+		return slices.Contains([]string{"worker_cleanup_required", "cleanup_acknowledged_at"}, column)
 	case "collaboration_events":
 		return slices.Contains([]string{"archive_operation", "archive_from_state", "archive_to_state", "archive_attempt_id", "archive_outcome", "archive_landed_commit"}, column)
 	default:

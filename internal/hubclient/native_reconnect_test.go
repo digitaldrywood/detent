@@ -300,7 +300,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 					t.Fatal(err)
 				}
 				live, err := h.admin.Recovery(t.Context(), current.WorkItemID)
-				if err != nil || live.Attempts[0].Outcome != wantReleasedOutcome {
+				if err != nil || live.Attempts[0].Outcome != wantReleasedOutcome || live.Attempts[0].Sequence != before.Attempts[0].Sequence {
 					t.Fatalf("live writer acknowledged: %+v, %v", live.Attempts, err)
 				}
 				if test.staleLaunch {
@@ -313,7 +313,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				}
 
 				uncertain, err := h.admin.Recovery(t.Context(), current.WorkItemID)
-				if err != nil || uncertain.Attempts[0].Outcome != wantReleasedOutcome {
+				if err != nil || uncertain.Attempts[0].Outcome != wantReleasedOutcome || uncertain.Attempts[0].Sequence != before.Attempts[0].Sequence {
 					t.Fatalf("unresolved provider writer acknowledged: %+v, %v", uncertain.Attempts, err)
 				}
 				providersStopped.Store(true)
@@ -323,15 +323,36 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				}
 				after, err := h.admin.Recovery(t.Context(), current.WorkItemID)
 				want := "cancelled"
+				cleanupExpected := true
 				if test.missingLaunch || test.missingProcessProof || test.stopCheckFails || runtime.GOOS == "windows" || runtime.GOOS == "plan9" || runtime.GOOS == "js" || runtime.GOOS == "wasip1" {
 					want = wantReleasedOutcome
+					cleanupExpected = false
 				}
 				if err != nil || len(after.Attempts) != 2 || after.Attempts[0].Outcome != want || !reflect.DeepEqual(after.Attempts[0].Checkpoint, before.Attempts[0].Checkpoint) || !reflect.DeepEqual(after.Attempts[1].NativeRunData, before.Attempts[1].NativeRunData) || after.Issue.Revision != current.Revision || after.Issue.State != current.State {
 					t.Fatalf("released restart reconciliation = %+v, %v", after, err)
 				}
-				if want == "cancelled" {
+				wantSequence := before.Attempts[0].Sequence
+				if cleanupExpected {
+					wantSequence++
+				}
+				if after.Attempts[0].Sequence != wantSequence || (after.Attempts[0].CleanupAcknowledgedAt != nil) != cleanupExpected {
+					t.Fatalf("cleanup acknowledgment sequence=%d want=%d acknowledged=%v", after.Attempts[0].Sequence, wantSequence, after.Attempts[0].CleanupAcknowledgedAt)
+				}
+				if cleanupExpected {
 					if err := cancelNativeReleasedAttempt(t.Context(), execution.claim.source.client, current.WorkItemID, before.Attempts[0]); err != nil {
 						t.Fatalf("duplicate termination acknowledgment: %v", err)
+					}
+					h.scheduler = newScheduler()
+					if err := h.scheduler.Heartbeat(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+					h.scheduler.client.runner.routingMu.Lock()
+					released := h.scheduler.client.runner.routing.ClaimState.ReleasedExecutions
+					h.scheduler.client.runner.routingMu.Unlock()
+					for _, reference := range released {
+						if reference.AttemptID == after.Attempts[0].AttemptID {
+							t.Fatal("completed cleanup remained eligible on the next poll")
+						}
 					}
 				}
 

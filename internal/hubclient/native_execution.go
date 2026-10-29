@@ -817,7 +817,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 	defer e.mu.Unlock()
 	if releasedAttempt != nil {
 		attempt := *releasedAttempt
-		if attempt.Outcome == "" || attempt.Outcome == "interrupted" {
+		if attempt.CleanupAcknowledgedAt == nil && (attempt.Outcome == "" || attempt.Outcome == "interrupted" || attempt.Outcome == "cancelled") {
 			if err := cancelNativeReleasedAttempt(ctx, e.claim.source.client, e.claim.lease.WorkItemID, attempt); err != nil {
 				return errors.Join(finishErr, err)
 			}
@@ -850,7 +850,7 @@ func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 }
 
 func cancelNativeReleasedAttempt(ctx context.Context, client *NativeClient, item tracker.NativeWorkItemID, attempt tracker.NativeAttempt) error {
-	if attempt.Status == "cancelled" || attempt.Outcome == "cancelled" {
+	if attempt.CleanupAcknowledgedAt != nil {
 		return nil
 	}
 	data := tracker.NativeRunData{AttemptID: attempt.AttemptID, RunID: attempt.RunID, LeaseID: attempt.LeaseID,
