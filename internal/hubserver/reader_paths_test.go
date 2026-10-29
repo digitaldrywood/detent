@@ -329,13 +329,6 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"nativeIssueJSON":              "The mutation response reads back the browser path of the issue this request just wrote.",
 	}
 	transactionReasons := map[string]string{
-		"convertConversationPayload":                     "Converts one source-checked message or event and its archive metadata after preparing content outside the transaction.",
-		"convertConversationToolPayload":                 "Converts one source-checked tool revision and its archive metadata after preparing content outside the transaction.",
-		"convertConversationRecordPayload":               "Converts one source-checked conversation record and its archive metadata after preparing content outside the transaction.",
-		"conversationStore.materializeRestartedMessages": "Updates one interrupted message and its archive metadata after rechecking its revision and delivery state.",
-		"conversationStore.normalizeRestartedExecutions": "Updates one interrupted execution and its archive metadata conditional on the unchanged source record.",
-		"conversationStore.normalizeRestartedReceipts":   "Updates one interrupted receipt and its archive metadata conditional on the unchanged source record.",
-
 		"nativeProgressOwner.Publish":       "Atomically publishes one fenced progress decision, its bounded evidence and comment, and one deduplicated machine intake occurrence.",
 		"requestTeamUnread":                 "Writes only the caller's unread refresh intent and supplied project scope; history projection runs in maintenance and summary reads use the reader.",
 		"advanceTeamUnread":                 "Publishes one reader-planned, bounded unread summary page and its cursor under the existing board maintenance owner.",
