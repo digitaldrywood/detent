@@ -101,7 +101,7 @@ func (r *rolloutHistoryReader) Page(ctx context.Context, query HistoryQuery) (Hi
 }
 
 func (r *rolloutHistoryReader) historyLocation(query HistoryQuery) (string, string) {
-	if strings.EqualFold(strings.TrimSpace(query.BackendKind), "pi_agent") || strings.EqualFold(strings.TrimSpace(query.BackendKind), "opencode") {
+	if strings.EqualFold(strings.TrimSpace(query.BackendKind), "pi_agent") || strings.EqualFold(strings.TrimSpace(query.BackendKind), "opencode") || strings.EqualFold(strings.TrimSpace(query.BackendKind), "antigravity") {
 		return "", ""
 	}
 	if strings.Contains(strings.ToLower(query.BackendKind), "claude") {

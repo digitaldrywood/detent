@@ -1228,6 +1228,8 @@ func (r *Runner) nativeWorkTimeout(cfg config.Config, backend config.AgentBacken
 			workBudget = durationFromMillis(backend.OpenCodeOptions().TurnTimeoutMS)
 		case config.AgentBackendPiAgent:
 			workBudget = durationFromMillis(backend.PiAgentOptions().TurnTimeoutMS)
+		case config.AgentBackendAntigravity:
+			workBudget = durationFromMillis(backend.AntigravityOptions().TurnTimeoutMS)
 		}
 	}
 	return max(r.afterRunTimeout, workBudget, validatorTimeout)

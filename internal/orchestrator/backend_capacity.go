@@ -176,7 +176,7 @@ func backendCapacityProviderOutage(outage BackendOutage) bool {
 
 func (o *Orchestrator) subscriptionQuotaOutage(outage BackendOutage) bool {
 	switch outage.Scope.BackendKind {
-	case workflowconfig.AgentBackendCodex, workflowconfig.AgentBackendClaudeCode, workflowconfig.AgentBackendPiAgent, workflowconfig.AgentBackendOpenCode:
+	case workflowconfig.AgentBackendCodex, workflowconfig.AgentBackendClaudeCode, workflowconfig.AgentBackendPiAgent, workflowconfig.AgentBackendOpenCode, workflowconfig.AgentBackendAntigravity:
 		return o.cfg.subscriptionBilling() && outage.Scope.Hosted() && !backendCapacityProviderOutage(outage)
 	default:
 		return false
@@ -222,7 +222,7 @@ func (o *Orchestrator) refreshBackendCapacity(ctx context.Context, state *State,
 	}
 	for _, key := range sortedKeys(state.BackendOutages) {
 		outage := state.BackendOutages[key]
-		if outage.Scope.BackendKind != workflowconfig.AgentBackendCodex && outage.Scope.BackendKind != workflowconfig.AgentBackendClaudeCode && outage.Scope.BackendKind != workflowconfig.AgentBackendPiAgent && outage.Scope.BackendKind != workflowconfig.AgentBackendOpenCode {
+		if outage.Scope.BackendKind != workflowconfig.AgentBackendCodex && outage.Scope.BackendKind != workflowconfig.AgentBackendClaudeCode && outage.Scope.BackendKind != workflowconfig.AgentBackendPiAgent && outage.Scope.BackendKind != workflowconfig.AgentBackendOpenCode && outage.Scope.BackendKind != workflowconfig.AgentBackendAntigravity {
 			continue
 		}
 		if backendCapacityProviderOutage(outage) || !outage.Scope.Hosted() || outage.ProbeIssueID != "" ||

@@ -109,6 +109,8 @@ func progressTurnTimeout(cfg config.Config, backend config.AgentBackend) time.Du
 			limit = durationFromMillis(backend.OpenCodeOptions().TurnTimeoutMS)
 		case config.AgentBackendPiAgent:
 			limit = durationFromMillis(backend.PiAgentOptions().TurnTimeoutMS)
+		case config.AgentBackendAntigravity:
+			limit = durationFromMillis(backend.AntigravityOptions().TurnTimeoutMS)
 		}
 	}
 	if limit <= 0 {

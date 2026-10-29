@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/activehours"
+	"github.com/digitaldrywood/detent/internal/antigravity"
 	"github.com/digitaldrywood/detent/internal/boardsnapshot"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/claudecode"
@@ -484,6 +485,17 @@ func buildAgentBackendWithIsolation(backend workflowconfig.AgentBackend, policie
 			},
 			TurnTimeout: durationFromMillis(cfg.TurnTimeoutMS), StallTimeout: durationFromMillis(cfg.StallTimeoutMS),
 		})
+	case workflowconfig.AgentBackendAntigravity:
+		cfg := backend.AntigravityOptions()
+		return antigravity.NewAgentBackend(antigravity.Options{
+			BackendID:       backend.ID,
+			IsolationPolicy: firstIsolationPolicy(policies),
+			CommandFactory: func(ctx context.Context, args []string) *exec.Cmd {
+				return buildClaudeCommandFromConfig(ctx, backend.Command, cfg.Shell, args)
+			},
+			Provider: backend.Provider, Effort: cfg.Effort,
+			TurnTimeout: durationFromMillis(cfg.TurnTimeoutMS), StallTimeout: durationFromMillis(cfg.StallTimeoutMS),
+		})
 	case workflowconfig.AgentBackendCodex:
 		return buildCodexAgentBackend(backend.Command, backend.CodexOptions(), policies...)
 	case workflowconfig.AgentBackendPiAgent:
@@ -500,12 +512,13 @@ func buildAgentBackendWithIsolation(backend workflowconfig.AgentBackend, policie
 	case workflowconfig.AgentBackendClaudeCode:
 		return buildClaudeAgentBackend(backend.Command, backend.ClaudeCodeOptions(), policies...)
 	default:
-		return nil, fmt.Errorf("unsupported agent backend kind %q; supported kinds: %s, %s, %s, %s",
+		return nil, fmt.Errorf("unsupported agent backend kind %q; supported kinds: %s, %s, %s, %s, %s",
 			backend.Kind,
 			workflowconfig.AgentBackendCodex,
 			workflowconfig.AgentBackendClaudeCode,
 			workflowconfig.AgentBackendPiAgent,
 			workflowconfig.AgentBackendOpenCode,
+			workflowconfig.AgentBackendAntigravity,
 		)
 	}
 }

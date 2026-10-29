@@ -144,6 +144,11 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 			return isolation.ErrSandboxUnavailable
 		}
 		shell = backend.OpenCodeOptions().Shell
+	case workflowconfig.AgentBackendAntigravity:
+		if policy.Tier != isolation.NativeTrusted {
+			return isolation.ErrSandboxUnavailable
+		}
+		shell = backend.AntigravityOptions().Shell
 	case workflowconfig.AgentBackendPiAgent:
 		if policy.Tier != isolation.NativeTrusted {
 			return isolation.ErrSandboxUnavailable

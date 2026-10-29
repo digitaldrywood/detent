@@ -15,6 +15,8 @@ func runtimeIdentitySystemName(kind string) string {
 		return "Codex"
 	case "pi_agent":
 		return "Pi"
+	case "antigravity":
+		return "Antigravity"
 	case "claude_code":
 		return "Claude Code"
 	default:

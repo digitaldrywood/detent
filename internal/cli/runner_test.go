@@ -18,6 +18,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/antigravity"
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -2820,5 +2821,15 @@ func TestBuildOpenCodeBackend(t *testing.T) {
 	}
 	if _, ok := backend.(runnerpkg.AgentToolBackend); !ok {
 		t.Fatal("OpenCode backend does not expose native worker tools")
+	}
+}
+
+func TestBuildAntigravityBackend(t *testing.T) {
+	backend, err := buildAgentBackend(workflowconfig.AgentBackend{ID: "agy", Kind: workflowconfig.AgentBackendAntigravity, Protocol: "stream-json", Command: "agy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := backend.(*antigravity.AgentBackend); !ok {
+		t.Fatalf("backend = %T, want Antigravity", backend)
 	}
 }

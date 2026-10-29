@@ -779,6 +779,11 @@ func (b *AgentBackend) decodeOptions() {
 		if err != nil {
 			b.optionsProblem = err.Error()
 		}
+	case AgentBackendAntigravity:
+		_, err := b.decodedAntigravityOptions()
+		if err != nil {
+			b.optionsProblem = err.Error()
+		}
 	case AgentBackendClaudeCode:
 		options, err := b.decodedClaudeCodeOptions()
 		if err != nil {
@@ -2267,6 +2272,14 @@ func (a *Agents) normalize() {
 		if backend.Command == "" && backend.Kind == AgentBackendClaudeCode {
 			backend.Command = defaultClaudeCodeCommand
 		}
+		if backend.Kind == AgentBackendAntigravity {
+			if backend.Protocol == "" {
+				backend.Protocol = "stream-json"
+			}
+			if backend.Command == "" {
+				backend.Command = "agy"
+			}
+		}
 		if backend.Kind == AgentBackendOpenCode {
 			if backend.Protocol == "" {
 				backend.Protocol = "acp"
@@ -2330,9 +2343,9 @@ func (a *Agents) validate(problems *[]string) {
 		switch backend.Kind {
 		case "":
 			*problems = append(*problems, "agents.backends.kind is required")
-		case AgentBackendCodex, AgentBackendClaudeCode, AgentBackendPiAgent, AgentBackendOpenCode:
+		case AgentBackendCodex, AgentBackendClaudeCode, AgentBackendPiAgent, AgentBackendOpenCode, AgentBackendAntigravity:
 		default:
-			*problems = append(*problems, "agents.backends.kind must be one of codex, claude_code, pi_agent, opencode")
+			*problems = append(*problems, "agents.backends.kind must be one of codex, claude_code, pi_agent, opencode, antigravity")
 		}
 		switch backend.Kind {
 		case AgentBackendCodex:
@@ -2342,6 +2355,10 @@ func (a *Agents) validate(problems *[]string) {
 		case AgentBackendOpenCode:
 			if backend.Protocol != "acp" {
 				*problems = append(*problems, "agents.backends.protocol must be acp for opencode")
+			}
+		case AgentBackendAntigravity:
+			if backend.Protocol != "stream-json" {
+				*problems = append(*problems, "agents.backends.protocol must be stream-json for antigravity")
 			}
 		case AgentBackendPiAgent:
 			if backend.Protocol != "rpc" {
@@ -2396,6 +2413,13 @@ func (b AgentBackend) validateOptions(prefix string, problems *[]string) {
 		options, err := b.decodedOpenCodeOptions()
 		if err != nil {
 			*problems = append(*problems, prefix+" must decode for opencode: "+err.Error())
+			return
+		}
+		options.validate(prefix, problems)
+	case AgentBackendAntigravity:
+		options, err := b.decodedAntigravityOptions()
+		if err != nil {
+			*problems = append(*problems, prefix+" must decode for antigravity: "+err.Error())
 			return
 		}
 		options.validate(prefix, problems)
