@@ -213,13 +213,25 @@ func (w *resumedExecutionWorkspace) AfterRun(ctx context.Context, info workspace
 func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name     string
-		status   string
-		unpushed int
+		name        string
+		status      string
+		unpushed    bool
+		changedHead bool
+		dirty       bool
+		rebase      bool
+		gitRef      bool
 	}{
 		{name: "killed clean attempt", status: "cancelled"},
-		{name: "killed unpushed attempt", status: "cancelled", unpushed: 1},
+		{name: "killed unpushed attempt", status: "cancelled", unpushed: true},
 		{name: "ordinary failed retry", status: "failed"},
+		{name: "unchanged git checkpoint after restart", status: "cancelled", gitRef: true},
+		{name: "unchanged git checkpoint on failed retry", status: "failed", gitRef: true},
+		{name: "cancelled retry with changed head", status: "cancelled", gitRef: true, changedHead: true},
+		{name: "failed retry with changed head", status: "failed", gitRef: true, changedHead: true},
+		{name: "cancelled retry preserves divergent tracked and untracked work", status: "cancelled", gitRef: true, dirty: true},
+		{name: "failed retry preserves divergent tracked and untracked work", status: "failed", gitRef: true, dirty: true},
+		{name: "cancelled retry rebases current Change", status: "cancelled", gitRef: true, rebase: true},
+		{name: "failed retry rebases current Change", status: "failed", rebase: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -236,15 +248,52 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			identity := agentidentity.Configured("codex", "codex", "default", RoleCode, "example-model", "openai", "high", "", started)
+			role := RoleCode
+			if test.rebase || test.dirty {
+				role = RoleRework
+			}
+			identity := agentidentity.Configured("codex", "codex", "default", role, "example-model", "openai", "high", "", started)
 			issue := connector.Issue{ID: "work", Identifier: "example-org/example-project#1", State: "In Progress", BranchName: "example/work"}
-			local := workspace.RecoveryState{HeadSHA: "head", WorkspaceFingerprint: "digest", UnpushedCommits: test.unpushed}
-			backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: issue.BranchName}, recoveryStates: []workspace.RecoveryState{local}}}
+			if role == RoleRework {
+				issue.State = "Rework"
+			}
+			source := initRunnerSourceRepo(t)
+			remote := filepath.Join(t.TempDir(), "origin.git")
+			runRunnerGit(t, source, "init", "--bare", "-b", "main", remote)
+			repository := "https://github.com/example-org/example-project"
+			runRunnerGit(t, source, "remote", "add", "origin", repository)
+			runRunnerGit(t, source, "config", "url."+remote+".insteadOf", repository)
+			runRunnerGit(t, source, "push", "-u", "origin", "main")
+			gitWorkspace, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			workspaceIssue := workspaceIssue("native", issue)
+			info, err := gitWorkspace.Create(ctx, workspaceIssue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+			if test.unpushed || test.rebase {
+				if err := os.WriteFile(filepath.Join(info.Path, "feature.md"), []byte("retained feature\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, info.Path, "add", "feature.md")
+				runRunnerGit(t, info.Path, "commit", "-m", "retained feature")
+			}
+			local, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend := &resumedExecutionWorkspace{LocalGit: gitWorkspace}
 			providerErr := errors.New("provider interrupted")
-			agent := &fakeCodexClient{err: providerErr}
+			agent := &fakeCodexClient{err: providerErr, result: AgentTurnResult{ThreadID: "persisted-thread", SessionID: "persisted-session"}}
+			if test.changedHead || test.dirty || test.rebase {
+				agent.result = AgentTurnResult{ThreadID: "fresh-thread", SessionID: "fresh-session"}
+			}
 			cfg := config.Config{Policy: approved}
 			cfg.Tracker.Kind = config.TrackerHubNative
-			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Role: RoleCode, Backend: "codex", Model: "example-model", Default: true}}
+			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Role: role, Backend: "codex", Model: "example-model", Default: true}}
 			deps := Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Continue the issue"}, Store: db, Workspace: backend, AgentBackend: agent}
 			first, err := NewRunner(deps)
 			if err != nil {
@@ -287,21 +336,92 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			}
 			checkpoint := executionCheckpoint(&local)
 			checkpoint.Resume = "resume_session"
-			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{ID: "new-lease", MachineID: "machine", FencingToken: 2}, Attempts: []tracker.NativeAttempt{{Status: test.status, Checkpoint: &checkpoint, NativeRunData: tracker.NativeRunData{MachineID: "machine", LeaseID: "old-lease", FencingToken: 1, Identity: &tracker.NativeExecutionIdentity{Role: RoleCode, Backend: "codex", Model: "example-model"}, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: attemptID, Identity: identity}}}}}}
-			_, err = restarted.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, WorkAttemptID: currentAttemptID, Generation: 2, Issue: issue, Mode: RunModeImplement, Execution: execution})
-			if !errors.Is(err, providerErr) || agent.calls != 1 || agent.request.Resume != resume || agent.verifiedResume != resume {
+			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{ID: "new-lease", MachineID: "machine", FencingToken: 2}, Attempts: []tracker.NativeAttempt{{Status: test.status, Checkpoint: &checkpoint, NativeRunData: tracker.NativeRunData{MachineID: "machine", LeaseID: "old-lease", FencingToken: 1, Identity: &tracker.NativeExecutionIdentity{Role: role, Backend: "codex", Model: "example-model"}, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: attemptID, Identity: identity}}}}}}
+			var runExecution Execution = execution
+			if test.gitRef {
+				ref, _, err := gitWorkspace.PushCheckpointRef(ctx, info, workspaceIssue, workspace.CheckpointRef{}, execution.Validate)
+				if err != nil {
+					t.Fatal(err)
+				}
+				checkpoint.Storage, checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA = "git_ref", ref.Ref, ref.CommitSHA, ref.BaseSHA, ref.TreeSHA
+			}
+			if test.changedHead {
+				runRunnerGit(t, info.Path, "commit", "--allow-empty", "-m", "divergent head")
+			}
+			if test.dirty {
+				for _, name := range []string{"README.md", "untracked.md"} {
+					if err := os.WriteFile(filepath.Join(info.Path, name), []byte("divergent work\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if test.rebase {
+				capture, err := workspace.CaptureChangeSource(ctx, info.Path, base, local.HeadSHA)
+				if err != nil {
+					t.Fatal(err)
+				}
+				owner := &retainedReviewExecution{testExecution: *execution, source: workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "version_example", ChangeID: "change_example", ChangeVersionInput: tracker.ChangeVersionInput{Repository: repository, BaseSHA: base, HeadSHA: local.HeadSHA, Source: &capture.Source}}, Bundle: capture.Bundle}}
+				execution = &owner.testExecution
+				runExecution = owner
+				if err := os.WriteFile(filepath.Join(source, "base.md"), []byte("advanced base\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runRunnerGit(t, source, "add", "base.md")
+				runRunnerGit(t, source, "commit", "-m", "advance integration base")
+				runRunnerGit(t, source, "push", "origin", "main")
+			}
+			if test.rebase {
+				session := newFakeConversationSession()
+				session.resume = resume.ThreadID
+				ctx = (&conversationRun{session: session}).attach(ctx)
+			}
+			before, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = restarted.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, WorkAttemptID: currentAttemptID, Generation: 2, Issue: issue, Mode: RunModeImplement, Execution: runExecution})
+			wantResume := resume
+			wantAction, wantReason := "resume_session", "verified_local_session"
+			if test.changedHead || test.dirty || test.rebase {
+				wantResume = AgentResume{}
+				wantAction, wantReason = "fresh_checkout", "session_restart_required"
+			}
+			if !errors.Is(err, providerErr) || agent.calls != 1 || agent.request.Resume != wantResume || agent.verifiedResume != resume {
 				t.Fatalf("restart lost persisted provider session: error=%v calls=%d resume=%+v verified=%+v", err, agent.calls, agent.request.Resume, agent.verifiedResume)
 			}
 			decision := execution.runtime.Recovery
-			if decision == nil || decision.Action != "resume_session" || decision.Reason != "verified_local_session" || agent.request.Workspace != backend.info.Path {
+			if decision == nil || decision.Action != wantAction || decision.Reason != wantReason || agent.request.Workspace != info.Path {
 				t.Fatalf("restart lost recovery or workspace: decision=%+v workspace=%s", decision, agent.request.Workspace)
+			}
+			after, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.rebase {
+				if !backend.prepared || after.HeadSHA == before.HeadSHA || !strings.Contains(runRunnerGit(t, info.Path, "show", "HEAD:base.md"), "advanced base") || !strings.Contains(runRunnerGit(t, info.Path, "show", "HEAD:feature.md"), "retained feature") {
+					t.Fatalf("preparation did not rebase the retained feature: before=%+v after=%+v", before, after)
+				}
+			} else if before.HeadSHA != after.HeadSHA || before.WorkspaceFingerprint != after.WorkspaceFingerprint {
+				t.Fatalf("retry changed retained source: before=%+v after=%+v", before, after)
+			}
+			if test.dirty {
+				for _, name := range []string{"README.md", "untracked.md"} {
+					contents, err := os.ReadFile(filepath.Join(info.Path, name))
+					if err != nil || string(contents) != "divergent work\n" {
+						t.Fatalf("retry lost %s: content=%q error=%v", name, contents, err)
+					}
+				}
 			}
 			latest, err := db.(store.ActivityStore).LatestIssueAgentSession(ctx, store.IssueIdentity{ProjectID: "native", IssueID: issue.ID})
 			if err != nil {
 				t.Fatal(err)
 			}
 			persisted, err := db.Queries().GetCodexSession(ctx, latest.DetentSessionID)
-			if err != nil || persisted.ResumedFromSessionID.Int64 != sessionID || persisted.WorkAttemptID.Int64 != currentAttemptID {
+			wantParent := sessionID
+			if wantResume == (AgentResume{}) {
+				wantParent = 0
+			}
+			if err != nil || persisted.ResumedFromSessionID.Int64 != wantParent || persisted.WorkAttemptID.Int64 != currentAttemptID {
 				t.Fatalf("restart lost session provenance: session=%+v error=%v", persisted, err)
 			}
 		})
@@ -775,7 +895,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 			} else {
 				want := AgentResume{ThreadID: "original-thread", SessionID: "original-session"}
 				verified := want
-				if test.providerNotStarted || test.restartSession {
+				if test.providerNotStarted || test.restartSession || test.rework && !test.paused {
 					want = AgentResume{}
 				}
 				if test.providerNotStarted || test.restartSession && agent.verifyErr == nil {
@@ -846,7 +966,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 					}
 					resumed, err := db.Queries().GetCodexSession(ctx, latest.DetentSessionID)
 					from := sessionID
-					if test.providerNotStarted {
+					if agentResumeEmpty(want) {
 						from = 0
 					}
 					if err != nil || resumed.ResumedFromSessionID.Int64 != from || resumed.WorkAttemptID.Int64 != currentAttemptID || resumed.FinalState.String != "failed" {
@@ -1175,6 +1295,7 @@ func TestNativeRecoveryDecision(t *testing.T) {
 			r.Attempts[0].Status = "cancelled"
 			r.Attempts[0].MachineID = "machine"
 			r.Attempts[0].Checkpoint.HeadSHA = "head"
+			r.Attempts[0].Checkpoint.WorkspaceDigest = "digest"
 			remoteCheckpoint(r.Attempts[0].Checkpoint)
 		}, "resume_session", "verified_local_session", current},
 		{"ordinary retry retains current Change session", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
@@ -1273,10 +1394,10 @@ func TestNativeRecoveryDecision(t *testing.T) {
 			remoteCheckpoint(r.Attempts[0].Checkpoint)
 			(*local).HeadSHA, (*local).WorkspaceFingerprint = "restored", "restored-digest"
 		}, "fresh_checkout", "session_restart_required", nil},
-		{"git checkpoint resumes a session its runner still has", func(r *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
+		{"git checkpoint with divergent fingerprint starts fresh", func(r *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
 			remoteCheckpoint(r.Attempts[0].Checkpoint)
 			(*local).WorkspaceFingerprint = "restored-digest"
-		}, "resume_session", "verified_local_session", nil},
+		}, "fresh_checkout", "session_restart_required", nil},
 		{"interrupted git checkpoint without its session never blocks", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, available *bool) {
 			r.Attempts[0].Status = "interrupted"
 			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "provider_turn", "pending"

@@ -1049,14 +1049,14 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 		return "fresh_checkout", "session_restart_required"
 	}
 	sameMachine := previous.MachineID == recovery.Lease.MachineID
+	localAvailable := sameMachine && local != nil
+	checkpointMatches := localAvailable && checkpoint.HeadSHA == local.HeadSHA && checkpoint.WorkspaceDigest != "" && checkpoint.WorkspaceDigest == local.WorkspaceFingerprint
 	if checkpoint.GitRef() {
-		if !operatorFresh && sameMachine && sessionAvailable && checkpoint.Resume == "resume_session" && previous.Identity != nil && *previous.Identity == identity {
+		if !operatorFresh && checkpointMatches && sessionAvailable && checkpoint.Resume == "resume_session" && previous.Identity != nil && *previous.Identity == identity {
 			return "resume_session", "verified_local_session"
 		}
 		return "fresh_checkout", "session_restart_required"
 	}
-	localAvailable := sameMachine && local != nil
-	checkpointMatches := localAvailable && checkpoint.HeadSHA == local.HeadSHA && checkpoint.WorkspaceDigest != "" && checkpoint.WorkspaceDigest == local.WorkspaceFingerprint
 	if localAvailable && checkpoint.WorktreeState != "clean" && (checkpoint.HeadSHA != local.HeadSHA || checkpoint.WorkspaceDigest != "" && checkpoint.WorkspaceDigest != local.WorkspaceFingerprint) {
 		if nativeInterruptedResumeAttempt(recovery) == nil && (len(local.TrackedPaths) != 0 || len(local.UntrackedPaths) != 0 || local.UnpushedCommits > 0) {
 			return "fresh_checkout", "local_work_preserved"

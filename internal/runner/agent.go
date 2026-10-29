@@ -1265,6 +1265,9 @@ func (r *Runner) runAgentTurn(
 	workerProcessObserved := false
 	conversation := conversationRunFromContext(ctx)
 	turnRequest = conversation.prepareTurn(turnRequest)
+	if runRequest.Execution != nil && runRequest.RetryMode == RetryModeFresh {
+		turnRequest.Resume = AgentResume{}
+	}
 	turnRequest.reserveScratch = r.reserveSessionWorkerScratch(detentSessionID, info.Path, "")
 	providerResume := turnRequest.Resume
 	usage := newSessionTokenUsage(!agentResumeEmpty(providerResume))
@@ -2256,15 +2259,22 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			if err != nil {
 				return RunResult{}, nativeGitError("prepare native rework", err)
 			}
-			if landingRework && precheck.Status == workspace.MergePrepareStatusConflict {
+			resumeSource := recoveryState
+			recoveryState = r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "rework_prepared")
+			if recoveryState == nil {
+				return RunResult{}, ErrNativeRecoveryRequired
+			}
+			sourceChanged := resumeSource == nil || resumeSource.HeadSHA != recoveryState.HeadSHA || resumeSource.WorkspaceFingerprint != recoveryState.WorkspaceFingerprint
+			if landingRework && precheck.Status == workspace.MergePrepareStatusConflict || !agentResumeStateEmpty(resumeState) && sourceChanged {
 				resumeState = store.AgentResumeState{}
 				req.ResumeState = store.AgentResumeState{}
 				req.RetryMode = RetryModeFresh
 				r.logWorkerEvent(req.Issue, "worker_native_recovery", "action", "fresh_checkout", "reason", "session_restart_required")
-			}
-			recoveryState = r.workspaceRecoveryState(runWorkspace, ctx, info, workspaceIssue, "rework_prepared")
-			if recoveryState == nil {
-				return RunResult{}, ErrNativeRecoveryRequired
+				if runtime, ok := req.Execution.(RuntimeExecution); ok {
+					if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Recovery: &tracker.NativeRecoveryDecision{Action: "fresh_checkout", Reason: "session_restart_required"}}); err != nil {
+						return RunResult{}, err
+					}
+				}
 			}
 			if diffs, ok := req.Execution.(DiffExecution); ok {
 				diffIssue := workspaceIssue
