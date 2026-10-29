@@ -33,6 +33,13 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+	var historyIndexes int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM sqlite_schema WHERE type='index' AND name IN ('native_comments_progress_input','native_attempts_progress_success','native_progress_human_input')`).Scan(&historyIndexes); err != nil {
+		t.Fatal(err)
+	}
+	if historyIndexes != 0 {
+		t.Fatalf("progress migration builds %d history indexes at startup", historyIndexes)
+	}
 	var previousIssue string
 	for _, outcome := range []progresscheck.Outcome{progresscheck.Progressing, progresscheck.Reroute, progresscheck.SystemDefect} {
 		t.Run(string(outcome), func(t *testing.T) {
@@ -53,6 +60,19 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			}
 			owner := nativeProgressOwner{service: f.service, scope: scope, request: request}
 			record := progresscheck.Record{RequestID: id, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: decision}
+			revision, err := progressRevision(t.Context(), f.service.database.reader, scope, request.IssueID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner.guardRevision = &revision
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET progress_evidence_revision=progress_evidence_revision+1 WHERE native_id=?", issue.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := owner.Publish(t.Context(), record); err == nil {
+				t.Fatal("new source evidence was accepted under the old publication revision")
+			}
+			owner.guardRevision = nil
+
 			if _, err := f.service.database.db.ExecContext(t.Context(), "CREATE TRIGGER reject_progress_evidence BEFORE INSERT ON native_progress_evidence BEGIN SELECT RAISE(ABORT, 'injected failure'); END"); err != nil {
 				t.Fatal(err)
 			}
@@ -119,6 +139,11 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			if published.DefectIssueID == "" {
 				t.Fatal("missing defect receipt")
 			}
+			dependent, _, err := readNativeIssue(t.Context(), f.service.database.reader, scope, request.IssueID)
+			if err != nil || len(dependent.Dependencies) != 1 || string(dependent.Dependencies[0]) != published.DefectIssueID || dependent.DependencyReady {
+				t.Fatalf("progress defect has no dispatch dependency: %+v, %v", dependent, err)
+			}
+
 			comment, err := readNativeComment(t.Context(), f.service.database.reader, scope, request.IssueID, published.CommentID)
 			if err != nil {
 				t.Fatal(err)
@@ -155,6 +180,75 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			if err != nil || defect != latest.DefectIssueID || state != "Backlog" {
 				t.Fatalf("latest defect=%s state=%s error=%v", defect, state, err)
 			}
+			for _, eventType := range []string{"comment.created", "comment.edited", "change.version_published", "run.checkpointed", "issue.edited"} {
+				request.EvidenceRevision = eventType
+				record.RequestID, err = request.ID()
+				if err != nil {
+					t.Fatal(err)
+				}
+				record.EvidenceRevision = request.EvidenceRevision
+				owner.request = request
+				if _, err := owner.Publish(t.Context(), record); err != nil {
+					t.Fatal(err)
+				}
+				linked, _, err := readNativeIssue(t.Context(), f.service.database.reader, scope, request.IssueID)
+				if err != nil || linked.DependencyReady || len(linked.Dependencies) != 1 {
+					t.Fatalf("missing dependency before %s: %v", eventType, err)
+				}
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := appendNativeHistory(t.Context(), tx, scope, request.IssueID, eventType, tracker.CollaborationData{}, clock); err != nil {
+					_ = tx.Rollback()
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+				reopened, _, err := readNativeIssue(t.Context(), f.service.database.reader, scope, request.IssueID)
+				if err != nil || !reopened.DependencyReady || len(reopened.Dependencies) != 0 {
+					t.Fatalf("%s retained progress veto: %v", eventType, err)
+				}
+			}
+			request.EvidenceRevision = "defect-landed"
+			record.RequestID, err = request.ID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			record.EvidenceRevision = request.EvidenceRevision
+			owner.request = request
+			if _, err := owner.Publish(t.Context(), record); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Done') WHERE native_id=?`, scope.project, latest.DefectIssueID); err != nil {
+				t.Fatal(err)
+			}
+			reopened, _, err := readNativeIssue(t.Context(), f.service.database.reader, scope, request.IssueID)
+			if err != nil || !reopened.DependencyReady {
+				t.Fatalf("landed defect still vetoes dispatch: %v", err)
+			}
+			ordinary := f.createIndependent(t, "Ordinary dependency")
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := changeNativeDependencyTx(t.Context(), tx, scope, request.IssueID, tracker.DependencyMutation{ExpectedRevision: reopened.Revision, Operation: "add", RelatedWorkItemID: ordinary.WorkItemID}, clock); err != nil {
+				_ = tx.Rollback()
+				t.Fatal(err)
+			}
+			if err := appendNativeHistory(t.Context(), tx, scope, request.IssueID, "issue.edited", tracker.CollaborationData{}, clock); err != nil {
+				_ = tx.Rollback()
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			retained, _, err := readNativeIssue(t.Context(), f.service.database.reader, scope, request.IssueID)
+			if err != nil || retained.DependencyReady || len(retained.Dependencies) != 1 || retained.Dependencies[0] != ordinary.WorkItemID {
+				t.Fatalf("new evidence changed ordinary dependency: %v", err)
+			}
+
 		})
 	}
 }

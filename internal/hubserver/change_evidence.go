@@ -34,7 +34,15 @@ func insertChangeEvidenceRecord(ctx context.Context, tx *sql.Tx, changeID, versi
 	if err != nil {
 		return err
 	}
-	return projectChangeColumns(ctx, tx, "change_evidence", sequence, raw)
+	if err := projectChangeColumns(ctx, tx, "change_evidence", sequence, raw); err != nil {
+		return err
+	}
+	var scope nativeScope
+	var item string
+	if err := tx.QueryRowContext(ctx, "SELECT organization_id,project_id,work_item_id FROM change_requests WHERE id=?", changeID).Scan(&scope.organization, &scope.project, &item); err != nil {
+		return err
+	}
+	return expireNativeProgressDependencies(ctx, tx, scope, item, "change.evidence", tracker.CollaborationData{})
 }
 
 func (s *Service) reviewChange(c echo.Context) error {
