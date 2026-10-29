@@ -15,7 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -42,6 +44,11 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 10, 7, 8, 0, 0, 0, time.UTC)
 			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+			content := f.service.config.Content
+			f.service.config.ArchiveReader = func(ctx context.Context, ref attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
+				data, err := content(ctx, entryauthority.ContentRequest{Organization: string(f.project.OrganizationID), Reference: ref})
+				return entryauthority.ArchiveResponse{Data: data}, err
+			}
 			issue := f.create(t, "retain history")
 			path := f.base + "/work-items/" + string(issue.WorkItemID)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", f.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "comment"}, Body: "Human decision retained"}), http.StatusOK)
@@ -110,6 +117,9 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 				t.Fatal("missing initial cursor")
 			}
 			beforeSchema := storageSchemaVersion(t, f.service.database.reader)
+			if test.extraActivity > 0 {
+				f.service.config.Content = nil
+			}
 			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
 				t.Fatal(err)
 			}
@@ -123,7 +133,7 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 						t.Fatal(err)
 					}
 					var remaining, checkpoints int64
-					if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT count(*),coalesce(sum(json_type(data_json,'$.run.runtime.activity.spans') IS NOT NULL),0) FROM collaboration_events WHERE work_item_id=? AND type='run.checkpointed'`, issue.WorkItemID).Scan(&checkpoints, &remaining); err != nil {
+					if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT count(*),coalesce(sum(activity_spans_present),0) FROM collaboration_events WHERE work_item_id=? AND type='run.checkpointed'`, issue.WorkItemID).Scan(&checkpoints, &remaining); err != nil {
 						t.Fatal(err)
 					}
 					if summary.RemovedEvents != 0 || summary.CompactedActivityEvents != want.compacted || remaining != want.remaining || checkpoints != 501 {
@@ -716,7 +726,7 @@ func TestEventCompactionPassIsBoundedAndYieldsToWrites(t *testing.T) {
 		t.Fatalf("removed per pass=%v want %v", removed, want)
 	}
 	var referenced int
-	if err := a.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND payload_version=1 AND payload_attachment_id<>''", a.issue.WorkItemID).Scan(&referenced); err != nil || referenced != 4 {
+	if err := a.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type IN ('run.started','run.checkpointed','run.observed','run.finished') AND payload_version=1 AND payload_object_key<>''", a.issue.WorkItemID).Scan(&referenced); err != nil || referenced != 4 {
 		t.Fatalf("archive references=%d, want 4: %v", referenced, err)
 	}
 	if counts := a.runEvents(t); counts["run.observed"] != backlog+1 || counts["run.checkpointed"] != 1 {
