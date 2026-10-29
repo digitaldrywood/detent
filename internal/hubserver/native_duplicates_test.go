@@ -918,6 +918,7 @@ func TestNativeDuplicateFilingHistoryBound(t *testing.T) {
 		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET duplicate_challenge=1 WHERE id=?", f.project.ID); err != nil {
 			t.Fatal(err)
 		}
+		drainTestNativeSearch(t, f.service)
 		f.service.tokenUseWork.Wait()
 		fault.statements.Store(0)
 		fault.readerSearches.Store(0)
