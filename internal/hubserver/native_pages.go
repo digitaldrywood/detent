@@ -748,13 +748,10 @@ WHERE i.organization_id = ? AND i.project_id = ? `
 	searchQuery := strings.TrimSpace(params.Get("q"))
 	if searchQuery != "" {
 		expressions := nativeSearchExpressions(searchQuery)
-		terms, err := json.Marshal(expressions)
-		if err != nil {
-			return "", nil, err
-		}
+		join, searchArgs := nativeSearchJoin(scope, params.Get("archived"), expressions)
 		number, project := nativeSearchNumber(searchQuery)
-		query = strings.Replace(query, "WHERE i.organization_id", nativeSearchJoin+nativeNumberSearchJoin+"WHERE i.organization_id", 1)
-		args = append([]any{strings.Join(expressions, " OR "), scope.organization, scope.project, string(terms), number, project, -float64(len(expressions)) - 1}, args...)
+		query = strings.Replace(query, "WHERE i.organization_id", join+nativeNumberSearchJoin+"WHERE i.organization_id", 1)
+		args = append(append(searchArgs, number, project, -float64(len(expressions))-1), args...)
 	}
 	var dateClauses strings.Builder
 	for _, filter := range []struct{ name, column, operator string }{

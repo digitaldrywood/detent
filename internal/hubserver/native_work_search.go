@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"encoding/hex"
 	"strconv"
 	"strings"
 	"unicode"
@@ -38,25 +39,110 @@ func nativeSearchExpressions(query string) []string {
 	return expressions
 }
 
-const nativeSearchJoin = ` LEFT JOIN (
-WITH hits AS MATERIALIZED (
- SELECT d.issue_id, d.id, bm25(native_work_fts, 5.0, 1.0) AS score,
- snippet(native_work_fts, -1, '[', ']', ' … ', 32) AS snippet
- FROM native_work_fts JOIN native_work_documents d ON d.id = native_work_fts.rowid
- JOIN issues scoped ON scoped.id = d.issue_id
- WHERE native_work_fts MATCH ? AND scoped.organization_id = ? AND scoped.project_id = ?
-), coverage AS MATERIALIZED (
- SELECT native_work_fts.rowid AS id, count(*) AS terms
- FROM json_each(?) term CROSS JOIN native_work_fts
- WHERE native_work_fts MATCH term.value AND EXISTS (SELECT 1 FROM hits WHERE hits.id = native_work_fts.rowid)
- GROUP BY native_work_fts.rowid
-)
-SELECT issue_id, score, substr(snippet, max(1, instr(snippet, '[') - 60), 240) AS snippet FROM (
- SELECT hits.issue_id, hits.snippet, -coverage.terms + hits.score / (1 - hits.score) AS score,
- row_number() OVER (PARTITION BY hits.issue_id ORDER BY coverage.terms DESC, hits.score, hits.id) AS hit
- FROM hits JOIN coverage ON coverage.id = hits.id
-) WHERE hit = 1
-) search ON search.issue_id = i.id `
+func nativeSearchScopes(scope nativeScope, archived string) []string {
+	prefix := "s" + strings.ToUpper(hex.EncodeToString([]byte(scope.organization))) + "z" + strings.ToUpper(hex.EncodeToString([]byte(scope.project)))
+	suffix := "v"
+	if scope.credential.HostedRole == "reporter" {
+		principal := scope.actor().PrincipalID
+		if principal == "" {
+			return []string{"unavailable"}
+		}
+		suffix = "r" + strings.ToUpper(hex.EncodeToString([]byte(principal))) + "v"
+	}
+	switch archived {
+	case "all":
+		return []string{prefix + "a0" + suffix, prefix + "a1" + suffix}
+	case "true":
+		return []string{prefix + "a1" + suffix}
+	default:
+		return []string{prefix + "a0" + suffix}
+	}
+}
+
+func nativeScopedExpression(scopes, expressions []string, operator string) string {
+	var variants []string
+	for _, scope := range scopes {
+		var phrases []string
+		for _, expression := range expressions {
+			if expression == `""` {
+				phrases = append(phrases, expression)
+			} else {
+				phrases = append(phrases, `"`+scope+`_`+strings.TrimPrefix(expression, `"`))
+			}
+		}
+		variants = append(variants, `scope : "`+scope+`" AND {title body} : (`+strings.Join(phrases, operator)+`)`)
+	}
+	return "(" + strings.Join(variants, " OR ") + ")"
+}
+
+func nativeSearchHits(scope nativeScope, archived string, expressions []string) (string, []any) {
+	scopes := nativeSearchScopes(scope, archived)
+	pending, args := nativeSearchIndexPending(scope)
+	args = append(args, scope.organization, scope.project)
+	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
+	args = append(args, visibilityArgs...)
+	archiveFilter := " AND i.archived=0"
+	switch archived {
+	case "true":
+		archiveFilter = " AND i.archived=1"
+	case "all":
+		archiveFilter = ""
+	}
+	values := make([]string, len(expressions))
+	for i, expression := range expressions {
+		values[i] = "(?,?)"
+		args = append(args, expression, nativeScopedExpression(scopes, []string{expression}, " OR "))
+	}
+	args = append(args, nativeScopedExpression(scopes, expressions, " OR "))
+	return `WITH index_state AS MATERIALIZED (SELECT ` + pending + ` AS incomplete), fallback_issues AS MATERIALIZED (
+ SELECT i.id FROM index_state CROSS JOIN issues i
+ WHERE index_state.incomplete AND i.organization_id=? AND i.project_id=? AND (` + visibility + `)` + archiveFilter + `
+ ), terms(matched,expression) AS (VALUES ` + strings.Join(values, ",") + `), fallback_documents AS MATERIALIZED (
+ SELECT d.id,d.issue_id,c.title,c.body,native_search_tokens(c.title,'')+native_search_tokens(c.body,'') AS tokens
+ FROM fallback_issues i CROSS JOIN native_work_documents d CROSS JOIN native_work_search_content c
+ WHERE d.issue_id=i.id AND c.id=d.id
+ ), fallback_population AS MATERIALIZED (
+ SELECT count(*) AS documents,avg(tokens) AS average FROM fallback_documents
+ ), fallback_matches AS MATERIALIZED (
+ SELECT d.id,d.issue_id,d.tokens,terms.matched,
+ 5*native_search_tokens(d.title,terms.matched)+native_search_tokens(d.body,terms.matched) AS frequency
+ FROM fallback_documents d CROSS JOIN terms
+ ), fallback_frequencies AS MATERIALIZED (
+ SELECT matched,count(*) AS documents FROM fallback_matches WHERE frequency>0 GROUP BY matched
+ ), fallback_scores AS MATERIALIZED (
+ SELECT m.id,m.issue_id,count(*) AS terms,group_concat(m.matched,', ') AS matched,
+ sum(native_search_bm25(m.frequency,m.tokens,p.average,p.documents,f.documents)) AS score
+ FROM fallback_matches m CROSS JOIN fallback_population p JOIN fallback_frequencies f ON f.matched=m.matched
+ WHERE m.frequency>0 GROUP BY m.id
+ ), hits AS MATERIALIZED (
+ SELECT d.issue_id,native_work_scoped_fts.rowid AS id,bm25(native_work_scoped_fts,5.0,1.0,0.0) AS score
+ FROM index_state CROSS JOIN native_work_scoped_fts CROSS JOIN native_work_documents d
+ WHERE NOT index_state.incomplete AND native_work_scoped_fts MATCH ? AND d.id=native_work_scoped_fts.rowid/2
+ UNION ALL
+ SELECT issue_id,id*2,score FROM fallback_scores
+ ), coverage AS MATERIALIZED (
+ SELECT native_work_scoped_fts.rowid AS id,count(*) AS terms,group_concat(terms.matched,', ') AS matched
+ FROM index_state CROSS JOIN terms CROSS JOIN native_work_scoped_fts
+ WHERE NOT index_state.incomplete AND native_work_scoped_fts MATCH terms.expression GROUP BY native_work_scoped_fts.rowid
+ UNION ALL
+ SELECT id*2,terms,matched FROM fallback_scores
+ ), ranked AS (
+ SELECT hits.*,coverage.terms,coverage.matched,-coverage.terms+hits.score/(1-hits.score) AS search_score,
+ row_number() OVER (PARTITION BY hits.issue_id ORDER BY coverage.terms DESC,hits.score,hits.id) AS hit
+ FROM hits JOIN coverage ON coverage.id=hits.id
+ ) `, args
+}
+
+func nativeSearchJoin(scope nativeScope, archived string, expressions []string) (string, []any) {
+	ctes, args := nativeSearchHits(scope, archived, expressions)
+	args = append(args, strings.Join(expressions, " OR "))
+	return ` LEFT JOIN (` + ctes + `,previews AS MATERIALIZED (
+ SELECT ranked.issue_id,ranked.search_score AS score,native_search_snippet(content.title,content.body,?) AS snippet
+ FROM ranked CROSS JOIN native_work_search_content content
+ WHERE ranked.hit=1 AND content.id=ranked.id/2
+ ) SELECT issue_id,score,substr(snippet,max(1,instr(snippet,'[')-60),240) AS snippet FROM previews
+ ) search ON search.issue_id=i.id `, args
+}
 
 const nativeLegacySearchText = `i.title || ' ' || i.body || ' ' || i.labels_json || ' ' ||
  (SELECT name FROM projects WHERE id = i.project_id) || '#' || i.number || ' ' || i.project_id || '#' || i.number`
