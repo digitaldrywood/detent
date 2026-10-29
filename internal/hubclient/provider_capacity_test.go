@@ -44,7 +44,7 @@ func TestProviderSchedulerEndToEnd(t *testing.T) {
 	}
 
 	t.Parallel()
-	for _, unavailable := range []string{"intake off during admission", "fallback", "fail", "local wait", "bounded", "plain", "known waits", "six slots", "provider slots", "mixed providers", "provider hydration", "stage slots", "quota reset", "revoked lease after quota reset"} {
+	for _, unavailable := range []string{"intake off during admission", "fallback", "fail", "local wait", "bounded", "plain", "known waits", "six slots", "provider slots", "mixed providers", "provider hydration", "stage slots", "exhausted subscription", "revoked lease after quota reset"} {
 		t.Run(unavailable, func(t *testing.T) { t.Parallel(); testProviderSchedulerEndToEnd(t, unavailable) })
 	}
 }
@@ -211,7 +211,7 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 
 func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	t.Helper()
-	batch := unavailable == "six slots" || unavailable == "provider slots" || unavailable == "mixed providers" || unavailable == "provider hydration" || unavailable == "stage slots" || unavailable == "quota reset"
+	batch := unavailable == "six slots" || unavailable == "provider slots" || unavailable == "mixed providers" || unavailable == "provider hydration" || unavailable == "stage slots" || unavailable == "exhausted subscription"
 	service, err := hubserver.Open(t.Context(), hubserver.Config{Content: newHubContentStore(), RunDetails: &archivedRunDetails{}, DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte("provider-test-admin")})
 	if err != nil {
 		t.Fatal(err)
@@ -327,7 +327,7 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if unavailable == "mixed providers" {
 		report.MaxConcurrent = 1
 	}
-	if unavailable == "quota reset" {
+	if unavailable == "exhausted subscription" {
 		report.Availability = "exhausted"
 		report.ResetAt = report.ObservedAt.Add(time.Hour)
 	}
@@ -404,21 +404,6 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 				return providercapacity.Requirement{Role: runner.RoleCode, Backend: "claude", Model: "sonnet"}, nil
 			}
 			return providercapacity.Requirement{Role: runner.RoleCode, Backend: "codex", Model: "sol"}, nil
-		}
-		if unavailable == "quota reset" {
-			now := report.ObservedAt
-			scheduler.now = func() time.Time { return now }
-			for range 4 {
-				evaluations = 0
-				if full, err := scheduler.FetchCandidateIssues(t.Context(), request); err != nil || len(full) != 0 || len(scheduler.nativeClaims) != 0 || evaluations > request.CandidateLimit {
-					t.Fatalf("quota denial admitted work: %v, %v, retained=%d", full, err, len(scheduler.nativeClaims))
-				}
-			}
-			now = now.Add(31 * time.Second)
-			report.Availability = "available"
-			report.ResetAt = time.Time{}
-			report.ObservedAt = time.Now()
-			evaluations = 0
 		}
 		transport := client.httpClient.Transport
 		if unavailable == "provider hydration" {
@@ -594,8 +579,8 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		identity := tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "sol"}
 		report.Availability = "exhausted"
 		report.ResetAt = report.ObservedAt.Add(7 * 24 * time.Hour)
-		if err := execution.Start(t.Context(), identity); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-			t.Fatalf("quota pause accepted start: %v", err)
+		if err := execution.(*nativeExecution).validateProviderStart(identity); err != nil {
+			t.Fatalf("subscription exhaustion refused the admitted provider: %v", err)
 		}
 		if err := execution.(*nativeExecution).claim.source.client.Release(t.Context(), held, "released"); err != nil {
 			t.Fatalf("revoke acquired lease: %v", err)
@@ -620,14 +605,14 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if err != nil || len(models) != 1 || models[0].Model != "sol" || *launches != 1 {
 		t.Fatalf("workspace wrapper catalog = %+v, %v; launches=%d", models, err, *launches)
 	}
-	report.Availability = "exhausted"
+	report.Models = []string{"other-model"}
 	if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "sol"}); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-		t.Fatalf("changed local quota start = %v", err)
+		t.Fatalf("incompatible local model start = %v", err)
 	}
 	if err := scheduler.ReleaseClaim(t.Context(), issue.ID, "failed"); err != nil {
 		t.Fatal(err)
 	}
-	report.Availability = "available"
+	report.Models = []string{"sol"}
 	candidates, err = scheduler.FetchCandidateIssues(t.Context(), request)
 	if err != nil || len(candidates) != 1 {
 		t.Fatalf("released start did not free capacity: %v", err)
@@ -648,11 +633,11 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	if pending == nil || pending.Type != "run.started" || pending.Data.Sequence != 1 || pending.Data.Identity == nil || *pending.Data.Identity != identity {
 		t.Fatalf("lost start acknowledgment lost pending execution identity: %#v", pending)
 	}
-	report.Availability = "exhausted"
+	report.Models = []string{"other-model"}
 	if err := execution.Start(t.Context(), identity); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
-		t.Fatalf("unacknowledged start skipped local quota revalidation: %v", err)
+		t.Fatalf("unacknowledged start skipped local model revalidation: %v", err)
 	}
-	report.Availability = "available"
+	report.Models = []string{"sol"}
 	if err := execution.Start(t.Context(), identity); err != nil {
 		t.Fatal(err)
 	}

@@ -706,7 +706,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		}
 		if mode.preflight {
 			var raw string
-			err := tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(a.payload_object_key,''),a.data_json) FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id WHERE l.issue_id=? AND a.status='running' ORDER BY a.fencing_token DESC LIMIT 1`, id).Scan(&raw)
+			err := tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(a.payload_object_key,''),a.data_json) FROM native_attempts a WHERE a.lease_id=(SELECT lease_id FROM leases WHERE issue_id=? ORDER BY fencing_token DESC LIMIT 1) AND a.status='running'`, id).Scan(&raw)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return tracker.Lease{}, err
 			}

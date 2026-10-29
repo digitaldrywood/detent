@@ -404,7 +404,7 @@ func TestNativeRunnerReconnectsRetainedAttempt(t *testing.T) {
 				}
 
 				var source tracker.NativeSourceRecovery
-				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/work-items/"+issue.ID+"/source-recovery", nil, &source); err != nil || source.Quiesced != (want == "cancelled") || source.HeadSHA != checkpoint.HeadSHA || source.VersionID != checkpoint.Change.VersionID {
+				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/work-items/"+issue.ID+"/source-recovery", nil, &source); err != nil || source.Quiesced != (want == "cancelled" && cleanupExpected) || source.HeadSHA != checkpoint.HeadSHA || source.VersionID != checkpoint.Change.VersionID {
 					t.Fatalf("retained source recovery = %+v, %v", source, err)
 				}
 				staleCheckpoint := checkpoint

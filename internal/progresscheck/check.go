@@ -328,7 +328,30 @@ func validateDecisionVersion(request Request, decision Decision, legacy bool) er
 			return errors.New("progressing decision requires evidence of convergence")
 		}
 	case Reroute:
-		CompleteStep = "complete"
+		if decision.Step == CompleteStep {
+			if !request.EmptyDelta || len(request.Attempts) == 0 || request.Attempts[len(request.Attempts)-1].LandingRefusal != "nothing_to_land" {
+				return errors.New("completion requires an empty landing refusal")
+			}
+			allowed := false
+			for _, step := range request.AvailableSteps {
+				allowed = allowed || step == CompleteStep
+			}
+			if !allowed {
+				return errors.New("completion requires current review and audit gates")
+			}
+			acceptanceEvidence := false
+			for _, id := range decision.Evidence {
+				for _, comment := range request.Comments {
+					acceptanceEvidence = acceptanceEvidence || comment.ID == id
+				}
+				for _, receipt := range request.Receipts {
+					acceptanceEvidence = acceptanceEvidence || receipt.ID == id && receipt.Step != "landing" && receipt.Step != "source"
+				}
+			}
+			if !acceptanceEvidence {
+				return errors.New("completion requires acceptance evidence beyond the empty delta")
+			}
+		}
 		if !legacy && strings.TrimSpace(decision.Instruction) == "" {
 			return errors.New("reroute decision requires an actionable instruction")
 		}

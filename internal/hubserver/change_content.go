@@ -271,13 +271,13 @@ func hydrateChangeRecord(ctx context.Context, query nativeQueryer, value any) er
 				}
 			}
 		}
-		if record.Validation != nil {
+		if validation := record.Validation; validation != nil {
 			slots := make(map[string][]attributionSlot)
-			commandAttributionSlots(slots, "validation", record.Validation)
+			commandAttributionSlots(slots, "validation", validation)
 			if err := readAttributionSlots(ctx, query, version, version, slots); err != nil {
 				return err
 			}
-			commands = map[string][]gate.CommandResult{"validation": {*record.Validation}}
+			commands = map[string][]gate.CommandResult{"validation": {*validation}}
 		}
 	case *tracker.ChangeReview:
 		version, review = record.VersionID, record.ID

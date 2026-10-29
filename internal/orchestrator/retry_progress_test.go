@@ -164,9 +164,9 @@ func TestEmptyLandingProgressCompletesOrImplements(t *testing.T) {
 			}
 			execution := &progressCompletionExecution{}
 			source := &progressScheduling{hubSchedulingSource: hubSchedulingSource{execution: execution}, request: progresscheck.NativeRequest(recovery, "policy", "instance"), records: map[string]progresscheck.Record{}}
-			decision := progresscheck.Decision{Outcome: progresscheck.Reroute, Step: RunModeImplement, Reason: "Produce the missing acceptance regression", Evidence: []string{"merge-2:landing"}}
+			decision := progresscheck.Decision{Outcome: progresscheck.Reroute, Step: RunModeImplement, Diagnosis: "merge-2:landing contains no acceptance regression evidence", Instruction: "Add and run the missing acceptance regression", Reason: "Produce the missing acceptance regression", Evidence: []string{"merge-2:landing"}}
 			if test.complete {
-				decision = progresscheck.Decision{Outcome: progresscheck.Reroute, Step: progresscheck.CompleteStep, Reason: "The reviewed fix and passing acceptance regression are already on base", Evidence: []string{"merge-2:landing", "base-evidence"}}
+				decision = progresscheck.Decision{Outcome: progresscheck.Reroute, Step: progresscheck.CompleteStep, Diagnosis: "base-evidence confirms the reviewed fix and passing acceptance regression are already on base", Instruction: "Complete the issue using the verified base acceptance evidence", Reason: "The reviewed fix and passing acceptance regression are already on base", Evidence: []string{"merge-2:landing", "base-evidence"}}
 			}
 			checker := &progressRunner{decision: decision}
 			worker := newWorkerHostRunner()

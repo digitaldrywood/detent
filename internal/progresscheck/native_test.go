@@ -95,7 +95,7 @@ func TestNativeEmptyLandingSuccessRequiresProgressCheck(t *testing.T) {
 				Issue:    tracker.NativeIssue{NativeReference: tracker.NativeReference{ProjectID: "example-project", WorkItemID: "example-issue", Revision: 1}},
 				Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "merge-attempt", Outcome: outcome, Identity: &tracker.NativeExecutionIdentity{Role: "merge"}, Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "nothing_to_land", Refusal: "the published source has no deliverable to verify", BaseSHA: "base", HeadSHA: "head"}}}}},
 			}
-			backend := &fakeBackend{decision: Decision{Outcome: Reroute, Step: "implement", Reason: "Acceptance remains unmet after nothing_to_land", Evidence: []string{"merge-attempt:landing"}}}
+			backend := &fakeBackend{decision: Decision{Outcome: Reroute, Step: "implement", Diagnosis: "merge-attempt:landing has no deliverable or acceptance evidence", Instruction: "Implement and verify the unmet acceptance criteria", Reason: "Acceptance remains unmet after nothing_to_land", Evidence: []string{"merge-attempt:landing"}}}
 			_, checked, err := Check(t.Context(), NativeRequest(recovery, "policy", "instance"), backend, &fakeOwner{})
 			if err != nil || !checked || backend.calls != 1 {
 				t.Fatalf("empty landing skipped progress check: checked=%v calls=%d error=%v", checked, backend.calls, err)

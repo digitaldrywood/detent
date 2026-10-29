@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -619,17 +620,14 @@ func readLegacyClaimReviews(ctx context.Context, q nativeQueryer, change, versio
 	for _, value := range selected {
 		bySequence[value.sequence] = value.review
 	}
-	keys := make([]int64, 0, len(bySequence))
-	for sequence := range bySequence {
-		keys = append(keys, sequence)
+	ordered := make([]selectedReview, 0, len(bySequence))
+	for sequence, review := range bySequence {
+		ordered = append(ordered, selectedReview{sequence, review})
 	}
-	slices.Sort(keys)
-	reviews := make([]tracker.ChangeReview, 0, len(keys))
-	for _, sequence := range keys {
-		review, found := bySequence[sequence]
-		if !found {
-			return nil, errors.New("selected change review is missing")
-		}
+	slices.SortFunc(ordered, func(a, b selectedReview) int { return cmp.Compare(a.sequence, b.sequence) })
+	reviews := make([]tracker.ChangeReview, 0, len(ordered))
+	for _, record := range ordered {
+		review := record.review
 		if err := hydrateChangeRecord(ctx, q, &review); err != nil {
 			return nil, err
 		}

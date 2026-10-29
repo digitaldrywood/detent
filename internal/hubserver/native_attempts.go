@@ -392,6 +392,11 @@ func prepareNativeAttempt(ctx context.Context, tx nativeQueryer, scope nativeSco
 
 func recordNativeAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, item tracker.NativeWorkItemID, event *tracker.NativeRunEvent, now time.Time, termination bool) (recorded, history bool, resultErr error) {
 	update, err := prepareNativeAttempt(ctx, tx, scope, item, event, now, termination, nil)
+	if err == nil && termination {
+		if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET cleanup_acknowledged_at=coalesce(cleanup_acknowledged_at,?) WHERE id=?", formatHubTime(now), event.Data.AttemptID); err != nil {
+			return false, false, err
+		}
+	}
 	if err != nil || update.duplicate {
 		return false, false, err
 	}
@@ -464,11 +469,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, 0, ?, 2)`, data.AttemptID, 
 				return false, false, err
 			}
 		} else if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET sequence = ?, status = ?, payload_object_key = ?, data_json = '{}', updated_at = ?, analytics_revision = analytics_revision + 1 WHERE id = ?", data.Sequence, update.status, key, formatHubTime(now), data.AttemptID); err != nil {
-			return false, false, err
-		}
-	}
-	if termination {
-		if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET cleanup_acknowledged_at=coalesce(cleanup_acknowledged_at,?) WHERE id=?", formatHubTime(now), data.AttemptID); err != nil {
 			return false, false, err
 		}
 	}
@@ -1079,6 +1079,9 @@ WHERE a.lease_id=? AND a.fencing_token=? AND a.status='running'`, lease.session.
 	var fields map[string]json.RawMessage
 	if err := decodeStorageJSON(ctx, []byte(raw), &fields); err != nil {
 		return err
+	}
+	if fields == nil {
+		return errors.New("stored run record must be an object")
 	}
 	for key, value := range map[string]any{"sequence": strconv.FormatInt(data.Sequence, 10), "outcome": data.Outcome, "terminal_failure": data.TerminalFailure} {
 		encoded, err := json.Marshal(value)

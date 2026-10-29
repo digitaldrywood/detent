@@ -198,7 +198,7 @@ func TestEmptyLandingCompletionRequiresAcceptanceEvidence(t *testing.T) {
 			request.Attempts[1].LandingRefusal = "nothing_to_land"
 			request.Receipts = []Receipt{{ID: "attempt-2:landing", Step: "landing", Outcome: "nothing_to_land"}, {ID: "empty-version", Step: "source"}, {ID: "base-test", Step: "check", Outcome: "success", HeadSHA: "base", Detail: "Acceptance regression passes"}}
 			request.Comments = []Comment{{ID: "base-proof", Body: "Previously reviewed delta is incorporated in base"}}
-			decision := Decision{Outcome: Reroute, Step: CompleteStep, Reason: "Acceptance regression passes on the base", Evidence: []string{"base-test"}}
+			decision := Decision{Outcome: Reroute, Step: CompleteStep, Diagnosis: "base-test and base-proof show the required behavior is already on the base", Instruction: "Complete the issue using the verified base acceptance evidence", Reason: "Acceptance regression passes on the base", Evidence: []string{"base-test"}}
 			if test.mutate != nil {
 				test.mutate(&request, &decision)
 			}

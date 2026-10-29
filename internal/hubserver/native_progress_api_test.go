@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -49,7 +50,7 @@ type progressPublicationConn struct {
 
 func (c *progressPublicationConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	count, marked := ctx.Value(progressPublicationContextKey{}).(*int)
-	if !marked || !(strings.HasPrefix(query, "SELECT progress_evidence_revision FROM issues") || strings.HasPrefix(query, "SELECT event_sequence + progress_evidence_revision FROM issues")) {
+	if !marked || !strings.HasPrefix(query, "SELECT progress_evidence_revision FROM issues") && !strings.HasPrefix(query, "SELECT event_sequence + progress_evidence_revision FROM issues") {
 		return c.timedConn.QueryContext(ctx, query, args)
 	}
 	*count++
@@ -96,7 +97,7 @@ func (progressPublicationAgent) SupportsReadOnlyInvestigation() bool { return tr
 
 func (a progressPublicationAgent) RunTurn(_ context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
 	if !strings.Contains(request.Prompt, "TestExample: expected repaired value, got old value") || !request.ReadOnly || request.TextOnly || !request.IsolatedTools {
-		return runner.AgentTurnResult{}, fmt.Errorf("progress turn did not receive retained failure output and read-only investigation access")
+		return runner.AgentTurnResult{}, errors.New("progress turn did not receive retained failure output and read-only investigation access")
 	}
 	if err := update(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{InputTokens: 10, OutputTokens: 1}}); err != nil {
 		return runner.AgentTurnResult{}, err

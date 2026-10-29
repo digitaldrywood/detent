@@ -204,6 +204,9 @@ func (s *Scheduler) RunExecution(issueID string) runner.Execution {
 	if claim.execution != nil {
 		return claim.execution
 	}
+	if claim.lifecycle == nil {
+		claim.lifecycle = &sync.Mutex{}
+	}
 	execution := &nativeExecution{scheduler: s, claim: claim, data: tracker.NativeRunData{
 		RunID: executionID("run", string(claim.lease.WorkItemID)), AttemptID: executionID("attempt", string(claim.lease.ID)),
 		PolicyID: claim.lease.PolicyID, LeaseID: claim.lease.ID, FencingToken: claim.lease.FencingToken,

@@ -158,7 +158,6 @@ func TestChangeSourceBackfillPreservesReadersAndUsage(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.service = openTestService(t, config)
-			ctx = f.service.runDetailContext(t.Context())
 			stopMaintenance()
 		}
 	}

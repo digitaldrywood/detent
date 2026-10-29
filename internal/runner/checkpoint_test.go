@@ -359,7 +359,7 @@ func TestFreshNativeCheckpointResumesCurrentThread(t *testing.T) {
 				}
 				cfg := config.Agent{}
 				wantTurns := 2
-				var wantErr error = ErrSessionDurationExceeded
+				wantErr := ErrSessionDurationExceeded
 				if reason == "periodic" {
 					cfg.CheckpointIntervalMS = 1000
 					wantTurns = 3

@@ -49,7 +49,6 @@ func readActivityChangeLink(ctx context.Context, q nativeQueryer, organization s
 			}
 			var c tracker.ChangeRequest
 			if err := decodeStorageJSON(ctx, []byte(raw), &c); err != nil {
-				rows.Close()
 				return err
 			}
 			day := float64(c.CreatedAt.Round(time.Millisecond).UnixMilli())/86400000 + 2440587.5
