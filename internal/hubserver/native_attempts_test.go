@@ -3,6 +3,7 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -712,7 +713,7 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 				t.Fatal("lease reassignment did not advance fencing")
 			}
 			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/runtime?native_attempt_id="+event.Data.AttemptID, other, nil), &evidence)
-			if evidence.Attempt.Current || evidence.Attempt.Status != "interrupted" || evidence.Attempt.RuntimeFreshness != "expired" || evidence.Attempt.Runtime.Activity.Dropped != 3 || evidence.Attempt.Runtime.Activity.Unpaired != 2 || evidence.CurrentLease == nil || evidence.CurrentLease.ID != replacement.ID || evidence.Scheduling.Outcome != "claimed" {
+			if evidence.Attempt.Current || evidence.Attempt.Status != "cancelled" || evidence.Attempt.RuntimeFreshness != "available" || evidence.Attempt.Runtime.Activity.Dropped != 3 || evidence.Attempt.Runtime.Activity.Unpaired != 2 || evidence.CurrentLease == nil || evidence.CurrentLease.ID != replacement.ID || evidence.Scheduling.Outcome != "claimed" {
 				t.Fatalf("restart lost runtime observation=%#v", evidence.Attempt)
 			}
 			if test.retained && (evidence.Attempt.ClaimReleasedAt == nil || !reflect.DeepEqual(evidence.Attempt.Checkpoint, &wantCheckpoint)) {
@@ -749,7 +750,7 @@ func TestNativeRecoveryAfterReassignmentAndRestart(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var page tracker.Page[tracker.NativeAttempt]
 			decodeHubResponse(t, response, &page)
-			if len(page.Items) != 1 || page.Items[0].Status != "interrupted" || page.Items[0].Checkpoint == nil || page.Items[0].Checkpoint.EffectState != "ambiguous" || page.Items[0].Checkpoint.WorktreeState != "dirty" {
+			if len(page.Items) != 1 || page.Items[0].Status != "cancelled" || page.Items[0].Checkpoint == nil || page.Items[0].Checkpoint.EffectState != "ambiguous" || page.Items[0].Checkpoint.WorktreeState != "dirty" {
 				t.Fatalf("recovery lost evidence: %#v", page)
 			}
 			next := nativeStartedEvent(replacement)
@@ -1287,4 +1288,129 @@ SELECT ?,organization_id,project_id,work_item_id,?,type,schema_version,actor_jso
 		}
 	}
 
+}
+
+func TestNativeLeaseLossTerminalizesAttempts(t *testing.T) {
+	for _, mode := range []string{"superseded", "released", "expired repair", "released repair", "superseded repair", "revoked", "release rollback"} {
+		t.Run(mode, func(t *testing.T) {
+			now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+			details := &memoryRunDetails{}
+			f := newDefaultNativeFixture(t, Config{RunDetails: details, now: func() time.Time { return now }})
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			owner := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+			owner.enroll(t)
+			items := []tracker.NativeIssue{f.create(t, "Lost execution"), f.create(t, "Current execution")}
+			leases := make([]tracker.NativeLease, len(items))
+			events := make([]tracker.NativeRunEvent, len(items))
+			for i, item := range items {
+				claim := tracker.NativeClaim{PolicyID: hubTestPolicy().ID, WorkItemID: item.WorkItemID, MachineID: owner.binding.MachineID, SessionID: fmt.Sprintf("session-%d", i), TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}}
+				response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", owner.redemption.Credential, claim)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &leases[i])
+				events[i] = nativeStartedEvent(leases[i])
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/events", owner.redemption.Credential, events[i]), http.StatusOK)
+			}
+			f.service.maintainNativeBoard(t.Context())
+			lease := leases[0]
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
+			exec := func(query string, args ...any) {
+				t.Helper()
+				if _, err := f.service.database.db.ExecContext(t.Context(), query, args...); err != nil {
+					t.Fatal(err)
+				}
+			}
+			switch mode {
+			case "release rollback":
+				exec("CREATE TRIGGER reject_attempt_cancel BEFORE UPDATE OF status ON native_attempts BEGIN SELECT RAISE(ABORT, 'cancel failed'); END")
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusInternalServerError)
+				var released bool
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT released_at IS NOT NULL FROM leases WHERE lease_id=?", lease.ID).Scan(&released); err != nil {
+					t.Fatal(err)
+				}
+				if released {
+					t.Fatal("lease release committed without attempt cancellation")
+				}
+			case "released":
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", owner.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+			case "revoked":
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				if err := revokeRunnerIdentityInTx(t.Context(), tx, scope, owner.binding.RunnerID, now); err != nil {
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				exec("UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(now), lease.ID)
+				if mode == "superseded" {
+					replacement := claimNativeAttempt(t, f, f.worker(t, "replacement"), "replacement-machine", "replacement-session", items[0].WorkItemID)
+					if replacement.FencingToken <= lease.FencingToken {
+						t.Fatal("replacement reused fencing token")
+					}
+				} else {
+					if mode == "released repair" {
+						exec("UPDATE leases SET released_at=? WHERE lease_id=?", formatHubTime(now), lease.ID)
+					}
+					if mode == "superseded repair" {
+						exec("UPDATE leases SET released_at=? WHERE lease_id=?", formatHubTime(now), lease.ID)
+						replacement := claimNativeAttempt(t, f, f.worker(t, "replacement"), "replacement-machine", "replacement-session", items[0].WorkItemID)
+						if replacement.FencingToken <= lease.FencingToken {
+							t.Fatal("replacement reused fencing token")
+						}
+					}
+					runner, err := readRunner(f.service.runDetailContext(t.Context()), f.service.database.reader, scope.organization, owner.binding.RunnerID, now)
+					if err != nil {
+						t.Fatal(err)
+					}
+					fleet := hostedFleetRunnerView(runner, "test", map[tracker.ProjectID]bool{scope.project: true}, now)
+					if runner.Used != 1 || runner.HostUsed != 1 || runner.ProjectUsed[scope.project] != 1 || len(fleet.Leases) != 1 || fleet.Leases[0].WorkItemID != items[1].WorkItemID {
+						t.Fatalf("stale row consumed capacity or fleet slot: runner=%+v fleet=%+v", runner, fleet)
+					}
+					if _, err := readNativeBoardExecution(t.Context(), f.service.database.reader, scope, string(items[0].WorkItemID), nil, now); mode != "superseded repair" && !errors.Is(err, sql.ErrNoRows) {
+						t.Fatalf("expired execution remained on board: %v", err)
+					}
+					summary, err := readNativeBoardSummary(t.Context(), f.service.database.reader, scope, url.Values{}, now)
+					if err != nil {
+						t.Fatal(err)
+					}
+					running := 0
+					for _, lane := range summary.Lanes {
+						running += lane.Running
+					}
+					if running != 1 {
+						t.Fatalf("board counted stale attempts: running=%d", running)
+					}
+					if err := f.service.convertLegacyStorage(t.Context(), now); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			for i, event := range events {
+				var status, raw string
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT status,data_json FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&status, &raw); err != nil {
+					t.Fatal(err)
+				}
+				want := "running"
+				if mode != "release rollback" && (i == 0 || mode == "revoked") {
+					want = "cancelled"
+				}
+				if status != want {
+					t.Fatalf("item %d stored status=%s, want %s", i, status, want)
+				}
+				if want == "cancelled" {
+					var data tracker.NativeRunData
+					if err := json.Unmarshal([]byte(raw), &data); err != nil {
+						t.Fatal(err)
+					}
+					if data.Outcome != "cancelled" || data.TerminalFailure == nil || data.TerminalFailure.ErrorClass != "lease_released" {
+						t.Fatalf("missing typed lease cancellation: %+v", data)
+					}
+				}
+			}
+		})
+	}
 }

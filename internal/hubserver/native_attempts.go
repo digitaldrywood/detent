@@ -353,7 +353,7 @@ func prepareNativeAttempt(ctx context.Context, tx nativeQueryer, scope nativeSco
 		data.Evidence = previous.Evidence
 		reconnecting := (status == "running" || status == "interrupted") && event.Type == "run.observed" && data.Runtime != nil && data.Runtime.LocalAttemptID == 0 && data.Runtime.Generation == 0 && data.Outcome == ""
 		usageCorrection := status != "running" && event.Type == "run.finished" && nativeUsageCorrection(previous, data)
-		terminating := termination && status == "interrupted"
+		terminating := termination && (status == "interrupted" || status == "cancelled")
 		if previous.LeaseID != data.LeaseID || previous.RunID != data.RunID || previous.PolicyID != data.PolicyID || previous.Identity == nil || data.Identity == nil || *previous.Identity != *data.Identity || status != "running" && !usageCorrection && !reconnecting && !terminating || data.Sequence != sequence+1 || event.Type == "run.started" {
 			return update, nativeExecutionConflict("Attempt identity, lifecycle or next sequence does not match")
 		}
@@ -463,6 +463,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`, data.AttemptID, scope.org
 			return false, false, err
 		}
 	}
+	if termination {
+		if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET cleanup_acknowledged_at=coalesce(cleanup_acknowledged_at,?) WHERE id=?", formatHubTime(now), data.AttemptID); err != nil {
+			return false, false, err
+		}
+	}
 	if !termination && data.Runtime != nil && data.Runtime.Landing != nil {
 		if err := recordAttemptLanding(ctx, tx, scope, item, data.AttemptID, *data.Runtime.Landing); err != nil {
 			return false, false, err
@@ -491,6 +496,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`, data.AttemptID, scope.org
 		return false, false, err
 	}
 	if err := updateAttemptHotProjection(ctx, tx, data.AttemptID, update.status, data); err != nil {
+		return false, false, err
+	}
+	if err := updateAttemptCleanupProjection(ctx, tx, data.AttemptID, data); err != nil {
 		return false, false, err
 	}
 	if err := recordRunDetailReference(ctx, tx, scope, item, data, formatHubTime(now)); err != nil {
@@ -654,11 +662,11 @@ func (s *Service) readNativeAttemptPage(ctx context.Context, scope nativeScope, 
 		return nativeAttemptPage{}, err
 	}
 	defer tx.Rollback()
-	query := `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
+	query := `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation, a.cleanup_acknowledged_at
 FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
 WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fencing_token > CAST(? AS INTEGER) ORDER BY a.fencing_token LIMIT ?`
 	if params.Get("direction") == "newest" {
-		query = `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
+		query = `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation, a.cleanup_acknowledged_at
 FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
 WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND a.fencing_token < CAST(? AS INTEGER) ORDER BY a.fencing_token DESC LIMIT ?`
 	}
@@ -777,8 +785,8 @@ func nativeAttemptDisplayIdentity(attempt tracker.NativeAttempt) *tracker.Native
 func scanNativeAttempt(ctx context.Context, q nativeQueryer, rows *sql.Rows, now time.Time) (tracker.NativeAttempt, error) {
 	var attempt tracker.NativeAttempt
 	var data, started, updated, artifacts, expires, renewed string
-	var checkpoint, released sql.NullString
-	if err := rows.Scan(&data, &attempt.Status, &started, &updated, &checkpoint, &artifacts, &expires, &released, &renewed, &attempt.WorkItemRevision, &attempt.DispatchGeneration); err != nil {
+	var checkpoint, released, cleanupAcknowledged sql.NullString
+	if err := rows.Scan(&data, &attempt.Status, &started, &updated, &checkpoint, &artifacts, &expires, &released, &renewed, &attempt.WorkItemRevision, &attempt.DispatchGeneration, &cleanupAcknowledged); err != nil {
 		return attempt, err
 	}
 	if err := decodeRunDetail(ctx, q, data, &attempt.NativeRunData); err != nil {
@@ -816,6 +824,13 @@ func scanNativeAttempt(ctx context.Context, q nativeQueryer, rows *sql.Rows, now
 			return attempt, err
 		}
 		attempt.ClaimReleasedAt = &at
+	}
+	if cleanupAcknowledged.Valid {
+		at, err := parseTimeValue(cleanupAcknowledged.String)
+		if err != nil {
+			return attempt, err
+		}
+		attempt.CleanupAcknowledgedAt = &at
 	}
 	attempt.FinalizationAvailability = "unavailable"
 	attempt.TerminalFailureAvailability = "unavailable"
@@ -887,7 +902,7 @@ func readNativeAttemptRecord(ctx context.Context, q nativeQueryer, scope nativeS
 	if err != nil {
 		return tracker.NativeAttempt{}, err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT a.data_json,a.status,a.started_at,a.updated_at,a.checkpoint_json,a.artifact_ids_json,l.expires_at,l.released_at,l.renewed_at,a.work_item_revision,a.dispatch_generation FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.id=?`, scope.organization, scope.project, item, id)
+	rows, err := q.QueryContext(ctx, `SELECT a.data_json,a.status,a.started_at,a.updated_at,a.checkpoint_json,a.artifact_ids_json,l.expires_at,l.released_at,l.renewed_at,a.work_item_revision,a.dispatch_generation,a.cleanup_acknowledged_at FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND a.id=?`, scope.organization, scope.project, item, id)
 	if err != nil {
 		return tracker.NativeAttempt{}, err
 	}
@@ -925,13 +940,16 @@ WHERE l.lease_id=? AND l.fencing_token=? AND e.kind='lease_released' ORDER BY e.
 	return failure.Public(), nil
 }
 
-func cancelNativeLeaseAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, lease leaseRecord, now time.Time) error {
+func cancelNativeLeaseAttempt(ctx context.Context, tx *sql.Tx, lease leaseRecord, now time.Time) error {
 	var raw string
 	var item tracker.NativeWorkItemID
 	var revision tracker.Revision
-	err := tx.QueryRowContext(ctx, `SELECT a.data_json, a.work_item_id, i.revision FROM native_attempts a
-JOIN issues i ON i.native_id = a.work_item_id AND i.project_id = a.project_id AND i.organization_id = a.organization_id
-WHERE a.lease_id = ? AND a.fencing_token = ? AND a.organization_id = ? AND a.project_id = ? AND a.status IN ('running', 'interrupted')`, lease.session.ID, lease.session.FencingToken, scope.organization, scope.project).Scan(&raw, &item, &revision)
+	var attemptID, runID string
+	var sequence int64
+	scope := nativeScope{sourceActor: nativeIntegrationActor("lease_release")}
+	err := tx.QueryRowContext(ctx, `SELECT a.data_json,a.work_item_id,i.revision,a.organization_id,a.project_id,a.id,a.run_id,a.sequence FROM native_attempts a
+JOIN issues i ON i.native_id=a.work_item_id AND i.project_id=a.project_id AND i.organization_id=a.organization_id
+WHERE a.lease_id=? AND a.fencing_token=? AND a.status='running'`, lease.session.ID, lease.session.FencingToken).Scan(&raw, &item, &revision, &scope.organization, &scope.project, &attemptID, &runID, &sequence)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -942,24 +960,61 @@ WHERE a.lease_id = ? AND a.fencing_token = ? AND a.organization_id = ? AND a.pro
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
 		return err
 	}
-	if owner, ok := ctx.Value(runDetailContextKey{}).(*runDetailContext); ok && stored.Detail != nil {
-		owner.reuse[stored.AttemptID] = stored.Detail
+	data := stored.NativeRunData
+	data.AttemptID, data.RunID, data.LeaseID, data.FencingToken = attemptID, runID, lease.session.ID, lease.session.FencingToken
+	data.Sequence = sequence + 1
+	data.Outcome = "cancelled"
+	data.Handoff, data.ArtifactIDs = nil, nil
+	if data.TerminalFailure == nil {
+		failure, err := leaseReleaseFailure(ctx, tx, data, now)
+		if err != nil {
+			return err
+		}
+		data.TerminalFailure = &failure
 	}
-	var previous tracker.NativeRunData
-	if err := decodeRunDetail(ctx, tx, raw, &previous); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
 		return err
 	}
-	if previous.Identity == nil {
-		return nil
+	for key, value := range map[string]any{"sequence": strconv.FormatInt(data.Sequence, 10), "outcome": data.Outcome, "terminal_failure": data.TerminalFailure} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		fields[key] = encoded
 	}
-	data := tracker.NativeRunData{AttemptID: previous.AttemptID, RunID: previous.RunID, LeaseID: previous.LeaseID,
-		FencingToken: previous.FencingToken, PolicyID: previous.PolicyID, Identity: previous.Identity,
-		MachineID: previous.MachineID, SessionID: previous.SessionID, RunnerID: previous.RunnerID,
-		Sequence: previous.Sequence + 1, Outcome: "cancelled"}
-	event := tracker.NativeRunEvent{Type: "run.finished", SchemaVersion: 1, Data: data}
-	_, history, err := recordNativeAttempt(ctx, tx, scope, item, &event, now, true)
-	if err != nil || !history {
+	delete(fields, "handoff")
+	delete(fields, "artifact_ids")
+	encoded, err := json.Marshal(fields)
+	if err != nil {
 		return err
 	}
-	return appendNativeHistory(ctx, tx, scope, string(item), event.Type, tracker.CollaborationData{Run: &event.Data, Revision: revision}, now)
+	if _, err := tx.ExecContext(ctx, `UPDATE native_attempts SET sequence=?,status='cancelled',data_json=?,updated_at=?,analytics_revision=analytics_revision+1,final_outcome='cancelled',failure_class=?,failure_stage=? WHERE lease_id=? AND fencing_token=? AND status='running'`, data.Sequence, string(encoded), formatHubTime(now), data.TerminalFailure.ErrorClass, data.TerminalFailure.Stage, lease.session.ID, lease.session.FencingToken); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE activity_attempt_durations SET status='cancelled',updated_at=julianday(?),seconds=0 WHERE attempt_id=?`, formatHubTime(now), data.AttemptID); err != nil {
+		return err
+	}
+	if err := updateReportAttemptProjection(ctx, tx, data.AttemptID, data); err != nil {
+		return err
+	}
+	if err := updateAttemptHotProjection(ctx, tx, data.AttemptID, "cancelled", data); err != nil {
+		return err
+	}
+	identity := tracker.NativeRunData{AttemptID: data.AttemptID, RunID: data.RunID, LeaseID: data.LeaseID,
+		FencingToken: data.FencingToken, PolicyID: data.PolicyID, Identity: data.Identity,
+		MachineID: data.MachineID, SessionID: data.SessionID, RunnerID: data.RunnerID,
+		Sequence: data.Sequence, Outcome: "cancelled"}
+	request, err := marshalNative(identity)
+	if err != nil {
+		return err
+	}
+	hash := sha256.Sum256([]byte("run.finished " + request))
+	if _, err := tx.ExecContext(ctx, "INSERT INTO native_attempt_events(attempt_id,sequence,request_hash) VALUES(?,?,?)", data.AttemptID, data.Sequence, hex.EncodeToString(hash[:])); err != nil {
+		return err
+	}
+	if stored.Detail != nil {
+		ctx = context.WithValue(ctx, runDetailContextKey{}, &runDetailContext{reuse: map[string]*runDetailReference{data.AttemptID: stored.Detail}})
+	}
+	return appendNativeHistory(ctx, tx, scope, string(item), "run.finished", tracker.CollaborationData{Run: &data, Revision: revision}, now)
 }

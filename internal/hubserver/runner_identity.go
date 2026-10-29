@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"slices"
@@ -215,9 +216,33 @@ func revokeRunnerIdentityInTx(ctx context.Context, tx *sql.Tx, scope nativeScope
 	if err := requireRunnerUpdate(result, err); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE leases SET released_at = ?, updated_at = ? WHERE released_at IS NULL AND lease_id IN
-(SELECT lr.lease_id FROM lease_runners lr JOIN runner_identities r ON r.id = lr.runner_id WHERE r.id = ? AND r.organization_id = ?)`, formatHubTime(now), formatHubTime(now), resource, scope.organization); err != nil {
+	rows, err := tx.QueryContext(ctx, `SELECT l.lease_id FROM leases l JOIN lease_runners lr ON lr.lease_id=l.lease_id JOIN runner_identities r ON r.id=lr.runner_id
+WHERE r.id=? AND r.organization_id=? AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?)`, resource, scope.organization, formatHubTime(now))
+	if err != nil {
 		return err
+	}
+	defer rows.Close()
+	var ids []tracker.LeaseID
+	for rows.Next() {
+		var id tracker.LeaseID
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		lease, found, err := readLeaseByID(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if found {
+			if err := releaseLeaseRow(ctx, tx, lease, "cancelled", now); err != nil {
+				return err
+			}
+		}
 	}
 	return recordRunnerEvent(ctx, tx, resource, scope.credential.ID, "revoked", now)
 }
@@ -455,7 +480,7 @@ func (s *Service) heartbeatNativeMachine(c echo.Context) error {
 					}
 					return nil, err
 				}
-				if err := readRunnerClaimState(ctx, tx, scope, &snapshot, now); err != nil {
+				if err := s.readRunnerClaimState(ctx, tx, scope, &snapshot, now); err != nil {
 					return nil, err
 				}
 				if request.ChangeCursor != nil {

@@ -127,7 +127,7 @@ func (s *Service) readNativeRecovery(ctx context.Context, scope nativeScope, ite
 		return result, err
 	}
 
-	rows, err := tx.QueryContext(ctx, `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
+	rows, err := tx.QueryContext(ctx, `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation, a.cleanup_acknowledged_at
 FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
 WHERE a.organization_id = ? AND a.project_id = ? AND a.work_item_id = ? AND (a.id = ? OR a.id = ? OR a.id = (
  SELECT id FROM native_attempts WHERE organization_id = ? AND project_id = ? AND work_item_id = ? ORDER BY fencing_token DESC LIMIT 1)

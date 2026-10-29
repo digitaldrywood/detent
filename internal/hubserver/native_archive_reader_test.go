@@ -383,6 +383,11 @@ func TestArchiveQueryScopesLiveFallback(t *testing.T) {
 		for _, name := range nativeArchiveTables(kind) {
 			t.Run(name, func(t *testing.T) {
 				table := archiveTestTable(t, f.service, name, "0")
+				if name == "native_attempts" {
+					table.Columns = slices.DeleteFunc(table.Columns, func(column string) bool {
+						return column == "worker_cleanup_required" || column == "cleanup_acknowledged_at"
+					})
+				}
 				section := &attachment.ArchiveSection{
 					OrganizationID: string(f.project.OrganizationID), ProjectID: string(f.project.ID),
 					WorkItemID: string(item.WorkItemID), SectionID: kind, Tables: []attachment.ArchiveTable{table},

@@ -67,7 +67,7 @@ func TestHeartbeatScaleBenchmark(t *testing.T) {
 		if _, err := tx.ExecContext(t.Context(), `INSERT INTO lease_runners(lease_id,runner_id) VALUES(?,?)`, id, r.binding.RunnerID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,checkpoint_json,started_at,updated_at) VALUES(?,?,?,?,?,?,?,1,'interrupted','{}',?,?,?)`, id, f.project.OrganizationID, f.project.ID, fmt.Sprintf("wi_scale_%d", i), id, fence, id, `{"worktree_state":"dirty","resume":"checkpoint","ref":"refs/heads/example","sha":"`+strings.Repeat("a", 40)+`"}`, at, at); err != nil {
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,checkpoint_json,started_at,updated_at,worker_cleanup_required,runner_id) VALUES(?,?,?,?,?,?,?,1,'interrupted','{}',?,?,?,1,?)`, id, f.project.OrganizationID, f.project.ID, fmt.Sprintf("wi_scale_%d", i), id, fence, id, `{"worktree_state":"dirty","resume":"checkpoint","ref":"refs/heads/example","sha":"`+strings.Repeat("a", 40)+`"}`, at, at, r.binding.RunnerID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -130,7 +130,7 @@ func TestHeartbeatScaleBenchmark(t *testing.T) {
 			if err := json.Unmarshal(response.Body.Bytes(), &snapshot); err != nil {
 				t.Fatal(err)
 			}
-			if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 300 {
+			if snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) > releasedExecutionsPageSize {
 				t.Fatalf("released executions = %+v", snapshot.ClaimState)
 			}
 			if writer == nil {
@@ -286,7 +286,7 @@ func TestHeartbeatResponseReaderSnapshot(t *testing.T) {
 	}
 }
 
-func TestHeartbeatResponseArchivedCheckpoint(t *testing.T) {
+func TestHeartbeatResponseArchivedCleanup(t *testing.T) {
 	for _, concurrent := range []int{1, readerConnections} {
 		t.Run(fmt.Sprintf("responses=%d", concurrent), func(t *testing.T) {
 			store := &memoryRunDetails{}
@@ -304,6 +304,11 @@ func TestHeartbeatResponseArchivedCheckpoint(t *testing.T) {
 			var lease tracker.NativeLease
 			decodeHubResponse(t, response, &lease)
 			event := nativeStartedEvent(lease)
+			now := f.service.config.now()
+			event.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 1, Generation: 1, HeartbeatAt: now, Phase: "implementation", WorkerLaunch: &tracker.NativeWorkerLaunch{
+				PID: 1, GroupID: 1, ProcessStart: now, PolicyID: hubTestPolicy().ID, ExecutionVersion: "test", ControlVersion: "test",
+				ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), Protocol: 6, SelectedAt: now,
+			}}
 			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 			event.Type, event.IdempotencyKey, event.Data.Sequence = "run.checkpointed", "checkpoint", 2
@@ -318,6 +323,12 @@ func TestHeartbeatResponseArchivedCheckpoint(t *testing.T) {
 			if err := json.Unmarshal([]byte(raw), &checkpoint); err != nil || checkpoint.Detail == nil {
 				t.Fatalf("checkpoint is not archived: %s error=%v", raw, err)
 			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET worker_cleanup_required=NULL WHERE id=?", event.Data.AttemptID); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.convertAttemptHotProjection(t.Context(), event.Data.AttemptID); err != nil {
+				t.Fatal(err)
+			}
 			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 				t.Fatal(err)
 			}
@@ -326,39 +337,14 @@ func TestHeartbeatResponseArchivedCheckpoint(t *testing.T) {
 			store.mu.Lock()
 			store.reads = 0
 			store.mu.Unlock()
-			ready := make(chan struct{}, concurrent)
-			release := make(chan struct{})
 			results := make(chan *httptest.ResponseRecorder, concurrent)
 			for range concurrent {
 				request := newHubAPIRequest(t, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, map[string]any{"capacity": 1, "version": "test"})
-				timing := &requestTiming{}
-				observed := false
-				timing.trace = func(query string, _ []driver.NamedValue) {
-					if observed || !strings.HasPrefix(query, "SELECT a.id,l.machine_id,") {
-						return
-					}
-					observed = true
-					ready <- struct{}{}
-					<-release
-				}
 				go func() {
 					response := httptest.NewRecorder()
-					f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(t.Context(), timing)))
+					f.service.Handler().ServeHTTP(response, request)
 					results <- response
 				}()
-			}
-			for range concurrent {
-				select {
-				case <-ready:
-				case response := <-results:
-					close(release)
-					t.Fatalf("response completed before archive read: status=%d body=%s", response.Code, response.Body.String())
-				}
-			}
-			inUse := f.service.database.reader.Stats().InUse
-			close(release)
-			if inUse != concurrent {
-				t.Errorf("occupied readers=%d want=%d", inUse, concurrent)
 			}
 			for range concurrent {
 				response := <-results
@@ -372,8 +358,8 @@ func TestHeartbeatResponseArchivedCheckpoint(t *testing.T) {
 			store.mu.Lock()
 			reads := store.reads
 			store.mu.Unlock()
-			if reads != concurrent {
-				t.Fatalf("archive reads=%d want=%d", reads, concurrent)
+			if reads != 0 {
+				t.Fatalf("cleanup polling hydrated %d archive entries", reads)
 			}
 		})
 	}
@@ -426,8 +412,8 @@ func TestHeartbeatClaimSkipsUnknownLegacySource(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var snapshot runnerauth.RoutingSnapshot
 	decodeHubResponse(t, response, &snapshot)
-	if snapshot.RunnerID != r.binding.RunnerID || snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 1 || snapshot.ClaimState.ReleasedExecutions[0].WorkItemID != known.WorkItemID {
-		t.Fatalf("heartbeat lost routing or included unknown source: %+v", snapshot)
+	if snapshot.RunnerID != r.binding.RunnerID || snapshot.ClaimState == nil || len(snapshot.ClaimState.ReleasedExecutions) != 0 {
+		t.Fatalf("heartbeat lost routing or polled attempts without workers: %+v", snapshot)
 	}
 	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, tracker.NativeClaim{
 		PolicyID: hubTestPolicy().ID, MachineID: r.binding.MachineID, SessionID: "next-candidate", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability},
@@ -454,5 +440,101 @@ func TestHeartbeatClaimSkipsUnknownLegacySource(t *testing.T) {
 		if want := max(0, 11483-(tick+1)*claimFactsRowsPerTick); unknownRows != want {
 			t.Fatalf("tick %d: unknown=%d want=%d", tick+1, unknownRows, want)
 		}
+	}
+}
+
+func TestReleasedExecutionPollingBudget(t *testing.T) {
+	for _, test := range []struct {
+		history    int
+		unresolved bool
+		pending    int
+	}{{0, false, 101}, {1000, false, 101}, {0, true, 101}, {1000, true, 101}, {0, true, 100}} {
+		t.Run(fmt.Sprintf("history=%d/unresolved=%v/pending=%d", test.history, test.unresolved, test.pending), func(t *testing.T) {
+			f := newNativeFixture(t, nil, "", "cleanup-budget")
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
+			r.enroll(t)
+			now := f.service.config.now()
+			at := formatHubTime(now)
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			pending := map[string]bool{}
+			for i := range test.pending + test.history {
+				id := fmt.Sprintf("cleanup-%04d", i)
+				result, err := tx.ExecContext(t.Context(), `INSERT INTO issues(workflow_state_id,native_id,organization_id,project_id,number,title,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,native_created_at,native_updated_at) VALUES((SELECT id FROM workflow_states WHERE project_id=? AND source_name='Todo'),?,?,?,?,?,'','open','v1',?,?,?,?,?,?)`, f.project.ID, "wi_"+id, f.project.OrganizationID, f.project.ID, i+1, "Example issue", at, at, at, at, at, at)
+				if err != nil {
+					t.Fatal(err)
+				}
+				issue, err := result.LastInsertId()
+				if err != nil {
+					t.Fatal(err)
+				}
+				lease, err := tx.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, id, issue, r.binding.MachineID, id, at, at, at, at, at, at)
+				if err != nil {
+					t.Fatal(err)
+				}
+				fence, err := lease.LastInsertId()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO lease_runners(lease_id,runner_id) VALUES(?,?)`, id, r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+				required := i < test.pending || i%2 == 0
+				var acknowledged any
+				if i < test.pending {
+					pending[id] = true
+				} else if required {
+					acknowledged = at
+				}
+				checkpoint := `{"worktree_state":"dirty","resume":"checkpoint","ref":"refs/heads/example","sha":"` + strings.Repeat("a", 40) + `"}`
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_attempts(id,organization_id,project_id,work_item_id,lease_id,fencing_token,run_id,sequence,status,data_json,checkpoint_json,started_at,updated_at,runner_id,worker_cleanup_required,cleanup_acknowledged_at) VALUES(?,?,?,?,?,?,?,1,'cancelled','{}',?,?,?,?,?,?)`, id, f.project.OrganizationID, f.project.ID, "wi_"+id, id, fence, id, checkpoint, at, at, r.binding.RunnerID, required, acknowledged); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Runner: r.identity}}
+			pages := []int{100, 1, 0}
+			if test.unresolved {
+				pages = []int{100, test.pending - 100, 100, 0}
+			}
+			for poll, want := range pages {
+				query := &runtimeReadQuery{nativeQueryer: f.service.database.reader}
+				snapshot := runnerauth.RoutingSnapshot{RunnerID: r.binding.RunnerID}
+				if err := f.service.readRunnerClaimState(t.Context(), query, scope, &snapshot, now); err != nil {
+					t.Fatal(err)
+				}
+				if len(query.statements) != 4 || len(snapshot.ClaimState.ReleasedExecutions) != want {
+					t.Fatalf("poll %d with %d history: queries=%d executions=%d want=4,%d", poll, test.history, len(query.statements), len(snapshot.ClaimState.ReleasedExecutions), want)
+				}
+				for index, statement := range query.statements {
+					if strings.Contains(statement, "checkpoint") {
+						t.Errorf("cleanup poll read a source checkpoint: %s", statement)
+					}
+					if strings.Contains(statement, "worker_cleanup_required") {
+						plan := strings.Join(explainQueryPlan(t, f.service.database.reader, statement, query.arguments[index]), "\n")
+						if !strings.Contains(plan, "USING INDEX native_attempts_pending_cleanup_idx") || strings.Contains(plan, "USE TEMP B-TREE") {
+							t.Fatalf("cleanup poll scans history or sorts: %s", plan)
+						}
+					}
+				}
+				for _, reference := range snapshot.ClaimState.ReleasedExecutions {
+					if !pending[reference.AttemptID] {
+						t.Fatalf("history or acknowledged cleanup returned: %+v", reference)
+					}
+					if test.unresolved && poll == 0 {
+						continue
+					}
+					delete(pending, reference.AttemptID)
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET cleanup_acknowledged_at=? WHERE id=?", at, reference.AttemptID); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+		})
 	}
 }
