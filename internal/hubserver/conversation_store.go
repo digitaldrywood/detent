@@ -352,7 +352,18 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
 }
 
 func (s *conversationStore) readConversation(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, project tracker.ProjectID, id string) (conversationRecord, error) {
-	record, err := s.readConversationRecord(ctx, query, query.QueryRowContext(ctx, "SELECT "+conversationReadProjection(ctx, query, id)+" FROM conversations WHERE organization_id = ? AND project_id = ? AND id = ?", organization, project, id))
+	record, err := s.readConversationRow(ctx, query, organization, project, id)
+	if err != nil {
+		return record, err
+	}
+	if err := s.resolveConversationRecord(ctx, query, &record); err != nil {
+		return record, fmt.Errorf("read conversation: %w", err)
+	}
+	return record, nil
+}
+
+func (s *conversationStore) readConversationRow(ctx context.Context, query nativeQueryer, organization tracker.OrganizationID, project tracker.ProjectID, id string) (conversationRecord, error) {
+	record, err := scanConversation(query.QueryRowContext(ctx, "SELECT "+conversationReadProjection(ctx, query, id)+" FROM conversations WHERE organization_id = ? AND project_id = ? AND id = ?", organization, project, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return record, nativeNotFound()
 	}
@@ -764,6 +775,21 @@ func (s *conversationStore) listMessages(ctx context.Context, query nativeQuerye
 	if err != nil {
 		return nil, err
 	}
+	messages, err := s.listMessageRows(ctx, query, conversationID, beforeSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	pointers := make([]*conversationMessageRecord, 0, len(messages))
+	for i := range messages {
+		pointers = append(pointers, &messages[i])
+	}
+	if err := s.resolveMessageContents(ctx, query, pointers); err != nil {
+		return nil, err
+	}
+	return messages, nil
+}
+
+func (s *conversationStore) listMessageRows(ctx context.Context, query nativeQueryer, conversationID string, beforeSeq int64, limit int) ([]conversationMessageRecord, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -796,14 +822,12 @@ func (s *conversationStore) listMessages(ctx context.Context, query nativeQuerye
 	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
 		messages[i], messages[j] = messages[j], messages[i]
 	}
-	// The rows are drained before the follow-up query: the hub pool holds a
-	// single connection.
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
 	pointers := make([]*conversationMessageRecord, 0, len(messages))
 	for i := range messages {
 		pointers = append(pointers, &messages[i])
-	}
-	if err := s.resolveMessageContents(ctx, query, pointers); err != nil {
-		return nil, err
 	}
 	if err := resolveMessageReferences(ctx, query, pointers); err != nil {
 		return nil, err
@@ -923,6 +947,19 @@ func (s *conversationStore) listPendingQuestions(ctx context.Context, query nati
 // current attempt, so a locked card survives a reload. The newest limit
 // questions are returned oldest first.
 func (s *conversationStore) listSnapshotQuestions(ctx context.Context, query nativeQueryer, conversationID, attemptID string, limit int) ([]conversationQuestionRecord, error) {
+	records, err := s.listSnapshotQuestionRows(ctx, query, conversationID, attemptID, limit)
+	if err != nil {
+		return nil, err
+	}
+	for i := range records {
+		if err := s.resolveQuestion(ctx, query, &records[i]); err != nil {
+			return nil, err
+		}
+	}
+	return records, nil
+}
+
+func (s *conversationStore) listSnapshotQuestionRows(ctx context.Context, query nativeQueryer, conversationID, attemptID string, limit int) ([]conversationQuestionRecord, error) {
 	if limit <= 0 {
 		limit = conversationSnapshotQuestions
 	}
@@ -947,11 +984,6 @@ ORDER BY created_at DESC, id DESC LIMIT ?`, conversationID, attemptID, attemptID
 	slices.Reverse(records)
 	if err := rows.Close(); err != nil {
 		return nil, err
-	}
-	for i := range records {
-		if err := s.resolveQuestion(ctx, query, &records[i]); err != nil {
-			return nil, err
-		}
 	}
 	return records, nil
 }

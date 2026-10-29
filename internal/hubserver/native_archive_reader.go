@@ -482,7 +482,7 @@ func archiveConversationQuery(ctx context.Context, query nativeQueryer, id strin
 	if !ok {
 		return query, nil
 	}
-	record, err := state.service.conversations.loadConversation(ctx, query, state.scope, id)
+	record, err := state.service.conversations.loadConversationRow(ctx, query, state.scope, id)
 	if err != nil {
 		return nil, err
 	}

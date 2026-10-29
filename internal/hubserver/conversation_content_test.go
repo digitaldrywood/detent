@@ -226,6 +226,107 @@ func TestConversationPayloadRequiresPublication(t *testing.T) {
 	}
 }
 
+func TestConversationObjectReadsReleaseDatabaseTransactions(t *testing.T) {
+	for _, endpoint := range []string{"snapshot", "messages"} {
+		t.Run(endpoint, func(t *testing.T) {
+			f := newStorageArchiveFixture(t)
+			objects := &conversationContentFixture{}
+			f.store.contents = objects
+			record := f.create(t, f.record(f.owner, "read transaction", f.now))
+			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.owner}, CreatedAt: f.now, UpdatedAt: f.now}
+			tx := f.tx(t)
+			if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
+				t.Fatal(err)
+			}
+			saved := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "saved text", Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}, CreatedAt: f.now, UpdatedAt: f.now}
+			if err := f.appendMessage(t, t.Context(), tx, &saved); err != nil {
+				t.Fatal(err)
+			}
+			f.commit(t, tx)
+			tx = f.tx(t)
+			if err := f.appendDelta(t, f.service.conversations, t.Context(), tx, &message, "streamed text", f.now); err != nil {
+				t.Fatal(err)
+			}
+			question := conversationQuestionRecord{Question: conversation.Question{ID: conversation.NewQuestionID(), ConversationID: record.ID, MessageID: message.ID, Status: conversation.QuestionPending, Prompts: []conversation.Prompt{{ID: "prompt", Question: "Continue?"}}, CreatedAt: f.now, UpdatedAt: f.now}}
+			if err := f.upsertQuestion(t, t.Context(), tx, question); err != nil {
+				t.Fatal(err)
+			}
+			f.commit(t, tx)
+			reads := 0
+			read := func(scope nativeScope) (json.RawMessage, error) {
+				if endpoint == "snapshot" {
+					return f.service.readConversationSnapshot(t.Context(), scope, record.ID)
+				}
+				return f.service.readConversationMessages(t.Context(), scope, record.ID, 0, 10)
+			}
+			scope := nativeScope{organization: f.organization, project: f.project.ID, credential: apiCredential{ID: f.owner, Scope: apiScopeOperator}}
+			deniedScope := scope
+			deniedScope.credential.ID = f.other
+			objects.onIO = func() error {
+				reads++
+				return nil
+			}
+			_, err := read(deniedScope)
+			var denied *nativeError
+			if !errors.As(err, &denied) || denied.Code != "not_found" {
+				t.Fatalf("unauthorized read result=%v", err)
+			}
+			if reads != 0 {
+				t.Errorf("unauthorized read fetched %d objects", reads)
+			}
+			reads = 0
+			objects.onIO = func() error {
+				reads++
+				if occupied := f.store.reader.Stats().InUse; occupied != 0 {
+					t.Errorf("object read holds %d reader connections", occupied)
+				}
+				if occupied := f.store.db.Stats().InUse; occupied != 0 {
+					t.Errorf("object read holds %d writer connections", occupied)
+				}
+				if reads == 1 {
+					if _, err := f.store.db.ExecContext(t.Context(), `DELETE FROM attachments
+WHERE id IN (SELECT content_attachment_id FROM conversation_messages WHERE conversation_id=?
+UNION SELECT content_attachment_id FROM conversation_events WHERE conversation_id=? AND type='message.delta')`, record.ID, record.ID); err != nil {
+						return err
+					}
+					if _, err := f.store.db.ExecContext(t.Context(), "DELETE FROM conversation_events WHERE conversation_id=? AND type='message.delta'", record.ID); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+			raw, err := read(scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var response conversationSnapshot
+			if err := json.Unmarshal(raw, &response); err != nil {
+				t.Fatal(err)
+			}
+			if len(response.Messages) != 2 || response.Messages[0].Text != "streamed text" || response.Messages[1].Text != saved.Text {
+				t.Fatalf("streamed message changed: %+v", response.Messages)
+			}
+			if endpoint == "snapshot" {
+				var snapshot struct {
+					Questions []struct {
+						ID      string                `json:"id"`
+						Prompts []conversation.Prompt `json:"questions"`
+					} `json:"questions"`
+				}
+				if err := json.Unmarshal(raw, &snapshot); err != nil {
+					t.Fatal(err)
+				}
+				if len(snapshot.Questions) != 1 || snapshot.Questions[0].ID != question.ID || !reflect.DeepEqual(snapshot.Questions[0].Prompts, question.Prompts) {
+					t.Fatalf("question changed: %+v", snapshot.Questions)
+				}
+			}
+			if reads < 2 {
+				t.Fatalf("expected message and delta object reads, got %d", reads)
+			}
+		})
+	}
+}
+
 func TestConversationPublicationReconcilesOutsideWriter(t *testing.T) {
 	for _, outcome := range []string{"committed", "uncertain committed", "uncertain absent"} {
 		t.Run(outcome, func(t *testing.T) {

@@ -1470,80 +1470,106 @@ func (s *Service) readConversationSnapshot(ctx context.Context, scope nativeScop
 	return s.readConversationSnapshotFor(ctx, scope, id, "", false)
 }
 
-func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeScope, id, item string, diagnoseMissing bool) (json.RawMessage, error) {
-	ctx = s.archiveContext(ctx, scope, false)
-	service := s.conversations
-	var snapshot conversationSnapshot
-	var diagnostic json.RawMessage
+type conversationPageRead struct {
+	record     conversationRecord
+	messages   []conversationMessageRecord
+	contents   *conversationReadBatch
+	compaction tracker.EventCompaction
+}
+
+func (s *Service) captureConversationPage(ctx context.Context, scope nativeScope, id, item string, before int64, limit int) (conversationPageRead, error) {
+	var page conversationPageRead
+	query, err := archiveConversationQuery(ctx, s.database.reader, id, before)
+	if err != nil {
+		return page, err
+	}
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return nil, err
+		return page, err
 	}
 	defer tx.Rollback()
-	err = func(tx *sql.Tx, now time.Time) error {
-		var record conversationRecord
-		var err error
-		if item != "" {
-			if _, _, err = readNativeIssue(ctx, tx, scope, item); err != nil {
-				return err
-			}
-			record, err = service.readLinkedConversation(ctx, tx, scope, item)
-			var failure *nativeError
-			if diagnoseMissing && record.ID == "" && errors.As(err, &failure) && failure.Code == "not_found" {
-				runtime, err := readNativeRuntime(ctx, tx, scope, item, "", now)
-				if err != nil {
-					return err
-				}
-				diagnostic, err = json.Marshal(struct {
-					Status       string                        `json:"status"`
-					Conversation *conversationResource         `json:"conversation"`
-					Runtime      tracker.NativeRuntimeEvidence `json:"runtime"`
-				}{Status: "unavailable", Runtime: runtime})
-				return err
-			}
-			if err == nil {
-				record, err = service.loadConversation(ctx, tx, scope, record.ID)
-			}
-		} else {
-			record, err = service.loadConversation(ctx, tx, scope, id)
-		}
-		if err != nil {
-			return err
-		}
-		messages, err := service.store.listMessages(ctx, tx, record.ID, 0, conversationMessagePage)
-		if err != nil {
-			return err
-		}
-		questions, err := service.store.listSnapshotQuestions(ctx, tx, record.ID, record.Execution.Owner.AttemptID, conversationSnapshotQuestions)
-		if err != nil {
-			return err
-		}
-		snapshot = conversationSnapshot{Conversation: projectConversation(record), Messages: projectMessages(messages), Questions: make([]conversation.Question, 0, len(questions)), Cursor: record.EventSeq}
-		snapshot.Skills, err = readConversationSkills(ctx, tx, record)
-		if err != nil {
-			return err
-		}
-		compaction, err := readEventCompaction(ctx, tx, record.OrganizationID, record.ProjectID, "conversation", record.ID)
-		if err != nil {
-			return err
-		}
-		if compaction.RemovedEvents > 0 {
-			snapshot.Compaction = &compaction
-		}
-		snapshot.HasMore, _ = conversationOlderCursor(snapshot.Messages)
-		for _, question := range questions {
-			snapshot.Questions = append(snapshot.Questions, question.Question)
-		}
-		return nil
-	}(tx, s.config.now())
-	if err == nil {
-		err = tx.Commit()
+	if archive, ok := query.(*nativeArchiveQuery); ok {
+		captured := *archive
+		captured.nativeQueryer = tx
+		query = &captured
+	} else {
+		query = tx
 	}
+	page.record, err = s.conversations.loadConversationRow(ctx, tx, scope, id)
+	if err != nil {
+		return page, err
+	}
+	if item != "" && page.record.WorkItemID != item {
+		return page, nativeNotFound()
+	}
+	page.messages, err = s.conversations.store.listMessageRows(ctx, query, id, before, limit)
+	if err != nil {
+		return page, err
+	}
+	page.contents = newConversationReadBatch(string(page.record.OrganizationID))
+	if err := page.contents.capture(ctx, tx, page.record.ContentID); err != nil {
+		return page, err
+	}
+	if err := page.contents.captureMessages(ctx, query, page.messages); err != nil {
+		return page, err
+	}
+	page.compaction, err = readEventCompaction(ctx, tx, page.record.OrganizationID, page.record.ProjectID, "conversation", id)
+	if err != nil {
+		return page, err
+	}
+	if err := tx.Commit(); err != nil {
+		return page, err
+	}
+	return page, nil
+}
+
+func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeScope, id, item string, diagnoseMissing bool) (json.RawMessage, error) {
+	ctx = withConversationArchiveReads(s.archiveContext(ctx, scope, false))
+	if item != "" {
+		if _, _, err := readNativeIssue(ctx, s.database.reader, scope, item); err != nil {
+			return nil, err
+		}
+		err := s.database.reader.QueryRowContext(ctx, "SELECT id FROM conversations WHERE organization_id=? AND project_id=? AND work_item_id=?", scope.organization, scope.project, item).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			if !diagnoseMissing {
+				return nil, nativeNotFound()
+			}
+			runtime, err := readNativeRuntime(ctx, s.database.reader, scope, item, "", s.config.now())
+			if err != nil {
+				return nil, err
+			}
+			return json.Marshal(struct {
+				Status       string                        `json:"status"`
+				Conversation *conversationResource         `json:"conversation"`
+				Runtime      tracker.NativeRuntimeEvidence `json:"runtime"`
+			}{Status: "unavailable", Runtime: runtime})
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	page, err := s.captureConversationPage(ctx, scope, id, item, 0, conversationMessagePage)
 	if err != nil {
 		return nil, err
 	}
-	if diagnostic != nil {
-		return diagnostic, nil
+	store := s.conversations.store
+	if err := page.contents.hydrateRecord(ctx, store, &page.record); err != nil {
+		return nil, err
+	}
+	if err := page.contents.hydrateMessages(ctx, store, page.messages); err != nil {
+		return nil, err
+	}
+	questions, skills, err := s.readConversationSnapshotDetails(ctx, scope, page.record)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := conversationSnapshot{Conversation: projectConversation(page.record), Messages: projectMessages(page.messages), Questions: make([]conversation.Question, 0, len(questions)), Skills: skills, Cursor: page.record.EventSeq}
+	if page.compaction.RemovedEvents > 0 {
+		snapshot.Compaction = &page.compaction
+	}
+	snapshot.HasMore, _ = conversationOlderCursor(snapshot.Messages)
+	for _, question := range questions {
+		snapshot.Questions = append(snapshot.Questions, question.Question)
 	}
 	snapshot.Conversation.WebURL, err = s.canonicalBrowserLink(ctx, "/chat/c/"+url.PathEscape(snapshot.Conversation.ID)+"?project_id="+url.QueryEscape(string(snapshot.Conversation.ProjectID)))
 	if err != nil {
@@ -1554,6 +1580,38 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 		return nil, err
 	}
 	return withNativeArchive(raw, nativeArchiveDescriptor(ctx))
+}
+
+func (s *Service) readConversationSnapshotDetails(ctx context.Context, scope nativeScope, record conversationRecord) ([]conversationQuestionRecord, []skills.ProviderSkill, error) {
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, nil, err
+	}
+	defer tx.Rollback()
+	if _, err := s.conversations.loadConversationRow(ctx, tx, scope, record.ID); err != nil {
+		return nil, nil, err
+	}
+	questions, err := s.conversations.store.listSnapshotQuestionRows(ctx, tx, record.ID, record.Execution.Owner.AttemptID, conversationSnapshotQuestions)
+	if err != nil {
+		return nil, nil, err
+	}
+	contents := newConversationReadBatch(string(record.OrganizationID))
+	for _, question := range questions {
+		if err := contents.capture(ctx, tx, question.ContentID); err != nil {
+			return nil, nil, err
+		}
+	}
+	reportedSkills, err := readConversationSkills(ctx, tx, record)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, err
+	}
+	if err := contents.hydrateQuestions(ctx, s.conversations.store, questions); err != nil {
+		return nil, nil, err
+	}
+	return questions, reportedSkills, nil
 }
 
 func (s *Service) commandPatchConversation(ctx context.Context, scope nativeScope, id string, request conversationPatchRequest) (json.RawMessage, error) {
@@ -1623,30 +1681,17 @@ func (s *Service) commandPatchConversation(ctx context.Context, scope nativeScop
 }
 
 func (s *Service) readConversationMessages(ctx context.Context, scope nativeScope, id string, before int64, limit int) (json.RawMessage, error) {
-	ctx = s.archiveContext(ctx, scope, false)
-	var raw json.RawMessage
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	ctx = withConversationArchiveReads(s.archiveContext(ctx, scope, false))
+	captured, err := s.captureConversationPage(ctx, scope, id, "", before, limit)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
-	err = func(tx *sql.Tx, _ time.Time) error {
-		record, err := s.conversations.loadConversation(ctx, tx, scope, id)
-		if err != nil {
-			return err
-		}
-		messages, err := s.conversations.store.listMessages(ctx, tx, record.ID, before, limit)
-		if err != nil {
-			return err
-		}
-		page := conversationMessagesPage{Messages: projectMessages(messages)}
-		_, page.NextCursor = conversationOlderCursor(page.Messages)
-		raw, err = json.Marshal(page)
-		return err
-	}(tx, s.config.now())
-	if err == nil {
-		err = tx.Commit()
+	if err := captured.contents.hydrateMessages(ctx, s.conversations.store, captured.messages); err != nil {
+		return nil, err
 	}
+	page := conversationMessagesPage{Messages: projectMessages(captured.messages)}
+	_, page.NextCursor = conversationOlderCursor(page.Messages)
+	raw, err := json.Marshal(page)
 	if err != nil {
 		return nil, err
 	}

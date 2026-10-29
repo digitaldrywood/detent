@@ -848,10 +848,21 @@ func projectMessage(record conversationMessageRecord) conversationMessageResourc
 // loadConversation reads a conversation for the request scope and applies
 // the read rule. Any failure is an API error.
 func (c *conversationService) loadConversation(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (conversationRecord, error) {
+	record, err := c.loadConversationRow(ctx, query, scope, id)
+	if err != nil {
+		return conversationRecord{}, err
+	}
+	if err := c.store.resolveConversationRecord(ctx, query, &record); err != nil {
+		return conversationRecord{}, translateConversationError(err)
+	}
+	return record, nil
+}
+
+func (c *conversationService) loadConversationRow(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (conversationRecord, error) {
 	if err := conversation.ValidateConversationID(id); err != nil {
 		return conversationRecord{}, nativeNotFound()
 	}
-	record, err := c.store.readConversation(ctx, query, scope.organization, scope.project, id)
+	record, err := c.store.readConversationRow(ctx, query, scope.organization, scope.project, id)
 	if err != nil {
 		return conversationRecord{}, translateConversationError(err)
 	}

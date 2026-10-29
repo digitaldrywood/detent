@@ -373,37 +373,57 @@ func (s *conversationStore) recordContentArchive(ctx context.Context, tx *sql.Tx
 	return nil
 }
 
-func (s *conversationStore) resolveMessageDeltas(ctx context.Context, q nativeQueryer, message *conversationMessageRecord) error {
-	rows, err := q.QueryContext(ctx, `SELECT body_json,content_attachment_id FROM conversation_events WHERE conversation_id=? AND message_id=? AND type='message.delta' AND delta_offset>=? AND delta_offset<? ORDER BY seq`, message.ConversationID, message.ID, len(message.Text), message.TextBytes)
+type conversationReadDelta struct {
+	raw       []byte
+	contentID string
+	offset    int64
+}
+
+func readConversationMessageDeltas(ctx context.Context, q nativeQueryer, message conversationMessageRecord) ([]conversationReadDelta, error) {
+	rows, err := q.QueryContext(ctx, `SELECT body_json,content_attachment_id,delta_offset FROM conversation_events WHERE conversation_id=? AND message_id=? AND type='message.delta' AND delta_offset>=? AND delta_offset<? ORDER BY seq`, message.ConversationID, message.ID, len(message.Text), message.TextBytes)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer rows.Close()
-	type delta struct{ raw, content string }
-	var batch []delta
+	var batch []conversationReadDelta
 	for rows.Next() {
-		var d delta
-		if err := rows.Scan(&d.raw, &d.content); err != nil {
-			rows.Close()
-			return err
+		var d conversationReadDelta
+		if err := rows.Scan(&d.raw, &d.contentID, &d.offset); err != nil {
+			return nil, err
 		}
 		batch = append(batch, d)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	return batch, nil
+}
+
+func (s *conversationStore) resolveMessageDeltas(ctx context.Context, q nativeQueryer, message *conversationMessageRecord) error {
+	batch, err := readConversationMessageDeltas(ctx, q, *message)
+	if err != nil {
 		return err
 	}
-	var text strings.Builder
-	text.WriteString(message.Text)
-	for _, d := range batch {
-		raw := []byte(d.raw)
-		if d.content != "" {
-			raw, err = s.readEventStorage(ctx, q, message.ConversationID, d.content)
+	for i := range batch {
+		if batch[i].contentID != "" {
+			batch[i].raw, err = s.readEventStorage(ctx, q, message.ConversationID, batch[i].contentID)
 			if err != nil {
 				return err
 			}
 		}
+	}
+	return applyConversationMessageDeltas(message, batch)
+}
+
+func applyConversationMessageDeltas(message *conversationMessageRecord, batch []conversationReadDelta) error {
+	var text strings.Builder
+	text.WriteString(message.Text)
+	for _, d := range batch {
+		if d.offset < int64(len(message.Text)) {
+			continue
+		}
 		var fact conversationDeltaFact
-		if err := json.Unmarshal(raw, &fact); err != nil {
+		if err := json.Unmarshal(d.raw, &fact); err != nil {
 			return err
 		}
 		if fact.Offset != int64(text.Len()) || len(fact.Text) != fact.Bytes {
@@ -431,6 +451,15 @@ func (s *conversationStore) readConversationArchive(ctx context.Context, query n
 	if err != nil {
 		return nil, err
 	}
+	return s.readCapturedConversationArchive(ctx, organization, contentID, ref)
+}
+
+func (s *conversationStore) readCapturedConversationArchive(ctx context.Context, organization, contentID string, ref attachment.ArchiveReference) ([]byte, error) {
+	cache := conversationArchiveCache(ctx)
+	key := organization + "/" + contentID
+	if data, ok := cache.load(key); ok {
+		return data, nil
+	}
 	if s.contents == nil {
 		return nil, errors.New("conversation content storage is unavailable")
 	}
@@ -441,4 +470,140 @@ func (s *conversationStore) readConversationArchive(ctx context.Context, query n
 	cache.store(key, data)
 	cache.rememberReference(organization, ref, data)
 	return data, nil
+}
+
+type conversationReadBatch struct {
+	organization string
+	archives     map[string]attachment.ArchiveReference
+	deltas       map[string][]conversationReadDelta
+}
+
+func newConversationReadBatch(organization string) *conversationReadBatch {
+	return &conversationReadBatch{organization: organization, archives: map[string]attachment.ArchiveReference{}, deltas: map[string][]conversationReadDelta{}}
+}
+
+func (b *conversationReadBatch) capture(ctx context.Context, query nativeQueryer, contentID string) error {
+	if contentID == "" {
+		return nil
+	}
+	if _, ok := b.archives[contentID]; ok {
+		return nil
+	}
+	ref, err := scanAttachmentArchive(query.QueryRowContext(ctx, `SELECT object_key,sha256,size,uncompressed_size,codec,schema_version,kind,retention_class,storage_binding_id,customer_owned FROM attachments WHERE id=? AND organization_id=? AND kind='archive'`, contentID, b.organization))
+	if err != nil {
+		return err
+	}
+	b.archives[contentID] = ref
+	return nil
+}
+
+func (b *conversationReadBatch) captureMessages(ctx context.Context, query nativeQueryer, messages []conversationMessageRecord) error {
+	for _, message := range messages {
+		if err := b.capture(ctx, query, message.ContentID); err != nil {
+			return err
+		}
+		if message.Role != conversation.RoleAssistant || message.TextBytes <= int64(len(message.Text)) {
+			continue
+		}
+		deltas, err := readConversationMessageDeltas(ctx, query, message)
+		if err != nil {
+			return err
+		}
+		for _, delta := range deltas {
+			if err := b.capture(ctx, query, delta.contentID); err != nil {
+				return err
+			}
+		}
+		b.deltas[message.ID] = deltas
+	}
+	return nil
+}
+
+func (b *conversationReadBatch) read(ctx context.Context, store *conversationStore, contentID string) ([]byte, error) {
+	ref, ok := b.archives[contentID]
+	if !ok {
+		return nil, errors.New("conversation archive was not captured before hydration")
+	}
+	return store.readCapturedConversationArchive(ctx, b.organization, contentID, ref)
+}
+
+func (b *conversationReadBatch) payload(ctx context.Context, store *conversationStore, contentID string) ([]byte, error) {
+	raw, err := b.read(ctx, store, contentID)
+	if err != nil {
+		return nil, err
+	}
+	var content conversationContent
+	if err := json.Unmarshal(raw, &content); err != nil {
+		return nil, err
+	}
+	return content.Data, nil
+}
+
+func (b *conversationReadBatch) hydrateRecord(ctx context.Context, store *conversationStore, record *conversationRecord) error {
+	if record.ContentID == "" {
+		return nil
+	}
+	raw, err := b.payload(ctx, store, record.ContentID)
+	if err != nil {
+		return err
+	}
+	var content conversationRecordContent
+	if err := json.Unmarshal(raw, &content); err != nil {
+		return err
+	}
+	record.Execution, record.Preferences = content.Execution, content.Preferences.Normalized()
+	return nil
+}
+
+func (b *conversationReadBatch) hydrateMessages(ctx context.Context, store *conversationStore, messages []conversationMessageRecord) error {
+	for i := range messages {
+		message := &messages[i]
+		if message.ContentID != "" {
+			raw, err := b.read(ctx, store, message.ContentID)
+			if err != nil {
+				return err
+			}
+			var content conversationContent
+			if err := json.Unmarshal(raw, &content); err != nil {
+				return err
+			}
+			message.Text, message.Data, message.contentHash = content.Text, content.Data, artifact.Digest(raw)
+		}
+		if message.Role != conversation.RoleAssistant || message.TextBytes <= int64(len(message.Text)) {
+			continue
+		}
+		deltas := b.deltas[message.ID]
+		for j := range deltas {
+			if deltas[j].offset < int64(len(message.Text)) || deltas[j].contentID == "" {
+				continue
+			}
+			var err error
+			deltas[j].raw, err = b.read(ctx, store, deltas[j].contentID)
+			if err != nil {
+				return err
+			}
+		}
+		if err := applyConversationMessageDeltas(message, deltas); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *conversationReadBatch) hydrateQuestions(ctx context.Context, store *conversationStore, questions []conversationQuestionRecord) error {
+	for i := range questions {
+		if questions[i].ContentID == "" {
+			continue
+		}
+		raw, err := b.payload(ctx, store, questions[i].ContentID)
+		if err != nil {
+			return err
+		}
+		var content conversationQuestionContent
+		if err := json.Unmarshal(raw, &content); err != nil {
+			return err
+		}
+		questions[i].Prompts, questions[i].Answers = content.Prompts, content.Answers
+	}
+	return nil
 }
