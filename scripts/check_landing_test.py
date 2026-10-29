@@ -103,7 +103,8 @@ class LandingGateTest(unittest.TestCase):
             tool = binaries / name
             tool.write_text(TOOL)
             tool.chmod(0o755)
-        self.env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"], DETENT_API_TOKEN="fixture-token", GOCACHEPROG="", REAL_GO=shutil.which("go"), REAL_MAKE=shutil.which("make"))
+        toolchain = subprocess.check_output(["go", "env", "GOVERSION"], cwd=ROOT, text=True, timeout=30).strip()
+        self.env = dict(os.environ, PATH=str(binaries) + os.pathsep + os.environ["PATH"], DETENT_API_TOKEN="fixture-token", GOCACHEPROG="", GOTOOLCHAIN=toolchain, REAL_GO=shutil.which("go"), REAL_MAKE=shutil.which("make"))
         self.linter = str(binaries / "golangci-lint")
 
     def git(self, *args):
