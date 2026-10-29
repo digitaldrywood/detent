@@ -37,8 +37,11 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 		checkpoint          bool
 		checkpointRefusal   string
 		checkpointCommitted bool
+		absorbedConflict    bool
 	}{
 		{name: "runner prepares unsigned conflict"},
+		{name: "absorbed conflict retains an idempotent publication head", absorbedConflict: true},
+		{name: "inherited absorbed conflict retains a publication head", absorbedConflict: true, inheritedPause: true},
 		{name: "inherited signed pause", inheritedPause: true},
 		{name: "legacy unpublished pause", legacy: true},
 		{name: "resolved paused replay integrates selected target", advanceTarget: true},
@@ -276,6 +279,11 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 					runGit(t, info.Path, "add", "README.md")
 				}
 			}
+			if test.absorbedConflict {
+				issue.Source = &ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{BaseSHA: strings.TrimSpace(runGit(t, info.Path, "rev-parse", original+"^")), HeadSHA: original}}}
+				writeCheckpointFile(t, info.Path, "README.md", "base\n")
+				runGit(t, info.Path, "add", "README.md")
+			}
 			if test.alter == "branch" {
 				runGit(t, source, "update-ref", "refs/heads/"+info.Branch, base)
 			} else if test.alter != "" {
@@ -362,7 +370,10 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 				if test.checkpoint {
 					wantFiles++
 				}
-				if err != nil || diff.BaseSHA != selectedBase || len(diff.Files) != wantFiles || diff.Files[0].Path != "README.md" {
+				if test.absorbedConflict {
+					wantFiles = 0
+				}
+				if err != nil || diff.BaseSHA != selectedBase || len(diff.Files) != wantFiles || wantFiles > 0 && diff.Files[0].Path != "README.md" {
 					t.Fatalf("final baseline lost the owned resolution: %+v, %v", diff, err)
 				}
 				head := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
@@ -375,6 +386,16 @@ func TestLocalGitNativeReworkOwnsPausedRebase(t *testing.T) {
 				wantContent := "resolved\n"
 				if test.clean {
 					wantContent = "feature\n"
+				}
+				if test.absorbedConflict {
+					wantContent = "base\n"
+					if _, err := CaptureChangeSource(t.Context(), info.Path, finalBase, head); err != nil {
+						t.Fatalf("empty resolution cannot be retained for publication: %v", err)
+					}
+					repeatedBase, err := owner.FinalizeNativeWork(t.Context(), info, issue, func(ctx context.Context) error { return ctx.Err() })
+					if err != nil || repeatedBase != finalBase || strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")) != head {
+						t.Fatalf("repeated finalization changed the resolved source: base=%s error=%v", repeatedBase, err)
+					}
 				}
 				if got := readFile(t, filepath.Join(info.Path, "README.md")); got != wantContent {
 					t.Fatalf("resolution = %q", got)

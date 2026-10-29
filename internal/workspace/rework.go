@@ -388,6 +388,14 @@ func (l *LocalGit) FinalizeNativeWork(ctx context.Context, info Info, issue Issu
 	if prepared.Status == MergePrepareStatusConflict {
 		return "", nil
 	}
+	if issue.Source != nil && prepared.HeadSHA == prepared.BaseSHA && prepared.HeadSHA != issue.Source.Version.HeadSHA {
+		if err := validate(ctx); err != nil {
+			return "", err
+		}
+		if _, err := l.runCommit(ctx, info.Path, nil, "-c", "core.hooksPath="+os.DevNull, "commit", "--allow-empty", "-m", "fix: reconcile "+issue.Identifier); err != nil {
+			return "", err
+		}
+	}
 	return prepared.BaseSHA, nil
 }
 

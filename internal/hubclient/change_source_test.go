@@ -32,16 +32,18 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {
-		name            string
-		updatePolicy    bool
-		republish       bool
-		transferDirty   bool
-		transfer        bool
-		transferCode    bool
-		workerOwnership bool
-		planning        bool
+		name             string
+		updatePolicy     bool
+		republish        bool
+		transferDirty    bool
+		transfer         bool
+		transferCode     bool
+		workerOwnership  bool
+		planning         bool
+		absorbedConflict bool
 	}{
 		{name: "same policy"},
+		{name: "conflict resolution absorbed by target advances the Change head", absorbedConflict: true, updatePolicy: true},
 		{name: "planning enabled Rework restores missing published head before provider", planning: true},
 		{name: "retained source waits for writer cleanup before replacement", workerOwnership: true},
 		{name: "updated policy", updatePolicy: true},
@@ -226,6 +228,12 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 				t.Fatal(err)
 			}
 			nativeChangeGit(t, sourceA, "add", "UPSTREAM.md")
+			if test.absorbedConflict {
+				if err := os.WriteFile(filepath.Join(sourceA, "CHANGE.md"), []byte("integrated\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				nativeChangeGit(t, sourceA, "add", "CHANGE.md")
+			}
 			nativeChangeGit(t, sourceA, "commit", "-m", "advance dev")
 			nativeChangeGit(t, sourceA, "push", "origin", "dev")
 			newBase := head(sourceA)
@@ -279,6 +287,17 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 					t.Fatalf("Rework provider identity = %+v, want role=rework", identity)
 				}
 				expectedFiles := map[string]string{"CHANGE.md": "changed\n"}
+				if test.absorbedConflict {
+					conflicts, err := exec.CommandContext(t.Context(), "git", "-C", providerB.workspace, "diff", "--name-only", "--diff-filter=U").Output()
+					if err != nil || strings.TrimSpace(string(conflicts)) != "CHANGE.md" {
+						t.Fatalf("expected a real source conflict: %q, %v", conflicts, err)
+					}
+					if err := os.WriteFile(filepath.Join(providerB.workspace, "CHANGE.md"), []byte("integrated\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					nativeChangeGit(t, providerB.workspace, "add", "CHANGE.md")
+					expectedFiles["CHANGE.md"] = "integrated\n"
+				}
 				if test.transferCode {
 					if got := head(providerB.workspace); got != recovered.Version.HeadSHA {
 						t.Fatalf("code transfer started at %s, want selected head %s", got, recovered.Version.HeadSHA)
@@ -300,6 +319,11 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 				}
 			}
 			second := run(sourceB, providerB, candidates[0], h.scheduler.RunExecution(issue.ID))
+			if test.absorbedConflict {
+				if second.NativeChange.HeadSHA == newBase || second.NativeChange.Files != 0 || headTree(providerB.workspace, second.NativeChange.HeadSHA) != headTree(sourceA, newBase) {
+					t.Fatalf("absorbed resolution must retain a reviewable head with the target tree: %+v", second.NativeChange)
+				}
+			}
 			expectedBase := newBase
 			if test.transferCode {
 				expectedBase = initialBase
@@ -310,6 +334,21 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 			detail, err := h.admin.Change(context.Background(), item, first.NativeChange.ChangeID)
 			if err != nil || len(detail.Versions) != versionCount || len(detail.Reviews) != 2 || detail.Versions[versionCount-1].PolicyID != h.descriptor.ID || detail.Reviews[1].VersionID != second.NativeChange.VersionID || detail.Versions[0].ID != old.Versions[0].ID {
 				t.Fatalf("new source did not get current-policy review: %+v, %v", detail, err)
+			}
+			if test.absorbedConflict {
+				h.complete(t, issue.ID, second.NativeChange)
+				current, err := h.admin.Issue(t.Context(), item)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "In Progress", Reason: "user_requested"}); err != nil {
+					t.Fatal(err)
+				}
+				h.claim(t, issue.ID)
+				retried, err := h.scheduler.RunExecution(issue.ID).(runner.ChangeSourceExecution).RecoverChangeSource(t.Context())
+				if err != nil || retried.Version.ID != second.NativeChange.VersionID || retried.Version.HeadSHA != second.NativeChange.HeadSHA {
+					t.Fatalf("retry recovered stale Change source: %+v, %v", retried.Version, err)
+				}
 			}
 		})
 	}
