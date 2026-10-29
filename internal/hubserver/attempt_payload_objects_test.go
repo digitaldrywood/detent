@@ -962,10 +962,15 @@ func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {
 	for _, test := range []struct {
 		name              string
 		legacy, different bool
+		invalid           string
 	}{
 		{name: "new write"},
 		{name: "legacy matching attempt", legacy: true},
 		{name: "legacy different receipt", legacy: true, different: true},
+		{name: "missing runtime", invalid: `{}`},
+		{name: "missing landing", invalid: `{"runtime":{}}`},
+		{name: "null landing", invalid: `{"runtime":{"landing":null}}`},
+		{name: "empty landing", invalid: `{"runtime":{"landing":{}}}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newChangeFixture(t, nil)
@@ -973,7 +978,7 @@ func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {
 			runner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 			runner.enroll(t)
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			receipt := tracker.NativeLandingReceipt{VersionID: version.ID, ChangeID: f.change.ID, MergeSHA: strings.Repeat("c", 40), Landed: true, ObservedAt: time.Now().UTC(), Gate: &gate.CommandResult{Output: strings.Repeat("gate evidence", 8192)}}
+			receipt := tracker.NativeLandingReceipt{VersionID: version.ID, ChangeID: f.change.ID, MergeSHA: strings.Repeat("c", 40), Landed: true, ObservedAt: version.CreatedAt.Add(time.Minute), Gate: &gate.CommandResult{Command: "go test ./...", Output: strings.Repeat("gate evidence", 8192)}}
 			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 			if err != nil {
 				t.Fatal(err)
@@ -1029,9 +1034,44 @@ func TestLandingReceiptPayloadReferencesAndConversion(t *testing.T) {
 			if source == "" || derived == "" || (source != derived) != test.different {
 				t.Fatal("landing receipt did not preserve or share the expected attempt snapshot")
 			}
+			if test.invalid != "" {
+				ref, err := prepareChangeContent(ctx, string(f.project.OrganizationID), []byte(test.invalid))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(ctx, "UPDATE change_landing_receipts SET payload_object_key=? WHERE attempt_id=?", ref.Key, attempt); err != nil {
+					t.Fatal(err)
+				}
+			}
 			after, err := readVersionLanding(f.service.freshRunDetailContext(t.Context()), f.service.database.reader, version.ID)
-			if err != nil || !reflect.DeepEqual(after, receipt) {
+			if test.invalid != "" {
+				var decodeErr *landingReceiptDecodeError
+				if !errors.As(err, &decodeErr) || !errors.Is(err, artifact.ErrIntegrity) {
+					t.Errorf("invalid archived landing receipt returned %v, want typed integrity error", err)
+				}
+			} else if err != nil || !reflect.DeepEqual(after, receipt) {
 				t.Fatalf("receipt after conversion differs: %v", err)
+			}
+			candidates, partial, err := readValidationCandidates(f.service.freshRunDetailContext(t.Context()), f.service.database.reader, scope, string(f.issue.WorkItemID), f.change.ID, attempt, gate.ScheduledEvidence{Repository: validationRepository(version.Repository), HeadSHA: receipt.MergeSHA})
+			if test.invalid != "" {
+				var decodeErr *landingReceiptDecodeError
+				if !errors.As(err, &decodeErr) || !errors.Is(err, artifact.ErrIntegrity) {
+					t.Fatalf("validation accepted invalid archived landing receipt: %v", err)
+				}
+				return
+			}
+			if err != nil || partial || len(candidates) != 1 {
+				t.Fatalf("validation candidates: count=%d partial=%t error=%v", len(candidates), partial, err)
+			}
+			candidate := candidates[0]
+			if candidate.IntegratedHeadSHA != receipt.MergeSHA || candidate.IntegratedSource != "same_commit" || !candidate.ObservedAt.Equal(receipt.ObservedAt) {
+				t.Fatalf("validation lost landing provenance: %+v", candidate)
+			}
+			local := *receipt.Gate
+			local.Output = ""
+			local.Command = "go test [redacted]"
+			if !reflect.DeepEqual(candidate.Local, &local) {
+				t.Fatalf("validation lost landing gate: %+v", candidate.Local)
 			}
 		})
 	}

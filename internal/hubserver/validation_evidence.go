@@ -141,7 +141,7 @@ func readValidationCandidates(ctx context.Context, query nativeQueryer, scope na
 	ranked := []rankedCandidate{}
 	partial := false
 	for _, unknown := range []bool{false, true} {
-		statement := `SELECT c.work_item_id,COALESCE(NULLIF(v.payload_object_key,''),v.record_json),COALESCE(a.id,''),COALESCE(a.run_id,''),COALESCE(a.local_attempt_id,0),COALESCE(NULLIF(r.payload_object_key,''),r.record_json,''),c.record_json,v.rowid,COALESCE(a.fencing_token,0),r.merge_sha
+		statement := `SELECT c.work_item_id,COALESCE(NULLIF(v.payload_object_key,''),v.record_json),COALESCE(a.id,''),COALESCE(a.run_id,''),COALESCE(a.local_attempt_id,0),COALESCE(NULLIF(r.payload_object_key,''),r.record_json,''),c.record_json,v.rowid,COALESCE(a.fencing_token,0),r.merge_sha,COALESCE(r.payload_object_key<>'',0)
  FROM change_versions v JOIN change_requests c ON c.id=v.change_id
  LEFT JOIN change_landing_receipts r ON r.version_id=v.id
  LEFT JOIN native_attempts a ON a.id=r.attempt_id AND a.organization_id=c.organization_id AND a.project_id=c.project_id
@@ -163,7 +163,8 @@ func readValidationCandidates(ctx context.Context, query nativeQueryer, scope na
 			var versionRaw, receiptRaw, changeRaw string
 			var rowid, fence int64
 			var merge sql.NullString
-			if err := rows.Scan(&candidate.WorkItemID, &versionRaw, &candidate.NativeAttemptID, &candidate.NativeRunID, &candidate.LocalAttemptID, &receiptRaw, &changeRaw, &rowid, &fence, &merge); err != nil {
+			var receiptObject bool
+			if err := rows.Scan(&candidate.WorkItemID, &versionRaw, &candidate.NativeAttemptID, &candidate.NativeRunID, &candidate.LocalAttemptID, &receiptRaw, &changeRaw, &rowid, &fence, &merge, &receiptObject); err != nil {
 				return nil, false, err
 			}
 			var version tracker.ChangeVersion
@@ -183,8 +184,8 @@ func readValidationCandidates(ctx context.Context, query nativeQueryer, scope na
 			candidate.Attribution = "candidate_only; source_inclusion_and_causality_unverified"
 			candidate.Local, candidate.ObservedAt = version.Validation, version.CreatedAt
 			if receiptRaw != "" {
-				var receipt tracker.NativeLandingReceipt
-				if err := decodeStorageJSON(ctx, []byte(receiptRaw), &receipt); err != nil {
+				receipt, err := decodeLandingReceipt(ctx, receiptRaw, receiptObject)
+				if err != nil {
 					return nil, false, err
 				}
 				if receipt.Gate != nil {

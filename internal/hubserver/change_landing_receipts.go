@@ -8,8 +8,17 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+type landingReceiptDecodeError struct{}
+
+func (*landingReceiptDecodeError) Error() string {
+	return "landing receipt missing or empty in attempt object"
+}
+
+func (*landingReceiptDecodeError) Unwrap() error { return artifact.ErrIntegrity }
 
 func readVersionLanding(ctx context.Context, query nativeQueryer, version string) (tracker.NativeLandingReceipt, error) {
 	var raw string
@@ -28,8 +37,8 @@ func decodeLandingReceipt(ctx context.Context, raw string, object bool) (tracker
 		if err := decodeStorageJSON(ctx, []byte(raw), &run); err != nil {
 			return tracker.NativeLandingReceipt{}, err
 		}
-		if run.Runtime == nil || run.Runtime.Landing == nil {
-			return tracker.NativeLandingReceipt{}, errors.New("landing receipt missing from attempt object")
+		if run.Runtime == nil || run.Runtime.Landing == nil || reflect.DeepEqual(*run.Runtime.Landing, tracker.NativeLandingReceipt{}) {
+			return tracker.NativeLandingReceipt{}, &landingReceiptDecodeError{}
 		}
 		return *run.Runtime.Landing, nil
 	}
