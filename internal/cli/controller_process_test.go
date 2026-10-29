@@ -123,6 +123,109 @@ func TestControllerRestartCancellationWaitsForRejection(t *testing.T) {
 	}
 }
 
+func TestControllerSupervisorCleanExitRestarts(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("POSIX controller supervision")
+	}
+	for _, test := range []struct {
+		name       string
+		mode       string
+		wantBinary bool
+		wantError  bool
+	}{
+		{name: "unexpected clean exit", mode: "clean", wantBinary: true},
+		{name: "applied replacement exits cleanly", mode: "adopt", wantBinary: true},
+		{name: "failed controller exits nonzero", mode: "failure", wantError: true},
+		{name: "operator shutdown stays stopped", mode: "operator"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := t.TempDir()
+			binary := filepath.Join(root, "current")
+			updated := filepath.Join(root, "updated")
+			for _, path := range []string{binary, updated} {
+				if err := os.Link(executable, path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("DETENT_TEST_CONTROLLER_EXIT", test.mode)
+			t.Setenv("DETENT_TEST_CONTROLLER_UPDATED", updated)
+			t.Setenv("GOCOVERDIR", t.TempDir())
+			ctx, cancel := context.WithCancel(t.Context())
+			shutdown := NewShutdownController()
+			restart := NewRestartRequest()
+			var target atomic.Pointer[url.URL]
+			done := make(chan error, 1)
+			go func() {
+				done <- runControllerSupervisor(ctx, shutdown, binary, []string{"-test.run=^TestControllerSupervisorExitProcess$"}, io.Discard, os.Stderr, &target, controllerSupervisorConfig{restart: restart})
+			}()
+			t.Cleanup(func() { cancel(); <-done })
+			if test.mode == "operator" {
+				testenv.WaitUntil(t, ctx, func() error {
+					if target.Load() == nil {
+						return errors.New("controller is not ready")
+					}
+					return nil
+				})
+				shutdown.RequestDrain()
+			}
+			err = <-done
+			done <- err
+			if (err != nil) != test.wantError {
+				t.Fatalf("supervisor error = %v, want error %t", err, test.wantError)
+			}
+			wantBinary := ""
+			if test.wantBinary {
+				wantBinary = binary
+				if test.mode == "adopt" {
+					wantBinary = updated
+				}
+			}
+			if restart.Binary() != wantBinary {
+				t.Fatalf("restart binary = %q, want %q", restart.Binary(), wantBinary)
+			}
+		})
+	}
+}
+
+func TestControllerSupervisorExitProcess(t *testing.T) {
+	mode := os.Getenv("DETENT_TEST_CONTROLLER_EXIT")
+	if mode == "" || os.Getenv(controllerPipeEnvironment) == "" {
+		return
+	}
+	restart := ControllerRestartRequest()
+	if restart == nil || restart.control == nil {
+		t.Fatal("missing controller connection")
+	}
+	defer restart.control.close()
+	shutdown := NewShutdownController()
+	defer shutdown.activate()()
+	if err := restart.control.ready(t.Context(), shutdown, "127.0.0.1:12345"); err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(os.Args[0]) == "updated" || mode == "clean" {
+		return
+	}
+	if mode == "failure" {
+		os.Exit(17)
+	}
+	if mode == "adopt" {
+		restart.reserve = func() func() { return func() {} }
+		accepted, err := requestRuntimeUpdateRestart(t.Context(), shutdown, restart, os.Getenv("DETENT_TEST_CONTROLLER_UPDATED"), nil)
+		if err != nil || !accepted {
+			t.Fatalf("adopt replacement: accepted=%t error=%v", accepted, err)
+		}
+	}
+	select {
+	case <-shutdown.Requests():
+	case <-t.Context().Done():
+		t.Fatal("controller was not drained")
+	}
+}
+
 func TestControllerTerminalViewKeepsRetiredAttemptsVisible(t *testing.T) {
 	t.Parallel()
 	view := &controllerView{snapshots: hub.New[telemetry.Snapshot]()}

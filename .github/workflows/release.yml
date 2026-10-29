@@ -36,8 +36,8 @@ jobs:
           git fetch --no-tags origin "$branch:refs/remotes/origin/$branch"
           git merge-base --is-ancestor "$GITHUB_SHA" "origin/$branch"
 
-  release:
-    name: GoReleaser
+  prepare:
+    name: Prepare release binaries
     needs: source
     outputs:
       version: ${{ steps.provenance.outputs.version }}
@@ -45,9 +45,8 @@ jobs:
     permissions:
       actions: read
       checks: read
-      contents: write
+      contents: read
       statuses: read
-      id-token: write
     steps:
       - uses: actions/checkout@v5
         with:
@@ -110,6 +109,73 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/release-use-prebuilt.sh "${{ steps.provenance.outputs.version }}"
 
+      - name: Build Linux Hub binary
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          args: build --single-target --clean
+        env:
+          GORELEASER_CURRENT_TAG: ${{ steps.provenance.outputs.version }}
+          GOOS: linux
+          GOARCH: amd64
+
+      - name: Prepare Hub deployment artifact
+        run: |
+          set -euo pipefail
+          binaries=(tmp/goreleaser/detent_linux_amd64*/detent)
+          test "${#binaries[@]}" -eq 1
+          cp "${binaries[0]}" "$RUNNER_TEMP/detent"
+          mkdir -p tmp/prebuilt/linux_amd64
+          cp "$RUNNER_TEMP/detent" tmp/prebuilt/linux_amd64/detent
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-hub-binary
+          path: ${{ runner.temp }}/detent
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-inputs
+          path: |
+            tmp/detent_release_provenance.json
+            tmp/prebuilt
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: GoReleaser
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      DETENT_PREBUILT_DIR: ${{ github.workspace }}/tmp/prebuilt
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            web/conversation/package-lock.json
+            package-lock.json
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.10'
+          cache: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-inputs
+          path: tmp
+
       - name: Install minisign
         run: |
           sudo apt-get update
@@ -159,7 +225,7 @@ jobs:
         with:
           args: release --clean
         env:
-          GORELEASER_CURRENT_TAG: ${{ steps.provenance.outputs.version }}
+          GORELEASER_CURRENT_TAG: ${{ needs.prepare.outputs.version }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
           SCOOP_BUCKET_GITHUB_TOKEN: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}
@@ -172,30 +238,16 @@ jobs:
           QUILL_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           QUILL_NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
 
-      - name: Prepare Hub deployment artifact
-        run: |
-          set -euo pipefail
-          binaries=(tmp/goreleaser/detent_linux_amd64*/detent)
-          test "${#binaries[@]}" -eq 1
-          cp "${binaries[0]}" "$RUNNER_TEMP/detent"
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: release-hub-binary
-          path: ${{ runner.temp }}/detent
-          if-no-files-found: error
-          retention-days: 14
-
   staging:
-    needs: release
+    needs: prepare
     uses: ./.github/workflows/deploy-staging.yml
     with:
-      version: ${{ needs.release.outputs.version }}
+      version: ${{ needs.prepare.outputs.version }}
     secrets: inherit
 
   production:
-    needs: [release, staging]
+    needs: [prepare, staging]
     uses: ./.github/workflows/deploy-production.yml
     with:
-      version: ${{ needs.release.outputs.version }}
+      version: ${{ needs.prepare.outputs.version }}
     secrets: inherit

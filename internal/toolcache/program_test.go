@@ -33,7 +33,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestCacheProgramPinsUntilClose(t *testing.T) {
+func TestCacheProgramPinsUntilScratchCleanup(t *testing.T) {
 	for _, body := range []string{"", "cached output", strings.Repeat("a", 64<<10)} {
 		t.Run(fmt.Sprintf("bytes=%d", len(body)), func(t *testing.T) {
 			root, scratch := t.TempDir(), t.TempDir()
@@ -88,11 +88,19 @@ func TestCacheProgramPinsUntilClose(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(root, cacheName(output[:], "d"))); err != nil {
 				t.Fatalf("active output was age-evicted: %v", err)
 			}
-			if _, err := os.Stat(put.DiskPath); !os.IsNotExist(err) {
-				t.Fatalf("writer retained scratch pins: %v", err)
+			if data, err := os.ReadFile(put.DiskPath); err != nil || string(data) != body {
+				t.Fatalf("writer output unavailable to caller after close: bytes=%d err=%v", len(data), err)
 			}
 			if err := reader.close(); err != nil {
 				t.Fatal(err)
+			}
+			if err := os.RemoveAll(scratch); err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{put.DiskPath, get.DiskPath} {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("scratch cleanup retained cache output: %v", err)
+				}
 			}
 			if _, err := cache.Maintain(t.Context(), Policy{MaxBytes: 1}, time.Now()); err != nil {
 				t.Fatal(err)
@@ -143,9 +151,11 @@ func TestCacheProgramProtocol(t *testing.T) {
 				if response.ID != int64(id) || id == 0 && strings.Join(response.KnownCommands, ",") != "get,put,close" || id == 1 && !response.Miss || id == 3 && (response.Miss || !bytes.Equal(response.OutputID, output[:])) {
 					t.Fatalf("response %d: %#v", id, response)
 				}
-			}
-			if files, err := os.ReadDir(scratch); err != nil || len(files) != 0 {
-				t.Fatalf("cache program left pins after close or EOF: count=%d err=%v", len(files), err)
+				if id == 2 || id == 3 {
+					if data, err := os.ReadFile(response.DiskPath); err != nil || !bytes.Equal(data, body) {
+						t.Fatalf("response %d output unavailable after close or EOF: bytes=%d err=%v", id, len(data), err)
+					}
+				}
 			}
 		})
 	}
@@ -189,6 +199,24 @@ func TestCacheProgramGoBuild(t *testing.T) {
 		if data, err := os.ReadFile(filepath.Join(module, "output.a")); err != nil || !bytes.HasPrefix(data, []byte("!<arch>\n")) {
 			t.Fatalf("Go build did not produce a package archive: bytes=%d err=%v", len(data), err)
 		}
+		list := exec.CommandContext(t.Context(), "go", "list", "-export", "-f", "{{.Export}}", ".")
+		list.Dir = module
+		variables["GOCOVERDIR"] = t.TempDir()
+		procgroup.SetEnvironment(list, procgroup.Environment{Variables: variables})
+		procgroup.SetTempDir(list, scratch)
+		procgroup.Configure(t.Context(), list)
+		t.Cleanup(func() {
+			if err := procgroup.Cleanup(procgroup.GroupID(list)); err != nil {
+				t.Error(err)
+			}
+		})
+		exports, err := list.Output()
+		if err != nil {
+			t.Fatalf("Go list using managed cache failed: %v", err)
+		}
+		if data, err := os.ReadFile(strings.TrimSpace(string(exports))); err != nil || !bytes.HasPrefix(data, []byte("!<arch>\n")) {
+			t.Fatalf("Go list export unavailable to caller after process exit: bytes=%d err=%v", len(data), err)
+		}
 	}
 }
 
@@ -200,7 +228,8 @@ func TestCacheProgramPinSurvivesLinkFailureAndEviction(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			writer, err := newCacheProgram(root, scratch)
+			writerScratch := t.TempDir()
+			writer, err := newCacheProgram(root, writerScratch)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -213,6 +242,9 @@ func TestCacheProgramPinSurvivesLinkFailureAndEviction(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := writer.close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(writerScratch); err != nil {
 				t.Fatal(err)
 			}
 			reader, err := newCacheProgram(root, scratch)
