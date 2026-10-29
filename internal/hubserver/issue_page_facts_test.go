@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -201,7 +200,7 @@ func TestIssuePageFiltersExceedCompoundSelectLimit(t *testing.T) {
 	var known string
 	want := map[string]bool{}
 	for _, fixture := range []nativeFixture{f, other} {
-		for index := range 101 {
+		for index := range 103 {
 			group := "unknown"
 			if index == 100 {
 				group = "known"
@@ -316,6 +315,7 @@ func TestIssuePageBackfillOwnsOneRowPerTransaction(t *testing.T) {
 		name, table, column, family, update string
 	}{
 		{"actors", "issues", "actor_principal_id", "native_issue_actors", "UPDATE ISSUES SET ACTOR_KIND"},
+		{"board facts", "native_board_items", "actor_principal_id", "native_board_filter_facts", "UPDATE NATIVE_BOARD_ITEMS SET ACTOR_PRINCIPAL_ID"},
 		{"issue filters", "issues", "page_filters_ready", "native_issue_page_filter_values", "UPDATE ISSUES SET PAGE_FILTERS_READY"},
 		{"board filters", "native_board_items", "page_filters_ready", "native_board_filter_values", "UPDATE NATIVE_BOARD_ITEMS SET PAGE_FILTERS_READY"},
 	} {
@@ -341,7 +341,7 @@ func TestIssuePageBackfillOwnsOneRowPerTransaction(t *testing.T) {
 				return n
 			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-			if test.name != "actors" {
+			if strings.Contains(test.name, "filters") {
 				statement := "INSERT INTO native_issue_page_filter_values(issue_id,kind,value) SELECT id,'label','ghost' FROM issues WHERE native_id=?"
 				if test.name == "board filters" {
 					statement = "INSERT INTO native_board_filter_values(work_item_id,kind,value) VALUES(?,'label','ghost')"
@@ -358,11 +358,29 @@ func TestIssuePageBackfillOwnsOneRowPerTransaction(t *testing.T) {
 					t.Fatalf("unknown empty list matched stale filter: count=%d err=%v", stale, err)
 				}
 			}
-			if _, err := prepareNativePageQuery(t.Context(), f.service.database.reader, scope, "", test.family); !errors.Is(err, operatortool.ErrReadUnavailable) {
-				t.Fatalf("oversized unknown fallback did not refuse: %v", err)
+			query, err := prepareNativePageQuery(t.Context(), f.service.database.reader, scope, "", test.family)
+			if err != nil {
+				t.Fatalf("pending backfill prevents reads: %v", err)
+			}
+			var got int
+			if err := query.QueryRowContext(t.Context(), "SELECT count(*) FROM "+test.family).Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(test.name, "filters") && got != storageConversionRows+1 {
+				t.Fatalf("legacy actors=%d", got)
 			}
 			remaining, observed := count(), 0
-			ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(statement string, _ []driver.NamedValue) {
+			ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(statement string, bindings []driver.NamedValue) {
+				if strings.HasPrefix(statement, "SELECT organization_id,project_id,") {
+					args := make([]any, len(bindings))
+					for index, binding := range bindings {
+						args[index] = binding.Value
+					}
+					plan := explainQueryPlan(t, f.service.database.reader, statement, args)
+					if strings.Contains(strings.Join(plan, "\n"), "USE TEMP B-TREE") {
+						t.Fatalf("conversion batch sorts the pending backlog: %v", plan)
+					}
+				}
 				if strings.HasPrefix(strings.ToUpper(statement), test.update) {
 					if committed := count(); committed != remaining {
 						t.Fatalf("backfill wrote a second row before committing: unknown=%d want=%d", committed, remaining)
@@ -553,5 +571,175 @@ func TestIssuePagePullRequestBackfill(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestLegacyPageEventsReadPastConversionBudget(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	issue := f.create(t, "Legacy event pages")
+	actor := tracker.Actor{Kind: "human", PrincipalID: strings.Repeat("example-", 1500)}
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, sourceActor: &actor}
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(t.Context(), "INSERT INTO linked_issue_sources(work_item_id,source_url,title_supplied,body_supplied) VALUES(?,?,0,0)", issue.WorkItemID, "https://github.com/example-org/example-project/issues/1"); err != nil {
+		t.Fatal(err)
+	}
+	issue.State = "Done"
+	issue.Revision++
+	if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "Done"}, f.service.config.now()); err != nil {
+		t.Fatal(err)
+	}
+	for index := range storageConversionRows + 3 {
+		data := tracker.CollaborationData{Reason: strings.Repeat("x", 11000), FromState: "Todo", ToState: "Done"}
+		if index == storageConversionRows+2 {
+			data.Fields = []string{"title", "body"}
+		}
+		for _, kind := range []string{"issue.edited", "comment.created", "workflow.transitioned"} {
+			if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), kind, data, f.service.config.now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for index := range storageConversionRows + 3 {
+		if _, err := tx.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,created_at,updated_at) VALUES(?,?,?,?,?)", scope.project, fmt.Sprintf("example-state-%d", index), "Todo", formatHubTime(f.service.config.now()), formatHubTime(f.service.config.now())); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tx.ExecContext(t.Context(), "UPDATE collaboration_events SET page_projection_ready=NULL,edited_title=NULL,edited_body=NULL WHERE work_item_id=?", issue.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range []string{"native_transition_facts", "native_workflow_ranks"} {
+		t.Run(family, func(t *testing.T) {
+			q, err := prepareNativePageQuery(t.Context(), f.service.database.reader, scope, "", family)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var count int
+			if err := q.QueryRowContext(t.Context(), "SELECT count(*) FROM "+family).Scan(&count); err != nil || count < storageConversionRows+3 {
+				t.Fatalf("facts=%d error=%v", count, err)
+			}
+		})
+	}
+	t.Run("edited ownership", func(t *testing.T) {
+		title, body, err := readNativeEditedOwnership(t.Context(), f.service.database.reader, issue.WorkItemID)
+		if err != nil || !title || !body {
+			t.Fatalf("late edits lost: title=%t body=%t error=%v", title, body, err)
+		}
+	})
+	t.Run("ownership during conversion", func(t *testing.T) {
+		pages := 0
+		ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(statement string, _ []driver.NamedValue) {
+			if !strings.Contains(statement, "type='issue.edited' AND page_projection_ready IS NULL") {
+				return
+			}
+			pages++
+			if pages == 2 {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE collaboration_events SET page_projection_ready=1,edited_title=1,edited_body=1 WHERE work_item_id=? AND type='issue.edited' AND sequence=(SELECT max(sequence) FROM collaboration_events WHERE work_item_id=? AND type='issue.edited')", issue.WorkItemID, issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}})
+		title, body, err := readNativeEditedOwnership(ctx, f.service.database.reader, issue.WorkItemID)
+		if err != nil || !title || !body || pages < 2 {
+			t.Fatalf("concurrent conversion lost edit ownership: title=%t body=%t pages=%d error=%v", title, body, pages, err)
+		}
+	})
+	t.Run("participants", func(t *testing.T) {
+		event := issueEmailEvent{item: "other-item", at: f.service.config.now()}
+		participants, next, err := readIssueEmailParticipants(t.Context(), f.service.database.reader, event, string(issue.WorkItemID), string(scope.organization), "", 10)
+		if err != nil || next != "" || len(participants) != 2 {
+			t.Fatalf("participants=%d next=%q error=%v", len(participants), next, err)
+		}
+		if _, ok := participants[actor.PrincipalID]; !ok {
+			t.Fatal("legacy commenter missing")
+		}
+	})
+}
+
+func TestLegacyPageFactsExceedSQLiteParameterLimit(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	fact := nativePageFact{columns: "id,actor_kind,actor_principal_id", known: "SELECT id,actor_kind,actor_principal_id FROM main.issues WHERE actor_principal_id IS NOT NULL"}
+	principal := "example'中文\x00principal"
+	for index := range 12000 {
+		fact.values = append(fact.values, []any{index, "human", principal})
+	}
+	q := &nativePageQuery{nativeQueryer: f.service.database.reader, facts: map[string]nativePageFact{"native_issue_actors": fact}}
+	var count int
+	if err := q.QueryRowContext(t.Context(), "SELECT count(*) FROM native_issue_actors WHERE actor_principal_id=?", principal).Scan(&count); err != nil || count != 12000 {
+		t.Fatalf("facts=%d error=%v", count, err)
+	}
+}
+
+func TestLegacyPageReadsSurviveConcurrentConversion(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	for index := range storageConversionRows + 3 {
+		f.create(t, fmt.Sprintf("Concurrent legacy item %d", index))
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_principal_id=NULL"); err != nil {
+		t.Fatal(err)
+	}
+	pages := 0
+	ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(statement string, _ []driver.NamedValue) {
+		if !strings.Contains(statement, "FROM main.issues WHERE actor_principal_id IS NULL") {
+			return
+		}
+		pages++
+		if pages == 2 {
+			if err := f.service.convertIssuePageFacts(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}})
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	q, err := prepareNativePageQuery(ctx, f.service.database.reader, scope, "", "native_issue_actors")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total, distinct int
+	if err := q.QueryRowContext(t.Context(), "SELECT count(*),count(DISTINCT id) FROM native_issue_actors").Scan(&total, &distinct); err != nil || total != storageConversionRows+3 || distinct != total {
+		t.Fatalf("concurrent conversion lost or duplicated rows: total=%d distinct=%d error=%v", total, distinct, err)
+	}
+	if pages < 2 {
+		t.Fatal("read did not cross a page boundary")
+	}
+}
+
+func TestIssuePageBackfillSkipsFailedRowsAndFamilies(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	for index := range storageConversionRows + 3 {
+		f.create(t, fmt.Sprintf("Failed conversion item %d", index))
+	}
+	drainTestNativeBoard(t, f.service)
+	for _, statement := range []string{"UPDATE issues SET actor_principal_id=NULL,actor_json='[]'", "UPDATE native_board_items SET actor_principal_id=NULL"} {
+		if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failures := 0
+	for range 6 {
+		if err := f.service.convertIssuePageFacts(t.Context()); err != nil {
+			failures++
+		}
+	}
+	var pending int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_board_items WHERE actor_principal_id IS NULL").Scan(&pending); err != nil || pending != 0 || failures == 0 {
+		t.Fatalf("failed actors starve board conversion: pending=%d failures=%d error=%v", pending, failures, err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_json='{}' WHERE actor_principal_id IS NULL"); err != nil {
+		t.Fatal(err)
+	}
+	for range 6 {
+		if err := f.service.convertIssuePageFacts(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE actor_principal_id IS NULL").Scan(&pending); err != nil || pending != 0 {
+		t.Fatalf("repaired actors were never retried: pending=%d error=%v", pending, err)
 	}
 }

@@ -53,25 +53,62 @@ func changeVersionExternalURL(version tracker.ChangeVersion) string {
 }
 
 func (s *Service) convertIssuePageFacts(ctx context.Context) error {
-	for range storageConversionRows {
-		more, err := s.convertIssuePageFact(ctx)
-		if err != nil || !more {
-			return err
+	remaining := storageConversionRows
+	var failures error
+	families := []struct{ name, table, key, order, pending string }{
+		{"issue", "issues", "id", "organization_id,project_id,id", "actor_principal_id IS NULL"},
+		{"issue-filters", "issues", "id", "organization_id,project_id,id", "page_filters_ready IS NULL"},
+		{"event", "collaboration_events", "id", "organization_id,project_id,work_item_id,sequence", "page_projection_ready IS NULL"},
+		{"board", "native_board_items", "work_item_id", "organization_id,project_id,work_item_id", "actor_principal_id IS NULL"},
+		{"board-filters", "native_board_items", "work_item_id", "organization_id,project_id,work_item_id", "page_filters_ready IS NULL"},
+		{"version", "change_versions", "id", "id", "external_url IS NULL"},
+	}
+	start := int((s.pageConversionFamily.Add(1) - 1) % uint64(len(families)))
+	families = append(families[start:], families[:start]...)
+	for _, family := range families {
+		if remaining == 0 {
+			break
+		}
+		cursor := "page-" + family.name
+		candidates, err := s.storageProjectionPage(ctx, cursor, "SELECT "+family.key+" FROM "+family.table+" WHERE "+family.pending, family.order, remaining)
+		if err != nil {
+			return errors.Join(failures, err)
+		}
+		for _, candidate := range candidates {
+			for {
+				remaining--
+				s.projectionCursors.Store(cursor, candidate.cursor)
+				more, err := s.convertIssuePageFact(ctx, family.name, candidate.id)
+				if err != nil {
+					failures = errors.Join(failures, err)
+					if ctx.Err() != nil {
+						return failures
+					}
+					break
+				}
+				if !more || family.name != "version" || remaining == 0 {
+					break
+				}
+			}
+			if remaining == 0 {
+				break
+			}
 		}
 	}
-	return nil
+	return failures
 }
 
-func (s *Service) convertIssuePageFact(ctx context.Context) (bool, error) {
-	var family, id, raw, actorRaw string
-	err := s.database.reader.QueryRowContext(ctx, `SELECT * FROM (
- SELECT 'issue',CAST(id AS TEXT),actor_json,'' FROM (SELECT id,actor_json FROM issues WHERE actor_principal_id IS NULL ORDER BY organization_id,project_id,id LIMIT 1)
- UNION ALL SELECT 'issue-filters',CAST(id AS TEXT),labels_json,assignees_json FROM (SELECT id,labels_json,assignees_json FROM issues WHERE page_filters_ready IS NULL ORDER BY organization_id,project_id,id LIMIT 1)
- UNION ALL SELECT 'event',id,data_json,actor_json FROM (SELECT id,data_json,actor_json FROM collaboration_events WHERE page_projection_ready IS NULL ORDER BY organization_id,project_id,work_item_id,sequence LIMIT 1)
- UNION ALL SELECT 'board',work_item_id,record_json,'' FROM (SELECT work_item_id,record_json FROM native_board_items WHERE actor_principal_id IS NULL ORDER BY organization_id,project_id,work_item_id LIMIT 1)
- UNION ALL SELECT 'board-filters',work_item_id,record_json,'' FROM (SELECT work_item_id,record_json FROM native_board_items WHERE page_filters_ready IS NULL ORDER BY organization_id,project_id,work_item_id LIMIT 1)
- UNION ALL SELECT 'version',id,record_json,'' FROM (SELECT id,record_json FROM change_versions WHERE external_url IS NULL ORDER BY id LIMIT 1)
- ) LIMIT 1`).Scan(&family, &id, &raw, &actorRaw)
+func (s *Service) convertIssuePageFact(ctx context.Context, family, id string) (bool, error) {
+	var raw, actorRaw string
+	queries := map[string]string{
+		"issue":         "SELECT actor_json,'' FROM issues WHERE id=? AND actor_principal_id IS NULL",
+		"issue-filters": "SELECT labels_json,assignees_json FROM issues WHERE id=? AND page_filters_ready IS NULL",
+		"event":         "SELECT data_json,actor_json FROM collaboration_events WHERE id=? AND page_projection_ready IS NULL",
+		"board":         "SELECT record_json,'' FROM native_board_items WHERE work_item_id=? AND actor_principal_id IS NULL",
+		"board-filters": "SELECT record_json,'' FROM native_board_items WHERE work_item_id=? AND page_filters_ready IS NULL",
+		"version":       "SELECT record_json,'' FROM change_versions WHERE id=? AND external_url IS NULL",
+	}
+	err := s.database.reader.QueryRowContext(ctx, queries[family], id).Scan(&raw, &actorRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -175,5 +212,5 @@ func (s *Service) convertIssuePageFact(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return true, tx.Commit()
+	return family == "version" && activity.item != "", tx.Commit()
 }

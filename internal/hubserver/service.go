@@ -77,6 +77,9 @@ type Service struct {
 	workerCancel            context.CancelFunc
 	workerDone              chan struct{}
 	boardRefresh            chan struct{}
+	pageConversionFamily    atomic.Uint64
+	activityConvertFamily   atomic.Uint64
+	projectionCursors       sync.Map
 	boardRefreshCursor      string
 	boardRetentionScope     nativeScope
 	lastNativeCleanup       time.Time

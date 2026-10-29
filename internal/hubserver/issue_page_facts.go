@@ -3,12 +3,14 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
-	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -57,6 +59,31 @@ type nativePageQuery struct {
 	item         string
 }
 
+func nativePageFactLiteral(value any) string {
+	switch value := value.(type) {
+	case nil:
+		return "NULL"
+	case bool:
+		if value {
+			return "1"
+		}
+		return "0"
+	case int:
+		return strconv.Itoa(value)
+	case int64:
+		return strconv.FormatInt(value, 10)
+	case tracker.FencingToken:
+		return strconv.FormatInt(int64(value), 10)
+	case *int:
+		if value == nil {
+			return "NULL"
+		}
+		return strconv.Itoa(*value)
+	default:
+		return "CAST(X'" + hex.EncodeToString([]byte(fmt.Sprint(value))) + "' AS TEXT)"
+	}
+}
+
 func (q *nativePageQuery) statement(query string, args []any) (string, []any) {
 	var clauses []string
 	var bindings []any
@@ -68,11 +95,28 @@ func (q *nativePageQuery) statement(query string, args []any) (string, []any) {
 		var values []string
 		bindings = append(bindings, f.knownArgs...)
 		for _, row := range f.values {
-			values = append(values, "("+strings.TrimSuffix(strings.Repeat("?,", len(row)), ",")+")")
-			bindings = append(bindings, row...)
+			columns := make([]string, len(row))
+			for index, value := range row {
+				columns[index] = nativePageFactLiteral(value)
+			}
+			values = append(values, "("+strings.Join(columns, ",")+")")
 		}
 		selection := f.known
 		if len(values) > 0 {
+			key := strings.Split(f.columns, ",")[0]
+			if name == "native_issue_page_filter_values" || name == "native_board_filter_values" {
+				key = "v." + key
+			}
+			ids := make([]string, 0, len(f.values))
+			seen := map[string]bool{}
+			for _, row := range f.values {
+				id := nativePageFactLiteral(row[0])
+				if !seen[id] {
+					ids = append(ids, id)
+					seen[id] = true
+				}
+			}
+			selection += " AND " + key + " NOT IN (" + strings.Join(ids, ",") + ")"
 			selection += " UNION ALL SELECT * FROM (VALUES " + strings.Join(values, ",") + ")"
 		}
 		materialization := ""
@@ -181,18 +225,21 @@ func readLegacyPageFact(ctx context.Context, q nativeQueryer, scope nativeScope,
 		query += " AND " + key + "=?"
 		args = append(args, item)
 	}
-	query += " LIMIT ?"
-	args = append(args, storageConversionRows+1)
-	rows, err := q.QueryContext(ctx, query, args...)
+	order := "organization_id,project_id,id"
+	switch family {
+	case "native_board_filter_facts":
+		order = "organization_id,project_id,work_item_id"
+	case "native_transition_facts":
+		order = "organization_id,project_id,work_item_id,sequence"
+	case "native_workflow_ranks":
+		order = "w.id"
+	}
+	rows, err := queryLegacyPageRows(ctx, q, query, order, args...)
 	if err != nil {
 		return f, err
 	}
 	defer rows.Close()
-	bytes := 0
 	for rows.Next() {
-		if len(f.values) >= storageConversionRows {
-			return f, operatortool.ErrReadUnavailable
-		}
 		var raw string
 		var values []any
 		switch family {
@@ -248,10 +295,6 @@ func readLegacyPageFact(ctx context.Context, q nativeQueryer, scope nativeScope,
 				verification = card.Issue.Verification.State
 			}
 			values = []any{card.Issue.WorkItemID, card.Issue.Actor.PrincipalID, card.Issue.Type, verification, card.Issue.Priority}
-		}
-		bytes += len(raw)
-		if bytes > storageConversionBytes {
-			return f, operatortool.ErrReadUnavailable
 		}
 		f.values = append(f.values, values)
 	}
