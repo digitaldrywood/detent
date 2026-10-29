@@ -606,12 +606,36 @@ func TestNativeStorageArchiveCommentRevisions(t *testing.T) {
 
 func TestNativeStorageArchiveRunTimeline(t *testing.T) {
 	a := newTerminalAttemptFixture(t)
+	if err := a.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.service.stopGitHubReconciliation(); err != nil {
+		t.Fatal(err)
+	}
+	a.service.stopHealthDetector()
+	a.service.outbox.stop()
+	checkingConnections := false
+	archiveReads := 0
+	checkConnections := func() error {
+		if checkingConnections {
+			if readers, writers := a.service.database.reader.Stats().InUse, a.service.database.db.Stats().InUse; readers != 0 || writers != 0 {
+				t.Errorf("archive I/O holds database connections: readers=%d writers=%d", readers, writers)
+				return errors.New("archive I/O holds database connections")
+			}
+		}
+		return nil
+	}
 	a.snapshots(t, 2)
 	a.finish(t)
 	a.advance(74 * time.Hour)
 	objects := map[string][]byte{}
 	previousContent := a.service.config.Content
 	a.service.config.Content = func(ctx context.Context, r entryauthority.ContentRequest) ([]byte, error) {
+		if !r.Write {
+			if err := checkConnections(); err != nil {
+				return nil, err
+			}
+		}
 		if r.Write {
 			objects[r.Reference.Key] = slices.Clone(r.Data)
 		}
@@ -622,6 +646,10 @@ func TestNativeStorageArchiveRunTimeline(t *testing.T) {
 		return data, nil
 	}
 	a.service.config.ArchiveReader = func(_ context.Context, ref attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
+		archiveReads++
+		if err := checkConnections(); err != nil {
+			return entryauthority.ArchiveResponse{}, err
+		}
 		return entryauthority.ArchiveResponse{Data: objects[ref.Key]}, nil
 	}
 	tx, err := a.service.database.db.BeginTx(t.Context(), nil)
@@ -644,6 +672,8 @@ func TestNativeStorageArchiveRunTimeline(t *testing.T) {
 	paths := []string{a.base + "/work-items/" + string(a.issue.WorkItemID) + "/runtime?native_attempt_id=" + a.start.Data.AttemptID, a.base + "/work-items/" + string(a.issue.WorkItemID) + "/history?limit=200"}
 	read := func(index int, path string) []byte {
 		t.Helper()
+		checkingConnections = true
+		defer func() { checkingConnections = false }()
 		var items []tracker.CollaborationEvent
 		cursor := ""
 		for {
@@ -684,6 +714,9 @@ func TestNativeStorageArchiveRunTimeline(t *testing.T) {
 	}
 	for index, path := range paths {
 		assertArchiveGolden(t, before[index], read(index, path))
+	}
+	if archiveReads == 0 {
+		t.Fatal("history did not read an archive section")
 	}
 	var checkpoints int
 	if err := a.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempt_events WHERE attempt_id=?", a.start.Data.AttemptID).Scan(&checkpoints); err != nil {

@@ -80,7 +80,16 @@ func appendLegacyNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScop
 }
 
 func TestCollaborationPayloadInlineBytes(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{Conversation: &ConversationConfig{Enabled: true}, now: func() time.Time { return time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC) }})
+	store := &memoryRunDetails{}
+	f := newDefaultNativeFixture(t, Config{RunDetails: store, Conversation: &ConversationConfig{Enabled: true}, now: func() time.Time { return time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC) }})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.stopGitHubReconciliation(); err != nil {
+		t.Fatal(err)
+	}
+	f.service.stopHealthDetector()
+	f.service.outbox.stop()
 	rowBytes := collaborationInlineBytesQuery(t, f.service.database.reader)
 	for _, kind := range []string{"run.started", "run.checkpointed", "run.observed", "run.finished", "scheduler.decision"} {
 		t.Run(kind, func(t *testing.T) {
@@ -142,9 +151,47 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 					t.Fatal(err)
 				}
 				sizes = append(sizes, inline)
-				page, err := f.service.readHistory(f.service.freshRunDetailContext(t.Context()), scope, string(issue.WorkItemID), url.Values{"limit": {"100"}})
-				if err != nil {
-					t.Fatal(err)
+				var page tracker.Page[tracker.CollaborationEvent]
+				for _, view := range []string{"", "timeline"} {
+					t.Run(fmt.Sprintf("%d/view=%s", size, view), func(t *testing.T) {
+						original := f.service.config.Content
+						defer func() { f.service.config.Content = original }()
+						reads := 0
+						checkConnections := func(context.Context) error {
+							reads++
+							if readers, writers := f.service.database.reader.Stats().InUse, f.service.database.db.Stats().InUse; readers != 0 || writers != 0 {
+								t.Errorf("object I/O holds database connections: readers=%d writers=%d", readers, writers)
+								return errors.New("object I/O holds database connections")
+							}
+							return nil
+						}
+						store.beforeRead = checkConnections
+						defer func() { store.beforeRead = nil }()
+						f.service.config.Content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+							if err := checkConnections(ctx); err != nil {
+								return nil, err
+							}
+							return original(ctx, request)
+						}
+						result, err := f.service.readHistory(f.service.freshRunDetailContext(t.Context()), scope, string(issue.WorkItemID), url.Values{"limit": {"100"}, "view": {view}})
+						if err != nil {
+							t.Fatal(err)
+						}
+						if view == "" {
+							page = result
+						}
+						if len(result.Items) != 2 {
+							t.Fatalf("history items=%d, want 2", len(result.Items))
+						}
+						suppressed := view == "timeline" && (kind == "run.started" || kind == "run.checkpointed" || kind == "run.finished")
+						if suppressed {
+							if reads != 0 || !reflect.DeepEqual(result.Items[1].Data, tracker.CollaborationData{}) {
+								t.Fatal("timeline hydrated suppressed run payload")
+							}
+						} else if reads == 0 {
+							t.Fatal("history did not hydrate object payload")
+						}
+					})
 				}
 				if len(page.Items) != 2 {
 					t.Fatalf("history items=%d, want 2", len(page.Items))

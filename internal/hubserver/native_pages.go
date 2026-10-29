@@ -543,6 +543,21 @@ func (s *Service) readHistory(ctx context.Context, scope nativeScope, item strin
 		return tracker.Page[tracker.CollaborationEvent]{}, err
 	}
 
+	var after int64
+	if cursor.After != "" {
+		after, err = strconv.ParseInt(cursor.After, 10, 64)
+		if err != nil {
+			return tracker.Page[tracker.CollaborationEvent]{}, nativePublicInvalid("History cursor is invalid")
+		}
+	}
+	var historyQuery nativeQueryer = s.database.reader
+	if view == "" {
+		historyQuery, err = archiveQuery(ctx, historyQuery, item, "history", item, after+1)
+		if err != nil {
+			return tracker.Page[tracker.CollaborationEvent]{}, err
+		}
+	}
+
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return tracker.Page[tracker.CollaborationEvent]{}, err
@@ -564,19 +579,11 @@ func (s *Service) readHistory(ctx context.Context, scope nativeScope, item strin
 		return tracker.Page[tracker.CollaborationEvent]{}, nativePublicInvalid("History was compacted; restart the query")
 	}
 	cursor.Compaction = generation
-	var after int64
-	if cursor.After != "" {
-		after, err = strconv.ParseInt(cursor.After, 10, 64)
-		if err != nil {
-			return tracker.Page[tracker.CollaborationEvent]{}, nativePublicInvalid("History cursor is invalid")
-		}
-	}
 	var query nativeQueryer = tx
-	if view == "" {
-		query, err = archiveQuery(ctx, tx, item, "history", item, after+1)
-		if err != nil {
-			return tracker.Page[tracker.CollaborationEvent]{}, err
-		}
+	if archived, ok := historyQuery.(*nativeArchiveQuery); ok {
+		transactionQuery := *archived
+		transactionQuery.nativeQueryer = tx
+		query = &transactionQuery
 	}
 	order, boundary, err := nativePageOrder(params, "sequence", cursor.After)
 	if err != nil {
@@ -589,6 +596,7 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND `+order+` 
 	}
 	defer rows.Close()
 	page := tracker.Page[tracker.CollaborationEvent]{Items: []tracker.CollaborationEvent{}, Compaction: compaction}
+	var payloads []string
 	for rows.Next() {
 		event := tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateType: "work_item", AggregateID: tracker.NativeWorkItemID(item)}
 		var actor, data, recorded string
@@ -632,7 +640,43 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND `+order+` 
 					event.Data.Run = &tracker.NativeRunData{AttemptID: legacy.Run.Attempt, FencingToken: legacy.Run.Fence}
 				}
 			}
-		} else {
+		}
+		if event.RecordedAt, err = parseTimeValue(recorded); err != nil {
+			return tracker.Page[tracker.CollaborationEvent]{}, err
+		}
+
+		page.Items = append(page.Items, event)
+		payloads = append(payloads, data)
+	}
+	if err := rows.Err(); err != nil {
+		return tracker.Page[tracker.CollaborationEvent]{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return tracker.Page[tracker.CollaborationEvent]{}, err
+	}
+	hasMore := len(page.Items) > limit
+	if state, ok := ctx.Value(nativeArchiveContextKey{}).(*nativeArchiveRead); ok && state.section != nil && state.last > 0 {
+		through := state.last
+		if len(page.Items) > 0 {
+			through = max(through, page.Items[len(page.Items)-1].AggregateSequence)
+		}
+		var subsequent bool
+		err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>?)
+OR EXISTS(SELECT 1 FROM native_archive_sections WHERE organization_id=? AND project_id=? AND work_item_id=? AND kind='history' AND first_sequence>?)`, scope.organization, scope.project, item, through, scope.organization, scope.project, item, through).Scan(&subsequent)
+		if err != nil {
+			return tracker.Page[tracker.CollaborationEvent]{}, err
+		}
+		hasMore = hasMore || subsequent
+	}
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		return tracker.Page[tracker.CollaborationEvent]{}, err
+	}
+	query = historyQuery
+	page.Items = page.Items[:min(len(page.Items), limit)]
+	for index := range page.Items {
+		event := &page.Items[index]
+		data := payloads[index]
+		if view != "blockers" {
 			resolved, err := resolveCollaborationPayload(ctx, query, data)
 			if err != nil {
 				return tracker.Page[tracker.CollaborationEvent]{}, err
@@ -657,9 +701,6 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND `+order+` 
 				event.Data.Run.Runtime = event.Data.Run.Runtime.WithoutActivitySpans()
 			}
 		}
-		if event.RecordedAt, err = parseTimeValue(recorded); err != nil {
-			return tracker.Page[tracker.CollaborationEvent]{}, err
-		}
 		encoded, err := json.Marshal(event)
 		if err != nil {
 			return tracker.Page[tracker.CollaborationEvent]{}, err
@@ -669,20 +710,13 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND `+order+` 
 			event.Data = tracker.CollaborationData{}
 			event.DataOmission = &tracker.HistoryDataOmission{Bytes: len(data), SHA256: hex.EncodeToString(digest[:])}
 		}
-		page.Items = append(page.Items, event)
-	}
-	if err := rows.Err(); err != nil {
-		return tracker.Page[tracker.CollaborationEvent]{}, err
-	}
-	if err := rows.Close(); err != nil {
-		return tracker.Page[tracker.CollaborationEvent]{}, err
 	}
 	for index := range page.Items {
 		event := &page.Items[index]
 		if event.Data.RelatedWorkItemID == "" {
 			continue
 		}
-		link, err := readNativeDependencyReference(ctx, tx, scope, event.Data.RelatedWorkItemID)
+		link, err := readNativeDependencyReference(ctx, s.database.reader, scope, event.Data.RelatedWorkItemID)
 		if errors.Is(err, sql.ErrNoRows) {
 			event.Data.RelatedWorkItemID = ""
 			event.Data.RelatedIssue = nil
@@ -692,20 +726,6 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND `+order+` 
 			return tracker.Page[tracker.CollaborationEvent]{}, err
 		}
 		event.Data.RelatedIssue = link
-	}
-	hasMore := len(page.Items) > limit
-	if state, ok := ctx.Value(nativeArchiveContextKey{}).(*nativeArchiveRead); ok && state.section != nil && state.last > 0 {
-		through := state.last
-		if len(page.Items) > 0 {
-			through = max(through, page.Items[len(page.Items)-1].AggregateSequence)
-		}
-		var subsequent bool
-		err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>?)
-OR EXISTS(SELECT 1 FROM native_archive_sections WHERE organization_id=? AND project_id=? AND work_item_id=? AND kind='history' AND first_sequence>?)`, scope.organization, scope.project, item, through, scope.organization, scope.project, item, through).Scan(&subsequent)
-		if err != nil {
-			return tracker.Page[tracker.CollaborationEvent]{}, err
-		}
-		hasMore = hasMore || subsequent
 	}
 	items := page.Items[:min(len(page.Items), limit)]
 	page.Items = []tracker.CollaborationEvent{}
