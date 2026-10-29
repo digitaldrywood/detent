@@ -46,7 +46,7 @@ func changeArtifactAttemptMatches(ctx context.Context, query nativeQueryer, scop
 	return value.AttemptID == attempt, nil
 }
 
-func readRecoveryCommentIDs(ctx context.Context, query nativeQueryer, scope nativeScope, item, order string, bounded bool) ([]string, error) {
+func readRecoveryCommentIDs(ctx context.Context, query nativeQueryer, scope nativeScope, item, order string, bounded bool) (ids []string, err error) {
 	var unknown bool
 	if err := query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM native_comments WHERE organization_id=? AND project_id=? AND work_item_id=? AND (change_actor_kind IS NULL OR change_edited_by_kind IS NULL))`, scope.organization, scope.project, item).Scan(&unknown); err != nil {
 		return nil, err
@@ -58,8 +58,8 @@ func readRecoveryCommentIDs(ctx context.Context, query nativeQueryer, scope nati
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	ids := []string{}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	ids = []string{}
 	latestMachine := false
 	for rows.Next() {
 		var id, raw string
@@ -93,10 +93,10 @@ func readRecoveryCommentIDs(ctx context.Context, query nativeQueryer, scope nati
 	return ids, rows.Err()
 }
 
-func readLegacyIssueChangeSideData(ctx context.Context, query nativeQueryer, scope nativeScope, item string, issue *tracker.NativeIssue) error {
+func readLegacyIssueChangeSideData(ctx context.Context, query nativeQueryer, scope nativeScope, item string, issue *tracker.NativeIssue) (err error) {
 	var id, raw string
 	var current, landed, base, merge sql.NullString
-	err := query.QueryRowContext(ctx, `SELECT c.id,c.record_json,c.claim_version_id,c.landed_version_id,c.landed_base_ref,c.landed_merge_sha FROM change_requests c JOIN change_issue_links l ON l.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? ORDER BY c.rowid DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&id, &raw, &current, &landed, &base, &merge)
+	err = query.QueryRowContext(ctx, `SELECT c.id,c.record_json,c.claim_version_id,c.landed_version_id,c.landed_base_ref,c.landed_merge_sha FROM change_requests c JOIN change_issue_links l ON l.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? ORDER BY c.rowid DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&id, &raw, &current, &landed, &base, &merge)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -152,7 +152,7 @@ func readLegacyIssueChangeSideData(ctx context.Context, query nativeQueryer, sco
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { err = errors.Join(err, rows.Close()) }()
 	issue.PullRequest = nil
 	for rows.Next() {
 		var provider, externalID, url sql.NullString
@@ -250,12 +250,12 @@ func readNativePolicyLanding(ctx context.Context, query policyQuerier, organizat
 	}
 }
 
-func latestRecoveryLandingAttempt(ctx context.Context, query nativeQueryer, scope nativeScope, item string) (string, error) {
+func latestRecoveryLandingAttempt(ctx context.Context, query nativeQueryer, scope nativeScope, item string) (id string, err error) {
 	rows, err := queryChangeLegacyRows(ctx, query, `SELECT id,has_landing_receipt,data_json FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND (has_landing_receipt=1 OR has_landing_receipt IS NULL) ORDER BY fencing_token DESC`, scope.organization, scope.project, item)
 	if err != nil {
 		return "", err
 	}
-	defer rows.Close()
+	defer func() { err = errors.Join(err, rows.Close()) }()
 	for rows.Next() {
 		var id, raw string
 		var present sql.NullBool
@@ -277,32 +277,42 @@ func latestRecoveryLandingAttempt(ctx context.Context, query nativeQueryer, scop
 }
 
 func readEscapeOccurrence(ctx context.Context, query nativeQueryer, change, version, occurrence string) (string, error) {
-	rows, err := queryChangeLegacyRows(ctx, query, `SELECT record_json,escape_occurrence_id FROM change_evidence WHERE change_id=? AND version_id=? AND kind='discussion' AND (escape_occurrence_id=? OR escape_occurrence_id IS NULL) ORDER BY sequence DESC`, change, version, occurrence)
-	if err != nil {
-		return "", err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var raw string
-		var known sql.NullString
-		if err := rows.Scan(&raw, &known); err != nil {
+	var before int64
+	for {
+		statement := `SELECT sequence,record_json,escape_occurrence_id FROM change_evidence WHERE change_id=? AND version_id=? AND kind='discussion' AND (escape_occurrence_id=? OR escape_occurrence_id IS NULL)`
+		args := []any{change, version, occurrence}
+		if before != 0 {
+			statement += ` AND sequence<?`
+			args = append(args, before)
+		}
+		type record struct {
+			raw   string
+			known sql.NullString
+		}
+		records, err := readChangeLegacyPage(ctx, query, statement+` ORDER BY sequence DESC LIMIT ?`, func(rows *sql.Rows) (record, error) {
+			var value record
+			err := rows.Scan(&before, &value.raw, &value.known)
+			return value, err
+		}, append(args, changeLegacyReadLimit)...)
+		if err != nil {
 			return "", err
 		}
-		if known.Valid {
-			return raw, nil
+		for _, value := range records {
+			if value.known.Valid {
+				return value.raw, nil
+			}
+			var discussion tracker.ChangeDiscussion
+			if err := decodeChangeColumnsJSON(ctx, []byte(value.raw), &discussion); err != nil {
+				return "", err
+			}
+			if discussion.Escape != nil && discussion.Escape.OccurrenceID == occurrence {
+				return marshalNative(discussion)
+			}
 		}
-		var discussion tracker.ChangeDiscussion
-		if err := decodeChangeColumnsJSON(ctx, []byte(raw), &discussion); err != nil {
-			return "", err
-		}
-		if discussion.Escape != nil && discussion.Escape.OccurrenceID == occurrence {
-			return raw, nil
+		if len(records) < changeLegacyReadLimit {
+			return "", sql.ErrNoRows
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return "", err
-	}
-	return "", sql.ErrNoRows
 }
 
 func qualityReopenOccurrence(ctx context.Context, query nativeQueryer, scope nativeScope, item string, escape tracker.QualityEscape) (bool, error) {

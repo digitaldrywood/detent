@@ -189,3 +189,112 @@ func changeMutationSource(t *testing.T, input *tracker.ChangeVersionInput, files
 	input.Source.HeadSHA, input.Source.BundleSHA256, input.Source.DiffSHA256, input.Source.Bytes = input.HeadSHA, tracker.ChangeSourceDigest(bundle), tracker.ChangeSourceDigest([]byte(diff)), int64(len(bundle))
 	return bundle
 }
+
+func TestQualityEscapePreparesHistoryOutsideWriter(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"legacy inline", "legacy archive", "concurrent assessment", "changed landing", "human override"} {
+		t.Run(scenario, func(t *testing.T) {
+			objects := &changeObjectFixture{}
+			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), content: objects.call}))
+			version := f.publish(t, "initial", "")
+			now := f.service.config.now()
+			landing := tracker.ChangeLanding{VersionID: version.ID, MergeSHA: strings.Repeat("d", 40), LandedAt: now.Add(-time.Hour), Quality: &tracker.LandingQualitySnapshot{IssueBody: "Accept valid input", Criteria: []string{"Accept valid input"}}}
+			raw, err := json.Marshal(landing)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO quality_landings(version_id,record_json) VALUES(?,?)", version.ID, string(raw)); err != nil {
+				t.Fatal(err)
+			}
+			escape := tracker.QualityEscape{OccurrenceID: strings.Repeat("e", 40), Kind: "revert", ObservedAt: now.Add(-time.Minute), Cause: "missing_criterion", EvidenceReference: "revert_commit", EvidenceQuote: "This reverts commit " + landing.MergeSHA, BasisQuote: "Accept valid input"}
+			prior := escape
+			prior.HumanOverride = scenario == "human override"
+			discussion := tracker.ChangeDiscussion{ID: "prior", VersionID: version.ID, Escape: &prior}
+			data, err := json.Marshal(discussion)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, err := json.Marshal(storageJSONPayload{Organization: string(f.project.OrganizationID), Project: string(f.project.ID), Family: "change_evidence", Row: 1, Data: data})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref, err := prepareChangeContent(f.service.contentContext(t.Context()), string(f.project.OrganizationID), payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			envelope, err := json.Marshal(map[string]any{"_storage_archive": storageJSONReference{Organization: string(f.project.OrganizationID), Project: string(f.project.ID), Family: "change_evidence", Row: 1, Reference: ref}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario != "legacy archive" && scenario != "human override" {
+				envelope = data
+			}
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'discussion',?)", f.change.ID, version.ID, string(envelope)); err != nil {
+				t.Fatal(err)
+			}
+			for range claimEvidenceLimit + 1 {
+				if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'discussion','{}')", f.change.ID, version.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			measurement := &changeWriterMeasurement{}
+			injected, historyInWriter := false, false
+			ctx := context.WithValue(t.Context(), changeWriterMeasurementKey{}, measurement)
+			ctx = withRequestTiming(ctx, &requestTiming{
+				writerTransaction: func(active bool) { measurement.active = active },
+				writerTrace: func(query string, _ []driver.NamedValue) {
+					if strings.Contains(query, "escape_occurrence_id") && strings.Contains(query, "SELECT record_json") {
+						historyInWriter = true
+					}
+				},
+				trace: func(query string, _ []driver.NamedValue) {
+					if (scenario != "concurrent assessment" && scenario != "changed landing") || injected || !strings.Contains(query, "FROM change_requests c JOIN issues i") {
+						return
+					}
+					injected = true
+					if scenario == "changed landing" {
+						if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE quality_landings SET record_json='{}' WHERE version_id=?", version.ID); err != nil {
+							t.Fatal(err)
+						}
+						return
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'discussion',?)", f.change.ID, version.ID, string(data)); err != nil {
+						t.Fatal(err)
+					}
+				},
+			})
+			request := tracker.DiscussChange{Mutation: tracker.Mutation{IdempotencyKey: "prepared-escape"}, VersionID: version.ID, Body: "Assessment", Escape: &escape}
+			response := httptest.NewRecorder()
+			f.service.Handler().ServeHTTP(response, newHubAPIRequest(t, http.MethodPost, f.path+"/discussion", f.token, request).WithContext(ctx))
+			want := http.StatusOK
+			if scenario == "concurrent assessment" || scenario == "changed landing" {
+				want = http.StatusConflict
+			}
+			if scenario == "human override" {
+				want = http.StatusUnprocessableEntity
+			}
+			requireNativeStatus(t, response, want)
+			var receipts int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE command_key='prepared-escape'").Scan(&receipts); err != nil {
+				t.Fatal(err)
+			}
+			if want != http.StatusOK && receipts != 0 {
+				t.Fatalf("rejected assessment saved %d receipts", receipts)
+			}
+			if measurement.content != 0 || historyInWriter {
+				t.Fatalf("writer scanned history=%v or accessed %d objects", historyInWriter, measurement.content)
+			}
+			if (scenario == "concurrent assessment" || scenario == "changed landing") && !injected {
+				t.Fatal("concurrent assessment was not injected")
+			}
+		})
+	}
+}

@@ -465,7 +465,7 @@ func readClaimReviews(ctx context.Context, q nativeQueryer, change, version stri
 		return nil, err
 	}
 	if unknown {
-		return claimEvidenceRows[tracker.ChangeReview](ctx, q, `SELECT record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' ORDER BY sequence`, change, version)
+		return readLegacyClaimReviews(ctx, q, change, version)
 	}
 	type record struct {
 		sequence int64
@@ -510,6 +510,75 @@ func readClaimReviews(ctx context.Context, q nativeQueryer, change, version stri
 	for _, sequence := range keys {
 		var review tracker.ChangeReview
 		if err := decodeStorageJSON(ctx, []byte(records[sequence]), &review); err != nil {
+			return nil, err
+		}
+		reviews = append(reviews, review)
+	}
+	return reviews, nil
+}
+
+func readLegacyClaimReviews(ctx context.Context, q nativeQueryer, change, version string) ([]tracker.ChangeReview, error) {
+	type selectedReview struct {
+		sequence int64
+		review   tracker.ChangeReview
+	}
+	selected := make(map[string]selectedReview)
+	var after int64
+	for {
+		type reviewRecord struct {
+			sequence int64
+			raw      string
+		}
+		records, err := readChangeLegacyPage(ctx, q, `SELECT sequence,record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' AND sequence>? ORDER BY sequence LIMIT ?`, func(rows *sql.Rows) (reviewRecord, error) {
+			var record reviewRecord
+			err := rows.Scan(&record.sequence, &record.raw)
+			return record, err
+		}, change, version, after, changeLegacyReadLimit)
+		if err != nil {
+			return nil, err
+		}
+		for _, record := range records {
+			after = record.sequence
+			var review tracker.ChangeReview
+			if err := decodeChangeColumnsJSON(ctx, []byte(record.raw), &review); err != nil {
+				return nil, err
+			}
+			kind := "human:" + review.Actor.PrincipalID
+			switch {
+			case review.SecurityAudit != nil:
+				kind = "audit"
+				if review.SecurityAudit.Landing {
+					kind = "landing_audit"
+				}
+				if review.Decision == "changes_requested" {
+					selected[kind+":rejection"] = selectedReview{record.sequence, review}
+				}
+			case review.ImplementationReview != nil:
+				kind = "implementation"
+			case review.Validator != nil:
+				kind = "validator"
+			case review.Decision == "commented":
+				continue
+			}
+			selected[kind] = selectedReview{record.sequence, review}
+		}
+		if len(records) < changeLegacyReadLimit {
+			break
+		}
+	}
+	bySequence := make(map[int64]tracker.ChangeReview)
+	for _, value := range selected {
+		bySequence[value.sequence] = value.review
+	}
+	keys := make([]int64, 0, len(bySequence))
+	for sequence := range bySequence {
+		keys = append(keys, sequence)
+	}
+	slices.Sort(keys)
+	reviews := make([]tracker.ChangeReview, 0, len(keys))
+	for _, sequence := range keys {
+		review := bySequence[sequence]
+		if err := hydrateChangeRecord(ctx, q, &review); err != nil {
 			return nil, err
 		}
 		reviews = append(reviews, review)
