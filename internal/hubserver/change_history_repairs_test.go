@@ -697,7 +697,11 @@ func TestLegacyClaimReviewsRetainGateAuthority(t *testing.T) {
 	)
 	for _, review := range reviews {
 		review.VersionID = version.ID
-		if err := insertChangeEvidence(t.Context(), tx, f.change.ID, version.ID, "review", "", review); err != nil {
+		raw, err := marshalNative(review)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review',?)`, f.change.ID, version.ID, raw); err != nil {
 			t.Fatal(err)
 		}
 	}
