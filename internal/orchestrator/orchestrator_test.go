@@ -1559,93 +1559,106 @@ func TestRunSchedulesRetryAfterRunnerPanic(t *testing.T) {
 func TestRunPausesMeteredBackendAfterQuotaErrorWithoutBreakerStrike(t *testing.T) {
 	t.Parallel()
 
-	now := time.Now().UTC()
-	resetAt := now.Add(44 * time.Minute)
-	issue := testIssue("issue-quota-exhausted", "example-org/example-project#1", "Todo")
-	tracker := newFakeConnector(issue)
-	backendBody := fmt.Sprintf(`{"type":"error","error":{"type":"usageLimitExceeded","resetAt":%d,"message":"usage limit reached"}}`, resetAt.Unix())
-	capacityErr := backendcapacity.NewError(
-		backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"},
-		backendcapacity.Details{Type: backendcapacity.ErrorTypeUsageLimit, Kind: "usageLimitExceeded", Reason: "provider usage limit reached", ResetAt: &resetAt},
-		instantBackendError{body: backendBody},
-	)
-	runner := &staticRunner{err: capacityErr}
+	synctest.Test(t, func(t *testing.T) {
+		now := time.Now().UTC()
+		resetAt := now.Add(44 * time.Minute)
+		issue := testIssue("issue-quota-exhausted", "example-org/example-project#1", "Todo")
+		tracker := newFakeConnector(issue)
+		backendBody := fmt.Sprintf(`{"type":"error","error":{"type":"usageLimitExceeded","resetAt":%d,"message":"usage limit reached"}}`, resetAt.Unix())
+		capacityErr := backendcapacity.NewError(
+			backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"},
+			backendcapacity.Details{Type: backendcapacity.ErrorTypeUsageLimit, Kind: "usageLimitExceeded", Reason: "provider usage limit reached", ResetAt: &resetAt},
+			instantBackendError{body: backendBody},
+		)
+		runner := &staticRunner{err: capacityErr}
 
-	orch, err := orchestrator.New(orchestrator.Config{
-		BillingMode:            workflowconfig.BillingModeMetered,
-		PollInterval:           time.Millisecond,
-		MaxConcurrentAgents:    1,
-		MaxRetryBackoff:        time.Hour,
-		FailureRetryBaseDelay:  time.Hour,
-		ActiveStates:           []string{"Todo", "In Progress"},
-		ObservedStates:         []string{"Blocked"},
-		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
-		ContinuationRetryDelay: time.Second,
-	}, orchestrator.Dependencies{
-		Connector: tracker,
-		Runner:    runner,
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	stop := runOrchestrator(t, orch)
-	defer stop()
+		orch, err := orchestrator.New(orchestrator.Config{
+			BillingMode:            workflowconfig.BillingModeMetered,
+			PollInterval:           time.Millisecond,
+			MaxConcurrentAgents:    1,
+			MaxRetryBackoff:        time.Hour,
+			FailureRetryBaseDelay:  time.Hour,
+			ActiveStates:           []string{"Todo", "In Progress"},
+			ObservedStates:         []string{"Blocked"},
+			TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
+			ContinuationRetryDelay: time.Second,
+		}, orchestrator.Dependencies{
+			Connector: tracker,
+			Runner:    runner,
+		})
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		done := make(chan error, 1)
+		go func() { done <- orch.Run(ctx) }()
+		defer func() {
+			cancel()
+			if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+				t.Fatalf("Run() error = %v", err)
+			}
+		}()
 
-	state := waitForState(t, orch, func(state orchestrator.State) bool {
-		_, ok := state.Retry[issue.ID]
-		return ok
-	})
-
-	refresh, err := orch.RequestRefresh(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	testenv.WaitUntil(t, t.Context(), func() error {
+		synctest.Wait()
+		state, err := orch.State(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := state.Retry[issue.ID]; !ok {
+			t.Fatalf("Retry[%q] missing after quota error", issue.ID)
+		}
+		refresh, err := orch.RequestRefresh(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
 		state, err = orch.State(t.Context())
 		if err != nil {
-			return err
+			t.Fatal(err)
 		}
 		manual := state.Snapshot(time.Now()).Refresh.Manual
 		if manual == nil || manual.ID != refresh.RequestID || manual.CompletedAt == nil {
-			return errors.New("manual refresh has not completed")
+			t.Fatal("manual refresh has not completed")
 		}
-		return nil
-	})
 
-	if got := runner.calls.Load(); got != 1 {
-		t.Fatalf("runner calls = %d, want one capacity probe", got)
-	}
-	if _, ok := state.Blocked[issue.ID]; ok {
-		t.Fatalf("Blocked[%q] present after quota error", issue.ID)
-	}
-	retry := state.Retry[issue.ID]
-	if retry.Issue.State != "Todo" {
-		t.Fatalf("Retry[%q].Issue.State = %q, want pre-probe Todo state", issue.ID, retry.Issue.State)
-	}
-	if retry.Attempt != 0 {
-		t.Fatalf("Retry[%q].Attempt = %d, want unchanged initial attempt", issue.ID, retry.Attempt)
-	}
-	scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
-	outage, ok := state.BackendOutages[scope.Key()]
-	if !ok {
-		t.Fatalf("BackendOutages[%q] missing after quota error", scope.Key())
-	}
-	if !outage.ResetAt.Equal(resetAt) || !outage.ResumeAt.Equal(resetAt.Add(5*time.Second)) {
-		t.Fatalf("provider window = reset %s resume %s, want reset %s resume %s", outage.ResetAt, outage.ResumeAt, resetAt, resetAt.Add(5*time.Second))
-	}
-	// Bounded probes can recover early after an external quota reset (#3638).
-	// The provider reset remains evidence, rather than delaying the first probe.
-	probeAt := outage.LastObservedAt.Add(5 * time.Minute)
-	if !outage.NextProbeAt.Equal(probeAt) {
-		t.Fatalf("NextProbeAt = %s, want bounded probe %s", outage.NextProbeAt, probeAt)
-	}
-	if !retry.DueAt.Equal(probeAt) {
-		t.Fatalf("Retry[%q].DueAt = %s, want bounded probe %s", issue.ID, retry.DueAt, probeAt)
-	}
-	updates := tracker.stateUpdateCalls()
-	if len(updates) < 2 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: "Todo"}) {
-		t.Fatalf("state updates = %#v, want capacity probe restored to Todo", updates)
-	}
+		if got := runner.calls.Load(); got != 1 {
+			t.Fatalf("runner calls = %d, want one capacity probe", got)
+		}
+		if _, ok := state.Blocked[issue.ID]; ok {
+			t.Fatalf("Blocked[%q] present after quota error", issue.ID)
+		}
+		if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
+			t.Fatalf("FailureBreaker = %#v, want no quota strike", state.FailureBreaker)
+		}
+		retry := state.Retry[issue.ID]
+		if retry.Issue.State != "Todo" {
+			t.Fatalf("Retry[%q].Issue.State = %q, want pre-probe Todo state", issue.ID, retry.Issue.State)
+		}
+		if retry.Attempt != 0 {
+			t.Fatalf("Retry[%q].Attempt = %d, want unchanged initial attempt", issue.ID, retry.Attempt)
+		}
+		scope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
+		outage, ok := state.BackendOutages[scope.Key()]
+		if !ok {
+			t.Fatalf("BackendOutages[%q] missing after quota error", scope.Key())
+		}
+		if !outage.ResetAt.Equal(resetAt) || !outage.ResumeAt.Equal(resetAt.Add(5*time.Second)) {
+			t.Fatalf("provider window = reset %s resume %s, want reset %s resume %s", outage.ResetAt, outage.ResumeAt, resetAt, resetAt.Add(5*time.Second))
+		}
+		// Bounded probes can recover early after an external quota reset (#3638).
+		// The provider reset remains evidence, rather than delaying the first probe.
+		probeAt := outage.LastObservedAt.Add(5 * time.Minute)
+		if !outage.NextProbeAt.Equal(probeAt) {
+			t.Fatalf("NextProbeAt = %s, want bounded probe %s", outage.NextProbeAt, probeAt)
+		}
+		if !retry.DueAt.Equal(probeAt) {
+			t.Fatalf("Retry[%q].DueAt = %s, want bounded probe %s", issue.ID, retry.DueAt, probeAt)
+		}
+		updates := tracker.stateUpdateCalls()
+		if len(updates) < 2 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: "Todo"}) {
+			t.Fatalf("state updates = %#v, want capacity probe restored to Todo", updates)
+		}
+	})
 }
 
 func TestRunRedispatchesDueRetryWithExistingClaim(t *testing.T) {
