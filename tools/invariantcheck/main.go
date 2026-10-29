@@ -147,7 +147,7 @@ func runBehavior(p policy, stdout, stderr io.Writer) error {
 		for i, name := range names {
 			patterns[i] = regexp.QuoteMeta(name)
 		}
-		cmd := exec.CommandContext(context.Background(), "go", "test", "-json", "-count=1")
+		cmd := exec.CommandContext(context.Background(), "go", "test", "-json")
 		// Names are regexp-escaped and packages must start with ./; neither can
 		// introduce a Go flag or shell syntax. Keep the executable argv fixed.
 		cmd.Args = append(cmd.Args, "-run", "^("+strings.Join(patterns, "|")+")$", pkg)

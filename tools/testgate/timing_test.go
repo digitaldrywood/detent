@@ -244,12 +244,12 @@ func TestGoTestCoverageArgs(t *testing.T) {
 		skip    string
 		want    string
 	}{
-		{"ordinary", false, "", "", "", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s ./internal/hubserver"},
-		{"race", true, "", "", "", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s -race ./internal/hubserver"},
-		{"combined", true, "current.out", "", "", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s -race -covermode=atomic -coverprofile=current.out ./internal/hubserver"},
-		{"coverage", false, "current.out", "", "", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s -covermode=atomic -coverprofile=current.out ./internal/hubserver"},
-		{"run partition", true, "", "^Test[A-C]", "", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s -race -run=^Test[A-C] ./internal/hubserver"},
-		{"skip partition", true, "", "", "^Test[A-C]", "-json -count=1 -p=1 -parallel=2 -timeout=15m0s -race -skip=^Test[A-C] ./internal/hubserver"},
+		{"ordinary", false, "", "", "", "-json -p=1 -parallel=2 -timeout=15m0s ./internal/hubserver"},
+		{"race", true, "", "", "", "-json -p=1 -parallel=2 -timeout=15m0s -race ./internal/hubserver"},
+		{"combined", true, "current.out", "", "", "-json -p=1 -parallel=2 -timeout=15m0s -race -covermode=atomic -coverprofile=current.out ./internal/hubserver"},
+		{"coverage", false, "current.out", "", "", "-json -p=1 -parallel=2 -timeout=15m0s -covermode=atomic -coverprofile=current.out ./internal/hubserver"},
+		{"run partition", true, "", "^Test[A-C]", "", "-json -p=1 -parallel=2 -timeout=15m0s -race -run=^Test[A-C] ./internal/hubserver"},
+		{"skip partition", true, "", "", "^Test[A-C]", "-json -p=1 -parallel=2 -timeout=15m0s -race -skip=^Test[A-C] ./internal/hubserver"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
