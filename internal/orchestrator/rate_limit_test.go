@@ -1844,7 +1844,7 @@ func TestTickBacksOffGitHubLookupsDuringProviderOutage(t *testing.T) {
 	providerScope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
 	state.BackendOutages[providerScope.Key()] = BackendOutage{
 		Scope:       providerScope,
-		Kind:        string(backendcapacity.ErrorTypeUsageLimit),
+		Kind:        "http_503",
 		Reason:      "provider responses unavailable",
 		DetectedAt:  now.Add(-time.Minute),
 		ResumeAt:    now.Add(5 * time.Minute),
@@ -1907,6 +1907,7 @@ func TestTickProviderProbeWindowReachesCandidateFetch(t *testing.T) {
 	providerScope := backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}
 	state.BackendOutages[providerScope.Key()] = BackendOutage{
 		Scope:       providerScope,
+		Kind:        "http_503",
 		NextProbeAt: now,
 	}
 	state.BackendOutages[githubLookupBackoffScope.Key()] = BackendOutage{

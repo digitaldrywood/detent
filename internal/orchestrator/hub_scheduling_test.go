@@ -72,9 +72,9 @@ func TestHubSchedulingCycle(t *testing.T) {
 		{name: "native HTTP outage reset admits a canary", native: true, capacityWait: "reset", wantRunning: true},
 		{name: "native HTTP outage probe admits a canary before reset", native: true, capacityWait: "probe", wantRunning: true},
 		{name: "native backend running canary makes zero claims", native: true, capacityWait: "running"},
-		{name: "quota recovery dispatches on subsequent scheduler pass", native: true, capacityWait: "quota-recovered", wantRunning: true},
-		{name: "quota polling without eligible work", native: true, capacityWait: "quota-idle", empty: true},
-		{name: "unknown quota blocks claims", native: true, capacityWait: "quota-unknown"},
+		{name: "legacy quota hold dispatches immediately", native: true, capacityWait: "quota-recovered", wantRunning: true},
+		{name: "quota never polled without eligible work", native: true, capacityWait: "quota-idle", empty: true},
+		{name: "unknown quota permits claims", native: true, capacityWait: "quota-unknown", wantRunning: true},
 		{name: "native other backend stays eligible", native: true, capacityWait: "other", wantRunning: true},
 	}
 	for _, test := range tests {
@@ -154,8 +154,9 @@ func TestHubSchedulingCycle(t *testing.T) {
 						}
 					},
 				}
-				outage := BackendOutage{Scope: scope, ResumeAt: now.Add(time.Hour), NextProbeAt: now.Add(time.Minute)}
+				outage := BackendOutage{Scope: scope, Kind: "http_503", ResumeAt: now.Add(time.Hour), NextProbeAt: now.Add(time.Minute)}
 				if strings.HasPrefix(test.capacityWait, "quota-") {
+					outage.Kind = "subscription_window_exhausted"
 					orch.capacityReader = backendCapacityTestController{read: func(ctx context.Context, got backendcapacity.Scope, _ time.Time) (runpkg.CapacityObservation, error) {
 						if got != scope {
 							t.Fatalf("read scope=%#v", got)
@@ -199,18 +200,8 @@ func TestHubSchedulingCycle(t *testing.T) {
 			beforeRetry := state.Retry["preserved"]
 			beforeBreaker := cloneProjectFailureBreaker(state.FailureBreaker)
 
-			if test.capacityWait == "quota-recovered" {
-				held := state.BackendOutages[backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"}.Key()]
-				held.NextProbeAt = now.Add(cfg.PollInterval)
-				state.BackendOutages[held.Scope.Key()] = held
-				orch.tick(t.Context(), &state, now)
-				if scheduling.claims != 0 || capacityReads != 0 {
-					t.Fatal("paused quota claimed work or read before poll")
-				}
-				now = now.Add(cfg.PollInterval)
-			}
 			orch.tick(t.Context(), &state, now)
-			if strings.HasPrefix(test.capacityWait, "quota-") && capacityReads != 1 {
+			if strings.HasPrefix(test.capacityWait, "quota-") && capacityReads != 0 {
 				t.Fatalf("status reads=%d", capacityReads)
 			}
 			if test.interrupted {
@@ -281,9 +272,6 @@ func TestHubSchedulingCycle(t *testing.T) {
 				}
 			}
 			wantFetches := 1 + test.repeats
-			if test.capacityWait == "quota-recovered" {
-				wantFetches++
-			}
 			if test.wantRunning && (scheduling.fetches != wantFetches || scheduling.adoptions != wantAdoptions || scheduling.releases != wantReleases) {
 				t.Fatalf("Hub scheduling calls = fetch %d adopt %d release %d", scheduling.fetches, scheduling.adoptions, scheduling.releases)
 			}

@@ -310,7 +310,8 @@ func TestCapacityStatus(t *testing.T) {
 				Primary:   &telemetry.RateLimitBucket{Limit: 100, Remaining: 4},
 				Secondary: &telemetry.RateLimitBucket{Limit: 100, Remaining: 50},
 			},
-			wantReported: true,
+			wantReported:  true,
+			wantAvailable: true,
 		},
 		{
 			name: "provider still reports reached window",
@@ -319,7 +320,7 @@ func TestCapacityStatus(t *testing.T) {
 				Primary:     &telemetry.RateLimitBucket{Limit: 100, Remaining: 20},
 			},
 			wantReported:  true,
-			wantExhausted: true,
+			wantAvailable: true,
 		},
 	}
 

@@ -67,6 +67,8 @@ Use the selected project's actual tracker and supplied context. A GitHub reposit
 
 ## Mechanism budget
 
+Subscription provider quota is never a constraint. The operator resets subscription quota as needed, so quota usage never affects dispatch, claim eligibility, capacity, scheduling or retries, and no code reads subscription usage to decide any of them.
+
 Detent's self-protection mechanisms (brakes, breakers, leases, parks, recovery sweeps, revocations, reconcilers) interact, and those interactions cause most incidents, so the set may not grow.
 
 - INV-3: a change that adds or expands a mechanism removes or consolidates an existing one in the same change. "Add a guard for the new case" is not a fix.

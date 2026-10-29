@@ -25,15 +25,15 @@ func TestRunnerCapacityEvidence(t *testing.T) {
 		{"missing configuration", func(r *Runner) { r.CapacityConfig = nil }, -1, "unknown"},
 		{"stale configuration", func(r *Runner) { r.CapacityConfig.ObservedAt = now.Add(-HeartbeatTimeout) }, -1, "unknown"},
 		{"stale heartbeat", func(r *Runner) { r.LastHeartbeatAt = now.Add(-HeartbeatTimeout) }, -1, "unknown"},
-		{"stale provider", func(r *Runner) { r.ProviderCapacity[0].ObservedAt = now.Add(-providercapacity.MaxAge) }, -1, "unknown"},
-		{"future provider", func(r *Runner) { r.ProviderCapacity[0].ObservedAt = now.Add(time.Second) }, -1, "unknown"},
+		{"stale provider", func(r *Runner) { r.ProviderCapacity[0].ObservedAt = now.Add(-providercapacity.MaxAge) }, 6, "applied"},
+		{"future provider", func(r *Runner) { r.ProviderCapacity[0].ObservedAt = now.Add(time.Second) }, 6, "applied"},
 		{"missing provider", func(r *Runner) { r.ProviderCapacity = nil }, -1, "unknown"},
 		{"multiple provider accounts", func(r *Runner) {
 			other := r.ProviderCapacity[0]
 			other.AccountAlias = "other"
 			r.ProviderCapacity = append(r.ProviderCapacity, other)
 		}, -1, "unknown"},
-		{"provider exhaustion", func(r *Runner) { r.ProviderCapacity[0].State = "exhausted" }, 0, "partially_applied"},
+		{"provider exhaustion", func(r *Runner) { r.ProviderCapacity[0].State = "exhausted" }, 6, "applied"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			r := Runner{Binding: Binding{RunnerID: "runner"}, Routing: Routing{CapacityLimit: 6}, HostCapacity: 6, ReportedCapacity: 6, LastHeartbeatAt: now, Health: "online", ConnectionHealth: "online",

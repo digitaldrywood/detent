@@ -216,7 +216,7 @@ func (c *placementCapacity) available(r placementRunner, project tracker.Project
 	var selected providercapacity.Report
 	providerFree := 0
 	for _, view := range r.ProviderCapacity {
-		if view.State == "exhausted" || provider.Model != "" && !view.Supports(provider) {
+		if provider.Model != "" && !view.Supports(provider) {
 			continue
 		}
 		remaining := free
@@ -482,9 +482,6 @@ func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, sco
 				continue
 			}
 			known = true
-			if view.State == "exhausted" {
-				continue
-			}
 			remaining := result.SpriteTarget
 			if view.MaxConcurrent > 0 {
 				remaining = view.MaxConcurrent - view.Used
