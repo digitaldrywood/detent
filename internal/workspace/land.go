@@ -462,7 +462,19 @@ func deliveredLanding(ctx context.Context, path string, opts LandOptions, base, 
 		merge = strings.TrimSpace(output)
 	}
 	if merge == "" {
-		return LandResult{}, nil
+		sourceBase, err := runGitAt(ctx, path, "merge-base", base, opts.HeadSHA)
+		if err != nil {
+			return LandResult{}, fmt.Errorf("inspect delivered source base: %w", err)
+		}
+		incorporated, err := incorporatedSourceDelta(ctx, path, strings.TrimSpace(sourceBase), base, opts.HeadSHA)
+		var refusal *LandRefusal
+		if errors.As(err, &refusal) && refusal.Kind == LandRefusalConflict {
+			return LandResult{}, nil
+		}
+		if err != nil || !incorporated {
+			return LandResult{}, err
+		}
+		merge = base
 	}
 	return LandResult{MergeSHA: merge, BaseRef: target, BaseBefore: base, Method: method}, nil
 }
@@ -520,25 +532,33 @@ func (l *LocalGit) VerifyIntegratedChange(ctx context.Context, info Info, issue 
 			return LandResult{}, refuse(LandRefusalHeadMoved, "the published source and final base do not identify the integration branch")
 		}
 	}
-	delta, err := runGitAt(ctx, normalized.Path, "diff", "--no-ext-diff", "--no-textconv", "--name-only", sourceBase, opts.HeadSHA)
+	incorporated, err := incorporatedSourceDelta(ctx, normalized.Path, sourceBase, base, opts.HeadSHA)
 	if err != nil {
 		return LandResult{}, err
 	}
-	if strings.TrimSpace(delta) == "" {
-		return LandResult{}, refuse(LandRefusalNothing, "the published source has no deliverable to verify")
-	}
-	merged, err := runGitAt(ctx, normalized.Path, "merge-tree", "--write-tree", "--merge-base="+sourceBase, base, opts.HeadSHA)
-	if err != nil {
-		return LandResult{}, refuse(LandRefusalConflict, "the published source delta is not proven incorporated on the current integration base")
-	}
-	tree, err := runGitAt(ctx, normalized.Path, "rev-parse", base+"^{tree}")
-	if err != nil {
-		return LandResult{}, err
-	}
-	if strings.TrimSpace(merged) != strings.TrimSpace(tree) {
+	if !incorporated {
 		return LandResult{}, refuse(LandRefusalNothing, "the current integration base does not incorporate the published source delta")
 	}
 	return LandResult{MergeSHA: base, BaseRef: target, BaseBefore: base, Method: opts.Method}, nil
+}
+
+func incorporatedSourceDelta(ctx context.Context, path, sourceBase, base, head string) (bool, error) {
+	delta, err := runGitAt(ctx, path, "diff", "--no-ext-diff", "--no-textconv", "--name-only", sourceBase, head)
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(delta) == "" {
+		return false, refuse(LandRefusalNothing, "the published source has no deliverable to verify")
+	}
+	merged, err := runGitAt(ctx, path, "merge-tree", "--write-tree", "--merge-base="+sourceBase, base, head)
+	if err != nil {
+		return false, refuse(LandRefusalConflict, "the published source delta is not proven incorporated on the current integration base")
+	}
+	tree, err := runGitAt(ctx, path, "rev-parse", base+"^{tree}")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(merged) == strings.TrimSpace(tree), nil
 }
 
 func (l *LocalGit) removeLandingWorktree(ctx context.Context, workspacePath, staging string) error {

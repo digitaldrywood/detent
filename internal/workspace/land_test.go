@@ -445,21 +445,32 @@ func TestLocalGitLandingAlreadyContains(t *testing.T) {
 			name        string
 			method      string
 			ancestor    bool
+			cherryPick  bool
+			empty       bool
+			normal      bool
 			trailer     string
 			partial     bool
 			unpublished bool
 			mismatch    string
 			wantReuse   bool
+			wantCurrent bool
 			wantKind    string
 		}{
 			{name: "ancestor squash", method: "squash", ancestor: true, wantReuse: true},
 			{name: "ancestor merge", method: "merge", ancestor: true, wantReuse: true},
 			{name: "ancestor rebase", method: "rebase", ancestor: true, wantReuse: true},
 			{name: "exact squash trailer", trailer: "exact", wantReuse: true},
-			{name: "different head of same Change", trailer: "different head", wantKind: LandRefusalNothing},
-			{name: "different Change of same head", trailer: "different change", wantKind: LandRefusalNothing},
-			{name: "trailer with extra text", trailer: "extra text", wantKind: LandRefusalNothing},
-			{name: "identical content without trailer", wantKind: LandRefusalNothing},
+			{name: "different head of same Change", trailer: "different head", wantReuse: true, wantCurrent: true},
+			{name: "different Change of same head", trailer: "different change", wantReuse: true, wantCurrent: true},
+			{name: "trailer with extra text", trailer: "extra text", wantReuse: true, wantCurrent: true},
+			{name: "identical content without trailer", wantReuse: true, wantCurrent: true},
+			{name: "cherry-picked squash", method: "squash", cherryPick: true, wantReuse: true, wantCurrent: true},
+			{name: "cherry-picked merge", method: "merge", cherryPick: true, wantReuse: true, wantCurrent: true},
+			{name: "cherry-picked rebase", method: "rebase", cherryPick: true, wantReuse: true, wantCurrent: true},
+			{name: "empty own delta squash", method: "squash", empty: true, wantKind: LandRefusalNothing},
+			{name: "empty own delta merge", method: "merge", empty: true, wantKind: LandRefusalNothing},
+			{name: "empty own delta rebase", method: "rebase", empty: true, wantKind: LandRefusalNothing},
+			{name: "normal squash", method: "squash", normal: true},
 			{name: "partial change is not already delivered", partial: true, trailer: "different head"},
 			{name: "unpublished trailer still requires push", trailer: "exact", unpublished: true},
 			{name: "delivered head cannot bypass current head verification", ancestor: true, mismatch: "head", wantKind: LandRefusalHeadMoved},
@@ -474,9 +485,16 @@ func TestLocalGitLandingAlreadyContains(t *testing.T) {
 				f := newLandingFixture(t)
 				base := f.remoteMain(t)
 				integrated := f.head
-				if test.ancestor {
+				if test.empty {
+					runGit(t, f.info.Path, "revert", "--no-commit", base+".."+f.head)
+					runGit(t, f.info.Path, "commit", "-m", "revert source delta")
+					f.head = strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD"))
+				} else if test.cherryPick {
+					f.advanceMain(t, "independent.txt", "independent base work\n")
+					runGit(t, f.source, "cherry-pick", base+".."+f.head)
+				} else if test.ancestor {
 					runGit(t, f.source, "merge", "--ff-only", f.head)
-				} else {
+				} else if !test.normal {
 					squashedHead := f.head
 					if test.partial {
 						squashedHead = strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^"))
@@ -503,10 +521,13 @@ func TestLocalGitLandingAlreadyContains(t *testing.T) {
 					f.advanceMain(t, "later.txt", "later independent delivery\n")
 				}
 				before := f.remoteMain(t)
+				if test.wantCurrent {
+					integrated = before
+				}
 				if err := os.WriteFile(filepath.Join(f.remote, "hooks", "pre-receive"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
 					t.Fatal(err)
 				}
-				if test.partial || test.unpublished {
+				if test.partial || test.unpublished || test.normal {
 					if err := os.Remove(filepath.Join(f.remote, "hooks", "pre-receive")); err != nil {
 						t.Fatal(err)
 					}
@@ -768,10 +789,10 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 		}, wantKind: LandRefusalHeadMoved},
 		{name: "nothing left to land", arrange: func(t *testing.T, f landingFixture) LandOptions {
 			t.Helper()
-			runGit(t, f.source, "merge", "--squash", f.head)
-			runGit(t, f.source, "commit", "-m", "unattributed squash")
-			runGit(t, f.source, "push", "origin", "main")
-			return LandOptions{HeadSHA: f.head, Method: "squash"}
+			base := f.remoteMain(t)
+			runGit(t, f.info.Path, "revert", "--no-commit", base+".."+f.head)
+			runGit(t, f.info.Path, "commit", "-m", "revert source delta")
+			return LandOptions{HeadSHA: strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD")), Method: "squash"}
 		}, wantKind: LandRefusalNothing},
 		{name: "base branch requires pull requests", arrange: func(t *testing.T, f landingFixture) LandOptions {
 			t.Helper()
@@ -900,17 +921,17 @@ func TestLocalGitLandChangeReportsAKeptLanding(t *testing.T) {
 	if err := ForgetLanding(context.Background(), f.info); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: "squash"}); err == nil {
-		t.Fatal("after the hub has the landing, landing the same head again was not refused")
+	again, err = f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: "squash"})
+	if err != nil || again.MergeSHA != first.MergeSHA || again.Gate.Command != "" || f.remoteMain(t) != first.MergeSHA {
+		t.Fatalf("forgotten receipt did not reprove incorporation: result=%+v error=%v", again, err)
 	}
 	// A kept landing whose commit is no longer on the base is forgotten.
 	if err := RecordLanding(context.Background(), f.info, f.head, LandResult{MergeSHA: strings.Repeat("d", 40), BaseRef: "main", Method: "squash"}); err != nil {
 		t.Fatal(err)
 	}
-	var refusal *LandRefusal
-	_, err = f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: "squash"})
-	if !errors.As(err, &refusal) || refusal.Kind != LandRefusalNothing {
-		t.Fatalf("a stale kept landing was reported: %v", err)
+	again, err = f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: "squash"})
+	if err != nil || again.MergeSHA != first.MergeSHA || f.remoteMain(t) != first.MergeSHA {
+		t.Fatalf("stale receipt did not reprove incorporation: result=%+v error=%v", again, err)
 	}
 }
 
