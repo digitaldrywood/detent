@@ -25,12 +25,6 @@ AND (EXISTS (SELECT 1 FROM change_requests c
 WHERE c.organization_id=d.organization_id AND c.project_id=d.project_id AND c.claim_version_id=v.id)
 OR EXISTS (SELECT 1 FROM change_requests c
 WHERE c.organization_id=d.organization_id AND c.project_id=d.project_id AND c.claim_version_id IS NULL)))
-AND NOT EXISTS (SELECT 1 FROM change_versions v INDEXED BY change_versions_attempt_idx
-WHERE v.attempt_id IS NULL
-AND (EXISTS (SELECT 1 FROM change_requests c
-WHERE c.organization_id=d.organization_id AND c.project_id=d.project_id AND c.claim_version_id=v.id)
-OR EXISTS (SELECT 1 FROM change_requests c
-WHERE c.organization_id=d.organization_id AND c.project_id=d.project_id AND c.claim_version_id IS NULL)))
 AND d.id <> (SELECT latest.id FROM attempt_diffs latest
 WHERE latest.organization_id=d.organization_id AND latest.project_id=d.project_id AND latest.work_item_id=d.work_item_id AND latest.source=d.source
 ORDER BY latest.created_at DESC, latest.rowid DESC LIMIT 1)`
@@ -56,36 +50,81 @@ type diffBodyExpiryFile struct {
 
 func (s *Service) selectDiffBodyExpiryCandidates(ctx context.Context, cutoff time.Time) (diffBodyExpiryCandidates, error) {
 	var candidates diffBodyExpiryCandidates
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT d.id FROM attempt_diffs d
+	reader, err := s.database.reader.Conn(ctx)
+	if err != nil {
+		return candidates, err
+	}
+	defer reader.Close()
+	protectedProjects := make(map[[2]string]bool)
+	projectProtected := func(organization, project string) (bool, error) {
+		scope := [2]string{organization, project}
+		if protected, found := protectedProjects[scope]; found {
+			return protected, nil
+		}
+		var protected bool
+		err := reader.QueryRowContext(ctx, `SELECT
+EXISTS (SELECT 1 FROM change_requests c JOIN change_versions v ON v.id=c.claim_version_id
+WHERE c.organization_id=? AND c.project_id=? AND v.attempt_id IS NULL)
+OR (EXISTS (SELECT 1 FROM change_requests c
+WHERE c.organization_id=? AND c.project_id=? AND c.claim_version_id IS NULL)
+AND EXISTS (SELECT 1 FROM change_versions WHERE attempt_id IS NULL))`, organization, project, organization, project).Scan(&protected)
+		if err != nil {
+			return false, err
+		}
+		protectedProjects[scope] = protected
+		return protected, nil
+	}
+	rows, err := reader.QueryContext(ctx, `SELECT d.id,d.organization_id,d.project_id FROM attempt_diffs d
 WHERE (d.object_key<>'' OR EXISTS(SELECT 1 FROM attempt_diff_file_archives f WHERE f.diff_id=d.id))
-AND d.manifest_expired=0 AND `+supersededDiffBody+` LIMIT 32`, formatHubTime(cutoff))
+AND d.manifest_expired=0 AND `+supersededDiffBody, formatHubTime(cutoff))
 	if err != nil {
 		return candidates, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var id, organization, project string
+		if err := rows.Scan(&id, &organization, &project); err != nil {
 			return candidates, err
 		}
+		protected, err := projectProtected(organization, project)
+		if err != nil {
+			return candidates, err
+		}
+		if protected {
+			continue
+		}
 		candidates.manifests = append(candidates.manifests, id)
+		if len(candidates.manifests) == 32 {
+			break
+		}
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return candidates, err
 	}
-	rows, err = s.database.reader.QueryContext(ctx, `SELECT f.diff_id,f.position
+	rows, err = reader.QueryContext(ctx, `SELECT f.diff_id,f.position,d.organization_id,d.project_id
 FROM attempt_diff_files f JOIN attempt_diffs d ON d.id=f.diff_id
-WHERE f.patch_object<>'' AND f.patch_expired=0 AND `+supersededDiffBody+` LIMIT 32`, formatHubTime(cutoff))
+WHERE f.patch_object<>'' AND f.patch_expired=0 AND `+supersededDiffBody, formatHubTime(cutoff))
 	if err != nil {
 		return candidates, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var file diffBodyExpiryFile
-		if err := rows.Scan(&file.diffID, &file.position); err != nil {
+		var organization, project string
+		if err := rows.Scan(&file.diffID, &file.position, &organization, &project); err != nil {
 			return candidates, err
 		}
+		protected, err := projectProtected(organization, project)
+		if err != nil {
+			return candidates, err
+		}
+		if protected {
+			continue
+		}
 		candidates.files = append(candidates.files, file)
+		if len(candidates.files) == 32 {
+			break
+		}
 	}
 	return candidates, errors.Join(rows.Err(), rows.Close())
 }

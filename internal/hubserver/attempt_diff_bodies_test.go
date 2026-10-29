@@ -3,14 +3,19 @@ package hubserver
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"modernc.org/sqlite"
 
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/diffbody"
@@ -227,20 +232,74 @@ func TestAttemptDiffBodyMigrationAndRetention(t *testing.T) {
 }
 
 func TestAttemptDiffBodyExpiryCandidates(t *testing.T) {
+	var examined atomic.Int64
+	probe := fmt.Sprintf("diff_expiry_probe_%x", sha256.Sum256([]byte(t.TempDir())))
+	if err := sqlite.RegisterScalarFunction(probe, 1, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+		examined.Add(1)
+		return int64(1), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 	t.Parallel()
 	for _, test := range []struct {
 		name           string
 		archive        bool
 		claimAfterRead bool
 		unrelated      int
+		nullAttempts   int
+		otherTenant    bool
 	}{
 		{name: "bounded manifest and file expiry", unrelated: 10},
 		{name: "bounded expiry with project history", unrelated: 1000},
+		{name: "ten null attempts in another project", nullAttempts: 10},
+		{name: "ten thousand null attempts in another project", nullAttempts: 10000},
+		{name: "ten null attempts in another tenant", nullAttempts: 10, otherTenant: true},
+		{name: "ten thousand null attempts in another tenant", nullAttempts: 10000, otherTenant: true},
 		{name: "archived file manifest expiry", archive: true},
 		{name: "new claim protects selected bodies", claimAfterRead: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newAttemptDiffFixture(t)
+			if test.nullAttempts > 0 {
+				organization := f.project.OrganizationID
+				if test.otherTenant {
+					response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations", testHubAdminToken, map[string]any{"name": "Other tenant"})
+					requireNativeStatus(t, response, http.StatusCreated)
+					var other nativeOrganization
+					decodeHubResponse(t, response, &other)
+					organization = other.ID
+				}
+				other := newNativeFixture(t, f.service, organization, "other-project")
+				issue := other.create(t, "other-work")
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json,claim_version_id)
+VALUES ('change_null_history',?,?,?,'{}','version_null_1')`, organization, other.project.ID, issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?)
+INSERT INTO change_versions(id,change_id,number,record_json,attempt_id)
+SELECT 'version_null_'||i,'change_null_history',i,'{}',NULL FROM n`, test.nullAttempts); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json,claim_version_id)
+VALUES ('change_attempt_history',?,?,?,'{}','')`, f.project.OrganizationID, f.project.ID, f.issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_versions(id,change_id,number,record_json,attempt_id)
+VALUES ('version_attempt_history','change_attempt_history',1,'{}','attempt_old')`); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<40)
+INSERT INTO attempt_diffs(id,attempt_id,organization_id,project_id,work_item_id,source,seq,base_sha,head_sha,
+producer_kind,producer_id,producer_runner_id,producer_lease_id,producer_fencing_token,created_at,object_key)
+SELECT 'diff_legacy_'||i,'attempt_legacy',?,?,?,'attempt',i,'base','head','attempt','producer','runner','lease',1,?,'manifest' FROM n`,
+					organization, other.project.ID, issue.WorkItemID, formatHubTime(time.Now().Add(-40*24*time.Hour))); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO attempt_diff_files(diff_id,position,path,status,patch_object)
+SELECT id,0,'legacy.go','modified',id||'/0' FROM attempt_diffs WHERE attempt_id='attempt_legacy'`); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if test.unrelated > 0 {
 				if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?)
 INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json,claim_version_id)
@@ -284,7 +343,52 @@ SELECT id,2,organization_id,project_id,'archive','sha256',1,1 FROM attempt_diffs
 			if len(candidates.manifests) != 32 || len(candidates.files) != 32 {
 				t.Fatalf("candidate counts: manifests=%d files=%d, want 32 each", len(candidates.manifests), len(candidates.files))
 			}
-			if test.unrelated > 0 {
+			if test.nullAttempts > 0 {
+				for _, id := range candidates.manifests {
+					if strings.HasPrefix(id, "diff_legacy_") {
+						t.Fatalf("protected project's manifest selected for expiry: %s", id)
+					}
+				}
+				for _, file := range candidates.files {
+					if strings.HasPrefix(file.diffID, "diff_legacy_") {
+						t.Fatalf("protected project's file selected for expiry: %s", file.diffID)
+					}
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `ANALYZE`); err != nil {
+					t.Fatal(err)
+				}
+				for _, query := range []struct {
+					name      string
+					statement string
+					args      []any
+				}{
+					{"manifest", expireDiffBodyManifest, []any{candidates.manifests[0], formatHubTime(time.Now().Add(-diffBodyRetention))}},
+					{"file", expireDiffBodyFile, []any{candidates.files[0].diffID, candidates.files[0].position, formatHubTime(time.Now().Add(-diffBodyRetention))}},
+				} {
+					tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tx.Rollback()
+					examined.Store(0)
+					statement := strings.ReplaceAll(query.statement, "WHERE v.attempt_id", "WHERE "+probe+"(v.id) AND v.attempt_id")
+					result, err := tx.ExecContext(t.Context(), statement, query.args...)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if count, err := result.RowsAffected(); err != nil || count != 1 {
+						t.Fatalf("%s expiry updated %d rows: %v", query.name, count, err)
+					}
+					if err := tx.Rollback(); err != nil {
+						t.Fatal(err)
+					}
+					t.Logf("%s writer examined %d versions with %d unrelated NULL attempts", query.name, examined.Load(), test.nullAttempts)
+					if examined.Load() != 1 {
+						t.Errorf("%s writer examined %d versions, want only the candidate attempt's version", query.name, examined.Load())
+					}
+				}
+			}
+			if test.unrelated > 0 || test.nullAttempts > 0 {
 				if _, err := f.service.database.db.ExecContext(t.Context(), `ANALYZE`); err != nil {
 					t.Fatal(err)
 				}
