@@ -627,6 +627,11 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			return fmt.Errorf("verify startup listener: %w", err)
 		}
 		logger.Info("web server responding", "addr", listener.Addr().String(), "lifecycle", startupLifecycle.State())
+		if cfg.Restart != nil && cfg.Restart.control != nil {
+			if err := cfg.Restart.control.ready(ctx, cfg.Shutdown, serviceAddress, cfg.Build); err != nil {
+				return fmt.Errorf("adopt verified controller listener: %w", err)
+			}
+		}
 		cachedSnapshot, cached, loadErr := boardSnapshotStore.Load(ctx)
 		if loadErr != nil {
 			logger.Warn("load board snapshot failed", "error", loadErr)
@@ -858,9 +863,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 				if err := markHealthy(ctx); err != nil {
 					return err
 				}
-			}
-			if err := cfg.Restart.control.ready(ctx, cfg.Shutdown, serviceAddress, cfg.Build); err != nil {
-				return err
 			}
 			releaseStartupDispatch()
 			return nil
