@@ -995,16 +995,18 @@ func TestHealthSnapshotRefreshObservation(t *testing.T) {
 func TestHealthDetectorChangeContent(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name     string
-		archived bool
+		name        string
+		detailStore bool
 	}{
-		{name: "inline output"},
-		{name: "archived output", archived: true},
+		{name: "detail store", detailStore: true},
+		{name: "content handler"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "health.db")}
-			if test.archived {
+			if test.detailStore {
+				cfg.RunDetails = &memoryRunDetails{}
+			} else {
 				objects := &changeObjectFixture{}
 				cfg.Content = objects.call
 			}
@@ -1022,7 +1024,7 @@ func TestHealthDetectorChangeContent(t *testing.T) {
 			if err := service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM change_command_outputs WHERE version_id=?", version.ID).Scan(&outputs); err != nil {
 				t.Fatal(err)
 			}
-			if (outputs == 1) != test.archived {
+			if outputs != 1 {
 				t.Fatalf("archived command outputs=%d", outputs)
 			}
 			r := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Heartbeat)
