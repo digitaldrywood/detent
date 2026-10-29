@@ -20,6 +20,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
@@ -418,6 +419,80 @@ func TestVersionSourceAndDiffPayloadObjects(t *testing.T) {
 						t.Fatal("diff backfill changed reads")
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestPayloadPreparationPreservesMutationIDs(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		setup func(*testing.T) (*Service, tracker.OrganizationID, func(context.Context, *sql.Tx, time.Time) (string, error))
+	}{
+		{
+			name: "attempt diff",
+			setup: func(t *testing.T) (*Service, tracker.OrganizationID, func(context.Context, *sql.Tx, time.Time) (string, error)) {
+				f := newAttemptDiffFixture(t)
+				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+				request := f.request(1, tracker.AttemptDiffFile{Path: "example.go", Status: tracker.DiffStatusModified, Patch: "+example"})
+				return f.service, scope.organization, func(ctx context.Context, tx *sql.Tx, now time.Time) (string, error) {
+					_, err := storeAttemptDiff(ctx, tx, scope, f.attempt, string(f.issue.WorkItemID), request, now)
+					var hydration *claimHydration
+					if err != nil && !errors.As(err, &hydration) {
+						return "", err
+					}
+					var id string
+					readErr := tx.QueryRowContext(ctx, "SELECT id FROM attempt_diffs WHERE attempt_id=?", f.attempt).Scan(&id)
+					return id, errors.Join(err, readErr)
+				}
+			},
+		},
+		{
+			name: "conversation audience",
+			setup: func(t *testing.T) (*Service, tracker.OrganizationID, func(context.Context, *sql.Tx, time.Time) (string, error)) {
+				f := newConversationFixture(t)
+				record := f.create(t, f.record(f.owner, "Audience", f.service.config.now()))
+				return f.service, f.organization, func(ctx context.Context, tx *sql.Tx, now time.Time) (string, error) {
+					if err := f.store.recordAudience(ctx, tx, record.ID, f.owner, conversation.VisibilityPrivate, conversation.VisibilityShared, now); err != nil {
+						return "", err
+					}
+					var id string
+					err := tx.QueryRowContext(ctx, "SELECT id FROM conversation_audience_events WHERE conversation_id=?", record.ID).Scan(&id)
+					return id, err
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, organization, mutate := test.setup(t)
+			ctx := service.contentContext(t.Context())
+			var firstID, key string
+			passes := 0
+			if err := service.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
+				passes++
+				id, err := mutate(ctx, tx, now)
+				if id != "" {
+					if firstID == "" {
+						firstID = id
+					} else if id != firstID {
+						return fmt.Errorf("payload preparation changed mutation ID from %s to %s", firstID, id)
+					}
+				}
+				if err != nil {
+					return err
+				}
+				key, err = storedPayloadKey(ctx, string(organization), []byte(id))
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if passes < 2 || firstID == "" {
+				t.Fatalf("payload preparation passes=%d ID=%q", passes, firstID)
+			}
+			raw, err := readStoredPayload(ctx, key)
+			if err != nil || string(raw) != firstID {
+				t.Fatalf("archived mutation ID=%q want=%q error=%v", raw, firstID, err)
 			}
 		})
 	}

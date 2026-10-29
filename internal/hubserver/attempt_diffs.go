@@ -303,7 +303,7 @@ func storeAttemptDiff(ctx context.Context, tx *sql.Tx, scope nativeScope, attemp
 			break
 		}
 	}
-	id := newNativeID("diff")
+	id := payloadNativeID(ctx, "diff")
 	if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_diffs (id, attempt_id, organization_id, project_id, work_item_id,
 source, source_id, seq, base_sha, head_sha, producer_kind, producer_id, producer_runner_id, producer_lease_id, producer_fencing_token,
 file_count, patch_bytes, posted_bytes, truncated, created_at)
