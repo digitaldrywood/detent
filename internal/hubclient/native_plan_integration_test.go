@@ -380,11 +380,11 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 				if claimed {
 					_, authorityErr = h.native.ValidateLease(request.Context(), claim.lease)
 				}
-				response, releaseErr := transport.RoundTrip(request)
+				response, releaseErr := h.failChanges.RoundTrip(request)
 				finished <- nativePlanFinish{state: current.State, authorityLive: claimed && authorityErr == nil, err: errors.Join(readErr, authorityErr, releaseErr)}
 				return response, releaseErr
 			}
-			response, err := transport.RoundTrip(request)
+			response, err := h.failChanges.RoundTrip(request)
 			if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/release") {
 				current, readErr := h.native.Issue(request.Context(), tracker.NativeWorkItemID(issue.ID))
 				finished <- nativePlanFinish{state: current.State, err: errors.Join(err, readErr)}
@@ -606,6 +606,11 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 			t.Fatalf("resume refusal did not exercise the intended boundary: case=%s verification_calls=%d", resumeCase, provider.resumeVerified.Load())
 		}
 		assertInstanceRecoveryRetry(t, h, orch, issue.ID)
+		select {
+		case extra := <-finished:
+			t.Fatalf("duplicate release notification: %+v", extra)
+		default:
+		}
 		attempt, err := runtimeStore.WorkAttempt(t.Context(), refusalAttemptID)
 		var metadata struct {
 			RunMode string `json:"run_mode"`
