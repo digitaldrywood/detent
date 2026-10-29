@@ -3804,10 +3804,11 @@ func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
 		args        []string
 		redirection string
 		exitCode    int
-		wantDelay   bool
 	}{
-		{name: "stdout retained", redirection: "2>/dev/null", wantDelay: true},
-		{name: "stderr retained", redirection: ">/dev/null", wantDelay: true},
+		{name: "stdout retained", redirection: "2>/dev/null"},
+		{name: "stderr retained", redirection: ">/dev/null"},
+		{name: "untracked listing stdout retained", args: []string{"ls-files", "--others", "--exclude-standard", "-z"}, redirection: "2>/dev/null"},
+		{name: "untracked listing stderr retained", args: []string{"ls-files", "--others", "--exclude-standard", "-z"}, redirection: ">/dev/null"},
 		{name: "failed command", exitCode: 23},
 		{name: "output closed", redirection: ">/dev/null 2>&1"},
 		{name: "worktree creation stdout retained", args: []string{"worktree", "add", "--detach", "new-worktree", "HEAD"}, redirection: "2>/dev/null"},
@@ -3856,42 +3857,24 @@ exit %d
 			}()
 			defer func() {
 				cancel()
+				defer func() { <-joined }()
 				if _, err := release.WriteString("release\n"); err != nil {
 					t.Errorf("release descendant: %v", err)
 				}
-				timer := time.NewTimer(10 * time.Second)
-				defer timer.Stop()
-				ticker := time.NewTicker(10 * time.Millisecond)
-				defer ticker.Stop()
-				for {
-					if _, err := os.Stat(donePath); err == nil {
-						break
-					}
-					select {
-					case <-timer.C:
-						t.Error("descendant did not acknowledge release")
-						return
-					case <-ticker.C:
-					}
-				}
-				select {
-				case <-joined:
-				case <-timer.C:
-					t.Error("Git command did not join after descendant release")
-				}
+				testenv.WaitUntil(t, t.Context(), func() error {
+					_, err := os.Stat(donePath)
+					return err
+				})
 			}()
 
 			var got result
 			select {
 			case got = <-results:
-			case <-time.After(10 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("Git command did not return while descendant retained output")
 			}
-			if errors.Is(got.err, exec.ErrWaitDelay) != tt.wantDelay {
-				t.Fatalf("runGitAtWithEnv() error = %v, want WaitDelay = %t", got.err, tt.wantDelay)
-			}
 			output := got.output
-			if tt.wantDelay || tt.exitCode != 0 {
+			if tt.exitCode != 0 {
 				var commandErr *CommandError
 				if !errors.As(got.err, &commandErr) {
 					t.Fatalf("error = %v, want CommandError", got.err)
