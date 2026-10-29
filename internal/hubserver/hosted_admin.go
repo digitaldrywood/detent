@@ -374,7 +374,7 @@ func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, crede
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
-	stamp := s.config.now()
+	stamp := payloadTimestamp(ctx, s.config.now())
 	before, err := s.database.hostedConsumption(ctx, tx, stamp)
 	if err != nil {
 		return "", err
@@ -382,7 +382,7 @@ func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, crede
 	if err := s.database.requireHostedFeature(ctx, tx, "collaboration", stamp); err != nil {
 		return "", err
 	}
-	project = newNativeID("prj")
+	project = payloadNativeID(ctx, "prj")
 	if states == nil {
 		states = HostedProjectStates()
 	}
@@ -390,7 +390,7 @@ func (s *Service) createHostedProjectInTx(ctx context.Context, tx *sql.Tx, crede
 	if err := validateNativeStates(states); err != nil {
 		return "", err
 	}
-	now := formatHubTime(s.config.now())
+	now := formatHubTime(payloadTimestamp(ctx, s.config.now()))
 	encoded, err := marshalNative(states)
 	if err != nil {
 		return "", err

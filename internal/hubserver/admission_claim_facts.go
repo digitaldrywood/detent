@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -41,7 +40,7 @@ func writeAttemptClaimFacts(ctx context.Context, tx *sql.Tx, id string, data tra
 	statement := `UPDATE native_attempts SET policy_id=?,claim_facts_known=CASE WHEN ? OR checkpoint_json IS NULL OR checkpoint_external_effect IS NOT NULL THEN 1 ELSE NULL END,disposition_status=?,disposition_human_action=?,disposition_present=?,disposition_blockers=?,disposition_reason_code=?,acceptance_recorded=?,landing_waiting=?,landing_change_id=?,landing_version_id=?,landing_head_sha=?,checkpoint_external_effect=CASE WHEN ? THEN ? WHEN checkpoint_json IS NULL THEN '' ELSE checkpoint_external_effect END,checkpoint_effect_state=CASE WHEN ? THEN ? WHEN checkpoint_json IS NULL THEN '' ELSE checkpoint_effect_state END,checkpoint_preserves_source=CASE WHEN ? THEN ? ELSE checkpoint_preserves_source END WHERE id=?`
 	args := []any{data.PolicyID, checkpointKnown, disposition.Status, disposition.HumanAction, data.Disposition != nil, disposition.Blockers, disposition.ReasonCode, acceptance, landing.Waiting, landing.ChangeID, landing.VersionID, landing.HeadSHA, checkpointKnown, checkpoint.ExternalEffect, checkpointKnown, checkpoint.EffectState, checkpointKnown, data.Handoff.PreservesSource(), id}
 	if source != nil {
-		statement += ` AND data_json=? AND checkpoint_json IS ? AND claim_facts_known IS NULL`
+		statement += ` AND COALESCE(NULLIF(payload_object_key,''),data_json)=? AND COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) IS ? AND claim_facts_known IS NULL`
 		args = append(args, source.data, source.checkpoint)
 	}
 	_, err := tx.ExecContext(ctx, statement, args...)
@@ -69,14 +68,14 @@ type admissionFactWrite func(*sql.Tx) error
 func prepareLegacyAdmissionFact(ctx context.Context, q nativeQueryer) (admissionFactWrite, error) {
 	var id, raw string
 	var checkpoint sql.NullString
-	err := q.QueryRowContext(ctx, `SELECT id,data_json,checkpoint_json FROM native_attempts WHERE claim_facts_known IS NULL ORDER BY id LIMIT 1`).Scan(&id, &raw, &checkpoint)
+	err := q.QueryRowContext(ctx, `SELECT id,COALESCE(NULLIF(payload_object_key,''),data_json),COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) FROM native_attempts WHERE claim_facts_known IS NULL ORDER BY id LIMIT 1`).Scan(&id, &raw, &checkpoint)
 	if err == nil {
 		var data tracker.NativeRunData
-		if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &data); err != nil {
 			return nil, err
 		}
 		if checkpoint.Valid {
-			if err := json.Unmarshal([]byte(checkpoint.String), &data.Handoff); err != nil {
+			if data.Handoff, err = decodeRunCheckpoint(ctx, q, checkpoint.String); err != nil {
 				return nil, err
 			}
 		}
@@ -87,10 +86,51 @@ func prepareLegacyAdmissionFact(ctx context.Context, q nativeQueryer) (admission
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
-	err = q.QueryRowContext(ctx, `SELECT id,record_json FROM change_requests WHERE landed_version_id IS NULL ORDER BY id LIMIT 1`).Scan(&id, &raw)
+
+	err = q.QueryRowContext(ctx, `SELECT id,COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) FROM native_attempts WHERE checkpoint_preserves_source IS NULL LIMIT 1`).Scan(&id, &checkpoint)
+	if err == nil {
+		var preserved bool
+		if checkpoint.Valid {
+			value, err := decodeRunCheckpoint(ctx, q, checkpoint.String)
+			if err != nil {
+				return nil, err
+			}
+			preserved = value.PreservesSource()
+		}
+		return func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `UPDATE native_attempts SET checkpoint_preserves_source=? WHERE id=? AND COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) IS ? AND checkpoint_preserves_source IS NULL`, preserved, id, checkpoint)
+			return err
+		}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	var sequence int64
+	var change, version string
+	err = q.QueryRowContext(ctx, `SELECT sequence,change_id,COALESCE(version_id,''),COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE kind='review' AND claim_review_current IS NULL ORDER BY change_id,version_id,sequence LIMIT 1`).Scan(&sequence, &change, &version, &raw)
+	if err == nil {
+		resolved, err := resolveStorageJSON(ctx, []byte(raw))
+		if err != nil {
+			return nil, err
+		}
+		return func(tx *sql.Tx) error {
+			var unchanged bool
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(payload_object_key,''),record_json)=? AND claim_review_current IS NULL FROM change_evidence WHERE sequence=?`, raw, sequence).Scan(&unchanged); err != nil {
+				return err
+			}
+			if !unchanged {
+				return nil
+			}
+			return projectClaimReview(ctx, tx, sequence, change, version, string(resolved))
+		}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	err = q.QueryRowContext(ctx, `SELECT id,record_json FROM change_requests WHERE landed_version_id IS NULL OR claim_version_id IS NULL OR claim_head_sha IS NULL ORDER BY id LIMIT 1`).Scan(&id, &raw)
 	if err == nil {
 		var change tracker.ChangeRequest
-		if err := json.Unmarshal([]byte(raw), &change); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &change); err != nil {
 			return nil, err
 		}
 		version, head, err := claimChangeIdentity(ctx, q, id, raw)
@@ -102,7 +142,7 @@ func prepareLegacyAdmissionFact(ctx context.Context, q nativeQueryer) (admission
 			landed = change.Landed.VersionID
 		}
 		return func(tx *sql.Tx) error {
-			_, err := tx.ExecContext(ctx, `UPDATE change_requests SET claim_version_id=?,claim_head_sha=?,landed_version_id=? WHERE id=? AND record_json=? AND landed_version_id IS NULL`, version, head, landed, id, raw)
+			_, err := tx.ExecContext(ctx, `UPDATE change_requests SET claim_version_id=?,claim_head_sha=?,landed_version_id=? WHERE id=? AND record_json=? AND (landed_version_id IS NULL OR claim_version_id IS NULL OR claim_head_sha IS NULL)`, version, head, landed, id, raw)
 			return err
 		}, nil
 	}
@@ -110,14 +150,15 @@ func prepareLegacyAdmissionFact(ctx context.Context, q nativeQueryer) (admission
 		return nil, err
 	}
 	var frozen sql.NullString
-	err = q.QueryRowContext(ctx, `SELECT v.id,v.record_json,(SELECT metadata_json FROM policy_revisions p WHERE p.scope=c.organization_id||'/'||c.project_id AND p.policy_id=v.policy_revision_id) FROM change_versions v JOIN change_requests c ON c.id=v.change_id WHERE v.gate_github_pull_request IS NULL ORDER BY v.id LIMIT 1`).Scan(&id, &raw, &frozen)
+	var knownHead sql.NullString
+	err = q.QueryRowContext(ctx, `SELECT v.id,COALESCE(NULLIF(v.payload_object_key,''),v.record_json),(SELECT metadata_json FROM policy_revisions p WHERE p.scope=c.organization_id||'/'||c.project_id AND p.policy_id=v.policy_revision_id),v.claim_head_sha FROM change_versions v JOIN change_requests c ON c.id=v.change_id WHERE v.gate_github_pull_request IS NULL ORDER BY v.id LIMIT 1`).Scan(&id, &raw, &frozen, &knownHead)
 	if err == nil {
-		head, github, err := decodeLandingVersionFacts(ctx, q, raw, frozen.String)
+		head, github, err := decodeLandingVersionFacts(ctx, q, raw, frozen.String, knownHead)
 		if err != nil {
 			return nil, err
 		}
 		return func(tx *sql.Tx) error {
-			_, err := tx.ExecContext(ctx, `UPDATE change_versions SET claim_head_sha=?,gate_github_pull_request=? WHERE id=? AND record_json=? AND gate_github_pull_request IS NULL`, head, github, id, raw)
+			_, err := tx.ExecContext(ctx, `UPDATE change_versions SET claim_head_sha=?,gate_github_pull_request=? WHERE id=? AND COALESCE(NULLIF(payload_object_key,''),record_json)=? AND gate_github_pull_request IS NULL`, head, github, id, raw)
 			return err
 		}, nil
 	}
@@ -128,7 +169,7 @@ func prepareLegacyAdmissionFact(ctx context.Context, q nativeQueryer) (admission
 	err = q.QueryRowContext(ctx, `SELECT scope,policy_id,metadata_json FROM policy_revisions WHERE gate_github_pull_request IS NULL ORDER BY scope,policy_id LIMIT 1`).Scan(&scope, &id, &raw)
 	if err == nil {
 		var descriptor policy.Descriptor
-		if err := json.Unmarshal([]byte(raw), &descriptor); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &descriptor); err != nil {
 			return nil, err
 		}
 		return func(tx *sql.Tx) error {
@@ -142,7 +183,7 @@ func prepareLegacyAdmissionFact(ctx context.Context, q nativeQueryer) (admission
 	err = q.QueryRowContext(ctx, `SELECT id,data_json FROM collaboration_events WHERE claim_attempt_id IS NULL ORDER BY id LIMIT 1`).Scan(&id, &raw)
 	if err == nil {
 		var data tracker.CollaborationData
-		if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &data); err != nil {
 			return nil, err
 		}
 		facts := eventClaimFacts(data.Run)
@@ -184,7 +225,7 @@ func answeredClaimKind(data tracker.NativeRunData, checkpoint *tracker.NativeChe
 func readUnknownAnsweredClaim(ctx context.Context, q nativeQueryer, id tracker.WorkItemID) (tracker.NativeAnsweredExclusion, error) {
 	var result tracker.NativeAnsweredExclusion
 	var raw, checkpointRaw string
-	err := q.QueryRowContext(ctx, `SELECT a.id,a.data_json,COALESCE(a.checkpoint_json,'null') FROM issues i JOIN projects p ON p.id=i.project_id AND p.organization_id=i.organization_id JOIN workflow_states ws ON ws.id=i.workflow_state_id JOIN native_attempts a ON a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.work_item_id=i.native_id WHERE i.id=? AND p.profile='native' AND lower(trim(ws.detent_state))<>'merging' AND a.claim_facts_known IS NULL AND a.status='succeeded' AND a.work_item_revision>=i.revision AND a.dispatch_generation>=i.dispatch_generation AND a.fencing_token=(SELECT max(latest.fencing_token) FROM native_attempts latest WHERE latest.organization_id=i.organization_id AND latest.project_id=i.project_id AND latest.work_item_id=i.native_id)`, id).Scan(&result.AttemptID, &raw, &checkpointRaw)
+	err := q.QueryRowContext(ctx, `SELECT a.id,COALESCE(NULLIF(a.payload_object_key,''),a.data_json),COALESCE(COALESCE(NULLIF(a.checkpoint_object_key,''),a.checkpoint_json),'null') FROM issues i JOIN projects p ON p.id=i.project_id AND p.organization_id=i.organization_id JOIN workflow_states ws ON ws.id=i.workflow_state_id JOIN native_attempts a ON a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.work_item_id=i.native_id WHERE i.id=? AND p.profile='native' AND lower(trim(ws.detent_state))<>'merging' AND a.claim_facts_known IS NULL AND a.status='succeeded' AND a.work_item_revision>=i.revision AND a.dispatch_generation>=i.dispatch_generation AND a.fencing_token=(SELECT max(latest.fencing_token) FROM native_attempts latest WHERE latest.organization_id=i.organization_id AND latest.project_id=i.project_id AND latest.work_item_id=i.native_id)`, id).Scan(&result.AttemptID, &raw, &checkpointRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return tracker.NativeAnsweredExclusion{}, nil
 	}
@@ -196,7 +237,7 @@ func readUnknownAnsweredClaim(ctx context.Context, q nativeQueryer, id tracker.W
 		return result, err
 	}
 	var checkpoint *tracker.NativeCheckpoint
-	if err := json.Unmarshal([]byte(checkpointRaw), &checkpoint); err != nil {
+	if checkpoint, err = decodeRunCheckpoint(ctx, q, checkpointRaw); err != nil {
 		return result, err
 	}
 	result.Kind = answeredClaimKind(data, checkpoint)

@@ -60,6 +60,12 @@ func (c *NativeClient) AttemptsPage(ctx context.Context, id tracker.NativeWorkIt
 	return result, err
 }
 
+func (c *NativeClient) AttemptsDetailPage(ctx context.Context, id tracker.NativeWorkItemID, cursor string, limit int) (tracker.Page[tracker.NativeAttempt], error) {
+	var result tracker.Page[tracker.NativeAttempt]
+	err := c.readItemPage(ctx, id, "attempts", "detail", cursor, limit, &result)
+	return result, err
+}
+
 func (c *NativeClient) readItemPage(ctx context.Context, id tracker.NativeWorkItemID, kind, view, cursor string, limit int, target any) error {
 	path, err := nativeItemPath(id)
 	if err != nil {
@@ -69,6 +75,9 @@ func (c *NativeClient) readItemPage(ctx context.Context, id tracker.NativeWorkIt
 		return tracker.ErrInvalidCandidateQuery
 	}
 	params := url.Values{"limit": {strconv.Itoa(limit)}, "cursor": {cursor}}
+	if kind == "attempts" && view == "detail" {
+		return c.client.requestWithHeaders(ctx, http.MethodGet, c.base()+path+"/"+kind+"?"+params.Encode(), http.Header{"X-Detent-Attempt-Detail": {"full"}}, nil, target)
+	}
 	if view != "" {
 		params.Set("view", view)
 	}

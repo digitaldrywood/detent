@@ -462,7 +462,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Scope: apiScopeAdmin}}
 	drainTestNativeBoard(t, f.service)
 	var since int64
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT sequence FROM native_board_sequences WHERE project_id=?", scope.project).Scan(&since); err != nil {
+	if err := f.service.database.reader.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT sequence FROM native_board_sequences WHERE project_id=?", scope.project).Scan(&since); err != nil {
 		t.Fatal(err)
 	}
 	var version tracker.ChangeVersion
@@ -474,7 +474,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 	assertDelta := func(t *testing.T, status string, count int, reset ...bool) {
 		t.Helper()
 		drainTestNativeBoard(t, f.service)
-		frame, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, since)
+		frame, err := readNativeBoardFrame(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, since)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -483,7 +483,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 			if !frame.Gap || len(frame.Deltas) != 0 {
 				t.Fatalf("policy reset frame=%#v", frame)
 			}
-			page, err := f.service.readBoardIssues(t.Context(), scope, url.Values{"include": {"board"}})
+			page, err := f.service.readBoardIssues(f.service.runDetailContext(t.Context()), scope, url.Values{"include": {"board"}})
 			if err != nil || len(page.Cards) != 1 {
 				t.Fatalf("reset page=%#v, error=%v", page, err)
 			}
@@ -521,12 +521,12 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 			if effort != "" && (latest.Runtime == nil || latest.Runtime.Identity.ReasoningEffort.Value != effort) {
 				t.Fatalf("runtime identity differs from projection: %#v", latest.Runtime)
 			}
-			record, err := readNativeAttemptRecord(t.Context(), f.service.database.reader, scope, string(f.issue.WorkItemID), latest.AttemptID, now)
+			record, err := readNativeAttemptRecord(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, string(f.issue.WorkItemID), latest.AttemptID, now)
 			if err != nil || record.Identity == nil || record.Identity.Model != "test-model" || record.Identity.ReasoningEffort != "" {
 				t.Fatalf("display projection changed execution identity=%#v, error=%v", record.Identity, err)
 			}
 		}
-		summary, err := readNativeBoardSummary(t.Context(), f.service.database.reader, scope, url.Values{}, f.service.config.now())
+		summary, err := readNativeBoardSummary(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, url.Values{}, f.service.config.now())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -572,10 +572,10 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 		}},
 		{"expiry", "interrupted", 2, func(t *testing.T) {
 			now = now.Add(91 * time.Second)
-			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
+			if err := f.service.maintainNativeRetention(f.service.runDetailContext(t.Context()), now); err != nil {
 				t.Fatal(err)
 			}
-			f.service.maintainNativeBoard(t.Context())
+			f.service.maintainNativeBoard(f.service.runDetailContext(t.Context()))
 		}},
 		{"version", "", 2, func(t *testing.T) { version = f.publish(t, "board-version", "") }},
 		{"review", "", 2, func(t *testing.T) {
@@ -620,10 +620,10 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO policy_revisions(scope,policy_id,metadata_json,approved_by,approved_at) VALUES(?,?,?,?,?)", string(scope.organization)+"/"+string(scope.project), descriptor.ID, string(raw), "historical-owner", formatHubTime(now)); err != nil {
+			if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "INSERT INTO policy_revisions(scope,policy_id,metadata_json,approved_by,approved_at) VALUES(?,?,?,?,?)", string(scope.organization)+"/"+string(scope.project), descriptor.ID, string(raw), "historical-owner", formatHubTime(now)); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER change_versions_immutable"); err != nil {
+			if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "DROP TRIGGER change_versions_immutable"); err != nil {
 				t.Fatal(err)
 			}
 			version = f.detail(t).Versions[0]
@@ -632,10 +632,10 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 				t.Fatal(err)
 			}
 			originalPolicyID := version.PolicyID
-			ctx := t.Context()
+			ctx := f.service.runDetailContext(t.Context())
 			t.Cleanup(func() {
 				version.PolicyID = originalPolicyID
-				if _, err := f.service.database.db.ExecContext(context.WithoutCancel(ctx), "UPDATE change_versions SET policy_revision_id=?,record_json=? WHERE id=?", originalPolicyID, original, version.ID); err != nil {
+				if _, err := f.service.database.db.ExecContext(context.WithoutCancel(ctx), "UPDATE change_versions SET policy_revision_id=?,record_json=?,payload_object_key='' WHERE id=?", originalPolicyID, original, version.ID); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := f.service.database.db.ExecContext(context.WithoutCancel(ctx), "INSERT OR IGNORE INTO native_board_dirty(work_item_id) VALUES(?)", f.issue.WorkItemID); err != nil {
@@ -647,13 +647,13 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE change_versions SET policy_revision_id=?,record_json=? WHERE id=?", descriptor.ID, record, version.ID); err != nil {
+			if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE change_versions SET policy_revision_id=?,record_json=?,payload_object_key='' WHERE id=?", descriptor.ID, record, version.ID); err != nil {
 				t.Fatal(err)
 			}
 			if got := f.detail(t).Versions[0].Policy; !reflect.DeepEqual(got, descriptor) {
 				t.Fatal("historical policy changed during hydration")
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT OR IGNORE INTO native_board_dirty(work_item_id) VALUES(?)", f.issue.WorkItemID); err != nil {
+			if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "INSERT OR IGNORE INTO native_board_dirty(work_item_id) VALUES(?)", f.issue.WorkItemID); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -679,7 +679,7 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 		"CREATE TABLE policy_dirty_cards(work_item_id TEXT PRIMARY KEY)",
 		"CREATE TRIGGER count_change_policy_cards AFTER INSERT ON native_board_dirty BEGIN INSERT OR IGNORE INTO policy_dirty_cards VALUES(NEW.work_item_id); END",
 	} {
-		if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
+		if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), statement); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -699,22 +699,22 @@ func TestNativeBoardAttemptAndChangeDeltas(t *testing.T) {
 		{"restored policy", http.MethodPut, policy.Change{ExpectedID: changed.ID, Policy: hubTestPolicy()}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM policy_dirty_cards"); err != nil {
+			if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "DELETE FROM policy_dirty_cards"); err != nil {
 				t.Fatal(err)
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, test.method, f.base+"/policy", testHubAdminToken, test.body), map[string]int{http.MethodPut: http.StatusOK, http.MethodDelete: http.StatusNoContent}[test.method])
-			ids, err := nativePageIDs(t.Context(), f.service.database.reader, "SELECT work_item_id FROM policy_dirty_cards ORDER BY work_item_id")
+			ids, err := nativePageIDs(f.service.runDetailContext(t.Context()), f.service.database.reader, "SELECT work_item_id FROM policy_dirty_cards ORDER BY work_item_id")
 			want := []string{string(f.issue.WorkItemID), string(historical.WorkItemID)}
 			slices.Sort(want)
 			if err != nil || len(ids) != 0 {
 				t.Fatalf("approval rebuilt historical cards=%v err=%v", ids, err)
 			}
-			frame, err := readNativeBoardFrame(t.Context(), f.service.database.reader, scope, since)
+			frame, err := readNativeBoardFrame(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, since)
 			if err != nil || !frame.Gap {
 				t.Fatalf("policy did not invalidate old replay=%+v, error=%v", frame, err)
 			}
 			since = frame.Sequence
-			page, err := f.service.readBoardIssues(t.Context(), scope, url.Values{"include": {"board"}})
+			page, err := f.service.readBoardIssues(f.service.runDetailContext(t.Context()), scope, url.Values{"include": {"board"}})
 			if err != nil {
 				t.Fatal(err)
 			}

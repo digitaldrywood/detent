@@ -281,7 +281,7 @@ func challengeNativeIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 	if err != nil {
 		return duplicateChallenge{}, err
 	}
-	token := newNativeID("dup")
+	token := payloadNativeID(ctx, "dup")
 	_, err = tx.ExecContext(ctx, `INSERT INTO native_duplicate_challenges
 (token, organization_id, project_id, principal_id, request_id, content_hash, matches_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, token, scope.organization, scope.project, scope.actor().PrincipalID, request.IdempotencyKey, hash, string(encoded), formatHubTime(now))
 	if err != nil {

@@ -41,7 +41,7 @@ func readLandingQualitySnapshot(ctx context.Context, q nativeQueryer, scope nati
 		return nil, err
 	}
 	snapshot := &tracker.LandingQualitySnapshot{IssueRevision: issue.Revision, IssueBody: issue.Body, Criteria: contract.AcceptanceCriteria(issue.Body), Missing: contract.Evaluate(nativeContractIssue(issue)).Missing, Evidence: []gate.CriterionEvidence{}}
-	rows, err := q.QueryContext(ctx, `SELECT record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' ORDER BY sequence DESC LIMIT ?`, change.ID, version.ID, maxAnalyticsPopulation+1)
+	rows, err := q.QueryContext(ctx, `SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' ORDER BY sequence DESC LIMIT ?`, change.ID, version.ID, maxAnalyticsPopulation+1)
 	if err != nil {
 		return nil, err
 	}

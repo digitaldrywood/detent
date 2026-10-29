@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sort"
 	"time"
@@ -152,7 +151,7 @@ SELECT a.id,a.work_item_id,a.status,a.updated_at,
 func readLegacyHealthRateAttempts(ctx context.Context, q nativeQueryer, scope nativeScope, window operatortool.AnalyticsWindow) ([]healthRateAttempt, error) {
 	rows, err := q.QueryContext(ctx, `SELECT a.id,a.work_item_id,a.status,a.updated_at,
  COALESCE((SELECT lr.runner_id FROM lease_runners lr WHERE lr.lease_id=a.lease_id),''),
- CASE WHEN a.hot_projection_version=0 THEN a.data_json ELSE '{}' END,
+ CASE WHEN a.hot_projection_version=0 THEN COALESCE(NULLIF(a.payload_object_key,''),a.data_json) ELSE '{}' END,
  a.hot_projection_version,a.heartbeat_at,a.health_failure_signature,a.health_recovery_reason,a.health_instance_failure,a.health_landing,a.health_landed,a.health_conflict,a.health_landing_at,a.health_landing_key,
  (SELECT coalesce(sum(u.cost_estimate),0) FROM attempt_usage u WHERE u.organization_id=a.organization_id AND u.project_id=a.project_id AND u.attempt_id=a.id AND u.currency='USD' AND julianday(u.updated_at)<=julianday(?))
  FROM native_attempts a JOIN projects p ON p.id=a.project_id
@@ -185,7 +184,7 @@ func readLegacyHealthRateAttempts(ctx context.Context, q nativeQueryer, scope na
 		}
 		if version == 0 {
 			var data tracker.NativeRunData
-			if err := json.Unmarshal([]byte(raw), &data); err != nil {
+			if err := decodeStorageJSON(ctx, []byte(raw), &data); err != nil {
 				return nil, err
 			}
 			applyHealthAttemptData(&a, data)

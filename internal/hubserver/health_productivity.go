@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -135,7 +134,7 @@ func readHealthProductivityAttempts(ctx context.Context, q nativeQueryer, scope 
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(attempts)), ",")
 	rows, err := q.QueryContext(ctx, `SELECT id,started_at,session_id,failure_stage,
  CASE WHEN finalization_settled=1 AND finalization_changed=1 THEN finalization_version_id ELSE '' END,
- CASE WHEN hot_projection_version=0 THEN data_json ELSE '' END
+ CASE WHEN hot_projection_version=0 THEN COALESCE(NULLIF(payload_object_key,''),data_json) ELSE '' END
  FROM native_attempts WHERE organization_id=? AND project_id=? AND id IN (`+placeholders+`)`, args...)
 	if err != nil {
 		return err
@@ -153,7 +152,7 @@ func readHealthProductivityAttempts(ctx context.Context, q nativeQueryer, scope 
 		a.Session, a.Stage, a.SourceVersion = session, stage, source
 		if raw != "" {
 			var data tracker.NativeRunData
-			if err := json.Unmarshal([]byte(raw), &data); err != nil {
+			if err := decodeStorageJSON(ctx, []byte(raw), &data); err != nil {
 				return err
 			}
 			a.Session = data.SessionID

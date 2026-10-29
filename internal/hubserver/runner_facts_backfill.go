@@ -79,7 +79,7 @@ func prepareRunnerFactBackfill(ctx context.Context, q nativeQueryer) (runnerFact
 	if !errors.Is(err, sql.ErrNoRows) {
 		return runnerFactBackfill{}, err
 	}
-	err = q.QueryRowContext(ctx, `SELECT id,data_json FROM native_attempts WHERE usage_facts_ready IS NULL ORDER BY id LIMIT 1`).Scan(&id, &raw)
+	err = q.QueryRowContext(ctx, `SELECT id,COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE usage_facts_ready IS NULL ORDER BY id LIMIT 1`).Scan(&id, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return runnerFactBackfill{}, nil
 	}
@@ -90,7 +90,7 @@ func prepareRunnerFactBackfill(ctx context.Context, q nativeQueryer) (runnerFact
 	if err := decodeRunDetail(ctx, q, raw, &data); err != nil {
 		return runnerFactBackfill{}, err
 	}
-	return runnerFactBackfill{verify: `SELECT EXISTS(SELECT 1 FROM native_attempts WHERE id=? AND data_json=? AND usage_facts_ready IS NULL)`, args: []any{id, raw}, write: func(ctx context.Context, tx *sql.Tx) error { return writeAttemptUsageFacts(ctx, tx, id, data) }}, nil
+	return runnerFactBackfill{verify: `SELECT EXISTS(SELECT 1 FROM native_attempts WHERE id=? AND COALESCE(NULLIF(payload_object_key,''),data_json)=? AND usage_facts_ready IS NULL)`, args: []any{id, raw}, write: func(ctx context.Context, tx *sql.Tx) error { return writeAttemptUsageFacts(ctx, tx, id, data) }}, nil
 }
 
 func prepareMachineFactBackfill(id, raw string) (runnerFactBackfill, error) {

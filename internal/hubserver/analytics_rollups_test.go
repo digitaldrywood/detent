@@ -804,10 +804,11 @@ func TestAnalyticsRollupCompactionPreservesPredecessor(t *testing.T) {
 }
 
 func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
-	f := newUsageHostedFixture(t)
+	f := newUsageHostedFixture(t, func(config *Config) { config.RunDetails = &memoryRunDetails{} })
+	ctx := f.service.runDetailContext(t.Context())
 	scope := nativeScope{organization: "org_browser_preview", project: tracker.ProjectID(f.project)}
 	now := f.service.config.now().UTC().Truncate(time.Hour)
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	tx, err := f.service.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -817,10 +818,10 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime.landing.gate',json(?)),started_at=?,updated_at=? WHERE id='attempt_browser_usage_0_0'`, string(landingGate), formatHubTime(now.Add(-4*time.Hour)), formatHubTime(now.Add(-time.Hour))); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime.landing.gate',json(?)),started_at=?,updated_at=? WHERE id='attempt_browser_usage_0_0'`, string(landingGate), formatHubTime(now.Add(-4*time.Hour)), formatHubTime(now.Add(-time.Hour))); err != nil {
 		t.Fatal(err)
 	}
-	issue, err := createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: "completed history", State: "Todo"}, now.Add(-72*time.Hour))
+	issue, err := createNativeFixtureIssueTx(ctx, tx, scope, tracker.CreateIssue{Body: nativeContractTestBody, Title: "completed history", State: "Todo"}, now.Add(-72*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -840,16 +841,16 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := tx.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) SELECT 'rollup-open-lease',id,'machine_browser_preview_runner','rollup-open-session',?,?,?,NULL,?,? FROM issues WHERE native_id=?`, formatHubTime(now.Add(30*time.Minute)), formatHubTime(now.Add(-90*time.Minute)), formatHubTime(now.Add(-time.Minute)), formatHubTime(now.Add(-90*time.Minute)), formatHubTime(now.Add(-time.Minute)), issue.WorkItemID); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) SELECT 'rollup-open-lease',id,'machine_browser_preview_runner','rollup-open-session',?,?,?,NULL,?,? FROM issues WHERE native_id=?`, formatHubTime(now.Add(30*time.Minute)), formatHubTime(now.Add(-90*time.Minute)), formatHubTime(now.Add(-time.Minute)), formatHubTime(now.Add(-90*time.Minute)), formatHubTime(now.Add(-time.Minute)), issue.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 2 {
 		changeID := "rollup-change-" + string(rune('a'+i))
 		versionID := changeID + "-version"
-		if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?,json_object('landed',json_object('version_id',?,'head_sha',?,'merge_sha',?,'landed_at',?)))`, changeID, scope.organization, scope.project, issue.WorkItemID, versionID, strings.Repeat("a", 40), strings.Repeat("b", 40), formatHubTime(now.Add(-22*time.Hour+time.Duration(i)*time.Minute))); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES(?,?,?,?,json_object('landed',json_object('version_id',?,'head_sha',?,'merge_sha',?,'landed_at',?)))`, changeID, scope.organization, scope.project, issue.WorkItemID, versionID, strings.Repeat("a", 40), strings.Repeat("b", 40), formatHubTime(now.Add(-22*time.Hour+time.Duration(i)*time.Minute))); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,1,json_object('head_sha',?))`, versionID, changeID, strings.Repeat("a", 40)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,1,json_object('head_sha',?))`, versionID, changeID, strings.Repeat("a", 40)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -859,19 +860,19 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := f.service.database.commit(t.Context(), tx); err != nil {
+	if err := f.service.database.commit(ctx, tx); err != nil {
 		t.Fatal(err)
 	}
 	projectTestChangeColumns(t, f.service)
 	drainTestAnalytics(t, f.service)
-	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE analytics_hourly_rollups SET data_json=json_set(data_json,'$.completion_body',?) WHERE organization_id=? AND project_id=? AND metric='attempt'`, strings.Repeat("legacy payload", 2048), scope.organization, scope.project); err != nil {
+	if _, err := f.service.database.db.ExecContext(ctx, `UPDATE analytics_hourly_rollups SET data_json=json_set((SELECT a.data_json FROM native_attempts a WHERE a.id=analytics_hourly_rollups.dimension),'$.completion_body',?) WHERE organization_id=? AND project_id=? AND metric='attempt'`, strings.Repeat("legacy payload", 2048), scope.organization, scope.project); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.convertStorageFamily(t.Context(), scope, storageConversionFamilies[2], now); err != nil {
+	if err := f.service.convertStorageFamily(f.service.runDetailContext(ctx), scope, storageConversionFamilies[2], now); err != nil {
 		t.Fatal(err)
 	}
 	var legacyRows int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='attempt' AND json_extract(data_json,'$.completion_body') IS NOT NULL`, scope.organization, scope.project).Scan(&legacyRows); err != nil || legacyRows != 0 {
+	if err := f.service.database.reader.QueryRowContext(ctx, `SELECT count(*) FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='attempt' AND json_extract(data_json,'$.completion_body') IS NOT NULL`, scope.organization, scope.project).Scan(&legacyRows); err != nil || legacyRows != 0 {
 		t.Fatalf("legacy report payloads=%d err=%v", legacyRows, err)
 	}
 	for _, test := range []struct {
@@ -897,7 +898,7 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 				{f.service.database.reader, &raw},
 				{analyticsRollupReader{f.service.database.reader}, &rolled},
 			} {
-				project, err := readNativeAnalytics(t.Context(), input.q, scope, test.request, w)
+				project, err := readNativeAnalytics(ctx, input.q, scope, test.request, w)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -909,9 +910,9 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 			assertAnalyticsJSONEqual(t, raw, rolled)
 			if test.request.PopulationCursor == "" {
 				for _, q := range []nativeQueryer{f.service.database.reader, analyticsRollupReader{f.service.database.reader}} {
-					shared := withReportsQualityInputs(t.Context(), w)
+					shared := withReportsQualityInputs(ctx, w)
 					for _, window := range []operatortool.AnalyticsWindow{w, {From: w.From.Add(-w.To.Sub(w.From)), To: w.From, Bucket: w.Bucket}} {
-						want, err := readAnalyticsQuality(t.Context(), q, scope, test.request, window)
+						want, err := readAnalyticsQuality(ctx, q, scope, test.request, window)
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -924,24 +925,24 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 				}
 			}
 
-			wantDiagnostics, err := f.service.readHostedDiagnosticsFrom(t.Context(), raw, f.service.database.reader)
+			wantDiagnostics, err := f.service.readHostedDiagnosticsFrom(ctx, raw, f.service.database.reader)
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantReports, err := f.service.readHostedReportsFrom(t.Context(), raw, f.service.database.reader)
+			wantReports, err := f.service.readHostedReportsFrom(ctx, raw, f.service.database.reader)
 			if err != nil {
 				t.Fatal(err)
 			}
-			projectedTx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			projectedTx, err := f.service.database.db.BeginTx(ctx, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer projectedTx.Rollback()
-			if _, err := projectedTx.ExecContext(t.Context(), `DELETE FROM analytics_hourly_rollups WHERE metric='event' AND NOT (type='scheduler.decision' AND coalesce(scheduler_outcome,'')='ready')`); err != nil {
+			if _, err := projectedTx.ExecContext(ctx, `DELETE FROM analytics_hourly_rollups WHERE metric='event' AND NOT (type='scheduler.decision' AND coalesce(scheduler_outcome,'')='ready')`); err != nil {
 				t.Fatal(err)
 			}
 			q := analyticsRollupReader{projectedTx}
-			gotDiagnostics, err := f.service.readHostedDiagnosticsFrom(t.Context(), rolled, q)
+			gotDiagnostics, err := f.service.readHostedDiagnosticsFrom(ctx, rolled, q)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -952,16 +953,16 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 					want diagnosticsReport
 				}{{q, gotDiagnostics}, {f.service.database.reader, wantDiagnostics}} {
 					q := source.q
-					project, err := readNativeDiagnostics(t.Context(), q, scope, test.request, w)
+					project, err := readNativeDiagnostics(ctx, q, scope, test.request, w)
 					if err != nil {
 						t.Fatal(err)
 					}
 					narrow := nativeAnalyticsReport{OrganizationID: string(scope.organization), Window: w, Projects: []nativeAnalyticsProject{project}}
-					got, err := f.service.readHostedDiagnosticsFrom(t.Context(), narrow, q)
+					got, err := f.service.readHostedDiagnosticsFrom(ctx, narrow, q)
 					if err != nil {
 						t.Fatal(err)
 					}
-					usageRows, err := readUsageRows(t.Context(), q, string(scope.organization), usageWindow{From: w.From, To: w.To}, []string{string(scope.project)}, maxAnalyticsPopulation+1)
+					usageRows, err := readUsageRows(ctx, q, string(scope.organization), usageWindow{From: w.From, To: w.To}, []string{string(scope.project)}, maxAnalyticsPopulation+1)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -975,18 +976,18 @@ func TestAnalyticsRollupResponseEquivalence(t *testing.T) {
 					assertAnalyticsJSONEqual(t, source.want, got)
 				}
 			}
-			gotReports, err := f.service.readHostedReportsFrom(t.Context(), rolled, q)
+			gotReports, err := f.service.readHostedReportsFrom(ctx, rolled, q)
 			if err != nil {
 				t.Fatal(err)
 			}
 			residence := nativeAnalyticsProject{Window: w, Digest: append([]nativeAnalyticsBucket{}, rolled.Projects[0].Digest...), allAttempts: rolled.Projects[0].allAttempts}
-			if err := projectNativeAnalyticsResidence(t.Context(), q, scope, test.request, &residence); err != nil {
+			if err := projectNativeAnalyticsResidence(ctx, q, scope, test.request, &residence); err != nil {
 				t.Fatal(err)
 			}
 			assertAnalyticsJSONEqual(t, raw.Projects[0].LaneResidence, residence.LaneResidence)
 			assertAnalyticsJSONEqual(t, raw.Projects[0].QueueTime, residence.QueueTime)
 			capacity := nativeAnalyticsProject{Window: w, Digest: append([]nativeAnalyticsBucket{}, rolled.Projects[0].Digest...)}
-			if err := projectNativeAnalyticsCapacityWait(t.Context(), q, scope, &capacity); err != nil {
+			if err := projectNativeAnalyticsCapacityWait(ctx, q, scope, &capacity); err != nil {
 				t.Fatal(err)
 			}
 			assertAnalyticsJSONEqual(t, raw.Projects[0].ProviderCapacityWait, capacity.ProviderCapacityWait)
@@ -1083,7 +1084,7 @@ func TestAnalyticsAttemptProjectionFields(t *testing.T) {
 }
 
 func TestAnalyticsAttemptRevision(t *testing.T) {
-	f := newUsageHostedFixture(t)
+	f := newUsageHostedFixture(t, func(config *Config) { config.RunDetails = &memoryRunDetails{} })
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 		t.Fatal(err)
 	}
@@ -1126,36 +1127,31 @@ func TestAnalyticsAttemptRevision(t *testing.T) {
 			})
 		}
 		t.Run(id+"/landing receipt", func(t *testing.T) {
-			tx, err := d.db.BeginTx(t.Context(), nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer tx.Rollback()
+			ctx := f.service.runDetailContext(t.Context())
 			var before, after int64
 			var timestamp, updated string
-			if err := tx.QueryRowContext(t.Context(), "SELECT analytics_revision,updated_at FROM native_attempts WHERE id=?", id).Scan(&before, &timestamp); err != nil {
+			if err := d.reader.QueryRowContext(ctx, "SELECT analytics_revision,updated_at FROM native_attempts WHERE id=?", id).Scan(&before, &timestamp); err != nil {
 				t.Fatal(err)
 			}
 			receipt := tracker.NativeLandingReceipt{GateFailed: true, ObservedAt: f.service.config.now()}
-			if err := persistAttemptLanding(t.Context(), tx, id, receipt); err != nil {
+			if err := f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
+				return persistAttemptLanding(ctx, tx, id, receipt)
+			}); err != nil {
 				t.Fatal(err)
 			}
-			if err := tx.QueryRowContext(t.Context(), "SELECT analytics_revision,updated_at FROM native_attempts WHERE id=?", id).Scan(&after, &updated); err != nil {
+			if err := d.reader.QueryRowContext(ctx, "SELECT analytics_revision,updated_at FROM native_attempts WHERE id=?", id).Scan(&after, &updated); err != nil {
 				t.Fatal(err)
 			}
 			if after != before+1 || updated != timestamp {
 				t.Fatalf("landing revision %d -> %d, timestamp %q -> %q", before, after, timestamp, updated)
 			}
-			if err := tx.Commit(); err != nil {
-				t.Fatal(err)
-			}
 			drainTestAnalytics(t, f.service)
 			var raw string
-			if err := d.reader.QueryRowContext(t.Context(), "SELECT data_json FROM analytics_hourly_rollups WHERE metric='attempt' AND dimension=?", id).Scan(&raw); err != nil {
+			if err := d.reader.QueryRowContext(t.Context(), "SELECT payload_object_key FROM analytics_hourly_rollups WHERE metric='attempt' AND dimension=?", id).Scan(&raw); err != nil {
 				t.Fatal(err)
 			}
 			var projected analyticsAttemptProjection
-			if err := json.Unmarshal([]byte(raw), &projected); err != nil {
+			if err := decodeStorageJSON(ctx, []byte(raw), &projected); err != nil {
 				t.Fatal(err)
 			}
 			if projected.Runtime.Landing == nil || !projected.Runtime.Landing.GateFailed || !projected.Runtime.Landing.ObservedAt.Equal(receipt.ObservedAt) {

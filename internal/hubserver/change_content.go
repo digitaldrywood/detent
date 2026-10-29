@@ -23,24 +23,42 @@ import (
 
 type changeContentKey struct{}
 
+func immutableContentStorageError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, artifact.ErrIntegrity) {
+		return err
+	}
+	return fmt.Errorf("immutable content storage: %w", errors.Join(artifact.ErrStorage, err))
+}
+
 type changeContent struct {
-	mu       sync.Mutex
-	call     entryauthority.ContentHandler
-	register func(context.Context, string, attachment.ArchiveReference) error
-	prepared map[string]attachment.ArchiveReference
+	mu            sync.Mutex
+	call          entryauthority.ContentHandler
+	store         attachment.DetailStore
+	register      func(context.Context, string, attachment.ArchiveReference) error
+	prepared      map[string]attachment.ArchiveReference
+	query         nativeQueryer
+	payloads      map[string][]byte
+	references    map[string]attachment.ArchiveReference
+	ids           map[string]string
+	idPositions   map[string]int
+	generatedAt   time.Time
+	organization  string
+	completion    bool
+	mutationDepth int
+	payloadBytes  int64
+	writing       bool
 }
 
 func (s *Service) contentContext(ctx context.Context) context.Context {
 	if ctx.Value(changeContentKey{}) != nil {
 		return ctx
 	}
-	if s.config.Content != nil {
-		return context.WithValue(ctx, changeContentKey{}, &changeContent{call: s.config.Content, register: s.registerChangeContent})
-	}
-	if s.config.Hosted == nil || s.config.Hosted.SharedEntry == nil || s.config.Hosted.SharedEntry.Content == nil {
+	call := s.storageArchiveContent()
+	store := s.runDetailStore()
+	if call == nil && store == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, changeContentKey{}, &changeContent{call: s.config.Hosted.SharedEntry.Content, register: s.registerChangeContent})
+	return context.WithValue(ctx, changeContentKey{}, &changeContent{call: call, store: store, register: s.registerChangeContent, query: s.database.reader})
 }
 
 func (s *Service) changeContentMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -53,28 +71,70 @@ func (s *Service) changeContentMiddleware(next echo.HandlerFunc) echo.HandlerFun
 func prepareChangeContent(ctx context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
 	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
 	if !ok {
-		return attachment.ArchiveReference{}, errors.New("immutable content storage unavailable")
+		return attachment.ArchiveReference{}, errContentStorageUnconfigured
+	}
+	content.mu.Lock()
+	digest := organization + "/" + artifact.Digest(data)
+	cached, found := content.prepared[digest]
+	content.mu.Unlock()
+	if found {
+		return cached, nil
+	}
+	var ref attachment.ArchiveReference
+	if content.call == nil {
+		var err error
+		ref, err = content.store.StoreDetail(ctx, organization, data)
+		if err != nil {
+			return ref, immutableContentStorageError(err)
+		}
+		if ref.Validate(organization) != nil || ref.UncompressedSize != int64(len(data)) {
+			return ref, artifact.ErrIntegrity
+		}
+		verified, err := content.store.ReadDetail(ctx, organization, ref)
+		if err != nil {
+			return ref, immutableContentStorageError(err)
+		}
+		if !bytes.Equal(data, verified) {
+			return ref, artifact.ErrIntegrity
+		}
+		if err := content.register(ctx, organization, ref); err != nil {
+			return ref, err
+		}
+	} else {
+		prepared, compressed, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(data))
+		if err != nil {
+			return prepared, err
+		}
+		ref = prepared
+		if err := content.register(ctx, organization, ref); err != nil {
+			return ref, err
+		}
+		if _, err := content.call(ctx, entryauthority.ContentRequest{Organization: organization, Reference: ref, Data: compressed, Write: true}); err != nil {
+			return ref, immutableContentStorageError(err)
+		}
+		verified, err := content.call(ctx, entryauthority.ContentRequest{Organization: organization, Reference: ref})
+		if err != nil {
+			return ref, immutableContentStorageError(err)
+		}
+		if !bytes.Equal(compressed, verified) {
+			return ref, artifact.ErrIntegrity
+		}
 	}
 	content.mu.Lock()
 	defer content.mu.Unlock()
-	digest := organization + "/" + artifact.Digest(data)
-	if ref, found := content.prepared[digest]; found {
-		return ref, nil
-	}
-	ref, compressed, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(data))
-	if err != nil {
-		return ref, err
-	}
-	if err := content.register(ctx, organization, ref); err != nil {
-		return ref, err
-	}
-	if _, err := content.call(ctx, entryauthority.ContentRequest{Organization: organization, Reference: ref, Data: compressed, Write: true}); err != nil {
-		return ref, err
-	}
 	if content.prepared == nil {
 		content.prepared = make(map[string]attachment.ArchiveReference)
 	}
+	if len(content.prepared) >= claimEvidenceLimit && content.mutationDepth == 0 {
+		clear(content.prepared)
+	}
+	if len(content.prepared) >= claimEvidenceLimit {
+		return ref, attachment.ErrTooLarge
+	}
 	content.prepared[digest] = ref
+	if err := content.rememberPayload(ref, data); err != nil {
+		return ref, err
+	}
 	return ref, nil
 }
 
@@ -90,11 +150,43 @@ func readChangeContent(ctx context.Context, organization string, ref attachment.
 func readChangeContentObject(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
 	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
 	if !ok {
-		return nil, errors.New("immutable content storage unavailable")
+		return nil, errContentStorageUnconfigured
+	}
+	content.mu.Lock()
+	writing := content.writing
+	cached, found := content.payloads[ref.Key]
+	cachedRef := content.references[ref.Key]
+	content.mu.Unlock()
+	if writing || claimWriting(ctx) {
+		if found && cachedRef == ref {
+			return bytes.Clone(cached), nil
+		}
+		if claimWriting(ctx) {
+			return nil, errClaimHintStale
+		}
+		return nil, &claimHydration{run: func(ctx context.Context, _ nativeQueryer) error {
+			raw, err := readChangeContent(ctx, organization, ref)
+			if err != nil {
+				return err
+			}
+			content.mu.Lock()
+			defer content.mu.Unlock()
+			return content.rememberPayload(ref, raw)
+		}}
+	}
+	if content.call == nil {
+		raw, err := content.store.ReadDetail(ctx, organization, ref)
+		if err != nil {
+			return nil, immutableContentStorageError(err)
+		}
+		if int64(len(raw)) != ref.UncompressedSize {
+			return nil, artifact.ErrIntegrity
+		}
+		return raw, nil
 	}
 	compressed, err := content.call(ctx, entryauthority.ContentRequest{Organization: organization, Reference: ref})
 	if err != nil {
-		return nil, err
+		return nil, immutableContentStorageError(err)
 	}
 	if int64(len(compressed)) != ref.CompressedSize || artifact.Digest(compressed) != ref.SHA256 {
 		return nil, artifact.ErrIntegrity
@@ -129,6 +221,9 @@ func persistCommandOutput(ctx context.Context, tx *sql.Tx, organization string, 
 		}
 	} else {
 		var err error
+		if _, err := storedPayloadKey(ctx, organization, []byte(command.Output)); err != nil {
+			return err
+		}
 		ref, err = preparedChangeContent(ctx, organization, []byte(command.Output))
 		if err != nil {
 			return err
@@ -157,7 +252,7 @@ func hydrateChangeRecord(ctx context.Context, query nativeQueryer, value any) er
 			if err := query.QueryRowContext(ctx, `SELECT metadata_json FROM policy_revisions WHERE scope=? AND policy_id=?`, scope, revision).Scan(&raw); err != nil {
 				return err
 			}
-			if err := json.Unmarshal([]byte(raw), &record.Policy); err != nil {
+			if err := decodeStorageJSON(ctx, []byte(raw), &record.Policy); err != nil {
 				return err
 			}
 			if err := record.Policy.Validate(); err != nil {
@@ -276,7 +371,7 @@ func compactChangeVersion(version tracker.ChangeVersion) (string, error) {
 func preparedChangeContent(ctx context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
 	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
 	if !ok {
-		return attachment.ArchiveReference{}, errors.New("immutable content storage unavailable")
+		return attachment.ArchiveReference{}, errContentStorageUnconfigured
 	}
 	content.mu.Lock()
 	defer content.mu.Unlock()
@@ -293,9 +388,15 @@ func (s *Service) registerChangeContent(ctx context.Context, organization string
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO change_content_objects(organization_id,object_sha256,object_key,object_bytes,content_bytes) VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING`, organization, ref.SHA256, ref.Key, ref.CompressedSize, ref.UncompressedSize); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO change_content_objects(organization_id,object_sha256,object_key,object_bytes,content_bytes) SELECT ?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM attachments WHERE organization_id=? AND object_key=? AND kind='archive' AND customer_owned=0 AND storage_binding_id='') ON CONFLICT DO NOTHING`, organization, ref.SHA256, ref.Key, ref.CompressedSize, ref.UncompressedSize, organization, ref.Key); err != nil {
 			return err
 		}
-		return s.database.checkHostedGrowth(ctx, tx, before, now, false, "collaboration_bytes")
+		completion := false
+		if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
+			content.mu.Lock()
+			completion = content.completion
+			content.mu.Unlock()
+		}
+		return s.database.checkHostedGrowth(ctx, tx, before, now, completion, "collaboration_bytes")
 	})
 }

@@ -75,7 +75,7 @@ func TestChangeMutationsRejectStalePreparation(t *testing.T) {
 					case "evidence":
 						review := tracker.ChangeReview{ID: newNativeID("review"), VersionID: version.ID, Decision: "changes_requested", Actor: tracker.Actor{Kind: "human", PrincipalID: f.rules.RequiredChecks[0].PrincipalID}}
 						err = f.service.hubTransact(t.Context(), func(tx *sql.Tx, _ time.Time) error {
-							return insertChangeEvidence(t.Context(), tx, change.ID, version.ID, "review", "", review)
+							return seedLegacyChangeEvidence(t.Context(), tx, change.ID, version.ID, "review", "", review)
 						})
 					}
 					if err != nil {

@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"slices"
 	"time"
@@ -271,7 +270,7 @@ func readActivityIssueSamples(ctx context.Context, q nativeQueryer, organization
 		if err := rows.Scan(&raw); err != nil {
 			return nil, false, err
 		}
-		if err := json.Unmarshal([]byte(raw), &sample); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &sample); err != nil {
 			return nil, false, err
 		}
 		samples = append(samples, sample)
@@ -284,7 +283,7 @@ func readActivityIssueSamples(ctx context.Context, q nativeQueryer, organization
 }
 
 func readActivityIssueAttempts(ctx context.Context, q nativeQueryer, organization, project, id string, start, now time.Time) ([]activityIssueAttempt, bool, error) {
-	rows, err := q.QueryContext(ctx, `SELECT a.data_json,a.started_at,a.updated_at,a.status,coalesce(a.role,''),coalesce(lr.runner_id,''),coalesce(l.session_id,''),coalesce(l.renewed_at,''),coalesce(l.expires_at,''),coalesce(l.released_at,'') FROM native_attempts a LEFT JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND (julianday(a.updated_at)>=julianday(?) OR (a.status='running' AND julianday(l.expires_at)>=julianday(?))) ORDER BY a.started_at DESC,a.id DESC LIMIT ?`, organization, project, id, formatHubTime(start), formatHubTime(start), activityIssueHistoryLimit+1)
+	rows, err := q.QueryContext(ctx, `SELECT COALESCE(NULLIF(a.payload_object_key,''),a.data_json),a.started_at,a.updated_at,a.status,coalesce(a.role,''),coalesce(lr.runner_id,''),coalesce(l.session_id,''),coalesce(l.renewed_at,''),coalesce(l.expires_at,''),coalesce(l.released_at,'') FROM native_attempts a LEFT JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND (julianday(a.updated_at)>=julianday(?) OR (a.status='running' AND julianday(l.expires_at)>=julianday(?))) ORDER BY a.started_at DESC,a.id DESC LIMIT ?`, organization, project, id, formatHubTime(start), formatHubTime(start), activityIssueHistoryLimit+1)
 	if err != nil {
 		return nil, false, err
 	}
@@ -355,7 +354,7 @@ func readActivityIssues(ctx context.Context, q nativeQueryer, projects []string,
 			return err
 		}
 		var lanes []tracker.NativeState
-		if err := json.Unmarshal([]byte(raw), &lanes); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &lanes); err != nil {
 			return err
 		}
 		selected, err := readActivityIssueCandidates(ctx, q, out.OrganizationID, project, out.Window.From, out.ObservedAt, remaining+1)
@@ -371,7 +370,7 @@ func readActivityIssues(ctx context.Context, q nativeQueryer, projects []string,
 				var actor struct {
 					PrincipalID string `json:"principal_id"`
 				}
-				if err := json.Unmarshal([]byte(candidate.actorRaw), &actor); err != nil {
+				if err := decodeStorageJSON(ctx, []byte(candidate.actorRaw), &actor); err != nil {
 					return err
 				}
 				if actor.PrincipalID != visibility.reporterPrincipal {
@@ -456,20 +455,20 @@ func readActivityIssueChange(ctx context.Context, q nativeQueryer, organization 
 		return err
 	}
 	var request tracker.ChangeRequest
-	if err := json.Unmarshal([]byte(raw), &request); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &request); err != nil {
 		return err
 	}
 	issue.ChangeID = request.ID
 	if request.CurrentVersion == "" {
 		return nil
 	}
-	if err := q.QueryRowContext(ctx, `SELECT record_json FROM change_versions WHERE change_id=? AND id=?`, request.ID, request.CurrentVersion).Scan(&raw); errors.Is(err, sql.ErrNoRows) {
+	if err := q.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_versions WHERE change_id=? AND id=?`, request.ID, request.CurrentVersion).Scan(&raw); errors.Is(err, sql.ErrNoRows) {
 		return nil
 	} else if err != nil {
 		return err
 	}
 	var version tracker.ChangeVersion
-	if err := json.Unmarshal([]byte(raw), &version); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &version); err != nil {
 		return err
 	}
 	if version.External != nil && issue.PullRequestURL == "" {

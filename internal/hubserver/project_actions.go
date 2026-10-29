@@ -202,7 +202,7 @@ func (w *workspaceService) queueActionRun(ctx context.Context, tx *sql.Tx, scope
 		return actionRunRecord{}, actionRunCapabilityMissing()
 	}
 	run := actionRunRecord{
-		ID: newNativeID("actionrun"), ActionID: action.ID, OrganizationID: scope.organization,
+		ID: payloadNativeID(ctx, "actionrun"), ActionID: action.ID, OrganizationID: scope.organization,
 		ProjectID: scope.project, WorkspaceID: workspace.ID,
 		// The command is snapshotted onto the row. An action edited afterwards
 		// must not rewrite the history of what already ran, which is what
@@ -441,7 +441,7 @@ func applyActionRunStatus(ctx context.Context, tx *sql.Tx, run actionRunRecord, 
 
 func (s *Service) applyCreateProjectAction(ctx context.Context, tx *sql.Tx, scope nativeScope, request projectActionRequest, now time.Time) (any, error) {
 	record := actionRecord{
-		ID: newNativeID("action"), OrganizationID: scope.organization, ProjectID: scope.project,
+		ID: payloadNativeID(ctx, "action"), OrganizationID: scope.organization, ProjectID: scope.project,
 		OpenPreview: request.OpenPreview, RunOnWorktreeCreation: request.RunOnWorktreeCreation,
 		CreatedBy: scope.actor().PrincipalID, Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}

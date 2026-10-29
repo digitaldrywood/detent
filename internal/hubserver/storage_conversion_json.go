@@ -27,6 +27,9 @@ type storageJSONPayload struct {
 }
 
 func resolveStorageJSON(ctx context.Context, raw []byte) ([]byte, error) {
+	if bytes.HasPrefix(raw, []byte("orgs/")) {
+		return readStoredPayload(ctx, string(raw))
+	}
 	if explanationRead(ctx) {
 		return raw, nil
 	}

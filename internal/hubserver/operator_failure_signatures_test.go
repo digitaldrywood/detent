@@ -182,11 +182,11 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,status=?,data_json=?,started_at=?,updated_at=? WHERE id=?", test.status, string(raw), formatHubTime(now.Add(-3*time.Minute)), formatHubTime(now), start.Data.AttemptID); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key='',report_projection_version=NULL,status=?,data_json=?,started_at=?,updated_at=? WHERE id=?", test.status, string(raw), formatHubTime(now.Add(-3*time.Minute)), formatHubTime(now), start.Data.AttemptID); err != nil {
 				t.Fatal(err)
 			}
 			if test.malformedPhases {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,data_json=json_set(data_json,'$.runtime.phases',?) WHERE id=?", "malformed", start.Data.AttemptID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key='',report_projection_version=NULL,data_json=json_set(data_json,'$.runtime.phases',?) WHERE id=?", "malformed", start.Data.AttemptID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -196,11 +196,11 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT OR REPLACE INTO attempt_usage(attempt_id,organization_id,project_id,period,provider,model,input,cached_input,output,cost_estimate,updated_at) VALUES(?,?,?,?,?,?,10,10,0,0.25,?)`, start.Data.AttemptID, scope.organization, scope.project, formatHubTime(now.Add(-2*time.Hour)), "codex", "other", formatHubTime(now)); err != nil {
 				t.Fatal(err)
 			}
-			out, err := readNativeAnalytics(t.Context(), f.service.database.db, scope, operatortool.AnalyticsRequest{Limit: 10}, w)
+			out, err := readNativeAnalytics(f.service.runDetailContext(t.Context()), f.service.database.db, scope, operatortool.AnalyticsRequest{Limit: 10}, w)
 			if err != nil {
 				t.Fatal(err)
 			}
-			failures, partial, err := readNativeFailures(t.Context(), f.service.database.db, scope, string(issue.WorkItemID), nil)
+			failures, partial, err := readNativeFailures(f.service.runDetailContext(t.Context()), f.service.database.db, scope, string(issue.WorkItemID), nil)
 			if err != nil || partial {
 				t.Fatalf("read failures: partial=%v err=%v", partial, err)
 			}
@@ -220,7 +220,7 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 			}
 			foreign := scope
 			foreign.project = "prj_foreign"
-			hidden, _, err := readNativeFailures(t.Context(), f.service.database.db, foreign, "", &w)
+			hidden, _, err := readNativeFailures(f.service.runDetailContext(t.Context()), f.service.database.db, foreign, "", &w)
 			if err != nil || len(hidden) != 0 {
 				t.Fatalf("scope leak: %#v %v", hidden, err)
 			}
@@ -253,16 +253,16 @@ func TestNativeFailureSignatureReads(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,status='failed',data_json=?,updated_at=? WHERE id=?", string(raw), formatHubTime(updated), start.Data.AttemptID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key='',report_projection_version=NULL,status='failed',data_json=?,updated_at=? WHERE id=?", string(raw), formatHubTime(updated), start.Data.AttemptID); err != nil {
 					t.Fatal(err)
 				}
-				failures, partial, err := readNativeFailures(t.Context(), f.service.database.db, scope, "", &w)
+				failures, partial, err := readNativeFailures(f.service.runDetailContext(t.Context()), f.service.database.db, scope, "", &w)
 				if err != nil || partial || len(failures) != test.want {
 					t.Fatalf("window failures=%#v partial=%v err=%v", failures, partial, err)
 				}
 			})
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,data_json='{}',updated_at=? WHERE id=?", formatHubTime(now), start.Data.AttemptID); err != nil {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key='',report_projection_version=NULL,data_json='{}',updated_at=? WHERE id=?", formatHubTime(now), start.Data.AttemptID); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -288,7 +288,7 @@ SELECT 'attempt_signature_'||l.fencing_token,a.organization_id,a.project_id,a.wo
 FROM native_attempts a CROSS JOIN leases l WHERE a.id=? AND l.lease_id LIKE 'lease_signature_%'`, start.Data.AttemptID); err != nil {
 				t.Fatal(err)
 			}
-			failures, partial, err := readNativeFailures(t.Context(), tx, scope, string(issue.WorkItemID), &w)
+			failures, partial, err := readNativeFailures(f.service.runDetailContext(t.Context()), tx, scope, string(issue.WorkItemID), &w)
 			if err != nil || partial != (count > maxAnalyticsPopulation) || len(failures) != maxAnalyticsPopulation {
 				t.Fatalf("population=%d partial=%v err=%v", len(failures), partial, err)
 			}

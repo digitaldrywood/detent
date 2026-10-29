@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -26,7 +25,7 @@ CREATE INDEX native_attempts_blocked_disposition ON native_attempts(organization
 			return err
 		}
 		var data tracker.NativeRunData
-		if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &data); err != nil {
 			return err
 		}
 		if err := updateAttemptDisposition(ctx, tx, id, data); err != nil {

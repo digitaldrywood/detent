@@ -250,7 +250,18 @@ func (d *database) Release(ctx context.Context, request tracker.ReleaseRequest) 
 	return d.releaseLease(ctx, request, false)
 }
 
-func (d *database) releaseLease(ctx context.Context, request tracker.ReleaseRequest, cancelAttempt bool, scopes ...nativeScope) (resultErr error) {
+func (d *database) releaseLease(ctx context.Context, request tracker.ReleaseRequest, cancelAttempt bool, scopes ...nativeScope) error {
+	ctx = isolateContentContext(ctx)
+	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok && cancelAttempt {
+		content.completion = true
+	}
+	_, err := prepareContentMutation(ctx, d.reader, func() (struct{}, error) {
+		return struct{}{}, d.releaseLeaseOnce(ctx, request, cancelAttempt, scopes...)
+	})
+	return err
+}
+
+func (d *database) releaseLeaseOnce(ctx context.Context, request tracker.ReleaseRequest, cancelAttempt bool, scopes ...nativeScope) (resultErr error) {
 	request, err := normalizeReleaseRequest(request)
 	if err != nil {
 		return err

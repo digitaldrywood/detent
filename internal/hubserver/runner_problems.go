@@ -61,7 +61,7 @@ func updateRunnerProblems(ctx context.Context, tx *sql.Tx, scope nativeScope, pr
 		return err
 	}
 	var previous []runnerauth.Problem
-	if err := json.Unmarshal([]byte(raw), &previous); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &previous); err != nil {
 		return err
 	}
 	for i := range problems {
@@ -86,7 +86,7 @@ func refreshRunnerProblems(ctx context.Context, tx *sql.Tx, organization tracker
 		return err
 	}
 	var previous []runnerauth.Problem
-	if err := json.Unmarshal([]byte(raw), &previous); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &previous); err != nil {
 		return err
 	}
 	encoded, err := json.Marshal(mergeRunnerProblems(previous, previous, protocol, rejected, now))
@@ -117,7 +117,7 @@ func appendRunnerRuntimeProblems(ctx context.Context, db nativeQueryer, r *runne
 	if len(projects) == 0 {
 		return nil
 	}
-	rows, err := db.QueryContext(ctx, `SELECT a.data_json, a.status, a.started_at, a.updated_at, a.checkpoint_json, a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
+	rows, err := db.QueryContext(ctx, `SELECT COALESCE(NULLIF(a.payload_object_key,''),a.data_json), a.status, a.started_at, a.updated_at, COALESCE(NULLIF(a.checkpoint_object_key,''),a.checkpoint_json), a.artifact_ids_json, l.expires_at, l.released_at, l.renewed_at, a.work_item_revision, a.dispatch_generation
 FROM native_attempts a JOIN leases l ON l.lease_id = a.lease_id
 WHERE a.organization_id = ? AND l.lease_id IN (`+placeholders(len(projects))+`) AND a.status = 'running' AND l.released_at IS NULL`, args...)
 	if err != nil {

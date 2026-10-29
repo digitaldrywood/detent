@@ -55,8 +55,8 @@ func readChangeMutationSnapshot(ctx context.Context, q nativeQueryer, scope nati
 COALESCE((SELECT policy_id FROM project_policies WHERE scope=?),''),
 COALESCE((SELECT policy_json FROM change_review_policies WHERE organization_id=? AND project_id=?),''),
 COALESCE((SELECT sequence FROM change_evidence WHERE change_id=c.id ORDER BY sequence DESC LIMIT 1),0),
-COALESCE((SELECT data_json FROM native_attempts WHERE id=? AND organization_id=c.organization_id AND project_id=c.project_id AND work_item_id=c.work_item_id),''),
-COALESCE((SELECT data_json FROM native_attempts WHERE lease_id=? AND organization_id=c.organization_id AND project_id=c.project_id AND work_item_id=c.work_item_id),'')
+COALESCE((SELECT COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE id=? AND organization_id=c.organization_id AND project_id=c.project_id AND work_item_id=c.work_item_id),''),
+COALESCE((SELECT COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE lease_id=? AND organization_id=c.organization_id AND project_id=c.project_id AND work_item_id=c.work_item_id),'')
 FROM change_requests c JOIN issues i ON i.organization_id=c.organization_id AND i.project_id=c.project_id AND i.native_id=c.work_item_id
 WHERE c.organization_id=? AND c.project_id=? AND c.id=? AND EXISTS(SELECT 1 FROM change_issue_links WHERE change_id=c.id AND work_item_id=?)`,
 		string(scope.organization)+"/"+string(scope.project), scope.organization, scope.project, sourceAttempt, lease, scope.organization, scope.project, change, item).
@@ -144,7 +144,7 @@ func (s *Service) prepareChangeMutation(ctx context.Context, scope nativeScope, 
 			return ctx, err
 		}
 		prepared.sourceAttempt = prepared.version.AttemptID
-		prepared.record = tracker.ChangeReview{SecurityAudit: request.SecurityAudit, SessionMachineID: prepared.sessionMachineID, ImplementationReview: request.ImplementationReview, Validator: request.Validator, ID: newNativeID("review"), VersionID: options.VersionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: now}
+		prepared.record = tracker.ChangeReview{SecurityAudit: request.SecurityAudit, SessionMachineID: prepared.sessionMachineID, ImplementationReview: request.ImplementationReview, Validator: request.Validator, ID: payloadNativeID(ctx, "review"), VersionID: options.VersionID, Decision: request.Decision, Body: request.Body, Actor: scope.actor(), CreatedAt: payloadTimestamp(ctx, now)}
 		prepared.reviewSlots = reviewAttributionSlots(&prepared.record)
 		raw, err := json.Marshal(prepared.record)
 		if err != nil {
@@ -203,6 +203,17 @@ func (s *Service) prepareChangeMutation(ctx context.Context, scope nativeScope, 
 			return ctx, err
 		}
 	}
+	response := any(prepared.record)
+	if prepared.publication != nil {
+		response = prepared.publication.version
+	}
+	responseRaw, err := json.Marshal(response)
+	if err != nil {
+		return ctx, err
+	}
+	if _, err := prepareChangeContent(ctx, string(scope.organization), responseRaw); err != nil {
+		return ctx, err
+	}
 	return context.WithValue(ctx, changeMutationPreparationKey{}, prepared), nil
 }
 
@@ -252,7 +263,7 @@ func prepareChangePromotion(ctx context.Context, q nativeQueryer, scope nativeSc
 		}
 		detail.Reviews = append(detail.Reviews, tracker.ChangeReview{VersionID: version.ID, Decision: prepared.review.Decision, Actor: scope.actor(), Validator: prepared.review.Validator, ImplementationReview: prepared.review.ImplementationReview, SecurityAudit: prepared.review.SecurityAudit})
 		for _, expected := range version.Checks {
-			checks, err := changeRows[tracker.ChangeCheck](ctx, q, "SELECT record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='check' AND source_key=?", detail.Change.ID, version.ID, expected.CheckRunID)
+			checks, err := changeRows[tracker.ChangeCheck](ctx, q, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id=? AND version_id=? AND kind='check' AND source_key=?", detail.Change.ID, version.ID, expected.CheckRunID)
 			if err != nil {
 				return err
 			}

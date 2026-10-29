@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"slices"
 	"time"
@@ -45,7 +44,7 @@ func refreshProductivitySummary(ctx context.Context, tx projectionQuery, scope n
 		closedNS = at.UnixNano()
 	}
 	var actor tracker.Actor
-	if err := json.Unmarshal([]byte(actorRaw), &actor); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(actorRaw), &actor); err != nil {
 		return err
 	}
 	filerKind := "unknown"
@@ -87,7 +86,7 @@ func refreshProductivitySummary(ctx context.Context, tx projectionQuery, scope n
 				}
 			}
 			var who tracker.Actor
-			if err := json.Unmarshal([]byte(actorRaw), &who); err != nil {
+			if err := decodeStorageJSON(ctx, []byte(actorRaw), &who); err != nil {
 				return errors.Join(err, events.Close())
 			}
 			if who.Kind == "human" && who.Agent == "" {
@@ -107,7 +106,7 @@ func refreshProductivitySummary(ctx context.Context, tx projectionQuery, scope n
 	}
 	if err == nil {
 		var sample analyticsResidenceSample
-		if err := json.Unmarshal([]byte(sampleRaw), &sample); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(sampleRaw), &sample); err != nil {
 			return err
 		}
 		if !sample.Partial && sample.Started != nil && sample.LastDone != nil {
@@ -128,7 +127,7 @@ func refreshProductivitySummary(ctx context.Context, tx projectionQuery, scope n
 		}
 	}
 	var labels []string
-	if err := json.Unmarshal([]byte(labelsRaw), &labels); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(labelsRaw), &labels); err != nil {
 		return err
 	}
 	for _, label := range labels {
@@ -219,7 +218,7 @@ func productivityHours(ctx context.Context, tx projectionQuery, scope nativeScop
 
 func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope nativeScope, id string) (_ productivityQuality, resultErr error) {
 	out := productivityQuality{}
-	rows, err := queryChangeLegacyRows(ctx, tx, `SELECT c.id,c.work_item_id,c.record_json,v.id,v.record_json,coalesce(l.record_json,'') FROM change_requests c JOIN change_versions v ON v.change_id=c.id LEFT JOIN quality_landings l ON l.version_id=v.id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? ORDER BY c.id,v.number`, scope.organization, scope.project, id)
+	rows, err := queryChangeLegacyRows(ctx, tx, `SELECT c.id,c.work_item_id,c.record_json,v.id,COALESCE(NULLIF(v.payload_object_key,''),v.record_json),coalesce(l.record_json,'') FROM change_requests c JOIN change_versions v ON v.change_id=c.id LEFT JOIN quality_landings l ON l.version_id=v.id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? ORDER BY c.id,v.number`, scope.organization, scope.project, id)
 	if err != nil {
 		return out, err
 	}
@@ -280,7 +279,7 @@ func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope na
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return out, err
 	}
-	rows, err = queryChangeLegacyRows(ctx, tx, `SELECT e.record_json FROM change_requests c JOIN change_evidence e ON e.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? AND e.kind='review' ORDER BY e.sequence`, scope.organization, scope.project, id)
+	rows, err = queryChangeLegacyRows(ctx, tx, `SELECT COALESCE(NULLIF(e.payload_object_key,''),e.record_json) FROM change_requests c JOIN change_evidence e ON e.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? AND e.kind='review' ORDER BY e.sequence`, scope.organization, scope.project, id)
 	if err != nil {
 		return out, err
 	}

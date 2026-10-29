@@ -69,7 +69,7 @@ function ArchivedDiagnostics(props: Parameters<typeof IssueDiagnosticsBody>[0]) 
       const result: NativeAttempt[] = [];
       let cursor: string | undefined;
       do {
-        const page = await http.listAttempts(issue.project_id, issue.work_item_id, 100, controller.signal, cursor);
+        const page = await http.listAttempts(issue.project_id, issue.work_item_id, 100, controller.signal, cursor, undefined, "detail");
         result.push(...page.items);
         const next = page.next_cursor ?? undefined;
         if (next !== undefined && next === cursor) throw new Error("Archived runs cursor did not advance");

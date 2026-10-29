@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -267,8 +268,8 @@ func TestNativeStorageArchivePublication(t *testing.T) {
 					t.Fatalf("pending sections=%d", pending)
 				}
 			}
-			if len(f.objects) != 2 {
-				t.Fatalf("interruption duplicated archive objects: %d", len(f.objects))
+			if count := len(storageTestArchiveObjects(t, f.service, f.objects)); count != 2 {
+				t.Fatalf("interruption duplicated archive objects: %d", count)
 			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 			ctx := f.service.archiveContext(t.Context(), scope, false)
@@ -325,7 +326,7 @@ func TestNativeStorageArchivePrivacyAndOrganizations(t *testing.T) {
 	if count != 2 {
 		t.Fatalf("archives=%d want two organizations", count)
 	}
-	for key, data := range f.objects {
+	for key, data := range storageTestArchiveObjects(t, f.service, f.objects) {
 		raw := archiveTestBytes(t, data)
 		for _, secret := range []string{string(secret.WorkItemID), secret.Title, private.ID, "private conversation content"} {
 			if bytes.Contains(raw, []byte(secret)) {
@@ -396,7 +397,7 @@ func TestNativeStorageArchiveRangesAndLateMessages(t *testing.T) {
 	if sections < 2 {
 		t.Fatalf("large history uses %d sections", sections)
 	}
-	for _, data := range f.objects {
+	for _, data := range storageTestArchiveObjects(t, f.service, f.objects) {
 		if len(archiveTestBytes(t, data)) > attachment.MaxSectionBytes {
 			t.Fatal("oversized section")
 		}
@@ -652,21 +653,17 @@ func TestNativeStorageArchiveRunTimeline(t *testing.T) {
 		}
 		return entryauthority.ArchiveResponse{Data: objects[ref.Key]}, nil
 	}
-	tx, err := a.service.database.db.BeginTx(t.Context(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	issue, _, err := readNativeIssue(t.Context(), tx, a.scope, string(a.issue.WorkItemID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	from := issue.State
-	issue.State = "Done"
-	if _, err := persistNativeIssue(t.Context(), tx, a.scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: "Done"}, a.service.config.now().Add(-73*time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
+	ctx := a.service.runDetailContext(t.Context())
+	if err := a.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
+		issue, _, err := readNativeIssue(ctx, tx, a.scope, string(a.issue.WorkItemID))
+		if err != nil {
+			return err
+		}
+		from := issue.State
+		issue.State = "Done"
+		_, err = persistNativeIssue(ctx, tx, a.scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: "Done"}, a.service.config.now().Add(-73*time.Hour))
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
 	paths := []string{a.base + "/work-items/" + string(a.issue.WorkItemID) + "/runtime?native_attempt_id=" + a.start.Data.AttemptID, a.base + "/work-items/" + string(a.issue.WorkItemID) + "/history?limit=200"}

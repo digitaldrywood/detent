@@ -1176,7 +1176,7 @@ func (s *conversationStore) recordAudience(ctx context.Context, tx *sql.Tx, conv
 		return nativePublicInvalid("Audience visibility is not valid")
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO conversation_audience_events (id, conversation_id, actor_principal_id, from_visibility, to_visibility, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-		newNativeID("aud"), conversationID, actorPrincipalID, from, to, conversationTime(now)); err != nil {
+		payloadNativeID(ctx, "aud"), conversationID, actorPrincipalID, from, to, conversationTime(now)); err != nil {
 		return fmt.Errorf("insert audience event: %w", err)
 	}
 	return nil

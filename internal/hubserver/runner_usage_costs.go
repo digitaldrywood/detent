@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -62,7 +61,7 @@ func recordRunnerUsageCosts(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 	}
 	var organization, project, item, started, ended, runnerID, machineID, placement string
 	var legacy sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT a.organization_id,a.project_id,a.work_item_id,a.started_at,a.updated_at,coalesce(lr.runner_id,''),coalesce(a.machine_id,''),CASE WHEN a.usage_facts_ready IS NULL THEN a.data_json END FROM native_attempts a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.id=?`, request.Data.AttemptID).Scan(&organization, &project, &item, &started, &ended, &runnerID, &machineID, &legacy)
+	err := tx.QueryRowContext(ctx, `SELECT a.organization_id,a.project_id,a.work_item_id,a.started_at,a.updated_at,coalesce(lr.runner_id,''),coalesce(a.machine_id,''),CASE WHEN a.usage_facts_ready IS NULL THEN COALESCE(NULLIF(a.payload_object_key,''),a.data_json) END FROM native_attempts a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.id=?`, request.Data.AttemptID).Scan(&organization, &project, &item, &started, &ended, &runnerID, &machineID, &legacy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -162,7 +161,7 @@ func recordRunnerUsageCosts(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 				return err
 			}
 			if err == nil {
-				if err := json.Unmarshal([]byte(raw), &previous); err != nil {
+				if err := decodeStorageJSON(ctx, []byte(raw), &previous); err != nil {
 					return err
 				}
 			}

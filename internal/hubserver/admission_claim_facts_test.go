@@ -162,7 +162,7 @@ func TestLandingClaimFactsUnknown(t *testing.T) {
 			var lease tracker.NativeLease
 			decodeHubResponse(t, response, &lease)
 			var change, version, head string
-			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT c.id,c.claim_version_id,v.claim_head_sha FROM change_requests c JOIN change_versions v ON v.id=c.claim_version_id WHERE c.work_item_id=?`, first.WorkItemID).Scan(&change, &version, &head); err != nil {
+			if err := f.service.database.reader.QueryRowContext(f.service.runDetailContext(t.Context()), `SELECT c.id,c.claim_version_id,v.claim_head_sha FROM change_requests c JOIN change_versions v ON v.id=c.claim_version_id WHERE c.work_item_id=?`, first.WorkItemID).Scan(&change, &version, &head); err != nil {
 				t.Fatal(err)
 			}
 			event := nativeStartedEvent(lease)
@@ -173,22 +173,46 @@ func TestLandingClaimFactsUnknown(t *testing.T) {
 				item tracker.NativeWorkItemID
 				out  *tracker.WorkItemID
 			}{{first.WorkItemID, &firstID}, {second.WorkItemID, &secondID}} {
-				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT id FROM issues WHERE native_id=?`, pair.item).Scan(pair.out); err != nil {
+				if err := f.service.database.reader.QueryRowContext(f.service.runDetailContext(t.Context()), `SELECT id FROM issues WHERE native_id=?`, pair.item).Scan(pair.out); err != nil {
 					t.Fatal(err)
 				}
+			}
+			ctx := f.service.runDetailContext(f.service.runDetailContext(t.Context()))
+			var versionRaw string
+			if err := f.service.database.reader.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_versions WHERE id=?", version).Scan(&versionRaw); err != nil {
+				t.Fatal(err)
+			}
+			versionJSON, err := resolveStorageJSON(ctx, []byte(versionRaw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			runJSON, err := json.Marshal(readReferencedRun(t, f.service, event.Data.AttemptID).NativeRunData)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
+				if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET data_json=?,payload_object_key='' WHERE id=?", string(runJSON), event.Data.AttemptID); err != nil {
+					return err
+				}
+				return withMutableClaimFact(ctx, tx, "change_versions_immutable", func() error {
+					_, err := tx.ExecContext(ctx, "UPDATE change_versions SET record_json=?,payload_object_key='' WHERE id=?", string(versionJSON), version)
+					return err
+				})
+			}); err != nil {
+				t.Fatal(err)
 			}
 			wantAllowed := !github
 			for _, unknown := range []bool{false, true} {
 				if unknown {
-					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET claim_facts_known=NULL,landing_waiting=NULL,landing_head_sha=NULL WHERE id=?`, event.Data.AttemptID); err != nil {
+					if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), `UPDATE native_attempts SET claim_facts_known=NULL,landing_waiting=NULL,landing_head_sha=NULL WHERE id=?`, event.Data.AttemptID); err != nil {
 						t.Fatal(err)
 					}
-					tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+					tx, err := f.service.database.db.BeginTx(f.service.runDetailContext(t.Context()), nil)
 					if err != nil {
 						t.Fatal(err)
 					}
-					if err := withMutableClaimFact(t.Context(), tx, "change_versions_immutable", func() error {
-						_, err := tx.ExecContext(t.Context(), `UPDATE change_versions SET claim_head_sha=NULL,gate_github_pull_request=NULL WHERE change_id IN (SELECT id FROM change_requests WHERE project_id=?)`, f.project.ID)
+					if err := withMutableClaimFact(f.service.runDetailContext(t.Context()), tx, "change_versions_immutable", func() error {
+						_, err := tx.ExecContext(f.service.runDetailContext(t.Context()), `UPDATE change_versions SET claim_head_sha=NULL,gate_github_pull_request=NULL WHERE change_id IN (SELECT id FROM change_requests WHERE project_id=?)`, f.project.ID)
 						return err
 					}); err != nil {
 						tx.Rollback()
@@ -197,10 +221,10 @@ func TestLandingClaimFactsUnknown(t *testing.T) {
 					if err := tx.Commit(); err != nil {
 						t.Fatal(err)
 					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE policy_revisions SET gate_github_pull_request=NULL WHERE scope=?`, string(f.project.OrganizationID)+"/"+string(f.project.ID)); err != nil {
+					if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), `UPDATE policy_revisions SET gate_github_pull_request=NULL WHERE scope=?`, string(f.project.OrganizationID)+"/"+string(f.project.ID)); err != nil {
 						t.Fatal(err)
 					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE change_requests SET claim_version_id=NULL,claim_head_sha=NULL,landed_version_id=NULL WHERE project_id=?`, f.project.ID); err != nil {
+					if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), `UPDATE change_requests SET claim_version_id=NULL,claim_head_sha=NULL,landed_version_id=NULL WHERE project_id=?`, f.project.ID); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -222,18 +246,18 @@ func TestLandingClaimFactsUnknown(t *testing.T) {
 					{name: "version gate disabled", statement: `UPDATE change_versions SET policy_revision_id='unrecorded-policy',gate_github_pull_request=0,record_json=json_set(record_json,'$.policy.gates.github_pull_request',json('false')) WHERE id=?`, args: []any{version}, immutable: true},
 				} {
 					t.Run(fmt.Sprintf("unknown=%v/%s", unknown, test.name), func(t *testing.T) {
-						tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+						tx, err := f.service.database.db.BeginTx(f.service.runDetailContext(t.Context()), nil)
 						if err != nil {
 							t.Fatal(err)
 						}
 						defer tx.Rollback()
 						if test.statement != "" {
 							write := func() error {
-								_, err := tx.ExecContext(t.Context(), test.statement, test.args...)
+								_, err := tx.ExecContext(f.service.runDetailContext(t.Context()), test.statement, test.args...)
 								return err
 							}
 							if test.immutable {
-								err = withMutableClaimFact(t.Context(), tx, "change_versions_immutable", write)
+								err = withMutableClaimFact(f.service.runDetailContext(t.Context()), tx, "change_versions_immutable", write)
 							} else {
 								err = write()
 							}
@@ -242,11 +266,11 @@ func TestLandingClaimFactsUnknown(t *testing.T) {
 							}
 						}
 						if !unknown {
-							if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET data_json='{}' WHERE id=?`, event.Data.AttemptID); err != nil {
+							if _, err := tx.ExecContext(f.service.runDetailContext(t.Context()), `UPDATE native_attempts SET data_json='{}' WHERE id=?`, event.Data.AttemptID); err != nil {
 								t.Fatal(err)
 							}
 						}
-						_, pending, err := readPendingLandingFact(t.Context(), tx, firstID)
+						_, pending, err := readPendingLandingFact(f.service.runDetailContext(t.Context()), tx, firstID)
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -257,51 +281,51 @@ func TestLandingClaimFactsUnknown(t *testing.T) {
 				}
 				if unknown {
 					t.Run("transaction projection without resolvable version policy", func(t *testing.T) {
-						tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+						tx, err := f.service.database.db.BeginTx(f.service.runDetailContext(t.Context()), nil)
 						if err != nil {
 							t.Fatal(err)
 						}
 						defer tx.Rollback()
-						if err := withMutableClaimFact(t.Context(), tx, "change_versions_immutable", func() error {
-							_, err := tx.ExecContext(t.Context(), `UPDATE change_versions SET policy_revision_id='unrecorded-policy',record_json=json_remove(record_json,'$.policy') WHERE id=?`, version)
+						if err := withMutableClaimFact(f.service.runDetailContext(t.Context()), tx, "change_versions_immutable", func() error {
+							_, err := tx.ExecContext(f.service.runDetailContext(t.Context()), `UPDATE change_versions SET policy_revision_id='unrecorded-policy',record_json=json_remove(record_json,'$.policy') WHERE id=?`, version)
 							return err
 						}); err != nil {
 							t.Fatal(err)
 						}
-						if _, _, err := readPendingLandingFact(t.Context(), tx, firstID); !errors.Is(err, errClaimHintStale) {
+						if _, _, err := readPendingLandingFact(f.service.runDetailContext(t.Context()), tx, firstID); !errors.Is(err, errClaimHintStale) {
 							t.Fatalf("landing fact error = %v, want stale claim hint", err)
 						}
-						if _, _, err := readNativeIssueProjection(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(first.WorkItemID), true); !errors.Is(err, errClaimHintStale) {
+						if _, _, err := readNativeIssueProjection(f.service.runDetailContext(t.Context()), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(first.WorkItemID), true); !errors.Is(err, errClaimHintStale) {
 							t.Fatalf("execution-facing projection error = %v, want stale claim hint", err)
 						}
-						issue, _, err := readNativeIssueProjection(withDisplayLandingFacts(t.Context()), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(first.WorkItemID), true)
+						issue, _, err := readNativeIssueProjection(withDisplayLandingFacts(f.service.runDetailContext(t.Context())), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(first.WorkItemID), true)
 						if err != nil {
 							t.Fatalf("board display projection: %v", err)
 						}
 						if issue.ListChange != nil && issue.ListChange.LandingPending {
 							t.Fatal("unresolved landing fact reported pending")
 						}
-						prepared := context.WithValue(withDisplayLandingFacts(t.Context()), claimPreparationKey{}, &claimPreparation{})
+						prepared := context.WithValue(withDisplayLandingFacts(f.service.runDetailContext(t.Context())), claimPreparationKey{}, &claimPreparation{})
 						if _, _, err := readNativeIssueProjection(prepared, tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(first.WorkItemID), true); err == nil {
 							t.Fatal("claim-prepared projection resolved an unprepared landing fact")
 						}
 					})
 				}
-				_, pending, err := readPendingLandingFact(t.Context(), f.service.database.reader, firstID)
+				_, pending, err := readPendingLandingFact(f.service.runDetailContext(t.Context()), f.service.database.reader, firstID)
 				if err != nil {
 					t.Fatal(err)
 				}
 				if pending != github {
 					t.Fatalf("unknown=%v pending=%v want=%v", unknown, pending, github)
 				}
-				allowed, _, err := nativeLandingClaimCapacity(t.Context(), f.service.database.reader, secondID, 1, f.service.config.now())
+				allowed, _, err := nativeLandingClaimCapacity(f.service.runDetailContext(t.Context()), f.service.database.reader, secondID, 1, f.service.config.now())
 				if err != nil {
 					t.Fatal(err)
 				}
 				if allowed != wantAllowed {
 					t.Fatalf("unknown=%v allowed=%v want=%v", unknown, allowed, wantAllowed)
 				}
-				key, err := nativeLandingCapacityKey(t.Context(), f.service.database.reader, owner.binding.MachineID, "landing/batch/second", firstID)
+				key, err := nativeLandingCapacityKey(f.service.runDetailContext(t.Context()), f.service.database.reader, owner.binding.MachineID, "landing/batch/second", firstID)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -309,10 +333,10 @@ func TestLandingClaimFactsUnknown(t *testing.T) {
 					t.Fatalf("unknown=%v grouped=%q", unknown, key)
 				}
 				if unknown {
-					if err := f.service.database.populateClaimFacts(t.Context()); err != nil {
+					if err := f.service.database.populateClaimFacts(f.service.runDetailContext(t.Context())); err != nil {
 						t.Fatal(err)
 					}
-					allowed, _, err := nativeLandingClaimCapacity(t.Context(), f.service.database.reader, secondID, 1, f.service.config.now())
+					allowed, _, err := nativeLandingClaimCapacity(f.service.runDetailContext(t.Context()), f.service.database.reader, secondID, 1, f.service.config.now())
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -323,21 +347,30 @@ func TestLandingClaimFactsUnknown(t *testing.T) {
 			}
 			t.Run("archived legacy policy", func(t *testing.T) {
 				objects := &changeObjectFixture{}
+				originalContent := f.service.config.Content
 				f.service.config.Content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
 					if !request.Write && f.service.database.db.Stats().InUse != 0 {
 						return nil, errors.New("archive read with writer connection held")
 					}
+					if !request.Write {
+						objects.mu.Lock()
+						_, found := objects.objects[request.Reference.Key]
+						objects.mu.Unlock()
+						if !found {
+							return originalContent(ctx, request)
+						}
+					}
 					return objects.call(ctx, request)
 				}
-				ctx := f.service.contentContext(t.Context())
+				ctx := f.service.contentContext(f.service.runDetailContext(t.Context()))
 				for _, item := range []tracker.NativeIssue{first, second} {
 					var row int64
 					var raw string
-					if err := f.service.database.reader.QueryRowContext(ctx, `SELECT v.rowid,v.record_json FROM change_versions v JOIN change_requests c ON c.id=v.change_id WHERE c.work_item_id=?`, item.WorkItemID).Scan(&row, &raw); err != nil {
+					if err := f.service.database.reader.QueryRowContext(ctx, `SELECT v.rowid,COALESCE(NULLIF(v.payload_object_key,''),v.record_json) FROM change_versions v JOIN change_requests c ON c.id=v.change_id WHERE c.work_item_id=?`, item.WorkItemID).Scan(&row, &raw); err != nil {
 						t.Fatal(err)
 					}
 					var legacy tracker.ChangeVersion
-					if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
+					if err := decodeStorageJSON(ctx, []byte(raw), &legacy); err != nil {
 						t.Fatal(err)
 					}
 					legacy.Policy = f.descriptor
@@ -363,7 +396,7 @@ func TestLandingClaimFactsUnknown(t *testing.T) {
 					}
 					defer tx.Rollback()
 					if err := withMutableClaimFact(ctx, tx, "change_versions_immutable", func() error {
-						_, err := tx.ExecContext(ctx, `UPDATE change_versions SET record_json=?,policy_revision_id='unrecorded-policy',gate_github_pull_request=NULL WHERE rowid=?`, string(converted), row)
+						_, err := tx.ExecContext(ctx, `UPDATE change_versions SET record_json=?,payload_object_key='',policy_revision_id='unrecorded-policy',gate_github_pull_request=NULL WHERE rowid=?`, string(converted), row)
 						return err
 					}); err != nil {
 						t.Fatal(err)
@@ -411,14 +444,14 @@ func TestLandingClaimFactsUnknown(t *testing.T) {
 				for _, backfilled := range []bool{false, true} {
 					readCtx := ctx
 					if backfilled {
-						if err := f.service.maintainNativeRetention(t.Context(), f.service.config.now()); err != nil {
+						if err := f.service.maintainNativeRetention(f.service.runDetailContext(t.Context()), f.service.config.now()); err != nil {
 							t.Fatal(err)
 						}
 						var known int
 						if err := f.service.database.reader.QueryRowContext(ctx, `SELECT count(*) FROM change_versions WHERE change_id IN (SELECT id FROM change_requests WHERE project_id=?) AND gate_github_pull_request=?`, f.project.ID, github).Scan(&known); err != nil || known != 2 {
 							t.Fatalf("archived gates not backfilled: count=%d error=%v", known, err)
 						}
-						readCtx = t.Context()
+						readCtx = f.service.runDetailContext(t.Context())
 					}
 					_, pending, err := readPendingLandingFact(readCtx, f.service.database.reader, firstID)
 					if err != nil || pending != github {

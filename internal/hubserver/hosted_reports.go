@@ -853,21 +853,20 @@ func readLandingAttemptReceipts(ctx context.Context, q nativeQueryer, scope nati
 	if prepareErr != nil {
 		return nil, prepareErr
 	}
-	type landed struct {
-		WorkItemID string `json:"work_item_id"`
-		LandedAt   string `json:"landed_at"`
+	if len(landings) == 0 {
+		return [][]string{}, nil
 	}
-	keys := make([]landed, 0, len(landings))
-	for _, landing := range landings {
-		keys = append(keys, landed{string(landing.WorkItemID), formatHubTime(landing.Landing.LandedAt)})
+	values := make([]string, 0, len(landings))
+	args := make([]any, 0, len(landings)*3+2)
+	for index, landing := range landings {
+		values = append(values, "(?,?,?)")
+		args = append(args, index, landing.WorkItemID, formatHubTime(landing.Landing.LandedAt))
 	}
-	encoded, err := marshalNative(keys)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := q.QueryContext(ctx, `SELECT l.key,a.started_at,a.id,a.data_json FROM json_each(?) l
-CROSS JOIN report_attempts a ON a.organization_id=? AND a.project_id=? AND a.work_item_id=json_extract(l.value,'$.work_item_id') AND julianday(+a.started_at)<=julianday(json_extract(l.value,'$.landed_at'))
-AND (a.role='merge' OR a.has_landing_receipt=1)`, encoded, scope.organization, scope.project)
+	args = append(args, scope.organization, scope.project)
+	rows, err := q.QueryContext(ctx, `WITH landed(key,work_item_id,landed_at) AS (VALUES `+strings.Join(values, ",")+`)
+SELECT l.key,a.started_at,a.id,a.data_json FROM landed l
+CROSS JOIN report_attempts a ON a.organization_id=? AND a.project_id=? AND a.work_item_id=l.work_item_id AND julianday(+a.started_at)<=julianday(l.landed_at)
+AND (a.role='merge' OR a.has_landing_receipt=1)`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -880,22 +879,27 @@ AND (a.role='merge' OR a.has_landing_receipt=1)`, encoded, scope.organization, s
 		if err := rows.Scan(&landing, &r.started, &r.id, &r.raw); err != nil {
 			return nil, err
 		}
-		var data tracker.NativeRunData
-		if err := decodeActivityRun(ctx, q, r.raw, &data); err != nil {
-			return nil, err
-		}
-		var landingReceipt *tracker.NativeLandingReceipt
-		if data.Runtime != nil {
-			landingReceipt = data.Runtime.Landing
-		}
-		r.raw, err = marshalNative(landingReceipt)
-		if err != nil {
-			return nil, err
-		}
 		found[landing] = append(found[landing], r)
 	}
-	if err := rows.Err(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err
+	}
+	for index := range found {
+		for j := range found[index] {
+			r := &found[index][j]
+			var data tracker.NativeRunData
+			if err := decodeActivityRun(ctx, q, r.raw, &data); err != nil {
+				return nil, err
+			}
+			var landingReceipt *tracker.NativeLandingReceipt
+			if data.Runtime != nil {
+				landingReceipt = data.Runtime.Landing
+			}
+			r.raw, err = marshalNative(landingReceipt)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	out := make([][]string, len(landings))
 	for i, receipts := range found {

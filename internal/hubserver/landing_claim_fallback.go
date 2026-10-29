@@ -37,7 +37,7 @@ func resolveLandingProject(ctx context.Context, q nativeQueryer, project string,
 	if prepared != nil {
 		if cached, ok := prepared.landings[project]; ok && cached.change == fact.change {
 			var versionRaw string
-			err := q.QueryRowContext(ctx, `SELECT record_json FROM change_versions WHERE change_id=? AND id=?`, changeID, cached.id).Scan(&versionRaw)
+			err := q.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_versions WHERE change_id=? AND id=?`, changeID, cached.id).Scan(&versionRaw)
 			if err != nil {
 				return "", err
 			}
@@ -63,7 +63,7 @@ func resolveLandingProject(ctx context.Context, q nativeQueryer, project string,
 		}
 	}
 	var change tracker.ChangeRequest
-	if err := json.Unmarshal([]byte(fact.change), &change); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(fact.change), &change); err != nil {
 		return "", err
 	}
 	fact.changeID = changeID
@@ -76,14 +76,15 @@ func resolveLandingProject(ctx context.Context, q nativeQueryer, project string,
 		return "", nil
 	}
 	var policyID string
-	if err := q.QueryRowContext(ctx, `SELECT record_json,policy_revision_id FROM change_versions WHERE change_id=? AND id=?`, changeID, versionID).Scan(&fact.version, &policyID); err != nil {
+	var knownHead sql.NullString
+	if err := q.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(payload_object_key,''),record_json),policy_revision_id,claim_head_sha FROM change_versions WHERE change_id=? AND id=?`, changeID, versionID).Scan(&fact.version, &policyID, &knownHead); err != nil {
 		return "", err
 	}
 	err = q.QueryRowContext(ctx, `SELECT metadata_json FROM policy_revisions frozen JOIN issues i ON frozen.scope=i.organization_id||'/'||i.project_id WHERE i.id=? AND frozen.policy_id=?`, id, policyID).Scan(&fact.frozen)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
-	fact.head, fact.github, err = decodeLandingVersionFacts(ctx, q, fact.version, fact.frozen)
+	fact.head, fact.github, err = decodeLandingVersionFacts(ctx, q, fact.version, fact.frozen, knownHead)
 	if err != nil {
 		return "", err
 	}
@@ -99,31 +100,47 @@ func resolveLandingProject(ctx context.Context, q nativeQueryer, project string,
 	return "", nil
 }
 
-func decodeLandingVersionFacts(ctx context.Context, q nativeQueryer, raw, frozen string) (string, bool, error) {
+func decodeLandingVersionFacts(ctx context.Context, q nativeQueryer, raw, frozen string, knownHead sql.NullString) (string, bool, error) {
 	var version struct {
 		HeadSHA string             `json:"head_sha"`
 		Policy  *policy.Descriptor `json:"policy"`
 	}
-	if frozen != "" {
+	if frozen != "" && knownHead.Valid {
+		var descriptor policy.Descriptor
+		if err := decodeStorageJSON(ctx, []byte(frozen), &descriptor); err != nil {
+			return "", false, err
+		}
+		return knownHead.String, descriptor.Gates.GitHubPullRequest, nil
+	}
+	referenced := strings.HasPrefix(raw, "orgs/")
+	if !referenced {
 		if err := json.Unmarshal([]byte(raw), &version); err != nil {
 			return "", false, err
 		}
-		var descriptor policy.Descriptor
-		if err := json.Unmarshal([]byte(frozen), &descriptor); err != nil {
-			return "", false, err
-		}
-		return version.HeadSHA, descriptor.Gates.GitHubPullRequest, nil
 	}
-	if err := json.Unmarshal([]byte(raw), &version); err != nil {
-		return "", false, err
-	}
-	if version.Policy == nil {
+	if referenced || version.HeadSHA == "" || frozen == "" && version.Policy == nil {
 		if _, transaction := q.(*sql.Tx); transaction {
-			return "", false, errClaimHintStale
+			content, ok := ctx.Value(changeContentKey{}).(*changeContent)
+			if !ok {
+				return "", false, errClaimHintStale
+			}
+			content.mu.Lock()
+			prepared := content.writing
+			content.mu.Unlock()
+			if !prepared {
+				return "", false, errClaimHintStale
+			}
 		}
 		if err := decodeStorageJSON(ctx, []byte(raw), &version); err != nil {
 			return "", false, err
 		}
+	}
+	if frozen != "" {
+		var descriptor policy.Descriptor
+		if err := decodeStorageJSON(ctx, []byte(frozen), &descriptor); err != nil {
+			return "", false, err
+		}
+		return version.HeadSHA, descriptor.Gates.GitHubPullRequest, nil
 	}
 	if version.Policy == nil {
 		return "", false, fmt.Errorf("read version landing policy: %w", errClaimHintStale)

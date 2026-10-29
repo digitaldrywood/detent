@@ -230,8 +230,8 @@ func TestNativeRunDetailReferences(t *testing.T) {
 	if input != 100 || cached != 20 || output != 10 || cost != 1.5 {
 		t.Fatalf("usage summary reset or double counted: %d/%d/%d cost=%g", input, cached, output, cost)
 	}
-	if store.uploads != 5 {
-		t.Fatalf("uploaded %d segments, want five boundaries for seven events", store.uploads)
+	if store.uploads != 18 {
+		t.Fatalf("uploaded %d objects, want eighteen attempt, checkpoint and history payloads", store.uploads)
 	}
 	for _, table := range []string{"native_attempts", "collaboration_events"} {
 		columns, err := f.service.database.reader.QueryContext(t.Context(), "SELECT name FROM pragma_table_xinfo(?) WHERE hidden=0", table)
@@ -263,7 +263,7 @@ func TestNativeRunDetailReferences(t *testing.T) {
 		}
 	}
 
-	response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts", worker, nil)
+	response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts?view=detail", worker, nil)
 	requireNativeStatus(t, response, http.StatusOK)
 	var attempts tracker.Page[tracker.NativeAttempt]
 	decodeHubResponse(t, response, &attempts)
@@ -271,7 +271,7 @@ func TestNativeRunDetailReferences(t *testing.T) {
 		t.Fatal("attempt detail was lost")
 	}
 	var raw string
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT data_json FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&raw); err != nil {
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
 	for _, stage := range []string{"writer", "backfill"} {
@@ -381,7 +381,7 @@ func TestNativeRunDetailReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=?,checkpoint_json=? WHERE id=?", string(inline), string(checkpointJSON), event.Data.AttemptID); err != nil {
+	if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=?,checkpoint_json=?,payload_object_key='',checkpoint_object_key='' WHERE id=?", string(inline), string(checkpointJSON), event.Data.AttemptID); err != nil {
 		t.Fatal(err)
 	}
 	var trigger string
@@ -400,8 +400,12 @@ func TestNativeRunDetailReferences(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.ExecContext(t.Context(), "UPDATE collaboration_events SET data_json=?,payload_version=0,payload_attachment_id='',payload_entry='' WHERE work_item_id=? AND run_sequence=?", string(raw), issue.WorkItemID, sequence); err != nil {
+		result, err := tx.ExecContext(t.Context(), "UPDATE collaboration_events SET data_json=?,payload_version=0,payload_attachment_id='',payload_entry='',payload_object_key='' WHERE work_item_id=? AND run_sequence=?", string(raw), issue.WorkItemID, sequence)
+		if err != nil {
 			t.Fatal(err)
+		}
+		if count, err := result.RowsAffected(); err != nil || count != 1 {
+			t.Fatalf("legacy history replaced %d rows, want 1: %v", count, err)
 		}
 	}
 	if _, err := tx.ExecContext(t.Context(), trigger); err != nil {
@@ -441,7 +445,7 @@ func TestNativeRunDetailUploadFailures(t *testing.T) {
 			}
 			store.fail = true
 			response := performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event)
-			requireNativeStatus(t, response, http.StatusInternalServerError)
+			requireNativeStatus(t, response, http.StatusServiceUnavailable)
 			var after string
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(group_concat(data_json), '') FROM native_attempts").Scan(&after); err != nil {
 				t.Fatal(err)
@@ -462,7 +466,11 @@ func TestNativeRunDetailUploadFailures(t *testing.T) {
 						}
 					}
 					t.Cleanup(func() { store.beforeRead, store.afterStore = nil, nil })
-					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusInternalServerError)
+					status := http.StatusInternalServerError
+					if failure == "verification unavailable" {
+						status = http.StatusServiceUnavailable
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), status)
 					if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT coalesce(group_concat(data_json), '') FROM native_attempts").Scan(&after); err != nil || before != after {
 						t.Fatalf("unverified upload changed the attempt: %v", err)
 					}
@@ -470,11 +478,11 @@ func TestNativeRunDetailUploadFailures(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 			var raw string
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT data_json FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&raw); err != nil {
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&raw); err != nil {
 				t.Fatal(err)
 			}
-			var stored storedRun
-			if err := json.Unmarshal([]byte(raw), &stored); err != nil || stored.Detail == nil || stored.Sequence != event.Data.Sequence {
+			stored := readReferencedRun(t, f.service, event.Data.AttemptID)
+			if stored.Detail == nil || stored.Sequence != event.Data.Sequence {
 				t.Fatalf("attempt failed to progress from reference after upload recovery: %v", err)
 			}
 		})
@@ -517,6 +525,7 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 			event := nativeStartedEvent(lease)
 			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
+			initialUploads := store.uploads
 			original := event
 			if test.released {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET released_at=? WHERE lease_id=?", formatHubTime(now), lease.ID); err != nil {
@@ -559,9 +568,12 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 				}
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), test.status)
-			wantUploads := 1
-			if test.duringUpload || test.cancelled && test.status == http.StatusOK {
-				wantUploads = 2
+			wantUploads := initialUploads
+			if test.duringUpload {
+				wantUploads++
+			}
+			if test.cancelled && test.status == http.StatusOK {
+				wantUploads += 2
 			}
 			if store.uploads != wantUploads {
 				t.Fatalf("rejected or identity-only event uploaded detail: %d uploads", store.uploads)
@@ -570,9 +582,9 @@ func TestNativeRunDetailAdmission(t *testing.T) {
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachment_archive_references").Scan(&references); err != nil {
 				t.Fatal(err)
 			}
-			wantReferences := 1
+			wantReferences := 2
 			if test.cancelled && test.status == http.StatusOK {
-				wantReferences = 2
+				wantReferences = 4
 			}
 			if references != wantReferences {
 				t.Fatalf("event committed %d references, want %d", references, wantReferences)
@@ -642,8 +654,8 @@ func TestNativeRunDetailIsolation(t *testing.T) {
 				}
 				requireNativeStatus(t, performHubAPIRequest(t, fixture.service, http.MethodPost, fixture.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "cancelled", CancelAttempt: true}), http.StatusNoContent)
 				store.beforeRead, store.afterStore = nil, nil
-				if store.uploads != uploads+1 {
-					t.Fatal("lease cancellation did not persist its complete payload")
+				if store.uploads != uploads+2 {
+					t.Fatalf("lease cancellation uploaded %d payloads, want 2", store.uploads-uploads)
 				}
 			} else {
 				event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Outcome = "run.finished", "finish-"+session, 2, "failed"
@@ -652,11 +664,11 @@ func TestNativeRunDetailIsolation(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, fixture.service, http.MethodPost, fixture.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 			}
 			var raw string
-			if err := fixture.service.database.reader.QueryRowContext(t.Context(), "SELECT data_json FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&raw); err != nil {
+			if err := fixture.service.database.reader.QueryRowContext(t.Context(), "SELECT COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&raw); err != nil {
 				t.Fatal(err)
 			}
-			var stored storedRun
-			if err := json.Unmarshal([]byte(raw), &stored); err != nil || stored.Detail == nil {
+			stored := readReferencedRun(t, fixture.service, event.Data.AttemptID)
+			if stored.Detail == nil {
 				t.Fatal("missing immutable detail")
 			}
 			if refs[stored.Detail.AttachmentID] || attempts[event.Data.AttemptID] {
@@ -706,7 +718,7 @@ func TestNativeRunDetailIsolation(t *testing.T) {
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, fixture.service, http.MethodGet, foreign.base+"/work-items/"+string(issue.WorkItemID)+"/attempts/"+event.Data.AttemptID, foreign.token, nil), http.StatusNotFound)
 		}
-		response := performHubAPIRequest(t, fixture.service, http.MethodGet, path+"/attempts", worker, nil)
+		response := performHubAPIRequest(t, fixture.service, http.MethodGet, path+"/attempts?view=detail", worker, nil)
 		requireNativeStatus(t, response, http.StatusOK)
 		var page tracker.Page[tracker.NativeAttempt]
 		decodeHubResponse(t, response, &page)
@@ -856,6 +868,14 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 				if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
 					t.Fatal(err)
 				}
+				if err := f.service.stopGitHubReconciliation(); err != nil {
+					t.Fatal(err)
+				}
+				f.service.dashboard.stop()
+				f.service.outbox.stop()
+				f.service.stopHealthDetector()
+				f.service.stopHostedBilling()
+				f.service.stopIssueMailer()
 				issue := f.create(t, "checkpoint history")
 				registered := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
 				registered.enroll(t)
@@ -897,7 +917,10 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 					ctx := f.service.runDetailContext(t.Context())
 					owner := ctx.Value(runDetailContextKey{}).(*runDetailContext)
 					owner.organization, owner.reference, owner.runs = string(scope.organization), &ref, runs
-					encoded, err := encodeRunDetail(ctx, data, false)
+					compact := compactRun(data)
+					compact.Handoff = nil
+					compact.TerminalFailure = data.TerminalFailure
+					encoded, err := marshalNative(storedRun{NativeRunData: compact, Detail: newRunDetailReference(ref, string(scope.organization), runDetailEntry(data))})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -911,7 +934,7 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 					if err := updateAttemptHotProjection(ctx, tx, latest, "failed", data); err != nil {
 						t.Fatal(err)
 					}
-					if err := recordRunDetailReference(ctx, tx, scope, issue.WorkItemID, data, formatHubTime(f.service.config.now())); err != nil {
+					if _, err := recordPayloadAttachment(ctx, tx, scope, issue.WorkItemID, ref, formatHubTime(f.service.config.now())); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -1094,4 +1117,17 @@ func TestRunDetailSegmentResolvesPreparedReferenceBeforeCommit(t *testing.T) {
 	if err != nil || runs["attempt_prepared:2"].Sequence != 2 {
 		t.Fatalf("prepared detail before commit = %v, %v", runs, err)
 	}
+}
+
+func readReferencedRun(t *testing.T, service *Service, attempt string) storedRun {
+	t.Helper()
+	var key, organization, attachment string
+	if err := service.database.reader.QueryRowContext(t.Context(), "SELECT payload_object_key,organization_id,coalesce(detail_attachment_id,'') FROM native_attempts WHERE id=?", attempt).Scan(&key, &organization, &attachment); err != nil {
+		t.Fatal(err)
+	}
+	var run tracker.NativeRunData
+	if err := decodeRunDetail(service.runDetailContext(t.Context()), service.database.reader, key, &run); err != nil {
+		t.Fatal(err)
+	}
+	return storedRun{NativeRunData: run, Detail: &runDetailReference{AttachmentID: attachment, Organization: organization, Entry: runDetailEntry(run), ObjectKey: key}}
 }

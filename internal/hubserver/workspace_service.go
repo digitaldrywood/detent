@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -565,7 +564,7 @@ WHERE id = ? AND organization_id = ? AND project_id = ?`, attemptID, scope.organ
 func workspaceAttemptRunner(ctx context.Context, query nativeQueryer, scope nativeScope, attemptID string) (runnerID string, finishedAt time.Time, found bool, err error) {
 	var updated string
 	var data string
-	queryErr := query.QueryRowContext(ctx, `SELECT data_json, updated_at FROM native_attempts
+	queryErr := query.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(payload_object_key,''),data_json), updated_at FROM native_attempts
 WHERE id = ? AND organization_id = ? AND project_id = ?`, attemptID, scope.organization, scope.project).Scan(&data, &updated)
 	if errors.Is(queryErr, sql.ErrNoRows) {
 		return "", time.Time{}, false, nil
@@ -574,7 +573,7 @@ WHERE id = ? AND organization_id = ? AND project_id = ?`, attemptID, scope.organ
 		return "", time.Time{}, false, fmt.Errorf("read workspace attempt: %w", queryErr)
 	}
 	var execution tracker.NativeRunData
-	if err := json.Unmarshal([]byte(data), &execution); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(data), &execution); err != nil {
 		return "", time.Time{}, false, fmt.Errorf("decode workspace attempt data: %w", err)
 	}
 	finished, err := parseTimeValue(updated)

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -29,10 +30,10 @@ func TestChangeColumnsBackfillProgress(t *testing.T) {
 	second := first.anotherChange(t)
 	versions := []tracker.ChangeVersion{first.publish(t, "first", ""), second.publish(t, "second", "")}
 	fixtures := []changeFixture{first, second}
-	if err := first.service.populateChangeColumns(t.Context()); err != nil {
+	if err := first.service.populateChangeColumns(first.service.runDetailContext(t.Context())); err != nil {
 		t.Fatal(err)
 	}
-	tx, err := first.service.database.db.BeginTx(t.Context(), nil)
+	tx, err := first.service.database.db.BeginTx(first.service.runDetailContext(t.Context()), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +41,7 @@ func TestChangeColumnsBackfillProgress(t *testing.T) {
 	for i := range changeColumnsPerTick + 2 {
 		index := i % 2
 		raw := fmt.Sprintf(`{"review_id":"legacy-%d","version_id":%q,"decision":"changes_requested","validator":{},"actor":{"principal_id":"validator"},"created_at":"2026-10-25T12:00:00Z"}`, i, versions[index].ID)
-		if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review',?)`, fixtures[index].change.ID, versions[index].ID, raw); err != nil {
+		if _, err := tx.ExecContext(first.service.runDetailContext(t.Context()), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review',?)`, fixtures[index].change.ID, versions[index].ID, raw); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -50,7 +51,7 @@ func TestChangeColumnsBackfillProgress(t *testing.T) {
 	count := func() int {
 		t.Helper()
 		var value int
-		if err := first.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM change_evidence WHERE has_validator=1`).Scan(&value); err != nil {
+		if err := first.service.database.reader.QueryRowContext(first.service.runDetailContext(t.Context()), `SELECT count(*) FROM change_evidence WHERE has_validator=1`).Scan(&value); err != nil {
 			t.Fatal(err)
 		}
 		return value
@@ -60,7 +61,7 @@ func TestChangeColumnsBackfillProgress(t *testing.T) {
 	}
 	for _, f := range fixtures {
 		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-		detail, err := f.service.readRecoveryChange(t.Context(), f.service.database.reader, scope, string(f.issue.WorkItemID), f.changeWithCurrentVersion(t))
+		detail, err := f.service.readRecoveryChange(first.service.runDetailContext(t.Context()), f.service.database.reader, scope, string(f.issue.WorkItemID), f.changeWithCurrentVersion(t))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -69,23 +70,23 @@ func TestChangeColumnsBackfillProgress(t *testing.T) {
 		}
 	}
 	for tick, want := range []int{changeColumnsPerTick, changeColumnsPerTick + 2} {
-		if err := first.service.populateChangeColumns(t.Context()); err != nil {
+		if err := first.service.populateChangeColumns(first.service.runDetailContext(t.Context())); err != nil {
 			t.Fatal(err)
 		}
 		if got := count(); got != want {
 			t.Fatalf("tick %d converted %d rows, want %d", tick+1, got, want)
 		}
 	}
-	changed, err := first.service.populateChangeColumn(t.Context())
+	changed, err := first.service.populateChangeColumn(first.service.runDetailContext(t.Context()))
 	if err != nil || changed {
 		t.Fatalf("completed backfill: changed=%v error=%v", changed, err)
 	}
 	for _, raw := range []string{`{"validator":{},"decision":"changes_requested"}`, `{"validator":"invalid"}`} {
-		if _, err := first.service.database.db.ExecContext(t.Context(), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review',?)`, first.change.ID, versions[0].ID, raw); err != nil {
+		if _, err := first.service.database.db.ExecContext(first.service.runDetailContext(t.Context()), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review',?)`, first.change.ID, versions[0].ID, raw); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := first.service.populateChangeColumns(t.Context()); err == nil {
+	if err := first.service.populateChangeColumns(first.service.runDetailContext(t.Context())); err == nil {
 		t.Fatal("invalid historical projection did not fail")
 	}
 	if got := count(); got != changeColumnsPerTick+3 {
@@ -124,28 +125,28 @@ func TestChangeTypedColumnsOwnEvidenceFilters(t *testing.T) {
 				{ID: "landing-audit", VersionID: current.ID, Decision: "approved", SecurityAudit: &tracker.SecurityAuditReview{Landing: true}, CreatedAt: at},
 			}
 			for _, review := range reviews {
-				if err := insertChangeEvidence(t.Context(), tx, f.change.ID, review.VersionID, "review", review.ID, review); err != nil {
+				if err := seedLegacyChangeEvidence(t.Context(), tx, f.change.ID, review.VersionID, "review", review.ID, review); err != nil {
 					t.Fatal(err)
 				}
 			}
 			check := tracker.ChangeCheck{VersionID: current.ID, ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: current.Checks[0].CheckRunID, Conclusion: "failure"}}
-			if err := insertChangeEvidence(t.Context(), tx, f.change.ID, current.ID, "check", "check", check); err != nil {
+			if err := seedLegacyChangeEvidence(t.Context(), tx, f.change.ID, current.ID, "check", "check", check); err != nil {
 				t.Fatal(err)
 			}
 			unrelated := check
 			unrelated.CheckRunID = "unrelated"
-			if err := insertChangeEvidence(t.Context(), tx, f.change.ID, current.ID, "check", "unrelated", unrelated); err != nil {
+			if err := seedLegacyChangeEvidence(t.Context(), tx, f.change.ID, current.ID, "check", "unrelated", unrelated); err != nil {
 				t.Fatal(err)
 			}
 			for i := range 40 {
 				review := tracker.ChangeReview{ID: fmt.Sprintf("comment-%d", i), VersionID: current.ID, Decision: "commented", Actor: tracker.Actor{PrincipalID: "reviewer"}, CreatedAt: at}
-				if err := insertChangeEvidence(t.Context(), tx, f.change.ID, current.ID, "review", review.ID, review); err != nil {
+				if err := seedLegacyChangeEvidence(t.Context(), tx, f.change.ID, current.ID, "review", review.ID, review); err != nil {
 					t.Fatal(err)
 				}
 			}
 			for i, run := range []string{current.Checks[0].CheckRunID, "unrelated-check"} {
 				check := tracker.ChangeCheck{VersionID: current.ID, ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: run, Conclusion: "failure"}}
-				if err := insertChangeEvidence(t.Context(), tx, f.change.ID, current.ID, "check", strconv.Itoa(i), check); err != nil {
+				if err := seedLegacyChangeEvidence(t.Context(), tx, f.change.ID, current.ID, "check", strconv.Itoa(i), check); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -295,15 +296,15 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		tx, err := f.service.database.db.BeginTx(first.service.runDetailContext(t.Context()), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer tx.Rollback()
-		if _, err := tx.ExecContext(t.Context(), `UPDATE change_requests SET record_json=? WHERE id=?`, raw, change.ID); err != nil {
+		if _, err := tx.ExecContext(first.service.runDetailContext(t.Context()), `UPDATE change_requests SET record_json=? WHERE id=?`, raw, change.ID); err != nil {
 			t.Fatal(err)
 		}
-		if err := projectChangeColumns(t.Context(), tx, "change_requests", change.ID, raw); err != nil {
+		if err := projectChangeColumns(first.service.runDetailContext(t.Context()), tx, "change_requests", change.ID, raw); err != nil {
 			t.Fatal(err)
 		}
 		if i == 1 {
@@ -311,10 +312,10 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := tx.ExecContext(t.Context(), `INSERT INTO quality_landings(version_id,record_json) VALUES(?,?)`, version.ID, raw); err != nil {
+			if _, err := tx.ExecContext(first.service.runDetailContext(t.Context()), `INSERT INTO quality_landings(version_id,record_json) VALUES(?,?)`, version.ID, raw); err != nil {
 				t.Fatal(err)
 			}
-			if err := projectChangeColumns(t.Context(), tx, "quality_landings", version.ID, raw); err != nil {
+			if err := projectChangeColumns(first.service.runDetailContext(t.Context()), tx, "quality_landings", version.ID, raw); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -335,22 +336,22 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 		{"landing time", `UPDATE change_requests SET landed_at=? WHERE id=?`, []any{changeColumnTime(window.To), first.change.ID}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			tx, err := first.service.database.db.BeginTx(t.Context(), nil)
+			tx, err := first.service.database.db.BeginTx(first.service.runDetailContext(t.Context()), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
-			if _, err := tx.ExecContext(t.Context(), test.statement, test.args...); err != nil {
+			if _, err := tx.ExecContext(first.service.runDetailContext(t.Context()), test.statement, test.args...); err != nil {
 				t.Fatal(err)
 			}
 			for _, pending := range []bool{false, true} {
 				if pending {
-					if _, err := tx.ExecContext(t.Context(), `UPDATE change_requests SET created_at=NULL WHERE id=?`, first.change.ID); err != nil {
+					if _, err := tx.ExecContext(first.service.runDetailContext(t.Context()), `UPDATE change_requests SET created_at=NULL WHERE id=?`, first.change.ID); err != nil {
 						t.Fatal(err)
 					}
 				}
 				for _, read := range []func(context.Context, nativeQueryer, nativeScope, operatortool.AnalyticsWindow) ([]nativeAnalyticsLanding, error){nativeAnalyticsLandings, readQualityLandings} {
-					rows, err := read(t.Context(), tx, scope, window)
+					rows, err := read(first.service.runDetailContext(t.Context()), tx, scope, window)
 					want := 1
 					if pending {
 						want = 2
@@ -365,7 +366,7 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 
 	for _, column := range []string{"landed_version_id", "landed_merge_sha", "landed_base_ref", "repository"} {
 		t.Run("policy/"+column, func(t *testing.T) {
-			tx, err := first.service.database.db.BeginTx(t.Context(), nil)
+			tx, err := first.service.database.db.BeginTx(first.service.runDetailContext(t.Context()), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -379,14 +380,14 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 				value := any("different")
 				if pending {
 					value = nil
-					if _, err := tx.ExecContext(t.Context(), `UPDATE change_requests SET created_at=NULL WHERE id=?`, first.change.ID); err != nil {
+					if _, err := tx.ExecContext(first.service.runDetailContext(t.Context()), `UPDATE change_requests SET created_at=NULL WHERE id=?`, first.change.ID); err != nil {
 						t.Fatal(err)
 					}
 				}
-				if _, err := tx.ExecContext(t.Context(), "UPDATE "+table+" SET "+column+"=? WHERE id=?", value, id); err != nil {
+				if _, err := tx.ExecContext(first.service.runDetailContext(t.Context()), "UPDATE "+table+" SET "+column+"=? WHERE id=?", value, id); err != nil {
 					t.Fatal(err)
 				}
-				landing, found, err := readNativePolicyLanding(t.Context(), tx, string(scope.organization), string(scope.project), source)
+				landing, found, err := readNativePolicyLanding(first.service.runDetailContext(t.Context()), tx, string(scope.organization), string(scope.project), source)
 				if err != nil || found != pending || found && landing.ChangeID != first.change.ID {
 					t.Fatalf("pending=%v landing=%+v found=%v error=%v", pending, landing, found, err)
 				}
@@ -403,16 +404,16 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 		{"later matching landing", strings.Repeat("2", 40), "develop", second.change.ID},
 	} {
 		t.Run("partial backfill/"+test.name, func(t *testing.T) {
-			tx, err := first.service.database.db.BeginTx(t.Context(), nil)
+			tx, err := first.service.database.db.BeginTx(first.service.runDetailContext(t.Context()), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
-			if _, err := tx.ExecContext(t.Context(), `UPDATE change_requests SET created_at=NULL,landed_merge_sha=NULL,landed_base_ref=NULL WHERE id=?`, first.change.ID); err != nil {
+			if _, err := tx.ExecContext(first.service.runDetailContext(t.Context()), `UPDATE change_requests SET created_at=NULL,landed_merge_sha=NULL,landed_base_ref=NULL WHERE id=?`, first.change.ID); err != nil {
 				t.Fatal(err)
 			}
 			source := &policy.RepositorySource{Repository: validationRepository(versions[0].Repository), Commit: test.commit, DefaultBranch: test.branch}
-			landing, err := readPolicyLanding(t.Context(), tx, string(scope.organization)+"/"+string(scope.project), source)
+			landing, err := readPolicyLanding(first.service.runDetailContext(t.Context()), tx, string(scope.organization)+"/"+string(scope.project), source)
 			if err != nil || landing.ChangeID != test.change || landing.Actor != "" && test.change == "" {
 				t.Fatalf("landing=%+v want change=%q error=%v", landing, test.change, err)
 			}
@@ -422,24 +423,24 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 	for _, pending := range []bool{false, true} {
 		if pending {
 			for _, statement := range []string{`UPDATE change_requests SET created_at=NULL,claim_version_id=NULL,landed_version_id=NULL,landed_merge_sha=NULL,landed_base_ref=NULL,landed_at=NULL`, `UPDATE change_versions SET head_sha=NULL,repository=NULL`, `UPDATE quality_landings SET landed_at=NULL`} {
-				if _, err := first.service.database.db.ExecContext(t.Context(), statement); err != nil {
+				if _, err := first.service.database.db.ExecContext(first.service.runDetailContext(t.Context()), statement); err != nil {
 					t.Fatal(err)
 				}
 			}
 		}
 		for i, f := range fixtures {
 			source := &policy.RepositorySource{Repository: validationRepository(versions[i].Repository), Commit: strings.Repeat(strconv.Itoa(i+1), 40), DefaultBranch: "develop"}
-			landing, err := readPolicyLanding(t.Context(), f.service.database.reader, string(scope.organization)+"/"+string(scope.project), source)
+			landing, err := readPolicyLanding(first.service.runDetailContext(t.Context()), f.service.database.reader, string(scope.organization)+"/"+string(scope.project), source)
 			if err != nil || landing.ChangeID != f.change.ID {
 				t.Fatalf("pending=%v policy landing=%+v error=%v", pending, landing, err)
 			}
-			issue, _, err := readNativeIssue(t.Context(), f.service.database.reader, scope, string(f.issue.WorkItemID))
+			issue, _, err := readNativeIssue(first.service.runDetailContext(t.Context()), f.service.database.reader, scope, string(f.issue.WorkItemID))
 			if err != nil || issue.ListChange == nil || issue.ListChange.HeadSHA != source.Commit || issue.ListChange.Branch != "develop" {
 				t.Fatalf("pending=%v issue landing=%+v error=%v", pending, issue.ListChange, err)
 			}
 		}
 		for _, read := range []func(context.Context, nativeQueryer, nativeScope, operatortool.AnalyticsWindow) ([]nativeAnalyticsLanding, error){nativeAnalyticsLandings, readQualityLandings} {
-			rows, err := read(t.Context(), first.service.database.reader, scope, window)
+			rows, err := read(first.service.runDetailContext(t.Context()), first.service.database.reader, scope, window)
 			if err != nil || len(rows) != 2 {
 				t.Fatalf("pending=%v landings=%v error=%v", pending, rows, err)
 			}
@@ -451,7 +452,7 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 			}
 		}
 	}
-	if err := first.service.populateChangeColumns(t.Context()); err != nil {
+	if err := first.service.populateChangeColumns(first.service.runDetailContext(t.Context())); err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range fixtures {
@@ -460,13 +461,13 @@ func TestChangeLandingColumnsPreserveHistoricalReads(t *testing.T) {
 	window = operatortool.AnalyticsWindow{From: at.Add(2 * time.Hour), To: at.Add(4 * time.Hour)}
 	for _, pending := range []bool{true, false} {
 		if pending {
-			if _, err := first.service.database.db.ExecContext(t.Context(), `UPDATE collaboration_events SET from_state=NULL,to_state=NULL WHERE type='workflow.transitioned'`); err != nil {
+			if _, err := first.service.database.db.ExecContext(first.service.runDetailContext(t.Context()), `UPDATE collaboration_events SET from_state=NULL,to_state=NULL WHERE type='workflow.transitioned'`); err != nil {
 				t.Fatal(err)
 			}
-		} else if err := first.service.populateChangeColumns(t.Context()); err != nil {
+		} else if err := first.service.populateChangeColumns(first.service.runDetailContext(t.Context())); err != nil {
 			t.Fatal(err)
 		}
-		rows, err := readQualityLandings(t.Context(), first.service.database.reader, scope, window)
+		rows, err := readQualityLandings(first.service.runDetailContext(t.Context()), first.service.database.reader, scope, window)
 		if err != nil || len(rows) != 2 {
 			t.Fatalf("pending events=%v lost reopened historical landings: rows=%v error=%v", pending, rows, err)
 		}
@@ -670,7 +671,7 @@ func TestChangeColumnsSelectEscapeOccurrence(t *testing.T) {
 		}
 		for i, occurrence := range []string{eventIDs[0], "unrelated"} {
 			discussion := tracker.ChangeDiscussion{ID: fmt.Sprintf("discussion-%d", i), VersionID: version.ID, CreatedAt: at, Escape: &tracker.QualityEscape{OccurrenceID: occurrence, ObservedAt: at}}
-			if err := insertChangeEvidence(t.Context(), tx, f.change.ID, version.ID, "discussion", discussion.ID, discussion); err != nil {
+			if err := seedLegacyChangeEvidence(t.Context(), tx, f.change.ID, version.ID, "discussion", discussion.ID, discussion); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -678,7 +679,7 @@ func TestChangeColumnsSelectEscapeOccurrence(t *testing.T) {
 			{ID: "ordinary", VersionID: version.ID},
 			{ID: "other version", VersionID: old.ID, Escape: &tracker.QualityEscape{OccurrenceID: eventIDs[0]}},
 		} {
-			if err := insertChangeEvidence(t.Context(), tx, f.change.ID, discussion.VersionID, "discussion", discussion.ID, discussion); err != nil {
+			if err := seedLegacyChangeEvidence(t.Context(), tx, f.change.ID, discussion.VersionID, "discussion", discussion.ID, discussion); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -738,7 +739,7 @@ func TestChangeColumnsSelectAttemptEvidence(t *testing.T) {
 		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 		runner := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 		runner.enroll(t)
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		tx, err := f.service.database.db.BeginTx(first.service.runDetailContext(t.Context()), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -750,10 +751,14 @@ func TestChangeColumnsSelectAttemptEvidence(t *testing.T) {
 			run := tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: int64(100 + i), Landing: &receipt}}
 			attempt := seedHealthRateAttempt(t, tx, scope, f.issue, string(runner.binding.MachineID), "succeeded", run, at, -1)
 			attempts = append(attempts, attempt)
-			if err := updateAttemptHotProjection(t.Context(), tx, attempt, "succeeded", run); err != nil {
+			if err := updateAttemptHotProjection(first.service.runDetailContext(t.Context()), tx, attempt, "succeeded", run); err != nil {
 				t.Fatal(err)
 			}
-			if err := persistAttemptLanding(t.Context(), tx, attempt, receipt); err != nil {
+			receiptJSON, err := json.Marshal(receipt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(t.Context(), "INSERT INTO change_landing_receipts(attempt_id,version_id,record_json,merge_sha) VALUES(?,?,?,?)", attempt, receipt.VersionID, string(receiptJSON), receipt.MergeSHA); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -768,10 +773,10 @@ func TestChangeColumnsSelectAttemptEvidence(t *testing.T) {
 			{"unknown", nil, attempts[1]},
 		} {
 			t.Run(test.name+"/"+f.change.ID, func(t *testing.T) {
-				if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET has_landing_receipt=? WHERE id=?`, test.value, attempts[1]); err != nil {
+				if _, err := tx.ExecContext(first.service.runDetailContext(t.Context()), `UPDATE native_attempts SET has_landing_receipt=? WHERE id=?`, test.value, attempts[1]); err != nil {
 					t.Fatal(err)
 				}
-				got, err := latestRecoveryLandingAttempt(t.Context(), tx, scope, string(f.issue.WorkItemID))
+				got, err := latestRecoveryLandingAttempt(first.service.runDetailContext(t.Context()), tx, scope, string(f.issue.WorkItemID))
 				if err != nil || got != test.want {
 					t.Fatalf("landing attempt=%s want=%s error=%v", got, test.want, err)
 				}
@@ -787,10 +792,10 @@ func TestChangeColumnsSelectAttemptEvidence(t *testing.T) {
 			{"unknown matching receipt ranks first", nil, old.ID},
 		} {
 			t.Run(test.name+"/"+f.change.ID, func(t *testing.T) {
-				if _, err := tx.ExecContext(t.Context(), `UPDATE change_landing_receipts SET merge_sha=? WHERE attempt_id=?`, test.merge, attempts[0]); err != nil {
+				if _, err := tx.ExecContext(first.service.runDetailContext(t.Context()), `UPDATE change_landing_receipts SET merge_sha=? WHERE attempt_id=?`, test.merge, attempts[0]); err != nil {
 					t.Fatal(err)
 				}
-				rows, partial, err := readValidationCandidates(t.Context(), tx, scope, string(f.issue.WorkItemID), "", "", gate.ScheduledEvidence{Repository: validationRepository(current.Repository), HeadSHA: strings.Repeat("1", 40)})
+				rows, partial, err := readValidationCandidates(first.service.runDetailContext(t.Context()), tx, scope, string(f.issue.WorkItemID), "", "", gate.ScheduledEvidence{Repository: validationRepository(current.Repository), HeadSHA: strings.Repeat("1", 40)})
 				if err != nil || partial || len(rows) != 2 || rows[0].VersionID != test.want {
 					t.Fatalf("candidates=%+v partial=%v error=%v", rows, partial, err)
 				}
@@ -893,7 +898,8 @@ func TestChangeAnalyticsFallbackServesLegacyHistory(t *testing.T) {
 
 func TestChangeColumnBackfillUsesInlineAndRetriesArchive(t *testing.T) {
 	t.Parallel()
-	f := newChangeFixture(t, nil)
+	objects := &changeObjectFixture{}
+	f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Content: objects.call}))
 	version := f.publish(t, "version", "")
 	if err := f.service.populateChangeColumns(t.Context()); err != nil {
 		t.Fatal(err)
@@ -936,7 +942,6 @@ func TestChangeColumnBackfillUsesInlineAndRetriesArchive(t *testing.T) {
 	if pending != 1 || converted != 1 || calls != 1 {
 		t.Fatalf("pending=%d converted=%d archive reads=%d", pending, converted, calls)
 	}
-	objects := &changeObjectFixture{}
 	_, compressed, err := attachment.PrepareArchive(string(f.project.OrganizationID), 1, bytes.NewReader(payload))
 	if err != nil {
 		t.Fatal(err)

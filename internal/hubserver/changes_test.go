@@ -274,7 +274,7 @@ func TestNativeRecoveryRetainsCurrentReviewEvidence(t *testing.T) {
 			}
 			defer tx.Rollback()
 			for _, review := range history {
-				if err := insertChangeEvidence(t.Context(), tx, f.change.ID, review.VersionID, "review", review.ID, review); err != nil {
+				if err := seedLegacyChangeEvidence(t.Context(), tx, f.change.ID, review.VersionID, "review", review.ID, review); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -867,7 +867,20 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "wrong attempt policy":
-				if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.policy_id',?),policy_id=? WHERE id=?", hubTestPolicy().ID, hubTestPolicy().ID, run.AttemptID); err != nil {
+				var raw string
+				if err := tx.QueryRowContext(t.Context(), "SELECT payload_object_key FROM native_attempts WHERE id=?", run.AttemptID).Scan(&raw); err != nil {
+					t.Fatal(err)
+				}
+				var attempt tracker.NativeRunData
+				if err := decodeRunDetail(f.service.runDetailContext(t.Context()), tx, raw, &attempt); err != nil {
+					t.Fatal(err)
+				}
+				attempt.PolicyID = hubTestPolicy().ID
+				encoded, err := json.Marshal(attempt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=?,payload_object_key='',policy_id=? WHERE id=?", string(encoded), attempt.PolicyID, run.AttemptID); err != nil {
 					t.Fatal(err)
 				}
 			case "unrecorded sequence":
@@ -935,7 +948,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				proof, found, err := resolveVersionPublicationPush(t.Context(), tx, scope, string(f.issue.WorkItemID), version)
+				proof, found, err := resolveVersionPublicationPush(f.service.runDetailContext(t.Context()), tx, scope, string(f.issue.WorkItemID), version)
 				if err != nil || found != test.want {
 					t.Fatalf("%s: proof=%+v want=%v error=%v", projection, proof, test.want, err)
 				}
@@ -946,7 +959,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			detail, err := readChangeDetail(t.Context(), tx, scope, string(f.issue.WorkItemID), version.ChangeID, f.service.config.now())
+			detail, err := readChangeDetail(f.service.runDetailContext(t.Context()), tx, scope, string(f.issue.WorkItemID), version.ChangeID, f.service.config.now())
 			if err != nil || !reflect.DeepEqual(detail.Versions, baseline.Versions) || !reflect.DeepEqual(detail.Reviews, baseline.Reviews) || !reflect.DeepEqual(detail.Summary, baseline.Summary) || detail.External != nil {
 				t.Fatalf("push proof mutated source or review evidence: detail=%+v error=%v", detail, err)
 			}
@@ -1078,7 +1091,7 @@ func TestChangePublicationPushRetainsScopedCheckpoint(t *testing.T) {
 			}
 			foreignScope := scope
 			foreignScope.credential = credential
-			_, _, err = recordNativeAttempt(t.Context(), tx, foreignScope, foreignItem.WorkItemID, &foreignCheckpoint, f.service.config.now(), false)
+			_, _, err = recordNativeAttempt(f.service.runDetailContext(t.Context()), tx, foreignScope, foreignItem.WorkItemID, &foreignCheckpoint, f.service.config.now(), false)
 			var refusal *nativeError
 			if !errors.As(err, &refusal) || refusal.Code != "run_sequence_conflict" || !strings.Contains(refusal.Message, "PR publication no longer matches") {
 				t.Fatalf("a linked item's independent owner acquired publication authority: %v", err)
@@ -1424,12 +1437,12 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 			}
 			second := secondFixture.ready(t, "second change")
 			if test.direct {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id=?", f.project.ID, second.WorkItemID); err != nil {
+				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id=?", f.project.ID, second.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if test.directRace {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id IN (?,?)", f.project.ID, first.WorkItemID, second.WorkItemID); err != nil {
+				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id IN (?,?)", f.project.ID, first.WorkItemID, second.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1452,14 +1465,14 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET provider_reports_json=? WHERE id=?", string(raw), owner.binding.RunnerID); err != nil {
+				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE runner_identities SET provider_reports_json=? WHERE id=?", string(raw), owner.binding.RunnerID); err != nil {
 					t.Fatal(err)
 				}
 			}
 			waiter := prepareRunner(t, secondFixture.nativeFixture, runnerauth.Read, runnerauth.Claim, runnerauth.Events)
 			waiter.enroll(t)
 			if test.overflow {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET state='disabled' WHERE id=?", waiter.binding.RunnerID); err != nil {
+				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE runner_identities SET state='disabled' WHERE id=?", waiter.binding.RunnerID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1472,10 +1485,10 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 			if test.sameBatch {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, owner.identityPath()+"/routing", testHubAdminToken, map[string]any{"expected_revision": 1, "display_name": "Batch runner", "state": "active", "capacity_limit": 1, "project_ids": []tracker.ProjectID{f.project.ID}, "project_capacity_limits": map[tracker.ProjectID]int{f.project.ID: 1}, "idempotency_key": "batch-project-limit"}), http.StatusOK)
 				waiter = owner
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET capacity_limit=1, reported_capacity=1 WHERE id=?", owner.binding.RunnerID); err != nil {
+				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE runner_identities SET capacity_limit=1, reported_capacity=1 WHERE id=?", owner.binding.RunnerID); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=1 WHERE id=?", owner.binding.MachineID); err != nil {
+				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE machines SET capacity=1 WHERE id=?", owner.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}
 				ownerSession, waiterSession = "landing/shared/owner", "landing/shared/waiter"
@@ -1490,7 +1503,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 					requireNativeStatus(t, response, http.StatusOK)
 					var lease tracker.NativeLease
 					decodeHubResponse(t, response, &lease)
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(f.service.config.now().Add(-time.Second)), lease.ID); err != nil {
+					if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(f.service.config.now().Add(-time.Second)), lease.ID); err != nil {
 						t.Fatal(err)
 					}
 					acquire = func() *httptest.ResponseRecorder {
@@ -1547,7 +1560,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				t.Fatal("claim replay changed the lease owner or fence")
 			}
 			var pinned int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT landing_capacity FROM leases WHERE lease_id=?", lease.ID).Scan(&pinned); err != nil {
+			if err := f.service.database.db.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT landing_capacity FROM leases WHERE lease_id=?", lease.ID).Scan(&pinned); err != nil {
 				t.Fatal(err)
 			}
 			wantPinned := test.ownerCapacity
@@ -1577,10 +1590,10 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				requireNativeStatus(t, admit(test.contenderCapacity), http.StatusConflict)
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(direct.ID)+"/validate", waiter.redemption.Credential, tracker.NativeLeaseMutation{FencingToken: direct.FencingToken}), http.StatusOK)
 				var change, version string
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT id,json_extract(record_json,'$.current_version_id') FROM change_requests WHERE work_item_id=?", second.WorkItemID).Scan(&change, &version); err != nil {
+				if err := f.service.database.db.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT id,json_extract(record_json,'$.current_version_id') FROM change_requests WHERE work_item_id=?", second.WorkItemID).Scan(&change, &version); err != nil {
 					t.Fatal(err)
 				}
-				published, err := readChangeVersion(t.Context(), f.service.database.reader, change, version)
+				published, err := readChangeVersion(f.service.runDetailContext(t.Context()), f.service.database.reader, change, version)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1612,7 +1625,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				}
 				requireNativeStatus(t, admit(test.contenderCapacity), http.StatusOK)
 				requireNativeStatus(t, admit(test.contenderCapacity+1), http.StatusOK)
-				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT landing_capacity FROM leases WHERE lease_id=?", direct.ID).Scan(&pinned); err != nil {
+				if err := f.service.database.db.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT landing_capacity FROM leases WHERE lease_id=?", direct.ID).Scan(&pinned); err != nil {
 					t.Fatal(err)
 				}
 				if pinned != test.contenderCapacity {
@@ -1620,7 +1633,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				}
 				third := f.ready(t, "third change")
 				requireNativeStatus(t, f.claim(t, owner, third, "next-landing", test.ownerCapacity), http.StatusConflict)
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE native_id=?", second.WorkItemID); err != nil {
+				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE issues SET revision=revision+1 WHERE native_id=?", second.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 				response = performHubAPIRequest(t, f.service, http.MethodGet, path, f.token, nil)
@@ -1635,12 +1648,12 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				return
 			}
 			if test.laneChanged {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id=?", f.project.ID, first.WorkItemID); err != nil {
+				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id=?", f.project.ID, first.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if test.expired {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(f.service.config.now().Add(-time.Second)), lease.ID); err != nil {
+				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(f.service.config.now().Add(-time.Second)), lease.ID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1652,7 +1665,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				case "fractional":
 					expiry = expiry.Add(time.Nanosecond)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(expiry), lease.ID); err != nil {
+				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(expiry), lease.ID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1690,10 +1703,10 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 					var last tracker.NativeLease
 					decodeHubResponse(t, response, &last)
 					fourth := f.ready(t, "different batch")
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=4 WHERE id=?", owner.binding.MachineID); err != nil {
+					if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE machines SET capacity=4 WHERE id=?", owner.binding.MachineID); err != nil {
 						t.Fatal(err)
 					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET capacity_limit=4, reported_capacity=4 WHERE id=?", owner.binding.RunnerID); err != nil {
+					if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE runner_identities SET capacity_limit=4, reported_capacity=4 WHERE id=?", owner.binding.RunnerID); err != nil {
 						t.Fatal(err)
 					}
 					other := prepareRunner(t, f.nativeFixture, runnerauth.Read, runnerauth.Claim)
@@ -1710,11 +1723,11 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 					projectRunner.enroll(t)
 					if test.provider {
 						var reports string
-						if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT provider_reports_json FROM runner_identities WHERE id=?", owner.binding.RunnerID).Scan(&reports); err != nil {
+						if err := f.service.database.db.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT provider_reports_json FROM runner_identities WHERE id=?", owner.binding.RunnerID).Scan(&reports); err != nil {
 							t.Fatal(err)
 						}
 						for _, r := range []runnerFixture{other, projectRunner} {
-							if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET provider_reports_json=? WHERE id=?", reports, r.binding.RunnerID); err != nil {
+							if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE runner_identities SET provider_reports_json=? WHERE id=?", reports, r.binding.RunnerID); err != nil {
 								t.Fatal(err)
 							}
 						}
@@ -1724,7 +1737,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 						requireNativeStatus(t, independent.claim(t, projectRunner, otherItem, "landing/shared/project", 1), http.StatusConflict)
 						requireNativeStatus(t, f.claim(t, owner, fourth, "landing/different/owner", 1), http.StatusConflict)
 						if test.sprite {
-							used, err := readPlacementSpriteUsage(t.Context(), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, f.service.config.now())
+							used, err := readPlacementSpriteUsage(f.service.runDetailContext(t.Context()), f.service.database.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, f.service.config.now())
 							if err != nil || used != 1 {
 								t.Fatalf("Sprite usage=%d, err=%v, want 1", used, err)
 							}
@@ -1732,7 +1745,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 						if test.provider {
 							report := capacityReport(f.service.config.now())
 							report.Backend, report.Models = "git", []string{"git"}
-							view, err := providerView(t.Context(), f.service.database.reader, f.project.OrganizationID, owner.binding.RunnerID, report, f.service.config.now())
+							view, err := providerView(f.service.runDetailContext(t.Context()), f.service.database.reader, f.project.OrganizationID, owner.binding.RunnerID, report, f.service.config.now())
 							if err != nil || view.Used != 1 {
 								t.Fatalf("provider usage=%d, err=%v, want 1", view.Used, err)
 							}
@@ -1770,7 +1783,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 							}
 							args = []any{string(raw), owner.binding.RunnerID}
 						}
-						if _, err := f.service.database.db.ExecContext(t.Context(), exclusion.change, args...); err != nil {
+						if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), exclusion.change, args...); err != nil {
 							t.Fatal(err)
 						}
 						response := f.claim(t, owner, second, waiterSession, test.contenderCapacity)
@@ -1786,7 +1799,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 						if exclusion.name == "provider exhausted" {
 							args = []any{owner.binding.RunnerID}
 						}
-						if _, err := f.service.database.db.ExecContext(t.Context(), exclusion.restore, args...); err != nil {
+						if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), exclusion.restore, args...); err != nil {
 							t.Fatal(err)
 						}
 					})
@@ -1798,23 +1811,23 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				if member.ID == lease.ID || member.FencingToken <= lease.FencingToken {
 					t.Fatal("batch member did not acquire its own fenced lease")
 				}
-				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				tx, err := f.service.database.db.BeginTx(f.service.runDetailContext(t.Context()), nil)
 				if err != nil {
 					t.Fatal(err)
 				}
-				available, err := machineClaimCapacity(t.Context(), tx, owner.binding.MachineID, f.service.config.now(), "", "")
+				available, err := machineClaimCapacity(f.service.runDetailContext(t.Context()), tx, owner.binding.MachineID, f.service.config.now(), "", "")
 				if rollbackErr := tx.Rollback(); err != nil || rollbackErr != nil {
 					t.Fatal(err, rollbackErr)
 				}
 				if available != 0 {
 					t.Fatalf("two native batch owners consumed more than one host slot: available=%d, want0", available)
 				}
-				runner, err := readRunner(t.Context(), f.service.database.db, f.project.OrganizationID, owner.binding.RunnerID, f.service.config.now())
+				runner, err := readRunner(f.service.runDetailContext(t.Context()), f.service.database.db, f.project.OrganizationID, owner.binding.RunnerID, f.service.config.now())
 				if err != nil || runner.Used != 1 || runner.ProjectUsed[f.project.ID] != 1 || len(runner.Leases) != 2 {
 					t.Fatalf("native batch project accounting=%+v error=%v", runner, err)
 				}
 				third := f.ready(t, "different batch")
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=2 WHERE id=?", owner.binding.MachineID); err != nil {
+				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE machines SET capacity=2 WHERE id=?", owner.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}
 				response = f.claim(t, owner, third, "landing/different/owner", 1)
@@ -1824,7 +1837,7 @@ func TestGitHubLandingCapacityAcrossRunners(t *testing.T) {
 				if refusal.Code != "runner_capacity" {
 					t.Fatalf("different batch refusal=%s, want runner_capacity", refusal.Code)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capacity=1 WHERE id=?", owner.binding.MachineID); err != nil {
+				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE machines SET capacity=1 WHERE id=?", owner.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}
 				requireNativeStatus(t, f.claim(t, owner, third, "landing/different/owner", 1), http.StatusConflict)
@@ -2001,12 +2014,12 @@ func TestChangeLanding(t *testing.T) {
 	if landed.Landed.Quality == nil || landed.Landed.Quality.IssueBody != f.issue.Body || landed.Landed.Quality.IssueRevision != f.issue.Revision {
 		t.Fatalf("landing must freeze the contract: %+v", landed.Landed.Quality)
 	}
-	stored, err := readQualityLanding(t.Context(), f.service.database.db, landed, first.ID)
+	stored, err := readQualityLanding(f.service.runDetailContext(t.Context()), f.service.database.db, landed, first.ID)
 	if err != nil || stored == nil || stored.Quality == nil || stored.Quality.IssueBody != landed.Landed.Quality.IssueBody {
 		t.Fatalf("persistent landing context = %+v, %v", stored, err)
 	}
 
-	projected, _, err := readNativeIssueProjection(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID), true)
+	projected, _, err := readNativeIssueProjection(f.service.runDetailContext(t.Context()), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.issue.WorkItemID), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2026,7 +2039,7 @@ func TestChangeLanding(t *testing.T) {
 		{"foreign project", nativeScope{organization: f.project.OrganizationID, project: "prj_foreign"}, now.Add(-time.Hour), now.Add(time.Hour), 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := readNativeAnalytics(t.Context(), f.service.database.db, test.scope, operatortool.AnalyticsRequest{Limit: 1}, operatortool.AnalyticsWindow{From: test.from, To: test.to, Bucket: time.Hour})
+			got, err := readNativeAnalytics(f.service.runDetailContext(t.Context()), f.service.database.db, test.scope, operatortool.AnalyticsRequest{Limit: 1}, operatortool.AnalyticsWindow{From: test.from, To: test.to, Bucket: time.Hour})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -2551,16 +2564,16 @@ func TestReviewConversationHistoryDoesNotVetoLanding(t *testing.T) {
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 			ready := func() bool {
 				t.Helper()
-				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				tx, err := f.service.database.db.BeginTx(f.service.runDetailContext(t.Context()), nil)
 				if err != nil {
 					t.Fatal(err)
 				}
 				defer tx.Rollback()
 				var id tracker.WorkItemID
-				if err := tx.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id = ?", issue.WorkItemID).Scan(&id); err != nil {
+				if err := tx.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT id FROM issues WHERE native_id = ?", issue.WorkItemID).Scan(&id); err != nil {
 					t.Fatal(err)
 				}
-				ready, evaluated, _, err := nativeLandingCandidateReady(t.Context(), tx, &scope, id, "machine_landing", 0, f.service.config.now())
+				ready, evaluated, _, err := nativeLandingCandidateReady(f.service.runDetailContext(t.Context()), tx, &scope, id, "machine_landing", 0, f.service.config.now())
 				if err != nil || !evaluated {
 					t.Fatalf("landing eligibility evaluated = %t, error = %v", evaluated, err)
 				}
@@ -2572,7 +2585,7 @@ func TestReviewConversationHistoryDoesNotVetoLanding(t *testing.T) {
 			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/workflow"
 			move := func(state, detail string) {
 				t.Helper()
-				current, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(issue.WorkItemID))
+				current, _, err := readNativeIssue(f.service.runDetailContext(t.Context()), f.service.database.db, scope, string(issue.WorkItemID))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -2591,19 +2604,19 @@ func TestReviewConversationHistoryDoesNotVetoLanding(t *testing.T) {
 				if test.resolved {
 					reentryDetail += " " + workspace.ReviewConversationsResolvedText
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Merging') WHERE native_id=?", f.project.ID, issue.WorkItemID); err != nil {
+				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Merging') WHERE native_id=?", f.project.ID, issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO collaboration_events (id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) SELECT 'runner-reentry',organization_id,project_id,work_item_id,sequence+1,'workflow.transitioned',1,'{"kind":"runner","principal_id":"runner_landing"}',json_object('from_state','In Progress','to_state','Merging','reason','worker_progress','reason_detail',?),recorded_at FROM collaboration_events WHERE work_item_id=? ORDER BY sequence DESC LIMIT 1`, reentryDetail, issue.WorkItemID); err != nil {
+				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), `INSERT INTO collaboration_events (id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) SELECT 'runner-reentry',organization_id,project_id,work_item_id,sequence+1,'workflow.transitioned',1,'{"kind":"runner","principal_id":"runner_landing"}',json_object('from_state','In Progress','to_state','Merging','reason','worker_progress','reason_detail',?),recorded_at FROM collaboration_events WHERE work_item_id=? ORDER BY sequence DESC LIMIT 1`, reentryDetail, issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 			}
 			var actor string
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT json_extract(actor_json,'$.kind') FROM collaboration_events WHERE work_item_id=? AND type='workflow.transitioned' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&actor); err != nil || actor != test.reentry {
+			if err := f.service.database.db.QueryRowContext(f.service.runDetailContext(t.Context()), "SELECT json_extract(actor_json,'$.kind') FROM collaboration_events WHERE work_item_id=? AND type='workflow.transitioned' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&actor); err != nil || actor != test.reentry {
 				t.Fatalf("re-entry actor = %q, error = %v, want %s", actor, err, test.reentry)
 			}
 			if test.publish {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO collaboration_events (id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) SELECT 'republished',organization_id,project_id,work_item_id,sequence+1,'change.version_published',1,actor_json,'{}',recorded_at FROM collaboration_events WHERE work_item_id=? ORDER BY sequence DESC LIMIT 1`, issue.WorkItemID); err != nil {
+				if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), `INSERT INTO collaboration_events (id,organization_id,project_id,work_item_id,sequence,type,schema_version,actor_json,data_json,recorded_at) SELECT 'republished',organization_id,project_id,work_item_id,sequence+1,'change.version_published',1,actor_json,'{}',recorded_at FROM collaboration_events WHERE work_item_id=? ORDER BY sequence DESC LIMIT 1`, issue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 			}

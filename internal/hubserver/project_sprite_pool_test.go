@@ -1783,6 +1783,7 @@ func TestSpriteLifecycleReadsArchivedRunDetails(t *testing.T) {
 	f.service.config.SecretKeys, f.service.config.Hosted = nil, nil
 	store := &memoryRunDetails{}
 	f.service.config.RunDetails = store
+	f.service.config.Content = nil
 	r := placementFixtureRunner(t, f, "archive-worker", "local", false, 1, "gpt-6.1-sol", "test-model")
 	issue := f.create(t, "Archived execution")
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "archived-run"))

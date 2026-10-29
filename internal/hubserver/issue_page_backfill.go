@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"strconv"
 
@@ -53,6 +52,7 @@ func changeVersionExternalURL(version tracker.ChangeVersion) string {
 }
 
 func (s *Service) convertIssuePageFacts(ctx context.Context) error {
+	ctx = s.runDetailContext(ctx)
 	remaining := storageConversionRows
 	var failures error
 	families := []struct{ name, table, key, order, pending string }{
@@ -106,7 +106,7 @@ func (s *Service) convertIssuePageFact(ctx context.Context, family, id string) (
 		"event":         "SELECT data_json,actor_json FROM collaboration_events WHERE id=? AND page_projection_ready IS NULL",
 		"board":         "SELECT record_json,'' FROM native_board_items WHERE work_item_id=? AND actor_principal_id IS NULL",
 		"board-filters": "SELECT record_json,'' FROM native_board_items WHERE work_item_id=? AND page_filters_ready IS NULL",
-		"version":       "SELECT record_json,'' FROM change_versions WHERE id=? AND external_url IS NULL",
+		"version":       "SELECT COALESCE(NULLIF(payload_object_key,''),record_json),'' FROM change_versions WHERE id=? AND external_url IS NULL",
 	}
 	err := s.database.reader.QueryRowContext(ctx, queries[family], id).Scan(&raw, &actorRaw)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -122,19 +122,19 @@ func (s *Service) convertIssuePageFact(ctx context.Context, family, id string) (
 	var version tracker.ChangeVersion
 	switch family {
 	case "issue":
-		err = json.Unmarshal([]byte(raw), &actor)
+		err = decodeStorageJSON(ctx, []byte(raw), &actor)
 	case "issue-filters":
-		if err = json.Unmarshal([]byte(raw), &labels); err == nil {
-			err = json.Unmarshal([]byte(actorRaw), &assignees)
+		if err = decodeStorageJSON(ctx, []byte(raw), &labels); err == nil {
+			err = decodeStorageJSON(ctx, []byte(actorRaw), &assignees)
 		}
 	case "event":
-		if err = json.Unmarshal([]byte(actorRaw), &actor); err == nil {
+		if err = decodeStorageJSON(ctx, []byte(actorRaw), &actor); err == nil {
 			err = decodePageEvent(raw, &data)
 		}
 	case "board", "board-filters":
-		err = json.Unmarshal([]byte(raw), &card)
+		err = decodeStorageJSON(ctx, []byte(raw), &card)
 	case "version":
-		err = json.Unmarshal([]byte(raw), &version)
+		err = decodeStorageJSON(ctx, []byte(raw), &version)
 	}
 	if err != nil {
 		return false, err
@@ -164,7 +164,7 @@ func (s *Service) convertIssuePageFact(ctx context.Context, family, id string) (
 	case "board-filters":
 		err = tx.QueryRowContext(ctx, "SELECT record_json=? AND page_filters_ready IS NULL FROM native_board_items WHERE work_item_id=?", raw, id).Scan(&unchanged)
 	case "version":
-		err = tx.QueryRowContext(ctx, "SELECT record_json=? AND external_url IS NULL FROM change_versions WHERE id=?", raw, id).Scan(&unchanged)
+		err = tx.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json)=? AND external_url IS NULL FROM change_versions WHERE id=?", raw, id).Scan(&unchanged)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return true, nil

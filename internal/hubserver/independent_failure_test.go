@@ -32,16 +32,17 @@ func independentRepairReview(version tracker.ChangeVersion, now time.Time) track
 
 func TestIndependentFailureRepairDependency(t *testing.T) {
 	f := independentFailureFixture(t)
+	ctx := f.service.runDetailContext(t.Context())
 	version := f.publish(t, "version", "")
 	f.change = f.detail(t).Change
-	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
+	credential, _, err := f.service.authenticateAPIToken(ctx, f.token, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
 	review := independentRepairReview(version, f.service.config.now())
-	if err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, now time.Time) error {
-		return returnChangeForRework(t.Context(), tx, scope, f.change, review, now)
+	if err := f.service.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
+		return returnChangeForRework(ctx, tx, scope, f.change, review, now)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -71,9 +72,10 @@ func TestIndependentFailureRepairRouting(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := independentFailureFixture(t)
+			ctx := f.service.runDetailContext(t.Context())
 			version := f.publish(t, "version", "")
 			change := f.detail(t).Change
-			credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
+			credential, _, err := f.service.authenticateAPIToken(ctx, f.token, "", "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -102,34 +104,34 @@ func TestIndependentFailureRepairRouting(t *testing.T) {
 				review.Validator = nil
 			}
 			var owner tracker.NativeIssue
-			err = f.service.hubTransact(t.Context(), func(tx *sql.Tx, _ time.Time) error {
-				issue, _, err := readNativeIssue(t.Context(), tx, scope, string(f.issue.WorkItemID))
+			err = f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
+				issue, _, err := readNativeIssue(ctx, tx, scope, string(f.issue.WorkItemID))
 				if err != nil {
 					return err
 				}
 				issue.State = "In Progress"
-				if issue, err = persistNativeIssue(t.Context(), tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress", Reason: "user_requested"}, now); err != nil {
+				if issue, err = persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress", Reason: "user_requested"}, now); err != nil {
 					return err
 				}
 				if test.existing || test.self {
 					request := independentRepairRequest(review.IndependentFailures()[0], "existing")
 					if test.self {
 						issue.Body = request.Body
-						_, err = persistNativeIssue(t.Context(), tx, scope, issue, "issue.edited", tracker.CollaborationData{Fields: []string{"body"}}, now)
+						_, err = persistNativeIssue(ctx, tx, scope, issue, "issue.edited", tracker.CollaborationData{Fields: []string{"body"}}, now)
 						return err
 					}
-					owner, err = createNativeIssue(t.Context(), tx, scope, request, now, true)
+					owner, err = createNativeIssue(ctx, tx, scope, request, now, true)
 					if err != nil {
 						return err
 					}
 					if test.ambiguous {
-						owner, err = createNativeIssue(t.Context(), tx, scope, request, now, true)
+						owner, err = createNativeIssue(ctx, tx, scope, request, now, true)
 						if err != nil {
 							return err
 						}
 					}
 					if test.cycle {
-						_, err = changeNativeDependencyTx(t.Context(), tx, scope, string(owner.WorkItemID), tracker.DependencyMutation{ExpectedRevision: owner.Revision, RelatedWorkItemID: f.issue.WorkItemID, Operation: "add"}, now)
+						_, err = changeNativeDependencyTx(ctx, tx, scope, string(owner.WorkItemID), tracker.DependencyMutation{ExpectedRevision: owner.Revision, RelatedWorkItemID: f.issue.WorkItemID, Operation: "add"}, now)
 					}
 				}
 				return err
@@ -137,19 +139,19 @@ func TestIndependentFailureRepairRouting(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = f.service.hubTransact(t.Context(), func(tx *sql.Tx, _ time.Time) error {
-				if err := routeIndependentReview(t.Context(), tx, scope, change, &review, now); err != nil {
+			err = f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
+				if err := routeIndependentReview(ctx, tx, scope, change, &review, now); err != nil {
 					return err
 				}
-				if err := storeChangeReview(t.Context(), tx, string(scope.organization), change.ID, review); err != nil {
+				if err := storeChangeReview(ctx, tx, string(scope.organization), change.ID, review); err != nil {
 					return err
 				}
-				return returnChangeForRework(t.Context(), tx, scope, change, review, now)
+				return returnChangeForRework(ctx, tx, scope, change, review, now)
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			issue, _, err := readNativeIssue(t.Context(), f.service.database.reader, scope, string(f.issue.WorkItemID))
+			issue, _, err := readNativeIssue(ctx, f.service.database.reader, scope, string(f.issue.WorkItemID))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -170,7 +172,7 @@ func TestIndependentFailureRepairRouting(t *testing.T) {
 				t.Fatal("outcome lost repair evidence")
 			}
 			if test.wantRepair {
-				repair, _, err := readNativeIssue(t.Context(), f.service.database.reader, scope, string(issue.Dependencies[0]))
+				repair, _, err := readNativeIssue(ctx, f.service.database.reader, scope, string(issue.Dependencies[0]))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -179,18 +181,18 @@ func TestIndependentFailureRepairRouting(t *testing.T) {
 					t.Fatalf("repair provenance or lane lost: %+v", repair)
 				}
 				var itemID tracker.WorkItemID
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id=?", issue.WorkItemID).Scan(&itemID); err != nil {
+				if err := f.service.database.reader.QueryRowContext(ctx, "SELECT id FROM issues WHERE native_id=?", issue.WorkItemID).Scan(&itemID); err != nil {
 					t.Fatal(err)
 				}
 				query := claimCandidateQuery{NativeScope: &scope, WorkItemID: itemID, AvailableAt: now}
-				candidates, err := nativeCandidateIDs(t.Context(), f.service.database.reader, query, nil, nil, nil, nil, nil, nil, nil)
+				candidates, err := nativeCandidateIDs(ctx, f.service.database.reader, query, nil, nil, nil, nil, nil, nil, nil)
 				if err != nil || len(candidates) != 0 {
 					t.Fatalf("repair wait dispatch=%v err=%v", candidates, err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Done') WHERE native_id=?", scope.project, repair.WorkItemID); err != nil {
+				if _, err := f.service.database.db.ExecContext(ctx, "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Done') WHERE native_id=?", scope.project, repair.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
-				candidates, err = nativeCandidateIDs(t.Context(), f.service.database.reader, query, nil, nil, nil, nil, nil, nil, nil)
+				candidates, err = nativeCandidateIDs(ctx, f.service.database.reader, query, nil, nil, nil, nil, nil, nil, nil)
 				if err != nil || len(candidates) != 1 {
 					t.Fatalf("completed repair did not resume=%v err=%v", candidates, err)
 				}
@@ -201,6 +203,7 @@ func TestIndependentFailureRepairRouting(t *testing.T) {
 
 func TestIndependentFailureConcurrentRepairOwner(t *testing.T) {
 	f := independentFailureFixture(t)
+	ctx := f.service.runDetailContext(t.Context())
 	version := f.publish(t, "version", "")
 	first := f.detail(t).Change
 	second := f.createIndependent(t, "another change")
@@ -209,7 +212,7 @@ func TestIndependentFailureConcurrentRepairOwner(t *testing.T) {
 	var other tracker.ChangeRequest
 	decodeHubResponse(t, response, &other)
 	other.CurrentVersion = version.ID
-	credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
+	credential, _, err := f.service.authenticateAPIToken(ctx, f.token, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,14 +221,15 @@ func TestIndependentFailureConcurrentRepairOwner(t *testing.T) {
 	results := make(chan error, 2)
 	for _, change := range []tracker.ChangeRequest{first, other} {
 		go func() {
+			ctx := f.service.freshRunDetailContext(ctx)
 			<-start
 			review := independentRepairReview(version, f.service.config.now())
-			results <- f.service.hubTransact(t.Context(), func(tx *sql.Tx, now time.Time) error {
-				issue, _, err := readNativeIssue(t.Context(), tx, scope, string(change.WorkItemID))
+			results <- f.service.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
+				issue, _, err := readNativeIssue(ctx, tx, scope, string(change.WorkItemID))
 				if err != nil {
 					return err
 				}
-				_, _, err = attachIndependentRepairs(t.Context(), tx, scope, issue, review.IndependentFailures(), change.ID, now)
+				_, _, err = attachIndependentRepairs(ctx, tx, scope, issue, review.IndependentFailures(), change.ID, now)
 				return err
 			})
 		}()
@@ -236,11 +240,11 @@ func TestIndependentFailureConcurrentRepairOwner(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	one, _, err := readNativeIssue(t.Context(), f.service.database.reader, scope, string(f.issue.WorkItemID))
+	one, _, err := readNativeIssue(ctx, f.service.database.reader, scope, string(f.issue.WorkItemID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	two, _, err := readNativeIssue(t.Context(), f.service.database.reader, scope, string(second.WorkItemID))
+	two, _, err := readNativeIssue(ctx, f.service.database.reader, scope, string(second.WorkItemID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +252,7 @@ func TestIndependentFailureConcurrentRepairOwner(t *testing.T) {
 		t.Fatalf("concurrent repairs differ: %v %v", one.Dependencies, two.Dependencies)
 	}
 	var count int
-	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", scope.project).Scan(&count); err != nil {
+	if err := f.service.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM issues WHERE project_id=?", scope.project).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 3 {
@@ -261,6 +265,7 @@ func TestIndependentFailureGateAttemptReplay(t *testing.T) {
 		t.Run(outcome, func(t *testing.T) {
 			now := time.Date(2026, 10, 27, 7, 0, 0, 0, time.UTC)
 			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+			ctx := f.service.runDetailContext(t.Context())
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 			issue := f.create(t, "source failure")
 			worker := f.worker(t, "worker")
@@ -281,12 +286,12 @@ func TestIndependentFailureGateAttemptReplay(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 			event.IdempotencyKey = "same-event-replayed"
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
-			credential, _, err := f.service.authenticateAPIToken(t.Context(), f.token, "", "")
+			credential, _, err := f.service.authenticateAPIToken(ctx, f.token, "", "")
 			if err != nil {
 				t.Fatal(err)
 			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
-			attempt, err := readNativeAttempt(t.Context(), f.service.database.reader, scope, string(issue.WorkItemID), event.Data.AttemptID, now)
+			attempt, err := readNativeAttempt(ctx, f.service.database.reader, scope, string(issue.WorkItemID), event.Data.AttemptID, now)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -300,7 +305,7 @@ func TestIndependentFailureGateAttemptReplay(t *testing.T) {
 				t.Fatalf("gate outcome lost repair binding: %+v", attempt.Runtime)
 			}
 			var count int
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil {
+			if err := f.service.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM issues WHERE project_id=?", f.project.ID).Scan(&count); err != nil {
 				t.Fatal(err)
 			}
 			if count != 2 {
@@ -309,7 +314,7 @@ func TestIndependentFailureGateAttemptReplay(t *testing.T) {
 			event.Data.Sequence, event.IdempotencyKey = 4, "usage-correction"
 			event.Data.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "test-model", Input: 10, Output: 1, Currency: "USD", Revision: 1, From: now.Add(-time.Second), To: now, ReportedAt: now}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
-			corrected, err := readNativeAttempt(t.Context(), f.service.database.reader, scope, string(issue.WorkItemID), event.Data.AttemptID, now)
+			corrected, err := readNativeAttempt(ctx, f.service.database.reader, scope, string(issue.WorkItemID), event.Data.AttemptID, now)
 			if err != nil {
 				t.Fatal(err)
 			}

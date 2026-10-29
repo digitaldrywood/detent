@@ -58,15 +58,11 @@ func readEvidenceAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, inp
 	if err := requireNativeMutationLease(ctx, tx, scope, string(input.WorkItemID), input.Mutation, now); err != nil {
 		return data, nativeStaleLease(err, "Evidence producer lease is no longer current")
 	}
-	var encoded string
-	err := tx.QueryRowContext(ctx, `SELECT data_json FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND id=? AND lease_id=? AND fencing_token=? AND status='running'`, scope.organization, scope.project, input.WorkItemID, input.AttemptID, input.LeaseID, input.FencingToken).Scan(&encoded)
+	err := tx.QueryRowContext(ctx, `SELECT id,run_id,lease_id,fencing_token,policy_id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND id=? AND lease_id=? AND fencing_token=? AND status='running'`, scope.organization, scope.project, input.WorkItemID, input.AttemptID, input.LeaseID, input.FencingToken).Scan(&data.AttemptID, &data.RunID, &data.LeaseID, &data.FencingToken, &data.PolicyID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return data, nativeStaleExecution("Evidence producer is not the running attempt")
 	}
 	if err != nil {
-		return data, err
-	}
-	if err := json.Unmarshal([]byte(encoded), &data); err != nil {
 		return data, err
 	}
 	return data, nil

@@ -331,7 +331,7 @@ SELECT a.id,a.work_item_id,i.number,i.title,a.project_id,p.name,a.resolved_runne
  coalesce(nullif(a.role,''),a.execution_role,''),CASE WHEN a.activity_projection_version IS NOT NULL THEN coalesce(a.runtime_phase,'') ELSE '' END,coalesce(a.activity_phases_dropped,0),a.started_at,
  coalesce(CASE WHEN a.activity_projection_version IS NOT NULL THEN nullif(a.session_id,'') END,l.session_id,''),a.change_id,CASE WHEN a.activity_projection_version IS NOT NULL THEN a.activity_publication_url END,
  CASE WHEN a.status='running' THEN 'interrupted' ELSE a.status END,a.effective_finished_at,
- CASE WHEN a.activity_projection_version IS NULL OR a.activity_publication_url IS NULL THEN a.data_json ELSE '' END,CASE WHEN a.activity_projection_version IS NULL THEN a.checkpoint_json END,a.activity_projection_version,i.activity_actor_principal_id,CASE WHEN i.activity_actor_principal_id IS NULL THEN i.actor_json ELSE '' END
+ CASE WHEN a.activity_projection_version IS NULL OR a.activity_publication_url IS NULL THEN COALESCE(NULLIF(a.payload_object_key,''),a.data_json) ELSE '' END,CASE WHEN a.activity_projection_version IS NULL THEN COALESCE(NULLIF(a.checkpoint_object_key,''),a.checkpoint_json) END,a.activity_projection_version,i.activity_actor_principal_id,CASE WHEN i.activity_actor_principal_id IS NULL THEN i.actor_json ELSE '' END
 FROM linked a JOIN leases l ON l.lease_id=a.lease_id
 JOIN issues i ON i.organization_id=a.organization_id AND i.project_id=a.project_id AND i.native_id=a.work_item_id
 JOIN projects p ON p.organization_id=a.organization_id AND p.id=a.project_id`

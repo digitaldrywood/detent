@@ -48,18 +48,18 @@ func updateActivityAttemptProjection(ctx context.Context, tx *sql.Tx, id string,
 	var checkpointChange any
 	if checkpoint == nil {
 		var raw sql.NullString
-		err := tx.QueryRowContext(ctx, `SELECT checkpoint_json FROM native_attempts WHERE id=? AND activity_checkpoint_change_id IS NULL`, id).Scan(&raw)
+		err := tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) FROM native_attempts WHERE id=? AND activity_checkpoint_change_id IS NULL`, id).Scan(&raw)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		if err == nil {
 			checkpointChange = ""
 			if raw.Valid {
-				var stored tracker.NativeCheckpoint
-				if err := json.Unmarshal([]byte(raw.String), &stored); err != nil {
+				stored, err := decodeRunCheckpoint(ctx, tx, raw.String)
+				if err != nil {
 					return err
 				}
-				if stored.Change != nil {
+				if stored != nil && stored.Change != nil {
 					checkpointChange = stored.Change.ChangeID
 				}
 			}
@@ -157,7 +157,7 @@ func (s *Service) convertActivityProjections(ctx context.Context) error {
 func (s *Service) convertActivityAttempt(ctx context.Context, id string) error {
 	var raw, status string
 	var checkpoint sql.NullString
-	err := s.database.reader.QueryRowContext(ctx, `SELECT data_json,status,checkpoint_json FROM native_attempts WHERE id=? AND (activity_projection_version IS NULL OR report_projection_version IS NULL)`, id).Scan(&raw, &status, &checkpoint)
+	err := s.database.reader.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(payload_object_key,''),data_json),status,COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) FROM native_attempts WHERE id=? AND (activity_projection_version IS NULL OR report_projection_version IS NULL)`, id).Scan(&raw, &status, &checkpoint)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -182,7 +182,7 @@ func (s *Service) convertActivityAttempt(ctx context.Context, id string) error {
 	}
 	defer tx.Rollback()
 	var unchanged bool
-	err = tx.QueryRowContext(ctx, `SELECT data_json=? AND status=? AND checkpoint_json IS ? AND (activity_projection_version IS NULL OR report_projection_version IS NULL) FROM native_attempts WHERE id=?`, raw, status, checkpoint, id).Scan(&unchanged)
+	err = tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(payload_object_key,''),data_json)=? AND status=? AND COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) IS ? AND (activity_projection_version IS NULL OR report_projection_version IS NULL) FROM native_attempts WHERE id=?`, raw, status, checkpoint, id).Scan(&unchanged)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -208,7 +208,7 @@ func (s *Service) convertActivityActor(ctx context.Context, id string) error {
 		return err
 	}
 	var actor tracker.Actor
-	if err := json.Unmarshal([]byte(raw), &actor); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &actor); err != nil {
 		return err
 	}
 	_, err = s.database.db.ExecContext(ctx, `UPDATE issues SET activity_actor_principal_id=? WHERE id=? AND actor_json=? AND activity_actor_principal_id IS NULL`, actor.PrincipalID, id, raw)
@@ -225,7 +225,7 @@ func (s *Service) convertActivityChange(ctx context.Context, id string) error {
 		return err
 	}
 	var c tracker.ChangeRequest
-	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &c); err != nil {
 		return err
 	}
 	_, err = s.database.db.ExecContext(ctx, `UPDATE change_requests SET activity_created_at=julianday(?),activity_current_version_id=? WHERE id=? AND record_json=? AND activity_current_version_id IS NULL`, formatHubTime(c.CreatedAt), c.CurrentVersion, id, raw)
@@ -234,7 +234,7 @@ func (s *Service) convertActivityChange(ctx context.Context, id string) error {
 
 func (s *Service) convertActivityVersion(ctx context.Context, id string) error {
 	var raw string
-	err := s.database.reader.QueryRowContext(ctx, `SELECT record_json FROM change_versions WHERE id=? AND activity_external_url IS NULL`, id).Scan(&raw)
+	err := s.database.reader.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_versions WHERE id=? AND activity_external_url IS NULL`, id).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -242,20 +242,20 @@ func (s *Service) convertActivityVersion(ctx context.Context, id string) error {
 		return err
 	}
 	var v tracker.ChangeVersion
-	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &v); err != nil {
 		return err
 	}
 	var url string
 	if v.External != nil {
 		url = v.External.URL
 	}
-	_, err = s.database.db.ExecContext(ctx, `UPDATE change_versions SET activity_external_url=? WHERE id=? AND record_json=? AND activity_external_url IS NULL`, url, id, raw)
+	_, err = s.database.db.ExecContext(ctx, `UPDATE change_versions SET activity_external_url=? WHERE id=? AND COALESCE(NULLIF(payload_object_key,''),record_json)=? AND activity_external_url IS NULL`, url, id, raw)
 	return err
 }
 
 func decodeActivityRun(ctx context.Context, q nativeQueryer, raw string, data *tracker.NativeRunData) error {
 	var document map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &document); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &document); err != nil {
 		return err
 	}
 	if document == nil {

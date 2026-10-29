@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"database/sql"
 	"net/url"
 	"slices"
 	"sort"
@@ -182,12 +181,7 @@ func (s *Service) executeAnalyticsRead(ctx context.Context, call operatortool.Ca
 func (s *Service) readAnalyticsReport(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (nativeAnalyticsReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return nativeAnalyticsReport{}, err
-	}
-	defer tx.Rollback()
-	return s.readAnalyticsReportFrom(ctx, credential, r, w, analyticsRollupReader{tx})
+	return s.readAnalyticsReportFrom(ctx, credential, r, w, analyticsRollupReader{s.database.reader})
 }
 
 func (s *Service) readAnalyticsReportFrom(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow, q nativeQueryer) (nativeAnalyticsReport, error) {

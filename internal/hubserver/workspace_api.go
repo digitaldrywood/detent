@@ -154,7 +154,7 @@ func (w *workspaceService) openWorkspace(ctx context.Context, tx *sql.Tx, scope 
 	}
 	ref := strings.TrimSpace(request.Ref)
 	record := workspaceRecord{
-		ID: workspacesession.NewID(), OrganizationID: scope.organization, ProjectID: scope.project,
+		ID: payloadNativeID(ctx, "ws"), OrganizationID: scope.organization, ProjectID: scope.project,
 		SubjectWorkItemID: string(issue.WorkItemID), AttemptID: attemptID, Ref: ref,
 		State: workspacesession.StateRequested, Requires: request.Requires, ReadOnly: running,
 		IdleTimeoutSeconds: w.config.idleTimeoutSeconds(),

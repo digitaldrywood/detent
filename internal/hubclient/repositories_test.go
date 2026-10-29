@@ -84,7 +84,7 @@ func TestRunnerRepositoryList(t *testing.T) {
 
 func TestRepositoryDiscoveryIsNotStarvedByGitHubIntake(t *testing.T) {
 	t.Parallel()
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken), GitHubDisabled: true})
+	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(nativeChangeAdminToken), GitHubDisabled: true, Content: newHubContentStore()})
 	if err != nil {
 		t.Fatal(err)
 	}

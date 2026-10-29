@@ -73,18 +73,18 @@ func TestChangeMixedBackfillKeepsTypedIssueData(t *testing.T) {
 		old := f.publish(t, "old", "")
 		current := f.publish(t, "current", old.ID)
 		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		tx, err := f.service.database.db.BeginTx(f.service.runDetailContext(t.Context()), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer tx.Rollback()
-		if _, err := tx.ExecContext(t.Context(), `UPDATE change_versions SET head_sha=NULL WHERE id=?`, old.ID); err != nil {
+		if _, err := tx.ExecContext(f.service.runDetailContext(t.Context()), `UPDATE change_versions SET head_sha=NULL WHERE id=?`, old.ID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.ExecContext(t.Context(), `UPDATE change_versions SET head_sha='typed-current',external_provider='github',external_id='42',external_url='https://example.test/pull/42' WHERE id=?`, current.ID); err != nil {
+		if _, err := tx.ExecContext(f.service.runDetailContext(t.Context()), `UPDATE change_versions SET head_sha='typed-current',external_provider='github',external_id='42',external_url='https://example.test/pull/42' WHERE id=?`, current.ID); err != nil {
 			t.Fatal(err)
 		}
-		issue, _, err := readNativeIssueProjection(t.Context(), tx, scope, string(f.issue.WorkItemID), false)
+		issue, _, err := readNativeIssueProjection(f.service.runDetailContext(t.Context()), tx, scope, string(f.issue.WorkItemID), false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -204,7 +204,7 @@ func TestRecoveryUnknownHistoryBudgetPreservesOlderEvidence(t *testing.T) {
 				at := f.service.config.now()
 				if family == "check" {
 					check := tracker.ChangeCheck{VersionID: version.ID, ChangeCheckResult: tracker.ChangeCheckResult{CheckRunID: "wanted", Conclusion: "failure"}}
-					if err := insertChangeEvidence(t.Context(), tx, f.change.ID, version.ID, "check", "wanted", check); err != nil {
+					if err := seedLegacyChangeEvidence(t.Context(), tx, f.change.ID, version.ID, "check", "wanted", check); err != nil {
 						t.Fatal(err)
 					}
 				} else if err := appendNativeHistory(t.Context(), tx, scope, string(f.issue.WorkItemID), "workflow.transitioned", tracker.CollaborationData{FromState: "Merging", ToState: "Rework", Reason: "landing_refused"}, at); err != nil {
@@ -339,26 +339,26 @@ func TestProductivityRefreshServesChangeBackfill(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE change_requests SET record_json=? WHERE id=?`, raw, f.change.ID); err != nil {
+		if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), `UPDATE change_requests SET record_json=? WHERE id=?`, raw, f.change.ID); err != nil {
 			t.Fatal(err)
 		}
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		tx, err := f.service.database.db.BeginTx(f.service.runDetailContext(t.Context()), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := projectChangeColumns(t.Context(), tx, "change_requests", f.change.ID, raw); err != nil {
+		if err := projectChangeColumns(f.service.runDetailContext(t.Context()), tx, "change_requests", f.change.ID, raw); err != nil {
 			tx.Rollback()
 			t.Fatal(err)
 		}
-		if err := insertChangeEvidence(t.Context(), tx, f.change.ID, version.ID, "review", "refusal", tracker.ChangeReview{VersionID: version.ID, Decision: "changes_requested", CreatedAt: at.Add(-time.Hour)}); err != nil {
+		if err := seedLegacyChangeEvidence(f.service.runDetailContext(t.Context()), tx, f.change.ID, version.ID, "review", "refusal", tracker.ChangeReview{VersionID: version.ID, Decision: "changes_requested", CreatedAt: at.Add(-time.Hour)}); err != nil {
 			tx.Rollback()
 			t.Fatal(err)
 		}
 		for i := range changeLegacyReadLimit + 1 {
-			if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,?,?)`, fmt.Sprintf("legacy-%s-%d", f.change.ID, i), f.change.ID, i+100, fmt.Sprintf(`{"created_at":%q}`, formatHubTime(at))); err != nil {
+			if _, err := tx.ExecContext(f.service.runDetailContext(t.Context()), `INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,?,?)`, fmt.Sprintf("legacy-%s-%d", f.change.ID, i), f.change.ID, i+100, fmt.Sprintf(`{"created_at":%q}`, formatHubTime(at))); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review','{"decision":"commented"}')`, f.change.ID, version.ID); err != nil {
+			if _, err := tx.ExecContext(f.service.runDetailContext(t.Context()), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review','{"decision":"commented"}')`, f.change.ID, version.ID); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -368,31 +368,31 @@ func TestProductivityRefreshServesChangeBackfill(t *testing.T) {
 		for _, state := range []string{"before", "during", "after"} {
 			if state == "before" {
 				for _, statement := range []string{`UPDATE change_requests SET created_at=NULL,landed_merge_sha=NULL WHERE id=?`, `UPDATE change_versions SET head_sha=NULL WHERE change_id=?`, `UPDATE change_evidence SET has_validator=NULL,claim_review_decision=NULL WHERE change_id=?`} {
-					if _, err := f.service.database.db.ExecContext(t.Context(), statement, f.change.ID); err != nil {
+					if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), statement, f.change.ID); err != nil {
 						t.Fatal(err)
 					}
 				}
 			} else if state == "during" {
-				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				tx, err := f.service.database.db.BeginTx(f.service.runDetailContext(t.Context()), nil)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := projectChangeColumns(t.Context(), tx, "change_requests", f.change.ID, raw); err != nil {
+				if err := projectChangeColumns(f.service.runDetailContext(t.Context()), tx, "change_requests", f.change.ID, raw); err != nil {
 					tx.Rollback()
 					t.Fatal(err)
 				}
 				if err := tx.Commit(); err != nil {
 					t.Fatal(err)
 				}
-			} else if err := f.service.populateChangeColumns(t.Context()); err != nil {
+			} else if err := f.service.populateChangeColumns(f.service.runDetailContext(t.Context())); err != nil {
 				t.Fatal(err)
 			}
-			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			tx, err := f.service.database.db.BeginTx(f.service.runDetailContext(t.Context()), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			inputs, readErr := productivityQualityInputs(t.Context(), tx, scope, string(f.issue.WorkItemID))
-			refreshErr := refreshProductivitySummary(t.Context(), tx, scope, string(f.issue.WorkItemID))
+			inputs, readErr := productivityQualityInputs(f.service.runDetailContext(t.Context()), tx, scope, string(f.issue.WorkItemID))
+			refreshErr := refreshProductivitySummary(f.service.runDetailContext(t.Context()), tx, scope, string(f.issue.WorkItemID))
 			if readErr != nil || refreshErr != nil || len(inputs.currentLandings) != 1 || !slices.ContainsFunc(inputs.events, func(event qualityHistoryEvent) bool { return event.Kind == "changes_requested" }) {
 				tx.Rollback()
 				t.Fatalf("%s report lost legacy landing or refusal: %+v read=%v refresh=%v", state, inputs, readErr, refreshErr)
@@ -401,11 +401,11 @@ func TestProductivityRefreshServesChangeBackfill(t *testing.T) {
 			if state == "before" {
 				drained := false
 				for range 100 {
-					if err := f.service.database.drainAnalyticsItem(t.Context(), string(f.issue.WorkItemID), at); err != nil {
+					if err := f.service.database.drainAnalyticsItem(f.service.runDetailContext(t.Context()), string(f.issue.WorkItemID), at); err != nil {
 						t.Fatalf("legacy analytics drain: %v", err)
 					}
 					var dirty bool
-					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM analytics_rollup_dirty WHERE work_item_id=?)`, f.issue.WorkItemID).Scan(&dirty); err != nil {
+					if err := f.service.database.reader.QueryRowContext(f.service.runDetailContext(t.Context()), `SELECT EXISTS(SELECT 1 FROM analytics_rollup_dirty WHERE work_item_id=?)`, f.issue.WorkItemID).Scan(&dirty); err != nil {
 						t.Fatal(err)
 					}
 					if !dirty {
@@ -416,45 +416,45 @@ func TestProductivityRefreshServesChangeBackfill(t *testing.T) {
 				if !drained {
 					t.Fatal("legacy analytics drain did not finish")
 				}
-				snapshot, err := readHealthSnapshot(t.Context(), f.service.database.reader, scope.organization, at)
+				snapshot, err := readHealthSnapshot(f.service.runDetailContext(t.Context()), f.service.database.reader, scope.organization, at)
 				if err != nil {
 					t.Fatalf("legacy health snapshot: %v", err)
 				}
-				if err := f.service.commitHealthEvaluation(t.Context(), scope.organization, at, evaluateHealth(at, snapshot), snapshot.BaselineUnavailable); err != nil {
+				if err := f.service.commitHealthEvaluation(f.service.runDetailContext(t.Context()), scope.organization, at, evaluateHealth(at, snapshot), snapshot.BaselineUnavailable); err != nil {
 					t.Fatal(err)
 				}
 			}
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Done') WHERE native_id=?`, scope.project, f.issue.WorkItemID); err != nil {
+		if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Done') WHERE native_id=?`, scope.project, f.issue.WorkItemID); err != nil {
 			t.Fatal(err)
 		}
 		appendTestHealthEventAs(t, f.nativeFixture, tracker.Actor{Kind: "human", PrincipalID: "completion-person", DisplayName: "Example person"}, f.issue, "workflow.transitioned", tracker.CollaborationData{FromState: "In Progress", ToState: "Done"}, at)
 		appendTestHealthEventAs(t, f.nativeFixture, tracker.Actor{Kind: "human", PrincipalID: "other-person"}, f.issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, at.Add(time.Minute))
-		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE collaboration_events SET from_state=NULL,to_state=NULL WHERE work_item_id=? AND type='workflow.transitioned'`, f.issue.WorkItemID); err != nil {
+		if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), `UPDATE collaboration_events SET from_state=NULL,to_state=NULL WHERE work_item_id=? AND type='workflow.transitioned'`, f.issue.WorkItemID); err != nil {
 			t.Fatal(err)
 		}
-		tx, err = f.service.database.db.BeginTx(t.Context(), nil)
+		tx, err = f.service.database.db.BeginTx(f.service.runDetailContext(t.Context()), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		refreshErr := refreshProductivitySummary(t.Context(), tx, scope, string(f.issue.WorkItemID))
+		refreshErr := refreshProductivitySummary(f.service.runDetailContext(t.Context()), tx, scope, string(f.issue.WorkItemID))
 		tx.Rollback()
 		if refreshErr != nil {
 			t.Fatalf("legacy completion actor unavailable: %v", refreshErr)
 		}
-		if err := f.service.populateChangeColumns(t.Context()); err != nil {
+		if err := f.service.populateChangeColumns(f.service.runDetailContext(t.Context())); err != nil {
 			t.Fatal(err)
 		}
-		tx, err = f.service.database.db.BeginTx(t.Context(), nil)
+		tx, err = f.service.database.db.BeginTx(f.service.runDetailContext(t.Context()), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := refreshProductivitySummary(t.Context(), tx, scope, string(f.issue.WorkItemID)); err != nil {
+		if err := refreshProductivitySummary(f.service.runDetailContext(t.Context()), tx, scope, string(f.issue.WorkItemID)); err != nil {
 			tx.Rollback()
 			t.Fatal(err)
 		}
 		var kind, person string
-		err = tx.QueryRowContext(t.Context(), `SELECT completed_kind,completed_id FROM report_issue_summaries WHERE work_item_id=?`, f.issue.WorkItemID).Scan(&kind, &person)
+		err = tx.QueryRowContext(f.service.runDetailContext(t.Context()), `SELECT completed_kind,completed_id FROM report_issue_summaries WHERE work_item_id=?`, f.issue.WorkItemID).Scan(&kind, &person)
 		tx.Rollback()
 		if err != nil || kind != "people" || person != "completion-person" {
 			t.Fatalf("backfilled completion actor lost: %s %s %v", kind, person, err)
@@ -468,22 +468,22 @@ func TestChangeVersionBackfillRestoresLinkedPRActivity(t *testing.T) {
 	version := f.publishExternal(t, "historical-version")
 	other := f.create(t, "other linked issue")
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_issue_links(change_id,organization_id,project_id,work_item_id) VALUES(?,?,?,?)`, f.change.ID, scope.organization, scope.project, other.WorkItemID); err != nil {
+	if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), `INSERT INTO change_issue_links(change_id,organization_id,project_id,work_item_id) VALUES(?,?,?,?)`, f.change.ID, scope.organization, scope.project, other.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE change_versions SET head_sha=NULL,external_url=NULL WHERE id=?`, version.ID); err != nil {
+	if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), `UPDATE change_versions SET head_sha=NULL,external_url=NULL WHERE id=?`, version.ID); err != nil {
 		t.Fatal(err)
 	}
 	at := f.service.config.now().Add(time.Hour)
-	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE pull_requests SET issue_id=NULL,synchronized_at=? WHERE repository_id=?`, formatHubTime(at), f.repositoryID); err != nil {
+	if _, err := f.service.database.db.ExecContext(f.service.runDetailContext(t.Context()), `UPDATE pull_requests SET issue_id=NULL,synchronized_at=? WHERE repository_id=?`, formatHubTime(at), f.repositoryID); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.service.populateChangeColumns(t.Context()); err != nil {
+	if err := f.service.populateChangeColumns(f.service.runDetailContext(t.Context())); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []tracker.NativeWorkItemID{f.issue.WorkItemID, other.WorkItemID} {
 		var value string
-		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT last_activity_at FROM issues WHERE organization_id=? AND project_id=? AND native_id=?`, scope.organization, scope.project, id).Scan(&value); err != nil {
+		if err := f.service.database.reader.QueryRowContext(f.service.runDetailContext(t.Context()), `SELECT last_activity_at FROM issues WHERE organization_id=? AND project_id=? AND native_id=?`, scope.organization, scope.project, id).Scan(&value); err != nil {
 			t.Fatal(err)
 		}
 		got, err := parseTimeValue(value)

@@ -752,11 +752,11 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,data_json=json_set(data_json,'$.runtime',json(?)) WHERE id=?", string(raw), start.Data.AttemptID); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key='',report_projection_version=NULL,data_json=json_set(data_json,'$.runtime',json(?)) WHERE id=?", string(raw), start.Data.AttemptID); err != nil {
 				t.Fatal(err)
 			}
 			if test.malformedPhases {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,data_json=json_set(data_json,'$.runtime.phases',?) WHERE id=?", "malformed", start.Data.AttemptID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key='',report_projection_version=NULL,data_json=json_set(data_json,'$.runtime.phases',?) WHERE id=?", "malformed", start.Data.AttemptID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -765,12 +765,12 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 				bucket = time.Minute
 			}
 			window := operatortool.AnalyticsWindow{From: test.from, To: test.to, Bucket: bucket}
-			got, err := readNativeAnalytics(t.Context(), f.service.database.db, scope, operatortool.AnalyticsRequest{Limit: 1}, window)
+			got, err := readNativeAnalytics(f.service.runDetailContext(t.Context()), f.service.database.db, scope, operatortool.AnalyticsRequest{Limit: 1}, window)
 			if err != nil {
 				t.Fatal(err)
 			}
 			rebuildTestAnalyticsRollups(t, f.service, scope)
-			projected, err := readNativeAnalytics(t.Context(), analyticsRollupReader{f.service.database.reader}, scope, operatortool.AnalyticsRequest{Limit: 1}, window)
+			projected, err := readNativeAnalytics(f.service.runDetailContext(t.Context()), analyticsRollupReader{f.service.database.reader}, scope, operatortool.AnalyticsRequest{Limit: 1}, window)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -805,7 +805,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,data_json=json_set(data_json,'$.runtime',json(?)) WHERE id=?", string(raw), start.Data.AttemptID); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET payload_object_key='',report_projection_version=NULL,data_json=json_set(data_json,'$.runtime',json(?)) WHERE id=?", string(raw), start.Data.AttemptID); err != nil {
 		t.Fatal(err)
 	}
 	tx, err = f.service.database.db.BeginTx(t.Context(), nil)
@@ -823,7 +823,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	report, err = readNativeAnalytics(t.Context(), f.service.database.db, scope, operatortool.AnalyticsRequest{Limit: 1}, w)
+	report, err = readNativeAnalytics(f.service.runDetailContext(t.Context()), f.service.database.db, scope, operatortool.AnalyticsRequest{Limit: 1}, w)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -865,7 +865,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 				t.Fatal(err)
 			}
 			window := operatortool.AnalyticsWindow{From: now.Add(-2 * time.Minute), To: now, Bucket: time.Minute}
-			got, err := readNativeAnalytics(t.Context(), tx, scope, operatortool.AnalyticsRequest{Limit: 1}, window)
+			got, err := readNativeAnalytics(f.service.runDetailContext(t.Context()), tx, scope, operatortool.AnalyticsRequest{Limit: 1}, window)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -876,7 +876,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	}
 	foreign := scope
 	foreign.project = "prj_foreign"
-	hidden, err := readNativeAnalytics(t.Context(), f.service.database.db, foreign, operatortool.AnalyticsRequest{Limit: 1}, w)
+	hidden, err := readNativeAnalytics(f.service.runDetailContext(t.Context()), f.service.database.db, foreign, operatortool.AnalyticsRequest{Limit: 1}, w)
 	if err != nil {
 		t.Fatal(err)
 	}

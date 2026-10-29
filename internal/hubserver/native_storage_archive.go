@@ -68,13 +68,14 @@ func (s *Service) storageArchiveContent() entryauthority.ContentHandler {
 	if s.config.Content != nil {
 		return s.config.Content
 	}
-	if s.config.Hosted != nil && s.config.Hosted.SharedEntry != nil {
+	if s.config.Hosted != nil && s.config.Hosted.SharedEntry != nil && s.config.Hosted.SharedEntry.Content != nil {
 		return s.config.Hosted.SharedEntry.Content
 	}
 	return nil
 }
 
 func (s *Service) archiveClosedNativeIssues(ctx context.Context, now time.Time) error {
+	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, backgroundStorageBudget)
 	defer cancel()
 	ids, err := nativePageIDs(ctx, s.database.reader, `SELECT i.native_id FROM issues i JOIN projects p ON p.id=i.project_id WHERE p.profile='native' AND p.deleted_at IS NULL AND i.terminal_entered_at IS NULL AND EXISTS(SELECT 1 FROM workflow_states w WHERE w.id=i.workflow_state_id AND w.terminal=1) AND `+nativeTerminalEnteredAt+` IS NOT NULL ORDER BY i.id LIMIT 4`)

@@ -445,7 +445,7 @@ func TestNativeRecoveryMixedHubVersions(t *testing.T) {
 	for _, large := range []bool{false, true} {
 		t.Run(strconv.FormatBool(large), func(t *testing.T) {
 			issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_test", ProjectID: "prj_test", WorkItemID: "wi_test"}, Body: "exact source"}
-			full := tracker.NativeRecovery{Issue: issue}
+			full := tracker.NativeRecovery{Issue: issue, Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{CompletionBody: "retained runtime"}}}}
 			if large {
 				for range 18 {
 					full.Discussion = append(full.Discussion, tracker.NativeComment{Body: strings.Repeat("x", 60<<10)})
@@ -456,11 +456,28 @@ func TestNativeRecoveryMixedHubVersions(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				reads.Add(1)
 				upgraded := modern.Load()
+				if strings.HasSuffix(r.URL.Path, "/attempts") {
+					if len(r.URL.Query()) != 2 || r.URL.Query().Has("view") {
+						w.WriteHeader(http.StatusUnprocessableEntity)
+						return
+					}
+					attempt := full.Attempts[0]
+					if upgraded && r.Header.Get("X-Detent-Attempt-Detail") != "full" {
+						attempt.CompletionBody = ""
+					}
+					if err := json.NewEncoder(w).Encode(tracker.Page[tracker.NativeAttempt]{Items: []tracker.NativeAttempt{attempt}}); err != nil {
+						t.Error(err)
+					}
+					return
+				}
 				if len(r.URL.Query()) != 1 || r.URL.Query().Get("view") != "recovery" {
 					w.WriteHeader(http.StatusUnprocessableEntity)
 					return
 				}
 				result := full
+				if upgraded && r.Header.Get("X-Detent-Recovery-Detail") != "full" {
+					result.Attempts = nil
+				}
 				if upgraded && r.Header.Get("X-Detent-Recovery-Projection") == "bounded" && large {
 					result.Discussion = result.Discussion[:2]
 					result.Read = &tracker.NativeRecoveryRead{DetailPath: "scoped detail", Omitted: []string{"discussion"}}
@@ -489,8 +506,18 @@ func TestNativeRecoveryMixedHubVersions(t *testing.T) {
 				} else if err != nil || result.Issue.Body != issue.Body {
 					t.Fatalf("mixed-version recovery lost source: %v", err)
 				}
+				if err == nil && (len(result.Attempts) != 1 || result.Attempts[0].CompletionBody != "retained runtime") {
+					t.Fatal("mixed-version recovery lost runtime")
+				}
 				if reads.Load() != before+1 {
 					t.Fatal("mixed-version recovery retried unsupported data")
+				}
+				attempts, err := native.AttemptsDetailPage(t.Context(), issue.WorkItemID, "", 1)
+				if err != nil || len(attempts.Items) != 1 || attempts.Items[0].CompletionBody != "retained runtime" {
+					t.Fatalf("mixed-version attempt detail lost runtime: %v", err)
+				}
+				if reads.Load() != before+2 {
+					t.Fatal("mixed-version attempt detail retried unsupported data")
 				}
 			}
 		})

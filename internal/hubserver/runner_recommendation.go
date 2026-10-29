@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"math"
 	"slices"
@@ -354,7 +353,7 @@ func readRunnerRecommendation(ctx context.Context, q nativeQueryer, r runnerauth
 	if err != nil {
 		return runnerRecommendation{}, err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT a.started_at,a.process_peak_memory_bytes,a.process_user_cpu_seconds,a.process_system_cpu_seconds,a.process_wall_seconds,CASE WHEN a.usage_facts_ready IS NULL THEN a.data_json END FROM native_attempts a JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.organization_id=? AND lr.runner_id=? AND a.status IN ('succeeded','failed','cancelled') AND a.started_at>=? AND a.updated_at<=? AND (a.process_peak_memory_bytes>0 OR a.usage_facts_ready IS NULL) ORDER BY a.started_at DESC LIMIT 10001`, r.OrganizationID, r.RunnerID, formatHubTime(from), formatHubTime(to))
+	rows, err := q.QueryContext(ctx, `SELECT a.started_at,a.process_peak_memory_bytes,a.process_user_cpu_seconds,a.process_system_cpu_seconds,a.process_wall_seconds,CASE WHEN a.usage_facts_ready IS NULL THEN COALESCE(NULLIF(a.payload_object_key,''),a.data_json) END FROM native_attempts a JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.organization_id=? AND lr.runner_id=? AND a.status IN ('succeeded','failed','cancelled') AND a.started_at>=? AND a.updated_at<=? AND (a.process_peak_memory_bytes>0 OR a.usage_facts_ready IS NULL) ORDER BY a.started_at DESC LIMIT 10001`, r.OrganizationID, r.RunnerID, formatHubTime(from), formatHubTime(to))
 	if err != nil {
 		return runnerRecommendation{}, err
 	}
@@ -413,7 +412,7 @@ func readRecommendationHostHours(ctx context.Context, q nativeQueryer, r runnera
 		if err := rows.Scan(&raw); err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal([]byte(raw), &hour.Summary); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &hour.Summary); err != nil {
 			return nil, err
 		}
 		hours = append(hours, hour)

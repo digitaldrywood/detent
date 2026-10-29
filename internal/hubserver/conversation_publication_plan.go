@@ -11,6 +11,7 @@ import (
 )
 
 type conversationPublicationPlan struct {
+	receiptLogs      [][]any
 	toolRevisions    map[string]legacyToolRevision
 	prepared         preparedConversationContents
 	reads            *conversationArchiveReads

@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -13,7 +12,7 @@ import (
 )
 
 func readLegacyChangeAttempts(ctx context.Context, query nativeQueryer, scope nativeScope, item string) ([]any, error) {
-	versions, err := changeColumnRecords[tracker.ChangeVersion](ctx, query, `SELECT v.record_json FROM change_versions v INDEXED BY change_versions_change_attempt_unknown JOIN change_requests c ON c.id=v.change_id JOIN change_issue_links l ON l.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? AND v.attempt_id IS NULL ORDER BY v.rowid`, scope.organization, scope.project, item)
+	versions, err := changeColumnRecords[tracker.ChangeVersion](ctx, query, `SELECT COALESCE(NULLIF(v.payload_object_key,''),v.record_json) FROM change_versions v INDEXED BY change_versions_change_attempt_unknown JOIN change_requests c ON c.id=v.change_id JOIN change_issue_links l ON l.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? AND v.attempt_id IS NULL ORDER BY v.rowid`, scope.organization, scope.project, item)
 	if err != nil {
 		return nil, err
 	}
@@ -29,7 +28,7 @@ func readLegacyChangeAttempts(ctx context.Context, query nativeQueryer, scope na
 func changeArtifactAttemptMatches(ctx context.Context, query nativeQueryer, scope nativeScope, version, attempt string) (bool, error) {
 	var stored sql.NullString
 	var raw string
-	err := query.QueryRowContext(ctx, `SELECT v.attempt_id,v.record_json FROM change_versions v JOIN change_requests c ON c.id=v.change_id WHERE v.id=? AND c.organization_id=? AND c.project_id=?`, version, scope.organization, scope.project).Scan(&stored, &raw)
+	err := query.QueryRowContext(ctx, `SELECT v.attempt_id,COALESCE(NULLIF(v.payload_object_key,''),v.record_json) FROM change_versions v JOIN change_requests c ON c.id=v.change_id WHERE v.id=? AND c.organization_id=? AND c.project_id=?`, version, scope.organization, scope.project).Scan(&stored, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -68,11 +67,11 @@ func readRecoveryCommentIDs(ctx context.Context, query nativeQueryer, scope nati
 			return nil, err
 		}
 		var actor, editor tracker.Actor
-		if err := json.Unmarshal([]byte(raw), &actor); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &actor); err != nil {
 			return nil, err
 		}
 		if edited.Valid {
-			if err := json.Unmarshal([]byte(edited.String), &editor); err != nil {
+			if err := decodeStorageJSON(ctx, []byte(edited.String), &editor); err != nil {
 				return nil, err
 			}
 		}
@@ -130,7 +129,7 @@ func readLegacyIssueChangeSideData(ctx context.Context, query nativeQueryer, sco
 		} else if current.String != "" {
 			var head sql.NullString
 			var versionRaw string
-			err := query.QueryRowContext(ctx, `SELECT head_sha,record_json FROM change_versions WHERE change_id=? AND id=?`, id, current.String).Scan(&head, &versionRaw)
+			err := query.QueryRowContext(ctx, `SELECT head_sha,COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_versions WHERE change_id=? AND id=?`, id, current.String).Scan(&head, &versionRaw)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
@@ -148,7 +147,7 @@ func readLegacyIssueChangeSideData(ctx context.Context, query nativeQueryer, sco
 		}
 		issue.ListChange = projection
 	}
-	rows, err := queryChangeLegacyRows(ctx, query, `SELECT v.external_provider,v.external_id,v.external_url,v.record_json FROM change_versions v JOIN change_requests c ON c.id=v.change_id JOIN change_issue_links l ON l.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? AND ((v.external_provider='github' AND v.external_url<>'') OR v.external_provider IS NULL OR v.external_url IS NULL) ORDER BY c.rowid DESC,v.number DESC`, scope.organization, scope.project, item)
+	rows, err := queryChangeLegacyRows(ctx, query, `SELECT v.external_provider,v.external_id,v.external_url,COALESCE(NULLIF(v.payload_object_key,''),v.record_json) FROM change_versions v JOIN change_requests c ON c.id=v.change_id JOIN change_issue_links l ON l.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? AND ((v.external_provider='github' AND v.external_url<>'') OR v.external_provider IS NULL OR v.external_url IS NULL) ORDER BY c.rowid DESC,v.number DESC`, scope.organization, scope.project, item)
 	if err != nil {
 		return err
 	}
@@ -229,7 +228,7 @@ func readNativePolicyLanding(ctx context.Context, query policyQuerier, organizat
 		}
 		var repository sql.NullString
 		var raw string
-		err = query.QueryRowContext(ctx, `SELECT repository,record_json FROM change_versions WHERE change_id=? AND id=?`, change.ID, candidate.version.String).Scan(&repository, &raw)
+		err = query.QueryRowContext(ctx, `SELECT repository,COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_versions WHERE change_id=? AND id=?`, change.ID, candidate.version.String).Scan(&repository, &raw)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
@@ -251,7 +250,14 @@ func readNativePolicyLanding(ctx context.Context, query policyQuerier, organizat
 }
 
 func latestRecoveryLandingAttempt(ctx context.Context, query nativeQueryer, scope nativeScope, item string) (id string, err error) {
-	rows, err := queryChangeLegacyRows(ctx, query, `SELECT id,has_landing_receipt,data_json FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND (has_landing_receipt=1 OR has_landing_receipt IS NULL) ORDER BY fencing_token DESC`, scope.organization, scope.project, item)
+	if attemptSummaryRead(ctx) {
+		err := query.QueryRowContext(ctx, `SELECT id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND has_landing_receipt=1 ORDER BY fencing_token DESC LIMIT 1`, scope.organization, scope.project, item).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return id, err
+	}
+	rows, err := queryChangeLegacyRows(ctx, query, `SELECT id,has_landing_receipt,COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND (has_landing_receipt=1 OR has_landing_receipt IS NULL) ORDER BY fencing_token DESC`, scope.organization, scope.project, item)
 	if err != nil {
 		return "", err
 	}
@@ -279,7 +285,7 @@ func latestRecoveryLandingAttempt(ctx context.Context, query nativeQueryer, scop
 func readEscapeOccurrence(ctx context.Context, query nativeQueryer, change, version, occurrence string) (string, error) {
 	var before int64
 	for {
-		statement := `SELECT sequence,record_json,escape_occurrence_id FROM change_evidence WHERE change_id=? AND version_id=? AND kind='discussion' AND (escape_occurrence_id=? OR escape_occurrence_id IS NULL)`
+		statement := `SELECT sequence,COALESCE(NULLIF(payload_object_key,''),record_json),escape_occurrence_id FROM change_evidence WHERE change_id=? AND version_id=? AND kind='discussion' AND (escape_occurrence_id=? OR escape_occurrence_id IS NULL)`
 		args := []any{change, version, occurrence}
 		if before != 0 {
 			statement += ` AND sequence<?`

@@ -169,7 +169,7 @@ func TestChangeContentObjects(t *testing.T) {
 		{"SELECT count(*) FROM change_sources WHERE length(bundle)=0 AND object_key<>''", &count, 3},
 		{"SELECT count(DISTINCT policy_revision_id) FROM change_versions WHERE policy_revision_id<>'' AND json_extract(record_json,'$.policy') IS NULL", &policies, 1},
 		{"SELECT count(DISTINCT object_key) FROM change_command_outputs", &count, 2},
-		{"SELECT count(*) FROM change_content_objects", &count, 3},
+		{"SELECT count(*) FROM change_content_objects", &count, 8},
 	} {
 		if err := f.service.database.reader.QueryRowContext(ctx, check.query).Scan(check.target); err != nil {
 			t.Fatal(err)
@@ -193,8 +193,8 @@ func TestChangeContentObjects(t *testing.T) {
 	objects.mu.Lock()
 	objectCount := len(objects.objects)
 	objects.mu.Unlock()
-	if objectCount != 3 {
-		t.Fatalf("stored %d objects, want one bundle, one validation output and one shared review output", objectCount)
+	if objectCount != 8 {
+		t.Fatalf("stored %d objects, want one bundle, two command outputs, three versions and two reviews", objectCount)
 	}
 
 	requireUsageCountersMatchRecount(t, f.service.database)
@@ -294,5 +294,5 @@ func legacyChangeService(t *testing.T, service *Service) *Service {
 	if err := service.Backup(t.Context(), path); err != nil {
 		t.Fatal(err)
 	}
-	return openTestService(t, Config{DatabasePath: path, now: service.config.now})
+	return openTestService(t, Config{DatabasePath: path, now: service.config.now, Content: service.config.Content, RunDetails: service.config.RunDetails})
 }

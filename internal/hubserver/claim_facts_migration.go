@@ -3,9 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
-	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -48,97 +46,37 @@ func (d *database) populateClaimFact(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if write == nil {
-		var pending bool
-		if err := d.reader.QueryRowContext(ctx, `SELECT
-EXISTS(SELECT 1 FROM change_requests WHERE claim_version_id IS NULL OR claim_head_sha IS NULL)
-OR EXISTS(SELECT 1 FROM native_attempts WHERE checkpoint_preserves_source IS NULL)
-OR EXISTS(SELECT 1 FROM change_evidence WHERE kind='review' AND claim_review_current IS NULL)`).Scan(&pending); err != nil {
-			return false, fmt.Errorf("read pending claim facts: %w", err)
-		}
-		if !pending {
-			return false, nil
-		}
+		return false, nil
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
-	changed := write != nil
-	if write != nil {
-		err = write(tx)
-	} else {
-		changed, err = projectLegacyClaimFact(ctx, tx)
-	}
+	changed := true
+	err = write(tx)
 	if err != nil {
 		return false, err
 	}
 	return changed, d.commit(ctx, tx)
 }
 
-func projectLegacyClaimFact(ctx context.Context, tx *sql.Tx) (bool, error) {
-	var id, raw string
-	err := tx.QueryRowContext(ctx, `SELECT id,record_json FROM change_requests WHERE claim_version_id IS NULL OR claim_head_sha IS NULL ORDER BY id LIMIT 1`).Scan(&id, &raw)
-	if err == nil {
-		version, head, err := claimChangeIdentity(ctx, tx, id, raw)
-		if err != nil {
-			return false, err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE change_requests SET claim_version_id=?,claim_head_sha=? WHERE id=?`, version, head, id); err != nil {
-			return false, err
-		}
-	} else if errors.Is(err, sql.ErrNoRows) {
-		var checkpoint sql.NullString
-		err = tx.QueryRowContext(ctx, `SELECT id,checkpoint_json FROM native_attempts WHERE checkpoint_preserves_source IS NULL ORDER BY id LIMIT 1`).Scan(&id, &checkpoint)
-		if errors.Is(err, sql.ErrNoRows) {
-			var sequence int64
-			var change, version string
-			err = tx.QueryRowContext(ctx, `SELECT sequence,change_id,version_id,record_json FROM change_evidence WHERE kind='review' AND claim_review_current IS NULL ORDER BY change_id,version_id,sequence LIMIT 1`).Scan(&sequence, &change, &version, &raw)
-			if errors.Is(err, sql.ErrNoRows) {
-				return false, nil
-			}
-			if err != nil {
-				return false, err
-			}
-			if err := projectClaimReview(ctx, tx, sequence, change, version, raw); err != nil {
-				return false, err
-			}
-			return true, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		var value *tracker.NativeCheckpoint
-		if checkpoint.Valid {
-			if err := json.Unmarshal([]byte(checkpoint.String), &value); err != nil {
-				return false, err
-			}
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE native_attempts SET checkpoint_preserves_source=? WHERE id=?`, value.PreservesSource(), id); err != nil {
-			return false, err
-		}
-	} else {
-		return false, err
-	}
-	return true, nil
-}
-
 func claimChangeIdentity(ctx context.Context, q nativeQueryer, id, raw string) (string, string, error) {
 	var change struct {
 		CurrentVersion string `json:"current_version_id"`
 	}
-	if err := json.Unmarshal([]byte(raw), &change); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &change); err != nil {
 		return "", "", err
 	}
 	var version struct {
 		HeadSHA string `json:"head_sha"`
 	}
 	if change.CurrentVersion != "" {
-		err := q.QueryRowContext(ctx, `SELECT record_json FROM change_versions WHERE change_id=? AND id=?`, id, change.CurrentVersion).Scan(&raw)
+		err := q.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_versions WHERE change_id=? AND id=?`, id, change.CurrentVersion).Scan(&raw)
 		if err != nil {
 			return "", "", err
 		}
-		if err := json.Unmarshal([]byte(raw), &version); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &version); err != nil {
 			return "", "", err
 		}
 	}
@@ -147,7 +85,7 @@ func claimChangeIdentity(ctx context.Context, q nativeQueryer, id, raw string) (
 
 func projectClaimReview(ctx context.Context, tx *sql.Tx, sequence int64, change, version, raw string) error {
 	var review tracker.ChangeReview
-	if err := json.Unmarshal([]byte(raw), &review); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &review); err != nil {
 		return err
 	}
 	kind, actor, decision := "human", review.Actor.PrincipalID, review.Decision

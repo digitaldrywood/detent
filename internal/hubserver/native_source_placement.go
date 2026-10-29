@@ -36,6 +36,10 @@ WHERE a.organization_id=? AND a.project_id=? AND a.work_item_id=? AND (a.checkpo
 		if err != nil {
 			return source, err
 		}
+		if attemptSummaryRead(ctx) {
+			_, source.Checkpoint, err = readTypedNativeRun(ctx, q, source.AttemptID)
+			return source, err
+		}
 		source.Checkpoint, err = readClaimCheckpoint(ctx, q, scope, item, source.AttemptID)
 		var hydration *claimHydration
 		if errors.As(err, &hydration) {

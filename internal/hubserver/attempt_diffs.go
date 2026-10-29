@@ -303,7 +303,7 @@ func storeAttemptDiff(ctx context.Context, tx *sql.Tx, scope nativeScope, attemp
 			break
 		}
 	}
-	id := newNativeID("diff")
+	id := payloadNativeID(ctx, "diff")
 	if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_diffs (id, attempt_id, organization_id, project_id, work_item_id,
 source, source_id, seq, base_sha, head_sha, producer_kind, producer_id, producer_runner_id, producer_lease_id, producer_fencing_token,
 file_count, patch_bytes, posted_bytes, truncated, created_at)
@@ -314,31 +314,20 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		len(files), patchBytes, postedBytes, truncated, formatHubTime(now)); err != nil {
 		return receipt, fmt.Errorf("insert attempt diff: %w", err)
 	}
-	if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
-		data, err := json.Marshal(files)
-		if err != nil {
-			return receipt, err
-		}
-		ref, err := preparedChangeContent(ctx, string(scope.organization), data)
-		if err != nil {
-			return receipt, err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE attempt_diffs SET object_key=?,object_sha256=?,object_bytes=?,content_bytes=? WHERE id=?`, ref.Key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize, id); err != nil {
-			return receipt, err
-		}
-	} else {
-		for position, file := range files {
-			var body diffbody.Reference
-			if file.PatchBody != nil {
-				body = *file.PatchBody
-			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO attempt_diff_files (diff_id, position, path, old_path, status,
-additions, deletions, binary, patch, truncated, denied, patch_object, patch_sha256, patch_size) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				id, position, file.Path, file.OldPath, file.Status, file.Additions, file.Deletions,
-				file.Binary, file.Patch, file.Truncated, file.Denied, body.Key, body.SHA256, body.Bytes); err != nil {
-				return receipt, fmt.Errorf("insert attempt diff file: %w", err)
-			}
-		}
+	data, err := json.Marshal(files)
+	if err != nil {
+		return receipt, err
+	}
+	key, err := storedPayloadKey(ctx, string(scope.organization), data)
+	if err != nil {
+		return receipt, err
+	}
+	ref, err := preparedChangeContent(ctx, string(scope.organization), data)
+	if err != nil {
+		return receipt, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE attempt_diffs SET object_key=?,object_sha256=?,object_bytes=?,content_bytes=? WHERE id=?`, key, ref.SHA256, ref.CompressedSize, ref.UncompressedSize, id); err != nil {
+		return receipt, err
 	}
 
 	return tracker.AttemptDiffReceipt{
@@ -573,10 +562,13 @@ func (s *Service) readWorkItemDiff(ctx context.Context, scope nativeScope, item,
 // returns nil. Only one transaction may be open at a time on that pool, so fn
 // must never start another.
 func (s *Service) hubTransact(ctx context.Context, fn func(tx *sql.Tx, now time.Time) error) (resultErr error) {
-	now, err := s.database.currentTime()
-	if err != nil {
-		return err
-	}
+	contentMutation(ctx, true)
+	defer contentMutation(ctx, false)
+	_, err := prepareContentMutation(ctx, s.database.reader, func() (struct{}, error) { return struct{}{}, s.commitHubTransaction(ctx, fn) })
+	return err
+}
+
+func (s *Service) commitHubTransaction(ctx context.Context, fn func(tx *sql.Tx, now time.Time) error) (resultErr error) {
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin hub transaction: %w", err)
@@ -586,6 +578,10 @@ func (s *Service) hubTransact(ctx context.Context, fn func(tx *sql.Tx, now time.
 			resultErr = errors.Join(resultErr, err)
 		}
 	}()
+	now, err := s.database.currentTime()
+	if err != nil {
+		return err
+	}
 	if err := fn(tx, now); err != nil {
 		return err
 	}

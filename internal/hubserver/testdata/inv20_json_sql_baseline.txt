@@ -15,7 +15,7 @@ internal/hubserver/hosted_admin.go 2
 internal/hubserver/hosted_auth.go 1
 internal/hubserver/hosted_context.go 1
 internal/hubserver/hosted_diagnostics.go 8
-internal/hubserver/hosted_reports.go 4
+internal/hubserver/hosted_reports.go 1
 internal/hubserver/hosted_reports_filters.go 8
 internal/hubserver/hosted_usage_api.go 1
 internal/hubserver/luna_usage_costs.go 1
@@ -34,7 +34,6 @@ internal/hubserver/onboarding_batch.go 2
 internal/hubserver/operator_analytics_residence.go 1
 internal/hubserver/report_productivity.go 7
 internal/hubserver/slack_delivery.go 1
-internal/hubserver/storage_conversion.go 3
 internal/hubserver/usage_cost_report.go 2
 internal/hubserver/usage_costs.go 1
 internal/store/sqlc/store.sql.go 25

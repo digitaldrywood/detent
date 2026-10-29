@@ -53,7 +53,7 @@ func TestNativeRetention(t *testing.T) {
 				{VersionID: version, Actor: tracker.Actor{PrincipalID: "reviewer-one"}, Decision: "approved"},
 				{VersionID: version, Actor: tracker.Actor{PrincipalID: "reviewer-two"}, Decision: "changes_requested"},
 			} {
-				if err := insertChangeEvidence(t.Context(), tx, f.change.ID, version, "review", "", review); err != nil {
+				if err := seedLegacyChangeEvidence(t.Context(), tx, f.change.ID, version, "review", "", review); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -90,7 +90,7 @@ func TestNativeRetention(t *testing.T) {
 				t.Fatal(err)
 			}
 			review := tracker.ChangeReview{VersionID: first.ID, Actor: tracker.Actor{PrincipalID: update.actor}, Decision: update.decision}
-			if err := insertChangeEvidence(t.Context(), tx, f.change.ID, first.ID, "review", "", review); err != nil {
+			if err := seedLegacyChangeEvidence(t.Context(), tx, f.change.ID, first.ID, "review", "", review); err != nil {
 				tx.Rollback()
 				t.Fatal(err)
 			}
@@ -501,7 +501,7 @@ VALUES (?,?,?,?,?,?,?,?,?)`, token, project.OrganizationID, project.ID, "princip
 				}
 			}
 			if test.typedRestore {
-				if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "issue.edited", tracker.CollaborationData{}, now.Add(-time.Hour)); err != nil {
+				if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "issue.edited", tracker.CollaborationData{}, now.Add(-time.Hour)); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := tx.ExecContext(t.Context(), "UPDATE collaboration_events SET archive_operation='restore' WHERE work_item_id=? AND type='issue.edited'", issue.WorkItemID); err != nil {
@@ -751,8 +751,8 @@ func TestNativeStorageArchiveRetention(t *testing.T) {
 				if err := f.service.archiveClosedNativeIssues(t.Context(), now); err != nil {
 					t.Fatal(err)
 				}
-				if len(objects) != 1 {
-					t.Fatalf("repeat publication created %d objects", len(objects))
+				if count := len(storageTestArchiveObjects(t, f.service, objects)); count != 1 {
+					t.Fatalf("repeat publication created %d objects", count)
 				}
 			}
 		})

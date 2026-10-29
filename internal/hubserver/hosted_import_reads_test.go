@@ -209,6 +209,10 @@ func TestHostedImportReplaySurvivesLegacyEvaluationFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if calls == 0 || string(first) != `"recorded"` {
+		t.Fatalf("mutation response=%s calls=%d", first, calls)
+	}
+	initialCalls := calls
 	if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO github_imports(id,project_id,issue_number,observed_at) VALUES('legacy-malformed',?,1,?)`, scope.project, testTimestamp); err != nil {
 		t.Fatal(err)
 	}
@@ -216,11 +220,11 @@ func TestHostedImportReplaySurvivesLegacyEvaluationFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	replay, err := f.service.executeNativeMutation(t.Context(), scope, options, command, input, operation)
-	if err != nil || !bytes.Equal(first, replay) || calls != 1 {
+	if err != nil || !bytes.Equal(first, replay) || calls != initialCalls {
 		t.Fatalf("receipt replay=%s calls=%d error=%v", replay, calls, err)
 	}
 	command.IdempotencyKey = "typed-new-command"
-	if _, err := f.service.executeNativeMutation(t.Context(), scope, options, command, input, operation); err == nil || calls != 1 {
+	if _, err := f.service.executeNativeMutation(t.Context(), scope, options, command, input, operation); err == nil || calls != initialCalls {
 		t.Fatalf("unevaluated new mutation ran: calls=%d error=%v", calls, err)
 	}
 }

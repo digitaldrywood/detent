@@ -147,7 +147,7 @@ func TestNativeOutcomeRefreshesDependencyReasonsAndUsage(t *testing.T) {
 	if calls != 2 || current.BlockedReason.Text == "" || neighbor.UnblocksReason.Text == "" {
 		t.Fatalf("outcome did not refresh endpoints: calls=%d reasons=%+v %+v", calls, current.BlockedReason, neighbor.UnblocksReason)
 	}
-	attempts, err := hub.admin.Attempts(t.Context(), dependent.WorkItemID, "")
+	attempts, err := hub.admin.AttemptsDetailPage(t.Context(), dependent.WorkItemID, "", 100)
 	if err != nil {
 		t.Fatal(err)
 	}

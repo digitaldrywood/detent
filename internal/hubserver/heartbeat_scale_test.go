@@ -311,11 +311,11 @@ func TestHeartbeatResponseArchivedCheckpoint(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, event), http.StatusOK)
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "released"}), http.StatusNoContent)
 			var raw string
-			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT checkpoint_json FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&raw); err != nil {
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT checkpoint_object_key FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&raw); err != nil {
 				t.Fatal(err)
 			}
-			var checkpoint storedRunCheckpoint
-			if err := json.Unmarshal([]byte(raw), &checkpoint); err != nil || checkpoint.Detail == nil {
+			checkpoint, err := decodeRunCheckpoint(f.service.runDetailContext(t.Context()), f.service.database.reader, raw)
+			if err != nil || checkpoint == nil {
 				t.Fatalf("checkpoint is not archived: %s error=%v", raw, err)
 			}
 			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {

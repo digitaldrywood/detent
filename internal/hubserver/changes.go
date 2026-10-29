@@ -175,9 +175,10 @@ WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? AND c.id
 }
 
 func readChangeVersionSnapshot(ctx context.Context, query nativeQueryer, changeID, versionID string) (tracker.ChangeVersion, error) {
+	ctx = payloadQueryContext(ctx, query)
 	var version tracker.ChangeVersion
 	var raw string
-	if err := query.QueryRowContext(ctx, "SELECT record_json FROM change_versions WHERE change_id = ? AND id = ?", changeID, versionID).Scan(&raw); err != nil {
+	if err := query.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_versions WHERE change_id = ? AND id = ?", changeID, versionID).Scan(&raw); err != nil {
 		return version, fmt.Errorf("read version snapshot: %w", err)
 	}
 	if err := decodeStorageJSON(ctx, []byte(raw), &version); err != nil {
@@ -241,7 +242,7 @@ WHERE p.change_id=? AND p.version_id=?`, changeID, version.ID).Scan(&confirmed.C
 		return err
 	}
 	var raw string
-	err = query.QueryRowContext(ctx, `SELECT a.data_json
+	err = query.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(a.payload_object_key,''),a.data_json)
 FROM native_attempts a JOIN change_requests c ON c.id=?
 AND c.organization_id=a.organization_id AND c.project_id=a.project_id AND c.work_item_id=a.work_item_id
 WHERE a.finalization_version_id=?
@@ -330,29 +331,35 @@ func resolveVersionPublicationPush(ctx context.Context, query nativeQueryer, sco
 }
 
 func changeRows[T any](ctx context.Context, query nativeQueryer, statement string, args ...any) ([]T, error) {
+	ctx = payloadQueryContext(ctx, query)
 	rows, err := query.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query snapshot: %w", err)
 	}
 	defer rows.Close()
-	result := []T{}
+	var records []string
 	for rows.Next() {
 		var raw string
-		var item T
 		if err := rows.Scan(&raw); err != nil {
-			return nil, fmt.Errorf("scan snapshot: %w", err)
+			return nil, err
 		}
+		if len(records) >= claimEvidenceLimit {
+			return nil, errors.New("change detail exceeds bounded history; use recovery evidence pages")
+		}
+		records = append(records, raw)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	result := make([]T, 0, len(records))
+	for _, raw := range records {
+		var item T
 		if err := decodeStorageJSON(ctx, []byte(raw), &item); err != nil {
 			return nil, fmt.Errorf("decode snapshot: %w", err)
 		}
 		result = append(result, item)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read snapshot rows: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
+
 	for i := range result {
 		if err := hydrateChangeRecord(ctx, query, &result[i]); err != nil {
 			return nil, err
@@ -413,11 +420,8 @@ func (s *Service) getChange(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	scope, ctx := nativeRequestScope(c), ctx
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	defer tx.Rollback()
+	query := s.database.reader
+	var err error
 	if c.QueryParam("view") == "bounded" {
 		args := operatortool.ChangeArguments{ProjectID: string(scope.project), ItemID: c.Param("item"), ChangeID: c.Param("change"), VersionID: c.QueryParam("version_id"), Section: c.QueryParam("section"), Cursor: c.QueryParam("cursor")}
 		if c.QueryParam("limit") != "" {
@@ -435,7 +439,7 @@ func (s *Service) getChange(c echo.Context) error {
 			return s.nativeAPIError(c, nativePublicInvalid("invalid Change read selector"))
 		}
 		result := (hubChangeApplication{service: s}).result(scope, args)
-		result, err = readBoundedChange(ctx, tx, scope, args, result)
+		result, err = readBoundedChange(ctx, query, scope, args, result)
 		if err != nil {
 			var refusal *operatortool.RequestError
 			if errors.As(err, &refusal) {
@@ -449,9 +453,6 @@ func (s *Service) getChange(c echo.Context) error {
 			}
 			return s.nativeAPIError(c, err)
 		}
-		if err := tx.Commit(); err != nil {
-			return s.nativeAPIError(c, err)
-		}
 		bounded, err := operatortool.BoundedChangeResult(result)
 		if err != nil {
 			return s.nativeAPIError(c, err)
@@ -459,11 +460,8 @@ func (s *Service) getChange(c echo.Context) error {
 		return c.Blob(http.StatusOK, "application/json", bounded.Content)
 	}
 
-	result, err := readChangeDetail(ctx, tx, scope, c.Param("item"), c.Param("change"), s.config.now())
+	result, err := readChangeDetail(ctx, query, scope, c.Param("item"), c.Param("change"), s.config.now())
 	if err != nil {
-		return s.nativeAPIError(c, err)
-	}
-	if err := tx.Commit(); err != nil {
 		return s.nativeAPIError(c, err)
 	}
 	return nativeArchiveJSON(c, http.StatusOK, result)
@@ -502,7 +500,7 @@ func readChangeDetailView(ctx context.Context, query nativeQueryer, scope native
 		evidenceFilter = " AND version_id = ?"
 		args = append(args, result.Change.CurrentVersion)
 	}
-	result.Versions, err = changeRows[tracker.ChangeVersion](ctx, query, "SELECT record_json FROM change_versions WHERE change_id = ?"+versionFilter+" ORDER BY number", args...)
+	result.Versions, err = changeRows[tracker.ChangeVersion](ctx, query, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_versions WHERE change_id = ?"+versionFilter+" ORDER BY number", args...)
 	if err != nil {
 		return result, fmt.Errorf("load versions: %w", err)
 	}
@@ -525,18 +523,18 @@ func readChangeDetailView(ctx context.Context, query nativeQueryer, scope native
 			result.PublicationPushes = append(result.PublicationPushes, push)
 		}
 	}
-	result.Reviews, err = changeRows[tracker.ChangeReview](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'review'"+evidenceFilter+" ORDER BY sequence", args...)
+	result.Reviews, err = changeRows[tracker.ChangeReview](ctx, query, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id = ? AND kind = 'review'"+evidenceFilter+" ORDER BY sequence", args...)
 	if err != nil {
 		return result, fmt.Errorf("load reviews: %w", err)
 	}
-	result.Checks, err = changeRows[tracker.ChangeCheck](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'check'"+evidenceFilter+" ORDER BY sequence", args...)
+	result.Checks, err = changeRows[tracker.ChangeCheck](ctx, query, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id = ? AND kind = 'check'"+evidenceFilter+" ORDER BY sequence", args...)
 	if err != nil {
 		return result, fmt.Errorf("load checks: %w", err)
 	}
 	if current {
 		evidenceFilter = " AND (version_id = ? OR version_id IS NULL OR version_id = '')"
 	}
-	result.Discussion, err = changeRows[tracker.ChangeDiscussion](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND kind = 'discussion'"+evidenceFilter+" ORDER BY sequence", args...)
+	result.Discussion, err = changeRows[tracker.ChangeDiscussion](ctx, query, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id = ? AND kind = 'discussion'"+evidenceFilter+" ORDER BY sequence", args...)
 	if err != nil {
 		return result, fmt.Errorf("load discussion: %w", err)
 	}
@@ -577,7 +575,7 @@ func readCurrentChangeDetailWithPolicy(ctx context.Context, query nativeQueryer,
 	}
 	if found {
 		result.Versions = []tracker.ChangeVersion{version}
-		result.Reviews, err = changeRows[tracker.ChangeReview](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND version_id = ? AND kind = 'review' ORDER BY sequence", change.ID, version.ID)
+		result.Reviews, err = changeRows[tracker.ChangeReview](ctx, query, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id = ? AND version_id = ? AND kind = 'review' ORDER BY sequence", change.ID, version.ID)
 		if err != nil {
 			return result, err
 		}
@@ -585,7 +583,7 @@ func readCurrentChangeDetailWithPolicy(ctx context.Context, query nativeQueryer,
 		if err != nil {
 			return result, err
 		}
-		result.Checks, err = changeRows[tracker.ChangeCheck](ctx, query, "SELECT record_json FROM change_evidence WHERE change_id = ? AND version_id = ? AND kind = 'check' ORDER BY sequence", change.ID, version.ID)
+		result.Checks, err = changeRows[tracker.ChangeCheck](ctx, query, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id = ? AND version_id = ? AND kind = 'check' ORDER BY sequence", change.ID, version.ID)
 		if err != nil {
 			return result, err
 		}
@@ -681,7 +679,8 @@ func (s *Service) createChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 	if strings.TrimSpace(request.Title) == "" || len(request.Title) > 512 || len(request.Body) > 64<<10 || len(request.LinkedIssues) > 32 {
 		return nil, nativePublicInvalid("Change requires a title up to 512 bytes, discussion up to 64 KiB, and at most 32 linked issues")
 	}
-	change := tracker.ChangeRequest{ID: newNativeID("change"), OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(item), Title: request.Title, Body: request.Body, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	createdAt := payloadTimestamp(ctx, now)
+	change := tracker.ChangeRequest{ID: payloadNativeID(ctx, "change"), OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(item), Title: request.Title, Body: request.Body, Revision: 1, CreatedAt: createdAt, UpdatedAt: createdAt}
 	change.LinkedIssues = append([]tracker.NativeWorkItemID{change.WorkItemID}, request.LinkedIssues...)
 	slices.Sort(change.LinkedIssues)
 	change.LinkedIssues = slices.Compact(change.LinkedIssues)

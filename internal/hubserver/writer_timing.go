@@ -218,10 +218,14 @@ func writerHoldOwnerFrame(frame runtime.Frame) bool {
 	if strings.HasSuffix(frame.File, "/writer_timing.go") || strings.HasPrefix(frame.Function, "database/sql.") {
 		return false
 	}
-	switch strings.TrimPrefix(frame.Function, "github.com/digitaldrywood/detent/internal/hubserver.") {
+	name := strings.TrimPrefix(frame.Function, "github.com/digitaldrywood/detent/internal/hubserver.")
+	if strings.HasPrefix(name, "prepareContentMutation[") || strings.HasPrefix(name, "(*Service).executeNativeMutation.func") || strings.HasPrefix(name, "(*Service).hubTransact.func") {
+		return false
+	}
+	switch name {
 	case "(*Service).runnerTransaction", "(*Service).runnerAdminTransaction", "(*Service).runnerReadTransaction",
-		"(*Service).hubTransact", "(*conversationService).transact", "(*conversationTurnCoordinator).write",
-		"(*Service).executeNativeMutation", "(*Service).nativeMutation", "(*Service).nativeMutationStatus",
+		"(*Service).hubTransact", "(*Service).commitHubTransaction", "(*conversationService).transact", "(*conversationTurnCoordinator).write",
+		"(*Service).executeNativeMutation", "(*Service).commitNativeMutation", "(*Service).nativeMutation", "(*Service).nativeMutationStatus",
 		"(*Service).commitOutbox", "(*Service).secretMutation":
 		return false
 	}

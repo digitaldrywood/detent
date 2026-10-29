@@ -995,7 +995,7 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
 						t.Fatal(err)
 					}
-					page, err := h.admin.AttemptsPage(t.Context(), tracker.NativeWorkItemID(issue.ID), "", 10)
+					page, err := h.admin.AttemptsDetailPage(t.Context(), tracker.NativeWorkItemID(issue.ID), "", 10)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -1021,7 +1021,7 @@ func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
 					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "failed"); err != nil {
 						t.Fatal(err)
 					}
-					page, err := h.admin.AttemptsPage(t.Context(), tracker.NativeWorkItemID(issue.ID), "", 10)
+					page, err := h.admin.AttemptsDetailPage(t.Context(), tracker.NativeWorkItemID(issue.ID), "", 10)
 					if err != nil {
 						t.Fatal(err)
 					}

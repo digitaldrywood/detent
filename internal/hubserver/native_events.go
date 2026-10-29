@@ -206,7 +206,20 @@ func (s *Service) validateNativeRunOwner(ctx context.Context, tx nativeQueryer, 
 }
 
 func (s *Service) recordNativeRunEvent(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, request tracker.NativeRunEvent, now time.Time) (any, error) {
-	issue, termination, err := s.validateNativeRunOwner(ctx, tx, scope, item, &request, now)
+	raw, cloneErr := json.Marshal(request)
+	if cloneErr != nil {
+		return nil, cloneErr
+	}
+	request = tracker.NativeRunEvent{}
+	if err := json.Unmarshal(raw, &request); err != nil {
+		return nil, err
+	}
+
+	authorityTime, err := s.database.currentTime()
+	if err != nil {
+		return nil, err
+	}
+	issue, termination, err := s.validateNativeRunOwner(ctx, tx, scope, item, &request, authorityTime)
 	if err != nil {
 		return nil, err
 	}

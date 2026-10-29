@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -436,7 +437,8 @@ func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id,
 	plans := pilotPlans()
 	plans.Plans[0].Allowances["projects"] = 10
 	logger := slog.New(slog.DiscardHandler)
-	fixture := tenantFixture{id: id, provider: providerID, path: path, config: hubserver.Config{DatabasePath: path, GitHubDisabled: true, InitialAdminToken: []byte(testAdminKey), Logger: logger, Conversation: &hubserver.ConversationConfig{Enabled: true},
+	content := &conversationArchiveFixture{}
+	fixture := tenantFixture{id: id, provider: providerID, path: path, config: hubserver.Config{DatabasePath: path, GitHubDisabled: true, InitialAdminToken: []byte(testAdminKey), Logger: logger, Content: content.handleContent, Conversation: &hubserver.ConversationConfig{Enabled: true},
 		Hosted: &hubserver.HostedConfig{Plans: plans, OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: testPublicURL, Provider: provider,
 			StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
 			SharedEntry: &hubserver.HostedSharedEntry{ArchiveContents: &conversationArchiveFixture{}, Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}},
@@ -1621,6 +1623,25 @@ func TestSharedEntryKeepsTenantStaticCachePolicy(t *testing.T) {
 type conversationArchiveFixture struct {
 	mu      sync.Mutex
 	content map[string][]byte
+}
+
+func (f *conversationArchiveFixture) handleContent(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := request.Reference.Validate(request.Organization); err != nil {
+		return nil, err
+	}
+	if !request.Write {
+		return f.ReadContent(ctx, request.Organization, request.Reference)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.content == nil {
+		f.content = map[string][]byte{}
+	}
+	f.content[request.Reference.Key] = bytes.Clone(request.Data)
+	return nil, nil
 }
 
 func (f *conversationArchiveFixture) PublishContent(_ context.Context, organization string, content []byte) (attachment.ArchiveReference, error) {

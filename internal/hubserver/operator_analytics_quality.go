@@ -226,12 +226,12 @@ AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)
 		return analyticsQualityInputs{}, err
 	}
 	if pending {
-		rows, err = queryLegacyAnalyticsRows(ctx, q, `SELECT e.change_id,e.kind,e.record_json,c.work_item_id,e.sequence FROM change_evidence e JOIN change_requests c ON c.id=e.change_id WHERE c.organization_id=? AND c.project_id=? AND e.kind IN ('review','discussion')`+evidenceIssues+` ORDER BY e.sequence`, append([]any{scope.organization, scope.project}, evidenceArgs...)...)
+		rows, err = queryLegacyAnalyticsRows(ctx, q, `SELECT e.change_id,e.kind,COALESCE(NULLIF(e.payload_object_key,''),e.record_json),c.work_item_id,e.sequence FROM change_evidence e JOIN change_requests c ON c.id=e.change_id WHERE c.organization_id=? AND c.project_id=? AND e.kind IN ('review','discussion')`+evidenceIssues+` ORDER BY e.sequence`, append([]any{scope.organization, scope.project}, evidenceArgs...)...)
 	} else {
-		rows, err = queryAnalyticsRows(ctx, q, `SELECT e.change_id,e.kind,e.record_json,c.work_item_id,e.sequence FROM change_evidence e INDEXED BY change_evidence_analytics_review CROSS JOIN change_requests c ON c.id=e.change_id
+		rows, err = queryAnalyticsRows(ctx, q, `SELECT e.change_id,e.kind,COALESCE(NULLIF(e.payload_object_key,''),e.record_json),c.work_item_id,e.sequence FROM change_evidence e INDEXED BY change_evidence_analytics_review CROSS JOIN change_requests c ON c.id=e.change_id
 WHERE c.organization_id=? AND c.project_id=? AND e.kind='review' AND e.claim_review_decision='changes_requested' AND e.created_at>=? AND e.created_at<? AND NOT EXISTS (SELECT 1 FROM change_versions current JOIN change_versions newer ON newer.change_id=current.change_id AND newer.number>current.number WHERE current.id=e.version_id AND julianday(newer.created_at)<=julianday(e.created_at))
 `+evidenceIssues+`
-UNION ALL SELECT e.change_id,e.kind,e.record_json,c.work_item_id,e.sequence FROM change_evidence e INDEXED BY change_evidence_analytics_escape CROSS JOIN change_requests c ON c.id=e.change_id
+UNION ALL SELECT e.change_id,e.kind,COALESCE(NULLIF(e.payload_object_key,''),e.record_json),c.work_item_id,e.sequence FROM change_evidence e INDEXED BY change_evidence_analytics_escape CROSS JOIN change_requests c ON c.id=e.change_id
 WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND e.escape_occurrence_id<>'' AND e.escape_observed_at>=? AND e.escape_observed_at<?
 `+evidenceIssues, append(append(append([]any{scope.organization, scope.project, changeColumnTime(w.From), changeColumnTime(w.To)}, evidenceArgs...), scope.organization, scope.project, changeColumnTime(w.From), changeColumnTime(w.To)), evidenceArgs...)...)
 	}

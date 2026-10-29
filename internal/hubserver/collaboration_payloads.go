@@ -8,6 +8,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -25,7 +26,7 @@ func schedulerPayloadArchive(scope nativeScope, raw string) ([]byte, error) {
 	return json.Marshal(storageJSONPayload{Organization: string(scope.organization), Project: string(scope.project), Family: "scheduler.decision", Data: json.RawMessage(raw)})
 }
 
-func collaborationPayloadValues(ctx context.Context, scope nativeScope, item, kind string, data tracker.CollaborationData, raw string) (string, []any, error) {
+func collaborationPayloadValues(ctx context.Context, tx *sql.Tx, scope nativeScope, item, kind, id string, data tracker.CollaborationData, raw string, now time.Time) (string, []any, error) {
 	version := 0
 	attachmentID, entry := "", ""
 	ref := contentReference()
@@ -44,16 +45,21 @@ func collaborationPayloadValues(ctx context.Context, scope nativeScope, item, ki
 		version, raw = 1, "{}"
 	}
 	if strings.HasPrefix(kind, "run.") {
-		var stored struct {
-			Run storedRun `json:"run"`
-		}
-		if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		payload, err := json.Marshal(storageJSONPayload{Organization: string(scope.organization), Project: string(scope.project), Family: kind + ":" + id, Data: json.RawMessage(raw)})
+		if err != nil {
 			return "", nil, err
 		}
-		if stored.Run.Detail == nil {
-			return "", nil, errRunDetailStoreUnavailable
+		key, err := storedPayloadKey(ctx, string(scope.organization), payload)
+		if err != nil {
+			return "", nil, err
 		}
-		attachmentID, entry = stored.Run.Detail.AttachmentID, stored.Run.Detail.Entry
+		ref, err = readPayloadReference(ctx, tx, string(scope.organization), key)
+		if err != nil {
+			return "", nil, err
+		}
+		if _, err := recordPayloadAttachment(ctx, tx, scope, tracker.NativeWorkItemID(item), ref, formatHubTime(now)); err != nil {
+			return "", nil, err
+		}
 		version, raw = 1, "{}"
 	}
 	change := tracker.NativeChangeReference{}
@@ -106,9 +112,18 @@ FROM collaboration_events WHERE id=? AND payload_version=1`, id).Scan(&organizat
 		if err := json.Unmarshal(payload, &archived); err != nil {
 			return "", err
 		}
-		bound := archived.Family == "runs" && archived.Row == row || kind == "scheduler.decision" && archived.Family == kind && archived.Row == 0
+		bound := archived.Family == "runs" && archived.Row == row || kind == "scheduler.decision" && archived.Family == kind && archived.Row == 0 || strings.HasPrefix(kind, "run.") && archived.Family == kind+":"+id && archived.Row == 0
 		if archived.Organization != organization || archived.Project != project || !bound || !json.Valid(archived.Data) {
 			return "", artifact.ErrIntegrity
+		}
+		if strings.HasPrefix(kind, "run.") && archived.Row == 0 {
+			var data tracker.CollaborationData
+			if err := json.Unmarshal(archived.Data, &data); err != nil {
+				return "", err
+			}
+			if data.Run == nil || data.Run.AttemptID != expected.AttemptID || data.Run.RunID != expected.RunID || data.Run.LeaseID != expected.LeaseID || data.Run.FencingToken != expected.FencingToken || data.Run.PolicyID != expected.PolicyID {
+				return "", artifact.ErrIntegrity
+			}
 		}
 		return string(archived.Data), nil
 	}
@@ -190,7 +205,7 @@ func (s *Service) prepareCollaborationPayloadMetadata(ctx context.Context, row i
 	if err != nil {
 		return m, err
 	}
-	encoded, err := marshalNative(data)
+	encoded, err := resolveCollaborationPayload(ctx, s.database.reader, string(raw))
 	if err != nil {
 		return m, err
 	}

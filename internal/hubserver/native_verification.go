@@ -89,7 +89,8 @@ func (s *Service) verifyNativeIssueCommand(ctx context.Context, scope nativeScop
 				}
 			}
 			actor := scope.actor()
-			issue.Verification = &tracker.NativeVerification{State: tracker.VerificationVerified, VerifiedBy: &actor, VerifiedAt: &now}
+			verifiedAt := payloadTimestamp(ctx, now)
+			issue.Verification = &tracker.NativeVerification{State: tracker.VerificationVerified, VerifiedBy: &actor, VerifiedAt: &verifiedAt}
 			return persistNativeIssue(ctx, tx, scope, issue, "issue.edited", tracker.CollaborationData{Fields: []string{"verification"}, Verification: tracker.VerificationVerified}, now)
 		}
 		project, err := readNativeProject(ctx, tx, scope)

@@ -35,12 +35,12 @@ func readRuntimeChangeDetail(ctx context.Context, q nativeQueryer, scope nativeS
 	}
 	if found {
 		detail.Versions = []tracker.ChangeVersion{version}
-		detail.Reviews, err = changeRows[tracker.ChangeReview](ctx, q, "SELECT record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' ORDER BY sequence DESC LIMIT 65", change.ID, version.ID)
+		detail.Reviews, err = changeRows[tracker.ChangeReview](ctx, q, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' ORDER BY sequence DESC LIMIT 65", change.ID, version.ID)
 		if err != nil {
 			return detail, err
 		}
 		slices.Reverse(detail.Reviews)
-		detail.Checks, err = changeRows[tracker.ChangeCheck](ctx, q, "SELECT record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='check' ORDER BY sequence DESC LIMIT 65", change.ID, version.ID)
+		detail.Checks, err = changeRows[tracker.ChangeCheck](ctx, q, "SELECT COALESCE(NULLIF(payload_object_key,''),record_json) FROM change_evidence WHERE change_id=? AND version_id=? AND kind='check' ORDER BY sequence DESC LIMIT 65", change.ID, version.ID)
 		if err != nil {
 			return detail, err
 		}
@@ -67,9 +67,9 @@ func readRuntimeChangeDetail(ctx context.Context, q nativeQueryer, scope nativeS
 func readExplanationCheckpoint(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (nativeSourceCheckpoint, error) {
 	rows, err := q.QueryContext(ctx, `SELECT a.id,l.machine_id,COALESCE(lr.runner_id,''),COALESCE(NULLIF(r.display_name,''),m.hostname,''),a.status,l.released_at,a.checkpoint_json
 FROM (
- SELECT * FROM (SELECT id,lease_id,organization_id,status,checkpoint_json,fencing_token FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND checkpoint_preserves_source=1 ORDER BY fencing_token DESC LIMIT 1)
+ SELECT * FROM (SELECT id,lease_id,organization_id,status,COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) AS checkpoint_json,fencing_token FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND checkpoint_preserves_source=1 ORDER BY fencing_token DESC LIMIT 1)
  UNION ALL
- SELECT * FROM (SELECT id,lease_id,organization_id,status,checkpoint_json,fencing_token FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND checkpoint_preserves_source IS NULL ORDER BY fencing_token DESC LIMIT 64)
+ SELECT * FROM (SELECT id,lease_id,organization_id,status,COALESCE(NULLIF(checkpoint_object_key,''),checkpoint_json) AS checkpoint_json,fencing_token FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND checkpoint_preserves_source IS NULL ORDER BY fencing_token DESC LIMIT 64)
 ) a
 JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id
 LEFT JOIN runner_identities r ON r.id=lr.runner_id AND r.organization_id=a.organization_id LEFT JOIN machines m ON m.id=l.machine_id AND m.organization_id=a.organization_id
@@ -99,7 +99,7 @@ ORDER BY a.fencing_token DESC`, scope.organization, scope.project, item, scope.o
 }
 
 func readExplanationFailures(ctx context.Context, q nativeQueryer, scope nativeScope, item string) ([]nativeFailure, bool, error) {
-	rows, err := q.QueryContext(ctx, `SELECT id,status,started_at,updated_at,data_json,health_failure_signature FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY fencing_token DESC LIMIT 65`, scope.organization, scope.project, item)
+	rows, err := q.QueryContext(ctx, `SELECT id,status,started_at,updated_at,COALESCE(NULLIF(payload_object_key,''),data_json),health_failure_signature FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY fencing_token DESC LIMIT 65`, scope.organization, scope.project, item)
 	if err != nil {
 		return nil, false, err
 	}
@@ -117,7 +117,7 @@ func readExplanationFailures(ctx context.Context, q nativeQueryer, scope nativeS
 			return nil, false, err
 		}
 		var data tracker.NativeRunData
-		if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &data); err != nil {
 			return nil, false, err
 		}
 		f.example, f.class = failureFromAttempt(data, status)
@@ -174,7 +174,7 @@ func explanationPlacementAllowed(ctx context.Context, q nativeQueryer, scope nat
 	var capabilities struct {
 		SpriteName string `json:"sprite_name"`
 	}
-	if err := json.Unmarshal([]byte(raw), &capabilities); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &capabilities); err != nil {
 		return false, "", err
 	}
 	if capabilities.SpriteName != hostname || !validSpritesSlug(hostname) {
@@ -271,7 +271,7 @@ WHERE i.organization_id=? AND i.project_id=? AND i.native_id=?`, args...).Scan(&
 		raw   string
 		value any
 	}{{labels, &issue.Labels}, {assignees, &issue.Assignees}, {actor, &issue.Actor}, {contract, issue.IssueContract}} {
-		if err := json.Unmarshal([]byte(field.raw), field.value); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(field.raw), field.value); err != nil {
 			return issue, 0, err
 		}
 	}
@@ -281,7 +281,7 @@ WHERE i.organization_id=? AND i.project_id=? AND i.native_id=?`, args...).Scan(&
 	var legacy struct {
 		Body string `json:"confirmed_body"`
 	}
-	if err := json.Unmarshal([]byte(contract), &legacy); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(contract), &legacy); err != nil {
 		return issue, 0, err
 	}
 	if legacy.Body != "" {
@@ -335,7 +335,7 @@ JOIN issues i ON i.id=d.blocker_issue_id JOIN organizations o ON o.id=i.organiza
 		issue.DependencyReady = issue.DependencyReady && dependency.Terminal
 		if scope.credential.HostedRole == "reporter" {
 			var owner tracker.Actor
-			if err := json.Unmarshal([]byte(actor), &owner); err != nil {
+			if err := decodeStorageJSON(ctx, []byte(actor), &owner); err != nil {
 				return err
 			}
 			visible = visible && scope.actor().PrincipalID != "" && owner.PrincipalID == scope.actor().PrincipalID

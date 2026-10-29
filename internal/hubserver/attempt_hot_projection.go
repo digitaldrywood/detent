@@ -3,7 +3,6 @@ package hubserver
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -106,7 +105,7 @@ func (s *Service) convertAttemptHotProjections(ctx context.Context) error {
 
 func (s *Service) convertAttemptHotProjection(ctx context.Context, id string) error {
 	var raw, status string
-	err := s.database.reader.QueryRowContext(ctx, "SELECT data_json,status FROM native_attempts WHERE id=? AND (hot_projection_version=0 OR health_disposition_reason IS NULL)", id).Scan(&raw, &status)
+	err := s.database.reader.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(payload_object_key,''),data_json),status FROM native_attempts WHERE id=? AND (hot_projection_version=0 OR health_disposition_reason IS NULL)", id).Scan(&raw, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -114,7 +113,7 @@ func (s *Service) convertAttemptHotProjection(ctx context.Context, id string) er
 		return err
 	}
 	var data tracker.NativeRunData
-	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &data); err != nil {
 		return err
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
@@ -123,7 +122,7 @@ func (s *Service) convertAttemptHotProjection(ctx context.Context, id string) er
 	}
 	defer tx.Rollback()
 	var unchanged bool
-	err = tx.QueryRowContext(ctx, "SELECT data_json=? AND status=? AND (hot_projection_version=0 OR health_disposition_reason IS NULL) FROM native_attempts WHERE id=?", raw, status, id).Scan(&unchanged)
+	err = tx.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(payload_object_key,''),data_json)=? AND status=? AND (hot_projection_version=0 OR health_disposition_reason IS NULL) FROM native_attempts WHERE id=?", raw, status, id).Scan(&unchanged)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
