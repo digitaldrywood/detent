@@ -385,6 +385,7 @@ func newConversationRunnerHub(t *testing.T) *conversationRunnerHub {
 		RunDetails:        &archivedRunDetails{},
 		DatabasePath:      hubDatabasePath(t),
 		InitialAdminToken: []byte(conversationRunnerAdminToken),
+		Content:           newHubContentStore(),
 		Conversation:      &hubserver.ConversationConfig{Enabled: true, ArchiveContents: &conversationArchiveFixture{}},
 	})
 	if err != nil {

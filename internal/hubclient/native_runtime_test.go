@@ -278,6 +278,7 @@ func TestNativeRuntimeCheckpointsDoNotGrowHistory(t *testing.T) {
 	item := tracker.NativeWorkItemID(issue.ID)
 	h.claim(t, issue.ID)
 	execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	execution.claim.lease.RunDetailBatching = false
 	at := time.Now().UTC()
 	timing := (gate.CommandResult{Command: "make check-land", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), StartedAt: at, FinishedAt: at.Add(time.Second)}).PipelineTiming("worker_check_land")
 	execution.RecordPipelineTiming(timing)

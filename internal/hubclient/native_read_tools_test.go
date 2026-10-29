@@ -477,6 +477,9 @@ func TestNativeExecutionReadToolsKeepHostAuthority(t *testing.T) {
 	if err := owner.ObserveRuntime(t.Context(), observation); err != nil {
 		t.Fatal(err)
 	}
+	if err := owner.append(t.Context(), "run.observed", "", nil, true); err != nil {
+		t.Fatal(err)
+	}
 	other := createIndependentNativeIssue(t, h.admin, tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Another item", Body: issueContractTestSections, State: "Todo"})
 	for _, tool := range tools {
 		if tool.Name == operatortool.WorkList && (!strings.Contains(tool.Description, "Use cursor, not offset") || strings.Contains(tool.Description, "reference must")) {
@@ -880,6 +883,9 @@ func TestNativeExecutionRetainedRecoveryEvidence(t *testing.T) {
 			landing = &retained
 			observation := tracker.NativeRuntimeObservation{Phase: "merging", Landing: &tracker.NativeLandingReceipt{SecurityAudit: landing, ChangeID: change.ID, VersionID: current.ID, HeadSHA: current.HeadSHA, GateFailed: true, ObservedAt: now}}
 			if err := execution.(runner.RuntimeExecution).ObserveRuntime(t.Context(), observation); err != nil {
+				t.Fatal(err)
+			}
+			if err := execution.(*nativeExecution).append(t.Context(), "run.observed", "", nil, true); err != nil {
 				t.Fatal(err)
 			}
 		}

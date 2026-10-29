@@ -53,7 +53,20 @@ func TestMain(m *testing.M) {
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
 	}
-	os.Exit(m.Run())
+	scratch, err := os.MkdirTemp("", "detent-hubclient-test-")
+	if err != nil {
+		panic(err)
+	}
+	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
+		if err := os.Setenv(key, scratch); err != nil {
+			panic(err)
+		}
+	}
+	code := m.Run()
+	if err := os.RemoveAll(scratch); err != nil {
+		panic(err)
+	}
+	os.Exit(code)
 }
 
 const nativeChangeAdminToken = "native-change-admin"
@@ -1261,7 +1274,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				if err := owner.ObserveLanding(guarded, refusal); err != nil {
 					t.Fatal(err)
 				}
-				if err := owner.FlushRuntime(guarded); err != nil {
+				if err := owner.append(guarded, "run.observed", "", nil, true); err != nil {
 					t.Fatal(err)
 				}
 				target, err := owner.LandingTarget(guarded)
@@ -1283,7 +1296,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				if err := execution.(runner.LandingRuntimeExecution).ObserveLanding(guarded, runner.NativeLanding{ChangeID: refusedPublication.ChangeID, VersionID: refusedPublication.ID, HeadSHA: refusedPublication.HeadSHA, RefusalKind: workspace.LandRefusalProtected}); err != nil {
 					t.Fatal(err)
 				}
-				if err := publicationOwner.FlushRuntime(guarded); err != nil {
+				if err := publicationOwner.append(guarded, "run.observed", "", nil, true); err != nil {
 					t.Fatal(err)
 				}
 				original, err = h.admin.Change(t.Context(), item, refusedPublication.ChangeID)
@@ -1558,6 +1571,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 				owner.mu.Unlock()
 			}
 			if test.disposition != nil {
+				execution.(*nativeExecution).claim.lease.RunDetailBatching = false
 				transport := &executionTransport{next: h.native.client.httpClient.Transport}
 				h.native.client.httpClient.Transport = transport
 				transport.drop.Store(true)

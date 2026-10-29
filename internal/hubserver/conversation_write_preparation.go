@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type conversationPublicationKey struct{}
@@ -66,7 +67,7 @@ func (p *conversationPublicationPlan) validate(ctx context.Context, tx *sql.Tx) 
 		return err
 	}
 	if revision != p.original.Revision || sequence != p.original.EventSeq {
-		return conversationStale("The conversation changed during content preparation")
+		return nativeConflict(tracker.Revision(revision))
 	}
 	return nil
 }

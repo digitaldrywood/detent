@@ -141,6 +141,13 @@ func decodeRunDetail(ctx context.Context, q nativeQueryer, raw string, result *t
 	if stored.Outcome == "cancelled" && stored.TerminalFailure != nil {
 		run.TerminalFailure = stored.TerminalFailure
 	}
+	if run.Runtime != nil && run.Runtime.Landing != nil && stored.Runtime != nil && stored.Runtime.Landing != nil {
+		runtime := *run.Runtime
+		landing := *runtime.Landing
+		landing.FromState, landing.TargetState = stored.Runtime.Landing.FromState, stored.Runtime.Landing.TargetState
+		runtime.Landing = &landing
+		run.Runtime = &runtime
+	}
 	*result = run
 	return nil
 }

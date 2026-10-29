@@ -1556,22 +1556,23 @@ func TestRunSchedulesRetryAfterRunnerPanic(t *testing.T) {
 	}
 }
 
-func TestRunPausesBackendAfterQuotaErrorWithoutBreakerStrike(t *testing.T) {
+func TestRunPausesMeteredBackendAfterQuotaErrorWithoutBreakerStrike(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now().UTC()
 	resetAt := now.Add(44 * time.Minute)
-	issue := testIssue("issue-quota-exhausted", "digitaldrywood/detent#1142", "Todo")
+	issue := testIssue("issue-quota-exhausted", "example-org/example-project#1", "Todo")
 	tracker := newFakeConnector(issue)
 	backendBody := fmt.Sprintf(`{"type":"error","error":{"type":"usageLimitExceeded","resetAt":%d,"message":"usage limit reached"}}`, resetAt.Unix())
 	capacityErr := backendcapacity.NewError(
 		backendcapacity.Scope{BackendID: "codex", BackendKind: "codex", Provider: "openai"},
-		backendcapacity.Details{Kind: "usageLimitExceeded", Reason: "provider usage limit reached", ResetAt: &resetAt},
+		backendcapacity.Details{Type: backendcapacity.ErrorTypeUsageLimit, Kind: "usageLimitExceeded", Reason: "provider usage limit reached", ResetAt: &resetAt},
 		instantBackendError{body: backendBody},
 	)
 	runner := &staticRunner{err: capacityErr}
 
 	orch, err := orchestrator.New(orchestrator.Config{
+		BillingMode:            workflowconfig.BillingModeMetered,
 		PollInterval:           time.Millisecond,
 		MaxConcurrentAgents:    1,
 		MaxRetryBackoff:        time.Hour,
@@ -1593,6 +1594,22 @@ func TestRunPausesBackendAfterQuotaErrorWithoutBreakerStrike(t *testing.T) {
 	state := waitForState(t, orch, func(state orchestrator.State) bool {
 		_, ok := state.Retry[issue.ID]
 		return ok
+	})
+
+	refresh, err := orch.RequestRefresh(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	testenv.WaitUntil(t, t.Context(), func() error {
+		state, err = orch.State(t.Context())
+		if err != nil {
+			return err
+		}
+		manual := state.Snapshot(time.Now()).Refresh.Manual
+		if manual == nil || manual.ID != refresh.RequestID || manual.CompletedAt == nil {
+			return errors.New("manual refresh has not completed")
+		}
+		return nil
 	})
 
 	if got := runner.calls.Load(); got != 1 {

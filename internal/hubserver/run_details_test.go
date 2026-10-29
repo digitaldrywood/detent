@@ -91,6 +91,32 @@ func (m *memoryRunDetails) ReadDetail(ctx context.Context, organization string, 
 	return bytes.Clone(data), nil
 }
 
+func TestNativeRunDetailRetainsHostLandingTransition(t *testing.T) {
+	t.Parallel()
+	for _, target := range []string{"", "Rework", "Done"} {
+		t.Run(target, func(t *testing.T) {
+			archived := tracker.NativeRunData{AttemptID: "attempt", RunID: "run", LeaseID: "lease", FencingToken: 1, Runtime: &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{VersionID: "version", FromState: "old", Gate: &gate.CommandResult{Output: "retained output"}}}}
+			stored := storedRun{NativeRunData: compactRun(archived), Detail: &runDetailReference{AttachmentID: "attachment", Entry: "attempt:0"}}
+			stored.Runtime.Landing.FromState, stored.Runtime.Landing.TargetState = "Merging", target
+			raw, err := json.Marshal(stored)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.WithValue(t.Context(), runDetailContextKey{}, &runDetailContext{cache: map[string]map[string]tracker.NativeRunData{"attachment": {"attempt:0": archived}}})
+			var got tracker.NativeRunData
+			if err := decodeRunDetail(ctx, nil, string(raw), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Runtime.Landing.FromState != "Merging" || got.Runtime.Landing.TargetState != target || got.Runtime.Landing.Gate.Output != "retained output" {
+				t.Fatalf("hydrated landing lost host transition or archive output: %+v", got.Runtime.Landing)
+			}
+			if archived.Runtime.Landing.FromState != "old" || archived.Runtime.Landing.TargetState != "" {
+				t.Fatal("hydration mutated cached archive")
+			}
+		})
+	}
+}
+
 func TestNativeRunDetailReferences(t *testing.T) {
 	t.Parallel()
 	store := &memoryRunDetails{}

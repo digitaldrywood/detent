@@ -1452,6 +1452,7 @@ func TestNativeExecutionTransportKeepsCurrentWorker(t *testing.T) {
 			issue := h.createInProgress(t, "Transport survival")
 			h.claim(t, issue.ID)
 			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			execution.claim.lease.RunDetailBatching = false
 			guarded, stop, err := execution.Guard(t.Context())
 			if err != nil {
 				t.Fatal(err)

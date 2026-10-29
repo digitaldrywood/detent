@@ -634,6 +634,7 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 			}
 			return response, err
 		})
+		landing.(*nativeExecution).claim.lease.RunDetailBatching = false
 		reconnectErr := landing.(runner.LandingRuntimeExecution).StartLanding(guarded, 168, 27)
 		h.native.client.httpClient.Transport = original
 		if reconnectErr == nil || !interrupted {
@@ -699,6 +700,9 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		if err := landing.(runner.LandingRuntimeExecution).ObserveLanding(guarded, waiting); err != nil {
 			t.Fatal(err)
 		}
+		if err := h.scheduler.RunExecution(issue.ID).(*nativeExecution).append(guarded, "run.observed", "", nil, true); err != nil {
+			t.Fatal(err)
+		}
 		evidence, err := h.admin.RuntimeEvidence(t.Context(), item, "")
 		if err != nil || !reflect.DeepEqual(evidence.Attempt.Runtime.Landing.CI, waiting.CI) || evidence.Change.Change.Landed != nil || h.state(t, issue.ID) != landingState {
 			t.Fatalf("waiting CI lost durable native receipt: %+v, %v", evidence, err)
@@ -721,6 +725,9 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		refused.Gate = &gate.CommandResult{Command: "make check-land", ExitCode: 7, HeadSHA: head, TreeSHA: strings.Repeat("a", 40), Output: "lint-error-sentinel", DurationNS: 123456}
 	}
 	if err := landing.(runner.LandingRuntimeExecution).ObserveLanding(guarded, refused); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.scheduler.RunExecution(issue.ID).(*nativeExecution).append(guarded, "run.observed", "", nil, true); err != nil {
 		t.Fatal(err)
 	}
 	evidence, err = h.admin.RuntimeEvidence(t.Context(), item, "")
@@ -877,6 +884,9 @@ func testNativeExecutionLandsReviewedVersion(t *testing.T, linked, github, ssh, 
 		}
 	}
 	if err := landing.(runner.LandingRuntimeExecution).ObserveLanding(guarded, landed); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.scheduler.RunExecution(issue.ID).(*nativeExecution).append(guarded, "run.observed", "", nil, true); err != nil {
 		t.Fatal(err)
 	}
 	evidence, err = h.admin.RuntimeEvidence(t.Context(), item, "")

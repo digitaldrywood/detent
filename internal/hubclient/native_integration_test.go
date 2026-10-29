@@ -38,7 +38,7 @@ func TestNativeSchedulerAndConnectorWithoutGitHub(t *testing.T) {
 
 	t.Parallel()
 	const admin = "native-integration-admin"
-	service, err := hubserver.Open(t.Context(), hubserver.Config{RunDetails: &archivedRunDetails{}, DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(admin)})
+	service, err := hubserver.Open(t.Context(), hubserver.Config{Content: newHubContentStore(), RunDetails: &archivedRunDetails{}, DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte(admin)})
 	if err != nil {
 		t.Fatal(err)
 	}

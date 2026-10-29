@@ -212,7 +212,7 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 	t.Helper()
 	batch := unavailable == "six slots" || unavailable == "provider slots" || unavailable == "mixed providers" || unavailable == "provider hydration" || unavailable == "stage slots" || unavailable == "quota reset"
-	service, err := hubserver.Open(t.Context(), hubserver.Config{RunDetails: &archivedRunDetails{}, DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte("provider-test-admin")})
+	service, err := hubserver.Open(t.Context(), hubserver.Config{Content: newHubContentStore(), RunDetails: &archivedRunDetails{}, DatabasePath: hubDatabasePath(t), InitialAdminToken: []byte("provider-test-admin")})
 	if err != nil {
 		t.Fatal(err)
 	}
