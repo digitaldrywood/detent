@@ -80,6 +80,8 @@ const nativeSearchPostingBudget = 2000
 func nativeSearchHits(scope nativeScope, archived string, expressions []string) (string, []any) {
 	scopes := nativeSearchScopes(scope, archived)
 	pending, args := nativeSearchIndexPending(scope)
+	pending = "(" + pending + ") OR EXISTS(SELECT 1 FROM native_work_search_refresh WHERE organization_id=? AND project_id=?)"
+	args = append(args, scope.organization, scope.project)
 	args = append(args, scope.organization, scope.project)
 	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
 	args = append(args, visibilityArgs...)
@@ -100,17 +102,23 @@ func nativeSearchHits(scope nativeScope, archived string, expressions []string) 
 		scopeValues[index] = "(?)"
 		args = append(args, searchScope)
 	}
+	args = append(args, scope.organization, scope.project)
+	args = append(args, visibilityArgs...)
 	return `WITH index_state AS MATERIALIZED (SELECT ` + pending + ` AS incomplete), fallback_issues AS MATERIALIZED (
  SELECT i.id FROM index_state CROSS JOIN (
  SELECT i.* FROM issues i WHERE i.organization_id=? AND i.project_id=?` + archiveFilter + ` LIMIT ` + strconv.Itoa(nativeSearchPostingBudget) + `
  ) i WHERE index_state.incomplete AND (` + visibility + `)
  ), terms(matched,key) AS (VALUES ` + strings.Join(values, ",") + `), search_scopes(scope) AS (VALUES ` + strings.Join(scopeValues, ",") + `), fallback_candidates AS MATERIALIZED (
+ SELECT d.id,d.issue_id,c.title,c.body FROM (
+ SELECT document_id AS id FROM native_work_search_refresh WHERE organization_id=? AND project_id=? ORDER BY document_id DESC LIMIT ` + strconv.Itoa(nativeSearchPostingBudget) + `
+ ) q CROSS JOIN native_work_documents d CROSS JOIN native_work_search_content c CROSS JOIN issues i WHERE d.id=q.id AND c.id=d.id AND i.id=d.issue_id` + archiveFilter + ` AND (` + visibility + `)
+ UNION ALL
  SELECT d.id,d.issue_id,c.title,c.body
  FROM fallback_issues i CROSS JOIN native_work_documents d CROSS JOIN native_work_search_content c
- WHERE d.issue_id=i.id AND c.id=d.id LIMIT ` + strconv.Itoa(nativeSearchPostingBudget) + `
+ WHERE d.issue_id=i.id AND c.id=d.id AND NOT EXISTS(SELECT 1 FROM native_work_search_refresh WHERE document_id=d.id) LIMIT ` + strconv.Itoa(nativeSearchPostingBudget) + `
  ), fallback_documents AS MATERIALIZED (
  SELECT d.*,native_search_tokens(d.title,'')+native_search_tokens(d.body,'') AS tokens
- FROM fallback_candidates d WHERE NOT EXISTS (
+ FROM fallback_candidates d WHERE EXISTS (SELECT 1 FROM native_work_search_refresh WHERE document_id=d.id) OR NOT EXISTS (
  SELECT 1 FROM search_scopes s CROSS JOIN native_work_search_lengths l WHERE l.document_id=d.id AND l.scope=s.scope
  )
  ), fallback_population AS MATERIALIZED (
@@ -144,6 +152,7 @@ func nativeSearchHits(scope nativeScope, archived string, expressions []string) 
  WHERE p.document_id=c.document_id AND p.scope=c.scope AND p.term=t.key
  AND l.document_id=c.document_id AND l.scope=c.scope AND pop.scope=c.scope
  AND f.scope=c.scope AND f.term=t.key AND d.id=c.document_id
+ AND NOT EXISTS(SELECT 1 FROM native_work_search_refresh WHERE document_id=c.document_id)
  ), indexed_scores AS MATERIALIZED (
  SELECT document_id,issue_id,scope,count(*) AS terms,group_concat(matched,', ') AS matched,
  sum(native_search_bm25(frequency,tokens,average,documents,matching)) AS score
