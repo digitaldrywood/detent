@@ -995,9 +995,85 @@ func TestNativeSearchIndexedIssueDuringRebuild(t *testing.T) {
 	}
 }
 
+func TestNativeSearchPostingStorage(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			tokens := make([]string, 1000)
+			for i := range tokens {
+				tokens[i] = fmt.Sprintf("token%07d", i)
+			}
+			item := f.create(t, "Token storage")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET title=?,body='' WHERE native_id=?", strings.Join(tokens, " "), item.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			drainTestNativeSearch(t, f.service)
+			if legacy {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_work_search_postings(scope,term,document_id,frequency,impact) SELECT l.scope,'ptok',l.document_id,1,1 FROM native_work_search_lengths l JOIN native_work_documents d ON d.id=l.document_id JOIN issues i ON i.id=d.issue_id WHERE i.native_id=?`, item.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				migration, err := migrationFiles.ReadFile("migrations/20261029102902_native_work_search_full_tokens.sql")
+				if err != nil {
+					t.Fatal(err)
+				}
+				up, _, ok := strings.Cut(string(migration), "-- +goose Down")
+				if !ok {
+					t.Fatal("missing migration rollback")
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), up); err != nil {
+					t.Fatal(err)
+				}
+				var through int64
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT through_id FROM native_work_search_rebuild").Scan(&through); err != nil || through != 0 {
+					t.Fatalf("rebuild cursor=%d err=%v", through, err)
+				}
+				ctx, timing := withWriterTiming(t.Context())
+				f.service.maintainNativeSearch(ctx)
+				if got := timing.txs.Load(); got != 1 {
+					t.Fatalf("backfill transactions=%d want=1", got)
+				}
+				var old int
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_search_postings WHERE term='ptok'").Scan(&old); err != nil || old != 0 {
+					t.Fatalf("legacy prefix rows=%d err=%v", old, err)
+				}
+			}
+
+			rows, err := f.service.database.reader.QueryContext(t.Context(), `SELECT p.scope,count(*) FROM native_work_search_postings p JOIN native_work_documents d ON d.id=p.document_id JOIN issues i ON i.id=d.issue_id WHERE i.native_id=? GROUP BY p.scope`, item.WorkItemID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			scopes := 0
+			for rows.Next() {
+				var scope string
+				var count int
+				if err := rows.Scan(&scope, &count); err != nil {
+					t.Fatal(err)
+				}
+				if count != len(tokens) {
+					t.Errorf("scope=%s postings=%d want=%d distinct tokens", scope, count, len(tokens))
+				}
+				scopes++
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if scopes != 2 {
+				t.Fatalf("scopes=%d want=2", scopes)
+			}
+		})
+	}
+}
+
 func TestNativeSearchCommonTermBudget(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
 	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "PRAGMA synchronous=NORMAL"); err != nil {
 		t.Fatal(err)
 	}
 	target := f.create(t, "Failure breaker classification blame phrase heuristic")
@@ -1019,14 +1095,22 @@ func TestNativeSearchCommonTermBudget(t *testing.T) {
 		_, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE seed(n) AS (
  SELECT ? UNION ALL SELECT n+1 FROM seed WHERE n<?)
  INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at)
- SELECT 'common-term-budget-'||seed.n,i.organization_id,i.project_id,i.native_id,1,seed.n,'failure breaker classification','{}',i.native_created_at,i.native_created_at
+ SELECT 'common-term-budget-'||seed.n,i.organization_id,i.project_id,i.native_id,1,seed.n,'failure breaker classification fairground','{}',i.native_created_at,i.native_created_at
  FROM seed CROSS JOIN issues i WHERE i.native_id=?`, count+1, size, target.WorkItemID)
 		if err != nil {
 			t.Fatal(err)
 		}
 		count = size
 		drainTestNativeSearch(t, f.service)
-		for _, query := range []string{"litestream WAL truncate", "failure breaker classification blame phrase heuristic", "failure breaker cifailure classification instance blame phrase"} {
+		postings, postingArgs := nativeSearchHits(scope, "", nativeSearchExpressions("fai"))
+		var examined int
+		if err := pool.QueryRowContext(t.Context(), postings+"SELECT count(*) FROM candidates", postingArgs...).Scan(&examined); err != nil {
+			t.Fatal(err)
+		}
+		if examined > nativeSearchPostingBudget {
+			t.Fatalf("documents=%d prefix candidates=%d budget=%d", size, examined, nativeSearchPostingBudget)
+		}
+		for _, query := range []string{"fai", "litestream WAL truncate", "failure breaker classification blame phrase heuristic", "failure breaker cifailure classification instance blame phrase"} {
 			statement, args, err := nativeIssueSelection(scope, url.Values{"q": {query}}, false)
 			if err != nil {
 				t.Fatal(err)
@@ -1060,20 +1144,24 @@ func TestNativeSearchCommonTermBudget(t *testing.T) {
 
 func TestNativeSearchPostingPrefixes(t *testing.T) {
 	f := newDefaultNativeFixture(t, Config{})
-	first := f.create(t, strings.Repeat("a", nativeSearchPrefixLimit)+"one")
-	second := f.create(t, strings.Repeat("a", nativeSearchPrefixLimit)+"two")
+	first := f.create(t, strings.Repeat("a", 64)+"one café cafeteria tokenalpha tokenbeta")
+	second := f.create(t, strings.Repeat("a", 64)+"two cag tokenalphabet")
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body='' WHERE project_id=?", f.project.ID); err != nil {
 		t.Fatal(err)
 	}
+	drainTestNativeSearch(t, f.service)
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	for _, test := range []struct {
 		name, query string
 		plain       bool
 		want        tracker.NativeWorkItemID
 	}{
-		{"long prefix one", strings.Repeat("a", nativeSearchPrefixLimit) + "o", false, first.WorkItemID},
-		{"long prefix two", strings.Repeat("a", nativeSearchPrefixLimit) + "t", false, second.WorkItemID},
-		{"long exact", strings.Repeat("a", nativeSearchPrefixLimit) + "one", true, first.WorkItemID},
+		{"long prefix one", strings.Repeat("a", 64) + "o", false, first.WorkItemID},
+		{"long prefix two", strings.Repeat("a", 64) + "t", false, second.WorkItemID},
+		{"long exact", strings.Repeat("a", 64) + "one", true, first.WorkItemID},
+		{"unicode prefix", "café", false, first.WorkItemID},
+		{"exact excludes longer tokens", "tokenalpha", true, first.WorkItemID},
+		{"prefix excludes adjacent terms", "tokenb", false, first.WorkItemID},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			expressions := nativeSearchExpressions(test.query)
@@ -1086,6 +1174,14 @@ func TestNativeSearchPostingPrefixes(t *testing.T) {
 				t.Fatalf("matches=%v want=%s err=%v", ids, test.want, err)
 			}
 		})
+	}
+	statement, args := nativeSearchHits(scope, "", nativeSearchExpressions("token"))
+	var frequency, terms int
+	if err := f.service.database.reader.QueryRowContext(t.Context(), statement+"SELECT m.frequency,s.terms FROM indexed_matches m JOIN indexed_scores s ON s.document_id=m.document_id AND s.scope=m.scope JOIN issues i ON i.id=s.issue_id WHERE i.native_id=?", append(args, first.WorkItemID)...).Scan(&frequency, &terms); err != nil {
+		t.Fatal(err)
+	}
+	if frequency != 10 || terms != 1 {
+		t.Fatalf("multi-token prefix frequency=%d terms=%d want 10,1", frequency, terms)
 	}
 }
 
