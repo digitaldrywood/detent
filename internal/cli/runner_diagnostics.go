@@ -88,7 +88,7 @@ func collectRunnerLocalChecks(ctx context.Context, cfg globalconfig.Config, name
 		if !slices.Contains(checks.ProviderKinds, backend.Kind) {
 			checks.ProviderKinds = append(checks.ProviderKinds, backend.Kind)
 		}
-		if backend.Kind == workflowconfig.AgentBackendPiAgent || backend.Kind == workflowconfig.AgentBackendOpenCode || backend.Kind == workflowconfig.AgentBackendAntigravity {
+		if backend.Kind == workflowconfig.AgentBackendPiAgent || backend.Kind == workflowconfig.AgentBackendOpenCode {
 			// These protocols have no authentication-status contract. Keep this unknown
 			// instead of reporting credentials as failed or authenticated.
 			if checks.Provider == "passed" {
@@ -128,6 +128,8 @@ func probeRunnerProviderAuth(ctx context.Context, backend workflowconfig.AgentBa
 			LoggedIn bool `json:"loggedIn"`
 		}
 		return json.Unmarshal(output, &status) == nil && status.LoggedIn
+	case workflowconfig.AgentBackendAntigravity:
+		return backend.AntigravityOptions().Home != "" && probeBackendSignIn(ctx, backend) == nil
 	default:
 		return false
 	}

@@ -44,7 +44,7 @@ func TestLocalChecksWorkReady(t *testing.T) {
 	}{
 		{"verified provider", LocalChecks{Checkout: "passed", Doctor: "warning", Provider: "passed", ProviderKinds: []string{"codex"}}, true},
 		{"OpenCode has no authentication status", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "pending", ProviderKinds: []string{"opencode"}}, true},
-		{"Antigravity has no authentication status", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "pending", ProviderKinds: []string{"antigravity"}}, true},
+		{"Antigravity requires a verified sign-in", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "pending", ProviderKinds: []string{"antigravity"}}, false},
 		{"failed provider beside OpenCode", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "failed", ProviderKinds: []string{"codex", "opencode"}}, false},
 		{"Pi has no authentication status", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "pending", ProviderKinds: []string{"pi_agent"}}, true},
 		{"Pi with verified Codex", LocalChecks{Checkout: "passed", Doctor: "passed", Provider: "pending", ProviderKinds: []string{"codex", "pi_agent"}}, true},

@@ -59,7 +59,7 @@ func (c LocalChecks) Validate() error {
 }
 
 func (c LocalChecks) ProviderReady() bool {
-	return c.Provider == "passed" || c.Provider == "pending" && (slices.Contains(c.ProviderKinds, "pi_agent") || slices.Contains(c.ProviderKinds, "opencode") || slices.Contains(c.ProviderKinds, "antigravity"))
+	return c.Provider == "passed" || c.Provider == "pending" && (slices.Contains(c.ProviderKinds, "pi_agent") || slices.Contains(c.ProviderKinds, "opencode"))
 }
 
 func (c LocalChecks) WorkReady() bool {

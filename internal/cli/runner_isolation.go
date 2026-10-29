@@ -347,6 +347,11 @@ func backendReadinessProblem(subject, kind, tier, goos string, err error) runner
 			if check != nil && check.SignedOut {
 				p.FixCommand = "claude auth login"
 			}
+		case workflowconfig.AgentBackendAntigravity:
+			if check != nil && check.SignedOut {
+				p.FixCommand = "agy"
+				p.FixHint = "Run agy once with HOME set to this backend's options.home and sign in, then wait for the runner's next heartbeat."
+			}
 		}
 		if code == "tier_unavailable" && (check == nil || !strings.HasSuffix(check.Check, " --version")) {
 			p.FixCommand = ""
@@ -400,6 +405,11 @@ func probeBackendSignIn(ctx context.Context, backend workflowconfig.AgentBackend
 	case workflowconfig.AgentBackendClaudeCode:
 		shell = backend.ClaudeCodeOptions().Shell
 		args = []string{"auth", "status", "--json"}
+	case workflowconfig.AgentBackendAntigravity:
+		options := backend.AntigravityOptions()
+		shell = options.Shell
+		args = []string{"models"}
+		environment = map[string]string{"HOME": options.Home}
 	default:
 		return nil
 	}
@@ -417,7 +427,7 @@ func probeBackendSignIn(ctx context.Context, backend workflowconfig.AgentBackend
 		}
 	}
 	if err != nil {
-		return &backendCheckError{Check: command + " " + strings.Join(args, " "), Err: err, SignedOut: strings.Contains(strings.ToLower(string(output)), "not logged in") || strings.Contains(strings.ToLower(string(output)), "not signed in") || strings.Contains(string(output), `"loggedIn":false`) || strings.Contains(string(output), `"loggedIn": false`)}
+		return &backendCheckError{Check: command + " " + strings.Join(args, " "), Err: err, SignedOut: strings.Contains(strings.ToLower(string(output)), "not logged in") || strings.Contains(strings.ToLower(string(output)), "not signed in") || strings.Contains(strings.ToLower(string(output)), "please sign in") || strings.Contains(string(output), `"loggedIn":false`) || strings.Contains(string(output), `"loggedIn": false`)}
 	}
 	return nil
 }

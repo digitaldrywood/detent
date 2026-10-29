@@ -205,6 +205,8 @@ func TestBackendReadinessProblem(t *testing.T) {
 	}{
 		{"codex signed out", workflowconfig.AgentBackendCodex, "", "linux", "codex login status", "Not logged in", "codex login --device-auth", true},
 		{"claude signed out", workflowconfig.AgentBackendClaudeCode, "", "linux", "claude auth status --json", `{"loggedIn":false}`, "claude auth login", true},
+		{"antigravity signed out", workflowconfig.AgentBackendAntigravity, "", "linux", "agy models", "Error: Please sign in to view available models.", "agy", true},
+		{"antigravity missing", workflowconfig.AgentBackendAntigravity, isolation.NativeTrusted, "linux", "agy --version", "sh: 1: agy: not found", "", false},
 		{"codex killed", workflowconfig.AgentBackendCodex, isolation.NativeTrusted, "darwin", "codex login status", "signal: killed", "", false},
 		{"claude killed", workflowconfig.AgentBackendClaudeCode, isolation.NativeTrusted, "linux", "claude auth status --json", "signal: killed", "", false},
 		{"codex missing", workflowconfig.AgentBackendCodex, isolation.NativeTrusted, "linux", "codex --version", "codex: command not found", "npm install -g @openai/codex", false},
