@@ -308,6 +308,24 @@ func TestInvestigationRefusesWriteAndNetworkPermissions(t *testing.T) {
 					t.Fatalf("side effect tool permitted: %s", tool)
 				}
 			}
+			for _, sourceRoot := range []string{"/source", ""} {
+				budgeted, boundedSettings, err := backend.commandWithIsolation(t.Context(), runner.AgentTurnRequest{Workspace: sourceRoot, TempDir: "/scratch", ReadOnly: true, IsolatedTools: true, ToolBudget: runner.NewAgentToolBudget(80, 1<<20)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				index := slices.Index(budgeted.Args, "--tools")
+				if index < 0 || index+1 >= len(budgeted.Args) || budgeted.Args[index+1] != "" {
+					t.Fatalf("native tools enabled: %v", budgeted.Args)
+				}
+				for _, tool := range []string{"Read", "Glob", "Grep"} {
+					if !slices.Contains(boundedSettings["permissions"].(map[string]any)["deny"].([]string), tool) {
+						t.Fatalf("native read enabled: %s", tool)
+					}
+				}
+				if sourceRoot == "" && budgeted.Dir != "/scratch" {
+					t.Fatalf("evidence-only launch directory=%q", budgeted.Dir)
+				}
+			}
 			encoded, err := json.Marshal(settings)
 			if err != nil {
 				t.Fatal(err)

@@ -24,6 +24,7 @@ func (b *AgentBackend) RunTurnWithTools(ctx context.Context, req runner.AgentTur
 	if handle == nil {
 		return result, errors.New("claude worker tool handler is unavailable")
 	}
+	handle = req.ToolBudget.Handler(tools, handle)
 	ctx, cancel := context.WithCancel(contextOrBackground(ctx))
 	defer cancel()
 	bounded := *b

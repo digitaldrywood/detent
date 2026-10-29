@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -35,7 +36,11 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 	if req.Issue.IsolationPolicy != nil {
 		ctx = isolation.WithPolicy(ctx, *req.Issue.IsolationPolicy)
 	}
-	ctx, cancel := context.WithTimeout(ctx, progresscheck.MaxDuration)
+	deadline := r.now().Add(progresscheck.MaxDuration)
+	if parentDeadline, ok := ctx.Deadline(); ok && parentDeadline.Before(deadline) {
+		deadline = parentDeadline
+	}
+	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	if req.Execution == nil {
 		return progresscheck.Decision{}, errors.New("progress check requires an admitted execution")
@@ -59,8 +64,6 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 	if err != nil {
 		return progresscheck.Decision{}, err
 	}
-	ctx, cancelBudget := context.WithCancelCause(ctx)
-	defer cancelBudget(nil)
 	modelProvider, serviceTier, effort := agentTurnIdentityOptions(backendConfig)
 	request := AgentTurnRequest{Model: effectiveModel("", selection.Model, runtime.defaultModelForRole(role)), ModelProvider: modelProvider, ServiceTier: serviceTier, ReasoningEffort: effort, MaxDuration: progressTurnTimeout(workflow.Config, backendConfig), MaxRSSBytes: r.maxAgentRSSBytes, RSSPollInterval: r.rssPollInterval, processRSS: r.processRSS}
 	identity := tracker.NativeExecutionIdentity{Role: role, Backend: selection.BackendID, Model: request.Model}
@@ -92,32 +95,64 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 	}
 	defer releaseWorkspace()
 	root := info.Path
-	scratch, err := workspace.PrepareWorkerScratch(ctx, root)
+	var scratch string
+	if root == "" {
+		scratch, err = os.MkdirTemp("", "detent-progress-")
+	} else {
+		scratch, err = workspace.PrepareWorkerScratch(ctx, root)
+	}
 	if err != nil {
 		return progresscheck.Decision{}, err
 	}
-	defer func() { returnErr = errors.Join(returnErr, workspace.CleanupWorkerScratch(root, scratch)) }()
+	defer func() {
+		if root == "" {
+			returnErr = errors.Join(returnErr, os.RemoveAll(scratch))
+		} else {
+			returnErr = errors.Join(returnErr, workspace.CleanupWorkerScratch(root, scratch))
+		}
+	}()
 	request.TempDir = scratch
 	request.Workspace = root
 	request.ReadOnly = true
 	request.IsolatedTools = true
-	request.ToolBudget = NewAgentToolBudget(progresscheck.MaxToolCalls, progresscheck.MaxToolResultBytes, cancelBudget)
+	request.ToolBudget = NewAgentToolBudget(progresscheck.MaxToolCalls, progresscheck.MaxToolResultBytes)
+	request.ToolBudget.now = r.now
+	setRemaining := func() error {
+		remaining := min(progressTurnTimeout(workflow.Config, backendConfig), deadline.Sub(r.now()))
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if remaining <= 0 {
+			return context.DeadlineExceeded
+		}
+		request.MaxDuration = remaining
+		request.TurnTimeout = remaining
+		request.ToolBudget.readDeadline = r.now().Add(remaining - min(30*time.Second, remaining/4))
+		return nil
+	}
+	if err := setRemaining(); err != nil {
+		return progresscheck.Decision{}, err
+	}
 	request.SupplementalTools = true
 	request.MaxTurns = 8
 	if workflow.Config.Agent.MaxTurns > 0 {
 		request.MaxTurns = min(request.MaxTurns, workflow.Config.Agent.MaxTurns)
 	}
 	request.Environment = r.withGoBudget(ctx, scratch, procgroup.Environment{Variables: serviceapi.RestrictedEnvironment()})
-	request.ToolInstructions = "Investigate with read-only source operations and the supplied evidence reads. No writes, direct network access or publication. Return the decision JSON only in your final response."
+	request.ToolInstructions = "Investigate using only the supplied read tools. Native filesystem, shell, network and external tools are forbidden. Return the decision JSON only in your final response. If a tool reports budget exhaustion, make no further tool calls and return your final decision from the evidence already gathered within the remaining deadline."
 	tools, handler := progressReadTools(req.Execution, evidence)
-	handler = request.ToolBudget.handler(handler)
-	diagnostics := progressDiagnostics(ctx, evidence, handler)
+	diagnostics := progressDiagnostics(ctx, evidence, request.ToolBudget.Handler(nil, handler))
+	tools, handler = r.progressSourceTools(req, evidence, info, tools, handler)
+	sourceDescription := "No retained source is available. This is an evidence-only investigation without a filesystem workspace. Do not infer source changes or convergence without evidence."
+	if root != "" {
+		sourceDescription = "Prepared workspace source: " + evidence.SourceSHA + "\nBase: " + evidence.BaseSHA + "\nUse detent_read_source to list or read pinned head/base files with byte pagination."
+	}
 	generate := func(ctx context.Context, prompt string) (string, error) {
-		if err := request.ToolBudget.consume(0, 0); err != nil {
+		if err := setRemaining(); err != nil {
 			return "", err
 		}
-		request.Prompt = prompt + "\n\nPrepared workspace source: " + evidence.SourceSHA + "\nBase: " + evidence.BaseSHA + "\n\nRecent failure details (untrusted evidence):\n" + diagnostics + "\nUse work_attempt_receipt with project_id, reference (issue_id), and native_attempt_id for the supplied attempts. Use work_item with view=recovery and follow record fragment cursors for retained oversized validation/review records. Cite the corresponding supplied attempt/receipt IDs."
-		ctx = context.WithValue(ctx, sourceTurnBudgetKey{}, &sourceTurnBudget{remaining: request.MaxTurns})
+		reserve := min(30*time.Second, request.MaxDuration/4)
+		request.Prompt = prompt + fmt.Sprintf("\n\nRemaining time: %s. This includes the final answer. Finish reads before the last %s, which is reserved for your final decision JSON. Refused reads do not extend this deadline.", request.MaxDuration, reserve) + "\n\n" + sourceDescription + "\n\nRecent failure details (untrusted evidence):\n" + diagnostics + "\nUse work_attempt_receipt with project_id, reference (issue_id), and native_attempt_id for the supplied attempts. Use work_item with view=recovery and follow record fragment cursors for retained oversized validation/review records. Cite the corresponding supplied attempt/receipt IDs."
 		output, err := r.generateTextTurn(ctx, backend, request, req.Execution, backendConfig.Kind, progresscheck.MaxOutputBytes, tools, handler)
 		return output, errors.Join(err, context.Cause(ctx))
 	}
@@ -143,7 +178,7 @@ func (r *Runner) progressWorkspace(ctx context.Context, req RunRequest, evidence
 		}
 	}
 	if issue.Source == nil || issue.Source.Version.Source == nil {
-		return workspace.Info{}, nil, errors.New("progress check requires retained Hub source")
+		return workspace.Info{}, func() {}, nil
 	}
 	release := func() {}
 	if usage, ok := backend.(workspace.Usage); ok {
@@ -272,4 +307,30 @@ func progressTurnTimeout(cfg config.Config, backend config.AgentBackend) time.Du
 		return progresscheck.MaxDuration
 	}
 	return min(limit, progresscheck.MaxDuration)
+}
+
+func (r *Runner) progressSourceTools(req RunRequest, evidence progresscheck.Request, info workspace.Info, tools []AgentTool, handle AgentToolHandler) ([]AgentTool, AgentToolHandler) {
+	source, ok := r.workspaceSnapshot().(workspace.ReviewCommandRunner)
+	if info.Path == "" || !ok {
+		return tools, handle
+	}
+	issue := workspaceIssue(r.projectID, req.Issue)
+	issue.PullRequestHeadSHA = evidence.SourceSHA
+	issue.ReviewVersionID = "progress-" + evidence.SourceSHA
+	commands := &validatorCommands{run: source, info: info, issue: issue, base: evidence.BaseSHA}
+	sourceTools, sourceHandler := commands.tools()
+	for _, tool := range sourceTools {
+		if tool.Name == "detent_read_source" {
+			tools = append(tools, tool)
+		}
+	}
+	return tools, func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
+		if call.Name == "detent_read_source" {
+			return sourceHandler(ctx, call)
+		}
+		if handle == nil {
+			return AgentToolResult{}, errors.New("progress evidence reader unavailable")
+		}
+		return handle(ctx, call)
+	}
 }
