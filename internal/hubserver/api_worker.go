@@ -705,6 +705,17 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			}
 		}
 		if mode.preflight {
+			var raw string
+			err := tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(a.payload_object_key,''),a.data_json) FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id WHERE l.issue_id=? AND a.status='running' ORDER BY a.fencing_token DESC LIMIT 1`, id).Scan(&raw)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return tracker.Lease{}, err
+			}
+			if err == nil {
+				var stored storedRun
+				if err := decodeStorageJSON(ctx, []byte(raw), &stored); err != nil {
+					return tracker.Lease{}, err
+				}
+			}
 			var revision int64
 			var item string
 			if err := tx.QueryRowContext(ctx, "SELECT revision,COALESCE(native_id,'') FROM issues WHERE id = ?", id).Scan(&revision, &item); err != nil {

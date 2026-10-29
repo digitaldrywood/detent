@@ -95,6 +95,8 @@ func claimWriting(ctx context.Context) bool {
 }
 
 func (d *database) claimNativePrepared(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, interval time.Duration) (tracker.Lease, error) {
+	contentMutation(ctx, true)
+	defer contentMutation(ctx, false)
 	prepared := &claimPreparation{versions: make(map[string]preparedClaimVersion), checkpoints: make(map[string]preparedClaimCheckpoint), details: make(map[string]preparedClaimDetail)}
 	pass := context.WithValue(ctx, claimPreparationKey{}, prepared)
 	for prepared.passes < claimPreparationLimit {
@@ -117,7 +119,19 @@ func (d *database) claimNativePrepared(ctx context.Context, request tracker.Clai
 		if err := prepareClaimDecisionPayloads(pass, prepared); err != nil {
 			return tracker.Lease{}, err
 		}
+		contentWriting(pass, true)
 		lease, err = d.claimNextOn(pass, d.db, nil, mode, request, query, interval)
+		contentWriting(pass, false)
+		var hydration *claimHydration
+		if errors.As(err, &hydration) {
+			prepared.hydrating = true
+			err = hydration.run(pass, d.reader)
+			prepared.hydrating = false
+			if err != nil {
+				return tracker.Lease{}, err
+			}
+			continue
+		}
 		if !errors.Is(err, errClaimHintStale) {
 			return lease, err
 		}

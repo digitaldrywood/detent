@@ -89,6 +89,9 @@ func (d *database) claimInTransaction(ctx context.Context, tx *sql.Tx, request t
 			return tracker.Lease{}, readErr
 		}
 		if priorFound {
+			if err := cancelNativeLeaseAttempt(ctx, tx, prior, now); err != nil {
+				return tracker.Lease{}, err
+			}
 			previous, err = sessionSummary(ctx, tx, prior)
 			if err != nil {
 				return tracker.Lease{}, err
@@ -247,21 +250,21 @@ func (d *database) renew(ctx context.Context, request tracker.RenewRequest, poli
 }
 
 func (d *database) Release(ctx context.Context, request tracker.ReleaseRequest) error {
-	return d.releaseLease(ctx, request, false)
+	return d.releaseLease(ctx, request)
 }
 
-func (d *database) releaseLease(ctx context.Context, request tracker.ReleaseRequest, cancelAttempt bool, scopes ...nativeScope) error {
+func (d *database) releaseLease(ctx context.Context, request tracker.ReleaseRequest) error {
 	ctx = isolateContentContext(ctx)
-	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok && cancelAttempt {
+	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
 		content.completion = true
 	}
 	_, err := prepareContentMutation(ctx, d.reader, func() (struct{}, error) {
-		return struct{}{}, d.releaseLeaseOnce(ctx, request, cancelAttempt, scopes...)
+		return struct{}{}, d.releaseLeaseOnce(ctx, request)
 	})
 	return err
 }
 
-func (d *database) releaseLeaseOnce(ctx context.Context, request tracker.ReleaseRequest, cancelAttempt bool, scopes ...nativeScope) (resultErr error) {
+func (d *database) releaseLeaseOnce(ctx context.Context, request tracker.ReleaseRequest) (resultErr error) {
 	request, err := normalizeReleaseRequest(request)
 	if err != nil {
 		return err
@@ -293,13 +296,6 @@ func (d *database) releaseLeaseOnce(ctx context.Context, request tracker.Release
 
 	if err := releaseLeaseRow(ctx, tx, record, request.Reason, now); err != nil {
 		return err
-	}
-	if cancelAttempt {
-		for _, scope := range scopes {
-			if err := cancelNativeLeaseAttempt(ctx, tx, scope, record, now); err != nil {
-				return err
-			}
-		}
 	}
 	if err := heartbeatMachine(ctx, tx, record.session.Machine.ID, now); err != nil {
 		return err
@@ -654,7 +650,10 @@ WHERE lease_id = ? AND fencing_token = ? AND released_at IS NULL`,
 	if err != nil {
 		return fmt.Errorf("release hub lease: %w", err)
 	}
-	return requireOneLeaseMutation(result, record.session.ID)
+	if err := requireOneLeaseMutation(result, record.session.ID); err != nil {
+		return err
+	}
+	return cancelNativeLeaseAttempt(ctx, tx, record, now)
 }
 
 func expireLease(ctx context.Context, tx *sql.Tx, record leaseRecord, now time.Time) error {
@@ -673,7 +672,7 @@ WHERE lease_id = ? AND fencing_token = ? AND released_at IS NULL`,
 	if err := requireOneLeaseMutation(result, record.session.ID); err != nil {
 		return err
 	}
-	return nil
+	return cancelNativeLeaseAttempt(ctx, tx, record, now)
 }
 
 func requireRenewableLease(ctx context.Context, tx *sql.Tx, record leaseRecord, token tracker.FencingToken, now time.Time, policyRequired bool, landingCapacity int, scopes ...nativeScope) error {

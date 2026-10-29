@@ -1101,3 +1101,67 @@ func TestStorageConversionContinuesAfterProjectionFailure(t *testing.T) {
 		t.Fatalf("projection failure stopped storage conversion: converted=%d error=%v", converted, err)
 	}
 }
+
+func TestStorageConversionAttemptLeaseBudget(t *testing.T) {
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+	items := []tracker.NativeIssue{f.create(t, "First expired execution"), f.create(t, "Second expired execution")}
+	worker := f.worker(t, "repair worker")
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/register", worker, map[string]any{"id": "repair-machine", "hostname": "repair-machine", "version": "test", "capacity": 2}), http.StatusOK)
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for i := range storageConversionRows + 3 {
+		data := tracker.NativeRunData{PolicyID: "example-policy", Sequence: 1}
+		id := seedHealthRateAttempt(t, tx, scope, items[i%len(items)], "repair-machine", "running", data, now.Add(-time.Hour), -1)
+		data.AttemptID = id
+		if err := tx.QueryRowContext(t.Context(), "SELECT lease_id,fencing_token,run_id FROM native_attempts WHERE id=?", id).Scan(&data.LeaseID, &data.FencingToken, &data.RunID); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=? WHERE id=?", string(raw), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, item := range items {
+		id := seedHealthRateAttempt(t, tx, scope, item, "repair-machine", "running", tracker.NativeRunData{PolicyID: "example-policy", Sequence: 1}, now, -1)
+		if _, err := tx.ExecContext(t.Context(), "UPDATE leases SET released_at=NULL WHERE lease_id=(SELECT lease_id FROM native_attempts WHERE id=?)", id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET id=? WHERE id=?", fmt.Sprintf("zz-live-%d", i), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for tick, want := range []int{storageConversionRows, storageConversionRows + 3, storageConversionRows + 3} {
+		if err := f.service.convertLegacyStorage(t.Context(), now); err != nil {
+			t.Fatal(err)
+		}
+		var cancelled int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts WHERE status='cancelled'").Scan(&cancelled); err != nil {
+			t.Fatal(err)
+		}
+		if cancelled != want {
+			t.Fatalf("tick %d cancelled %d attempts, want %d", tick, cancelled, want)
+		}
+		for i := range items {
+			var status string
+			var sequence int64
+			var released sql.NullString
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT a.status,a.sequence,l.released_at FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id WHERE a.id=?", fmt.Sprintf("zz-live-%d", i)).Scan(&status, &sequence, &released); err != nil {
+				t.Fatal(err)
+			}
+			if status != "running" || sequence != 1 || released.Valid {
+				t.Fatalf("tick %d changed live attempt %d: status=%s sequence=%d released=%v", tick, i, status, sequence, released)
+			}
+		}
+	}
+}

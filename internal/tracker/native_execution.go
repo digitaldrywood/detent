@@ -63,6 +63,7 @@ type NativeAttempt struct {
 	TerminalFailureAvailability string            `json:"terminal_failure_availability"`
 	FinalizationAvailability    string            `json:"finalization_availability"`
 	ClaimReleasedAt             *time.Time        `json:"claim_released_at,omitempty"`
+	CleanupAcknowledgedAt       *time.Time        `json:"cleanup_acknowledged_at,omitempty"`
 	Status                      string            `json:"status"`
 	StartedAt                   time.Time         `json:"started_at"`
 	UpdatedAt                   time.Time         `json:"updated_at"`

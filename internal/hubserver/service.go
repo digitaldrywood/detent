@@ -80,6 +80,7 @@ type Service struct {
 	pageConversionFamily    atomic.Uint64
 	activityConvertFamily   atomic.Uint64
 	projectionCursors       sync.Map
+	cleanupPollCursors      sync.Map
 	boardRefreshCursor      string
 	boardRetentionScope     nativeScope
 	lastNativeCleanup       time.Time

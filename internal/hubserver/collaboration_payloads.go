@@ -57,8 +57,10 @@ func collaborationPayloadValues(ctx context.Context, tx *sql.Tx, scope nativeSco
 		if err != nil {
 			return "", nil, err
 		}
-		if _, err := recordPayloadAttachment(ctx, tx, scope, tracker.NativeWorkItemID(item), ref, formatHubTime(now)); err != nil {
-			return "", nil, err
+		if scope.credential.ID != "" {
+			if _, err := recordPayloadAttachment(ctx, tx, scope, tracker.NativeWorkItemID(item), ref, formatHubTime(now)); err != nil {
+				return "", nil, err
+			}
 		}
 		version, raw = 1, "{}"
 	}

@@ -531,6 +531,10 @@ func archiveProjectionDefault(table, column string) json.RawMessage {
 		if slices.Contains([]string{"actor_principal_id", "text_bytes", "stored_text_bytes"}, column) {
 			return json.RawMessage("null")
 		}
+	case "native_attempts":
+		if slices.Contains([]string{"worker_cleanup_required", "cleanup_acknowledged_at"}, column) {
+			return json.RawMessage("null")
+		}
 	case "collaboration_events":
 		switch column {
 		case "archive_operation", "archive_from_state", "archive_to_state", "archive_attempt_id", "archive_outcome", "archive_landed_commit":
