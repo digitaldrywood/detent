@@ -15,4 +15,4 @@ if ! git cherry-pick -x "$sha"; then
   exit 1
 fi
 git push -u origin "$branch"
-gh pr create --base "$release" --head "$branch" --title "fix(release): pick ${sha:0:12}" --body "Cherry-pick develop commit $sha onto $release with its original commit trailer. Validate the fix before merging. After the batch of picks merges, dispatch the full suite: gh workflow run ci.yml --ref $release"
+gh pr create --base "$release" --head "$branch" --title "fix(release): pick ${sha:0:12}" --body "Cherry-pick develop commit $sha onto $release with its original commit trailer. Validate the fix before merging. After the batch of picks merges, validate the release head on a runner host: scripts/release-validate-local.sh $release"

@@ -491,6 +491,7 @@ detent --format json config path`),
 		newCloudCommand(opts),
 		newArtifactCommand(opts.lookupEnv),
 		newAttachCommand(opts.lookupEnv, nil),
+		newValidateCommand(opts.lookupEnv, nil, installGoTestWrapper),
 		newPauseProjectCommand(&configPath, opts),
 		newEditProjectCommand(&configPath, opts, OperationUnpauseProject, "unpause", "Unpause a project", func(project *globalconfig.Project) error {
 			clearProjectPause(project)

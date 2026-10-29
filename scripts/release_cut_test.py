@@ -18,13 +18,13 @@ class ReleaseCutTest(unittest.TestCase):
         active_cases = {
             "manual queued cut": ("release-cut.yml", "queued", "develop", "workflow_dispatch"),
             "scheduled pending cut": ("release-cut.yml", "pending", "develop", "schedule"),
-            "manual running CI": ("ci.yml", "in_progress", "release/v1.1", "workflow_dispatch"),
-            "scheduled queued CI": ("ci.yml", "queued", "release/v1.1", "push"),
+            "manual running finalizer": ("release-finalize.yml", "in_progress", "release/v1.1", "workflow_dispatch"),
+            "queued finalizer": ("release-finalize.yml", "queued", "release/v1.1", "workflow_dispatch"),
             "manual requested build": ("release.yml", "requested", "v1.1.0", "workflow_dispatch"),
             "manual running signed build": ("release.yml", "in_progress", "v1.1.0", "workflow_dispatch"),
             "manual waiting deploy": ("release.yml", "waiting", "v1.1.0", "workflow_dispatch"),
             "manual running deploy": ("release.yml", "in_progress", "develop", "workflow_dispatch"),
-            "develop CI active": ("ci.yml", "in_progress", "develop", "schedule"),
+            "develop finalizer active": ("release-finalize.yml", "in_progress", "develop", "workflow_dispatch"),
             "current cut": ("release-cut.yml", "in_progress", "develop", "schedule"),
             "manual explicit active": ("release.yml", "in_progress", "develop", "workflow_dispatch"),
             "recheck active": ("release.yml", "in_progress", "develop", "workflow_dispatch"),
@@ -64,12 +64,12 @@ class ReleaseCutTest(unittest.TestCase):
             "recheck branch advanced": [("v1.1", "green")],
             "recheck frozen branch": [],
         }
-        skipped = set(active_cases) - {"develop CI active", "current cut", "manual explicit active"}
+        skipped = set(active_cases) - {"develop finalizer active", "current cut", "manual explicit active"}
         skipped.update(("recent production newer develop", "UTC inside boundary", "UTC offset boundary", "UTC upper boundary", "old attempt recent retry", "recheck completion"))
         frozen_skips = set(frozen_cases) - {"current deployed head", "superseded leftover series", "manual explicit frozen series", "older production rerun recent"}
         frozen_skips.update(("existing", "same source unreleased", "advanced series", "newer uncovered green", "covered tip no green"))
         skipped.add("older production rerun recent")
-        cases = ("green", "no green", "skipped run", "explicit", "outside develop", "existing", "explicit existing", "next minor", "invalid version", "api failure", "superseded green", "newer release success", "newer release failure", "release status only", "failed develop publication", "legacy develop evidence", "missing release scripts", "legacy CI", "legacy finalizer", "same source unreleased", "advanced series", "stable tag only", "prerelease tag only", "newer uncovered green", "covered tip no green", "stable tip", "explicit covered series", "explicit covered tag", "admission API failure", "recheck API failure", "simultaneous triggers", "dispatch failure", "refs read failure", "recheck refs failure") + tuple(active_cases) + tuple(completion_cases) + tuple(frozen_cases)
+        cases = ("green", "no green", "skipped run", "explicit", "outside develop", "existing", "explicit existing", "next minor", "invalid version", "api failure", "superseded green", "newer release success", "newer release failure", "release status only", "failed develop publication", "missing release scripts", "missing finalize workflow", "same source unreleased", "advanced series", "stable tag only", "prerelease tag only", "newer uncovered green", "covered tip no green", "stable tip", "explicit covered series", "explicit covered tag", "admission API failure", "recheck API failure", "simultaneous triggers", "refs read failure", "recheck refs failure") + tuple(active_cases) + tuple(completion_cases) + tuple(frozen_cases)
         for case in cases:
             with self.subTest(case=case), tempfile.TemporaryDirectory(dir=scratch) as directory:
                 root = Path(directory)
@@ -89,8 +89,9 @@ class ReleaseCutTest(unittest.TestCase):
                 git("switch", "-c", "develop")
                 files = {
                     "scripts/release-cut.sh": "#!/usr/bin/env bash\ntrue\n",
-                    "scripts/scheduled-ci-finish.sh": 'release="${CI_RELEASE_BRANCH:-}"\n',
-                    ".github/workflows/ci.yml": "env:\n  CI_RELEASE_BRANCH: ${{ needs.preflight.outputs.release_branch }}\n",
+                    "scripts/release-validate-local.sh": "#!/usr/bin/env bash\ntrue\n",
+                    "scripts/release-finalize.sh": "#!/usr/bin/env bash\ntrue\n",
+                    ".github/workflows/release-finalize.yml": "on: workflow_dispatch\n",
                     ".github/workflows/release.yml": "on: workflow_dispatch\n",
                     ".github/workflows/release-cut.yml": "on:\n  schedule:\n    - cron: '37 6 * * 1'\n",
                 }
@@ -98,10 +99,8 @@ class ReleaseCutTest(unittest.TestCase):
                     files[".github/workflows/release-cut.yml"] = "on:\n  schedule:\n    - cron: '37 6 * * *'\n"
                 if case == "missing release scripts":
                     del files["scripts/release-cut.sh"]
-                if case == "legacy CI":
-                    files[".github/workflows/ci.yml"] = "on: workflow_dispatch\n"
-                if case == "legacy finalizer":
-                    files["scripts/scheduled-ci-finish.sh"] = "release=develop\n"
+                if case == "missing finalize workflow":
+                    del files[".github/workflows/release-finalize.yml"]
                 for name, content in files.items():
                     target = checkout / name
                     target.parent.mkdir(parents=True, exist_ok=True)
@@ -189,8 +188,8 @@ if "actions/runs?status=" in query:
         subprocess.run([os.environ["REAL_GIT"], "--git-dir", fixture["remote"], "update-ref", "refs/heads/" + branch, fixture["tip"]], check=True)
     if fixture["case"] == "recheck active" and admission_pass == 1:
         active = []
-    if fixture["case"] == "simultaneous triggers" and any(call[:2] == ["workflow", "run"] for call in calls):
-        active = [{"id": 90, "path": ".github/workflows/ci.yml", "status": "queued", "head_branch": "release/v1.2", "head_sha": fixture["green"], "html_url": "https://github.com/example-org/example-project/actions/runs/90"}]
+    if fixture["case"] == "simultaneous triggers" and any("git/refs" in " ".join(call) for call in calls):
+        active = [{"id": 90, "path": ".github/workflows/release-cut.yml", "status": "queued", "head_branch": "release/v1.2", "head_sha": fixture["green"], "html_url": "https://github.com/example-org/example-project/actions/runs/90"}]
     print(json.dumps([{"workflow_runs": [run for run in active if "status=" + run["status"] + "&" in query]}]))
 elif "workflows/release.yml/runs?" in query:
     runs = fixture["release_runs"]
@@ -203,15 +202,11 @@ elif "/attempts/2/jobs?" in query:
     if fixture["case"] == "older production rerun recent" and "runs/91/" in query:
         jobs = [{**jobs[0], "completed_at": "2026-10-12T05:00:00Z"}]
     print(json.dumps([{"jobs": jobs}]))
-elif "workflows/ci.yml/runs?" in query:
-    if fixture["case"] == "api failure": sys.exit(1)
-    if "branch=develop" not in query or "status=completed" not in query:
-        sys.exit("release selection must query completed develop runs")
-    print(json.dumps([{"workflow_runs": fixture["runs"]}]))
 elif "/statuses?" in query:
+    if fixture["case"] == "api failure": sys.exit(1)
     statuses = []
-    if fixture["green"] in query and fixture["case"] != "skipped run":
-        statuses = [{"context": "scheduled-full-ci" if fixture["case"] == "legacy develop evidence" else "develop-full-ci", "state": "success", "target_url": fixture["runs"][0]["html_url"]}]
+    if fixture["green"] in query and fixture["case"] not in ("skipped run", "no green", "covered tip no green"):
+        statuses = [{"context": "develop-full-ci", "state": "failure" if fixture["case"] == "failed develop publication" else "success"}]
     if fixture["case"] == "superseded green" and statuses:
         statuses.insert(0, {"context": "develop-full-ci", "state": "failure", "target_url": "https://github.com/example-org/example-project/actions/runs/3"})
     if fixture["case"] in ("newer release success", "newer release failure", "release status only") and statuses:
@@ -220,8 +215,8 @@ elif "/statuses?" in query:
     if fixture["case"] == "newer uncovered green" and fixture["uncovered"] in query:
         statuses = [{"context": "develop-full-ci", "state": "success", "target_url": "https://github.com/example-org/example-project/actions/runs/5"}]
     print(json.dumps([statuses]))
-elif "git/refs" in query or args[:2] == ["workflow", "run"]:
-    if fixture["case"] == "dispatch failure" and args[:2] == ["workflow", "run"]: sys.exit("dispatch unavailable")
+elif "git/refs" in query:
+    pass
 else:
     sys.exit("unexpected gh call: " + query)
 ''')
@@ -246,18 +241,13 @@ os.execv(os.environ["REAL_GIT"], [os.environ["REAL_GIT"], *sys.argv[1:]])
                 if source:
                     env["GITHUB_EVENT_NAME"] = "workflow_dispatch"
                 result = subprocess.run(["bash", str(ROOT / "scripts/release-cut.sh"), version, source], cwd=checkout, env=env, capture_output=True, text=True, timeout=30)
-                accepted = case not in ("outside develop", "explicit existing", "invalid version", "api failure", "missing release scripts", "legacy CI", "legacy finalizer", "explicit covered series", "explicit covered tag", "admission API failure", "recheck API failure", "jobs API failure", "dispatch failure", "refs read failure", "recheck refs failure")
+                accepted = case not in ("outside develop", "explicit existing", "invalid version", "api failure", "missing release scripts", "missing finalize workflow", "explicit covered series", "explicit covered tag", "admission API failure", "recheck API failure", "jobs API failure", "refs read failure", "recheck refs failure")
                 self.assertEqual(result.returncode == 0, accepted, result.stdout + result.stderr)
                 calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
                 writes = [call for call in calls if "POST" in call]
                 dispatches = [call for call in calls if call[:2] == ["workflow", "run"]]
                 if not accepted:
-                    if case == "dispatch failure":
-                        self.assertEqual(len(writes), 1)
-                        self.assertEqual(len(dispatches), 1)
-                        self.assertNotIn("and dispatched", result.stdout)
-                    else:
-                        self.assertEqual(writes + dispatches, [], "rejected cuts must not create a branch or run CI")
+                    self.assertEqual(writes + dispatches, [], "rejected cuts must not create a branch or run CI")
                     if case in ("admission API failure", "recheck API failure", "jobs API failure", "refs read failure", "recheck refs failure"):
                         self.assertIn("Release admission read failed", result.stderr)
                         self.assertNotIn("no-op", result.stdout)
@@ -283,7 +273,8 @@ os.execv(os.environ["REAL_GIT"], [os.environ["REAL_GIT"], *sys.argv[1:]])
                 self.assertEqual(len(writes), 1)
                 self.assertIn("sha=" + expected, writes[0])
                 self.assertIn("ref=refs/heads/" + branch, writes[0])
-                self.assertEqual(dispatches, [["workflow", "run", "ci.yml", "--repo", "example-org/example-project", "--ref", branch, "-f", "force=true"]])
+                self.assertEqual(dispatches, [], "cutting a release never dispatches GitHub Actions validation")
+                self.assertIn("scripts/release-validate-local.sh " + branch, result.stdout)
                 if case in ("manual explicit active", "manual explicit recent"):
                     self.assertFalse(any("actions/runs?status=" in " ".join(call) for call in calls))
                 if case == "simultaneous triggers":
