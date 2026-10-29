@@ -233,6 +233,9 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"separate session pass with human review", func(_ *tracker.ReviewChange) {}, http.StatusOK, "needs_evidence", nil},
 		{"implementing session", func(r *tracker.ReviewChange) { r.Validator.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"validator reconciliation without a provider session", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"validator reconciliation for recovered source without a provider session", multipleReceipts, http.StatusOK, "reviewed", nil},
+		{"implementation review for recovered source without a provider session", implementationReview, http.StatusOK, "needs_evidence", nil},
+		{"security audit for recovered source without a provider session", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
 		{"validator reconciliation reuses implementing session", func(r *tracker.ReviewChange) { r.Validator.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"same machine audit session cannot validate acceptance", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"audit from another machine does not collide", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
@@ -354,6 +357,11 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			event := nativeStartedEvent(lease)
 			event.Data.Identity.Role = "code"
 			event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 41}}
+			recoveredSource := strings.HasSuffix(test.name, "recovered source without a provider session")
+			if recoveredSource {
+				event.Data.Identity.Role = "rework"
+				event.Data.Runtime.Activity.SessionID = 0
+			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, event), http.StatusOK)
 			mutation := tracker.Mutation{IdempotencyKey: "change", LeaseID: lease.ID, FencingToken: lease.FencingToken}
 			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
@@ -364,7 +372,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			path += "/" + change.ID
 			input := changeTestInput()
 			input.PolicyID, input.RunID, input.AttemptID = descriptor.ID, event.Data.RunID, event.Data.AttemptID
-			if test.name == "separate session pass with multiple receipts" || test.name == "failed selected receipt cannot pass" {
+			if test.name == "separate session pass with multiple receipts" || test.name == "failed selected receipt cannot pass" || recoveredSource {
 				input.Validation = &gate.CommandResult{Command: "make check-land", HeadSHA: input.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 1}
 			}
 			mutation.IdempotencyKey = "publish"
@@ -417,12 +425,15 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				event = merge
 				request.LeaseID, request.FencingToken = lease.ID, lease.FencingToken
 			}
-			if strings.HasPrefix(test.name, "security audit reconciliation") || strings.HasPrefix(test.name, "validator reconciliation") {
+			if strings.HasPrefix(test.name, "security audit reconciliation") || strings.HasPrefix(test.name, "validator reconciliation") || recoveredSource {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 				lease = claimNativeAttempt(t, f, worker, "machine", "reconcile-session", issue.WorkItemID, descriptor.ID)
 				reconcile := nativeStartedEvent(lease)
 				reconcile.IdempotencyKey = "reconcile-start"
 				reconcile.Data.Identity.Role = "code"
+				if recoveredSource {
+					reconcile.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 71}}
+				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, reconcile), http.StatusOK)
 				event = reconcile
 				request.LeaseID, request.FencingToken = lease.ID, lease.FencingToken

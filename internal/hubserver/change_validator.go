@@ -181,7 +181,7 @@ func validateNativeValidatorReview(ctx context.Context, tx *sql.Tx, scope native
 	if err := decodeRunDetail(ctx, tx, raw, &source); err != nil {
 		return "", err
 	}
-	if source.RunID != version.RunID || source.PolicyID != version.PolicyID || source.Identity == nil || (source.Identity.Role != "code" && source.Identity.Role != "rework") || source.Runtime == nil || source.Runtime.Activity == nil || source.Runtime.Activity.SessionID <= 0 {
+	if source.RunID != version.RunID || source.PolicyID != version.PolicyID || source.Identity == nil || (source.Identity.Role != "code" && source.Identity.Role != "rework") || source.Runtime == nil || source.Runtime.Activity == nil || source.Runtime.Activity.SessionID < 0 {
 		if audit {
 			return "", auditInvalid("security audit requires the implementing session's recorded identity", "source.identity")
 		}
