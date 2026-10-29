@@ -188,6 +188,7 @@ type ClientInfo struct {
 }
 
 type RunTurnRequest struct {
+	FinalPrompt           func() string
 	TextOnly              bool
 	IsolatedTools         bool
 	Permissions           string
@@ -574,44 +575,54 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 	}
 
 	elicitationState := newMCPElicitationState(req.MCPElicitationPolicy, onUpdate)
-	turn, err := s.startTurn(ctx, transport, req, threadID, elicitationState, onUpdate)
-	if err != nil {
-		return RunTurnResult{}, err
-	}
-	turnID := turn.ID
-
-	result = RunTurnResult{
-		ThreadID:           threadID,
-		TurnID:             turnID,
-		SessionID:          threadID + "-" + turnID,
-		AuthenticationMode: authenticationMode,
-	}
-	if !turn.StartedEmitted {
-		startedIdentity := runtimeIdentity.Merge(turn.RuntimeIdentity)
-		if turn.Model != "" {
-			startedIdentity = startedIdentity.Merge(agentidentity.RuntimeUpdate(
-				turn.Model,
-				"",
-				"",
-				"",
-				time.Time{},
-			))
-		}
-		if err := emitUpdate(Update{
-			Type:            UpdateTurnStarted,
-			Method:          "turn/start",
-			ThreadID:        threadID,
-			TurnID:          turnID,
-			Status:          "started",
-			Model:           startedIdentity.Model(),
-			RuntimeIdentity: startedIdentity,
-		}, onUpdate); err != nil {
+	for turnIndex := 0; turnIndex < 2; turnIndex++ {
+		turn, err := s.startTurn(ctx, transport, req, threadID, elicitationState, onUpdate)
+		if err != nil {
 			return RunTurnResult{}, err
 		}
-	}
+		turnID := turn.ID
 
-	if err := s.streamTurn(ctx, transport, threadID, turnID, req.turnTimeout(s.turnTimeout), req.StallTimeout, req.ToolHandler, elicitationState, onUpdate); err != nil {
-		return RunTurnResult{}, err
+		result = RunTurnResult{
+			ThreadID:           threadID,
+			TurnID:             turnID,
+			SessionID:          threadID + "-" + turnID,
+			AuthenticationMode: authenticationMode,
+		}
+		if !turn.StartedEmitted {
+			startedIdentity := runtimeIdentity.Merge(turn.RuntimeIdentity)
+			if turn.Model != "" {
+				startedIdentity = startedIdentity.Merge(agentidentity.RuntimeUpdate(
+					turn.Model,
+					"",
+					"",
+					"",
+					time.Time{},
+				))
+			}
+			if err := emitUpdate(Update{
+				Type:            UpdateTurnStarted,
+				Method:          "turn/start",
+				ThreadID:        threadID,
+				TurnID:          turnID,
+				Status:          "started",
+				Model:           startedIdentity.Model(),
+				RuntimeIdentity: startedIdentity,
+			}, onUpdate); err != nil {
+				return RunTurnResult{}, err
+			}
+		}
+
+		if err := s.streamTurn(ctx, transport, threadID, turnID, req.turnTimeout(s.turnTimeout), req.StallTimeout, req.ToolHandler, elicitationState, onUpdate); err != nil {
+			return RunTurnResult{}, err
+		}
+
+		if turnIndex == 0 && req.FinalPrompt != nil {
+			if prompt := req.FinalPrompt(); prompt != "" {
+				req.Prompt = prompt
+				continue
+			}
+		}
+		break
 	}
 
 	return result, nil

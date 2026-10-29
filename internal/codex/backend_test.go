@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 )
@@ -753,28 +754,41 @@ func (t *quietCommandTransport) Receive(ctx context.Context) (Message, error) {
 
 func TestInvestigationExhaustsToolBudgetWithinOneTurn(t *testing.T) {
 	for _, test := range []struct {
-		name         string
-		calls, bytes int
-		events       []Message
+		name                            string
+		calls, bytes                    int
+		fallback, evidenceOnly, invalid bool
 	}{
-		{"calls", 1, 1000, []Message{
-			notificationMessage(t, "item/started", `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"read-1","type":"commandExecution","command":"cat source.go"}}`),
-			notificationMessage(t, "item/started", `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"read-2","type":"commandExecution","command":"cat test.go"}}`),
-		}},
-		{"aggregate result bytes", 10, 7, []Message{
-			notificationMessage(t, "item/commandExecution/outputDelta", `{"threadId":"thread-1","turnId":"turn-1","itemId":"read-1","delta":"four"}`),
-			notificationMessage(t, "item/commandExecution/outputDelta", `{"threadId":"thread-1","turnId":"turn-1","itemId":"read-2","delta":"four"}`),
-		}},
-		{"completed item bytes", 10, 7, []Message{
-			notificationMessage(t, "item/completed", `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"read-1","type":"commandExecution","aggregatedOutput":"four","status":"completed"}}`),
-			notificationMessage(t, "item/completed", `{"threadId":"thread-1","turnId":"turn-1","item":{"id":"read-2","type":"commandExecution","aggregatedOutput":"four","status":"completed"}}`),
-		}},
+		{name: "calls", calls: 1, bytes: 1000}, {name: "result bytes", calls: 10, bytes: 7}, {name: "same thread final turn", calls: 1, bytes: 1000, fallback: true}, {name: "evidence only", calls: 1, bytes: 1000, evidenceOnly: true}, {name: "invalid decision rejected", calls: 1, bytes: 1000, invalid: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			messages := []Message{responseMessage(t, 1, `{"userAgent":"codex-cli/0.157.0"}`), responseMessage(t, 5, `{"config":{}}`), responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`), responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`)}
-			messages = append(messages, test.events...)
-			messages = append(messages, notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`))
-			transport := newFakeAppServerTransport(messages)
+			decisionJSON := `{"outcome":"reroute","step":"implement","reason":"Repair the assertion","diagnosis":"failed: observed assertion failure","instruction":"Repair the implementation exercised by the failing assertion","evidence":["failed"]}`
+			if test.invalid {
+				decisionJSON = `{"outcome":"progressing","reason":"No evidence"}`
+			}
+			encoded, err := json.Marshal(decisionJSON)
+			if err != nil {
+				t.Fatal(err)
+			}
+			transport := newFakeAppServerTransport([]Message{
+				responseMessage(t, 1, `{"userAgent":"codex-cli/0.157.0"}`),
+				responseMessage(t, 5, `{"config":{}}`),
+				responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
+				responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+				serverRequestMessage(t, 90, "item/tool/call", `{"tool":"work_item","arguments":{}}`),
+				serverRequestMessage(t, 91, "item/tool/call", `{"tool":"work_item","arguments":{}}`),
+				serverRequestMessage(t, 92, "item/tool/call", `{"tool":"work_item","arguments":{}}`),
+				notificationMessage(t, "item/agentMessage/delta", `{"threadId":"thread-1","turnId":"turn-1","itemId":"final","delta":`+string(encoded)+`}`),
+				notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+			})
+			if test.fallback {
+				transport.received = append(transport.received[:len(transport.received)-2],
+					notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+					responseMessage(t, 3, `{"turn":{"id":"turn-2"}}`),
+					serverRequestMessage(t, 93, "item/tool/call", `{"tool":"work_item","arguments":{}}`),
+					notificationMessage(t, "item/agentMessage/delta", `{"threadId":"thread-1","turnId":"turn-2","itemId":"final","delta":`+string(encoded)+`}`),
+					notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-2","status":"completed"}}`),
+				)
+			}
 			server, err := NewAppServer(&workerTempCapturingTransportFactory{transport: transport}, WithReadTimeout(time.Second), WithTurnTimeout(time.Second))
 			if err != nil {
 				t.Fatal(err)
@@ -785,13 +799,78 @@ func TestInvestigationExhaustsToolBudgetWithinOneTurn(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancelCause(t.Context())
 			defer cancel(nil)
-			_, err = backend.RunTurn(ctx, runner.AgentTurnRequest{Workspace: "/scratch", ReadOnly: true, IsolatedTools: true, MaxTurns: 8, ToolBudget: runner.NewAgentToolBudget(test.calls, test.bytes, cancel)}, nil)
-			if !errors.Is(err, runner.ErrInvestigationBudget) || !errors.Is(context.Cause(ctx), runner.ErrInvestigationBudget) {
-				t.Fatalf("single turn escaped budget: err=%v cause=%v", err, context.Cause(ctx))
+			budget := runner.NewAgentToolBudget(test.calls, test.bytes)
+			reads := 0
+			var output strings.Builder
+			workspace := "/scratch"
+			if test.evidenceOnly {
+				workspace = ""
 			}
-			if len(transport.received) == 0 {
-				t.Fatal("consumed successful completion after exhaustion")
+			_, err = backend.RunTurnWithTools(ctx, runner.AgentTurnRequest{Workspace: workspace, TempDir: "/scratch", Model: "example-model", ReadOnly: true, IsolatedTools: true, ToolBudget: budget}, []runner.AgentTool{{Name: "work_item", InputSchema: json.RawMessage(`{"type":"object"}`)}}, func(context.Context, runner.AgentToolCall) (runner.AgentToolResult, error) {
+				reads++
+				return runner.AgentToolResult{Success: true, Content: "four"}, nil
+			}, func(update runner.AgentUpdate) error {
+				if update.Type == runner.AgentUpdateMessageDelta {
+					output.WriteString(update.Delta)
+				}
+				return nil
+			})
+			if err != nil || context.Cause(ctx) != nil || output.String() != decisionJSON {
+				t.Fatalf("no final decision: output=%q err=%v cause=%v", output.String(), err, context.Cause(ctx))
+			}
+			decision, err := (progresscheck.AI{Backend: progressDecisionText(output.String())}).Decide(ctx, progresscheck.Request{ProjectID: "project", IssueID: "issue", PolicyID: "policy", EvidenceRevision: "revision", Attempts: []progresscheck.Attempt{{ID: "failed", Outcome: "failed"}}, AvailableSteps: []string{"implement"}})
+			if (err != nil) != test.invalid || (!test.invalid && decision.Outcome != progresscheck.Reroute) {
+				t.Fatalf("invalid exhausted decision: %+v %v", decision, err)
+			}
+			wantReads := 1
+			if test.bytes == 7 {
+				wantReads = 2
+			}
+			if reads != wantReads {
+				t.Fatalf("reads=%d want=%d", reads, wantReads)
+			}
+			turns := 0
+			refused := false
+			for _, message := range transport.sent {
+				if message.Method == "turn/start" {
+					turns++
+					assertJSONContains(t, message.Params, "threadId", "thread-1")
+				}
+				if message.Method == "thread/resume" {
+					t.Fatal("final turn opened a new connection")
+				}
+				if message.Method == "thread/start" {
+					assertJSONContains(t, message.Params, "config.permissions.detent-investigation.filesystem./", "deny")
+					var params struct {
+						Config map[string]any `json:"config"`
+					}
+					if err := json.Unmarshal(message.Params, &params); err != nil {
+						t.Fatal(err)
+					}
+					if params.Config["features.shell_tool"] != false || params.Config["features.unified_exec"] != false {
+						t.Fatal("native tools enabled")
+					}
+					if test.evidenceOnly {
+						assertJSONContains(t, message.Params, "cwd", "/scratch")
+					}
+				}
+				if strings.Contains(string(message.Result), "Return your final decision") {
+					refused = true
+				}
+			}
+			wantTurns := 1
+			if test.fallback {
+				wantTurns = 2
+			}
+			if turns != wantTurns || !refused {
+				t.Fatalf("turns=%d refused=%t", turns, refused)
 			}
 		})
 	}
+}
+
+type progressDecisionText string
+
+func (p progressDecisionText) Generate(context.Context, string, string) (string, error) {
+	return string(p), nil
 }

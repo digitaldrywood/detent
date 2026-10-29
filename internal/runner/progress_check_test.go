@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -273,8 +274,8 @@ func TestProgressCheckRestoresPinnedSource(t *testing.T) {
 	}{
 		{name: "fresh runner restores Hub bundle"},
 		{name: "concurrent preparation", concurrent: true},
-		{name: "missing retained source refused", mismatch: "missing"},
-		{name: "source metadata missing refused", mismatch: "metadata"},
+		{name: "missing retained source uses evidence", mismatch: "missing"},
+		{name: "source metadata missing uses evidence", mismatch: "metadata"},
 		{name: "moved source refused", mismatch: "head"},
 		{name: "moved base refused", mismatch: "base"},
 	} {
@@ -314,7 +315,7 @@ func TestProgressCheckRestoresPinnedSource(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			backend := &progressInspectBackend{head: head}
+			backend := &progressInspectBackend{head: head, evidenceOnly: test.mismatch == "missing" || test.mismatch == "metadata"}
 			r, err := NewRunner(Dependencies{Workspace: local, AgentBackend: backend})
 			if err != nil {
 				t.Fatal(err)
@@ -341,7 +342,7 @@ func TestProgressCheckRestoresPinnedSource(t *testing.T) {
 				return
 			}
 			_, err = r.CheckProgress(t.Context(), RunRequest{Issue: connector.Issue{ID: "example", Identifier: "example#1"}, Mode: RunModeImplement, Execution: execution}, evidence)
-			if test.mismatch != "" {
+			if test.mismatch == "head" || test.mismatch == "base" {
 				if err == nil || backend.called {
 					t.Fatalf("mismatched source reached provider: %v", err)
 				}
@@ -365,12 +366,19 @@ func (e *progressSourceExecution) RecoverChangeSource(context.Context) (workspac
 }
 
 type progressInspectBackend struct {
-	head   string
-	called bool
+	head         string
+	called       bool
+	evidenceOnly bool
 }
 
 func (b *progressInspectBackend) RunTurn(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
 	b.called = true
+	if b.evidenceOnly {
+		if req.Workspace != "" || !req.ReadOnly || !req.IsolatedTools || !strings.Contains(req.Prompt, "evidence-only investigation") {
+			return AgentTurnResult{}, errors.New("evidence-only investigation escaped isolation")
+		}
+		return AgentTurnResult{}, update(AgentUpdate{Type: AgentUpdateMessageDelta, ItemID: "final", Delta: `{"outcome":"reroute","step":"implement","reason":"Obtain missing source","diagnosis":"failed: retained source is unavailable","instruction":"Capture the failing source and rerun its validation to diagnose the failure","evidence":["failed"]}`})
+	}
 	content, err := os.ReadFile(filepath.Join(req.Workspace, "assertion.txt"))
 	if err != nil || string(content) != "failing assertion and exercised code\n" || !req.ReadOnly || req.TextOnly || !req.IsolatedTools || !strings.Contains(req.Prompt, b.head) {
 		return AgentTurnResult{}, errors.New("pinned source unavailable to read-only investigation")
@@ -393,7 +401,7 @@ func TestProgressToolBudgetBoundsAllReads(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancelCause(t.Context())
 			defer cancel(nil)
-			budget := NewAgentToolBudget(test.calls, test.bytes, cancel)
+			budget := NewAgentToolBudget(test.calls, test.bytes)
 			reads := 0
 			handle := budget.handler(func(context.Context, AgentToolCall) (AgentToolResult, error) {
 				reads++
@@ -405,7 +413,7 @@ func TestProgressToolBudgetBoundsAllReads(t *testing.T) {
 			var result AgentToolResult
 			var err error
 			if test.native {
-				typeOfUpdate := AgentUpdateToolOutput
+				typeOfUpdate := AgentUpdateToolCompleted
 				if test.calls == 1 {
 					typeOfUpdate = AgentUpdateToolStarted
 				}
@@ -413,7 +421,7 @@ func TestProgressToolBudgetBoundsAllReads(t *testing.T) {
 			} else {
 				result, err = handle(ctx, AgentToolCall{})
 			}
-			if !errors.Is(err, ErrInvestigationBudget) || result.Content != "" || !errors.Is(context.Cause(ctx), ErrInvestigationBudget) {
+			if !errors.Is(err, ErrInvestigationBudget) || result.Content != "" || context.Cause(ctx) != nil {
 				t.Fatalf("exhaustion leaked result or continued: result=%+v err=%v cause=%v", result, err, context.Cause(ctx))
 			}
 			if _, err := handle(ctx, AgentToolCall{}); !errors.Is(err, ErrInvestigationBudget) {
@@ -464,7 +472,7 @@ func TestProgressPreparationNeverFallsBackWithoutRetainedSource(t *testing.T) {
 			if release != nil {
 				release()
 			}
-			if err == nil || backend.created || backend.seeded {
+			if err != nil || backend.created || backend.seeded {
 				t.Fatalf("unavailable retained source reached fallback: err=%v created=%t seeded=%t", err, backend.created, backend.seeded)
 			}
 		})
@@ -479,4 +487,81 @@ type progressFallbackWorkspace struct {
 func (w *progressFallbackWorkspace) SeedReviewHead(context.Context, workspace.Info, workspace.Issue) error {
 	w.seeded = true
 	return nil
+}
+
+func TestProgressToolBudgetCountsCompletedResultsOnce(t *testing.T) {
+	budget := NewAgentToolBudget(3, 11)
+	handler := budget.Handler([]AgentTool{{Name: "work_item"}}, func(context.Context, AgentToolCall) (AgentToolResult, error) {
+		return AgentToolResult{Success: true, Content: "four"}, nil
+	})
+	if result, err := handler(t.Context(), AgentToolCall{Name: "work_item"}); err != nil || !result.Success {
+		t.Fatalf("read failed: %+v %v", result, err)
+	}
+	for _, update := range []AgentUpdate{
+		{Type: AgentUpdateToolStarted, ItemID: "host-1", Tool: "work_item"},
+		{Type: AgentUpdateToolCompleted, ItemID: "host-1", Tool: "work_item", Delta: "four"},
+		{Type: AgentUpdateToolStarted, ItemID: "read-1"},
+		{Type: AgentUpdateToolStarted, ItemID: "read-1"},
+		{Type: AgentUpdateToolOutput, ItemID: "read-1", Delta: "four"},
+		{Type: AgentUpdateToolCompleted, ItemID: "read-1", Delta: "four"},
+		{Type: AgentUpdateToolCompleted, ItemID: "read-1", Delta: "four"},
+		{Type: AgentUpdateToolStarted, ItemID: "read-2"},
+		{Type: AgentUpdateToolCompleted, ItemID: "read-2", Delta: "two"},
+	} {
+		if err := budget.Observe(update); err != nil {
+			t.Fatalf("double-counted tool lifecycle: %v", err)
+		}
+	}
+	if budget.calls != 3 || budget.bytes != 11 {
+		t.Fatalf("calls=%d bytes=%d, want 3 and 11", budget.calls, budget.bytes)
+	}
+}
+
+func (b *progressInspectBackend) RunTurnWithTools(ctx context.Context, req AgentTurnRequest, tools []AgentTool, handle AgentToolHandler, update AgentUpdateHandler) (AgentTurnResult, error) {
+	if !b.evidenceOnly {
+		for _, tool := range tools {
+			if tool.Name != "detent_read_source" {
+				return AgentTurnResult{}, errors.New("unexpected investigation tool")
+			}
+		}
+		result, err := handle(ctx, AgentToolCall{Name: "detent_read_source", Arguments: json.RawMessage(`{"operation":"read","revision":"head","path":"assertion.txt"}`)})
+		if err != nil || !result.Success || !strings.Contains(result.Content, "failing assertion and exercised code") {
+			return AgentTurnResult{}, fmt.Errorf("pinned source tool unavailable: %v, %s", err, result.Content)
+		}
+		result, err = handle(ctx, AgentToolCall{Name: "detent_run_validation", Arguments: json.RawMessage(`{"command":"printf changed > assertion.txt"}`)})
+		if err == nil || result.Success {
+			return AgentTurnResult{}, errors.New("investigation permitted validation command")
+		}
+	}
+	return b.RunTurn(ctx, req, update)
+}
+
+func TestProgressCheckWithoutSourceInvestigatesScopedDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	backend := &progressPolicyBackend{fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, ItemID: "final", Delta: `{"outcome":"reroute","step":"implement","reason":"Repair failure","diagnosis":"failed-attempt: TestExample returned the old value","instruction":"Repair the implementation exercised by TestExample and run its validation","evidence":["failed-attempt"]}`}}}}
+	workspaces := &progressFallbackWorkspace{progressWorkspace: progressWorkspace{&fakeWorkspaceBackend{info: workspace.Info{Path: root}}}}
+	r, err := NewRunner(Dependencies{Workspace: workspaces, AgentBackend: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := &progressEvidenceExecution{}
+	decision, err := r.CheckProgress(t.Context(), RunRequest{Issue: connector.Issue{ID: "example-issue", IsolationPolicy: &isolation.Policy{Tier: isolation.NativeTrusted}}, Mode: RunModeImplement, Execution: execution}, progresscheck.Request{ProjectID: "example-project", IssueID: "example-issue", PolicyID: "policy", EvidenceRevision: "revision", SourceSHA: "head", BaseSHA: "base", Attempts: []progresscheck.Attempt{{ID: "failed-attempt", Outcome: "failed"}}, AvailableSteps: []string{RunModeImplement}})
+	if err != nil || decision.Outcome != progresscheck.Reroute {
+		t.Fatalf("evidence-only decision=%+v err=%v", decision, err)
+	}
+	if backend.request.Workspace != "" || !backend.request.IsolatedTools || !backend.request.ReadOnly || workspaces.created || workspaces.seeded {
+		t.Fatalf("evidence-only investigation prepared source: %+v", backend.request)
+	}
+	if !strings.Contains(backend.request.Prompt, "TestExample: expected repaired value, got old value") || !strings.Contains(backend.request.Prompt, "evidence-only investigation") || execution.reads != 2 || execution.writes != 0 || !backend.refusedWrite {
+		t.Fatalf("scoped diagnostics missing: reads=%d writes=%d prompt=%s", execution.reads, execution.writes, backend.request.Prompt)
+	}
+	if _, err := os.Stat(backend.request.TempDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("scratch retained: %v", err)
+	}
+}
+
+type progressEvidenceExecution struct{ progressReadExecution }
+
+func (*progressEvidenceExecution) RecoverChangeSource(context.Context) (workspace.ChangeSource, error) {
+	return workspace.ChangeSource{}, nil
 }
