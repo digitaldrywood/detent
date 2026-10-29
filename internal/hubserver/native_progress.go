@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -13,12 +14,13 @@ import (
 )
 
 type nativeProgressOwner struct {
-	service       *Service
-	scope         nativeScope
-	request       progresscheck.Request
-	leaseID       tracker.LeaseID
-	fencingToken  tracker.FencingToken
-	guardRevision *int64
+	service          *Service
+	scope            nativeScope
+	request          progresscheck.Request
+	leaseID          tracker.LeaseID
+	fencingToken     tracker.FencingToken
+	guardRevision    *int64
+	expectedRevision tracker.Revision
 }
 
 func (o nativeProgressOwner) Load(ctx context.Context, project, issue, id string) (progresscheck.Record, bool, error) {
@@ -110,7 +112,7 @@ func (o nativeProgressOwner) Publish(ctx context.Context, record progresscheck.R
 			return progresscheck.Record{}, err
 		}
 		if current != *o.guardRevision {
-			return progresscheck.Record{}, nativeInvalid("Progress evidence changed")
+			return progresscheck.Record{}, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
 		}
 	}
 	retained, found, err := readNativeProgress(ctx, tx, o.scope, record.IssueID, record.RequestID)
@@ -127,8 +129,11 @@ func (o nativeProgressOwner) Publish(ctx context.Context, record progresscheck.R
 	if err != nil {
 		return progresscheck.Record{}, err
 	}
+	if o.expectedRevision > 0 && issue.Revision != o.expectedRevision {
+		return progresscheck.Record{}, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
+	}
 	body := "Progress check: " + string(record.Decision.Outcome) + "\n\n" + record.Decision.Reason
-	if record.Decision.Step != "" {
+	if record.Decision.Outcome == progresscheck.Reroute {
 		body += "\n\nNext step: `" + record.Decision.Step + "`"
 	}
 	body += "\n\nEvidence: " + strings.Join(record.Decision.Evidence, ", ")

@@ -35,7 +35,14 @@ func NativeRequest(recovery tracker.NativeRecovery, policy, instance string) Req
 		if !Failed(outcome) && outcome != "success" && outcome != "cancelled" {
 			continue
 		}
-		entry := Attempt{ID: a.AttemptID, Outcome: outcome, Instance: string(a.MachineID)}
+		entry := Attempt{ID: a.AttemptID, Outcome: outcome, Instance: string(a.MachineID), WorkProduct: len(a.ArtifactIDs) > 0}
+		if a.Disposition != nil {
+			entry.Disposition, entry.ReasonCode = a.Disposition.Status, a.Disposition.ReasonCode
+		}
+		if a.Runtime != nil && a.Runtime.Landing != nil {
+			landing := a.Runtime.Landing
+			entry.RefusalKind, entry.RefusalBaseSHA, entry.RefusalHeadSHA = landing.RefusalKind, landing.BaseSHA, landing.HeadSHA
+		}
 		if a.Runtime != nil && a.Runtime.WorkerLaunch != nil {
 			entry.InstanceVersion = a.Runtime.WorkerLaunch.ExecutionVersion
 		}
@@ -53,6 +60,9 @@ func NativeRequest(recovery tracker.NativeRecovery, policy, instance string) Req
 			r.SourceSHA, r.BaseSHA = entry.SourceSHA, entry.BaseSHA
 		}
 		if a.Finalization != nil {
+			changed := a.Finalization.Changed
+			entry.FinalizationChanged = &changed
+			entry.WorkProduct = entry.WorkProduct || changed || a.Finalization.VersionID != ""
 			if a.Finalization.HeadSHA != "" {
 				entry.SourceSHA = a.Finalization.HeadSHA
 			}

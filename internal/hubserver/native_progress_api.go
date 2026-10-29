@@ -143,7 +143,7 @@ func (s *Service) getNativeProgress(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	view := nativeProgressView{Request: request}
-	if len(request.Attempts) > 0 && progresscheck.Failed(request.Attempts[len(request.Attempts)-1].Outcome) {
+	if progresscheck.NeedsCheck(request) {
 		id, err := request.ID()
 		if err != nil {
 			return s.nativeAPIError(c, err)
@@ -176,10 +176,10 @@ func (s *Service) publishNativeProgress(c echo.Context) error {
 	if id != input.RequestID {
 		return s.nativeAPIError(c, &nativeError{Code: "revision_conflict", status: http.StatusConflict})
 	}
-	if len(request.Attempts) == 0 || !progresscheck.Failed(request.Attempts[len(request.Attempts)-1].Outcome) {
-		return s.nativeAPIError(c, nativeInvalid("Progress decision requires a failed previous attempt"))
+	if !progresscheck.NeedsCheck(request) {
+		return s.nativeAPIError(c, nativeInvalid("Progress decision requires a non-progressing previous attempt"))
 	}
-	owner := nativeProgressOwner{service: s, scope: scope, request: request, leaseID: input.LeaseID, fencingToken: input.FencingToken, guardRevision: &sequence}
+	owner := nativeProgressOwner{service: s, scope: scope, request: request, leaseID: input.LeaseID, fencingToken: input.FencingToken, guardRevision: &sequence, expectedRevision: input.ExpectedRevision}
 	record, err := owner.Publish(c.Request().Context(), progresscheck.Record{RequestID: id, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: input.Decision})
 	if err != nil {
 		return s.nativeAPIError(c, err)

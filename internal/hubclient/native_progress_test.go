@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -36,9 +37,26 @@ func (b *nativeProgressBackend) Decide(context.Context, progresscheck.Request) (
 
 func TestNativeRetryProgressOwnerAndSuccess(t *testing.T) {
 	t.Parallel()
-	for _, outcome := range []string{"failed", "succeeded", "different issue"} {
+	for _, outcome := range []string{"failed", "succeeded", "different issue", "no change", "no work product", "source recovery", "repeated refusal"} {
 		t.Run(outcome, func(t *testing.T) {
 			recovery := tracker.NativeRecovery{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{ProjectID: "prj_example", WorkItemID: "wi_example", Revision: 1}}, Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "failed-attempt", Outcome: outcome}}}}
+			switch outcome {
+			case "no change":
+				recovery.Attempts[0].Outcome = "succeeded"
+				recovery.Attempts[0].Finalization = &tracker.NativeFinalization{Changed: false}
+			case "no work product":
+				recovery.Attempts[0].Outcome = "succeeded"
+				recovery.Attempts[0].Identity = &tracker.NativeExecutionIdentity{Role: "code"}
+			case "source recovery":
+				recovery.Attempts[0].Outcome = "succeeded"
+				recovery.Attempts[0].Disposition = &tracker.NativeDisposition{Status: "blocked", ReasonCode: "source_recovery_required"}
+			case "repeated refusal":
+				recovery.Attempts[0].Outcome = "succeeded"
+				recovery.Attempts[0].Runtime = &tracker.NativeRuntimeObservation{Landing: &tracker.NativeLandingReceipt{RefusalKind: "source_missing", BaseSHA: "base", HeadSHA: "head"}}
+				prior := recovery.Attempts[0]
+				prior.AttemptID = "prior-attempt"
+				recovery.Attempts = append([]tracker.NativeAttempt{prior}, recovery.Attempts...)
+			}
 			evidence := progresscheck.NativeRequest(recovery, "policy", "machine")
 			if outcome == "different issue" {
 				recovery.Attempts[0].Outcome = "failed"
@@ -48,6 +66,9 @@ func TestNativeRetryProgressOwnerAndSuccess(t *testing.T) {
 			var retained *progresscheck.Record
 			reads, writes := 0, 0
 			client, err := New(Config{URL: "https://hub.example.test", TokenSource: func() string { return "worker" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/work-items/wi_example") {
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"revision":"7"}`)), Request: request}, nil
+				}
 				if !strings.HasSuffix(request.URL.Path, "/work-items/wi_example/progress") {
 					t.Fatalf("unexpected progress route: %s", request.URL.Path)
 				}
@@ -100,16 +121,87 @@ func TestNativeRetryProgressOwnerAndSuccess(t *testing.T) {
 			}
 			for range 2 {
 				_, checked, err := progresscheck.Check(t.Context(), request, backend, owner)
-				if err != nil || checked != (outcome == "failed") {
+				if err != nil || checked != (outcome != "succeeded") {
 					t.Fatalf("checked=%v error=%v", checked, err)
 				}
 			}
 			want := 0
-			if outcome == "failed" {
+			if outcome != "succeeded" {
 				want = 1
 			}
 			if reads != want || writes != want || backend.calls != want {
 				t.Fatalf("reads=%d writes=%d turns=%d", reads, writes, backend.calls)
+			}
+		})
+	}
+}
+
+func TestNativeRetryProgressLoadsRepeatedLandingRefusals(t *testing.T) {
+	t.Parallel()
+	base, head := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	for _, test := range []struct {
+		name string
+		base string
+		head string
+		want bool
+	}{
+		{name: "same source", base: base, head: head, want: true},
+		{name: "changed base", base: strings.Repeat("c", 40), head: head},
+		{name: "changed head", base: base, head: strings.Repeat("c", 40)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Retry landing refusal")
+			var attempts []string
+			for _, source := range []struct{ base, head string }{{base, head}, {test.base, test.head}} {
+				h.claim(t, issue.ID)
+				execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+				if err := execution.StartLanding(t.Context(), 1, 0); err != nil {
+					t.Fatal(err)
+				}
+				if err := execution.ObserveLanding(t.Context(), runner.NativeLanding{RefusalKind: workspace.LandRefusalBaseMoved, BaseSHA: source.base, HeadSHA: source.head}); err != nil {
+					t.Fatal(err)
+				}
+				if err := execution.Checkpoint(t.Context(), tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: source.head, ExternalEffect: "none", EffectState: "none"}); err != nil {
+					t.Fatal(err)
+				}
+				if err := execution.Finish(t.Context(), "succeeded"); err != nil {
+					t.Fatal(err)
+				}
+				attempts = append(attempts, execution.data.AttemptID)
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "waiting"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.claim(t, issue.ID)
+			claim := h.scheduler.nativeClaims[issue.ID]
+			for _, attempt := range claim.recovery.Attempts {
+				if attempt.AttemptID == attempts[0] {
+					t.Fatal("sparse claim recovery unexpectedly retained the preceding refusal")
+				}
+			}
+			client := claim.source.client.client.httpClient
+			transport := client.Transport
+			reads := 0
+			client.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/progress") {
+					reads++
+				}
+				return transport.RoundTrip(request)
+			})
+			request, _, err := h.scheduler.RetryProgress(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reads != 1 || len(request.Attempts) != 2 {
+				t.Fatalf("progress history missing: reads=%d attempts=%+v", reads, request.Attempts)
+			}
+			if request.Attempts[0].ID != attempts[0] || request.Attempts[1].ID != attempts[1] {
+				t.Fatalf("progress attempts out of order: %+v", request.Attempts)
+			}
+			if got := progresscheck.NeedsCheck(request); got != test.want {
+				t.Fatalf("NeedsCheck=%v, want %v", got, test.want)
 			}
 		})
 	}
@@ -353,7 +445,7 @@ func TestNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T) {
 	}{
 		{name: "backend", failure: errors.New("provider unavailable"), reason: "provider unavailable"},
 		{name: "timeout", failure: context.DeadlineExceeded, reason: "context deadline exceeded"},
-		{name: "invalid decision", invalid: true, reason: "progressing decision cannot change step"},
+		{name: "invalid decision", invalid: true, reason: "progress decision names unavailable step"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			states := hubserverPlanStates()
@@ -402,7 +494,7 @@ func TestNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T) {
 			original := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
 			provider := &nativeProgressRerouteAgent{err: tt.failure}
 			if tt.invalid {
-				provider.decision = &progresscheck.Decision{Outcome: progresscheck.Progressing, Step: runner.RunModeMerge, Reason: "Continue", Evidence: []string{failed.data.AttemptID}}
+				provider.decision = &progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "unavailable", Reason: "Continue", Evidence: []string{failed.data.AttemptID}}
 			}
 			agent, err := runner.NewRunner(runner.Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "implementation", Backend: "codex", Model: "code-model", Default: true}}}}}, Workspace: nativeProgressWorkspace{path: t.TempDir()}, AgentBackend: provider})
 			if err != nil {
@@ -494,5 +586,80 @@ func configureNativeProgressProvider(t *testing.T, h *nativeChangeHub) {
 	h.scheduler, err = NewScheduler(client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: machine, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second, ProviderReports: func() ([]providercapacity.Report, error) { return []providercapacity.Report{report}, nil }, LeaseHold: h.leaseHold})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestProgressPublicationRefreshesRevisionOnce(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		status     int
+		code       string
+		wantWrites int
+		wantReads  int
+		wantError  bool
+	}{
+		{"conflict then published", http.StatusConflict, "revision_conflict", 2, 2, false},
+		{"repeated conflict stops", http.StatusConflict, "revision_conflict", 2, 2, true},
+		{"other error is not retried", http.StatusForbidden, "forbidden", 1, 1, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			evidence := progresscheck.NativeRequest(tracker.NativeRecovery{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{ProjectID: "prj_example", WorkItemID: "wi_example", Revision: 1}}, Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "failed-attempt", Outcome: "failed"}}}}, "policy", "machine")
+			reads, writes := 0, 0
+			requestID := ""
+			client, err := New(Config{URL: "https://hub.example.test", TokenSource: func() string { return "worker" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(req *http.Request) (*http.Response, error) {
+				status := http.StatusOK
+				var body any
+				if req.Method == http.MethodGet {
+					reads++
+					if strings.HasSuffix(req.URL.Path, "/progress") {
+						t.Fatal("publication must refresh item revision only")
+					}
+					body = tracker.NativeIssue{NativeReference: tracker.NativeReference{ProjectID: "prj_example", WorkItemID: "wi_example", Revision: tracker.Revision(6 + reads)}}
+				} else {
+					writes++
+					var input map[string]json.RawMessage
+					if err := json.NewDecoder(req.Body).Decode(&input); err != nil {
+						t.Fatal(err)
+					}
+					var id string
+					if err := json.Unmarshal(input["request_id"], &id); err != nil {
+						t.Fatal(err)
+					}
+					if requestID == "" {
+						requestID = id
+					}
+					if id != requestID {
+						t.Fatal("retry changed request key")
+					}
+					if string(input["expected_revision"]) != fmt.Sprintf("\"%d\"", 6+reads) {
+						t.Errorf("expected current item revision, got %s after %d reads", input["expected_revision"], reads)
+					}
+					if writes == 1 || test.wantError {
+						status = test.status
+						body = map[string]string{"code": test.code, "error": "publication refused"}
+					} else {
+						body = progresscheck.Record{RequestID: id, ProjectID: evidence.ProjectID, IssueID: evidence.IssueID, EvidenceRevision: evidence.EvidenceRevision, Decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Reason: "Repair the publication protocol", Evidence: []string{"failed-attempt"}}, CommentID: "comment"}
+					}
+				}
+				encoded, err := json.Marshal(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(encoded))), Request: req}, nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err := client.Native("org_example", "prj_example")
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner := &progressOwner{client: native, request: evidence, lease: tracker.NativeLease{ID: "lease", WorkItemID: "wi_example", FencingToken: 7}}
+			backend := &nativeProgressBackend{}
+			_, checked, err := progresscheck.Check(t.Context(), evidence, backend, owner)
+			if (err != nil) != test.wantError || checked == test.wantError || reads != test.wantReads || writes != test.wantWrites || backend.calls != 1 {
+				t.Fatalf("checked=%v err=%v reads=%d writes=%d turns=%d", checked, err, reads, writes, backend.calls)
+			}
+		})
 	}
 }

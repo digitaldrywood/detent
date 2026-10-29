@@ -41,7 +41,7 @@ func TestProgressCheckUsesReadOnlyBackendAndJSONBudget(t *testing.T) {
 		t.Fatalf("unaccounted progress turn: %+v", execution)
 	}
 	request := backend.request
-	if request.MaxDuration <= 0 || request.MaxDuration > 30*time.Second {
+	if request.MaxDuration != 3*time.Minute {
 		t.Fatalf("progress deadline=%v", request.MaxDuration)
 	}
 	if !request.ReadOnly || !request.TextOnly || request.SupplementalTools || request.MaxTurns != 1 || request.Resume.ThreadID != "" || filepath.Dir(filepath.Dir(request.Workspace)) != workspace.WorkerScratchRoot(root) {
@@ -109,25 +109,37 @@ func TestProgressCheckTimeoutAndAdmissionAccounting(t *testing.T) {
 	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
 		t.Setenv(key, "")
 	}
-	for _, rejected := range []bool{false, true} {
-		t.Run(map[bool]string{false: "timeout reports reasoning spend", true: "capacity rejection starts no provider"}[rejected], func(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		rejected     bool
+		agent        config.Agent
+		codex        config.Codex
+		wantDuration time.Duration
+	}{
+		{name: "timeout reports reasoning spend", wantDuration: 3 * time.Minute},
+		{name: "capacity rejection starts no provider", rejected: true},
+		{name: "configured turn limit", agent: config.Agent{MaxTurnDurationMS: 45000}, wantDuration: 45 * time.Second},
+		{name: "backend normal turn limit", codex: config.Codex{TurnTimeoutMS: 90000}, wantDuration: 90 * time.Second},
+		{name: "long backend turn is bounded", codex: config.Codex{TurnTimeoutMS: 600000}, wantDuration: 3 * time.Minute},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				backend := &stalledProgressBackend{}
 				execution := &progressUsageExecution{}
-				if rejected {
+				if test.rejected {
 					execution.startError = errors.New("provider capacity unavailable")
 				}
-				r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: "codex", Model: "", Default: true}}}}}, Workspace: progressWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: root}}}, AgentBackend: backend})
+				r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Agent: test.agent, Codex: test.codex, Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: "codex", Model: "", Default: true}}}}}, Workspace: progressWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: root}}}, AgentBackend: backend})
 				if err != nil {
 					t.Fatal(err)
 				}
 				start := time.Now()
 				_, err = r.CheckProgress(t.Context(), RunRequest{Issue: connector.Issue{ID: "example"}, Mode: RunModePlan, Execution: execution}, progresscheck.Request{ProjectID: "project", IssueID: "example", PolicyID: "policy", EvidenceRevision: "1", Attempts: []progresscheck.Attempt{{ID: "failed", Outcome: "failed"}}, AvailableSteps: []string{RunModeImplement}})
-				if rejected {
+				if test.rejected {
 					if !errors.Is(err, execution.startError) || backend.request.MaxDuration != 0 || len(execution.entries) != 0 {
 						t.Fatalf("rejected check spent provider capacity: %v %+v", err, execution.entries)
 					}
-				} else if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 30*time.Second || len(execution.entries) != 1 || execution.entries[0].Output != 900 || execution.entries[0].Model != "provider_default" || backend.request.Model != "" || execution.identity.Role != RolePlan {
+				} else if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != test.wantDuration || len(execution.entries) != 1 || execution.entries[0].Output != 900 || execution.entries[0].Model != "provider_default" || backend.request.Model != "" || execution.identity.Role != RolePlan {
 					t.Fatalf("timeout/accounting: elapsed=%v err=%v usage=%+v identity=%+v", time.Since(start), err, execution.entries, execution.identity)
 				}
 			})
@@ -138,3 +150,34 @@ func TestProgressCheckTimeoutAndAdmissionAccounting(t *testing.T) {
 type progressWorkspace struct{ *fakeWorkspaceBackend }
 
 func (w progressWorkspace) Existing(workspace.Issue) (workspace.Info, error) { return w.info, nil }
+
+func TestProgressCheckMissingCheckoutUsesWorkerScratch(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(key, "")
+	}
+	backend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, ItemID: "final", Delta: `{"outcome":"progressing","reason":"Changed evidence","evidence":["failed"]}`}}}
+	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Workspace: config.Workspace{Root: root}}}, Workspace: missingProgressWorkspace{&fakeWorkspaceBackend{}}, AgentBackend: backend})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.CheckProgress(t.Context(), RunRequest{Issue: connector.Issue{ID: "example"}, Mode: RunModeImplement, Execution: &progressUsageExecution{}}, progresscheck.Request{ProjectID: "project", IssueID: "example", PolicyID: "policy", EvidenceRevision: "1", Attempts: []progresscheck.Attempt{{ID: "failed", Outcome: "failed"}}, AvailableSteps: []string{RunModeImplement}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !backend.request.ReadOnly || !backend.request.TextOnly || filepath.Dir(filepath.Dir(backend.request.Workspace)) != workspace.WorkerScratchRoot(root) {
+		t.Fatalf("unconfined progress request: %+v", backend.request)
+	}
+	if _, err := os.Stat(backend.request.Workspace); !os.IsNotExist(err) {
+		t.Fatalf("scratch retained: %v", err)
+	}
+}
+
+type missingProgressWorkspace struct{ *fakeWorkspaceBackend }
+
+func (w missingProgressWorkspace) Existing(workspace.Issue) (workspace.Info, error) {
+	return workspace.Info{}, workspace.ErrMissingWorkspace
+}
