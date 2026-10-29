@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/workpad"
 
@@ -28,7 +29,12 @@ type runDetailContext struct {
 	reference    *attachment.ArchiveReference
 	runs         map[string]tracker.NativeRunData
 	cache        map[string]map[string]tracker.NativeRunData
-	reuse        map[string]*runDetailReference
+	cancellation *nativeLeaseCancellation
+}
+
+type nativeLeaseCancellation struct {
+	source string
+	at     time.Time
 }
 
 type runDetailReference struct {
@@ -88,7 +94,7 @@ func (s *Service) runDetailContext(ctx context.Context) context.Context {
 	if s.config.Hosted != nil {
 		organization = s.config.Hosted.OrganizationID
 	}
-	return context.WithValue(ctx, runDetailContextKey{}, &runDetailContext{store: owner, organization: organization, cache: make(map[string]map[string]tracker.NativeRunData), reuse: make(map[string]*runDetailReference)})
+	return context.WithValue(ctx, runDetailContextKey{}, &runDetailContext{store: owner, organization: organization, cache: make(map[string]map[string]tracker.NativeRunData)})
 }
 
 func (s *Service) runDetailMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -240,14 +246,6 @@ func encodeRunDetail(ctx context.Context, data tracker.NativeRunData, history bo
 	if !ok {
 		return marshalNative(data)
 	}
-	if ref := owner.reuse[data.AttemptID]; ref != nil {
-		compact := compactRun(data)
-		if !history {
-			compact.Handoff = nil
-		}
-		compact.TerminalFailure = data.TerminalFailure
-		return marshalNative(storedRun{NativeRunData: compact, Detail: ref})
-	}
 	if owner.reference == nil {
 		return marshalNative(data)
 	}
@@ -322,28 +320,32 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 	if len(runs) == 0 {
 		return ctx, nil
 	}
+	return ctx, storeRunDetail(ctx, owner, string(scope.organization), runs)
+}
+
+func storeRunDetail(ctx context.Context, owner *runDetailContext, organization string, runs map[string]tracker.NativeRunData) error {
 	raw, err := json.Marshal(runs)
 	if err != nil {
-		return ctx, err
+		return err
 	}
-	ref, err := owner.store.StoreDetail(ctx, string(scope.organization), raw)
+	ref, err := owner.store.StoreDetail(ctx, organization, raw)
 	if err != nil {
-		return ctx, fmt.Errorf("store run detail archive: %w", err)
+		return fmt.Errorf("store run detail archive: %w", err)
 	}
-	if ref.Validate(string(scope.organization)) != nil {
-		return ctx, fmt.Errorf("validate stored run detail reference: %w", artifact.ErrIntegrity)
+	if ref.Validate(organization) != nil {
+		return fmt.Errorf("validate stored run detail reference: %w", artifact.ErrIntegrity)
 	}
-	verified, err := owner.store.ReadDetail(ctx, string(scope.organization), ref)
+	verified, err := owner.store.ReadDetail(ctx, organization, ref)
 	if err != nil {
-		return ctx, fmt.Errorf("verify stored run detail archive: %w", err)
+		return fmt.Errorf("verify stored run detail archive: %w", err)
 	}
 	if !bytes.Equal(raw, verified) {
-		return ctx, fmt.Errorf("verify stored run detail archive: %w", artifact.ErrIntegrity)
+		return fmt.Errorf("verify stored run detail archive: %w", artifact.ErrIntegrity)
 	}
 	owner.reference, owner.runs = &ref, runs
-	owner.organization = string(scope.organization)
-	owner.cache[newRunDetailReference(ref, string(scope.organization), "").AttachmentID] = runs
-	return ctx, nil
+	owner.organization = organization
+	owner.cache[newRunDetailReference(ref, organization, "").AttachmentID] = runs
+	return nil
 }
 
 func recordRunDetailReference(ctx context.Context, tx *sql.Tx, scope nativeScope, item tracker.NativeWorkItemID, data tracker.NativeRunData, now string) error {
@@ -356,8 +358,6 @@ func recordRunDetailReference(ctx context.Context, tx *sql.Tx, scope nativeScope
 	if owner.reference != nil {
 		ref = *owner.reference
 		id = newRunDetailReference(ref, string(scope.organization), "").AttachmentID
-	} else if previous := owner.reuse[data.AttemptID]; previous != nil {
-		id = previous.AttachmentID
 	} else {
 		return nil
 	}

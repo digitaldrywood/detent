@@ -18,6 +18,7 @@ func TestChangeSourceBackfillPreservesReadersAndUsage(t *testing.T) {
 	t.Parallel()
 	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db")}
 	f := newChangeFixture(t, openTestService(t, config))
+	f.service.config.Content = nil
 	stopMaintenance := func() {
 		t.Helper()
 		if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
@@ -145,6 +146,7 @@ func TestChangeSourceBackfillPreservesReadersAndUsage(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.service = openTestService(t, config)
+			f.service.config.Content = nil
 			stopMaintenance()
 		}
 	}

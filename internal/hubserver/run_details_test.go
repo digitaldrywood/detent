@@ -597,6 +597,14 @@ func TestNativeRunDetailIsolation(t *testing.T) {
 	t.Parallel()
 	store := &memoryRunDetails{}
 	f := newDefaultNativeFixture(t, Config{RunDetails: store})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.stopGitHubReconciliation(); err != nil {
+		t.Fatal(err)
+	}
+	f.service.stopHealthDetector()
+	f.service.outbox.stop()
 	response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations", testHubAdminToken, map[string]any{"name": "Other organization"})
 	requireNativeStatus(t, response, http.StatusCreated)
 	var organization nativeOrganization
@@ -618,8 +626,25 @@ func TestNativeRunDetailIsolation(t *testing.T) {
 			if session == "first" {
 				checkpoint := event
 				checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence, checkpoint.Data.Handoff = "run.checkpointed", "checkpoint-"+session, 2, nativeTestCheckpoint()
+				checkpoint.Data.ArtifactIDs = []string{newNativeID("artifact")}
 				requireNativeStatus(t, performHubAPIRequest(t, fixture.service, http.MethodPost, path+"/events", worker, checkpoint), http.StatusOK)
+				uploads := store.uploads
+				store.beforeRead = func(context.Context) error {
+					if readers, writers := fixture.service.database.reader.Stats().InUse, fixture.service.database.db.Stats().InUse; readers != 0 || writers != 0 {
+						return fmt.Errorf("cancellation object read holds database connections: readers=%d writers=%d", readers, writers)
+					}
+					return nil
+				}
+				store.afterStore = func(attachment.ArchiveReference) {
+					if readers, writers := fixture.service.database.reader.Stats().InUse, fixture.service.database.db.Stats().InUse; readers != 0 || writers != 0 {
+						t.Errorf("cancellation object upload holds database connections: readers=%d writers=%d", readers, writers)
+					}
+				}
 				requireNativeStatus(t, performHubAPIRequest(t, fixture.service, http.MethodPost, fixture.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "cancelled", CancelAttempt: true}), http.StatusNoContent)
+				store.beforeRead, store.afterStore = nil, nil
+				if store.uploads != uploads+1 {
+					t.Fatal("lease cancellation did not persist its complete payload")
+				}
 			} else {
 				event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Outcome = "run.finished", "finish-"+session, 2, "failed"
 				event.Data.CompletionBody = string(fixture.project.OrganizationID) + " " + session
@@ -649,6 +674,27 @@ func TestNativeRunDetailIsolation(t *testing.T) {
 				if read.Outcome != "cancelled" || read.Checkpoint == nil || read.TerminalFailure == nil || read.TerminalFailure.ErrorClass != "lease_released" {
 					t.Fatal("released attempt lost retained checkpoint or terminal failure")
 				}
+				response := performHubAPIRequest(t, fixture.service, http.MethodGet, path+"/history?limit=100", worker, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var history tracker.Page[tracker.CollaborationEvent]
+				decodeHubResponse(t, response, &history)
+				var cancelled *tracker.NativeRunData
+				for _, entry := range history.Items {
+					if entry.Type == "run.finished" && entry.Data.Run != nil && entry.Data.Run.AttemptID == read.AttemptID {
+						cancelled = entry.Data.Run
+					}
+				}
+				if cancelled == nil {
+					t.Fatal("history omitted lease cancellation")
+				}
+				if cancelled.Handoff != nil || len(cancelled.ArtifactIDs) != 0 {
+					t.Error("cancellation history restored stale checkpoint or artifacts")
+				}
+				want := read.NativeRunData
+				want.ArtifactIDs = nil
+				if !reflect.DeepEqual(*cancelled, want) {
+					t.Errorf("cancellation history differs from attempt: got %+v, want %+v", *cancelled, want)
+				}
 				var outcome, failure string
 				if err := fixture.service.database.reader.QueryRowContext(t.Context(), "SELECT final_outcome,failure_class FROM native_attempts WHERE id=?", event.Data.AttemptID).Scan(&outcome, &failure); err != nil || outcome != "cancelled" || failure != "lease_released" {
 					t.Fatalf("released typed state=%s/%s err=%v", outcome, failure, err)
@@ -666,6 +712,102 @@ func TestNativeRunDetailIsolation(t *testing.T) {
 		decodeHubResponse(t, response, &page)
 		if len(page.Items) != 2 || page.Items[0].AttemptID == page.Items[1].AttemptID || page.Items[0].CompletionBody == page.Items[1].CompletionBody {
 			t.Fatal("both isolated attempts were not usable")
+		}
+	}
+}
+
+func TestNativeLeaseCancellationPreparation(t *testing.T) {
+	t.Parallel()
+	for _, human := range []bool{false, true} {
+		for _, failure := range []string{"", "upload", "source changed"} {
+			t.Run(fmt.Sprintf("human=%v/failure=%s", human, failure), func(t *testing.T) {
+				store := &memoryRunDetails{}
+				f := newDefaultNativeFixture(t, Config{RunDetails: store})
+				if human {
+					states := nativeFixtureStates()
+					states[0].Transitions = append(states[0].Transitions, "Blocked")
+					states = append(states, tracker.NativeState{Name: "Blocked", Transitions: []string{"Todo"}})
+					tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tx.Rollback()
+					scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+					if err := applyNativeProjectStates(t.Context(), tx, scope, states, f.service.config.now()); err != nil {
+						t.Fatal(err)
+					}
+					if err := f.service.database.commit(t.Context(), tx); err != nil {
+						t.Fatal(err)
+					}
+				}
+				approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+				issue := f.create(t, "cancellation archive")
+				worker := f.worker(t, "worker")
+				lease := claimNativeAttempt(t, f, worker, "machine", "session", issue.WorkItemID)
+				path := f.base + "/work-items/" + string(issue.WorkItemID)
+				event := nativeStartedEvent(lease)
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
+				event.Type, event.IdempotencyKey, event.Data.Sequence, event.Data.Handoff = "run.checkpointed", "checkpoint", 2, nativeTestCheckpoint()
+				event.Data.ArtifactIDs = []string{newNativeID("artifact")}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
+				if failure == "upload" {
+					store.fail = true
+				}
+				if failure == "source changed" {
+					store.afterStore = func(attachment.ArchiveReference) {
+						store.afterStore = nil
+						event.IdempotencyKey, event.Data.Sequence = "concurrent-checkpoint", 3
+						requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, event), http.StatusOK)
+					}
+				}
+				status := http.StatusNoContent
+				if human {
+					status = http.StatusOK
+				}
+				switch failure {
+				case "upload":
+					status = http.StatusInternalServerError
+				case "source changed":
+					status = http.StatusConflict
+				}
+				if human {
+					request := tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "operator-hold"}, ExpectedRevision: issue.Revision, State: "Blocked", Reason: "user_requested"}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/workflow", f.token, request), status)
+				} else {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "cancelled", CancelAttempt: true}), status)
+				}
+				response := performHubAPIRequest(t, f.service, http.MethodGet, path+"/attempts/"+event.Data.AttemptID, f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var attempt tracker.NativeAttempt
+				decodeHubResponse(t, response, &attempt)
+				if failure != "" {
+					if attempt.Status != "running" || attempt.Sequence != event.Data.Sequence || !attempt.Current {
+						t.Fatalf("failed cancellation changed execution authority: %+v", attempt)
+					}
+				}
+				response = performHubAPIRequest(t, f.service, http.MethodGet, path+"/history?limit=100", f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var page tracker.Page[tracker.CollaborationEvent]
+				decodeHubResponse(t, response, &page)
+				cancelled := 0
+				for _, entry := range page.Items {
+					if entry.Type == "run.finished" && entry.Data.Run != nil {
+						cancelled++
+						want := attempt.NativeRunData
+						want.ArtifactIDs = nil
+						if want.Outcome != "cancelled" || want.TerminalFailure == nil || !reflect.DeepEqual(*entry.Data.Run, want) {
+							t.Errorf("history lost cancellation payload: got %+v, want %+v", entry.Data.Run, want)
+						}
+					}
+				}
+				wantCancelled := 0
+				if failure == "" {
+					wantCancelled = 1
+				}
+				if cancelled != wantCancelled {
+					t.Fatalf("cancellation history count=%d, want %d", cancelled, wantCancelled)
+				}
+			})
 		}
 	}
 }
@@ -946,7 +1088,7 @@ func TestRunDetailSegmentResolvesPreparedReferenceBeforeCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	prepared := map[string]tracker.NativeRunData{"attempt_prepared:2": {AttemptID: "attempt_prepared", Sequence: 2}}
-	owner := &runDetailContext{store: store, organization: organization, cache: map[string]map[string]tracker.NativeRunData{}, reuse: map[string]*runDetailReference{}, reference: &ref, runs: prepared}
+	owner := &runDetailContext{store: store, organization: organization, cache: map[string]map[string]tracker.NativeRunData{}, reference: &ref, runs: prepared}
 	ctx := context.WithValue(t.Context(), runDetailContextKey{}, owner)
 	runs, err := readRunDetailSegment(ctx, f.service.database.reader, newRunDetailReference(ref, organization, "attempt_prepared:2"))
 	if err != nil || runs["attempt_prepared:2"].Sequence != 2 {

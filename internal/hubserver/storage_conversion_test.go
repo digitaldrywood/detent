@@ -195,6 +195,7 @@ func TestStorageConversionPublicationFailures(t *testing.T) {
 					_, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET revision=revision+1 WHERE native_id=?", issue.WorkItemID)
 					return err
 				case "live lease":
+					f.hook = nil
 					approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 					claimNativeAttempt(t, f.nativeFixture, f.worker(t, "worker"), "machine", "session", issue.WorkItemID)
 				}
@@ -216,6 +217,7 @@ func TestStorageConversionPublicationFailures(t *testing.T) {
 			if (phase == "uploaded" || phase == "verification" || phase == "commit") && actual != original {
 				t.Fatal("source retired before verified reference commit")
 			}
+			objectsBeforeRestart := len(f.objects)
 			f.hook = nil
 			if phase == "commit" {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "DROP TRIGGER conversion_interrupt"); err != nil {
@@ -225,8 +227,8 @@ func TestStorageConversionPublicationFailures(t *testing.T) {
 			if err := f.service.convertLegacyStorage(t.Context(), f.now); err != nil {
 				t.Fatal(err)
 			}
-			if len(f.objects) != 1 {
-				t.Fatalf("restart stored %d objects", len(f.objects))
+			if len(f.objects) != objectsBeforeRestart {
+				t.Fatalf("restart stored %d objects, want %d", len(f.objects), objectsBeforeRestart)
 			}
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT "+collaborationPayloadColumn("")+" FROM collaboration_events WHERE work_item_id=? AND type='run.finished'", issue.WorkItemID).Scan(&actual); err != nil {
 				t.Fatal(err)
@@ -1037,7 +1039,7 @@ func TestStorageConversionSkipsFailedRowsAndRetries(t *testing.T) {
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	tx := f.tx(t)
 	for range storageConversionRows + 3 {
-		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("example", 4096)}}, f.now); err != nil {
+		if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("example", 4096)}}, f.now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1057,7 +1059,7 @@ func TestStorageConversionSkipsFailedRowsAndRetries(t *testing.T) {
 		return nil
 	}
 	for tick, want := range []int{0, 3, storageConversionRows + 3} {
-		err := f.service.convertStorageAggregate(f.service.contentContext(t.Context()), scope, family, string(issue.WorkItemID), f.now)
+		err := f.service.convertStorageAggregate(f.service.runDetailContext(t.Context()), scope, family, string(issue.WorkItemID), f.now)
 		if (err != nil) != (tick == 0) {
 			t.Fatalf("tick=%d error=%v", tick, err)
 		}
@@ -1073,7 +1075,7 @@ func TestStorageConversionContinuesAfterProjectionFailure(t *testing.T) {
 	issue := f.nativeFixture.create(t, "Projection failure before storage")
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 	tx := f.tx(t)
-	if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("example", 4096)}}, f.now); err != nil {
+	if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("example", 4096)}}, f.now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET actor_principal_id=NULL,actor_json='[]' WHERE native_id=?", issue.WorkItemID); err != nil {

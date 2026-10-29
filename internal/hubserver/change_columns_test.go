@@ -899,7 +899,7 @@ func TestChangeColumnBackfillUsesInlineAndRetriesArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := 0
-	f.service.config.content = func(context.Context, entryauthority.ContentRequest) ([]byte, error) {
+	f.service.config.Content = func(context.Context, entryauthority.ContentRequest) ([]byte, error) {
 		calls++
 		return nil, context.DeadlineExceeded
 	}
@@ -944,7 +944,7 @@ func TestChangeColumnBackfillUsesInlineAndRetriesArchive(t *testing.T) {
 	if _, err := objects.call(t.Context(), entryauthority.ContentRequest{Organization: string(f.project.OrganizationID), Reference: ref, Data: compressed, Write: true}); err != nil {
 		t.Fatal(err)
 	}
-	f.service.config.content = objects.call
+	f.service.config.Content = objects.call
 	if err := f.service.populateChangeColumns(t.Context()); err != nil {
 		t.Fatal(err)
 	}

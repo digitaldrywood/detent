@@ -513,9 +513,13 @@ func archiveProjectionColumn(table, column string) bool {
 func archiveProjectionDefault(table, column string) json.RawMessage {
 	switch table {
 	case "conversation_events":
-		return slices.Contains([]string{"content_attachment_id", "delta_offset", "delta_bytes", "message_revision"}, column)
+		if slices.Contains([]string{"content_attachment_id", "delta_offset", "delta_bytes", "message_revision"}, column) {
+			return json.RawMessage("null")
+		}
 	case "conversation_messages":
-		return slices.Contains([]string{"actor_principal_id", "text_bytes", "stored_text_bytes"}, column)
+		if slices.Contains([]string{"actor_principal_id", "text_bytes", "stored_text_bytes"}, column) {
+			return json.RawMessage("null")
+		}
 	case "collaboration_events":
 		switch column {
 		case "archive_operation", "archive_from_state", "archive_to_state", "archive_attempt_id", "archive_outcome", "archive_landed_commit":

@@ -66,7 +66,7 @@ func TestRecoveryPreservesCollaborationAndFencesAuthority(t *testing.T) {
 	if result.SchemaVersion != supportedSchemaVersion(t) || result.AdministratorID == "" {
 		t.Fatalf("restore result = %+v", result)
 	}
-	restored := openTestService(t, Config{DatabasePath: destination})
+	restored := openTestService(t, Config{DatabasePath: destination, Content: f.service.config.Content, RunDetails: f.service.config.RunDetails})
 	change.service, change.token = restored, recoveryTestToken
 	if got := change.detail(t); !reflect.DeepEqual(got, changeBefore) {
 		t.Fatalf("restored Change or artifact references changed: got %+v, want %+v", got, changeBefore)

@@ -1018,7 +1018,7 @@ func openTestService(t *testing.T, cfg Config) *Service {
 			if shared.ArchiveContents == nil && shared.Content == nil {
 				shared.ArchiveContents = &conversationContentFixture{}
 			}
-		} else if conversationConfig.ArchiveContents == nil && cfg.content == nil {
+		} else if conversationConfig.ArchiveContents == nil && cfg.Content == nil {
 			conversationConfig.ArchiveContents = &conversationContentFixture{}
 		}
 	}

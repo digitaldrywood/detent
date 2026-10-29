@@ -489,18 +489,18 @@ func TestCollaborationPayloadConversion(t *testing.T) {
 	if _, err := f.service.database.db.ExecContext(ctx, "UPDATE storage_conversion_progress SET updated_at='1' WHERE family='runs'"); err != nil {
 		t.Fatal(err)
 	}
-	scopes, err := f.service.database.reader.QueryContext(ctx, storageConversionScopeDiscovery)
+	scopes, err := f.service.database.reader.QueryContext(ctx, storageConversionSchedule)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer scopes.Close()
 	selected := 0
 	for scopes.Next() {
-		var org, project string
-		if err := scopes.Scan(&org, &project); err != nil {
+		var org, project, family, aggregate string
+		if err := scopes.Scan(&org, &project, &family, &aggregate); err != nil {
 			t.Fatal(err)
 		}
-		if org != string(scope.organization) || project != string(scope.project) {
+		if org != string(scope.organization) || project != string(scope.project) || family != "runs" {
 			t.Fatal("another archive family crowded out run conversion")
 		}
 		selected++
@@ -509,11 +509,11 @@ func TestCollaborationPayloadConversion(t *testing.T) {
 		t.Fatal(err)
 	}
 	if selected != 4 {
-		t.Fatalf("pending scope entries=%d, want bounded batch of 4", selected)
+		t.Fatalf("pending conversion entries=%d, want bounded batch of 4", selected)
 	}
-	plan := explainQueryPlan(t, f.service.database.reader, storageConversionScopeDiscovery, nil)
-	if !strings.Contains(strings.Join(plan, " "), "storage_conversion_pending_scopes") {
-		t.Fatalf("scope discovery missed sparse index: %v", plan)
+	plan := explainQueryPlan(t, f.service.database.reader, storageConversionSchedule, nil)
+	if !strings.Contains(strings.Join(plan, " "), "storage_conversion_schedule") {
+		t.Fatalf("conversion schedule missed sparse index: %v", plan)
 	}
 	for range events {
 		if err := f.service.convertStorageFamily(ctx, scope, storageConversionFamilies[0], f.service.config.now()); err != nil {

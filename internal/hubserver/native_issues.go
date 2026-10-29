@@ -1095,6 +1095,30 @@ func (s *Service) transitionNativeIssueCommandWithChat(ctx context.Context, scop
 		tracker.Transition
 		ConversationID string `json:"conversation_id,omitempty"`
 	}{request, conversationID}
+	if scope.actor().Kind == "human" && strings.EqualFold(request.State, "Blocked") {
+		_, replay, err := s.nativeCommandReplay(ctx, scope, options.OperationID, request.IdempotencyKey, payload)
+		if err != nil {
+			return nil, err
+		}
+		if !replay {
+			issue, internalID, err := readNativeIssue(ctx, s.database.reader, scope, item)
+			if err != nil {
+				return nil, err
+			}
+			if !strings.EqualFold(issue.State, "Blocked") {
+				lease, found, err := readUnreleasedLease(ctx, s.database.reader, internalID)
+				if err != nil {
+					return nil, err
+				}
+				if found && lease.session.ExpiresAt.After(s.config.now()) {
+					ctx, err = s.prepareNativeLeaseCancellation(ctx, scope, lease.session.ID, lease.session.FencingToken)
+					if err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+	}
 	result, err := s.executeNativeIssueMutation(ctx, scope, options, request.Mutation, payload, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		heldLease = ""
 		issue, internalID, err := readNativeIssue(ctx, tx, scope, item)
