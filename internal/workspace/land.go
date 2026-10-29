@@ -463,11 +463,13 @@ func deliveredLanding(ctx context.Context, path string, opts LandOptions, base, 
 		merge = strings.TrimSpace(output)
 	}
 	if merge == "" {
-		sourceBase, err := runGitAt(ctx, path, "merge-base", base, opts.HeadSHA)
-		if err != nil {
-			return LandResult{}, fmt.Errorf("inspect delivered source base: %w", err)
+		if !validLandingHead(opts.SourceBaseSHA) {
+			return LandResult{}, nil
 		}
-		incorporated, err := incorporatedSourceDelta(ctx, path, strings.TrimSpace(sourceBase), base, opts.HeadSHA)
+		if _, err := runGitAt(ctx, path, "cat-file", "-e", opts.SourceBaseSHA+"^{commit}"); err != nil {
+			return LandResult{}, nil
+		}
+		incorporated, err := incorporatedSourceDelta(ctx, path, opts.SourceBaseSHA, base, opts.HeadSHA)
 		var refusal *LandRefusal
 		if errors.As(err, &refusal) && refusal.Kind == LandRefusalConflict {
 			return LandResult{}, nil

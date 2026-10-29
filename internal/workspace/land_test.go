@@ -446,6 +446,8 @@ func TestLocalGitLandingAlreadyContains(t *testing.T) {
 			method      string
 			ancestor    bool
 			cherryPick  bool
+			reverted    bool
+			sourceBase  string
 			empty       bool
 			normal      bool
 			trailer     string
@@ -467,6 +469,10 @@ func TestLocalGitLandingAlreadyContains(t *testing.T) {
 			{name: "cherry-picked squash", method: "squash", cherryPick: true, wantReuse: true, wantCurrent: true},
 			{name: "cherry-picked merge", method: "merge", cherryPick: true, wantReuse: true, wantCurrent: true},
 			{name: "cherry-picked rebase", method: "rebase", cherryPick: true, wantReuse: true, wantCurrent: true},
+			{name: "reverted ancestor and cherry-picked tail do not prove incorporation", reverted: true, wantKind: LandRefusalNothing},
+			{name: "missing reviewed base does not prove incorporation", sourceBase: "missing", wantKind: LandRefusalNothing},
+			{name: "unavailable reviewed base does not prove incorporation", sourceBase: "unavailable", wantKind: LandRefusalNothing},
+			{name: "invalid reviewed base does not prove incorporation", sourceBase: "invalid", wantKind: LandRefusalNothing},
 			{name: "empty own delta squash", method: "squash", empty: true, wantKind: LandRefusalNothing},
 			{name: "empty own delta merge", method: "merge", empty: true, wantKind: LandRefusalNothing},
 			{name: "empty own delta rebase", method: "rebase", empty: true, wantKind: LandRefusalNothing},
@@ -489,6 +495,17 @@ func TestLocalGitLandingAlreadyContains(t *testing.T) {
 					runGit(t, f.info.Path, "revert", "--no-commit", base+".."+f.head)
 					runGit(t, f.info.Path, "commit", "-m", "revert source delta")
 					f.head = strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD"))
+				} else if test.reverted {
+					runGit(t, f.info.Path, "restore", "--source=HEAD^", "--", "feature.txt")
+					if err := os.WriteFile(filepath.Join(f.info.Path, "tail.txt"), []byte("independent reviewed tail\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					runGit(t, f.info.Path, "add", "feature.txt", "tail.txt")
+					runGit(t, f.info.Path, "commit", "--amend", "-m", "independent reviewed tail")
+					f.head = strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD"))
+					runGit(t, f.source, "merge", "--ff-only", f.head+"^")
+					runGit(t, f.source, "revert", "--no-edit", "HEAD")
+					runGit(t, f.source, "cherry-pick", f.head)
 				} else if test.cherryPick {
 					f.advanceMain(t, "independent.txt", "independent base work\n")
 					runGit(t, f.source, "cherry-pick", base+".."+f.head)
@@ -532,7 +549,15 @@ func TestLocalGitLandingAlreadyContains(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				opts := LandOptions{ChangeID: "change_1", Native: native, HeadSHA: f.head, Method: test.method}
+				opts := LandOptions{ChangeID: "change_1", Native: native, HeadSHA: f.head, SourceBaseSHA: base, Method: test.method}
+				switch test.sourceBase {
+				case "missing":
+					opts.SourceBaseSHA = ""
+				case "unavailable":
+					opts.SourceBaseSHA = strings.Repeat("a", 40)
+				case "invalid":
+					opts.SourceBaseSHA = "main"
+				}
 				if test.mismatch == "head" {
 					opts.HeadSHA = strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^"))
 				}
@@ -903,6 +928,7 @@ func TestLocalGitLandChangeReportsAKeptLanding(t *testing.T) {
 
 	t.Parallel()
 	f := newLandingFixture(t)
+	sourceBase := f.remoteMain(t)
 	first, err := f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: "squash", Message: "Land the feature", ValidationCommand: "true"})
 	if err != nil {
 		t.Fatalf("LandChange() error = %v", err)
@@ -921,7 +947,7 @@ func TestLocalGitLandChangeReportsAKeptLanding(t *testing.T) {
 	if err := ForgetLanding(context.Background(), f.info); err != nil {
 		t.Fatal(err)
 	}
-	again, err = f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: "squash"})
+	again, err = f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, SourceBaseSHA: sourceBase, Method: "squash"})
 	if err != nil || again.MergeSHA != first.MergeSHA || again.Gate.Command != "" || f.remoteMain(t) != first.MergeSHA {
 		t.Fatalf("forgotten receipt did not reprove incorporation: result=%+v error=%v", again, err)
 	}
@@ -929,7 +955,7 @@ func TestLocalGitLandChangeReportsAKeptLanding(t *testing.T) {
 	if err := RecordLanding(context.Background(), f.info, f.head, LandResult{MergeSHA: strings.Repeat("d", 40), BaseRef: "main", Method: "squash"}); err != nil {
 		t.Fatal(err)
 	}
-	again, err = f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, Method: "squash"})
+	again, err = f.backend.LandChange(context.Background(), f.info, f.issue, LandOptions{HeadSHA: f.head, SourceBaseSHA: sourceBase, Method: "squash"})
 	if err != nil || again.MergeSHA != first.MergeSHA || f.remoteMain(t) != first.MergeSHA {
 		t.Fatalf("stale receipt did not reprove incorporation: result=%+v error=%v", again, err)
 	}
