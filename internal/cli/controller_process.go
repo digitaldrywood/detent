@@ -388,7 +388,7 @@ func superviseControllers(ctx context.Context, cfg BootConfig) (runErr error) {
 		}()
 		defer func() { cancel(); runErr = terminalDashboardError(runErr, <-uiDone) }()
 	}
-	return runControllerSupervisor(runCtx, cfg.Shutdown, binary, os.Args[1:], stdout, stderr, &target, controllerSupervisorConfig{})
+	return runControllerSupervisor(runCtx, cfg.Shutdown, binary, os.Args[1:], stdout, stderr, &target, controllerSupervisorConfig{restart: cfg.Restart})
 }
 
 func controllerProxy(settings controllerSettings, target *atomic.Pointer[url.URL], transport http.RoundTripper) http.Handler {
@@ -414,6 +414,7 @@ type controllerStarter func(context.Context, string, []string, chan<- controller
 type controllerSupervisorConfig struct {
 	start          controllerStarter
 	startupContext func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	restart        *RestartRequest
 }
 
 func runControllerSupervisor(ctx context.Context, shutdown *ShutdownController, binary string, args []string, stdout, stderr io.Writer, target *atomic.Pointer[url.URL], cfg controllerSupervisorConfig) error {
@@ -591,6 +592,9 @@ func runControllerSupervisor(ctx context.Context, shutdown *ShutdownController, 
 					pending.reply <- errors.Join(failure, event.err)
 					pending = nil
 				case active:
+					if !stopping && event.err == nil {
+						requestUpdateRestart(shutdown, cfg.restart, event.process.cmd.Path)
+					}
 					stopping = true
 					result = event.err
 					for process := range processes {
