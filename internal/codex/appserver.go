@@ -575,7 +575,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 	}
 
 	elicitationState := newMCPElicitationState(req.MCPElicitationPolicy, onUpdate)
-	for turnIndex := 0; turnIndex < 2; turnIndex++ {
+	for turnIndex := range 2 {
 		turn, err := s.startTurn(ctx, transport, req, threadID, elicitationState, onUpdate)
 		if err != nil {
 			return RunTurnResult{}, err

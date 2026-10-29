@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -598,7 +599,7 @@ func TestProgressToolBudgetCountsCompletedResultsOnce(t *testing.T) {
 
 func TestProgressReadDeadlinePreservesAnswerContext(t *testing.T) {
 	for _, parentCanceled := range []bool{false, true} {
-		t.Run(fmt.Sprint(parentCanceled), func(t *testing.T) {
+		t.Run(strconv.FormatBool(parentCanceled), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 				defer cancel()
@@ -645,7 +646,7 @@ func (b *progressInspectBackend) RunTurnWithTools(ctx context.Context, req Agent
 		}
 		result, err := handle(ctx, AgentToolCall{Name: "detent_read_source", Arguments: json.RawMessage(`{"operation":"read","revision":"head","path":"assertion.txt"}`)})
 		if err != nil || !result.Success || !strings.Contains(result.Content, "failing assertion and exercised code") {
-			return AgentTurnResult{}, fmt.Errorf("pinned source tool unavailable: %v, %s", err, result.Content)
+			return AgentTurnResult{}, fmt.Errorf("pinned source tool unavailable: %w, %s", err, result.Content)
 		}
 		result, err = handle(ctx, AgentToolCall{Name: "detent_run_validation", Arguments: json.RawMessage(`{"command":"printf changed > assertion.txt"}`)})
 		if err == nil || result.Success {

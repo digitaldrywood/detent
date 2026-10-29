@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -41,11 +42,11 @@ func (r *backgroundCPUReader) plans(t *testing.T) string {
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer rows.Close()
 		for rows.Next() {
 			var id, parent, unused int
 			var detail string
 			if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
-				rows.Close()
 				t.Fatal(err)
 			}
 			plans = append(plans, detail)
@@ -59,7 +60,7 @@ func (r *backgroundCPUReader) plans(t *testing.T) string {
 
 func TestAnalyticsUsageDrainBoundsHistory(t *testing.T) {
 	for _, history := range []int{2, 2000} {
-		t.Run(fmt.Sprint(history), func(t *testing.T) {
+		t.Run(strconv.Itoa(history), func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
 			items := []tracker.NativeIssue{f.create(t, "first"), f.create(t, "second")}

@@ -241,7 +241,7 @@ func (b *AgentBackend) command(ctx context.Context, req runner.AgentTurnRequest)
 
 func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.AgentTurnRequest) (*exec.Cmd, map[string]any, error) {
 	if req.IsolatedTools && (!req.ReadOnly || b.options.IsolationPolicy == nil) {
-		return nil, nil, errors.New("Claude investigation requires enforced read-only isolation")
+		return nil, nil, errors.New("read-only investigation requires enforced read-only isolation")
 	}
 	if req.TextOnly {
 		req.ReadOnly = true
@@ -285,17 +285,32 @@ func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.Agen
 		}
 		if req.IsolatedTools {
 			if policy.Tier != isolation.Sandbox {
-				return nil, nil, errors.New("Claude investigation requires sandbox enforcement")
+				return nil, nil, errors.New("read-only investigation requires sandbox enforcement")
 			}
-			sandbox := settings["sandbox"].(map[string]any)
+			sandbox, ok := settings["sandbox"].(map[string]any)
+			if !ok || sandbox == nil {
+				return nil, nil, errors.New("investigation sandbox settings are missing")
+			}
+			filesystem, ok := sandbox["filesystem"].(map[string]any)
+			if !ok || filesystem == nil {
+				return nil, nil, errors.New("investigation filesystem settings are missing")
+			}
 			sandbox["autoAllowBashIfSandboxed"] = false
-			sandbox["filesystem"].(map[string]any)["allowWrite"] = []string{}
+			filesystem["allowWrite"] = []string{}
 			sandbox["network"] = map[string]any{"allowedDomains": []string{}, "allowUnixSockets": []string{}, "allowAllUnixSockets": false, "allowLocalBinding": false, "strictAllowlist": true}
-			permissions := settings["permissions"].(map[string]any)
-			permissions["deny"] = append(permissions["deny"].([]string), "Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch")
-			if req.ToolBudget != nil || req.Workspace == "" {
-				permissions["deny"] = append(permissions["deny"].([]string), "Read", "Glob", "Grep")
+			permissions, ok := settings["permissions"].(map[string]any)
+			if !ok || permissions == nil {
+				return nil, nil, errors.New("investigation permission settings are missing")
 			}
+			denied, ok := permissions["deny"].([]string)
+			if !ok {
+				return nil, nil, errors.New("investigation tool restrictions are missing")
+			}
+			denied = append(denied, "Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch")
+			if req.ToolBudget != nil || req.Workspace == "" {
+				denied = append(denied, "Read", "Glob", "Grep")
+			}
+			permissions["deny"] = denied
 		}
 		if policy.Tier == "sandbox" && len(b.options.ExtraArgs) > 0 {
 			return nil, nil, errors.New("runner isolation cannot apply Claude extra arguments")

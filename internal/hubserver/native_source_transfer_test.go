@@ -104,8 +104,8 @@ func TestNativeSourceTransfer(t *testing.T) {
 				response = performHubAPIRequest(t, f.service, http.MethodGet, itemPath+"/attempts/"+start.Data.AttemptID, f.token, nil)
 				requireNativeStatus(t, response, http.StatusOK)
 				decodeHubResponse(t, response, &historical)
-				if historical.Status != "interrupted" || historical.Outcome != "" || historical.Current || historical.ClaimReleasedAt == nil || historical.Checkpoint == nil {
-					t.Fatalf("historical attempt did not retain interrupted custody: %#v", historical)
+				if historical.Status != "cancelled" || historical.Outcome != "cancelled" || historical.Current || historical.ClaimReleasedAt == nil || historical.Checkpoint == nil {
+					t.Fatalf("historical attempt did not retain cancelled custody: %#v", historical)
 				}
 				claim.SessionID = "latest-source"
 				response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", a.redemption.Credential, claim)

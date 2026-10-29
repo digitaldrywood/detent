@@ -331,6 +331,17 @@ func (s *Scheduler) RenewClaim(ctx context.Context, issueID string, _ time.Time)
 	native, isNative := s.nativeClaims[issueID]
 	s.mu.Unlock()
 	if isNative {
+		if native.lifecycle != nil {
+			native.lifecycle.Lock()
+			defer native.lifecycle.Unlock()
+			s.mu.Lock()
+			current, found := s.nativeClaims[issueID]
+			s.mu.Unlock()
+			if !found || current.lifecycle != native.lifecycle {
+				return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
+			}
+			native = current
+		}
 		return s.renewNativeClaim(ctx, issueID, native, 0)
 	}
 	if err := s.ensureMachine(ctx); err != nil {

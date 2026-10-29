@@ -1669,6 +1669,78 @@ func restoreRunWorkspaceCheckpoint(req RunRequest, runWorkspace workspace.Backen
 	}
 }
 
+func nativeRunRecovery(req RunRequest, mode string, gateCommand string) (*tracker.NativeAttempt, *tracker.NativeAttempt, bool) {
+	var reviewRecovery *tracker.NativeAttempt
+	repairResume := false
+	var turnRecovery *tracker.NativeAttempt
+	if req.Execution != nil && mode == RunModeImplement && !req.rerouteImplementation() {
+		recovery := req.Execution.Recovery()
+		reviewRecovery = nativeReviewResumeAttempt(recovery, gateCommand)
+		repairResume = reviewRecovery != nil && recovery.ChangeDetail != nil && len(changerequest.IndependentRepairDependencies(*recovery.ChangeDetail)) != 0
+		if reviewRecovery == nil {
+			turnRecovery = nativeTurnResumeAttempt(req.Execution.Recovery())
+			repairResume = turnRecovery != nil && nativeIndependentGateResume(req.Execution.Recovery())
+		}
+	}
+	return reviewRecovery, turnRecovery, repairResume
+}
+
+func (r *Runner) resumeRunCheckpoint(ctx context.Context, req *RunRequest, runtime agentRuntime) error {
+	previous := req.Execution.Recovery().SourceAttempt()
+	if !req.operatorFreshRetry() && previous != nil && previous.Checkpoint != nil && previous.Checkpoint.Resume == "resume_session" {
+		resume, err := r.nativeSessionResumeState(ctx, *req, runtime)
+		if err != nil {
+			return err
+		}
+		req.ResumeState = resume
+		if !agentResumeStateEmpty(resume) {
+			req.RetryMode = RetryModeResume
+		} else {
+			req.RetryMode = RetryModeFresh
+		}
+	}
+	if nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
+		req.retainCheckpoint = true
+	}
+	return nil
+}
+
+func (r *Runner) bindExecutionSources(ctx context.Context, req *RunRequest, runWorkspace workspace.Backend, info *workspace.Info, issue *workspace.Issue) {
+	if evidence, ok := req.Execution.(EvidenceSourceExecution); ok {
+		evidence.SetEvidenceSource(workspaceEvidenceSource(info.Path))
+	}
+	if diffs, ok := req.Execution.(DiffExecution); ok {
+		req.attemptDiffSource = r.attemptDiffSource(ctx, *info, *issue)
+		diffs.SetDiffSource(req.attemptDiffSource)
+	}
+	if repository, ok := req.Execution.(RepositoryExecution); ok {
+		repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
+	}
+	if source, ok := req.Execution.(ChangeSourceExecution); ok {
+		source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+			return workspace.CaptureChangeSource(ctx, info.Path, base, head)
+		})
+	}
+	if source, ok := req.Execution.(IntegrationSourceExecution); ok {
+		if verifier, supported := runWorkspace.(workspace.IntegrationVerifier); supported {
+			source.SetIntegrationSource(func(ctx context.Context, version tracker.ChangeVersion, base string) (workspace.LandResult, error) {
+				method := version.Policy.Gates.MergeMethod
+				if method == "" {
+					method = "squash"
+				}
+				target := ""
+				if d := issue.ReleaseDelivery; d != nil {
+					if d.ChangeID != version.ChangeID || d.VersionID != version.ID || d.HeadSHA != version.HeadSHA || d.BaseSHA != version.BaseSHA || d.Repository != version.Repository {
+						return workspace.LandResult{}, errors.New("release association differs from current version")
+					}
+					target = d.BaseRef
+				}
+				return verifier.VerifyIntegratedChange(ctx, *info, *issue, workspace.LandOptions{HeadSHA: version.HeadSHA, Repository: version.Repository, Method: method, TargetBranch: target}, version.BaseSHA, base)
+			})
+		}
+	}
+}
+
 func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult, returnErr error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -1696,35 +1768,11 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		req.ResumeState = store.AgentResumeState{}
 		req.RetryMode = RetryModeFresh
 	}
-	var reviewRecovery *tracker.NativeAttempt
-	repairResume := false
-	var turnRecovery *tracker.NativeAttempt
-	if req.Execution != nil && mode == RunModeImplement && !req.rerouteImplementation() {
-		recovery := req.Execution.Recovery()
-		reviewRecovery = nativeReviewResumeAttempt(recovery, gate.Effective(workflow.Config.Gate).Run)
-		repairResume = reviewRecovery != nil && recovery.ChangeDetail != nil && len(changerequest.IndependentRepairDependencies(*recovery.ChangeDetail)) != 0
-		if reviewRecovery == nil {
-			turnRecovery = nativeTurnResumeAttempt(req.Execution.Recovery())
-			repairResume = turnRecovery != nil && nativeIndependentGateResume(req.Execution.Recovery())
-		}
-	}
+	reviewRecovery, turnRecovery, repairResume := nativeRunRecovery(req, mode, gate.Effective(workflow.Config.Gate).Run)
 	publicationRecovery := req.publicationRecovery(mode)
 	if req.Execution != nil && !nativeLanding && !publicationRecovery && reviewRecovery == nil && turnRecovery == nil {
-		previous := req.Execution.Recovery().SourceAttempt()
-		if !req.operatorFreshRetry() && previous != nil && previous.Checkpoint != nil && previous.Checkpoint.Resume == "resume_session" {
-			resume, err := r.nativeSessionResumeState(ctx, req, agentRuntime)
-			if err != nil {
-				return RunResult{}, err
-			}
-			req.ResumeState = resume
-			if !agentResumeStateEmpty(resume) {
-				req.RetryMode = RetryModeResume
-			} else {
-				req.RetryMode = RetryModeFresh
-			}
-		}
-		if nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
-			req.retainCheckpoint = true
+		if err := r.resumeRunCheckpoint(ctx, &req, agentRuntime); err != nil {
+			return RunResult{}, err
 		}
 	}
 	if err := r.checkResumePolicy(ctx, req, req.ResumeState); err != nil {
@@ -2117,40 +2165,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	if req.Execution != nil {
-		if evidence, ok := req.Execution.(EvidenceSourceExecution); ok {
-			evidence.SetEvidenceSource(workspaceEvidenceSource(info.Path))
-		}
-		// The stored attempt diff rides every checkpoint and the finish.
-		if diffs, ok := req.Execution.(DiffExecution); ok {
-			req.attemptDiffSource = r.attemptDiffSource(ctx, info, workspaceIssue)
-			diffs.SetDiffSource(req.attemptDiffSource)
-		}
-		if repository, ok := req.Execution.(RepositoryExecution); ok {
-			repository.SetRepository(workspace.RepositoryURL(ctx, info.Path))
-		}
-		if source, ok := req.Execution.(ChangeSourceExecution); ok {
-			source.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
-				return workspace.CaptureChangeSource(ctx, info.Path, base, head)
-			})
-		}
-		if source, ok := req.Execution.(IntegrationSourceExecution); ok {
-			if verifier, supported := runWorkspace.(workspace.IntegrationVerifier); supported {
-				source.SetIntegrationSource(func(ctx context.Context, version tracker.ChangeVersion, base string) (workspace.LandResult, error) {
-					method := version.Policy.Gates.MergeMethod
-					if method == "" {
-						method = "squash"
-					}
-					target := ""
-					if d := workspaceIssue.ReleaseDelivery; d != nil {
-						if d.ChangeID != version.ChangeID || d.VersionID != version.ID || d.HeadSHA != version.HeadSHA || d.BaseSHA != version.BaseSHA || d.Repository != version.Repository {
-							return workspace.LandResult{}, errors.New("release association differs from current version")
-						}
-						target = d.BaseRef
-					}
-					return verifier.VerifyIntegratedChange(ctx, info, workspaceIssue, workspace.LandOptions{HeadSHA: version.HeadSHA, Repository: version.Repository, Method: method, TargetBranch: target}, version.BaseSHA, base)
-				})
-			}
-		}
+		r.bindExecutionSources(ctx, &req, runWorkspace, &info, &workspaceIssue)
 		preStartBinding := true
 		if _, binds := req.Execution.(ConversationExecution); binds {
 			if live, ok := backend.(AgentLiveBackend); ok && live.SupportsLiveControl() {
@@ -2175,7 +2190,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			resumeThreadID = resumeState.ProviderThreadID
 		}
 		conversation, err := r.bindConversation(ctx, req, backend, resumeThreadID)
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrNoConversation) {
 			return RunResult{}, err
 		}
 		ctx = conversation.attach(ctx)

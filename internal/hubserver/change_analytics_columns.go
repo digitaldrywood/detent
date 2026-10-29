@@ -25,7 +25,7 @@ func analyticsChangeColumnsPending(ctx context.Context, q nativeQueryer, scope n
 	return pending, err
 }
 
-func readUnconvertedAnalyticsLandings(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow, quality bool) ([]nativeAnalyticsLanding, error) {
+func readUnconvertedAnalyticsLandings(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow, quality bool) (_ []nativeAnalyticsLanding, closeErr error) {
 	reopened := map[string]bool{}
 	escaped := map[string]bool{}
 	if quality {
@@ -33,18 +33,18 @@ func readUnconvertedAnalyticsLandings(ctx context.Context, q nativeQueryer, scop
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
+		defer func() { closeErr = errors.Join(closeErr, rows.Close()) }()
 		for rows.Next() {
 			var item, raw string
 			var from sql.NullString
 			if err := rows.Scan(&item, &raw, &from); err != nil {
-				rows.Close()
+
 				return nil, err
 			}
 			if !from.Valid {
 				var data tracker.CollaborationData
 				if err := decodeChangeColumnsJSON(ctx, []byte(raw), &data); err != nil {
-					rows.Close()
+
 					return nil, err
 				}
 				from.String = data.FromState
@@ -60,7 +60,7 @@ func readUnconvertedAnalyticsLandings(ctx context.Context, q nativeQueryer, scop
 		if err != nil {
 			return nil, err
 		}
-		defer discussions.Close()
+		defer func() { closeErr = errors.Join(closeErr, discussions.Close()) }()
 		for discussions.Next() {
 			var raw string
 			if err := discussions.Scan(&raw); err != nil {
@@ -83,7 +83,7 @@ func readUnconvertedAnalyticsLandings(ctx context.Context, q nativeQueryer, scop
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { closeErr = errors.Join(closeErr, rows.Close()) }()
 	name := "landings"
 	if quality {
 		name = "quality_landings"

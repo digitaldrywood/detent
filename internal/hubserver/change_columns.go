@@ -448,12 +448,12 @@ func changeEventColumns(e tracker.CollaborationData) changeColumnValues {
 	return columns
 }
 
-func changeColumnRecords[T any](ctx context.Context, query nativeQueryer, statement string, args ...any) ([]T, error) {
+func changeColumnRecords[T any](ctx context.Context, query nativeQueryer, statement string, args ...any) (_ []T, closeErr error) {
 	rows, err := queryChangeLegacyRows(ctx, query, statement, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { closeErr = errors.Join(closeErr, rows.Close()) }()
 	values := []T{}
 	for rows.Next() {
 		var raw string

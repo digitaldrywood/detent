@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -70,7 +71,7 @@ func prepareReportsQuery(ctx context.Context, q nativeQueryer, scope nativeScope
 	return prepared, nil
 }
 
-func readLegacyReportFact(ctx context.Context, q nativeQueryer, scope nativeScope, family string) (nativePageFact, error) {
+func readLegacyReportFact(ctx context.Context, q nativeQueryer, scope nativeScope, family string) (_ nativePageFact, closeErr error) {
 	f := nativePageFact{name: family, override: true}
 	var query string
 	switch family {
@@ -101,7 +102,7 @@ func readLegacyReportFact(ctx context.Context, q nativeQueryer, scope nativeScop
 	if err != nil {
 		return f, err
 	}
-	defer rows.Close()
+	defer func() { closeErr = errors.Join(closeErr, rows.Close()) }()
 	type legacyRow struct {
 		values               []any
 		raw, status, updated string

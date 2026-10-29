@@ -10,7 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readNativeEditedOwnership(ctx context.Context, q nativeQueryer, item tracker.NativeWorkItemID) (bool, bool, error) {
+func readNativeEditedOwnership(ctx context.Context, q nativeQueryer, item tracker.NativeWorkItemID) (_ bool, _ bool, closeErr error) {
 	var title, body bool
 	const ownershipQuery = `SELECT title_supplied OR EXISTS(SELECT 1 FROM collaboration_events WHERE work_item_id=s.work_item_id AND type='issue.edited' AND edited_title=1),body_supplied OR EXISTS(SELECT 1 FROM collaboration_events WHERE work_item_id=s.work_item_id AND type='issue.edited' AND edited_body=1) FROM linked_issue_sources s WHERE work_item_id=?`
 	if err := q.QueryRowContext(ctx, ownershipQuery, item).Scan(&title, &body); err != nil {
@@ -23,7 +23,7 @@ func readNativeEditedOwnership(ctx context.Context, q nativeQueryer, item tracke
 	if err != nil {
 		return false, false, err
 	}
-	defer rows.Close()
+	defer func() { closeErr = errors.Join(closeErr, rows.Close()) }()
 	for rows.Next() {
 		var raw string
 		if err := rows.Scan(&raw); err != nil {
@@ -51,7 +51,7 @@ func readNativeEditedOwnership(ctx context.Context, q nativeQueryer, item tracke
 	return title || typedTitle, body || typedBody, nil
 }
 
-func readIssueEmailParticipants(ctx context.Context, q nativeQueryer, event issueEmailEvent, item, organization, after string, limit int) (map[string]bool, string, error) {
+func readIssueEmailParticipants(ctx context.Context, q nativeQueryer, event issueEmailEvent, item, organization, after string, limit int) (_ map[string]bool, _ string, closeErr error) {
 	var project tracker.ProjectID
 	var kind, principal sql.NullString
 	var raw string
@@ -73,15 +73,15 @@ func readIssueEmailParticipants(ctx context.Context, q nativeQueryer, event issu
 	if err != nil {
 		return nil, "", err
 	}
-	defer rows.Close()
+	defer func() { closeErr = errors.Join(closeErr, rows.Close()) }()
 	for rows.Next() {
 		if err := rows.Scan(&raw); err != nil {
-			rows.Close()
+
 			return nil, "", err
 		}
 		var actor tracker.Actor
 		if err := json.Unmarshal([]byte(raw), &actor); err != nil {
-			rows.Close()
+
 			return nil, "", err
 		}
 		if actor.Kind == "human" && actor.PrincipalID > after {

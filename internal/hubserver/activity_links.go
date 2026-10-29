@@ -11,12 +11,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readActivityWorkspaces(ctx context.Context, q nativeQueryer, organization string, a operatortool.ActivityAttempt) ([]string, error) {
+func readActivityWorkspaces(ctx context.Context, q nativeQueryer, organization string, a operatortool.ActivityAttempt) (_ []string, closeErr error) {
 	rows, err := queryChangeLegacyRows(ctx, q, `SELECT id FROM workspace_sessions WHERE organization_id=? AND project_id=? AND subject_work_item_id=? AND attempt_id=? AND state IN ('requested','starting','ready','idle') ORDER BY id`, organization, a.ProjectID, a.WorkItemID, a.AttemptID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { closeErr = errors.Join(closeErr, rows.Close()) }()
 	ids := []string{}
 	for rows.Next() {
 		var id string
@@ -30,7 +30,7 @@ func readActivityWorkspaces(ctx context.Context, q nativeQueryer, organization s
 
 const activityLatestChangeQuery = `SELECT id,activity_created_at FROM change_requests WHERE organization_id=? AND project_id=? AND work_item_id=? AND activity_current_version_id IS NOT NULL ORDER BY activity_created_at DESC,id DESC LIMIT 1`
 
-func readActivityChangeLink(ctx context.Context, q nativeQueryer, organization string, a *operatortool.ActivityAttempt) error {
+func readActivityChangeLink(ctx context.Context, q nativeQueryer, organization string, a *operatortool.ActivityAttempt) (closeErr error) {
 	if a.ChangeID == "" {
 		var latest string
 		var at float64
@@ -42,16 +42,16 @@ func readActivityChangeLink(ctx context.Context, q nativeQueryer, organization s
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
+		defer func() { closeErr = errors.Join(closeErr, rows.Close()) }()
 		for rows.Next() {
 			var id, raw string
 			if err := rows.Scan(&id, &raw); err != nil {
-				rows.Close()
+
 				return err
 			}
 			var c tracker.ChangeRequest
 			if err := json.Unmarshal([]byte(raw), &c); err != nil {
-				rows.Close()
+
 				return err
 			}
 			day := float64(c.CreatedAt.Round(time.Millisecond).UnixMilli())/86400000 + 2440587.5

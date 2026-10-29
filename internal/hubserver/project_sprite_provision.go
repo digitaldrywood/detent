@@ -722,6 +722,6 @@ func (s *Service) deletePoolSprite(ctx context.Context, scope nativeScope, membe
 
 func spriteMemberHoldsWork(ctx context.Context, q nativeQueryer, organization tracker.OrganizationID, enrollment string) (bool, error) {
 	var held bool
-	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM leases l JOIN runner_identities r ON r.machine_id=l.machine_id WHERE r.enrollment_id=? AND r.organization_id=? AND l.released_at IS NULL)`, enrollment, organization).Scan(&held)
+	err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM leases l JOIN runner_identities r ON r.machine_id=l.machine_id WHERE r.enrollment_id=? AND r.organization_id=? AND l.released_at IS NULL AND (r.removed_at IS NULL OR EXISTS(SELECT 1 FROM native_attempts a WHERE a.lease_id=l.lease_id AND a.worker_cleanup_required=1 AND a.cleanup_acknowledged_at IS NULL)))`, enrollment, organization).Scan(&held)
 	return held, err
 }

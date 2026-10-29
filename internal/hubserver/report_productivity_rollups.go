@@ -217,13 +217,13 @@ func productivityHours(ctx context.Context, tx projectionQuery, scope nativeScop
 	return hours, nil
 }
 
-func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope nativeScope, id string) (productivityQuality, error) {
+func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope nativeScope, id string) (_ productivityQuality, closeErr error) {
 	out := productivityQuality{}
 	rows, err := queryChangeLegacyRows(ctx, tx, `SELECT c.id,c.work_item_id,c.record_json,v.id,v.record_json,coalesce(l.record_json,'') FROM change_requests c JOIN change_versions v ON v.change_id=c.id LEFT JOIN quality_landings l ON l.version_id=v.id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? ORDER BY c.id,v.number`, scope.organization, scope.project, id)
 	if err != nil {
 		return out, err
 	}
-	defer rows.Close()
+	defer func(rows *changeLegacyRows) { closeErr = errors.Join(closeErr, rows.Close()) }(rows)
 	for rows.Next() {
 		var landing nativeAnalyticsLanding
 		var changeRaw, versionID, versionRaw, qualityRaw string
@@ -261,7 +261,7 @@ func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope na
 	if err != nil {
 		return out, err
 	}
-	defer rows.Close()
+	defer func(rows *changeLegacyRows) { closeErr = errors.Join(closeErr, rows.Close()) }(rows)
 	for rows.Next() {
 		e := qualityHistoryEvent{Item: id}
 		var at, raw string
@@ -284,7 +284,7 @@ func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope na
 	if err != nil {
 		return out, err
 	}
-	defer rows.Close()
+	defer func(rows *changeLegacyRows) { closeErr = errors.Join(closeErr, rows.Close()) }(rows)
 	for rows.Next() {
 		var raw string
 		var review tracker.ChangeReview

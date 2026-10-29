@@ -1043,6 +1043,9 @@ func testNativeLandingStaleAudit(t *testing.T, h *nativeChangeHub, issue connect
 		t.Fatal(err)
 	}
 	landing := h.scheduler.RunExecution(issue.ID)
+	if landing == nil {
+		t.Fatal("landing execution is missing after claim")
+	}
 	guarded, stop, err := landing.Guard(t.Context())
 	if err != nil {
 		t.Fatal(err)

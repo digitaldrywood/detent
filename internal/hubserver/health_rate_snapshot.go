@@ -82,6 +82,7 @@ func readHealthLandings(ctx context.Context, q nativeQueryer, scope nativeScope,
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 	var candidates []nativeAnalyticsLanding
 	legacy, converted := 0, 0
 	for rows.Next() {
@@ -89,7 +90,6 @@ func readHealthLandings(ctx context.Context, q nativeQueryer, scope nativeScope,
 		var raw string
 		var pending bool
 		if err := rows.Scan(&candidate.ChangeID, &candidate.WorkItemID, &raw, &pending); err != nil {
-			rows.Close()
 			return nil, err
 		}
 		if pending {
@@ -98,12 +98,10 @@ func readHealthLandings(ctx context.Context, q nativeQueryer, scope nativeScope,
 			converted++
 		}
 		if legacy > changeLegacyReadLimit || converted > healthReadLimit {
-			rows.Close()
 			return nil, errHealthReadLimit
 		}
 		var change tracker.ChangeRequest
 		if err := decodeChangeColumnsJSON(ctx, []byte(raw), &change); err != nil {
-			rows.Close()
 			return nil, err
 		}
 		if change.Landed == nil || change.Landed.LandedAt.Before(window.From) || !change.Landed.LandedAt.Before(window.To) {
