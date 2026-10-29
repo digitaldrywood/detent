@@ -2,7 +2,9 @@ package cloudentry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +23,9 @@ func TestTenantServingSupervision(t *testing.T) {
 		stalled        bool
 		wait           time.Duration
 		wantRestart    bool
+		migrating      bool
 	}{
+		{name: "explicit migration progress beyond startup grace", unavailableFor: 2 * tenantStartupGrace, wait: tenantStartupGrace + time.Minute, migrating: true},
 		{name: "migrating longer than the serving window", unavailableFor: 2 * time.Minute, wait: 3 * time.Minute},
 		{name: "never serves within the startup grace", unavailableFor: time.Hour, wait: tenantStartupGrace + 10*time.Second, wantRestart: true},
 		{name: "health request stalls during startup", unavailableFor: time.Hour, wait: tenantStartupGrace + 10*time.Second, stalled: true, wantRestart: true},
@@ -47,6 +51,9 @@ func TestTenantServingSupervision(t *testing.T) {
 						if test.stalled {
 							<-ctx.Done()
 							return ctx.Err()
+						}
+						if test.migrating {
+							return errTenantMigrating
 						}
 						return unreachable
 					}
@@ -84,10 +91,15 @@ func TestEntryHealthRequiresServingTenants(t *testing.T) {
 	f := newEntryFixture(t)
 	for _, test := range []struct {
 		name         string
+		body         string
+		migrating    bool
+		schema       int64
 		tenantStatus int
 		unreachable  bool
 		want         int
 	}{
+		{name: "migration progress", tenantStatus: http.StatusServiceUnavailable, body: `{"schema_version":99999999999999,"migrations_running":true}`, schema: 99999999999999, migrating: true, want: http.StatusServiceUnavailable},
+		{name: "migrated tenant ready", tenantStatus: http.StatusOK, body: `{"schema_version":99999999999999,"migrations_running":false}`, schema: 99999999999999, want: http.StatusOK},
 		{name: "healthy", tenantStatus: http.StatusNoContent, want: http.StatusOK},
 		{name: "connection refused", unreachable: true, want: http.StatusServiceUnavailable},
 		{name: "tenant returns 502", tenantStatus: http.StatusBadGateway, want: http.StatusServiceUnavailable},
@@ -102,12 +114,23 @@ func TestEntryHealthRequiresServingTenants(t *testing.T) {
 					}
 					return handlerTransport{http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 						w.WriteHeader(test.tenantStatus)
+						_, _ = io.WriteString(w, test.body)
 					})}, nil
 				}
 				return handlerTransport{f.tenants[organization.Endpoint]}, nil
 			}
 			response := httptest.NewRecorder()
 			f.service.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
+			var health struct {
+				SchemaVersion     int64 `json:"schema_version"`
+				MigrationsRunning bool  `json:"migrations_running"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &health); err != nil {
+				t.Fatal(err)
+			}
+			if health.MigrationsRunning != test.migrating || (test.schema != 0 && health.SchemaVersion != test.schema) {
+				t.Fatalf("migration health = %+v", health)
+			}
 			if response.Code != test.want || (strings.Contains(response.Body.String(), `"status":"ok"`) != (test.want == http.StatusOK)) {
 				t.Fatalf("health = %d %s", response.Code, response.Body.String())
 			}

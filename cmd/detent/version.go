@@ -9,17 +9,19 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cli"
+	"github.com/digitaldrywood/detent/internal/hubserver"
 )
 
 var version, commit, date = "dev", "none", "unknown"
 
 type versionInfo struct {
-	Version   string `json:"version"`
-	Commit    string `json:"commit"`
-	Date      string `json:"build_date"`
-	GoVersion string `json:"go_version"`
-	OS        string `json:"os"`
-	Arch      string `json:"arch"`
+	HubSchemaVersion int64  `json:"hub_schema_version"`
+	Version          string `json:"version"`
+	Commit           string `json:"commit"`
+	Date             string `json:"build_date"`
+	GoVersion        string `json:"go_version"`
+	OS               string `json:"os"`
+	Arch             string `json:"arch"`
 }
 
 func newVersionCommand() *cobra.Command {
@@ -30,6 +32,11 @@ func newVersionCommand() *cobra.Command {
 		Args:    cli.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			info := currentVersionInfo()
+			var err error
+			info.HubSchemaVersion, err = hubserver.LatestSchemaVersion()
+			if err != nil {
+				return err
+			}
 			out, err := cli.OutputForCommand(cmd)
 			if err != nil {
 				return err

@@ -138,7 +138,18 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 	if err := store.openReader(ctx, cfg.BusyTimeout); err != nil {
 		return nil, errors.Join(err, store.Close())
 	}
-	version, err := runMigrations(ctx, db, cfg.Logger)
+	migrate := cfg.migrate
+	if migrate == nil {
+		migrate = runMigrations
+	}
+	if cfg.startup != nil {
+		cfg.startup.database.Store(store.reader)
+		cfg.startup.running.Store(true)
+	}
+	version, err := migrate(ctx, db, cfg.Logger)
+	if cfg.startup != nil {
+		cfg.startup.running.Store(false)
+	}
 	if err != nil {
 		return nil, errors.Join(err, store.Close())
 	}

@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"net"
@@ -45,6 +46,8 @@ var (
 )
 
 type Config struct {
+	startup                        *startupHealth
+	migrate                        func(context.Context, *sql.DB, *slog.Logger) (int64, error)
 	dashboardDelivery              *dashboardDeliveryConfig
 	ArchiveReader                  entryauthority.ArchiveReader
 	Content                        entryauthority.ContentHandler
