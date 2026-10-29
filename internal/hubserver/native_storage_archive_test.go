@@ -32,6 +32,9 @@ type storageArchiveFixture struct {
 func newStorageArchiveFixture(t *testing.T) *storageArchiveFixture {
 	t.Helper()
 	f := &storageArchiveFixture{conversationFixture: newConversationFixture(t), objects: map[string][]byte{}, now: time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)}
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	f.service.conversations = &conversationService{server: f.service, store: f.store, broker: newNotificationBroker()}
 	t.Cleanup(func() { f.service.conversations = nil })
 	f.service.config.now = func() time.Time { return f.now }
@@ -93,7 +96,7 @@ func (f *storageArchiveFixture) messages(t *testing.T, item string, count int, v
 	tx := f.tx(t)
 	for index := range count {
 		message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "retained message " + strings.Repeat("x", index%7), Delivery: conversation.DeliveryCompleted, CreatedAt: f.now, UpdatedAt: f.now, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "example-runner"}}
-		if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+		if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -400,7 +403,7 @@ func TestNativeStorageArchiveRangesAndLateMessages(t *testing.T) {
 	}
 	tx := f.tx(t)
 	message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "late message", Delivery: conversation.DeliveryDelivered, CreatedAt: f.now, UpdatedAt: f.now, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}}
-	if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+	if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.ExecContext(t.Context(), "UPDATE conversations SET event_seq=event_seq+1 WHERE id=?", record.ID); err != nil {

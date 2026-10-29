@@ -262,12 +262,21 @@ func TestConversationStreamRejectsInvalidCursorAndHiddenConversation(t *testing.
 	}
 	t.Run("compacted cursor requests a snapshot", func(t *testing.T) {
 		old := time.Now().UTC().Add(-31 * 24 * time.Hour)
-		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		plan, err := f.service.conversations.newPublicationPlan(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := map[string]string{"text": "transient"}
+		if err := plan.event(t.Context(), body); err != nil {
+			t.Fatal(err)
+		}
+		ctx := plan.context(t.Context())
+		tx, err := f.service.database.db.BeginTx(ctx, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer tx.Rollback()
-		if _, err := f.service.conversations.store.appendEvent(t.Context(), tx, id, conversation.EventMessageDelta, map[string]string{"text": "transient"}, old); err != nil {
+		if _, err := f.service.conversations.store.appendEvent(ctx, tx, id, conversation.EventMessageDelta, body, old); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := tx.ExecContext(t.Context(), "UPDATE conversations SET status='settled',settled_at=?,updated_at=? WHERE id=?", conversationTime(old), conversationTime(old), id); err != nil {

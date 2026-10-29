@@ -251,28 +251,28 @@ func TestEventCompactionConversations(t *testing.T) {
 			if test.streaming {
 				message.Delivery = conversation.DeliveryResponding
 			}
-			if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+			if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
 				t.Fatal(err)
 			}
 			for range 600 {
-				if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventMessageDelta, conversationDeltaBody(message.ID, 0, "stream fragment"), at); err != nil {
+				if _, err := f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventMessageDelta, conversationDeltaBody(message.ID, 0, "stream fragment"), at); err != nil {
 					t.Fatal(err)
 				}
 			}
 			for range 2 {
 				for _, kind := range []conversation.EventType{conversation.EventMessageUpdated, conversation.EventExecutionUpdated} {
-					if _, err := f.store.appendEvent(t.Context(), tx, record.ID, kind, map[string]string{"id": message.ID, "status": "completed"}, at); err != nil {
+					if _, err := f.appendEvent(t, t.Context(), tx, record.ID, kind, map[string]string{"id": message.ID, "status": "completed"}, at); err != nil {
 						t.Fatal(err)
 					}
 				}
 			}
 			for _, title := range []string{"First", "First", "First", "Decision", "Decision", "Decision", "First", "First", "First"} {
-				if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventConversationUpdated, map[string]string{"id": message.ID, "status": "completed", "title": title}, at); err != nil {
+				if _, err := f.appendEvent(t, t.Context(), tx, record.ID, conversation.EventConversationUpdated, map[string]string{"id": message.ID, "status": "completed", "title": title}, at); err != nil {
 					t.Fatal(err)
 				}
 			}
 			for _, kind := range []conversation.EventType{conversation.EventMessageAccepted, conversation.EventMessageUpdated, conversation.EventQuestionOpened, conversation.EventQuestionUpdated, conversation.EventCommandReceipt, conversation.EventExecutionUpdated, conversation.EventConversationUpdated} {
-				if _, err := f.store.appendEvent(t.Context(), tx, record.ID, kind, map[string]string{"id": message.ID, "text": "durable content", "status": "completed"}, at); err != nil {
+				if _, err := f.appendEvent(t, t.Context(), tx, record.ID, kind, map[string]string{"id": message.ID, "text": "durable content", "status": "completed"}, at); err != nil {
 					t.Fatal(err)
 				}
 			}

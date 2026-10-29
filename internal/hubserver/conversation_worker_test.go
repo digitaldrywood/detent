@@ -53,6 +53,14 @@ func newConversationWorkerFixture(t *testing.T, contents ...attachment.ArchiveCo
 		defer fixture.mu.Unlock()
 		return fixture.now
 	}}
+	var logs bytes.Buffer
+	config.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log(logs.String())
+		}
+	})
+	config.Conversation.ArchiveContents = &conversationContentFixture{}
 	if len(contents) > 0 {
 		config.Conversation.ArchiveContents = contents[0]
 	}
@@ -81,8 +89,9 @@ func newConversationWorkerFixture(t *testing.T, contents ...attachment.ArchiveCo
 		Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: fixture.now},
 		CreatedAt: fixture.now, UpdatedAt: fixture.now,
 	}
+	ctx := prepareTestConversationRecord(t, fixture.chat.store, record)
 	tx := fixture.tx(t)
-	if err := fixture.chat.store.createConversation(t.Context(), tx, &record); err != nil {
+	if err := fixture.chat.store.createConversation(ctx, tx, &record); err != nil {
 		t.Fatalf("createConversation() error = %v", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -191,21 +200,43 @@ func (f *conversationWorkerFixture) awaitControlSubscribers(t *testing.T, want i
 func (f *conversationWorkerFixture) queue(t *testing.T, kind conversation.MessageKind, key, text string, data map[string]any) conversationMessageRecord {
 	t.Helper()
 	ctx := t.Context()
-	tx := f.tx(t)
-	record, err := f.chat.store.readConversation(ctx, tx, f.record.OrganizationID, f.record.ProjectID, f.record.ID)
+	record, err := f.chat.store.readConversation(ctx, f.chat.store.reader, f.record.OrganizationID, f.record.ProjectID, f.record.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	commandKind := map[conversation.MessageKind]conversation.CommandKind{conversation.MessageText: conversation.CommandMessage, conversation.MessageAnswer: conversation.CommandAnswer, conversation.MessageInterrupt: conversation.CommandInterrupt, conversation.MessageContinue: conversation.CommandContinue}[kind]
 	now := f.service.config.now()
-	if _, _, err := f.chat.store.reserveCommand(ctx, tx, record.ID, key, commandKind, "hash-"+key, now); err != nil {
-		t.Fatalf("reserveCommand() error = %v", err)
-	}
 	encoded, err := json.Marshal(data)
 	if err != nil {
 		t.Fatal(err)
 	}
 	message := conversationMessageRecord{Role: conversation.RoleUser, Kind: kind, Text: text, Data: encoded, Delivery: conversation.DeliveryQueued, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.principal}, CommandKey: key}
+	plan := &conversationPublicationPlan{service: f.chat, record: record, original: record, now: now}
+	if err := plan.appendMessage(t.Context(), &message); err != nil {
+		t.Fatal(err)
+	}
+	receiptPlan := conversation.Receipt{Key: key, Kind: commandKind, Status: conversation.DeliveryQueued, MessageID: message.ID}
+	if data != nil {
+		receiptPlan.QuestionID, _ = data["question_id"].(string)
+	}
+	if err := plan.recordReceipt(t.Context(), receiptPlan); err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.saveConversation(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := json.Marshal(conversation.Receipt{Key: key, Kind: commandKind, Status: conversation.DeliverySaved, UpdatedAt: now.UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.prepareValue(t.Context(), initial); err != nil {
+		t.Fatal(err)
+	}
+	ctx = plan.context(t.Context())
+	tx := f.tx(t)
+	if _, _, err := f.chat.store.reserveCommand(ctx, tx, record.ID, key, commandKind, "hash-"+key, now); err != nil {
+		t.Fatal(err)
+	}
 	if err := f.chat.appendMessage(ctx, tx, &record, &message, now); err != nil {
 		t.Fatalf("appendMessage() error = %v", err)
 	}
@@ -250,13 +281,9 @@ func (f *conversationWorkerFixture) messages(t *testing.T) map[string]conversati
 
 func (f *conversationWorkerFixture) receipt(t *testing.T, key string) conversation.Receipt {
 	t.Helper()
-	var encoded string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT receipt_json FROM conversation_commands WHERE conversation_id = ? AND key = ?", f.record.ID, key).Scan(&encoded); err != nil {
-		t.Fatal(err)
-	}
-	var receipt conversation.Receipt
-	if err := json.Unmarshal([]byte(encoded), &receipt); err != nil {
-		t.Fatal(err)
+	receipt, found, err := f.chat.readReceipt(t.Context(), f.chat.store.reader, f.record.ID, key)
+	if err != nil || !found {
+		t.Fatalf("read receipt: found=%v error=%v", found, err)
 	}
 	return receipt
 }
@@ -275,6 +302,14 @@ func (f *conversationWorkerFixture) questions(t *testing.T) []conversationQuesti
 			t.Fatal(err)
 		}
 		records = append(records, record)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	for i := range records {
+		if err := f.chat.store.resolveQuestion(t.Context(), f.chat.store.reader, &records[i]); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return records
 }
@@ -717,6 +752,50 @@ func TestConversationWorkerControlsLongPoll(t *testing.T) {
 
 func TestConversationWorkerTurnEvents(t *testing.T) {
 	t.Parallel()
+	for _, metadataVersion := range []int{0, 1} {
+		t.Run("active legacy tool history metadata="+strconv.Itoa(metadataVersion), func(t *testing.T) {
+			f := newConversationWorkerFixture(t)
+			requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+			requireNativeStatus(t, f.turnEvents(t, map[string]any{"type": "turn_started", "thread_id": "thread-legacy", "turn_id": "turn-legacy"}), http.StatusAccepted)
+			legacy := conversationFixture{store: f.chat.store}
+			tx, err := f.chat.store.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			for range 101 {
+				message := conversationMessageRecord{ConversationID: f.record.ID, Role: conversation.RoleSystem, Kind: conversation.MessageTool, Text: "historical tool output", Data: json.RawMessage(`{"tool":"example","item_id":"item","status":"completed"}`), Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}, CreatedAt: f.now, UpdatedAt: f.now}
+				if err := legacy.insertLegacyMessage(t, t.Context(), tx, &message); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := tx.ExecContext(t.Context(), "UPDATE conversation_messages SET query_metadata_version=? WHERE conversation_id=?", metadataVersion, f.record.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			requireNativeStatus(t, f.turnEvents(t,
+				map[string]any{"type": "delta", "provider_item_id": "assistant-legacy", "text": "finished"},
+				map[string]any{"type": "turn_completed", "turn_id": "turn-legacy", "status": "completed"},
+			), http.StatusAccepted)
+			if record := f.load(t); record.Execution.Owner.TurnID != "" {
+				t.Fatalf("completed turn remained active: %s", record.Execution.Owner.TurnID)
+			}
+			requireNativeStatus(t, f.unbind(t, "succeeded"), http.StatusOK)
+			if record := f.load(t); record.Execution.Status != conversation.ExecutionCompleted {
+				t.Fatalf("execution did not complete: %s", record.Execution.Status)
+			}
+			var untouched int
+			if err := f.chat.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE conversation_id=? AND kind='tool' AND content_attachment_id='' AND revision=1", f.record.ID).Scan(&untouched); err != nil || untouched != 101 {
+				t.Fatalf("unrelated legacy messages changed: untouched=%d err=%v", untouched, err)
+			}
+			var inline int
+			if err := f.chat.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE conversation_id=? AND role='assistant' AND (content_attachment_id='' OR text<>'' OR data_json<>'{}' OR actor_json<>'{}')", f.record.ID).Scan(&inline); err != nil || inline != 0 {
+				t.Fatalf("new assistant payload stayed inline: count=%d err=%v", inline, err)
+			}
+		})
+	}
 	t.Run("immutable content and compact replay", func(t *testing.T) {
 		objects := &conversationContentFixture{}
 		f := newConversationWorkerFixture(t, objects)

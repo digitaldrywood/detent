@@ -319,8 +319,28 @@ func (c *conversationService) settleIdleConversations(ctx context.Context, now t
 // transaction so a message that arrived since the sweep listed it keeps the
 // conversation active.
 func (c *conversationService) settleConversation(ctx context.Context, id string, before time.Time) (bool, error) {
+	plan, err := c.newPublicationPlan(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	finished := plan.record.Execution.Status.Terminal() || plan.record.Execution.Status == conversation.ExecutionIdle
+	activity := plan.record.UpdatedAt
+	if plan.record.LastMessageAt != nil {
+		activity = *plan.record.LastMessageAt
+	}
+	if plan.record.Status != conversation.StatusActive || !finished || !activity.Before(before) {
+		return false, nil
+	}
+	plan.record.WorkItem = nil
+	plan.record.Status = conversation.StatusSettled
+	at := plan.now
+	plan.record.SettledAt = &at
+	if err := plan.saveConversation(ctx); err != nil {
+		return false, err
+	}
+	ctx = plan.context(ctx)
 	changed := false
-	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+	err = c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 		record, err := c.store.readConversationByID(ctx, tx, id)
 		if err != nil {
 			return err

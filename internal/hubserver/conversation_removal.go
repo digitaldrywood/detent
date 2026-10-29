@@ -27,6 +27,9 @@ func (s *Service) archiveConversation(c echo.Context) error {
 		}
 		record.Archived = true
 		return nil
+	}, func(ctx context.Context, p *conversationPublicationPlan) error {
+		p.record.Archived = true
+		return nil
 	})
 	if err != nil {
 		return s.nativeAPIError(c, err)

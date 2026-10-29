@@ -25,6 +25,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
@@ -438,7 +439,7 @@ func newTenant(t *testing.T, provider *fakeProvider, key ed25519.PrivateKey, id,
 	fixture := tenantFixture{id: id, provider: providerID, path: path, config: hubserver.Config{DatabasePath: path, GitHubDisabled: true, InitialAdminToken: []byte(testAdminKey), Logger: logger, Conversation: &hubserver.ConversationConfig{Enabled: true},
 		Hosted: &hubserver.HostedConfig{Plans: plans, OrganizationID: id, WorkOSOrganizationID: providerID, BootstrapSubject: owner, PublicURL: testPublicURL, Provider: provider,
 			StaffEmails: []string{"staff@example.test", "support@example.test"}, SupportActors: []string{"support@example.test"},
-			SharedEntry: &hubserver.HostedSharedEntry{Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}},
+			SharedEntry: &hubserver.HostedSharedEntry{ArchiveContents: &conversationArchiveFixture{}, Issuer: "entry", PublicKeys: []ed25519.PublicKey{key.Public().(ed25519.PublicKey)}, Generation: 1}},
 	}}
 	for _, apply := range configure {
 		apply(&fixture.config)
@@ -1615,4 +1616,36 @@ func TestSharedEntryKeepsTenantStaticCachePolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+type conversationArchiveFixture struct {
+	mu      sync.Mutex
+	content map[string][]byte
+}
+
+func (f *conversationArchiveFixture) PublishContent(_ context.Context, organization string, content []byte) (attachment.ArchiveReference, error) {
+	ref, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(content))
+	if err != nil {
+		return ref, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.content == nil {
+		f.content = map[string][]byte{}
+	}
+	f.content[ref.Key] = bytes.Clone(content)
+	return ref, nil
+}
+
+func (f *conversationArchiveFixture) ReadContent(_ context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	if err := ref.Validate(organization); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	content, ok := f.content[ref.Key]
+	if !ok {
+		return nil, errors.New("archive content missing")
+	}
+	return bytes.Clone(content), nil
 }

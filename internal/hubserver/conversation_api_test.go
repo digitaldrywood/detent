@@ -25,12 +25,19 @@ type conversationAPIFixture struct {
 	otherID string
 }
 
-func newConversationAPIFixture(t *testing.T, cfg *ConversationConfig) conversationAPIFixture {
+func newConversationAPIFixture(t *testing.T, cfg *ConversationConfig, clocks ...func() time.Time) conversationAPIFixture {
 	t.Helper()
 	if cfg == nil {
 		cfg = &ConversationConfig{Enabled: true}
 	}
-	f := newDefaultNativeFixture(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Conversation: cfg})
+	if cfg.ArchiveContents == nil {
+		cfg.ArchiveContents = &conversationContentFixture{}
+	}
+	config := Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Conversation: cfg}
+	if len(clocks) > 0 {
+		config.now = clocks[0]
+	}
+	f := newDefaultNativeFixture(t, config)
 	service := f.service
 	var ownerID string
 	if err := service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name = ?", "operator-native").Scan(&ownerID); err != nil {
@@ -110,6 +117,29 @@ func (f conversationAPIFixture) snapshot(t *testing.T, token, id string) convers
 	return snapshot
 }
 
+func (f conversationAPIFixture) setExecution(t *testing.T, id string, execution conversation.Execution) {
+	t.Helper()
+	service := f.service.conversations
+	plan, err := service.newPublicationPlan(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.record.WorkItem = nil
+	if err := plan.updateExecution(t.Context(), execution); err != nil {
+		t.Fatal(err)
+	}
+	ctx := plan.context(t.Context())
+	if err := service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+		record, err := service.store.readConversationByID(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		return service.updateExecution(ctx, tx, &record, execution, now)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // settle runs the settle sweep against one conversation with a window that
 // is already over, so the test does not have to wait a day. The sweep only
 // settles a finished or idle conversation, so an execution still waiting for
@@ -117,8 +147,21 @@ func (f conversationAPIFixture) snapshot(t *testing.T, token, id string) convers
 func (f conversationAPIFixture) settle(t *testing.T, id string) {
 	t.Helper()
 	service := f.service.conversations
-	if err := service.transact(t.Context(), func(tx *sql.Tx, now time.Time) error {
-		record, err := service.store.readConversationByID(t.Context(), tx, id)
+	plan, err := service.newPublicationPlan(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.record.WorkItem = nil
+	if !plan.record.Execution.Status.Terminal() && plan.record.Execution.Status != conversation.ExecutionIdle {
+		execution := plan.record.Execution
+		execution.Status = conversation.ExecutionCompleted
+		if err := plan.updateExecution(t.Context(), execution); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := plan.context(t.Context())
+	if err := service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+		record, err := service.store.readConversationByID(ctx, tx, id)
 		if err != nil {
 			return err
 		}
@@ -127,7 +170,7 @@ func (f conversationAPIFixture) settle(t *testing.T, id string) {
 		}
 		execution := record.Execution
 		execution.Status = conversation.ExecutionCompleted
-		return service.updateExecution(t.Context(), tx, &record, execution, now)
+		return service.updateExecution(ctx, tx, &record, execution, now)
 	}); err != nil {
 		t.Fatalf("finish execution: %v", err)
 	}
@@ -232,12 +275,14 @@ func TestConversationAPIListVisibility(t *testing.T) {
 	requireNativeStatus(t, f.link(t, f.token, shared.ID, "link-shared", true, "Release checklist"), http.StatusOK)
 	shared = f.snapshot(t, f.token, shared.ID).Conversation
 	issue := f.nativeFixture.create(t, "Runner session")
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	now := f.service.config.now()
+	ctx := prepareTestConversationRecord(t, f.service.conversations.store, conversationRecord{OrganizationID: f.project.OrganizationID, Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now}})
+	tx, err := f.service.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = tx.Rollback() })
-	worker, err := f.service.conversations.ensureWorkerConversation(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: f.ownerID}}, string(issue.WorkItemID), f.service.config.now())
+	worker, err := f.service.conversations.ensureWorkerConversation(ctx, tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: f.ownerID}}, string(issue.WorkItemID), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,25 +601,36 @@ func TestConversationAPIAnswer(t *testing.T) {
 	record := f.create(t, f.token, map[string]any{"title": "Questions"}).Conversation
 	requireNativeStatus(t, f.link(t, f.token, record.ID, "link", true, "Ask me"), http.StatusOK)
 	store := f.service.conversations.store
-	ctx := t.Context()
-	tx, err := f.service.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := f.service.config.now()
-	linked, err := store.readConversation(ctx, tx, f.project.OrganizationID, f.project.ID, record.ID)
+	plan, err := f.service.conversations.newPublicationPlan(t.Context(), record.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	execution := conversation.Execution{Status: conversation.ExecutionWaitingInput, Owner: conversation.Owner{AttemptID: "att_1", RunID: "run_1", TurnID: "turn_1"}, Capabilities: conversation.Capabilities{Answer: true}}
-	if err := f.service.conversations.updateExecution(ctx, tx, &linked, execution, now); err != nil {
+	if err := plan.updateExecution(t.Context(), execution); err != nil {
 		t.Fatal(err)
 	}
 	question := conversationQuestionRecord{Question: conversation.Question{
 		ID: conversation.NewQuestionID(), ConversationID: record.ID, Status: conversation.QuestionPending,
 		Owner: execution.Owner, Prompts: []conversation.Prompt{{ID: "color", Question: "Which color?", Options: []conversation.Option{{Label: "red"}, {Label: "blue"}}}},
-		CreatedAt: now, UpdatedAt: now,
+		CreatedAt: plan.now, UpdatedAt: plan.now,
 	}}
+	if err := plan.prepareQuestion(t.Context(), question); err != nil {
+		t.Fatal(err)
+	}
+	ctx := plan.context(t.Context())
+	tx, err := f.service.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := plan.now
+	linked, err := store.readConversation(ctx, tx, f.project.OrganizationID, f.project.ID, record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.conversations.updateExecution(ctx, tx, &linked, execution, now); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := store.upsertQuestion(ctx, tx, question); err != nil {
 		t.Fatal(err)
 	}
@@ -976,7 +1032,10 @@ func TestConversationContinueRequiresExpectedAttempt(t *testing.T) {
 		owned := f.create(t, f.token, map[string]any{"title": "Owned"}).Conversation
 		requireNativeStatus(t, f.link(t, f.token, owned.ID, "link-owned", true, "Owned"), http.StatusOK)
 		if _, err := f.service.database.db.ExecContext(t.Context(),
-			`UPDATE conversations SET execution_json = json_set(execution_json, '$.attempt_id', 'att_live', '$.status', 'completed') WHERE id = ?`, owned.ID); err != nil {
+			`UPDATE conversations SET content_attachment_id='', execution_json = ? WHERE id = ?`, mustMarshalConversationExecution(t, f.service.conversations.store, owned.ID, func(execution *conversation.Execution) {
+				execution.Owner.AttemptID = "att_live"
+				execution.Status = conversation.ExecutionCompleted
+			}), owned.ID); err != nil {
 			t.Fatal(err)
 		}
 		requireNativeError(t, f.command(t, f.token, owned.ID, conversation.Command{Key: "continue-4", Kind: conversation.CommandContinue}), http.StatusUnprocessableEntity, "invalid_request")
@@ -1034,11 +1093,12 @@ func TestConversationListFiltersInSQL(t *testing.T) {
 			Execution: conversation.Execution{Status: conversation.ExecutionIdle, UpdatedAt: testTime(t)},
 			CreatedAt: testTime(t), UpdatedAt: testTime(t),
 		}
+		ctx := prepareTestConversationRecord(t, f.service.conversations.store, record)
 		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.conversations.store.createConversation(t.Context(), tx, &record); err != nil {
+		if err := f.service.conversations.store.createConversation(ctx, tx, &record); err != nil {
 			t.Fatal(err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -1151,15 +1211,7 @@ func TestConversationAPIRemoval(t *testing.T) {
 				{Status: conversation.ExecutionWaitingForRunner, Owner: conversation.Owner{AttemptID: "pending-runner"}},
 			} {
 				t.Run(string(execution.Status), func(t *testing.T) {
-					if err := f.service.conversations.transact(t.Context(), func(tx *sql.Tx, now time.Time) error {
-						record, err := f.service.conversations.store.readConversationByID(t.Context(), tx, target.ID)
-						if err != nil {
-							return err
-						}
-						return f.service.conversations.updateExecution(t.Context(), tx, &record, execution, now)
-					}); err != nil {
-						t.Fatal(err)
-					}
+					f.setExecution(t, target.ID, execution)
 					prior := f.snapshot(t, f.token, target.ID)
 					requireNativeError(t, request(path, f.token), http.StatusConflict, "stale_execution")
 					after := f.snapshot(t, f.token, target.ID)
@@ -1168,15 +1220,7 @@ func TestConversationAPIRemoval(t *testing.T) {
 					}
 				})
 			}
-			if err := f.service.conversations.transact(t.Context(), func(tx *sql.Tx, now time.Time) error {
-				record, err := f.service.conversations.store.readConversationByID(t.Context(), tx, target.ID)
-				if err != nil {
-					return err
-				}
-				return f.service.conversations.updateExecution(t.Context(), tx, &record, conversation.Execution{Status: conversation.ExecutionCompleted}, now)
-			}); err != nil {
-				t.Fatal(err)
-			}
+			f.setExecution(t, target.ID, conversation.Execution{Status: conversation.ExecutionCompleted})
 			if action == "delete" {
 				prior := f.snapshot(t, f.token, target.ID)
 				if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER removal_failure BEFORE DELETE ON conversations BEGIN SELECT RAISE(ABORT, 'forced removal failure'); END`); err != nil {
