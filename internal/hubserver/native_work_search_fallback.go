@@ -1,7 +1,10 @@
 package hubserver
 
 import (
+	"fmt"
 	"math"
+	"slices"
+	"strconv"
 	"strings"
 	"unsafe"
 
@@ -16,6 +19,8 @@ func registerNativeSearchFallback(tls *libc.TLS, database, module uintptr) int32
 		callback func(*libc.TLS, uintptr, int32, uintptr)
 	}{
 		{"native_search_tokens", 2, nativeSearchTokens},
+		{"native_search_postings", 2, nativeSearchPostingText},
+		{"native_search_key", 1, nativeSearchKey},
 		{"native_search_bm25", 5, nativeSearchBM25},
 	} {
 		name, err := libc.CString(function.name)
@@ -95,6 +100,114 @@ func nativeSearchTokens(tls *libc.TLS, context uintptr, _ int32, arguments uintp
 		}
 	}
 	sqlite3.Xsqlite3_result_int64(tls, context, count)
+}
+
+func nativeSearchLexemes(tls *libc.TLS, context uintptr, content string) ([]string, error) {
+	storage := tls.Alloc(int(unsafe.Sizeof(uintptr(0))))
+	defer tls.Free(int(unsafe.Sizeof(uintptr(0))))
+	if code := nativeSearchTokenizerCreate(tls, sqlite3.Xsqlite3_user_data(tls, context), 0, 0, storage); code != sqlite3.SQLITE_OK {
+		return nil, fmt.Errorf("create posting tokenizer: sqlite code %d", code)
+	}
+	tokenizer := *nativeSearchMemory[uintptr](storage)
+	defer nativeSearchTokenizerDelete(tls, tokenizer)
+	instance := nativeSearchMemory[nativeSearchTokenizer](tokenizer)
+	base := *(*func(*libc.TLS, uintptr, uintptr, int32, uintptr, int32, uintptr) int32)(unsafe.Pointer(&instance.module.base.FxTokenize))
+	text, err := libc.CString(content)
+	if err != nil {
+		return nil, err
+	}
+	defer libc.Xfree(tls, text)
+	var tokens []string
+	callback := func(_ *libc.TLS, _ uintptr, _ int32, token uintptr, length, _, _ int32) int32 {
+		tokens = append(tokens, string(libc.GoBytes(token, int(length))))
+		return sqlite3.SQLITE_OK
+	}
+	address, release := nativeSearchPinCallback(callback)
+	defer release()
+	if code := base(tls, instance.base, 0, sqlite3.FTS5_TOKENIZE_DOCUMENT, text, int32(len(content)), address); code != sqlite3.SQLITE_OK {
+		return nil, fmt.Errorf("tokenize postings: sqlite code %d", code)
+	}
+	return tokens, nil
+}
+
+func nativeSearchResultText(tls *libc.TLS, context uintptr, value string) {
+	text, err := libc.CString(value)
+	if err != nil {
+		sqlite3.Xsqlite3_result_error_nomem(tls, context)
+		return
+	}
+	defer libc.Xfree(tls, text)
+	sqlite3.Xsqlite3_result_text(tls, context, text, int32(len(value)), ^uintptr(0))
+}
+
+const nativeSearchPrefixLimit = 64
+
+func nativeSearchPrefix(token string) string {
+	count := 0
+	for offset := range token {
+		if count == nativeSearchPrefixLimit {
+			return token[:offset]
+		}
+		count++
+	}
+	return token
+}
+
+func nativeSearchKey(tls *libc.TLS, context uintptr, _ int32, arguments uintptr) {
+	value := *nativeSearchMemory[uintptr](arguments)
+	input := string(libc.GoBytes(sqlite3.Xsqlite3_value_text(tls, value), int(sqlite3.Xsqlite3_value_bytes(tls, value))))
+	tokens, err := nativeSearchLexemes(tls, context, input)
+	if err != nil {
+		sqlite3.Xsqlite3_result_error_code(tls, context, sqlite3.SQLITE_ERROR)
+		return
+	}
+	key := ""
+	if len(tokens) == 1 {
+		key = "e" + tokens[0]
+		if strings.HasSuffix(input, "*") {
+			key = "p" + nativeSearchPrefix(tokens[0])
+		}
+	}
+	nativeSearchResultText(tls, context, key)
+}
+
+func nativeSearchPostingText(tls *libc.TLS, context uintptr, _ int32, arguments uintptr) {
+	values := nativeSearchMemory[[2]uintptr](arguments)
+	frequencies := map[string]int{}
+	for index, value := range values {
+		tokens, err := nativeSearchLexemes(tls, context, string(libc.GoBytes(sqlite3.Xsqlite3_value_text(tls, value), int(sqlite3.Xsqlite3_value_bytes(tls, value)))))
+		if err != nil {
+			sqlite3.Xsqlite3_result_error_code(tls, context, sqlite3.SQLITE_ERROR)
+			return
+		}
+		weight := 1
+		if index == 0 {
+			weight = 5
+		}
+		for _, token := range tokens {
+			frequencies["e"+token] += weight
+			prefix := nativeSearchPrefix(token)
+			for offset := range prefix {
+				if offset > 0 {
+					frequencies["p"+prefix[:offset]] += weight
+				}
+			}
+			frequencies["p"+prefix] += weight
+		}
+	}
+	keys := make([]string, 0, len(frequencies))
+	for key := range frequencies {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	var output strings.Builder
+	for _, key := range keys {
+		output.WriteString(strconv.Itoa(frequencies[key]))
+		output.WriteByte(':')
+		output.WriteString(key)
+		output.WriteByte(' ')
+	}
+	nativeSearchResultText(tls, context, output.String())
 }
 
 func nativeSearchBM25(tls *libc.TLS, context uintptr, _ int32, arguments uintptr) {
