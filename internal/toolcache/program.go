@@ -109,7 +109,7 @@ func newCacheProgram(root string, scratch string) (*cacheProgram, error) {
 }
 
 func (p *cacheProgram) close() error {
-	return errors.Join(os.RemoveAll(p.pins), p.cache.Close())
+	return p.cache.Close()
 }
 
 func cacheName(id []byte, kind string) string {
