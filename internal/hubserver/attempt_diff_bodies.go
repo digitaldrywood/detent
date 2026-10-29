@@ -19,16 +19,18 @@ const diffBodyRetention = 30 * 24 * time.Hour
 
 const supersededDiffBody = `julianday(d.created_at) < julianday(?)
 AND NOT EXISTS (SELECT 1 FROM native_attempts a WHERE a.id=d.attempt_id AND a.status='running')
-AND NOT EXISTS (SELECT 1 FROM change_requests c
-WHERE c.organization_id=d.organization_id AND c.project_id=d.project_id
-AND EXISTS (SELECT 1 FROM change_versions v WHERE v.id=c.claim_version_id AND v.attempt_id=d.attempt_id LIMIT 1))
-AND NOT EXISTS (SELECT 1 FROM change_requests c
-WHERE c.organization_id=d.organization_id AND c.project_id=d.project_id
-AND EXISTS (SELECT 1 FROM change_versions v WHERE v.id=c.claim_version_id AND v.attempt_id IS NULL LIMIT 1))
-AND NOT EXISTS (SELECT 1 FROM change_requests c
-WHERE c.organization_id=d.organization_id AND c.project_id=d.project_id AND c.claim_version_id IS NULL
-AND (EXISTS (SELECT 1 FROM change_versions v WHERE v.attempt_id=d.attempt_id)
-OR EXISTS (SELECT 1 FROM change_versions v WHERE v.attempt_id IS NULL)))
+AND NOT EXISTS (SELECT 1 FROM change_versions v INDEXED BY change_versions_attempt_idx
+WHERE v.attempt_id=d.attempt_id
+AND (EXISTS (SELECT 1 FROM change_requests c
+WHERE c.organization_id=d.organization_id AND c.project_id=d.project_id AND c.claim_version_id=v.id)
+OR EXISTS (SELECT 1 FROM change_requests c
+WHERE c.organization_id=d.organization_id AND c.project_id=d.project_id AND c.claim_version_id IS NULL)))
+AND NOT EXISTS (SELECT 1 FROM change_versions v INDEXED BY change_versions_attempt_idx
+WHERE v.attempt_id IS NULL
+AND (EXISTS (SELECT 1 FROM change_requests c
+WHERE c.organization_id=d.organization_id AND c.project_id=d.project_id AND c.claim_version_id=v.id)
+OR EXISTS (SELECT 1 FROM change_requests c
+WHERE c.organization_id=d.organization_id AND c.project_id=d.project_id AND c.claim_version_id IS NULL)))
 AND d.id <> (SELECT latest.id FROM attempt_diffs latest
 WHERE latest.organization_id=d.organization_id AND latest.project_id=d.project_id AND latest.work_item_id=d.work_item_id AND latest.source=d.source
 ORDER BY latest.created_at DESC, latest.rowid DESC LIMIT 1)`

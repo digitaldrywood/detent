@@ -232,13 +232,26 @@ func TestAttemptDiffBodyExpiryCandidates(t *testing.T) {
 		name           string
 		archive        bool
 		claimAfterRead bool
+		unrelated      int
 	}{
-		{name: "bounded manifest and file expiry"},
+		{name: "bounded manifest and file expiry", unrelated: 10},
+		{name: "bounded expiry with project history", unrelated: 1000},
 		{name: "archived file manifest expiry", archive: true},
 		{name: "new claim protects selected bodies", claimAfterRead: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newAttemptDiffFixture(t)
+			if test.unrelated > 0 {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?)
+INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json,claim_version_id)
+SELECT 'change_history_'||i,?,?,?,'{}','version_history_'||i FROM n`, test.unrelated, f.project.OrganizationID, f.project.ID, f.issue.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_versions(id,change_id,number,record_json,attempt_id)
+SELECT claim_version_id,id,1,'{}','attempt_history_'||id FROM change_requests WHERE id LIKE 'change_history_%'`); err != nil {
+					t.Fatal(err)
+				}
+			}
 			requireNativeStatus(t, f.post(t, f.request(2, tracker.AttemptDiffFile{Path: "latest.go", Status: tracker.DiffStatusModified})), http.StatusAccepted)
 			manifestKey := "manifest"
 			if test.archive {
@@ -270,6 +283,30 @@ SELECT id,2,organization_id,project_id,'archive','sha256',1,1 FROM attempt_diffs
 			}
 			if len(candidates.manifests) != 32 || len(candidates.files) != 32 {
 				t.Fatalf("candidate counts: manifests=%d files=%d, want 32 each", len(candidates.manifests), len(candidates.files))
+			}
+			if test.unrelated > 0 {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `ANALYZE`); err != nil {
+					t.Fatal(err)
+				}
+				cutoff := formatHubTime(time.Now().Add(-diffBodyRetention))
+				for _, query := range []struct {
+					name      string
+					statement string
+					args      []any
+				}{
+					{"manifest", expireDiffBodyManifest, []any{candidates.manifests[0], cutoff}},
+					{"file", expireDiffBodyFile, []any{candidates.files[0].diffID, candidates.files[0].position, cutoff}},
+				} {
+					plan := explainQueryPlan(t, f.service.database.db, query.statement, query.args)
+					for _, detail := range plan {
+						if strings.HasPrefix(detail, "SCAN c") || strings.HasPrefix(detail, "SCAN v") ||
+							strings.HasPrefix(detail, "SEARCH c ") && !strings.Contains(detail, "claim_version_id=?") ||
+							strings.HasPrefix(detail, "SEARCH v ") && !strings.Contains(detail, "attempt_id=?") {
+							t.Errorf("%s writer recheck walks project history with %d unrelated Changes: %s", query.name, test.unrelated, strings.Join(plan, "\n"))
+							break
+						}
+					}
+				}
 			}
 			if test.claimAfterRead {
 				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json,claim_version_id)
