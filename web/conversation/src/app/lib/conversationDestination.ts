@@ -1,4 +1,4 @@
-// Where a conversation row goes (decisions.md §19.4).
+// Where a conversation row goes.
 //
 // One answer for the sidebar, the command palette and anything else that
 // offers a conversation: a linked one belongs to its issue page with the chat

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -1494,5 +1495,26 @@ func TestBoardProgressPointsOffsetAggregateCompletedCount(t *testing.T) {
 		if !got[i].At.Equal(want[i].At) || got[i].Label != want[i].Label || got[i].Count != want[i].Count {
 			t.Fatalf("BoardProgressPoints()[%d] = %#v, want %#v; got %#v", i, got[i], want[i], got)
 		}
+	}
+}
+
+func TestSnapshotIgnoresRetiredHoldFields(t *testing.T) {
+	t.Parallel()
+	var snapshot telemetry.Snapshot
+	legacy := `{"dispatch_loops":[{"tripped":true,"dispatch_limit":3}],"board_issues":[{"id":"issue","park_summary":{"park_count":4},"completion_progress":{"outcome":"no_progress","consecutive_no_progress":4,"no_progress_limit":3}}],"failure_breakers":[{"class":"runner_error","items":[{"issue_id":"issue","parked":true}]}],"ci_unavailable":[{"parked_attempt_count":2}],"queue":[{"issue":{"id":"issue"},"error":"recorded retry error","attempt":4}]}`
+	if err := json.Unmarshal([]byte(legacy), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"dispatch_loops", "dispatch_limit", "park_summary", "park_count", "consecutive_no_progress", "no_progress_limit", "parked", "parked_attempt_count"} {
+		if strings.Contains(string(raw), `"`+key+`"`) {
+			t.Errorf("retired field %s exposed", key)
+		}
+	}
+	if !strings.Contains(string(raw), "recorded retry error") {
+		t.Fatal("retry error was removed with retired hold fields")
 	}
 }

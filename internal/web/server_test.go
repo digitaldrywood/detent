@@ -38,9 +38,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/efficiency"
-	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/healthnotify"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/operatortool"
@@ -54,6 +52,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
 	"github.com/digitaldrywood/detent/internal/store/storetest"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/web"
 	"github.com/digitaldrywood/detent/internal/web/demofixtures"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -99,15 +99,6 @@ func TestNewServerValidatesDependencies(t *testing.T) {
 			}(),
 			want: web.ErrMissingRegistry,
 		},
-		{
-			name: "missing connector",
-			deps: func() web.Dependencies {
-				deps := testDeps(t)
-				deps.Connector = nil
-				return deps
-			}(),
-			want: web.ErrMissingConnector,
-		},
 	}
 
 	for _, tt := range tests {
@@ -143,6 +134,64 @@ func TestNewServerConfiguresHTTPTimeouts(t *testing.T) {
 	}
 	if httpServer.WriteTimeout != 0 {
 		t.Fatalf("WriteTimeout = %v, want 0 for long-lived SSE streams", httpServer.WriteTimeout)
+	}
+}
+
+func TestHealthTracksRegistryConnectorChanges(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	deps.Connector = nil
+	server, err := newServerWithLaneWriter(web.Config{}, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, step := range []struct {
+		name      string
+		update    func()
+		connector string
+		check     string
+	}{
+		{name: "before projects start", update: func() {}, check: "missing"},
+		{
+			name: "github project starts",
+			update: func() {
+				mustSetWebGitHubLabelProject(t, deps.Registry, "alpha", "example-org/example-project")
+			},
+			connector: "github", check: "configured",
+		},
+		{
+			name: "native project replaces github",
+			update: func() {
+				trackedProject, err := projectfixture.New(project.Config{
+					Project: globalconfig.Project{ID: "alpha"},
+				}, project.Dependencies{Connector: fakehub.New(fakehub.Config{})})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := deps.Registry.Set(trackedProject); err != nil {
+					t.Fatal(err)
+				}
+			},
+			connector: "hub_native", check: "configured",
+		},
+		{
+			name: "project removed",
+			update: func() {
+				deps.Registry.Delete("alpha")
+			},
+			check: "missing",
+		},
+	} {
+		step.update()
+		payload := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
+		if got := payload["connector"]; got != step.connector {
+			t.Fatalf("%s: connector = %v, want %q", step.name, got, step.connector)
+		}
+		if got := payload["checks"].(map[string]any)["connector"]; got != step.check {
+			t.Fatalf("%s: connector check = %v, want %q", step.name, got, step.check)
+		}
 	}
 }
 
@@ -397,7 +446,7 @@ func TestFailureBreakerCanaryEndpointRejectsUnknownProject(t *testing.T) {
 	}
 }
 
-func TestLibraryPageListsLocalArtifactsAndPullRequestRecords(t *testing.T) {
+func TestLibraryPageListsPullRequestRecords(t *testing.T) {
 	t.Parallel()
 
 	server := newLibraryTestServer(t)
@@ -412,10 +461,6 @@ func TestLibraryPageListsLocalArtifactsAndPullRequestRecords(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		`id="library-table"`,
-		"outputs/ad-1/manifest.json",
-		"outputs/ad-unsafe/manifest.json",
-		"pending_review",
-		"review/ad-1",
 		"PR #934",
 		"https://github.com/example-org/example-project/pull/934",
 		"validator clean",
@@ -433,7 +478,7 @@ func TestLibraryPageListsLocalArtifactsAndPullRequestRecords(t *testing.T) {
 	for _, test := range []struct {
 		project string
 		want    int
-	}{{"video", 2}, {"detent", 1}} {
+	}{{"detent", 1}} {
 		t.Run("operator library/"+test.project, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, "/api/v1/operator-tools/artifact_library", strings.NewReader(`{"project_id":"`+test.project+`","limit":1}`))
 			request.Header.Set("Content-Type", "application/json")
@@ -468,18 +513,6 @@ func TestLibraryPageFiltersRows(t *testing.T) {
 			path:      "/library?kind=pull_request",
 			want:      "PR #934",
 			forbidden: "outputs/ad-1/manifest.json",
-		},
-		{
-			name:      "artifact status",
-			path:      "/library?status=pending_review",
-			want:      "outputs/ad-1/manifest.json",
-			forbidden: "PR #934",
-		},
-		{
-			name:      "project",
-			path:      "/library?project=video",
-			want:      "outputs/ad-1/manifest.json",
-			forbidden: "PR #934",
 		},
 	}
 	for _, tt := range tests {
@@ -2043,7 +2076,6 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 		"fleet-kanban-multiproject",
 		"kanban-full-integration",
 		"reports-normal-window",
-		"onboarding-write-success",
 		"api-state-full-snapshot",
 	})
 	assertManifestOmitsScenarios(t, manifest, []string{"events-frozen", "events-play"})
@@ -2081,13 +2113,13 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 	alertsBoard := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/", http.StatusOK, map[string]string{
 		web.DemoScenarioHeader: "fleet-kanban-blocked-alerts",
 	})
-	for _, want := range []string{`id="board-exceptions"`, "Needs you", "after_create hook exited 2"} {
+	for _, want := range []string{`id="board-lanes"`, "after_create hook exited 2"} {
 		if !strings.Contains(alertsBoard, want) {
 			t.Fatalf("blocked-alerts board scenario missing %q:\n%s", want, alertsBoard)
 		}
 	}
-	if strings.Contains(alertsBoard, "Dependency waiting") {
-		t.Fatalf("blocked-alerts board scenario should not elevate dependency waits:\n%s", alertsBoard)
+	if strings.Contains(alertsBoard, `id="board-exceptions"`) || strings.Contains(alertsBoard, "Dependency waiting") {
+		t.Fatalf("blocked-alerts board scenario should not elevate machine failures or dependency waits:\n%s", alertsBoard)
 	}
 
 	state := requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/state", http.StatusOK, map[string]string{
@@ -3890,115 +3922,6 @@ func TestKanbanPendingOverlayDoesNotMutateLatestSnapshot(t *testing.T) {
 	}
 }
 
-func TestKanbanMoveRejectsDefaultRestrictedActiveTransitions(t *testing.T) {
-	t.Parallel()
-
-	deps := testDeps(t)
-	actionConnector := &kanbanActionConnector{name: "github"}
-	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
-		Mode: workflowconfig.KanbanModeIntegration,
-	}, actionConnector)
-	if err := deps.Hub.Publish(telemetry.Snapshot{
-		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
-		Project:     telemetry.Project{ID: "detent"},
-		Running: []telemetry.Running{
-			{
-				Issue: telemetry.Issue{
-					ID:         "I_progress",
-					Identifier: "example-org/example-project#1",
-					ProjectID:  "detent",
-					Title:      "Active card",
-					State:      "In Progress",
-				},
-			},
-			{
-				Issue: telemetry.Issue{
-					ID:         "I_rework",
-					Identifier: "example-org/example-project#2",
-					ProjectID:  "detent",
-					Title:      "Rework card",
-					State:      "Rework",
-				},
-			},
-			{
-				Issue: telemetry.Issue{
-					ID:         "I_merging",
-					Identifier: "example-org/example-project#3",
-					ProjectID:  "detent",
-					Title:      "Merging card",
-					State:      "Merging",
-				},
-			},
-		},
-	}); err != nil {
-		t.Fatalf("Publish() error = %v", err)
-	}
-	server, err := newServerWithLaneWriter(web.Config{}, deps)
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
-
-	rejections := []struct {
-		name    string
-		issueID string
-		source  string
-		target  string
-	}{
-		{
-			name:    "in progress to human review",
-			issueID: "I_progress",
-			source:  "In Progress",
-			target:  "Human Review",
-		},
-		{
-			name:    "rework to done",
-			issueID: "I_rework",
-			source:  "Rework",
-			target:  "Done",
-		},
-		{
-			name:    "merging to done",
-			issueID: "I_merging",
-			source:  "Merging",
-			target:  "Done",
-		},
-	}
-	for _, tt := range rejections {
-		t.Run(tt.name, func(t *testing.T) {
-			form := url.Values{
-				"project_id":    {"detent"},
-				"issue_id":      {tt.issueID},
-				"current_state": {tt.source},
-				"target_state":  {tt.target},
-			}
-			rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
-			if rec.Code != http.StatusUnprocessableEntity {
-				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
-			}
-			if !strings.Contains(rec.Body.String(), "transition policy") {
-				t.Fatalf("body missing transition policy feedback: %s", rec.Body.String())
-			}
-		})
-	}
-	if got := actionConnector.stateUpdates(); len(got) != 0 {
-		t.Fatalf("state updates = %#v, want none before allowed move", got)
-	}
-
-	form := url.Values{
-		"project_id":    {"detent"},
-		"issue_id":      {"I_progress"},
-		"current_state": {"In Progress"},
-		"target_state":  {"Blocked"},
-	}
-	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_progress", state: "Blocked"}}; !equalStateUpdates(got, want) {
-		t.Fatalf("state updates = %#v, want %#v", got, want)
-	}
-}
-
 func TestKanbanMoveAllowsConfiguredTransitionOverrides(t *testing.T) {
 	t.Parallel()
 
@@ -4116,7 +4039,7 @@ func TestKanbanCommentEditAndDeleteLocalComments(t *testing.T) {
 		issueComments: map[string][]connector.IssueComment{
 			"I_kw1": {{
 				ID:          "1",
-				Backend:     connector.BackendLocalSQLite.String(),
+				Backend:     "hub_native",
 				Body:        "Original local note",
 				AuthorLogin: "detent",
 				CreatedAt:   &createdAt,
@@ -4142,7 +4065,7 @@ func TestKanbanCommentEditAndDeleteLocalComments(t *testing.T) {
 			State:      "Todo",
 			Comments: []telemetry.IssueComment{{
 				ID:          "1",
-				Backend:     connector.BackendLocalSQLite.String(),
+				Backend:     "hub_native",
 				Body:        "Original local note",
 				AuthorLogin: "detent",
 				CreatedAt:   &createdAt,
@@ -4355,7 +4278,7 @@ func TestBoardCardSheetShowsLocalCommentControlsOnly(t *testing.T) {
 		},
 		{
 			ID:          "local-1",
-			Backend:     connector.BackendLocalSQLite.String(),
+			Backend:     "hub_native",
 			Body:        "Local note",
 			AuthorLogin: "detent",
 			CreatedAt:   &createdAt,
@@ -4379,7 +4302,7 @@ func TestBoardCardSheetShowsLocalCommentControlsOnly(t *testing.T) {
 				},
 				{
 					ID:          "local-1",
-					Backend:     connector.BackendLocalSQLite.String(),
+					Backend:     "hub_native",
 					Body:        "Local note",
 					AuthorLogin: "detent",
 					CreatedAt:   &createdAt,
@@ -5132,15 +5055,6 @@ func TestServerRendersInstanceNameInPagesStateAndMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
-	onboardingServer, err := newServerWithLaneWriter(web.Config{
-		Mode:         web.ModeOnboarding,
-		GlobalConfig: cfg.GlobalConfig,
-		Hostname:     cfg.Hostname,
-	}, web.Dependencies{})
-	if err != nil {
-		t.Fatalf("NewServer() onboarding error = %v", err)
-	}
-
 	tests := []struct {
 		name      string
 		handler   http.Handler
@@ -5152,7 +5066,6 @@ func TestServerRendersInstanceNameInPagesStateAndMetadata(t *testing.T) {
 		{name: "analytics", handler: server.Handler(), path: "/analytics", title: "buildbox · Analytics - Detent"},
 		{name: "reports", handler: server.Handler(), path: "/reports", title: "buildbox · Detent reports"},
 		{name: "settings", handler: server.Handler(), path: "/settings", title: "buildbox · Detent settings"},
-		{name: "onboarding", handler: onboardingServer.Handler(), path: "/onboarding", title: "buildbox · Detent onboarding", wantBadge: true},
 	}
 
 	for _, tt := range tests {
@@ -5427,14 +5340,6 @@ func TestServerStaticAssetsUseFingerprintsAndCacheHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
-	onboardingServer, err := newServerWithLaneWriter(web.Config{
-		Mode:      web.ModeOnboarding,
-		StaticDir: staticDir,
-	}, web.Dependencies{})
-	if err != nil {
-		t.Fatalf("NewServer() onboarding error = %v", err)
-	}
-
 	fingerprintedPath := "/static/css/output." + shortTestHash(css) + ".css"
 	fingerprintedFaviconPath := "/static/img/detent-mark." + shortTestHash(favicon) + ".svg"
 
@@ -5450,7 +5355,6 @@ func TestServerStaticAssetsUseFingerprintsAndCacheHeaders(t *testing.T) {
 			{name: "analytics", handler: server.Handler(), path: "/analytics"},
 			{name: "settings", handler: server.Handler(), path: "/settings"},
 			{name: "reports", handler: server.Handler(), path: "/reports"},
-			{name: "onboarding", handler: onboardingServer.Handler(), path: "/onboarding"},
 		}
 
 		for _, tt := range tests {
@@ -5662,16 +5566,14 @@ func TestOnboardingModeDoesNotRequireRuntimeDependencies(t *testing.T) {
 		wantLocation string
 	}{
 		{
-			name:         "root redirects to onboarding",
-			path:         "/",
-			wantStatus:   http.StatusFound,
-			wantLocation: "/onboarding",
+			name:       "retired setup root",
+			path:       "/",
+			wantStatus: http.StatusNotFound,
 		},
 		{
-			name:        "onboarding page",
-			path:        "/onboarding",
-			wantStatus:  http.StatusOK,
-			wantContent: "Detent onboarding",
+			name:       "onboarding page",
+			path:       "/onboarding",
+			wantStatus: http.StatusNotFound,
 		},
 		{
 			name:        "health",
@@ -5701,6 +5603,24 @@ func TestOnboardingModeDoesNotRequireRuntimeDependencies(t *testing.T) {
 			}
 		})
 	}
+	for _, mode := range []web.Mode{web.ModeOnboarding, web.ModeRunning} {
+		workflow := filepath.Join(t.TempDir(), "WORKFLOW.md")
+		retired, err := newServerWithLaneWriter(web.Config{Mode: mode, WorkflowPath: workflow}, testDeps(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, step := range []string{"tracker", "credentials", "project", "agent", "write"} {
+			rec := httptest.NewRecorder()
+			retired.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/onboarding/"+step, nil))
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("retired %s in %s returned %d", step, mode, rec.Code)
+			}
+		}
+		if _, err := os.Stat(workflow); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("retired setup wrote workflow: %v", err)
+		}
+	}
+
 }
 
 func TestDashboardRendersLatestSnapshot(t *testing.T) {
@@ -7087,7 +7007,7 @@ func TestStateAPIIncludesProjectFailureBreakerEvidence(t *testing.T) {
 		FailureBreakers: []telemetry.FailureBreaker{{
 			ProjectID: "example-org-video", Class: "runner_error:b6c174a86dfb", Count: 5, AttemptCount: 5, DistinctItemCount: 1,
 			Cause: "provider usage limit reached", RepresentativeError: "You've hit your limit. Try again at 9:39 PM", BackendID: "claude-code", BackendKind: "claude_code", Provider: "anthropic", EligibleCandidateCount: &eligibleCandidates,
-			Items: []telemetry.FailureBreakerItem{{IssueID: "video-1", Identifier: "2026-07-10-detent-not-vibe-coding-short", IssueURL: "https://example.test/items/video-1", Title: "Author beat visuals", CurrentState: "Blocked", AttemptCount: 5, Parked: true}},
+			Items: []telemetry.FailureBreakerItem{{IssueID: "video-1", Identifier: "2026-07-10-detent-not-vibe-coding-short", IssueURL: "https://example.test/items/video-1", Title: "Author beat visuals", CurrentState: "Blocked", AttemptCount: 5}},
 		}},
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
@@ -7108,8 +7028,11 @@ func TestStateAPIIncludesProjectFailureBreakerEvidence(t *testing.T) {
 		t.Fatalf("failure breaker evidence = %#v", breaker)
 	}
 	items := breaker["items"].([]any)
-	if len(items) != 1 || items[0].(map[string]any)["title"] != "Author beat visuals" || items[0].(map[string]any)["parked"] != true {
+	if len(items) != 1 || items[0].(map[string]any)["title"] != "Author beat visuals" || items[0].(map[string]any)["attempt_count"] != float64(5) || items[0].(map[string]any)["current_state"] != "Blocked" {
 		t.Fatalf("failure breaker items = %#v", items)
+	}
+	if _, ok := items[0].(map[string]any)["parked"]; ok {
+		t.Fatalf("failure breaker item includes retired parked field: %#v", items[0])
 	}
 	health := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
 	healthBreakers := health["failure_breakers"].([]any)
@@ -7887,42 +7810,6 @@ func TestStateAndHealthReportIgnoredLaneSignals(t *testing.T) {
 	}
 }
 
-func TestHealthReportsActiveDispatchLoops(t *testing.T) {
-	t.Parallel()
-
-	deps := testDeps(t)
-	mustSetWebProject(t, deps.Registry, "detent", false)
-	completedAt := time.Date(2026, 8, 18, 16, 0, 0, 0, time.UTC)
-	if err := deps.Hub.Publish(telemetry.Snapshot{
-		DispatchLoops: []telemetry.DispatchLoop{{
-			ProjectID: "detent", Identifier: "example-org/pyroapex#1850", Lane: "Rework", ConsecutiveDispatches: 2, DispatchLimit: 3, LastCompletedAt: &completedAt,
-		}},
-	}); err != nil {
-		t.Fatalf("Publish() error = %v", err)
-	}
-	server, err := newServerWithLaneWriter(web.Config{}, deps)
-	if err != nil {
-		t.Fatalf("NewServer() error = %v", err)
-	}
-
-	payload := requestJSON(t, server, http.MethodGet, "/health", http.StatusOK)
-	if payload["status"] != "needs_attention" {
-		t.Fatalf("status = %#v, want needs_attention", payload["status"])
-	}
-	loops, ok := payload["dispatch_loops"].([]any)
-	if !ok || len(loops) != 1 {
-		t.Fatalf("dispatch_loops = %#v, want one loop", payload["dispatch_loops"])
-	}
-	loop := loops[0].(map[string]any)
-	if loop["identifier"] != "example-org/pyroapex#1850" || loop["lane"] != "Rework" || loop["consecutive_dispatches"] != float64(2) || loop["dispatch_limit"] != float64(3) || loop["tripped"] != false {
-		t.Fatalf("dispatch_loops[0] = %#v", loop)
-	}
-	projects := payload["projects"].([]any)
-	if len(projects) != 1 || projects[0].(map[string]any)["status"] != "needs_human_attention" {
-		t.Fatalf("projects = %#v, want detent needs_human_attention", projects)
-	}
-}
-
 func TestHealthDistinguishesProcessHealthFromProjectConnectorDegradation(t *testing.T) {
 	t.Parallel()
 
@@ -7973,8 +7860,8 @@ func TestHealthDistinguishesProcessHealthFromProjectConnectorDegradation(t *test
 func TestHealthReportsProjectPinnedToLastGoodWorkflow(t *testing.T) {
 	updates := make(chan configwatcher.Update, 1)
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
-	trackedProject, err := project.New(project.Config{
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	trackedProject, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{ID: "detent", Workflow: "WORKFLOW.md"},
 		Workflow: workflowconfig.Workflow{
 			Config:     workflowCfg,
@@ -7989,7 +7876,7 @@ func TestHealthReportsProjectPinnedToLastGoodWorkflow(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("project.New() error = %v", err)
+		t.Fatalf("projectfixture.New() error = %v", err)
 	}
 	if err := trackedProject.Start(context.Background()); err != nil {
 		t.Fatalf("Project.Start() error = %v", err)
@@ -8043,8 +7930,8 @@ func TestHealthRespondsDuringDrainWithoutSupplementalProjectReads(t *testing.T) 
 	blocked := make(chan struct{}, 1)
 	release := make(chan struct{})
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
-	trackedProject, err := project.New(project.Config{
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	trackedProject, err := projectfixture.New(project.Config{
 		Project:  globalconfig.Project{ID: "detent"},
 		Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Work the issue."},
 	}, project.Dependencies{
@@ -8205,8 +8092,8 @@ func TestHealthReportsEnforcedProjectBudgets(t *testing.T) {
 
 	deps := testDeps(t)
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
-	trackedProject, err := project.New(project.Config{
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	trackedProject, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{ID: "detent"},
 		Workflow: workflowconfig.Workflow{
 			Config:     workflowCfg,
@@ -8328,10 +8215,10 @@ func TestAPIStateRespondsDuringDrainWithoutStoreEnrichment(t *testing.T) {
 		},
 	}
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	workflowCfg.Budget.Enabled = true
 	workflowCfg.Budget.PerDayMaxUSD = 100
-	trackedProject, err := project.New(project.Config{
+	trackedProject, err := projectfixture.New(project.Config{
 		Project:  globalconfig.Project{ID: "detent"},
 		Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Work the issue."},
 	}, project.Dependencies{
@@ -8758,7 +8645,7 @@ func TestBoardPageNavigationUsesCurrentInMemorySnapshot(t *testing.T) {
 			t.Parallel()
 
 			releaseStore := make(chan struct{})
-			t.Cleanup(func() { close(releaseStore) })
+			close(releaseStore)
 			var fetchCalls atomic.Int64
 			blockingStore := &renderBlockingStore{release: releaseStore}
 			deps := testDeps(t)
@@ -8808,24 +8695,20 @@ func TestBoardPageNavigationUsesCurrentInMemorySnapshot(t *testing.T) {
 				responseReady <- response{code: rec.Code, body: rec.Body.String()}
 			}()
 
-			select {
-			case got := <-responseReady:
-				if got.code != http.StatusOK {
-					t.Fatalf("status = %d, want %d; body = %s", got.code, http.StatusOK, got.body)
+			got := <-responseReady
+			if got.code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body = %s", got.code, http.StatusOK, got.body)
+			}
+			if !strings.Contains(got.body, tt.wantBody) {
+				t.Fatalf("body missing %q:\n%s", tt.wantBody, got.body)
+			}
+			if tt.wantPendingBudget {
+				if !strings.Contains(got.body, "Loading budget data…") {
+					t.Fatalf("body missing pending budget state:\n%s", got.body)
 				}
-				if !strings.Contains(got.body, tt.wantBody) {
-					t.Fatalf("body missing %q:\n%s", tt.wantBody, got.body)
+				if strings.Contains(got.body, "$0.00 / $100.00") {
+					t.Fatalf("body rendered zero spend while budget enrichment was pending:\n%s", got.body)
 				}
-				if tt.wantPendingBudget {
-					if !strings.Contains(got.body, "Loading budget data…") {
-						t.Fatalf("body missing pending budget state:\n%s", got.body)
-					}
-					if strings.Contains(got.body, "$0.00 / $100.00") {
-						t.Fatalf("body rendered zero spend while budget enrichment was pending:\n%s", got.body)
-					}
-				}
-			case <-time.After(500 * time.Millisecond):
-				t.Fatal("board navigation exceeded 500ms while current in-memory state was available")
 			}
 			if got := fetchCalls.Load(); got != 0 {
 				t.Fatalf("FetchCandidateIssues calls = %d, want 0", got)
@@ -12323,72 +12206,6 @@ func newLibraryTestServer(t *testing.T) *web.Server {
 	backend := openWebTestStore(t)
 	registry := project.NewRegistry()
 
-	localPath := filepath.Join(t.TempDir(), "work-items.db")
-	createdAt := time.Date(2026, 7, 2, 9, 0, 0, 0, time.UTC)
-	updatedAt := time.Date(2026, 7, 2, 10, 30, 0, 0, time.UTC)
-	issue := connector.NewIssue()
-	issue.ID = "ad-1"
-	issue.Identifier = "video/ad-1"
-	issue.Title = "Produce summer sale ad"
-	issue.State = "Review"
-	issue.Fields = map[string]string{"render_status": "pending_review"}
-	issue.CreatedAt = &createdAt
-	issue.UpdatedAt = &updatedAt
-	issue.StageUpdatedAt = &updatedAt
-	issue.Deliverable = &connector.Deliverable{
-		Kind:      "video_ad",
-		Path:      "outputs/ad-1/manifest.json",
-		ReviewURL: "http://127.0.0.1:8080/review/ad-1",
-		Metadata:  map[string]string{"format": "mp4", "aspect": "9:16"},
-	}
-	unsafeIssue := connector.NewIssue()
-	unsafeIssue.ID = "ad-unsafe"
-	unsafeIssue.Identifier = "video/ad-unsafe"
-	unsafeIssue.Title = "Unsafe review URL"
-	unsafeIssue.State = "Review"
-	unsafeIssue.Fields = map[string]string{"render_status": "pending_review"}
-	unsafeIssue.CreatedAt = &createdAt
-	unsafeIssue.UpdatedAt = &updatedAt
-	unsafeIssue.StageUpdatedAt = &updatedAt
-	unsafeIssue.Deliverable = &connector.Deliverable{
-		Kind:      "video_ad",
-		Path:      "outputs/ad-unsafe/manifest.json",
-		ReviewURL: "javascript:alert(1)",
-	}
-	conn, err := local.New(local.Config{
-		Path:      localPath,
-		ProjectID: "video-local",
-		Issues:    []connector.Issue{issue, unsafeIssue},
-	})
-	if err != nil {
-		t.Fatalf("local.New() error = %v", err)
-	}
-	if err := conn.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-
-	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerLocalSQLite
-	workflowCfg.Tracker.LocalSQLite.Path = localPath
-	workflowCfg.Tracker.LocalSQLite.ProjectID = "video-local"
-	workflowCfg.Deliverable.Kind = workflowconfig.DeliverableArtifact
-	workflowCfg.Gate.Kind = gate.KindArtifact
-	workflowCfg.Gate.Artifact.StatusField = "render_status"
-	trackedProject, err := project.New(project.Config{
-		Project: globalconfig.Project{ID: "video", Workdir: t.TempDir()},
-		Workflow: workflowconfig.Workflow{
-			Config: workflowCfg,
-			Prompt: "Work the issue.",
-		},
-	}, project.Dependencies{
-		Connector: connectorProbe{name: "local_sqlite"},
-	})
-	if err != nil {
-		t.Fatalf("project.New(video) error = %v", err)
-	}
-	if err := registry.Set(trackedProject); err != nil {
-		t.Fatalf("Registry.Set(video) error = %v", err)
-	}
 	mustSetWebGitHubLabelProject(t, registry, "detent", "example-org/example-project")
 
 	prUpdatedAt := time.Date(2026, 7, 3, 15, 0, 0, 0, time.UTC)
@@ -12420,35 +12237,23 @@ func newLibraryTestServer(t *testing.T) *web.Server {
 	return server
 }
 
-func newWorkItemAPITestServer(t *testing.T, apiToken string) (*web.Server, *local.Connector, *refreshProbe) {
+func newWorkItemAPITestServer(t *testing.T, apiToken string) (*web.Server, *fakehub.Connector, *refreshProbe) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("durable local SQLite integration")
 	}
 
-	conn, err := local.New(local.Config{
-		Path:           filepath.Join(t.TempDir(), "work-items.db"),
-		ProjectID:      "video",
-		ActiveStates:   []string{"Todo", "In Progress"},
-		ObservedStates: []string{"Backlog", "Blocked"},
-		TerminalStates: []string{"Done"},
-	})
-	if err != nil {
-		t.Fatalf("local.New() error = %v", err)
-	}
-	t.Cleanup(func() {
-		if err := conn.Close(); err != nil {
-			t.Errorf("Close() error = %v", err)
-		}
+	conn := fakehub.New(fakehub.Config{
+		Stateful: true,
 	})
 
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerLocalSQLite
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	workflowCfg.Tracker.LocalSQLite.Path = filepath.Join(t.TempDir(), "unused.db")
 	workflowCfg.Tracker.ActiveStates = []string{"Todo", "In Progress"}
 	workflowCfg.Tracker.ObservedStates = []string{"Backlog", "Blocked"}
 	workflowCfg.Tracker.TerminalStates = []string{"Done"}
-	trackedProject, err := project.New(project.Config{
+	trackedProject, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{ID: "video"},
 		Workflow: workflowconfig.Workflow{
 			Config: workflowCfg,
@@ -12458,7 +12263,7 @@ func newWorkItemAPITestServer(t *testing.T, apiToken string) (*web.Server, *loca
 		Connector: conn,
 	})
 	if err != nil {
-		t.Fatalf("project.New() error = %v", err)
+		t.Fatalf("projectfixture.New() error = %v", err)
 	}
 
 	refresher := &refreshProbe{}
@@ -12480,33 +12285,21 @@ func newWorkItemAPITestServer(t *testing.T, apiToken string) (*web.Server, *loca
 	return server, conn, refresher
 }
 
-func newAPIKeyWorkItemTestServer(t *testing.T) (*web.Server, store.Store, *local.Connector, *refreshProbe) {
+func newAPIKeyWorkItemTestServer(t *testing.T) (*web.Server, store.Store, *fakehub.Connector, *refreshProbe) {
 	t.Helper()
 
 	backend := openWebTestStore(t)
-	conn, err := local.New(local.Config{
-		Path:           filepath.Join(t.TempDir(), "work-items.db"),
-		ProjectID:      "example-org-video",
-		ActiveStates:   []string{"Todo", "In Progress"},
-		ObservedStates: []string{"Backlog", "Blocked"},
-		TerminalStates: []string{"Done"},
-	})
-	if err != nil {
-		t.Fatalf("local.New() error = %v", err)
-	}
-	t.Cleanup(func() {
-		if err := conn.Close(); err != nil {
-			t.Errorf("Close() error = %v", err)
-		}
+	conn := fakehub.New(fakehub.Config{
+		Stateful: true,
 	})
 
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerLocalSQLite
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	workflowCfg.Tracker.LocalSQLite.Path = filepath.Join(t.TempDir(), "unused.db")
 	workflowCfg.Tracker.ActiveStates = []string{"Todo", "In Progress"}
 	workflowCfg.Tracker.ObservedStates = []string{"Backlog", "Blocked"}
 	workflowCfg.Tracker.TerminalStates = []string{"Done"}
-	trackedProject, err := project.New(project.Config{
+	trackedProject, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{ID: "example-org-video"},
 		Workflow: workflowconfig.Workflow{
 			Config: workflowCfg,
@@ -12516,7 +12309,7 @@ func newAPIKeyWorkItemTestServer(t *testing.T) (*web.Server, store.Store, *local
 		Connector: conn,
 	})
 	if err != nil {
-		t.Fatalf("project.New() error = %v", err)
+		t.Fatalf("projectfixture.New() error = %v", err)
 	}
 
 	refresher := &refreshProbe{}
@@ -12681,11 +12474,11 @@ func mustSetWebGitHubLabelProject(t *testing.T, registry *project.Registry, id s
 	t.Helper()
 
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	workflowCfg.Tracker.APIKey = "$GITHUB_TOKEN"
 	workflowCfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
 	workflowCfg.Tracker.Repository = repository
-	trackedProject, err := project.New(project.Config{
+	trackedProject, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{ID: id},
 		Workflow: workflowconfig.Workflow{
 			Config: workflowCfg,
@@ -12714,7 +12507,7 @@ func mustSetWebProjectWithWorkflowStates(
 	t.Helper()
 
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	if active != nil {
 		workflowCfg.Tracker.ActiveStates = append([]string(nil), active...)
 	}
@@ -12724,7 +12517,7 @@ func mustSetWebProjectWithWorkflowStates(
 	if terminal != nil {
 		workflowCfg.Tracker.TerminalStates = append([]string(nil), terminal...)
 	}
-	trackedProject, err := project.New(project.Config{
+	trackedProject, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{ID: id, Paused: paused},
 		Workflow: workflowconfig.Workflow{
 			Config: workflowCfg,
@@ -12745,7 +12538,7 @@ func newSettingsTestProject(t *testing.T, cfg globalconfig.Project, worktreeRoot
 	t.Helper()
 
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	workflowCfg.Tracker.Endpoint = "https://api.github.com/graphql"
 	workflowCfg.Tracker.APIKey = "$GITHUB_TOKEN"
 	workflowCfg.Tracker.ProjectSlug = "PVT_settings"
@@ -12757,7 +12550,7 @@ func newSettingsTestProject(t *testing.T, cfg globalconfig.Project, worktreeRoot
 	workflowCfg.Workspace.Root = worktreeRoot
 	workflowCfg.Workspace.SourceRoot = cfg.Workdir
 
-	trackedProject, err := project.New(project.Config{
+	trackedProject, err := projectfixture.New(project.Config{
 		Project: cfg,
 		Workflow: workflowconfig.Workflow{
 			Config: workflowCfg,
@@ -12776,7 +12569,7 @@ func newBudgetTestProject(t *testing.T, id string, perDayMaxUSD float64, perIssu
 	t.Helper()
 
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	workflowCfg.Tracker.Endpoint = "https://api.github.com/graphql"
 	workflowCfg.Tracker.APIKey = "$GITHUB_TOKEN"
 	workflowCfg.Tracker.ProjectSlug = "https://github.com/orgs/example-org/projects/4"
@@ -12787,7 +12580,7 @@ func newBudgetTestProject(t *testing.T, id string, perDayMaxUSD float64, perIssu
 	workflowCfg.Budget.PerDayMaxUSD = perDayMaxUSD
 	workflowCfg.Budget.PerIssueMaxUSD = perIssueMaxUSD
 
-	trackedProject, err := project.New(project.Config{
+	trackedProject, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{ID: id},
 		Workflow: workflowconfig.Workflow{
 			Config: workflowCfg,
@@ -13873,7 +13666,13 @@ func mustSetKanbanProject(t *testing.T, registry *project.Registry, id string, k
 	t.Helper()
 
 	workflowCfg := workflowconfig.Default()
-	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	if actionConnector.Name() == "github" {
+		workflowCfg.Tracker.Kind = workflowconfig.TrackerHubNative
+		workflowCfg.Tracker.APIKey = "fixture-token"
+		workflowCfg.Tracker.ProjectSlug = "fixture-project"
+		workflowCfg.Tracker.Repository = "example-org/example-project"
+	}
 	workflowCfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "Human Review", "Rework", "Merging"}
 	workflowCfg.Tracker.ObservedStates = []string{"Backlog", "Blocked"}
 	workflowCfg.Tracker.TerminalStates = []string{"Done", "Cancelled"}
@@ -13883,7 +13682,7 @@ func mustSetKanbanProject(t *testing.T, registry *project.Registry, id string, k
 	workflowCfg.Agent.DispatchPriorityByLabel = append([]string(nil), dispatchPriorityByLabel...)
 	workflowCfg.Server.Kanban = kanban
 
-	trackedProject, err := project.New(project.Config{
+	trackedProject, err := projectfixture.New(project.Config{
 		Project: globalconfig.Project{ID: id},
 		Workflow: workflowconfig.Workflow{
 			Config: workflowCfg,

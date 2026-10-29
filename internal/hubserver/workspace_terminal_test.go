@@ -16,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// The terminal channel on the hub (decisions section 18.3).
+// The terminal channel on the hub.
 //
 // It is tested against real sockets for the reason the rest of the relay is:
 // what the hub has to get right is what happens between two connections --- one
@@ -36,7 +36,7 @@ func terminalFrameOf(t *testing.T, kind, stream string, payload any) workspacese
 	}
 }
 
-// terminalOutputFrame is a runner's output span, base64 as section 18.3
+// terminalOutputFrame is a runner's output span, base64 as the terminal contract
 // requires: a PTY's bytes are text interleaved with escape sequences, and a
 // span cut at a frame boundary routinely ends inside one.
 func terminalOutputFrame(t *testing.T, stream, data string) workspacesession.Frame {
@@ -62,7 +62,7 @@ func TestWorkspaceRelayCarriesATerminalSession(t *testing.T) {
 		t.Fatalf("open forwarded as %+v, want an open on an allocated stream", opened)
 	}
 	// The actor is the hub's stamp and never the client's, so a runner can
-	// audit what it was asked to do and by whom (section 18.2).
+	// audit what it was asked to do and by whom.
 	if opened.Actor == nil || opened.Actor.ConnectionID == "" {
 		t.Fatalf("the open carried actor %+v, want the hub's stamp", opened.Actor)
 	}
@@ -112,7 +112,7 @@ func TestWorkspaceRelayCarriesATerminalSession(t *testing.T) {
 	}
 }
 
-// TestWorkspaceRelayNeverSharesATerminalStream is section 18.2's rule in so
+// TestWorkspaceRelayNeverSharesATerminalStream is the relay protocol's rule in so
 // many words: a second tab that wants the same shell opens its own stream and
 // gets its own PTY, and neither connection ever sees the other's frames.
 func TestWorkspaceRelayNeverSharesATerminalStream(t *testing.T) {
@@ -170,7 +170,7 @@ func TestWorkspaceRelayRefusesAnUnknownTerminalFrame(t *testing.T) {
 // front of stream allocation, beside its vocabulary.
 //
 // The hub reads this payload itself --- it is what a recording's header declares
-// as the window (section 18.3) --- so an open it cannot parse is one it must
+// as the window --- so an open it cannot parse is one it must
 // refuse rather than forward: forwarding would spend a stream and start a
 // recording claiming a window nobody asked for.
 func TestWorkspaceRelayRefusesAnUnreadableTerminalOpen(t *testing.T) {
@@ -210,7 +210,7 @@ func TestWorkspaceRelayRefusesAnUnreadableTerminalOpen(t *testing.T) {
 	}
 }
 
-// TestWorkspaceRelayRefusesATerminalOnARunningAttempt is section 18.1's rule:
+// TestWorkspaceRelayRefusesATerminalOnARunningAttempt is the workspace session contract's rule:
 // a workspace on an attempt that is still running is read-only and refuses a
 // terminal, so a person cannot type into a worktree the model is editing.
 func TestWorkspaceRelayRefusesATerminalOnARunningAttempt(t *testing.T) {
@@ -227,7 +227,7 @@ func TestWorkspaceRelayRefusesATerminalOnARunningAttempt(t *testing.T) {
 }
 
 // TestWorkspaceRelayRefusesATerminalWhenTheSettingIsOff covers
-// workspaces.terminal.enabled, which section 18.3 defaults to off. The runner
+// workspaces.terminal.enabled, which the terminal contract defaults to off. The runner
 // here reports the capability and the workspace is not read-only: the setting
 // is the only thing refusing.
 func TestWorkspaceRelayRefusesATerminalWhenTheSettingIsOff(t *testing.T) {
@@ -242,7 +242,7 @@ func TestWorkspaceRelayRefusesATerminalWhenTheSettingIsOff(t *testing.T) {
 	}
 }
 
-// TestWorkspaceRelayResumesATerminalWithinTheWindow is section 18.2's resume
+// TestWorkspaceRelayResumesATerminalWithinTheWindow is the relay protocol's resume
 // applied to the one stream it was written for. A PTY survives its connection
 // dropping for sixty seconds, so a person who comes back inside the window
 // finds the same shell with the output they missed.
@@ -314,7 +314,7 @@ func TestWorkspaceRelayLosesATerminalAfterTheWindow(t *testing.T) {
 	}
 }
 
-// TestWorkspaceRelayRecordsATerminalSession covers section 18.3's recording:
+// TestWorkspaceRelayRecordsATerminalSession covers the terminal contract's recording:
 // the asciicast holds what the shell wrote and what the person typed, marked so
 // a reader can tell them apart, and the relay session row points at where it
 // may be read.
@@ -369,7 +369,7 @@ func TestWorkspaceRelayRecordsATerminalSession(t *testing.T) {
 		data, _ := event[2].(string)
 		codes[code] = data
 	}
-	// Recording cannot remove what the person typed (section 18.3), so input
+	// Recording cannot remove what the person typed, so input
 	// is kept and marked rather than dropped.
 	if codes[workspacesession.AsciicastInput] != "whoami\n" {
 		t.Fatalf("cast input = %q, want what the person typed", codes[workspacesession.AsciicastInput])
@@ -381,8 +381,8 @@ func TestWorkspaceRelayRecordsATerminalSession(t *testing.T) {
 		t.Fatalf("cast resize = %q, want the new window", codes[workspacesession.AsciicastResize])
 	}
 
-	// The relay session row references the recording, which is what section
-	// 18.3 asks for.
+	// The relay session row references the recording, which is what the terminal contract
+	// asks for.
 	var artifact string
 	if err := f.service.database.db.QueryRowContext(t.Context(),
 		"SELECT recording_artifact FROM workspace_relay_sessions WHERE workspace_id = ? AND recording_artifact != ''",
@@ -415,7 +415,7 @@ func TestWorkspaceRelaySkipsRecordingWhenTheSettingIsOff(t *testing.T) {
 	}
 }
 
-// TestTerminalRecordingAudience is section 18.3's audience rule, which is
+// TestTerminalRecordingAudience is the terminal contract's audience rule, which is
 // narrower than the issue's on purpose: a recording can carry what the runner
 // account can see.
 func TestTerminalRecordingAudience(t *testing.T) {
@@ -442,7 +442,7 @@ func TestTerminalRecordingAudience(t *testing.T) {
 		{
 			// At user isolation the shell ran as the runner's own account, so
 			// the recording can carry its credential store and its other
-			// checkouts. Section 18.3 narrows it to owners alone.
+			// checkouts. The terminal contract narrows it to owners alone.
 			name:      "an admin does not read a user-isolation recording",
 			isolation: workspacesession.IsolationUser,
 			role:      "admin",
@@ -535,7 +535,7 @@ func TestWorkspaceTerminalRecordingEndpoints(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusNotFound)
 }
 
-// TestRefuseTerminalGrantMatrix is section 18.3's gate, asked of the function
+// TestRefuseTerminalGrantMatrix is the terminal contract's gate, asked of the function
 // that actually decides it, against real grant rows.
 //
 // The socket tests above cover what a connection can reach with the fixture's
@@ -561,7 +561,7 @@ func TestRefuseTerminalGrantMatrix(t *testing.T) {
 			isolation: workspacesession.IsolationContainer, enabled: true,
 		},
 		{
-			// Section 18.3: "Viewers never get a terminal." The role loses
+			// The terminal contract: "Viewers never get a terminal." The role loses
 			// however generous the grant row is, which is what stops a
 			// demotion from being survivable by holding an old row.
 			name: "a viewer never does", role: "viewer", canWrite: true, runners: true,
@@ -585,7 +585,7 @@ func TestRefuseTerminalGrantMatrix(t *testing.T) {
 		},
 		{
 			// User isolation runs the shell as the runner's own account, so
-			// section 18.3 allows it to owners and admins only.
+			// the terminal contract allows it to owners and admins only.
 			name: "user isolation refuses a member", role: "member", canWrite: true, runners: true,
 			isolation: workspacesession.IsolationUser, enabled: true,
 			want: workspacesession.CodeForbidden,
@@ -600,7 +600,7 @@ func TestRefuseTerminalGrantMatrix(t *testing.T) {
 		},
 		{
 			// A support actor gets a terminal "only with a support reason
-			// recorded and only at container" (section 18.3).
+			// recorded and only at container".
 			name: "a support session is refused off container", role: "owner", canWrite: true, runners: true,
 			isolation: workspacesession.IsolationUser, enabled: true, support: "ticket-9",
 			want: workspacesession.CodeForbidden,

@@ -10,7 +10,7 @@ import (
 
 func FromNativeEvidence(e tracker.NativeRuntimeEvidence) IssueExplanation {
 	issue := e.Issue
-	r := IssueExplanation{Schema: SchemaVersion, Found: true, ObservedAt: e.ObservedAt,
+	r := IssueExplanation{ChangeSequence: e.ChangeSequence, Schema: SchemaVersion, Found: true, ObservedAt: e.ObservedAt,
 		Identity:     Identity{ProjectID: string(issue.ProjectID), IssueID: string(issue.WorkItemID), Identifier: string(issue.ProjectID) + "#" + strconv.Itoa(issue.Number), Number: issue.Number, Title: issue.Title},
 		CurrentLane:  Lane{Name: issue.State, ObservedAt: &issue.UpdatedAt, Freshness: SourceAvailable},
 		Eligibility:  Eligibility{State: EligibilityUnknown, Source: SourceUnavailable, Refusals: []EligibilityDecision{}},
@@ -103,6 +103,9 @@ func projectNativeGate(r *IssueExplanation, e tracker.NativeRuntimeEvidence) {
 	g.SourceState, g.Source = SourceAvailable, "native_current_change_version"
 	g.EvidenceID, g.ObservedAt = change.Change.CurrentVersion, &change.Change.UpdatedAt
 	g.Reason, g.State = change.Summary.Status, GatePending
+	if change.Summary.Status == "evidence_incomplete" {
+		g.State, g.SourceState = GateUnknown, SourceUnavailable
+	}
 	if change.Summary.Status == "reviewed" || change.Summary.Status == "landed" {
 		g.State = GateUnknown
 		g.Reason = "External merge requirements have not been observed for the current version"

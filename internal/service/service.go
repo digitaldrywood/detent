@@ -28,9 +28,10 @@ var (
 type ManagerName string
 
 const (
-	ManagerManual  ManagerName = "foreground/manual"
-	ManagerSystemd ManagerName = "systemd"
-	ManagerLaunchd ManagerName = "launchd"
+	ManagerManual        ManagerName = "foreground/manual"
+	ManagerSystemd       ManagerName = "systemd"
+	ManagerLaunchd       ManagerName = "launchd"
+	ManagerScheduledTask ManagerName = "scheduled-task"
 )
 
 const ManagerEnvironment = "DETENT_SERVICE_MANAGER"
@@ -389,6 +390,8 @@ func newPlatformManager(cfg Config) Manager {
 		return newSystemdManager(cfg)
 	case "darwin":
 		return newLaunchdManager(cfg)
+	case "windows":
+		return newScheduledTaskManager(cfg)
 	default:
 		return manualManager{}
 	}

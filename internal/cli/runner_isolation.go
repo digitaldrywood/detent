@@ -22,6 +22,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
@@ -53,21 +54,17 @@ func probeRunnerIsolation(ctx context.Context, cfg globalconfig.Config) (isolati
 			tier = snapshot.Routing.IsolationTier
 		}
 	}
+	sprite := runner.SpriteSocketPresent()
 	for _, configured := range cfg.Projects {
 		workflow, err := project.LoadWorkflowContext(ctx, configured)
 		if err != nil {
-			p := runnerauth.NewProblem("settings_invalid")
-			p.ProjectID = configured.ID
-			p.Subject = configured.ID + "/workflow"
-			p.Check = "load workflow"
-			p.ErrorOutput = err.Error()
-			problems = append(problems, runnerauth.SanitizeProblem(p))
+			problems = append(problems, runnerauth.WorkflowLoadProblems(configured.ID, err)...)
 			continue
 		}
 		for _, backend := range workflow.Config.AgentBackendConfigs() {
 			key := configured.ID + "/" + backend.ID
 			var unavailable error
-			report[key], _ = probeBackendTiers(ctx, backend, isolation.Policy{WritableRoots: []string{configured.Workdir}, HostServices: services, AllowLocalBinding: workflow.Config.Worker.EffectiveAllowLocalBinding(), ExtraNetworkDomains: workflow.Config.Worker.ExtraNetworkDomains}, func(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy) error {
+			report[key], _ = probeBackendTiers(ctx, backend, isolation.Policy{Tier: tier, WritableRoots: []string{configured.Workdir}, HostServices: services, AllowLocalBinding: workflow.Config.Worker.EffectiveAllowLocalBinding(), ExtraNetworkDomains: workflow.Config.Worker.ExtraNetworkDomains}, sprite, func(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy) error {
 				if policy.Tier == isolation.Sandbox && unavailable != nil {
 					return unavailable
 				}
@@ -90,10 +87,14 @@ func probeRunnerIsolation(ctx context.Context, cfg globalconfig.Config) (isolati
 	return report, runnerauth.MergeProblems(nil, problems, time.Now())
 }
 
-func probeBackendTiers(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy, probe func(context.Context, workflowconfig.AgentBackend, isolation.Policy) error) ([]string, map[string]string) {
+func probeBackendTiers(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy, sprite bool, probe func(context.Context, workflowconfig.AgentBackend, isolation.Policy) error) ([]string, map[string]string) {
 	tiers := []string{}
 	reasons := map[string]string{}
-	for _, tier := range []string{isolation.NativeTrusted, isolation.Sandbox} {
+	probeTiers := []string{isolation.NativeTrusted}
+	if !sprite || policy.Tier != isolation.NativeTrusted {
+		probeTiers = append(probeTiers, isolation.Sandbox)
+	}
+	for _, tier := range probeTiers {
 		policy.Tier = tier
 		if err := probe(ctx, backend, policy); err == nil {
 			tiers = append(tiers, tier)
@@ -124,7 +125,7 @@ func backendVersionAtLeast(output []byte, minimum [3]int) bool {
 }
 
 func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBackend, policy isolation.Policy) (probeErr error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	command := strings.TrimSpace(backend.Command)
 	var shell string
@@ -138,6 +139,11 @@ func probeBackendIsolation(ctx context.Context, backend workflowconfig.AgentBack
 		command = prefix
 		shell = backend.CodexOptions().Shell
 		minimum = [3]int{0, 159, 2}
+	case workflowconfig.AgentBackendOpenCode:
+		if policy.Tier != isolation.NativeTrusted {
+			return isolation.ErrSandboxUnavailable
+		}
+		shell = backend.OpenCodeOptions().Shell
 	case workflowconfig.AgentBackendPiAgent:
 		if policy.Tier != isolation.NativeTrusted {
 			return isolation.ErrSandboxUnavailable
@@ -264,7 +270,7 @@ func runBackendProbe(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
 	var output boundedProbeOutput
 	cmd.Stdout = &output
 	cmd.Stderr = &output
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		return nil, err
 	}
 	groupID := procgroup.GroupID(cmd)
@@ -340,16 +346,37 @@ func backendReadinessProblem(subject, kind, tier, goos string, err error) runner
 		if code == "tier_unavailable" && (check == nil || !strings.HasSuffix(check.Check, " --version")) {
 			p.FixCommand = ""
 		}
-		missingTool := strings.Contains(output, "bwrap") || strings.Contains(output, "bubblewrap") || strings.Contains(output, "socat")
-		if tier == isolation.Sandbox && goos == "linux" && missingTool && missingCommand {
-			p.FixCommand = "sudo apt-get install bubblewrap socat"
-		}
+	}
+	if prerequisite, ok := backendPrerequisiteProblem(goos, err.Error()); ok {
+		prerequisite.Subject = p.Subject
+		prerequisite.Check = p.Check
+		return prerequisite
 	}
 	return runnerauth.SanitizeProblem(p)
 }
 
+func backendPrerequisiteProblem(goos, output string) (runnerauth.Problem, bool) {
+	lower := strings.ToLower(output)
+	missing := strings.Contains(lower, "could not find") || strings.Contains(lower, "command not found") || strings.Contains(lower, ": not found") || strings.Contains(lower, "no such file") || strings.Contains(lower, "executable file not found")
+	if goos != "linux" || !missing {
+		return runnerauth.Problem{}, false
+	}
+	for _, tool := range []struct{ name, command string }{{"bubblewrap", "bwrap"}, {"socat", "socat"}} {
+		if !strings.Contains(lower, tool.name) && !strings.Contains(lower, tool.command) {
+			continue
+		}
+		p := runnerauth.NewProblem("backend_missing")
+		p.Message = "The backend prerequisite " + tool.name + " (" + tool.command + ") is missing from PATH."
+		p.ErrorOutput = output
+		p.FixCommand = "sudo apt-get install bubblewrap socat"
+		p.FixHint = "Install " + tool.name + " and ensure " + tool.command + " is on the runner's PATH."
+		return runnerauth.SanitizeProblem(p), true
+	}
+	return runnerauth.Problem{}, false
+}
+
 func probeBackendSignIn(ctx context.Context, backend workflowconfig.AgentBackend) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	command := backend.Command
 	var shell string

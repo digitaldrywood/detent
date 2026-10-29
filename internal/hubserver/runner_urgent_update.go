@@ -90,7 +90,7 @@ func runnerUpdateReceiptMatches(ctx context.Context, tx *sql.Tx, scope nativeSco
 	if !request.Urgent {
 		return false, nil
 	}
-	err := tx.QueryRowContext(ctx, "SELECT response_json FROM native_commands WHERE organization_id = ? AND operation = 'urgent_runner_update' AND json_extract(response_json, '$.request.id') = ? LIMIT 1", scope.organization, request.ID).Scan(&raw)
+	raw, err := readUrgentCommandReceipt(ctx, tx, scope.organization, request.ID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -127,7 +127,7 @@ func (s *Service) readUrgentRunnerUpdateCommand(ctx context.Context, scope nativ
 func (s *Service) markUrgentRunnerUpdate(c echo.Context) error {
 	var request urgentRunnerUpdateChange
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
 	if !ok {
@@ -145,10 +145,10 @@ func (s *Service) markUrgentRunnerUpdate(c echo.Context) error {
 func (s *Service) markUrgentRunnerUpdateCommand(ctx context.Context, scope nativeScope, request urgentRunnerUpdateChange) (any, error) {
 	request.Version = strings.TrimPrefix(strings.TrimSpace(request.Version), "v")
 	if _, err := update.CompareVersions(request.Version, request.Version); err != nil || request.ExpectedRevision < 0 || strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativeInvalid("A release version, expected revision and idempotency key are required")
+		return nil, nativePublicInvalid("A release version, expected revision and idempotency key are required")
 	}
 	if !request.Confirm {
-		return nil, &nativeError{Code: "confirmation_required", Message: "Confirm updating all runners below the selected release", status: http.StatusPreconditionRequired}
+		return nil, &nativeError{Code: "confirmation_required", Message: "Confirm updating all runners below the selected release", status: http.StatusPreconditionRequired, publicMessage: true}
 	}
 	return s.runnerAdminTransaction(ctx, scope, false, func(ctx context.Context, tx *sql.Tx, now time.Time) (any, error) {
 		const operation = "urgent_runner_update"
@@ -173,7 +173,7 @@ func (s *Service) markUrgentRunnerUpdateCommand(ctx context.Context, scope nativ
 		if current.Request != nil {
 			comparison, err := update.CompareVersions(request.Version, current.Request.Version)
 			if err != nil || comparison < 0 {
-				return nil, nativeInvalid("An urgent release cannot lower the existing update target")
+				return nil, nativePublicInvalid("An urgent release cannot lower the existing update target")
 			}
 		}
 		value := urgentRunnerUpdate{Revision: current.Revision + 1, Request: &runnerauth.UpdateRequest{ID: newNativeID("update"), RequestedAt: now, Service: "detent", Version: request.Version, Release: true, Urgent: true}}
@@ -190,7 +190,7 @@ func (s *Service) markUrgentRunnerUpdateCommand(ctx context.Context, scope nativ
 		if _, err := tx.ExecContext(ctx, "UPDATE organizations SET urgent_runner_update_json = ? WHERE id = ?", raw, scope.organization); err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", scope.organization, scope.credential.ID, operation, request.IdempotencyKey, hash, raw, formatHubTime(now)); err != nil {
+		if _, err := insertNativeCommandReceipt(ctx, tx, scope.organization, scope.credential.ID, operation, request.IdempotencyKey, hash, raw, formatHubTime(now)); err != nil {
 			return nil, err
 		}
 		return value, nil

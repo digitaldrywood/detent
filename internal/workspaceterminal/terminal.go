@@ -1,5 +1,5 @@
 // Package workspaceterminal runs one PTY in one worktree and streams what it
-// writes (decisions section 18.3).
+// writes.
 package workspaceterminal
 
 import (
@@ -178,7 +178,7 @@ type Terminal struct {
 // emit is called from a goroutine of the terminal's own, serially and in order,
 // until the shell exits or the PTY is closed. A span it refuses ends the
 // streaming but not the shell: a person whose connection dropped may come back
-// inside the resume window (section 18.2), and killing their shell because one
+// inside the resume window, and killing their shell because one
 // write failed would make the resume window a lie. The caller decides when the
 // shell dies, through Close.
 //
@@ -211,8 +211,8 @@ func (s *Service) Open(
 	// -c and is the wrong shape for a shell that is going to read its input
 	// from a terminal.
 	//
-	// #nosec G204 G702 -- the shell is the project's configured one, and section
-	// 18.3 is explicit that what bounds a terminal is who may open it rather
+	// #nosec G204 G702 -- the shell is the project's configured one, and the terminal contract
+	// is explicit that what bounds a terminal is who may open it rather
 	// than what it may run.
 	// The command is not tied to ctx: cancellation is handled below through
 	// Close, so the whole process group gets the hangup and the delayed kill.
@@ -463,12 +463,12 @@ func (t *Terminal) wait() {
 // stream forwards the PTY's output until it ends.
 //
 // There is no output cap, and its absence is the contract rather than an
-// oversight. An action's output is a log somebody reads afterwards, so section
-// 18.12 caps it at a size worth storing; a terminal's output is a screen
+// oversight. An action's output is a log somebody reads afterwards, so the project actions contract
+// caps it at a size worth storing; a terminal's output is a screen
 // somebody is watching, and a shell that stopped producing after a megabyte
 // would be a terminal that stopped working. What bounds a terminal instead is
 // the relay: the hub holds at most StreamBufferBytes of unacknowledged frames
-// per stream and closes the stream with overflow past that (section 18.2), so
+// per stream and closes the stream with overflow past that, so
 // backpressure is honoured through the acks rather than by truncation here.
 func (t *Terminal) stream(emit func(workspacesession.TerminalOutput) error) {
 	buffer := make([]byte, workspacesession.MaxTerminalOutputFrameBytes)
@@ -536,7 +536,7 @@ var credentialPrefixes = []string{"DETENT_", "OPENAI_", "ANTHROPIC_", "CODEX_", 
 // terminalEnvironment removes provider and Detent credentials from the shell's
 // environment and sets the variables a terminal is expected to have.
 //
-// Section 18.3 says what the removal is worth: a courtesy, not a boundary. The
+// The terminal contract says what the removal is worth: a courtesy, not a boundary. The
 // shell runs as the runner account, so every key that account can reach on its
 // own -- a logged-in CLI's token, a credential file, a keychain -- it can still
 // reach, and a person who types `cat ~/.config/...` will read it. What this

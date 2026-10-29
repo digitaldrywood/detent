@@ -2,7 +2,7 @@ package tracker
 
 import "testing"
 
-// The denylist of decisions section 18.4 is applied by path string, to both
+// The diff path denylist is applied by path string, to both
 // path and old_path, because a deleted or renamed file has no canonical target
 // to resolve.
 func TestDiffPathDenied(t *testing.T) {

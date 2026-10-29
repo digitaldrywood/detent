@@ -256,7 +256,7 @@ describe("generated outputs", () => {
     const { json, docs } = generate();
     expect(existsSync(outputPath)).toBe(true);
     expect(readFileSync(outputPath, "utf8"), "run npm run design:tokens").toBe(json);
-    expect(docs.size).toBe(2);
+    expect(docs.size).toBe(1);
     for (const [path, content] of docs) {
       expect(readFileSync(path, "utf8"), `${path} is stale; run npm run design:tokens`).toBe(content);
     }

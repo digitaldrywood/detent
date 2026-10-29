@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/forgeavailability"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workpad"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -30,7 +32,17 @@ func (e *nativeExecution) ownsIssueCompletion() bool {
 }
 
 func (e *nativeExecution) ownsChangeCompletion() bool {
-	return e.ownsIssueCompletion() && e.worktreeState != "dirty" && (e.preparedDisposition == nil || e.preparedDisposition.Status != "blocked")
+	return (e.ownsIssueCompletion() || e.mergeResolution) && e.worktreeState != "dirty" && (e.preparedDisposition == nil || e.preparedDisposition.Status != "blocked")
+}
+
+func (e *nativeExecution) PrepareMergeResolution() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.role != runner.RoleMerge || e.recoveredSource == nil {
+		return errors.New("merge resolution requires recovered reviewed source")
+	}
+	e.mergeResolution = true
+	return nil
 }
 
 func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int64) (diagnosticErr error) {
@@ -54,7 +66,7 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 		}
 	}
 	if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.data.PolicyID); err != nil {
-		return e.scheduler.nativeClaimError(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
+		return e.scheduler.nativeClaimError(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
 	}
 	if _, err := e.claim.source.client.ValidateLease(ctx, e.claim.lease); err != nil {
 		return err
@@ -70,23 +82,31 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 		return errors.New("the attempt diff does not match the final checkpoint head")
 	}
 	change := &runner.NativeChange{
-		Changed: diff.HeadSHA != "" && diff.HeadSHA != diff.BaseSHA && len(diff.Files) > 0,
-		BaseSHA: diff.BaseSHA, HeadSHA: diff.HeadSHA, Files: len(diff.Files),
+		MergeResolution: e.mergeResolution,
+		Changed:         diff.HeadSHA != "" && diff.HeadSHA != diff.BaseSHA && len(diff.Files) > 0,
+		BaseSHA:         diff.BaseSHA, HeadSHA: diff.HeadSHA, Files: len(diff.Files),
 	}
 	e.change = change
 	e.finalizationSource, e.finalizationAttempt = nil, ""
+	detail, err := e.claim.source.client.currentChange(ctx, e.claim.lease.WorkItemID)
+	if err != nil {
+		change.Error = err.Error()
+		return err
+	}
+	if err := e.requireRecoveredSource(detail, diff); err != nil {
+		return err
+	}
+	if delivered, err := e.settleIntegratedChange(ctx, detail, diff, change); err != nil {
+		change.Error = err.Error()
+		return err
+	} else if delivered {
+		e.settled = true
+		return nil
+	}
 	if !change.Changed {
-		detail, err := e.claim.source.client.currentChange(ctx, e.claim.lease.WorkItemID)
-		if err != nil {
-			change.Error = err.Error()
-			return err
-		}
 		if detail.Change.ID == "" {
 			e.settled = true
 			return nil
-		}
-		if err := e.requireRecoveredSource(detail, diff); err != nil {
-			return err
 		}
 		for _, version := range detail.Versions {
 			if version.ID != detail.Change.CurrentVersion {
@@ -105,26 +125,6 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 			change.VersionError = "the final attempt diff does not identify the current Change Request head"
 			if detail.Summary.Status == "stale_policy" {
 				change.VersionCode = "policy_mismatch"
-			} else if detail.Summary.Status == "reviewed" && detail.Change.CurrentLanding() == nil &&
-				diff.BaseSHA == diff.HeadSHA && len(diff.Files) == 0 && e.integrationSource != nil &&
-				e.preparedDisposition != nil && e.preparedDisposition.Status == "complete" && !e.preparedDisposition.Blockers && !e.preparedDisposition.HumanAction {
-				result, err := e.integrationSource(ctx, version, diff.BaseSHA)
-				if err != nil {
-					var refusal *workspace.LandRefusal
-					if !errors.As(err, &refusal) {
-						change.Error = err.Error()
-						return err
-					}
-					change.VersionError += ": " + err.Error()
-				} else {
-					landing := runner.NativeLanding{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
-					if err := e.RecordLanding(ctx, landing); err != nil {
-						change.Error = err.Error()
-						return err
-					}
-					change.VersionID, change.Reviewed, change.VersionError = version.ID, true, ""
-					change.Landing = &landing
-				}
 			}
 			e.settled = true
 			return nil
@@ -132,7 +132,6 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 		change.Error = "the final attempt diff does not identify the current Change Request head"
 		return errors.New(change.Error)
 	}
-	var err error
 	for try := range nativeChangeCreateTries {
 		if try > 0 {
 			select {
@@ -166,6 +165,57 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 	return err
 }
 
+func (e *nativeExecution) settleIntegratedChange(ctx context.Context, detail tracker.ChangeDetail, diff tracker.AttemptDiffRequest, change *runner.NativeChange) (bool, error) {
+	if detail.Summary.Status != "reviewed" || detail.Change.CurrentLanding() != nil || e.integrationSource == nil ||
+		e.preparedDisposition != nil && (e.preparedDisposition.Blockers || e.preparedDisposition.HumanAction) {
+		return false, nil
+	}
+	for _, version := range detail.Versions {
+		if version.ID != detail.Change.CurrentVersion || version.PolicyID != e.data.PolicyID {
+			continue
+		}
+		if d := e.claim.recovery.Issue.ReleaseDelivery; d != nil && (d.ChangeID != detail.Change.ID || d.VersionID != version.ID || d.HeadSHA != version.HeadSHA || d.BaseSHA != version.BaseSHA || d.Repository != version.Repository) {
+			return false, errors.New("release association differs from current version")
+		}
+		result, err := e.integrationSource(ctx, version, diff.HeadSHA)
+		if err != nil {
+			var refusal *workspace.LandRefusal
+			if errors.As(err, &refusal) {
+				if change.Changed || diff.HeadSHA == version.HeadSHA {
+					return false, nil
+				}
+				landing := &runner.NativeLanding{
+					ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA,
+					BaseSHA: refusal.BaseSHA, BaseRef: refusal.TargetBranch,
+					RefusalKind: refusal.Kind, Refusal: refusal.Reason, ConflictFiles: refusal.ConflictFiles,
+				}
+				if refusal.Kind == workspace.LandRefusalConflict {
+					landing.Path, landing.Waiting = "merge_resolution_pending", true
+				}
+				e.finalizationSource = &tracker.NativeChangeReference{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}
+				e.finalizationAttempt = version.AttemptID
+				change.Changed, change.ChangeID, change.VersionID = true, detail.Change.ID, version.ID
+				change.BaseSHA, change.HeadSHA, change.Reviewed, change.Landing = version.BaseSHA, version.HeadSHA, true, landing
+				return true, nil
+			}
+			return false, fmt.Errorf("verify delivered source: %w", err)
+		}
+		if version.Policy.Gates.SecurityAudit && !version.Policy.Gates.GitHubPullRequest && e.claim.recovery.Issue.ReleaseDelivery == nil {
+			return false, nil
+		}
+		landing := runner.NativeLanding{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA, Landed: true, MergeSHA: result.MergeSHA, BaseRef: result.BaseRef, Method: result.Method, Rebased: result.Rebased}
+		if err := e.recordLanding(ctx, landing); err != nil {
+			return false, err
+		}
+		e.finalizationSource = &tracker.NativeChangeReference{ChangeID: detail.Change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}
+		e.finalizationAttempt = version.AttemptID
+		change.Changed, change.ChangeID, change.VersionID = true, detail.Change.ID, version.ID
+		change.BaseSHA, change.HeadSHA, change.Reviewed, change.Landing = version.BaseSHA, version.HeadSHA, true, &landing
+		return true, nil
+	}
+	return false, nil
+}
+
 func (e *nativeExecution) SetIntegrationSource(source func(context.Context, tracker.ChangeVersion, string) (workspace.LandResult, error)) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -182,7 +232,7 @@ func (e *nativeExecution) publishVersion(ctx context.Context, diff tracker.Attem
 	}
 	change.VersionID, change.VersionError, change.VersionCode, change.Reviewed = id, "", "", reviewed
 	if err := e.preparePRPublication(ctx, change); err != nil {
-		change.VersionError, change.VersionCode, change.Reviewed = err.Error(), hubErrorCode(err), false
+		change.VersionError, change.VersionCode, change.Reviewed = err.Error(), publicationErrorCode(err), false
 		return err
 	}
 	return nil
@@ -206,42 +256,50 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 		if !version.Policy.Gates.GitHubPullRequest {
 			return nil
 		}
+		e.scheduler.mu.Lock()
+		pinned := e.scheduler.claimPolicies[string(e.claim.lease.WorkItemID)]
+		e.scheduler.mu.Unlock()
+		unresolvedAtStart := e.data.Handoff.UncertainForgeEffect()
+		reconcileStale := unresolvedAtStart && e.recoveredSource != nil &&
+			*e.recoveredSource == (tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}) &&
+			pinned.descriptor.ID == e.data.PolicyID && pinned.descriptor.Gates.GitHubPullRequest
 		authorize := func(ctx context.Context) error {
 			if checkpoint := e.data.Handoff; checkpoint != nil && (checkpoint.EffectState == "pending" || checkpoint.EffectState == "ambiguous") && checkpoint.ExternalEffect != "git_push" && checkpoint.ExternalEffect != "pr_create" {
-				return fmt.Errorf("%w: PR publication has an unresolved external effect; preserve source and reconcile its checkpoint before resuming", ErrUnavailable)
+				return &workspace.LandRefusal{Kind: workspace.LandRefusalHeadMoved, Reason: "PR publication has an unresolved " + checkpoint.ExternalEffect + " effect; preserve source and reconcile its checkpoint before resuming"}
 			}
 			if e.remaining() <= 0 {
 				if err := e.renew(ctx, 0); err != nil {
-					return e.executionError(err)
+					return e.executionError(ctx, err)
 				}
 			}
 			if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.data.PolicyID); err != nil {
-				return e.executionError(e.scheduler.nativeClaimError(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err))
+				return e.executionError(ctx, e.scheduler.nativeClaimError(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err))
 			}
 			if _, err := e.claim.source.client.ValidateLease(ctx, e.claim.lease); err != nil {
-				return e.executionError(err)
+				return e.executionError(ctx, err)
 			}
 			current, err := e.claim.source.client.runtimeChange(ctx, e.claim.lease.WorkItemID, change.ChangeID)
 			if err != nil {
 				return err
 			}
-			if current.Change.CurrentVersion != version.ID || version.HeadSHA != change.HeadSHA || version.Repository != e.repository || current.Summary.Status == "stale_policy" || current.Change.CurrentLanding() != nil {
+			if current.Change.CurrentVersion != version.ID || version.HeadSHA != change.HeadSHA || version.Repository != e.repository || current.Summary.Status == "stale_policy" && !reconcileStale || current.Change.CurrentLanding() != nil {
 				return errors.New("PR publication source, current version or review requirements changed; reconcile the current Change before retrying")
 			}
-			if previous := e.claim.recovery.SourceAttempt(); previous != nil && previous.Checkpoint != nil &&
-				(previous.Checkpoint.EffectState == "pending" || previous.Checkpoint.EffectState == "ambiguous") {
-				checkpoint := previous.Checkpoint
-				if e.role != runner.RoleRework || !checkpoint.UncertainForgeEffect() || e.recoveredSource == nil ||
+			// Inherited effects need restored source proof. Effects started by
+			// this execution already passed publication authorization.
+			if previous := e.claim.recovery.SourceAttempt(); previous != nil && previous.Checkpoint.UncertainForgeEffect() && e.data.Handoff.UncertainForgeEffect() {
+				checkpoint := e.data.Handoff
+				if e.role != runner.RoleCode && e.role != runner.RoleRework || !checkpoint.UncertainForgeEffect() || e.recoveredSource == nil ||
 					checkpoint.Change == nil || *checkpoint.Change != (tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}) ||
 					checkpoint.HeadSHA != version.HeadSHA || checkpoint.Storage != "local_only" && !checkpoint.GitRef() || checkpoint.Availability != "available" || e.lastDiff.HeadSHA != version.HeadSHA {
-					return errors.New("uncertain publication requires unchanged verified current Rework source under its newly owned lease; preserve its checkpoint and reconcile the source, version and policy before retrying")
+					return errors.New("uncertain publication requires unchanged verified current source under its newly owned lease; preserve its checkpoint and reconcile the source, version and policy before retrying")
 				}
 			}
 			return e.requireRecoveredSource(current, *e.lastDiff)
 		}
 		authorizeStart := func(ctx context.Context) error {
 			if err := nativeEffectError(ctx); err != nil {
-				return e.executionError(err)
+				return e.executionError(ctx, err)
 			}
 			if err := authorize(ctx); err != nil {
 				return err
@@ -310,20 +368,24 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 				unresolved := binding
 				unresolved.External = tracker.ChangeExternalReference{}
 				if checkpoint.EffectID != unresolved.EffectID(checkpoint.ExternalEffect) || checkpoint.Change == nil || *checkpoint.Change != binding.SourceVersion {
-					return errors.New("unresolved publication effect differs from the current source identity; preserve source and reconcile its checkpoint before resuming")
+					return &workspace.LandRefusal{Kind: workspace.LandRefusalHeadMoved, Reason: "unresolved publication effect differs from the current source identity; preserve source and reconcile its checkpoint before resuming"}
 				}
-			}
-			if state == "pending" && (checkpoint.EffectState == "pending" || checkpoint.EffectState == "ambiguous") {
-				return errors.New("PR publication has an unresolved external effect; reconcile the exact repository, branch, head and PR before retrying a write")
+				if state == "pending" && !unresolvedAtStart {
+					return errors.New("PR publication has an unresolved external effect; reconcile the exact repository, branch, head and PR before retrying a write")
+				}
 			}
 			if state == "confirmed" && kind == "git_push" && checkpoint.ExternalEffect == "pr_create" {
 				return nil
 			}
+			if kind == "git_push" && state == "pending" {
+				checkpoint.ExpectedHeadSHA = publication.ExpectedHeadSHA
+			}
 			checkpoint.ExternalEffect, checkpoint.EffectState = kind, state
+			checkpoint.Publication = nil
 			checkpoint.EffectID = binding.EffectID(kind)
 			checkpoint.Change = &tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
 			if state == "none" {
-				checkpoint.ExternalEffect, checkpoint.EffectID = "none", ""
+				checkpoint.ExternalEffect, checkpoint.EffectID, checkpoint.ExpectedHeadSHA = "none", "", ""
 			}
 			if err := e.append(ctx, "run.checkpointed", "", &checkpoint); err != nil {
 				return err
@@ -336,10 +398,15 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 			}
 			return nil
 		}
-		publication, err := e.publicationSource(ctx, version, workspace.LandOptions{Authorize: authorizeStart, PublicationEffect: effect, External: external, ExternalHeadSHA: externalHead, PublicationPushes: pushes, SourceIssues: detail.SourceIssues})
+		expectedHead := ""
+		if e.data.Handoff != nil {
+			expectedHead = e.data.Handoff.ExpectedHeadSHA
+		}
+		publication, err := e.publicationSource(ctx, version, workspace.LandOptions{Authorize: authorizeStart, PublicationEffect: effect, External: external, ExternalHeadSHA: externalHead, PublicationPushes: pushes, SourceIssues: detail.SourceIssues, UnresolvedEffect: unresolvedAtStart, ExpectedPublicationHead: expectedHead})
 		if err != nil {
-			if e.data.Handoff != nil && e.data.Handoff.EffectState == "ambiguous" {
-				return fmt.Errorf("%w: required GitHub PR has an ambiguous publication response; retain source and reconcile the exact existing PR before another write: %w", ErrUnavailable, err)
+			var refusal *workspace.LandRefusal
+			if errors.Is(err, forgeavailability.ErrUnavailable) || !errors.As(err, &refusal) && e.data.Handoff.UncertainForgeEffect() {
+				return fmt.Errorf("%w: required GitHub PR has an ambiguous publication response; the completion retry reconciles it against the forge before another write: %w", ErrUnavailable, err)
 			}
 			return fmt.Errorf("required GitHub PR is not ready; preserve source and resolve publication blocker: %w", err)
 		}
@@ -350,6 +417,11 @@ func (e *nativeExecution) preparePRPublication(ctx context.Context, change *runn
 			SourceVersion: tracker.NativeChangeReference{ChangeID: change.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}, SourceAttemptID: version.AttemptID, External: publication.External}
 		if !receipt.Matches(change.ChangeID, version) || publication != confirmedPR || e.data.Handoff == nil || e.data.Handoff.ExternalEffect != "pr_create" || e.data.Handoff.EffectState != "confirmed" || e.data.Handoff.EffectID != receipt.EffectID("pr_create") {
 			return errors.New("PR publication response lacks an exact verified identity and confirmed effect; reconcile publication before reporting success")
+		}
+		checkpoint := *e.data.Handoff
+		checkpoint.Publication = receipt
+		if err := e.append(ctx, "run.checkpointed", "", &checkpoint); err != nil {
+			return err
 		}
 		e.publication = receipt
 		return nil
@@ -375,6 +447,11 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 		}
 
 		if detail.Summary.Status == "stale_policy" {
+			if e.data.Handoff.UncertainForgeEffect() {
+				if err := e.preparePRPublication(ctx, &runner.NativeChange{ChangeID: changeID, VersionID: version.ID, HeadSHA: version.HeadSHA}); err != nil {
+					return "", false, err
+				}
+			}
 			break
 		}
 
@@ -418,6 +495,14 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 			RunID:      e.data.RunID, AttemptID: e.data.AttemptID, PolicyID: e.data.PolicyID,
 			Source: source,
 		},
+	}
+	if signal, ok := workpad.SignalFromComment(e.preparedMessage, "", ""); ok && signal.Invalid == nil && signal.Status == workpad.StatusComplete && signal.HumanAction == "" && len(signal.Blockers) == 0 {
+		for _, d := range signal.ReviewDispositions {
+			request.ReviewDispositions = append(request.ReviewDispositions, tracker.ReviewDisposition{HeadSHA: diff.HeadSHA, ThreadID: d.ThreadID, Disposition: d.Disposition, Evidence: d.Evidence})
+		}
+	}
+	if err := e.retainChangeValidation(ctx, &request.ChangeVersionInput); err != nil {
+		return "", false, err
 	}
 	identity, err := json.Marshal(struct {
 		Project tracker.ProjectID
@@ -518,6 +603,14 @@ func nativeLeaseLost(err error) bool {
 	}
 	var apiErr *APIError
 	return errors.As(err, &apiErr) && apiErr != nil && apiErr.Code == "stale_execution"
+}
+
+func publicationErrorCode(err error) string {
+	var refusal *workspace.LandRefusal
+	if errors.As(err, &refusal) && refusal.Kind == workspace.LandRefusalHeadMoved {
+		return refusal.Kind
+	}
+	return hubErrorCode(err)
 }
 
 func hubErrorCode(err error) string {

@@ -7,6 +7,7 @@ import { defineConfig, type Plugin } from "vitest/config";
 /** Include the complete upstream licenses in the distributed client. */
 function attributionBanner(): string {
   const licence = readFileSync(new URL("./LICENSE.t3code", import.meta.url), "utf8");
+  const voiceLicence = readFileSync(new URL("./LICENSE.voice-activity", import.meta.url), "utf8");
   const pierreLicence = readFileSync(new URL("./LICENSE.pierre-diffs", import.meta.url), "utf8");
   return [
     "/*!",
@@ -18,6 +19,10 @@ function attributionBanner(): string {
     " * Detent Cloud uses @pierre/diffs, licensed under the Apache License, Version 2.0.",
     " *",
     ...pierreLicence.trimEnd().split("\n").map((line) => line ? ` * ${line}` : " *"),
+    " *",
+    " * Detent Cloud uses @ricky0123/vad-web and Silero VAD for browser voice activity detection.",
+    " *",
+    ...voiceLicence.trimEnd().split("\n").map((line) => line ? ` * ${line}` : " *"),
     " */",
   ].join("\n");
 }
@@ -391,10 +396,6 @@ export default defineConfig({
       "rehype-raw": fileURLToPath(
         new URL("./src/app/adapters/rehypeRawDisabled.ts", import.meta.url),
       ),
-      // The vendored `ProjectFavicon.tsx` lazily imports lucide's whole icon
-      // map for a branch Detent never takes; the alias keeps that file
-      // byte-identical and keeps 1,588 icon chunks out of the build output.
-      // See `src/browser/lucideDynamicIcon.tsx`.
       "lucide-react/dynamic": fileURLToPath(
         new URL("./src/browser/lucideDynamicIcon.tsx", import.meta.url),
       ),
@@ -410,10 +411,20 @@ export default defineConfig({
   // `?worker` suffix. Rollup refuses the default `iife` worker format once the
   // graph code-splits, which this one does, so the workers are ES modules —
   // which every browser that can run the rest of this bundle supports.
-  worker: { format: "es", rollupOptions: { output: { hashCharacters: "hex" } } },
+  worker: {
+    format: "es",
+    rollupOptions: {
+      output: {
+        hashCharacters: "hex",
+        assetFileNames: (asset) => asset.names?.some((name) => name.endsWith(".mjs"))
+          ? "assets/[name]-[hash].js" : "assets/[name]-[hash][extname]",
+      },
+    },
+  },
   build: {
     outDir: "../../static/app/conversation",
     emptyOutDir: true,
+    assetsInlineLimit: (path) => path.endsWith("vad.worklet.bundle.min.js") ? false : undefined,
     chunkSizeWarningLimit: 700,
     // `app.js` and `app.css` keep fixed names: the shell references them
     // literally and the hub revalidates them on every load. Everything under
@@ -448,7 +459,10 @@ export default defineConfig({
         inlineDynamicImports: false,
         hashCharacters: "hex",
         chunkFileNames: "chunks/[name]-[hash].js",
-        assetFileNames: (asset) =>
+        assetFileNames: (asset) => asset.names?.some((name) => name.endsWith(".mjs"))
+          ? "assets/[name]-[hash].js" :
+          asset.names?.some((name) => name === "silero_vad_v5.onnx" || name === "vad.worklet.bundle.min.js")
+            ? "voice/[name][extname]" :
           asset.names?.some((name) => name.endsWith(".css")) ? "app.css" : "assets/[name]-[hash][extname]",
       },
     },
@@ -460,7 +474,7 @@ export default defineConfig({
       "/app/updates": { target: hubUrl, changeOrigin: true },
       // The project event stream; `/projects/…` is otherwise an app route.
       "^/projects/[^/]+/events": { target: hubUrl, changeOrigin: true },
-      // `/app/bootstrap` is what the client asks for first (decisions.md §12);
+      // `/app/bootstrap` is what the client asks for first;
       // `/chat/bootstrap` is the alias it falls back to.
       "/app/bootstrap": { target: hubUrl, changeOrigin: true },
       "/chat/bootstrap": { target: hubUrl, changeOrigin: true },
@@ -468,7 +482,7 @@ export default defineConfig({
     },
   },
   test: {
-    environmentMatchGlobs: [["tests/components/activityPage.test.tsx", "jsdom"], ["tests/components/diagnosticsLive.test.tsx", "jsdom"], ["tests/components/issueAsk.test.tsx", "jsdom"], ["tests/components/sourceRecovery.test.tsx", "jsdom"]],
+    environmentMatchGlobs: [["tests/components/teamThreads.test.tsx", "jsdom"], ["tests/components/integrations.test.tsx", "jsdom"], ["tests/components/reports.test.tsx", "jsdom"], ["tests/components/activityPage.test.tsx", "jsdom"], ["tests/components/diagnosticsLive.test.tsx", "jsdom"], ["tests/components/issueAsk.test.tsx", "jsdom"], ["tests/components/sourceRecovery.test.tsx", "jsdom"], ["tests/components/reporter.test.tsx", "jsdom"]],
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx", "src/**/*.test.ts"],
     setupFiles: ["./tests/setup.tsx"],
     css: false,

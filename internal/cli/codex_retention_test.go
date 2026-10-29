@@ -30,9 +30,15 @@ func TestPruneCodexLogs(t *testing.T) {
 		rows               int
 		shared             bool
 		startsDuringVacuum bool
+		oldRows            bool
+		compacted          bool
+		secondProfile      bool
 	}{
 		{name: "retains cutoff and newer", limit: codexLogSizeLimit, rows: 2},
 		{name: "exact floor retained", limit: 8192, rows: 2},
+		{name: "small log avoids rewrite", limit: codexLogSizeLimit, rows: 2, oldRows: true},
+		{name: "oversized log compacted below floor", limit: 8192, rows: 2, oldRows: true, compacted: true},
+		{name: "server starts before second profile", limit: codexLogSizeLimit, rows: 2, startsDuringVacuum: true, secondProfile: true},
 		{name: "live server preserves all", alive: true, limit: 1, rows: 3},
 		{name: "server starts during vacuum", startsDuringVacuum: true, limit: 1, rows: 2},
 		{name: "unknown process state preserves all", scanErr: errors.New("ps failed"), limit: 1, rows: 3},
@@ -41,20 +47,24 @@ func TestPruneCodexLogs(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			home := t.TempDir()
-			dir := filepath.Join(home, workerCodexProfileDir)
-			if err := os.Mkdir(dir, 0700); err != nil {
-				t.Fatal(err)
+			path := writeCodexLogFixture(t, home, workerCodexProfileDir, now)
+			if tt.oldRows {
+				db, err := sql.Open("sqlite", path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = db.ExecContext(t.Context(), "WITH RECURSIVE old(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM old WHERE n < 8192) INSERT INTO logs SELECT ? FROM old", now.Add(-8*24*time.Hour).Unix())
+				if err := errors.Join(err, db.Close()); err != nil {
+					t.Fatal(err)
+				}
 			}
-			path := filepath.Join(dir, "logs_2.sqlite")
-			db, err := sql.Open("sqlite", path)
+			beforeInfo, err := os.Stat(path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = db.ExecContext(t.Context(), "CREATE TABLE logs (ts INTEGER NOT NULL); INSERT INTO logs VALUES (?), (?), (?)", now.Add(-8*24*time.Hour).Unix(), now.Add(-7*24*time.Hour).Unix(), now.Unix()); err != nil {
-				t.Fatal(err)
-			}
-			if err = db.Close(); err != nil {
-				t.Fatal(err)
+			var secondPath string
+			if tt.secondProfile {
+				secondPath = writeCodexLogFixture(t, home, launchdCodexProfileDir, now)
 			}
 			userPath := filepath.Join(home, "logs_2.sqlite")
 			if tt.shared {
@@ -89,7 +99,30 @@ func TestPruneCodexLogs(t *testing.T) {
 				}
 				return
 			}
-			db, err = sql.Open("sqlite", path)
+			if tt.oldRows {
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tt.compacted && info.Size() >= beforeInfo.Size() || !tt.compacted && info.Size() != beforeInfo.Size() {
+					t.Fatalf("log size = %d, before = %d, want compacted = %v", info.Size(), beforeInfo.Size(), tt.compacted)
+				}
+			}
+			if secondPath != "" {
+				db, err := sql.Open("sqlite", secondPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var rows int
+				err = db.QueryRowContext(t.Context(), "SELECT count(*) FROM logs").Scan(&rows)
+				if err := errors.Join(err, db.Close()); err != nil {
+					t.Fatal(err)
+				}
+				if rows != 3 {
+					t.Fatalf("active second profile rows = %d, want 3", rows)
+				}
+			}
+			db, err := sql.Open("sqlite", path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -103,6 +136,24 @@ func TestPruneCodexLogs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func writeCodexLogFixture(t *testing.T, home, profile string, now time.Time) string {
+	t.Helper()
+	dir := filepath.Join(home, profile)
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "logs_2.sqlite")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(t.Context(), "CREATE TABLE logs (ts INTEGER NOT NULL); INSERT INTO logs VALUES (?), (?), (?)", now.Add(-8*24*time.Hour).Unix(), now.Add(-7*24*time.Hour).Unix(), now.Unix())
+	if err := errors.Join(err, db.Close()); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func writeRollout(t *testing.T, home, name, id, origin string, mtime time.Time) string {

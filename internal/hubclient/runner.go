@@ -40,6 +40,19 @@ type runnerCredentialSource struct {
 	hostMetricsSupported bool
 	mu                   sync.Mutex
 	path                 string
+	readOnly             bool
+}
+
+func NewRunnerReader(config Config) (*Client, error) {
+	client, err := New(config)
+	if err != nil {
+		return nil, err
+	}
+	if client.runner == nil {
+		return nil, errors.New("runner reader requires enrolled credentials")
+	}
+	client.runner.readOnly = true
+	return client, nil
 }
 
 var identityFileLocks sync.Map
@@ -127,6 +140,18 @@ func (c *Client) runnerToken(ctx context.Context) (token string, resultErr error
 }
 
 func (c *Client) runnerCredential(ctx context.Context, refreshIdentity bool) (result runnerauth.File, resultErr error) {
+	if c.runner.readOnly {
+		return c.readRunnerCredential(ctx)
+	}
+	if !refreshIdentity {
+		file, err := c.loadRunnerCredential()
+		if err != nil {
+			return result, err
+		}
+		if file.PendingCredential == "" && time.Now().Add(runnerauth.CredentialTTL/2).Before(file.Identity.ExpiresAt) {
+			return file, nil
+		}
+	}
 	c.runner.mu.Lock()
 	defer c.runner.mu.Unlock()
 	release, err := lockIdentityFile(c.runner.path)
@@ -134,35 +159,119 @@ func (c *Client) runnerCredential(ctx context.Context, refreshIdentity bool) (re
 		return result, err
 	}
 	defer func() { resultErr = errors.Join(resultErr, release()) }()
-	file, err := runnerauth.Load(c.runner.path)
+	file, err := c.loadRunnerCredential()
 	if err != nil {
 		return result, err
-	}
-	if file.HubURL != strings.TrimRight(c.baseURL.String(), "/") {
-		return result, errors.New("runner identity belongs to a different Hub")
 	}
 	file, err = c.prepareRunnerCredential(ctx, c.runner.path, file, false)
 	if err != nil {
 		return result, err
 	}
 	if refreshIdentity {
-		base, err := runnerOrganizationPath(file.Identity.OrganizationID)
+		identity, err := c.readRunnerIdentity(ctx, file, file.Credential)
 		if err != nil {
 			return result, err
 		}
-		var identity runnerauth.Identity
-		if err := c.runnerRequest(ctx, file.Credential, http.MethodGet, base+"/runners/"+file.Identity.RunnerID, nil, &identity); err != nil {
-			return result, err
-		}
-		if err := validateRunnerResponse(file, identity); err != nil {
-			return result, err
-		}
+
 		file.Identity = identity
 		if err := runnerauth.Save(c.runner.path, file); err != nil {
 			return result, err
 		}
 	}
 	return file, nil
+}
+
+func (c *Client) loadRunnerCredential() (runnerauth.File, error) {
+	file, err := runnerauth.Load(c.runner.path)
+	if err != nil {
+		return runnerauth.File{}, err
+	}
+	if file.HubURL != strings.TrimRight(c.baseURL.String(), "/") {
+		return runnerauth.File{}, errors.New("runner identity belongs to a different Hub")
+	}
+	return file, nil
+}
+
+func (c *Client) readRunnerCredential(ctx context.Context) (runnerauth.File, error) {
+	file, err := c.loadRunnerCredential()
+	if err != nil {
+		return runnerauth.File{}, err
+	}
+	validated, err := c.validateRunnerReadCredential(ctx, file)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnauthorized {
+		return validated, err
+	}
+	latest, loadErr := c.rotatedRunnerCredential(file)
+	if loadErr != nil {
+		return runnerauth.File{}, loadErr
+	}
+	if latest.Credential == file.Credential {
+		return runnerauth.File{}, err
+	}
+	return c.validateRunnerReadCredential(ctx, latest)
+}
+
+func (c *Client) rotatedRunnerCredential(file runnerauth.File) (runnerauth.File, error) {
+	latest, err := runnerauth.Load(c.runner.path)
+	if err != nil {
+		return runnerauth.File{}, err
+	}
+	if latest.Identity.Binding != file.Identity.Binding || latest.Identity.OrganizationID != file.Identity.OrganizationID || latest.HubURL != file.HubURL {
+		return runnerauth.File{}, errors.New("runner identity binding cannot be replaced")
+	}
+	if latest.PendingCredential != "" {
+		latest.Credential = latest.PendingCredential
+	}
+	return latest, nil
+}
+
+func (c *Client) validateRunnerReadCredential(ctx context.Context, file runnerauth.File) (runnerauth.File, error) {
+	identity, err := c.readRunnerIdentity(ctx, file, file.Credential)
+	if err != nil {
+		return runnerauth.File{}, err
+	}
+	if !time.Now().Before(identity.ExpiresAt) {
+		return runnerauth.File{}, errors.New("runner credential has expired")
+	}
+	file.Identity = identity
+	return file, nil
+}
+
+func (c *Client) runnerRead(ctx context.Context, request func(string) error) error {
+	file, err := c.readRunnerCredential(ctx)
+	if err != nil {
+		return err
+	}
+	err = request(file.Credential)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnauthorized {
+		return err
+	}
+	latest, loadErr := c.rotatedRunnerCredential(file)
+	if loadErr != nil {
+		return loadErr
+	}
+	if latest.Credential == file.Credential {
+		return err
+	}
+	latest, loadErr = c.validateRunnerReadCredential(ctx, latest)
+	if loadErr != nil {
+		return loadErr
+	}
+	return request(latest.Credential)
+}
+
+func (c *Client) readRunnerIdentity(ctx context.Context, file runnerauth.File, token string) (runnerauth.Identity, error) {
+	base, err := runnerOrganizationPath(file.Identity.OrganizationID)
+	if err != nil {
+		return runnerauth.Identity{}, err
+	}
+	var identity runnerauth.Identity
+	if err := c.runnerRequest(ctx, token, http.MethodGet, base+"/runners/"+file.Identity.RunnerID, nil, &identity); err != nil {
+		return runnerauth.Identity{}, err
+	}
+	return identity, validateRunnerResponse(file, identity)
 }
 
 func (c *Client) prepareRunnerCredential(ctx context.Context, path string, file runnerauth.File, forceRenew bool) (runnerauth.File, error) {
@@ -498,10 +607,14 @@ func (c *NativeClient) heartbeatMachine(ctx context.Context, machine Machine, ca
 		return c.heartbeatMachine(ctx, machine, capacity, false)
 	}
 
+	var commandErr error
 	if snapshot.GitHubIntake != nil && c.githubBatch != nil {
-		return c.githubBatch(ctx, *snapshot.GitHubIntake)
+		commandErr = c.githubBatch(ctx, *snapshot.GitHubIntake)
 	}
-	return nil
+	if snapshot.RepositoryListRequest != "" {
+		commandErr = errors.Join(commandErr, c.reportRepositoryList(ctx, snapshot.RepositoryListRequest))
+	}
+	return commandErr
 }
 
 func (r *runnerCredentialSource) setRouting(snapshot runnerauth.RoutingSnapshot) {

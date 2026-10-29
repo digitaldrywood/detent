@@ -151,6 +151,6 @@ func TestStatusValues(t *testing.T) {
 		t.Fatal("active and settled must be valid statuses")
 	}
 	if Status("archived").Valid() {
-		t.Fatal("archived is no longer a status (decisions section 14)")
+		t.Fatal("archived is no longer a status")
 	}
 }

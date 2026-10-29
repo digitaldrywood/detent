@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -69,6 +70,10 @@ type GitHubRESTClient interface {
 }
 
 type LandOptions struct {
+	Resolution            *LandingResolution
+	ChangeID              string
+	ReviewDispositions    []tracker.ReviewDisposition
+	ExpectedBaseSHA       string
 	SecurityAuditRequired bool
 	SecurityAudit         func(context.Context, FileDiffs) (*tracker.SecurityAuditReview, error) `json:"-"`
 	Native                bool
@@ -87,6 +92,11 @@ type LandOptions struct {
 	External              *tracker.ChangeExternalReference
 	ExternalHeadSHA       string
 	PublicationPushes     []GitHubPublicationPush
+	// UnresolvedEffect reports a prior publication write of HeadSHA whose
+	// outcome is unknown. Publication repeats it only when the branch holds
+	// HeadSHA, the recorded PR head or nothing.
+	UnresolvedEffect        bool
+	ExpectedPublicationHead string
 	// HeadSHA is the reviewed commit. It must be the worktree branch's head:
 	// a branch that moved past its review is not landed.
 	HeadSHA string
@@ -134,9 +144,11 @@ const (
 // not an infrastructure failure: retrying the same landing gives the same
 // answer until something changes, so the reason is reported on the change.
 type LandRefusal struct {
-	Kind    string
-	Reason  string
-	BaseSHA string
+	ConflictFiles []string
+	Kind          string
+	Reason        string
+	BaseSHA       string
+	TargetBranch  string
 }
 
 func (r *LandRefusal) Error() string {
@@ -363,6 +375,9 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 	if kept, ok := keptLanding(ctx, normalized.Path, head, targetRef); ok {
 		return kept, nil
 	}
+	if delivered, err := deliveredLanding(ctx, normalized.Path, opts, targetHead, target, method); err != nil || delivered.MergeSHA != "" {
+		return delivered, err
+	}
 
 	staging := filepath.Join(l.root, "landing-"+normalized.Key)
 	defer func() {
@@ -401,7 +416,7 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 	var validation gate.CommandResult
 	validationInfo := normalized
 	validationInfo.Path = staging
-	validation, err = l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, mergeSHA)
+	validation, err = l.validateLanding(ctx, validationInfo, issue, opts.ValidationCommand, mergeSHA, targetHead)
 	if err != nil {
 		return LandResult{Rebased: rebased, Gate: validation, BaseBefore: targetHead}, err
 	}
@@ -426,6 +441,30 @@ func (l *LocalGit) LandChange(ctx context.Context, info Info, issue Issue, opts 
 		}
 	}
 	return result, nil
+}
+
+func deliveredLanding(ctx context.Context, path string, opts LandOptions, base, target, method string) (LandResult, error) {
+	merge := ""
+	if _, err := runGitAt(ctx, path, "merge-base", "--is-ancestor", opts.HeadSHA, base); err == nil {
+		merge = opts.HeadSHA
+	} else {
+		var command *CommandError
+		if !errors.As(err, &command) || command.ExitCode != 1 {
+			return LandResult{}, fmt.Errorf("verify delivered head ancestry: %w", err)
+		}
+	}
+	if merge == "" && opts.ChangeID != "" {
+		pattern := "^Change Request " + regexp.QuoteMeta(opts.ChangeID) + ", round [0-9]+, head " + regexp.QuoteMeta(opts.HeadSHA) + "\\.$"
+		output, err := runGitAt(ctx, path, "log", "-1", "--format=%H", "--extended-regexp", "--grep="+pattern, base, "--")
+		if err != nil {
+			return LandResult{}, fmt.Errorf("verify delivered Change trailer: %w", err)
+		}
+		merge = strings.TrimSpace(output)
+	}
+	if merge == "" {
+		return LandResult{}, nil
+	}
+	return LandResult{MergeSHA: merge, BaseRef: target, BaseBefore: base, Method: method}, nil
 }
 
 func (l *LocalGit) VerifyIntegratedChange(ctx context.Context, info Info, issue Issue, opts LandOptions, sourceBase, integratedBase string) (LandResult, error) {
@@ -472,7 +511,11 @@ func (l *LocalGit) VerifyIntegratedChange(ctx context.Context, info Info, issue 
 	if _, err := runGitAt(ctx, normalized.Path, "fetch", "--no-tags", "--no-write-fetch-head", remote, base); err != nil {
 		return LandResult{}, err
 	}
-	for _, ancestry := range [][2]string{{integratedBase, base}, {sourceBase, integratedBase}, {sourceBase, opts.HeadSHA}} {
+	ancestries := [][2]string{{sourceBase, integratedBase}, {sourceBase, opts.HeadSHA}}
+	if integratedBase != opts.HeadSHA {
+		ancestries = append(ancestries, [2]string{integratedBase, base})
+	}
+	for _, ancestry := range ancestries {
 		if _, err := runGitAt(ctx, normalized.Path, "merge-base", "--is-ancestor", ancestry[0], ancestry[1]); err != nil {
 			return LandResult{}, refuse(LandRefusalHeadMoved, "the published source and final base do not identify the integration branch")
 		}
@@ -641,12 +684,12 @@ func classifyLandingPush(err error, target string) error {
 		strings.Contains(output, "not allowed to push"),
 		strings.Contains(output, "permission denied"),
 		strings.Contains(output, "refusing to allow"):
-		return refuse(LandRefusalProtected, "the base branch "+target+" refused the push: "+strings.TrimSpace(commandErrorOutput(err))+". Allow the runner to push to "+target+", or enable GitHub pull request mode for this project.")
+		return fmt.Errorf("%w: %w", &LandRefusal{Kind: LandRefusalProtected, TargetBranch: target, Reason: "the base branch " + target + " refused the push: " + strings.TrimSpace(commandErrorOutput(err)) + ". Allow the runner to push to " + target + ", or enable GitHub pull request mode for this project."}, err)
 	case strings.Contains(output, "fetch first"),
 		strings.Contains(output, "non-fast-forward"),
 		strings.Contains(output, "stale info"),
 		strings.Contains(output, "rejected"):
-		return refuse(LandRefusalBaseMoved, "the base branch "+target+" moved while the change was being landed: "+strings.TrimSpace(commandErrorOutput(err)))
+		return fmt.Errorf("%w: %w", refuse(LandRefusalBaseMoved, "the base branch "+target+" moved while the change was being landed: "+strings.TrimSpace(commandErrorOutput(err))), err)
 	}
 	return fmt.Errorf("git push %s: %w", target, err)
 }
@@ -778,7 +821,7 @@ func forgetStale(path string) bool {
 	return false
 }
 
-func (l *LocalGit) validateLanding(ctx context.Context, info Info, issue Issue, command, head string) (gate.CommandResult, error) {
+func (l *LocalGit) validateLanding(ctx context.Context, info Info, issue Issue, command, head, base string) (gate.CommandResult, error) {
 	if strings.TrimSpace(command) == "" {
 		return gate.CommandResult{}, nil
 	}
@@ -801,6 +844,8 @@ func (l *LocalGit) validateLanding(ctx context.Context, info Info, issue Issue, 
 		return result, err
 	}
 	if result.ExitCode != 0 {
+		reproduction, baseErr := l.RunBaseCommand(ctx, info, validationIssue, base, command)
+		AttributeCommandFailure(&result, base, reproduction, baseErr)
 		return result, newValidationError(ValidationStageLanding, result, fmt.Errorf("exit status %d", result.ExitCode))
 	}
 	return result, nil

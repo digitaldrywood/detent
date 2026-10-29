@@ -21,6 +21,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
@@ -108,6 +109,34 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 				}
 			})
 		}
+		t.Run(grant+"/organization reports", func(t *testing.T) {
+			for _, filter := range []bool{false, true} {
+				args := map[string]any{"scope": "organization", "range": "24h"}
+				if filter {
+					args["projects"] = []string{string(f.project), "prj_ungranted"}
+					args["types"] = []string{"bug"}
+				}
+				response, raw := call(user, operatortool.Reports, args)
+				var report organizationProductivity
+				if err := json.Unmarshal(raw, &report); err != nil || response.Code != http.StatusOK || report.OrganizationID != "org_security" {
+					t.Fatalf("organization response=%s err=%v", response.Body.String(), err)
+				}
+				want := 1
+				if grant == "both" && !filter {
+					want = 2
+				}
+				if grant == "github" && filter {
+					want = 0
+				}
+				if len(report.Projects) != want {
+					t.Fatalf("project count=%d want=%d", len(report.Projects), want)
+				}
+				if grant == "native" && strings.Contains(string(raw), "prj_other") || grant == "github" && strings.Contains(string(raw), string(f.project)) || strings.Contains(string(raw), "prj_ungranted") {
+					t.Fatalf("organization leaked project: %s", raw)
+				}
+				assertProductivitySums(t, report)
+			}
+		})
 		for _, name := range []string{operatortool.AnalyticsDashboard, operatortool.TimeSeries, operatortool.Reports} {
 			t.Run(grant+"/"+name, func(t *testing.T) {
 				response, raw := call(user, name, map[string]any{})
@@ -273,7 +302,7 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 				return f.service.readAnalyticsReport(ctx, credential, operatortool.AnalyticsRequest{ProjectID: string(f.project), Limit: 1}, report.Window)
 			}},
 			{"diagnostics", func(ctx context.Context) (any, error) {
-				return f.service.readHostedDiagnostics(ctx, report)
+				return f.service.readCloudDiagnostics(ctx, credential, report.Window)
 			}},
 			{"reports", func(ctx context.Context) (any, error) {
 				return f.service.readHostedReports(ctx, report)
@@ -292,8 +321,7 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 				if err != nil {
 					t.Fatal(err)
 				}
-				ctx, cancel := context.WithTimeout(authorityContext, 5*time.Second)
-				defer cancel()
+				ctx := testenv.WaitContext(t, authorityContext)
 				var held *sql.Tx
 				holdWriter := func() error {
 					writer, err := f.service.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -511,12 +539,11 @@ VALUES (?,'org_security',?,?,json_object('landed',json_object('version_id',?,'he
 					t.Fatal(err)
 				}
 			}
-			if err := rebuildAnalyticsRollups(t.Context(), tx, nativeScope{organization: "org_security", project: f.project}, f.service.config.now()); err != nil {
-				t.Fatal(err)
-			}
 			if err := tx.Commit(); err != nil {
 				t.Fatal(err)
 			}
+			projectTestChangeColumns(t, f.service)
+			rebuildTestAnalyticsRollups(t, f.service, nativeScope{organization: "org_security", project: f.project})
 			identity := operatortool.Identity{PrincipalID: user.identity.Subject, OrganizationID: "org_security", CredentialID: "test"}
 			ctx := operatortool.WithConnection(t.Context(), operatortool.Connection{Identity: identity, Resolve: func(context.Context) (operatortool.Authority, error) {
 				return operatortool.Authority{Identity: identity, Check: func(context.Context, operatortool.Requirement) error { return nil }}, nil
@@ -717,11 +744,11 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime',json(?)) WHERE id=?", string(raw), start.Data.AttemptID); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,data_json=json_set(data_json,'$.runtime',json(?)) WHERE id=?", string(raw), start.Data.AttemptID); err != nil {
 				t.Fatal(err)
 			}
 			if test.malformedPhases {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime.phases',?) WHERE id=?", "malformed", start.Data.AttemptID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,data_json=json_set(data_json,'$.runtime.phases',?) WHERE id=?", "malformed", start.Data.AttemptID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -770,7 +797,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime',json(?)) WHERE id=?", string(raw), start.Data.AttemptID); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET report_projection_version=NULL,data_json=json_set(data_json,'$.runtime',json(?)) WHERE id=?", string(raw), start.Data.AttemptID); err != nil {
 		t.Fatal(err)
 	}
 	tx, err = f.service.database.db.BeginTx(t.Context(), nil)

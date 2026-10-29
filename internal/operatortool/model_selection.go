@@ -66,7 +66,7 @@ func ModelSelectionCatalog() []Definition {
 		if err != nil {
 			panic(err)
 		}
-		definitions = append(definitions, Definition{Name: name, Description: "Read or update Cloud model selection through the shared application owner. Organization operations require a hosted session; project operations require current native project grants. Updates require expected_revision and request_id; null project selection restores organization inheritance.", InputSchema: raw, Annotations: Annotations{ReadOnly: read, Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}})
+		definitions = append(definitions, Definition{Name: name, Description: "Read or update Hub model selection through the shared application owner. Organization operations require a hosted session or self-hosted organization-wide operator authority; project operations require current native project grants. Updates require expected_revision and request_id; null project selection restores organization inheritance.", InputSchema: raw, Annotations: Annotations{ReadOnly: read, Idempotent: true}, Meta: ToolMetadata{Toolset: "projects"}})
 	}
 	return definitions
 }

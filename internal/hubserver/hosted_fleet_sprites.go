@@ -17,10 +17,11 @@ import (
 func (s *Service) hostedFleetSprite(ctx, statusContext context.Context, credential apiCredential, view *hostedFleetRunner, runner runnerauth.Runner, visible map[tracker.ProjectID]bool) error {
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
-	var name, failed string
-	if err := s.database.reader.QueryRowContext(readCtx, `SELECT COALESCE(json_extract(capabilities_json, '$.sprite_name'), ''), COALESCE(json_extract(capabilities_json, '$.sprite_wake_failed_at'), '') FROM machines WHERE id=? AND organization_id=?`, runner.MachineID, runner.OrganizationID).Scan(&name, &failed); err != nil {
+	facts, err := readMachineSpriteFacts(readCtx, s.database.reader, runner.OrganizationID, runner.MachineID)
+	if err != nil {
 		return err
 	}
+	name, failed := spriteFactValue(facts.Name), spriteFactValue(facts.WakeFailedAt)
 	if name == "" || name != runner.Hostname || !validSpritesSlug(name) {
 		return nil
 	}

@@ -97,9 +97,10 @@ type runtimeGitHubTokenState struct {
 }
 
 type runtimeDeps struct {
-	lookupEnv    func(string) string
-	ghAuthToken  func(context.Context) (string, error)
-	loadWorkflow func(string) (workflowconfig.Workflow, error)
+	lookupEnv       func(string) string
+	ghAuthToken     func(context.Context) (string, error)
+	waitGitHubToken func(context.Context, time.Duration) error
+	loadWorkflow    func(string) (workflowconfig.Workflow, error)
 }
 
 type runtimeCommandContextFactory func(context.Context, time.Duration) (context.Context, context.CancelFunc)
@@ -179,16 +180,16 @@ func resolveRuntimeSettings(ctx context.Context, input runtimeInput, deps runtim
 	settings.Port = port
 
 	tokenConfig := input.Config
-	if input.DeferProjectValidation && tokenConfig != nil {
-		copy := *tokenConfig
-		copy.Projects = nil
-		if githubTokenSentinel(copy.GitHubToken) {
-			copy.GitHubToken = ""
+	if input.DeferProjectValidation {
+		deps.waitGitHubToken = nil
+		if tokenConfig != nil {
+			copy := *tokenConfig
+			copy.Projects = nil
+			tokenConfig = &copy
 		}
-		tokenConfig = &copy
 	}
 	token, warnings, err := resolveRuntimeGitHubToken(ctx, tokenConfig, deps)
-	if err != nil {
+	if err != nil && (!input.DeferProjectValidation || !errors.Is(err, ErrGitHubAuth)) {
 		return RuntimeSettings{}, err
 	}
 	settings.GitHubToken = token
@@ -349,7 +350,16 @@ func resolveRuntimeGitHubToken(ctx context.Context, cfg *globalconfig.Config, de
 
 func resolveConfiguredGitHubToken(ctx context.Context, token string, deps runtimeDeps) (RuntimeSecret, error) {
 	if githubTokenSentinel(token) {
-		resolved, err := deps.ghAuthToken(ctx)
+		if err := ctx.Err(); err != nil {
+			return RuntimeSecret{}, err
+		}
+		var resolved string
+		var err error
+		if deps.waitGitHubToken == nil {
+			resolved, err = deps.ghAuthToken(ctx)
+		} else {
+			resolved, err = retryBootGitHubToken(ctx, deps.ghAuthToken, deps.waitGitHubToken)
+		}
 		if ctx.Err() != nil {
 			return RuntimeSecret{}, ctx.Err()
 		}
@@ -375,7 +385,7 @@ func trackerGitHubToken(ctx context.Context, cfg *globalconfig.Config, deps runt
 	requiresRuntimeToken := false
 	for _, project := range cfg.Projects {
 		workflow, err := loadRuntimeProjectWorkflow(ctx, project, deps)
-		if err != nil || !trackerUsesGitHubToken(workflow.Config.Tracker.Kind) {
+		if err != nil || !workflowUsesGitHubToken(workflow.Config) {
 			continue
 		}
 		if trackerHasGitHubAppCredentials(workflow.Config.Tracker, deps.lookupEnv) {
@@ -392,8 +402,12 @@ func trackerGitHubToken(ctx context.Context, cfg *globalconfig.Config, deps runt
 	return RuntimeSecret{}, requiresRuntimeToken
 }
 
+func workflowUsesGitHubToken(workflow workflowconfig.Config) bool {
+	return trackerUsesGitHubToken(workflow.Tracker.Kind) || workflow.Release.Enabled
+}
+
 func trackerUsesGitHubToken(kind string) bool {
-	return kind == workflowconfig.TrackerGitHub || kind == workflowconfig.TrackerGitHubLocal
+	return kind == workflowconfig.TrackerGitHub
 }
 
 func loadRuntimeProjectWorkflow(ctx context.Context, project globalconfig.Project, deps runtimeDeps) (workflowconfig.Workflow, error) {
@@ -584,10 +598,7 @@ func runtimeDepsFromOptions(opts options) runtimeDeps {
 // Doctor, reloads, and other one-shot callers retain bounded command execution.
 func bootRuntimeDeps(opts options) runtimeDeps {
 	deps := runtimeDepsFromOptions(opts)
-	resolve := deps.ghAuthToken
-	deps.ghAuthToken = func(ctx context.Context) (string, error) {
-		return retryBootGitHubToken(ctx, resolve, waitBootGitHubToken)
-	}
+	deps.waitGitHubToken = waitBootGitHubToken
 	return deps
 }
 

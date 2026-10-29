@@ -68,19 +68,20 @@ func TestWorkspacePreparationRetriesIssueWithoutPausingProject(t *testing.T) {
 			tracker := &terminalRetryConnector{issues: map[string]connector.Issue{issue.ID: cloneIssue(issue)}}
 			attempts := &terminalRetryWorkAttemptStore{}
 			cfg := normalizeConfig(Config{
-				ActiveStates:   []string{"Todo", "In Progress", "Rework"},
-				ObservedStates: []string{"Blocked"},
-				TerminalStates: []string{"Done"},
+				FailureRetryBaseDelay: time.Second,
+				MaxRetryBackoff:       time.Minute,
+				ActiveStates:          []string{"Todo", "In Progress", "Rework"},
+				ObservedStates:        []string{"Blocked"},
+				TerminalStates:        []string{"Done"},
 				FailureBreaker: FailureBreakerConfig{
-					SameClassLimit: repeatedFailureThreshold,
+					SameClassLimit: 5,
 					Window:         time.Hour,
 					Cooldown:       time.Hour,
 				},
 			})
-			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts}
+			scheduling := &hubSchedulingSource{}
+			orch := &Orchestrator{cfg: cfg, connector: tracker, workAttempts: attempts, scheduling: scheduling}
 			state := newState(cfg)
-			state.InstantFailures[issue.ID] = InstantFailure{Issue: issue, Count: 2}
-			state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: 2}
 			base := time.Date(2026, 8, 18, 20, 0, 0, 0, time.UTC)
 
 			for attempt := 1; attempt <= retryLimit; attempt++ {
@@ -113,11 +114,16 @@ func TestWorkspacePreparationRetriesIssueWithoutPausingProject(t *testing.T) {
 					Result:       runpkg.RunResult{TurnStarted: tt.postTurn},
 				})
 
-				if state.InstantFailures[issue.ID].Count != 2 || state.RepeatedFailures[issue.ID].Count != 2 {
-					t.Fatalf("attempt %d failure breakers = instant %#v repeated %#v, want preserved counts", attempt, state.InstantFailures[issue.ID], state.RepeatedFailures[issue.ID])
-				}
 				if _, retried := state.Retry[issue.ID]; !retried || len(state.Blocked) != 0 || len(tracker.comments) != 0 {
 					t.Fatal("workspace failure did not retry the issue in its lane")
+				}
+				if scheduling.releases != attempt {
+					t.Fatalf("releases = %d, want %d", scheduling.releases, attempt)
+				}
+				maximum := time.Second << attempt
+				delay := state.Retry[issue.ID].DueAt.Sub(completedAt)
+				if delay < maximum-maximum/8 || delay > maximum {
+					t.Fatalf("workspace retry delay = %s, want [%s, %s]", delay, maximum-maximum/8, maximum)
 				}
 				if len(state.ForgeUnavailable) != 0 {
 					t.Fatalf("workspace failure started forge condition or canary: %#v", state.ForgeUnavailable)
@@ -229,7 +235,8 @@ func TestWorkspaceDiskExhaustionRetriesWithoutProjectBreaker(t *testing.T) {
 		if state.FailureBreaker.Active() || len(state.FailureBreaker.Failures[workAttemptErrorWorkspace]) != 0 {
 			t.Fatalf("attempt %d charged disk exhaustion to project breaker: %#v", attempt, state.FailureBreaker)
 		}
-		if retry, ok := state.Retry[issue.ID]; !ok || !retry.DueAt.Equal(at.Add(orch.retryDelay(attempt+1, false))) || retry.Error != telemetry.WorkspaceDiskExhaustionMessage {
+		maximum := 10 * time.Second << attempt
+		if retry, ok := state.Retry[issue.ID]; !ok || retry.DueAt.Before(at.Add(maximum-maximum/8)) || retry.DueAt.After(at.Add(maximum)) || retry.Error != telemetry.WorkspaceDiskExhaustionMessage {
 			t.Fatalf("attempt %d did not use infrastructure backoff: %#v", attempt, state.Retry)
 		}
 		if len(state.ForgeUnavailable) != 0 || len(state.Blocked) != 0 || len(tracker.comments) != 0 {

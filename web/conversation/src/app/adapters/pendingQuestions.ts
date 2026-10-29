@@ -79,7 +79,7 @@ export interface PendingQuestionState {
   readonly retry: (() => void) | null;
 }
 
-/** The one sentence the composer shows about an answer's delivery (§5, §10.3). */
+/** The one sentence the composer shows about an answer's delivery. */
 export function receiptSentence(
   question: Question,
   control: PendingControl | undefined,

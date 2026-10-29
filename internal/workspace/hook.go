@@ -20,11 +20,11 @@ func runHookCommand(ctx context.Context, command string, hooks Hooks, info Info,
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
-	if err := cmd.Start(); err != nil {
+	if err := procgroup.Start(cmd); err != nil {
 		return output.Bytes(), errors.Join(ctx.Err(), err)
 	}
 	groupID := procgroup.GroupID(cmd)
-	err := cmd.Wait()
+	err := procgroup.Wait(cmd)
 	if errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil {
 		err = nil
 	}

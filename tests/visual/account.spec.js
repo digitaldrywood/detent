@@ -8,8 +8,8 @@
 // reach fails the test rather than passing on a class name.
 //
 // The React routes these tests exercise are served by the hub for every
-// non-API path (decisions.md §12, "Serving"), and they read the JSON endpoints
-// of §12. The public login uses the client shell; `/organization` remains
+// non-API path, and they read the JSON endpoints
+// of the hosted JSON API. The public login uses the client shell; `/organization` remains
 // a server-rendered page.
 const { test, expect } = require("@playwright/test");
 const AxeBuilder = require("@axe-core/playwright").default;
@@ -17,21 +17,57 @@ const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
 let hub;
 
+const integrationFixture = {
+  profile: "native",
+  revision: "1",
+  intake: "disabled",
+  projection: "summary",
+  repository_enabled: true,
+  archive_completed_after_days: null,
+  archive_cancelled_after_days: null,
+};
+
+for (const viewport of [
+  { name: "desktop-light", width: 1440, height: 900, theme: "light" },
+  { name: "desktop-dark", width: 1440, height: 900, theme: "dark" },
+  { name: "phone-light", width: 390, height: 844, theme: "light" },
+  { name: "phone-dark", width: 390, height: 844, theme: "dark" },
+]) {
+  test(`repository picker Connect GitHub no-match ${viewport.name}`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await page.route("**/integration", async (route) => {
+      await route.fulfill({ json: { ...integrationFixture, github_transport_available: true, checkout_repository: "", repository: "" } });
+    });
+    await page.route("**/api/cloud/account/github/repositories", (route) => route.fulfill({ json: { available: true, connected: false, reconnect: false, repositories: [] } }));
+    await openAs(page, "owner", `/projects/${hub.fixture.project_id}/setup`);
+    await page.evaluate((theme) => {
+      localStorage.setItem("detent.theme", theme);
+      document.documentElement.classList.toggle("dark", theme === "dark");
+    }, viewport.theme);
+    await page.getByRole("button", { name: /Repository action required/ }).click();
+    await page.getByRole("combobox", { name: "Search or type owner/name" }).fill("example-org/unlisted-project");
+    await expect(page.getByRole("button", { name: /Connect GitHub to list more repositories/ })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath(`connect-github-${viewport.name}.png`), animations: "disabled", fullPage: true });
+  });
+}
+
 test.beforeEach(async () => {
   test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
   hub = await startHostedHub("account", { env: { DETENT_HOSTED_BROWSER_UNSIGNED_MEMBER: "1" } });
 });
 
-test.afterEach(async () => {
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "wait" });
+  await page.context().close();
   await hub?.stop();
   hub = undefined;
 });
 
 /** Collects everything the page logs as an error, for a per-test assertion. */
-function watchConsole(page) {
+function watchConsole(page, expected = () => false) {
   const errors = [];
   page.on("console", (message) => {
-    if (message.type() === "error") errors.push(message.text());
+    if (message.type() === "error" && !expected(message)) errors.push(message.text());
   });
   page.on("pageerror", (error) => errors.push(String(error)));
   return errors;
@@ -161,7 +197,7 @@ test("the organization page lists the members and gates the controls by role", a
   await page.getByRole("button", { name: "Remove", exact: true }).last().click();
   await expect(unsigned).toHaveCount(0);
 
-  // A viewer sees the same data and none of the controls (decisions.md §10.11).
+  // A viewer sees the same data and none of the controls.
   await openAs(page, "viewer", "/settings/organization/members");
   await expect(page.getByRole("table")).toBeVisible();
   await expect(page.getByRole("button", { name: "Remove" })).toHaveCount(0);
@@ -186,13 +222,14 @@ test("sending invitations resets the form and shows the newest invitation with i
     const created = await response.json();
     expect(created.email).toBe(email);
     expect(created.expires_at).toBeTruthy();
+    const expiry = await page.evaluate((value) => new Date(value).toLocaleDateString(), created.expires_at);
     await expect(page.getByRole("dialog", { name: "Invite members", exact: true })).toHaveCount(0);
     const row = invitations.getByRole("group", { name: /^Invitation to/ }).first();
     await expect(row).toBeVisible();
     await expect(row).toContainText(email);
-    await expect(row).toContainText(`Invited as Viewer. Expires ${new Date(created.expires_at).toLocaleDateString()}.`);
+    await expect(row).toContainText(`Invited as Viewer. Expires ${expiry}.`);
     await page.reload();
-    await expect(invitations.getByRole("group", { name: /^Invitation to/ }).first()).toContainText(`Expires ${new Date(created.expires_at).toLocaleDateString()}.`);
+    await expect(invitations.getByRole("group", { name: /^Invitation to/ }).first()).toContainText(`Expires ${expiry}.`);
   }
 });
 
@@ -220,19 +257,23 @@ test("removing the last owner is refused by the hub and said in the page", async
 });
 
 test("the settings navigation is the sidebar, not a second column", async ({ page }) => {
-  const errors = watchConsole(page);
-  // `/settings` redirects to the default section (§17.3).
+  // The fixture's sign-in provider issues no WorkOS widget tokens, so the
+  // account widgets on General get `503` from `widget-token` and render their
+  // unavailable state. That refusal is expected here and nothing else is.
+  const errors = watchConsole(page, (message) => /503 \(Service Unavailable\)/.test(message.text()) && /\/widget-token$/.test(message.location().url ?? ""));
+  // `/settings` redirects to the default section.
   await openAs(page, "owner", "/settings");
 
   await expectOneHeadingOne(page, "Settings");
   await expect(page.getByLabel("Settings breadcrumb")).toContainText("General");
+  await expect(page.getByText("Profile and security settings are unavailable right now.", { exact: true })).toBeVisible();
 
   const sidebar = page.locator("[data-app-sidebar]");
   await expect(sidebar.getByRole("button", { name: "General" })).toBeVisible();
   await expect(sidebar.getByRole("button", { name: "Organization", exact: true })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Settings", exact: true })).toHaveCount(0);
 
-  // §17.2: one brand row. It used to be drawn twice on a settings route — once
+  // One brand row. It used to be drawn twice on a settings route — once
   // by the layout's titlebar band and once by the sidebar the stub re-rendered.
   await expect(page.getByLabel("Go to Detent Cloud")).toHaveCount(1);
 
@@ -244,7 +285,8 @@ test("the settings navigation is the sidebar, not a second column", async ({ pag
 
   await sidebar.getByRole("button", { name: "Projects" }).click();
   await expect(page).toHaveURL(/\/settings\/projects$/);
-  await expect(page.getByRole("heading", { name: "Projects", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Projects\b/ })).toBeVisible();
+  await expect(page.getByRole("table", { name: "Projects in dispatch order", exact: true })).toBeVisible();
 
   await expect(sidebar.getByRole("button", { name: "Appearance" })).toHaveAttribute(
     "aria-disabled",
@@ -257,7 +299,7 @@ test("the settings navigation is the sidebar, not a second column", async ({ pag
   expect(errors, "console errors on /settings").toEqual([]);
 
   await openAs(page, "viewer", "/settings");
-  // Plan and billing are owner or admin only (§12, "Plan, billing, support").
+  // Plan and billing are owner or admin only.
   await expect(page.getByRole("button", { name: "Billing" })).toHaveCount(0);
   await expect(page.getByLabel("Go to Detent Cloud")).toHaveCount(1);
   await expectNoSeriousAxeViolations(page, "/settings as viewer");
@@ -267,11 +309,10 @@ test("project settings show the integration and refuse to edit it for a viewer",
   page,
 }) => {
   const errors = watchConsole(page);
-  // §17.3: this path redirects into the Integrations section of settings.
-  await openAs(page, "owner", `/projects/${hub.fixture.project_id}/settings`);
+  await openAs(page, "owner", `/settings/projects/${hub.fixture.project_id}/repository`);
 
-  await expect(page).toHaveURL(/\/settings\/integrations\?project=/);
-  await expectOneHeadingOne(page, "Settings");
+  await expect(page).toHaveURL(/\/settings\/projects\/[^/]+\/repository$/);
+  await expectOneHeadingOne(page, /settings$/);
   await expect(page.getByLabel("Go to Detent Cloud")).toHaveCount(1);
   await expect(page.getByText(/Hub GitHub integration is unavailable/)).toBeVisible();
   await expect(page.getByRole("switch", { name: "Pull requests" })).toHaveCount(0);
@@ -288,7 +329,7 @@ test("project settings show the integration and refuse to edit it for a viewer",
     "console errors on project settings",
   ).toEqual([]);
 
-  await openAs(page, "viewer", `/projects/${hub.fixture.project_id}/settings`);
+  await openAs(page, "viewer", `/settings/projects/${hub.fixture.project_id}/repository`);
   await expect(page.getByText(/Hub GitHub integration is unavailable/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Associate runner checkout" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Save changes" })).toHaveCount(0);
@@ -339,24 +380,23 @@ test("pending invitations can be resent and revoked from their row", async ({ pa
 });
 
 for (const state of [
-  { name: "installed", installed: true, profile: "native", repository: "acme/orders", transport: true, visible: true },
-  { name: "not installed", installed: false, profile: "native", repository: "acme/orders", transport: true, visible: true },
-  { name: "long repository", installed: true, profile: "native", repository: "acme/" + "long-repository-name-".repeat(5), transport: true, visible: true },
-  { name: "compatibility project", installed: true, profile: "github_compatible", repository: "acme/orders", transport: true, visible: false },
+  { name: "installed", installed: true, profile: "native", repository: "example-org/example-project", transport: true, visible: true },
+  { name: "not installed", installed: false, profile: "native", repository: "example-org/example-project", transport: true, visible: true },
+  { name: "long repository", installed: true, profile: "native", repository: "example-org/" + "long-repository-name-".repeat(5), transport: true, visible: true },
+  { name: "compatibility project", installed: true, profile: "github_compatible", repository: "example-org/example-project", transport: true, visible: false },
   { name: "unassociated repository", installed: false, profile: "native", repository: "", transport: true, visible: false },
-  { name: "unavailable transport", installed: false, profile: "native", repository: "acme/orders", transport: false, visible: false },
+  { name: "unavailable transport", installed: false, profile: "native", repository: "example-org/example-project", transport: false, visible: false },
 ].flatMap((state) => state.visible ? [1440, 390].flatMap((width) => ["light", "dark"].map((theme) => ({ ...state, width, theme }))) : [{ ...state, width: 1440, theme: "light" }])) {
   test(`setup and integrations GitHub App installation: ${state.name} ${state.width}px ${state.theme}`, async ({ page }) => {
     await page.setViewportSize({ width: state.width, height: 1100 });
+    await page.route("**/api/cloud/account/github/repositories", (route) => route.fulfill({ json: { available: state.transport, connected: false, reconnect: false, repositories: [] } }));
 
     const integrationURL = "**/projects/*/integration";
     let integrationReady = Promise.resolve();
     await page.route(integrationURL, async (route) => {
-      const response = await route.fetch();
-      const integration = await response.json();
       await integrationReady;
-      await route.fulfill({ response, json: {
-        ...integration,
+      await route.fulfill({ json: {
+        ...integrationFixture,
         profile: state.profile,
         intake: state.profile === "native" && state.repository ? "automatic" : "disabled",
         manual_import_enabled: false,
@@ -376,7 +416,8 @@ for (const state of [
     await (await setupIntegration).finished();
     await page.getByRole("list", { name: "Setup steps" }).getByRole("button", { name: /^.*Repository (ready|action required)$/ }).click();
     if (state.repository) {
-      await expect(page.getByText(`Verified runner checkout: ${state.repository}`, { exact: true })).toBeVisible();
+      await expect(page.getByRole("combobox", { name: "Search or type owner/name" })).toHaveValue(state.repository);
+      await expect(page.getByRole("combobox", { name: "Search or type owner/name" })).toBeDisabled();
     }
     const install = page.getByRole("link", { name: "Install the Detent Cloud GitHub App" });
     if (state.visible) {
@@ -392,44 +433,44 @@ for (const state of [
     let releaseIntegration;
     integrationReady = new Promise((resolve) => { releaseIntegration = resolve; });
     try {
-      await page.goto(new URL(`/settings/integrations?project=${hub.fixture.project_id}`, hub.fixture.url).toString(), { waitUntil: "domcontentloaded" });
-      await expect(page.getByRole("heading", { name: /settings$/, level: 2 })).toBeVisible();
-      await expect(page.getByRole("status").filter({ hasText: "Loading the project settings." })).toBeVisible();
+      await page.goto(new URL(`/settings/projects/${hub.fixture.project_id}/repository`, hub.fixture.url).toString(), { waitUntil: "domcontentloaded" });
+      await expect(page.getByRole("heading", { name: /settings$/, level: 1 })).toBeVisible();
+      await expect(page.getByRole("status", { name: "Loading project settings" })).toBeVisible();
     } finally {
       releaseIntegration();
     }
-    await expect(page.getByRole("heading", { name: "Repository", level: 2, exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Repository & GitHub", level: 2, exact: true })).toBeVisible();
     await page.evaluate((theme) => {
       document.documentElement.classList.toggle("dark", theme === "dark");
       document.documentElement.dataset.theme = theme;
     }, state.theme);
     if (state.visible) {
       await expect(page.getByRole("heading", { name: "GitHub App", exact: true })).toBeVisible();
-      await expect(page.getByText(state.installed ? `Installed on ${state.repository}.` : "Not installed. New issues will not reach this project until it is.", { exact: true })).toBeVisible();
-      const link = page.getByRole("link", { name: state.installed ? "Manage installation" : "Install the Detent Cloud GitHub App" });
+      await expect(page.getByText(state.installed ? "Installed" : "Not installed · new issues will not arrive", { exact: true })).toBeVisible();
+      const link = page.getByRole("link", { name: state.installed ? "Manage installation" : "Install GitHub App", exact: true });
       await expect(link).toHaveAttribute("href", "https://github.com/apps/detent-cloud/installations/new");
       await expect(link).toHaveAttribute("target", "_blank");
       await expect(link).toHaveAttribute("rel", "noopener noreferrer");
-      await expect(install).toHaveCount(state.installed ? 0 : 1);
+      await expect(page.getByRole("link", { name: "Install GitHub App", exact: true })).toHaveCount(state.installed ? 0 : 1);
       const intake = page.locator('[data-slot="settings-row"]').filter({ has: page.getByRole("heading", { name: "New issues", exact: true }) });
       await expect(intake).toContainText("Automatic");
-      await expect(intake).toContainText(state.installed ? `Every issue opened on ${state.repository} enters Triage.` : "Waiting for the GitHub App.");
+      await expect(intake).toContainText(state.installed ? "Enter Triage" : "Waiting for the GitHub App");
       await expect(page.getByRole("combobox", { name: "Intake", exact: true })).toHaveCount(0);
-      await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeDisabled();
+      await expect(page.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
       await expect(page.getByRole("switch", { name: "Existing issues", exact: true })).not.toBeChecked();
       const invalidSelects = await page.locator("select").evaluateAll((selects) => selects.filter((select) =>
         !Array.from(select.options).some((option) => option.value === select.value)).length);
       expect(invalidSelects).toBe(0);
       await link.focus();
       await page.keyboard.press("Tab");
-      await expect(page.getByRole("button", { name: "About New issues", exact: true })).toBeFocused();
+      await expect(page.getByRole("link", { name: "Import issues", exact: true })).toBeFocused();
       const importSwitch = page.getByRole("switch", { name: "Existing issues", exact: true });
       await importSwitch.focus();
       await page.keyboard.press("Space");
       await expect(importSwitch).toBeChecked();
-      await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeEnabled();
+      await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
       await page.keyboard.press("Space");
-      await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeDisabled();
+      await expect(page.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);
       const headings = await page.getByRole("heading").allTextContents();
       const setupRows = headings.filter((title) => ["GitHub App", "New issues", "Existing issues", "Pull requests", "Work summaries", "Authority"].includes(title));
       expect(setupRows).toEqual(["GitHub App", "New issues", "Existing issues", "Pull requests", "Work summaries", "Authority"]);
@@ -440,53 +481,93 @@ for (const state of [
       }
       await page.screenshot({ path: require("node:path").join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, `integrations-${state.name.replaceAll(" ", "-")}-${state.width}-${state.theme}.png`), fullPage: true });
       await page.getByRole("switch", { name: "Pull requests", exact: true }).click();
-      await expect(page.getByRole("button", { name: "Save changes", exact: true })).toBeEnabled();
+      await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
       await expectNoSeriousAxeViolations(page, `Integrations GitHub App ${state.name}`);
       if (state.width === 390) {
+        // A project's Models tab shows only a summary until its owner edits an
+        // override, so the read-only wide tables live on the organization
+        // Models page, read by a viewer.
+        const viewerContext = await page.context().browser().newContext();
+        const models = await viewerContext.newPage();
+        await models.setViewportSize({ width: state.width, height: 1100 });
+        await models.goto(hub.fixture.accounts.viewer, { waitUntil: "domcontentloaded" });
+        await models.goto(new URL("/settings/organization/models", hub.fixture.url).toString(), { waitUntil: "domcontentloaded" });
         for (const name of ["Complexity levels", "Stages"]) {
-          const table = page.getByRole("table", { name, exact: true });
+          const table = models.getByRole("table", { name, exact: true });
           await table.focus();
           await expect(table).toBeFocused();
           const left = await table.evaluate((element) => element.parentElement.scrollLeft);
-          await page.keyboard.press("ArrowRight");
+          await models.keyboard.press("ArrowRight");
           await expect.poll(() => table.evaluate((element) => element.parentElement.scrollLeft)).toBeGreaterThan(left);
         }
+        await viewerContext.close();
       }
     } else {
-      await expect(page.getByRole("heading", { name: "GitHub App", exact: true })).toHaveCount(0);
+      await expect(page.getByRole("heading", { name: "GitHub App", exact: true })).toBeVisible();
+      if (state.profile === "github_compatible") {
+        await expect(page.getByRole("link", { name: "Manage installation", exact: true })).toBeVisible();
+        await expect(page.getByRole("switch", { name: "Work summaries", exact: true })).toBeDisabled();
+      } else {
+        await expect(page.getByText(state.transport ? "Associate a runner checkout to configure repository integration." : "Hub GitHub integration is unavailable; PR landing uses the runner’s repository configuration.", { exact: true })).toBeVisible();
+        await expect(page.getByRole("switch", { name: "Pull requests", exact: true })).toHaveCount(0);
+      }
       await expect(install).toHaveCount(0);
       await expect(page.getByText(/Detent Cloud is (not )?installed on/)).toHaveCount(0);
     }
   });
 }
 
-test("the first-run wizard puts repository binding before the four Hub onboarding steps", async ({ page }) => {
+test("the first-run wizard orders runner, repository, checkout and run files", async ({ page }) => {
   const errors = watchConsole(page);
   await openAs(page, "owner", `/projects/${hub.fixture.project_id}/setup`);
 
   const steps = page.getByRole("list", { name: "Setup steps" }).getByRole("listitem");
-  await expect(steps).toHaveCount(5);
-  await expect(steps.first()).toContainText("Repository");
+  await expect(steps).toHaveCount(4);
+  await expect(steps.first()).toContainText("Runner");
   // Exactly one step is the current one, and it is reachable from the keyboard.
-  await expect(page.locator('[aria-current="step"]')).toHaveCount(1);
-  expect(await tabTo(page, "Skip for now")).toBe(true);
+  await expect(steps.locator('[aria-current="step"]')).toHaveCount(1);
+  expect(await tabTo(page, "Copy the install command")).toBe(true);
   await expectNoSeriousAxeViolations(page, "/projects/:project/setup");
   expect(errors, "console errors on the wizard").toEqual([]);
 });
 
 for (const viewport of [
-  { name: "desktop", width: 1440, height: 900 },
-  { name: "phone", width: 390, height: 844 },
+  { name: "desktop-light", width: 1440, height: 900, theme: "light" },
+  { name: "desktop-dark", width: 1440, height: 900, theme: "dark" },
+  { name: "phone-light", width: 390, height: 844, theme: "light" },
+  { name: "phone-dark", width: 390, height: 844, theme: "dark" },
 ]) {
-  test(`the setup wizard fits a ${viewport.name} and its choices show what is selected`, async ({ page }) => {
+  test(`the setup wizard fits a ${viewport.name} and its choices show what is selected`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     const errors = watchConsole(page);
     await openAs(page, "owner", `/projects/${hub.fixture.project_id}/setup`);
 
+    await page.evaluate((theme) => {
+      localStorage.setItem("detent.theme", theme);
+      document.documentElement.classList.toggle("dark", theme === "dark");
+    }, viewport.theme);
+    const context = page.getByRole("region", { name: "Project setup context" });
+    const bootstrap = await page.evaluate(async () => (await fetch("/app/bootstrap")).json());
+    const project = bootstrap.projects.find((entry) => entry.id === hub.fixture.project_id);
+    await expect(context.getByText(`Setting up a project in ${bootstrap.organization.name}`, { exact: true })).toBeVisible();
+    await expect(context.getByText(project.name, { exact: true })).toBeVisible();
+    await expect(page).toHaveTitle(`${project.name} setup · Detent`);
+    const steps = page.getByRole("list", { name: "Setup steps" });
+    for (const label of ["Runner", "Repository", "Checkout", "Run files"]) {
+      await expect(steps.getByText(label, { exact: true })).toBeVisible();
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+    expect(await steps.evaluate((element) => element.scrollWidth - element.clientWidth)).toBeLessThanOrEqual(0);
+    await page.screenshot({ path: testInfo.outputPath(`setup-context-${viewport.name}.png`), animations: "disabled" });
+    await context.getByRole("button", { name: "Switch project" }).click();
+    await expect(page.getByRole("combobox", { name: "Search projects" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    if (viewport.width === 390) await page.keyboard.press("Escape");
+
     const tabs = page.getByRole("list", { name: "Setup steps" }).getByRole("button");
-    await expect(tabs).toHaveCount(5);
-    await page.getByRole("list", { name: "Setup steps" }).getByRole("button", { name: /Artifact history/ }).click();
-    await expect(page.getByRole("heading", { level: 1, name: "Artifact history" })).toBeVisible();
+    await expect(tabs).toHaveCount(4);
+    await page.getByRole("list", { name: "Setup steps" }).getByRole("button", { name: /Run files/ }).click();
+    await expect(page.getByRole("heading", { level: 1, name: "Where should run files go?" })).toBeVisible();
 
     // Every tab and the whole step fit inside the viewport: nothing is
     // clipped at either edge.
@@ -498,12 +579,12 @@ for (const viewport of [
     }
 
     // Clicking anywhere on a card chooses it, and the choice is visible.
-    const local = page.getByRole("radio", { name: "Your runner (local history)" });
+    const local = page.getByRole("radio", { name: /^Keep them on / });
     const selectedChoice = page.locator("[data-checked]").filter({ has: page.getByRole("radio") });
-    await page.getByText("Your runner (local history)", { exact: true }).click();
+    await page.getByText(/^Keep them on /).click();
     await expect(local).toBeChecked();
     await expect(selectedChoice).toHaveCount(1);
-    await expect(selectedChoice).toContainText("Your runner (local history)");
+    await expect(selectedChoice).toContainText("Keep them on ");
     await page.getByText("Your bucket and gateway", { exact: true }).click();
     await expect(page.getByRole("radio", { name: "Your bucket and gateway" })).toBeChecked();
     await expect(local).not.toBeChecked();
@@ -511,8 +592,8 @@ for (const viewport of [
     await expect(selectedChoice).toContainText("Your bucket and gateway");
 
     // Every step stays reachable from the tabs.
-    await page.getByRole("list", { name: "Setup steps" }).getByRole("button", { name: /Execution runner/ }).click();
-    await expect(page.getByRole("heading", { level: 1, name: "Execution runner" })).toBeVisible();
+    await page.getByRole("list", { name: "Setup steps" }).getByRole("button", { name: /Runner (ready|action required)/ }).click();
+    await expect(page.getByRole("heading", { level: 1, name: `Connect a computer to ${project.name}` })).toBeVisible();
     await expectNoSeriousAxeViolations(page, `/projects/:project/setup (${viewport.name})`);
     expect(errors, "console errors on the wizard").toEqual([]);
   });
@@ -522,27 +603,25 @@ test("the fleet page redirects into settings and renders the hosts and providers
   page,
 }) => {
   const errors = watchConsole(page);
-  // §17.3: `/fleet` is the Providers & runners section of settings now. The
+  // `/fleet` is the Runners section of settings now. The
   // spend hero, the chart, the range control and the allowance totals moved to
-  // `/usage` with the numbers they measure (§17.5).
+  // `/usage` with the numbers they measure.
   await openAs(page, "owner", "/fleet");
 
   await expect(page).toHaveURL(/\/settings\/runners$/);
   await expectOneHeadingOne(page, "Settings");
   await expect(page.getByLabel("Go to Detent Cloud")).toHaveCount(1);
   await expect(
-    page.locator("[data-app-sidebar]").getByRole("button", { name: "Providers & runners" }),
+    page.locator("[data-app-sidebar]").getByRole("button", { name: "Runners", exact: true }),
   ).toHaveAttribute("data-active", "true");
-  await expect(page.getByRole("heading", { name: "Providers & runners", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Runners", exact: true })).toBeVisible();
   if (await page.getByTestId("host-card").count()) {
     await expect(page.getByRole("heading", { name: "Runners", exact: true })).toBeVisible();
   } else {
     await expect(page.getByText("No runners yet. Add a runner manually or let Luna help you set one up.")).toBeVisible();
   }
-  if (await page.getByTestId("host-card").count()) {
-    await page.getByText("Fleet capacity and providers", { exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Providers", exact: true })).toBeVisible();
-  }
+  await expect(page.getByRole("heading", { name: "Capacity right now", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Provider accounts" })).toHaveCount(0);
 
   const meters = page.getByRole("progressbar");
   if ((await meters.count()) > 0) {
@@ -551,13 +630,13 @@ test("the fleet page redirects into settings and renders the hosts and providers
   await expectNoSeriousAxeViolations(page, "/settings/runners");
   expect(errors, "console errors on /settings/runners").toEqual([]);
 
-  // A viewer reads the fleet: it has no mutations to gate (§12, "Fleet").
+  // A viewer reads the fleet: it has no mutations to gate.
   await openAs(page, "viewer", "/fleet");
   await expectOneHeadingOne(page, "Settings");
   await expectNoSeriousAxeViolations(page, "/settings/runners as viewer");
 });
 
-test("Providers & runners enrolls a host through setup, a masked command, and live check-in", async ({ page }, testInfo) => {
+test("Runners enrolls a host through setup, a masked command, and live check-in", async ({ page }, testInfo) => {
   const errors = watchConsole(page);
   let connected = false;
   const fleet = require("../../web/conversation/src/contracts/fixtures/account-fleet.json");
@@ -739,7 +818,7 @@ test("the usage page draws the window, the tabs and the breakdown", async ({ pag
   await openAs(page, "owner", "/usage");
 
   await expectOneHeadingOne(page, "Usage");
-  // §17.2: the brand row is drawn once here too. `/usage` is not a settings
+  // The brand row is drawn once here too. `/usage` is not a settings
   // route, so it keeps the conversation sidebar — and that sidebar draws the
   // band itself.
   await expect(page.getByLabel("Go to Detent Cloud")).toHaveCount(1);
@@ -778,7 +857,7 @@ test("the usage page draws the window, the tabs and the breakdown", async ({ pag
   expect(errors, "console errors on /usage").toEqual([]);
 
   // Usage is a report: a viewer reads it, because there is nothing on it to
-  // gate (§17.5).
+  // gate.
   await openAs(page, "viewer", "/usage");
   await expectOneHeadingOne(page, "Usage");
   await expectNoSeriousAxeViolations(page, "/usage as viewer");
@@ -826,7 +905,7 @@ for (const theme of ["dark", "light"]) {
       await expect(page.getByRole("heading", { name: "API keys & MCP", exact: true })).toBeVisible();
       await page.evaluate((mode) => { document.documentElement.dataset.theme = mode; document.documentElement.classList.toggle("dark", mode === "dark"); }, theme);
       await expect(page).toHaveURL(new RegExp(`${mount}/settings/mcp$`));
-      await expect(page.getByRole("heading", { name: "Your personal keys", exact: true })).toBeVisible();
+      await expect(page.getByRole("tab", { name: "Personal 1", exact: true })).toBeVisible();
       await expect(page.getByRole("button", { name: "Create key", exact: true })).toHaveCount(1);
       await expect(page.getByRole("button", { name: "Copy MCP setup prompt", exact: true })).toHaveCount(1);
       await expect(page.getByRole("textbox", { name: "MCP endpoint value" })).toHaveValue("https://cloud.example.test/mcp");
@@ -848,10 +927,9 @@ for (const theme of ["dark", "light"]) {
       await page.keyboard.press("Escape");
       await expect(page.getByRole("button", { name: "Create key", exact: true })).toBeFocused();
       await page.goto(new URL(`${mount}/settings/mcp`, hub.fixture.url).toString());
-      await expect(page.getByRole("heading", { name: "Organization service keys", exact: true })).toBeVisible();
       await page.evaluate((mode) => { document.documentElement.dataset.theme = mode; document.documentElement.classList.toggle("dark", mode === "dark"); }, theme);
-      await expect(page.getByRole("heading", { name: "Member keys", exact: true })).toBeVisible();
-      await expect(page.getByLabel("Personal keys", { exact: true })).toHaveValue("approval");
+      await page.getByRole("tab", { name: /^Member keys 1\b/ }).click();
+      await expect(page.getByRole("combobox", { name: "Personal keys in this organization", exact: true })).toHaveValue("approval");
       await expect(page.getByRole("button", { name: "Approve My cross-org agent", exact: true })).toBeVisible();
       await expect(page.getByRole("button", { name: "Block My cross-org agent for this org", exact: true })).toBeVisible();
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

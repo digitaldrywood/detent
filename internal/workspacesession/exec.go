@@ -8,12 +8,12 @@ import (
 	"time"
 )
 
-// The exec channel (decisions section 18.12). One project action, run once,
+// The exec channel. One project action, run once,
 // non-interactively, on the workspace's worktree.
 //
 // It is deliberately not the terminal channel with a command pre-typed into it.
 // A terminal is a PTY: it is interactive, it is recorded as an asciicast, its
-// lifetime is a person's attention span, and section 18.3 gates it behind the
+// lifetime is a person's attention span, and the terminal contract gates it behind the
 // grant's runners flag and an owner-only isolation choice because it hands the
 // runner account's authority to a person. An action is the opposite of all
 // four: the command is the project's, written down in advance and reviewable,
@@ -46,7 +46,7 @@ func ValidExecRequest(value string) bool { return slices.Contains(ExecRequestTyp
 // Exec channel limits.
 const (
 	// MaxExecOutputBytes is the whole output a run may stream before the runner
-	// truncates it. Section 18.12: the runner stops forwarding past the cap,
+	// truncates it. The project actions contract: the runner stops forwarding past the cap,
 	// appends ExecTruncationMarker once, and lets the process run to completion
 	// so the exit code still means what it says.
 	MaxExecOutputBytes = 1 << 20
@@ -69,7 +69,7 @@ const ExecTruncationMarker = "\n[output truncated at 1 MiB]\n"
 // ExecRun is the body of a run frame.
 //
 // RunID is what joins the stream to the run row the hub already created for
-// this action (POST {nativeBase}/actions/:id/runs). Section 18.12 keeps the two
+// this action (POST {nativeBase}/actions/:id/runs). The project actions contract keeps the two
 // steps separate — the row exists before the first frame, so a run that never
 // reaches a runner is still visible as queued — and the id is what lets the hub
 // record status from frames it is only relaying. ActionID and Command are
@@ -99,7 +99,7 @@ type ExecExited struct {
 	Signal string `json:"signal,omitempty"`
 }
 
-// Run statuses (section 18.12). They are the whole lifecycle of one run:
+// Run statuses. They are the whole lifecycle of one run:
 // queued the moment the row is written, running on the first frame the runner
 // sends, and then exactly one of succeeded or failed.
 const (
@@ -111,7 +111,7 @@ const (
 	RunSucceeded = "succeeded"
 	// RunFailed is a run that exited non-zero, was killed, or whose stream or
 	// lease ended before it exited. A run whose outcome cannot be established
-	// is failed rather than left running: section 5's rule for a control whose
+	// is failed rather than left running: the conversation contract's rule for a control whose
 	// outcome is unknown, applied to a command.
 	RunFailed = "failed"
 )
@@ -135,12 +135,12 @@ func RunStatusForExit(code int) string {
 
 // RunEventType is the project stream event one run transition emits:
 // action_run.running, action_run.succeeded and so on. It rides the project
-// event stream the way workspace.<state> does (section 18.1), so a client
+// event stream the way workspace.<state> does, so a client
 // observes a run it did not start — a run-on-worktree-creation run, or one
 // another tab began — by the same subscription and never by polling.
 func RunEventType(status string) string { return "action_run." + status }
 
-// Action is one stored project action (section 18.12). It is the resource the
+// Action is one stored project action. It is the resource the
 // actions API serves and the record the runner is handed at bind time for the
 // run-on-worktree-creation set.
 type Action struct {
@@ -153,8 +153,8 @@ type Action struct {
 	Icon           string `json:"icon"`
 	PreviewURL     string `json:"preview_url,omitempty"`
 	// OpenPreview and RunOnWorktreeCreation are the dialog's two switches.
-	// OpenPreview is stored and echoed only: the Browser surface is deferred
-	// (section 18.7), so nothing acts on it yet and the client shows the
+	// OpenPreview is stored and echoed only: the Browser surface is deferred,
+	// so nothing acts on it yet and the client shows the
 	// switch disabled with that reason rather than hiding the field.
 	OpenPreview           bool      `json:"open_preview"`
 	RunOnWorktreeCreation bool      `json:"run_on_worktree_creation"`
@@ -164,7 +164,7 @@ type Action struct {
 	UpdatedAt             time.Time `json:"updated_at"`
 }
 
-// Run is one run of one action (section 18.12).
+// Run is one run of one action.
 //
 // ExitCode is a pointer because "exited 0" and "never exited" are different
 // facts and a zero int cannot hold both: a run whose lease was lost has no exit
@@ -255,8 +255,8 @@ func NormalizeActionName(value string) (string, error) {
 // It is deliberately not a validation of what the command does. The command
 // runs through the project's configured shell, so any shell syntax is legal by
 // construction, and a hub that tried to decide which commands are safe would
-// be pretending to a boundary it does not have — the same admission section
-// 18.3 makes about a terminal. What bounds the damage is who may write an
+// be pretending to a boundary it does not have — the same admission the terminal contract
+// makes about a terminal. What bounds the damage is who may write an
 // action (write on the project) and where it runs (the worktree, under the
 // workspace's isolation level), not a pattern match here.
 func NormalizeActionCommand(value string) (string, error) {
@@ -292,7 +292,7 @@ func NormalizeActionKeybinding(value string) (string, error) {
 }
 
 // NormalizeActionPreviewURL trims the optional preview URL and applies its
-// bounds. It is stored and echoed, never fetched: section 18.7 defers the
+// bounds. It is stored and echoed, never fetched: the browser preview rule defers the
 // Browser surface, so nothing on either side opens this URL yet.
 func NormalizeActionPreviewURL(value string) (string, error) {
 	trimmed := strings.TrimSpace(value)

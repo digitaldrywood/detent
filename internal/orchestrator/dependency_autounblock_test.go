@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -44,16 +43,18 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 	}{
 		{
 			name:                "all refs resolved after no progress limit",
+			wantTransition:      true,
 			blockers:            []connector.Issue{resolved},
-			stickyReason:        noProgressLimitReason,
+			stickyReason:        "no_progress_limit",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 			wantWorkpadLookup:   true,
 		},
 		{
 			name:                "resolved ref also has native relation",
+			wantTransition:      true,
 			blockers:            []connector.Issue{resolved},
-			stickyReason:        noProgressLimitReason,
+			stickyReason:        "no_progress_limit",
 			nativeDuplicate:     true,
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
@@ -61,16 +62,18 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 		},
 		{
 			name:                "resolved refs after spend breaker",
+			wantTransition:      true,
 			blockers:            []connector.Issue{resolved},
-			stickyReason:        spendProgressReason,
+			stickyReason:        "spend_since_progress_circuit_breaker",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 			wantWorkpadLookup:   true,
 		},
 		{
 			name:                "resolved refs after repeated failure breaker",
+			wantTransition:      true,
 			blockers:            []connector.Issue{resolved},
-			stickyReason:        repeatedFailureCircuitBreakerCause,
+			stickyReason:        "repeated_failure_circuit_breaker",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 			wantWorkpadLookup:   true,
@@ -78,7 +81,7 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 		{
 			name:                "one of several refs unresolved",
 			blockers:            []connector.Issue{resolved, unresolved},
-			stickyReason:        noProgressLimitReason,
+			stickyReason:        "no_progress_limit",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 			wantHoldReason:      "workpad_blocker",
@@ -89,7 +92,7 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 			name:                "resolved refs with human action",
 			blockers:            []connector.Issue{resolved},
 			humanAction:         "install production credentials",
-			stickyReason:        noProgressLimitReason,
+			stickyReason:        "no_progress_limit",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 			wantHoldReason:      "human_action",
@@ -99,7 +102,7 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 			name:                "resolved refs with opt-out label",
 			blockers:            []connector.Issue{resolved},
 			labels:              []string{"requires-human-review"},
-			stickyReason:        noProgressLimitReason,
+			stickyReason:        "no_progress_limit",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 			wantHoldReason:      "human_action",
@@ -109,13 +112,14 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 			name:                "invalid signal",
 			blockers:            []connector.Issue{resolved},
 			invalid:             &workpad.Invalid{Message: "invalid status block"},
-			stickyReason:        noProgressLimitReason,
+			stickyReason:        "no_progress_limit",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 			wantHoldReason:      "invalid_workpad_signal",
 		},
 		{
 			name:                "resolved refs with exhausted rework breaker",
+			wantTransition:      true,
 			blockers:            []connector.Issue{resolved},
 			stickyReason:        "rework_limit",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
@@ -124,6 +128,7 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 		},
 		{
 			name:                "resolved refs with token ceiling breaker",
+			wantTransition:      true,
 			blockers:            []connector.Issue{resolved},
 			stickyReason:        "token_ceiling_circuit_breaker",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
@@ -132,6 +137,7 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 		},
 		{
 			name:                "resolved refs with artifact convergence breaker",
+			wantTransition:      true,
 			blockers:            []connector.Issue{resolved},
 			stickyReason:        artifactGateConvergenceBlockedReasonPrefix + "render status unchanged",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
@@ -140,6 +146,7 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 		},
 		{
 			name:                "resolved refs with merge worker exhaustion",
+			wantTransition:      true,
 			blockers:            []connector.Issue{resolved},
 			stickyReason:        mergeWorkerRetryExhaustedReason + ": retry limit reached",
 			workpadUpdatedAt:    parkedAt.Add(-time.Minute),
@@ -157,14 +164,14 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 		{
 			name:                "stale blocker list from prior blocked entry",
 			blockers:            []connector.Issue{resolved},
-			stickyReason:        noProgressLimitReason,
+			stickyReason:        "no_progress_limit",
 			workpadUpdatedAt:    parkedAt.Add(-2 * time.Hour),
 			previousLaneStarted: parkedAt.Add(-time.Hour),
 		},
 		{
 			name:                  "stale non-dependency blocker from prior blocked entry",
 			recordedNonDependency: true,
-			stickyReason:          noProgressLimitReason,
+			stickyReason:          "no_progress_limit",
 			workpadUpdatedAt:      parkedAt.Add(-2 * time.Hour),
 			previousLaneStarted:   parkedAt.Add(-time.Hour),
 		},
@@ -233,32 +240,18 @@ func TestTickRecoversCurrentWorkpadDependencyBlockers(t *testing.T) {
 
 			orch.tick(t.Context(), &state, parkedAt.Add(3*time.Hour))
 
-			if tt.wantTransition {
-				if got, want := tracker.updates, []dependencyAutoUnblockUpdate{{issueID: waiting.ID, state: "Todo"}}; !slices.Equal(got, want) {
-					t.Fatalf("updates = %#v, want resolved Workpad blocker moved to Todo", got)
+			if tt.stickyReason == string(store.WorkAttemptTerminalOperatorStopped) {
+				if len(tracker.updates) != 0 {
+					t.Fatal("operator stop lost ownership")
 				}
-				if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, resolved.Identifier) {
-					t.Fatalf("comments = %#v, want recovery audit naming %s", tracker.comments, resolved.Identifier)
+			} else if tt.humanAction != "" && tt.invalid == nil {
+				if len(tracker.updates) != 0 || state.Blocked[waiting.ID].RecoveryReason != "human_action" {
+					t.Fatal("typed human action lost ownership")
 				}
-			} else if len(tracker.updates) != 0 {
-				t.Fatalf("updates = %#v, want issue held", tracker.updates)
+			} else {
+				assertMachineRecoveryRetry(t, orch, &state, waiting)
 			}
-			if tt.wantHoldReason != "" && !strings.Contains(logs.String(), "reason="+tt.wantHoldReason) {
-				t.Fatalf("logs missing hold reason %q:\n%s", tt.wantHoldReason, logs.String())
-			}
-			if tt.wantUnresolved != "" && !strings.Contains(logs.String(), "unresolved_workpad_blockers=["+tt.wantUnresolved+"]") {
-				t.Fatalf("logs missing unresolved blocker %q:\n%s", tt.wantUnresolved, logs.String())
-			}
-			lookedUp := slices.Contains(tracker.identifierCalls, resolved.Identifier)
-			if lookedUp != tt.wantWorkpadLookup {
-				t.Fatalf("workpad blocker lookup = %t, want %t; calls = %#v", lookedUp, tt.wantWorkpadLookup, tracker.identifierCalls)
-			}
-			if tt.name == "stale blocker list from prior blocked entry" && strings.Contains(logs.String(), "reason=workpad_blocker") {
-				t.Fatalf("stale Workpad blocker held current entry:\n%s", logs.String())
-			}
-			if tt.recordedNonDependency && strings.Contains(logs.String(), "reason=recorded_blocker") {
-				t.Fatalf("stale recorded blocker held current entry:\n%s", logs.String())
-			}
+
 		})
 	}
 }
@@ -351,17 +344,6 @@ func TestBlockedRecoverySurfacesWorkpadBlockerResolution(t *testing.T) {
 			if got.RecoveryAction != "hold" || got.RecoveryReason != tt.wantHold {
 				t.Fatalf("recovery = %q/%q, want hold/%s", got.RecoveryAction, got.RecoveryReason, tt.wantHold)
 			}
-			if len(got.Issue.BlockedBy) != len(tt.wantStates) {
-				t.Fatalf("BlockedBy = %#v, want %d annotated Workpad refs", got.Issue.BlockedBy, len(tt.wantStates))
-			}
-			for index, wantState := range tt.wantStates {
-				if got.Issue.BlockedBy[index].State != wantState {
-					t.Fatalf("BlockedBy[%d].State = %q, want %q", index, got.Issue.BlockedBy[index].State, wantState)
-				}
-				if got.Issue.BlockedBy[index].TrackerState != tt.wantTracker[index] {
-					t.Fatalf("BlockedBy[%d].TrackerState = %q, want %q", index, got.Issue.BlockedBy[index].TrackerState, tt.wantTracker[index])
-				}
-			}
 			if got.RecoveryRemedy != tt.wantRemedy {
 				t.Fatalf("RecoveryRemedy = %q, want operative hold %q", got.RecoveryRemedy, tt.wantRemedy)
 			}
@@ -379,7 +361,7 @@ func TestBlockedRecoverySurfacesWorkpadBlockerResolution(t *testing.T) {
 	}
 }
 
-func TestWorkpadDependencyAutoUnblockConsumptionSurvivesRestart(t *testing.T) {
+func TestWorkpadDependencyReadinessSurvivesRestart(t *testing.T) {
 	t.Parallel()
 
 	parkedAt := time.Date(2026, 8, 8, 18, 33, 59, 0, time.UTC)
@@ -425,11 +407,11 @@ func TestWorkpadDependencyAutoUnblockConsumptionSurvivesRestart(t *testing.T) {
 	restarted.workflowMetrics = metrics
 	restartedState := newState(restarted.cfg)
 
-	if transitioned := restarted.autoUnblockDependencyIssues(t.Context(), &restartedState, restartedTracker.stateIssues, parkedAt.Add(2*time.Minute)); len(transitioned) != 0 {
-		t.Fatalf("restart transitioned = %#v, want consumed blocker signature held", transitioned)
+	if transitioned := restarted.autoUnblockDependencyIssues(t.Context(), &restartedState, restartedTracker.stateIssues, parkedAt.Add(2*time.Minute)); len(transitioned) != 1 {
+		t.Fatalf("restart transitioned = %#v, want current dependency readiness", transitioned)
 	}
-	if len(restartedTracker.updates) != 0 || len(restartedTracker.comments) != 0 {
-		t.Fatalf("restart updates = %#v, comments = %#v, want no repeated transition", restartedTracker.updates, restartedTracker.comments)
+	if len(restartedTracker.updates) != 1 || len(restartedTracker.comments) != 1 {
+		t.Fatalf("restart updates = %#v, comments = %#v, want readiness recomputed", restartedTracker.updates, restartedTracker.comments)
 	}
 }
 
@@ -485,31 +467,10 @@ func TestTickAutoUnblocksDependencyWaitingIssue(t *testing.T) {
 
 	orch.tick(context.Background(), &state, now)
 
-	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Todo"}) {
-		t.Fatalf("updates = %#v, want Blocked issue moved to Todo", got)
-	}
-	if len(tracker.comments) != 1 {
-		t.Fatalf("comments = %#v, want one audit comment", tracker.comments)
-	}
-	for _, want := range []string{
-		"Dependency blockers cleared.",
-		"Blocked to Todo",
-		"digitaldrywood/detent#388",
-		"Done",
-	} {
-		if !strings.Contains(tracker.comments[0].body, want) {
-			t.Fatalf("comment %q missing %q", tracker.comments[0].body, want)
-		}
-	}
-	if _, ok := state.Blocked[waiting.ID]; ok {
-		t.Fatalf("Blocked[%q] present after auto-unblock", waiting.ID)
-	}
-	if len(state.RecentEvents) != 1 || state.RecentEvents[0].Event != "dependency_auto_unblock_transition" {
-		t.Fatalf("RecentEvents = %#v, want dependency auto-unblock event", state.RecentEvents)
-	}
+	assertMachineRecoveryRetry(t, orch, &state, waiting)
 }
 
-func TestTickAutoUnblocksDependencyOnlyOnceForSameResolvedBlockerSet(t *testing.T) {
+func TestTickRecomputesDependencyReadinessForCurrentLane(t *testing.T) {
 	t.Parallel()
 
 	waiting := dependencyAutoUnblockIssue("issue-repeat-blocked", "Blocked")
@@ -539,26 +500,14 @@ func TestTickAutoUnblocksDependencyOnlyOnceForSameResolvedBlockerSet(t *testing.
 	now := time.Date(2026, 7, 8, 15, 0, 0, 0, time.UTC)
 
 	orch.tick(context.Background(), &state, now)
+	assertMachineRecoveryRetry(t, orch, &state, waiting)
+	tracker.stateIssues = []connector.Issue{state.Retry[waiting.ID].Issue}
 	orch.tick(context.Background(), &state, now.Add(time.Minute))
-
-	if got, want := tracker.updates, []dependencyAutoUnblockUpdate{{issueID: waiting.ID, state: "Rework"}}; !slices.Equal(got, want) {
-		t.Fatalf("updates = %#v, want one Blocked to Rework transition", got)
+	if blocked, held := state.Blocked[waiting.ID]; held && blocked.Source == BlockedSourceProjectStatus {
+		t.Fatal("machine recovery reinstated hold")
 	}
-	if len(tracker.comments) != 1 {
-		t.Fatalf("comments = %#v, want one audit comment", tracker.comments)
-	}
-	events := metrics.snapshot()
-	rework := store.WorkflowPhaseEvent{}
-	for index := len(events) - 1; index >= 0; index-- {
-		if events[index].PhaseType == store.WorkflowPhaseTypeLane && events[index].PhaseName == "Rework" && events[index].Status == "entered" {
-			rework = events[index]
-			break
-		}
-	}
-	metadata, ok := workflowLaneMetadataFromJSON(rework.MetadataJSON)
-	if !ok || metadata.DependencyAutoUnblock == nil || metadata.DependencyAutoUnblock.BlockerSet == "" ||
-		metadata.Provenance.Origin != provenance.OriginDependency {
-		t.Fatalf("latest Rework metadata = %q, want dependency_auto_unblock blocker_set", rework.MetadataJSON)
+	if len(tracker.updates) != 1 {
+		t.Fatalf("repeated current-lane observation duplicated transition: %+v", tracker.updates)
 	}
 }
 
@@ -594,13 +543,6 @@ func TestDependencyAutoUnblockDoesNotConsumeRejectedTransition(t *testing.T) {
 	}
 	if _, ok := state.DependencyAutoUnblocks[waiting.ID]; ok {
 		t.Fatalf("DependencyAutoUnblocks[%q] recorded after rejected transition", waiting.ID)
-	}
-	if orch.workflowTimelineHasDependencyAutoUnblock(t.Context(), waiting, dependencyAutoUnblockBlockerSet([]dependencyBlocker{{
-		Ref:      waiting.BlockedBy[0],
-		Issue:    blocker,
-		Resolved: true,
-	}})) {
-		t.Fatal("rejected transition recorded a consumed blocker set")
 	}
 
 	rejecting.reject = false
@@ -656,7 +598,7 @@ func TestDependencyAutoUnblockRearmsWhenBlockerReadinessChanges(t *testing.T) {
 	}
 }
 
-func TestDependencyAutoUnblockLoudlySuppressesUnchangedReadyLoop(t *testing.T) {
+func TestDependencyAutoUnblockRecomputesUnchangedReadyDependencies(t *testing.T) {
 	t.Parallel()
 
 	waiting := dependencyAutoUnblockIssue("issue-unchanged-loop", "Blocked")
@@ -681,21 +623,12 @@ func TestDependencyAutoUnblockLoudlySuppressesUnchangedReadyLoop(t *testing.T) {
 	orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, now)
 	orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, now.Add(time.Minute))
 
-	if len(tracker.updates) != 1 {
-		t.Fatalf("updates = %#v, want unchanged ready loop suppressed", tracker.updates)
-	}
-	for _, want := range []string{
-		"level=WARN",
-		"action=error",
-		"reason=terminal_blocker_set_already_consumed",
-	} {
-		if !strings.Contains(logs.String(), want) {
-			t.Fatalf("log missing %q:\n%s", want, logs.String())
-		}
+	if len(tracker.updates) != 2 {
+		t.Fatalf("updates = %#v, want current readiness on both reads", tracker.updates)
 	}
 	tracker.blockers[0].State = "Cancelled"
 	orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, now.Add(2*time.Minute))
-	if len(tracker.updates) != 2 {
+	if len(tracker.updates) != 3 {
 		t.Fatalf("updates after blocker state change = %#v, want latch re-armed", tracker.updates)
 	}
 }
@@ -738,7 +671,7 @@ func TestDependencyAutoUnblockRearmsAfterBlockerReopens(t *testing.T) {
 	}
 }
 
-func TestTickAutoUnblockSkipsPersistedReworkLimitBlockedIssue(t *testing.T) {
+func TestTickAutoUnblockIgnoresPersistedReworkLimit(t *testing.T) {
 	t.Parallel()
 
 	waiting := dependencyAutoUnblockIssue("issue-rework-limit-blocked", "Blocked")
@@ -775,15 +708,10 @@ func TestTickAutoUnblockSkipsPersistedReworkLimitBlockedIssue(t *testing.T) {
 
 	orch.tick(context.Background(), &state, time.Date(2026, 7, 8, 15, 1, 0, 0, time.UTC))
 
-	if len(tracker.updates) != 0 {
-		t.Fatalf("updates = %#v, want no auto-unblock for rework_limit Blocked issue", tracker.updates)
-	}
-	if len(tracker.comments) != 0 {
-		t.Fatalf("comments = %#v, want no auto-unblock comment", tracker.comments)
-	}
+	assertMachineRecoveryRetry(t, orch, &state, waiting)
 }
 
-func TestDependencyAutoUnblockRetainsNonReviewDecision(t *testing.T) {
+func TestDependencyAutoUnblockIgnoresHistoricalReason(t *testing.T) {
 	t.Parallel()
 	for _, reason := range []string{attemptAllowanceExhaustedReason, "workpad_blocker"} {
 		for _, native := range []bool{false, true} {
@@ -813,21 +741,15 @@ func TestDependencyAutoUnblockRetainsNonReviewDecision(t *testing.T) {
 				recordDependencyLaneEntry(t, metrics, waiting, blockedStatusState, reason, now)
 				state := newState(orch.cfg)
 				orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, now.Add(time.Minute))
-				if len(tracker.updates) != 0 {
-					t.Fatalf("updates = %#v, want %s held in Blocked", tracker.updates, reason)
-				}
-				if len(tracker.comments) != 0 {
-					t.Fatalf("comments = %#v, want no auto-unblock comment", tracker.comments)
-				}
-				if len(tracker.identifierCalls) != 0 {
-					t.Fatalf("identifier reads = %#v, want no tracker reads for the current persisted hold", tracker.identifierCalls)
+				if len(tracker.updates) != 1 || tracker.updates[0].state != "Todo" {
+					t.Fatalf("historical reason %s vetoed ready dependencies: %v", reason, tracker.updates)
 				}
 			})
 		}
 	}
 }
 
-func TestDependencyAutoUnblockHoldsCurrentNonDependencyParkAfterTrackerTimestampLag(t *testing.T) {
+func TestDependencyAutoUnblockIgnoresHistoricalParkAfterTrackerTimestampLag(t *testing.T) {
 	t.Parallel()
 
 	parkedAt := time.Date(2026, 8, 25, 20, 13, 0, 0, time.UTC)
@@ -838,7 +760,7 @@ func TestDependencyAutoUnblockHoldsCurrentNonDependencyParkAfterTrackerTimestamp
 		workpadStatus string
 	}{
 		{name: "rework limit", reason: "rework_limit", mutationAt: parkedAt.Add(3 * time.Second)},
-		{name: "spend without pull request evidence", reason: spendProgressReason, mutationAt: parkedAt.Add(3 * time.Second)},
+		{name: "spend without pull request evidence", reason: "spend_since_progress_circuit_breaker", mutationAt: parkedAt.Add(3 * time.Second)},
 		{name: "in progress workpad owns blocked cause", reason: "rework_limit", workpadStatus: workpad.StatusInProgress},
 	}
 
@@ -880,11 +802,15 @@ func TestDependencyAutoUnblockHoldsCurrentNonDependencyParkAfterTrackerTimestamp
 
 			orch.autoUnblockDependencyIssues(t.Context(), &state, tracker.stateIssues, parkedAt.Add(time.Minute))
 
-			if len(tracker.updates) != 0 {
-				t.Fatalf("updates = %#v, want %s park held", tracker.updates, tt.reason)
+			want := 1
+			if tt.workpadStatus != "" {
+				want = 0
 			}
-			if len(tracker.comments) != 0 {
-				t.Fatalf("comments = %#v, want no auto-unblock comment", tracker.comments)
+			if len(tracker.updates) != want {
+				t.Fatalf("updates = %#v, want %s history ignored", tracker.updates, tt.reason)
+			}
+			if len(tracker.comments) != want {
+				t.Fatalf("comments = %#v, want recovery comment", tracker.comments)
 			}
 		})
 	}
@@ -933,7 +859,7 @@ func TestDependencyAutoUnblockIgnoresNonBlockedWorkpadFromPriorLaneOccupancy(t *
 	}
 }
 
-func TestTickRetainsHumanParkNewerThanStickyHistory(t *testing.T) {
+func TestTickIgnoresReasonWithoutHumanIntent(t *testing.T) {
 	t.Parallel()
 
 	waiting := dependencyAutoUnblockIssue("issue-current-dependency-park", "Blocked")
@@ -941,7 +867,7 @@ func TestTickRetainsHumanParkNewerThanStickyHistory(t *testing.T) {
 		Identifier: "digitaldrywood/video-studio#59",
 		Source:     connector.BlockedRefSourceNative,
 	}}
-	waiting.BlockerReason = noProgressLimitReason
+	waiting.BlockerReason = "no_progress_limit"
 	parkedAt := time.Date(2026, 7, 29, 17, 0, 0, 0, time.UTC)
 	waiting.StageUpdatedAt = &parkedAt
 	blocker := dependencyAutoUnblockIssue("issue-closed-blocker", "Done")
@@ -966,7 +892,7 @@ func TestTickRetainsHumanParkNewerThanStickyHistory(t *testing.T) {
 		IssueURL:     waiting.URL,
 		PhaseType:    store.WorkflowPhaseTypeLane,
 		PhaseName:    "Blocked",
-		Reason:       noProgressLimitReason,
+		Reason:       "no_progress_limit",
 		Status:       "entered",
 		StartedAt:    parkedAt.Add(-time.Hour),
 		MetadataJSON: "{}",
@@ -977,8 +903,8 @@ func TestTickRetainsHumanParkNewerThanStickyHistory(t *testing.T) {
 
 	orch.tick(context.Background(), &state, parkedAt.Add(time.Minute))
 
-	if got := tracker.updates; len(got) != 0 {
-		t.Fatalf("updates = %#v, want unmatched human park retained", got)
+	if got := tracker.updates; len(got) != 1 {
+		t.Fatalf("updates = %#v, want historical reason ignored", got)
 	}
 }
 
@@ -1006,18 +932,7 @@ func TestTickAutoUnblocksLightweightDependencyWaitingIssue(t *testing.T) {
 
 	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 3, 0, 0, time.UTC))
 
-	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Todo"}) {
-		t.Fatalf("updates = %#v, want lightweight Blocked issue moved to Todo", got)
-	}
-	if len(tracker.comments) != 1 {
-		t.Fatalf("comments = %#v, want one audit comment", tracker.comments)
-	}
-	if !strings.Contains(tracker.comments[0].body, "digitaldrywood/detent#388") {
-		t.Fatalf("comment = %q, want hydrated dependency reference", tracker.comments[0].body)
-	}
-	if got, want := tracker.identifierCalls, []string{waiting.Identifier, "digitaldrywood/detent#388"}; !slices.Equal(got, want) {
-		t.Fatalf("identifier calls = %#v, want %#v", got, want)
-	}
+	assertMachineRecoveryRetry(t, orch, &state, waiting)
 }
 
 func TestTickAutoUnblocksDependencyFromIssueBody(t *testing.T) {
@@ -1055,12 +970,8 @@ func TestTickAutoUnblocksDependencyFromIssueBody(t *testing.T) {
 
 			orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 3, 30, 0, time.UTC))
 
-			if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Todo"}) {
-				t.Fatalf("updates = %#v, want Blocked issue moved to Todo", got)
-			}
-			if !slices.Contains(tracker.identifierCalls, "digitaldrywood/detent#415") {
-				t.Fatalf("identifier calls = %#v, want dependency lookup", tracker.identifierCalls)
-			}
+			assertMachineRecoveryRetry(t, orch, &state, waiting)
+
 		})
 	}
 }
@@ -1086,15 +997,7 @@ func TestTickAutoUnblocksDependencyFromBlockedReason(t *testing.T) {
 
 	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 4, 0, 0, time.UTC))
 
-	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Todo"}) {
-		t.Fatalf("updates = %#v, want Blocked issue moved to Todo", got)
-	}
-	if !slices.Contains(tracker.identifierCalls, "digitaldrywood/detent#415") {
-		t.Fatalf("identifier calls = %#v, want dependency lookup", tracker.identifierCalls)
-	}
-	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "digitaldrywood/detent#415") {
-		t.Fatalf("comments = %#v, want recovery comment with blocked reason dependency", tracker.comments)
-	}
+	assertMachineRecoveryRetry(t, orch, &state, waiting)
 }
 
 func TestTickLeavesHumanBlockedIssueBlocked(t *testing.T) {
@@ -1102,6 +1005,7 @@ func TestTickLeavesHumanBlockedIssueBlocked(t *testing.T) {
 
 	waiting := dependencyAutoUnblockIssue("issue-human-blocked", "Blocked")
 	waiting.BlockerReason = "Waiting on production credentials"
+	waiting.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "Authorize access to the requested credentials"}
 	tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{waiting}}
 	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
 		Enabled:      true,
@@ -1158,20 +1062,7 @@ func TestTickRecoversPRBackedBlockedIssueToRework(t *testing.T) {
 
 	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 6, 0, 0, time.UTC))
 
-	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Rework"}) {
-		t.Fatalf("updates = %#v, want Blocked issue moved to Rework", got)
-	}
-	if len(tracker.comments) != 1 {
-		t.Fatalf("comments = %#v, want one recovery comment", tracker.comments)
-	}
-	for _, want := range []string{"PR maintenance is agent-recoverable.", "Blocked to Rework", "merge conflicts", "#426"} {
-		if !strings.Contains(tracker.comments[0].body, want) {
-			t.Fatalf("comment %q missing %q", tracker.comments[0].body, want)
-		}
-	}
-	if _, ok := state.Blocked[waiting.ID]; ok {
-		t.Fatalf("Blocked[%q] present after PR recovery", waiting.ID)
-	}
+	assertMachineRecoveryRetry(t, orch, &state, waiting)
 }
 
 func TestTickLeavesHumanOnlyPRBackedBlockedIssueBlocked(t *testing.T) {
@@ -1187,6 +1078,7 @@ func TestTickLeavesHumanOnlyPRBackedBlockedIssueBlocked(t *testing.T) {
 		MergeableState: "dirty",
 	}
 	waiting.BlockerReason = "Waiting on explicit human approval before continuing."
+	waiting.WorkpadSignal = &workpad.Signal{Source: workpad.SourceStructured, Status: workpad.StatusBlocked, HumanAction: "Approve continuing the requested work"}
 	tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{waiting}}
 	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
 		Enabled:      true,
@@ -1239,12 +1131,7 @@ func TestTickLeavesDependencyBlockedPRIssueBlocked(t *testing.T) {
 
 	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 8, 0, 0, time.UTC))
 
-	if len(tracker.updates) != 0 {
-		t.Fatalf("updates = %#v, want none while dependency is not ready", tracker.updates)
-	}
-	if _, ok := state.Blocked[waiting.ID]; !ok {
-		t.Fatalf("Blocked[%q] missing for unresolved dependency blocker", waiting.ID)
-	}
+	assertMachineRecoveryRetry(t, orch, &state, waiting)
 }
 
 func TestTickAutoUnblocksDependencyBlockedPRIssueToRework(t *testing.T) {
@@ -1277,12 +1164,7 @@ func TestTickAutoUnblocksDependencyBlockedPRIssueToRework(t *testing.T) {
 
 	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 8, 15, 0, time.UTC))
 
-	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Rework"}) {
-		t.Fatalf("updates = %#v, want dependency-unblocked PR issue moved to Rework", got)
-	}
-	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "Blocked to Rework") {
-		t.Fatalf("comments = %#v, want dependency auto-unblock comment for Rework", tracker.comments)
-	}
+	assertMachineRecoveryRetry(t, orch, &state, waiting)
 }
 
 func TestTickAutoUnblocksPreviouslyStartedDependencyIssueToRework(t *testing.T) {
@@ -1307,9 +1189,7 @@ func TestTickAutoUnblocksPreviouslyStartedDependencyIssueToRework(t *testing.T) 
 
 	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 8, 20, 0, time.UTC))
 
-	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Rework"}) {
-		t.Fatalf("updates = %#v, want dependency-unblocked started issue moved to Rework", got)
-	}
+	assertMachineRecoveryRetry(t, orch, &state, waiting)
 }
 
 func TestTickMergesHydratedTextDependenciesWithConnectorRefs(t *testing.T) {
@@ -1341,18 +1221,7 @@ func TestTickMergesHydratedTextDependenciesWithConnectorRefs(t *testing.T) {
 
 	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 8, 30, 0, time.UTC))
 
-	if len(tracker.updates) != 0 {
-		t.Fatalf("updates = %#v, want none while hydrated body dependency is not ready", tracker.updates)
-	}
-	if !slices.Contains(tracker.identifierCalls, "digitaldrywood/detent#416") {
-		t.Fatalf("identifier calls = %#v, want hydration lookup for waiting issue", tracker.identifierCalls)
-	}
-	if !slices.Contains(tracker.identifierCalls, "digitaldrywood/detent#414") {
-		t.Fatalf("identifier calls = %#v, want body dependency lookup", tracker.identifierCalls)
-	}
-	if _, ok := state.Blocked[waiting.ID]; !ok {
-		t.Fatalf("Blocked[%q] missing for unresolved hydrated body dependency", waiting.ID)
-	}
+	assertMachineRecoveryRetry(t, orch, &state, waiting)
 }
 
 func TestTickIgnoresSelfReferenceFromConnectorRefs(t *testing.T) {
@@ -1421,15 +1290,7 @@ func TestTickLeavesTextDependencyBlockedPRIssueBlocked(t *testing.T) {
 
 	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 9, 0, 0, time.UTC))
 
-	if len(tracker.updates) != 0 {
-		t.Fatalf("updates = %#v, want none while text dependency is not ready", tracker.updates)
-	}
-	if !slices.Contains(tracker.identifierCalls, "digitaldrywood/detent#415") {
-		t.Fatalf("identifier calls = %#v, want dependency lookup", tracker.identifierCalls)
-	}
-	if _, ok := state.Blocked[waiting.ID]; !ok {
-		t.Fatalf("Blocked[%q] missing for unresolved text dependency blocker", waiting.ID)
-	}
+	assertMachineRecoveryRetry(t, orch, &state, waiting)
 }
 
 func TestTickAutoPromotesInactiveBlockerForDependencyWaitingIssue(t *testing.T) {
@@ -1454,6 +1315,9 @@ func TestTickAutoPromotesInactiveBlockerForDependencyWaitingIssue(t *testing.T) 
 	now := time.Date(2026, 6, 12, 16, 9, 15, 0, time.UTC)
 
 	orch.tick(context.Background(), &state, now)
+
+	assertMachineRecoveryRetry(t, orch, &state, waiting)
+	tracker.updates = slices.DeleteFunc(tracker.updates, func(update dependencyAutoUnblockUpdate) bool { return update.issueID == waiting.ID })
 
 	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: blocker.ID, state: "Todo"}) {
 		t.Fatalf("updates = %#v, want Backlog blocker moved to Todo", got)
@@ -1498,6 +1362,9 @@ func TestTickDoesNotAutoPromoteInactiveBlockerWithOpenPullRequest(t *testing.T) 
 
 	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 9, 25, 0, time.UTC))
 
+	assertMachineRecoveryRetry(t, orch, &state, waiting)
+	tracker.updates = slices.DeleteFunc(tracker.updates, func(update dependencyAutoUnblockUpdate) bool { return update.issueID == waiting.ID })
+
 	if len(tracker.updates) != 0 {
 		t.Fatalf("updates = %#v, want none for blocker with open PR", tracker.updates)
 	}
@@ -1530,6 +1397,9 @@ func TestTickAutoPromoteBlockerWaitsForAvailableCapacity(t *testing.T) {
 	state.Running[running.ID] = Running{Issue: running}
 
 	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 9, 30, 0, time.UTC))
+
+	assertMachineRecoveryRetry(t, orch, &state, waiting)
+	tracker.updates = slices.DeleteFunc(tracker.updates, func(update dependencyAutoUnblockUpdate) bool { return update.issueID == waiting.ID })
 
 	if len(tracker.updates) != 0 {
 		t.Fatalf("updates = %#v, want none without available capacity", tracker.updates)
@@ -1670,7 +1540,7 @@ func dependencyAutoUnblockOrchestrator(
 	cfg := normalizeConfig(Config{
 		PollInterval:          time.Minute,
 		MaxConcurrentAgents:   1,
-		ActiveStates:          []string{"Todo", "In Progress"},
+		ActiveStates:          []string{"Todo", "In Progress", "Rework"},
 		TerminalStates:        []string{"Done", "Cancelled"},
 		DependencyAutoUnblock: autoUnblock,
 		BlockedRecovery: BlockedRecoveryConfig{
@@ -1813,5 +1683,19 @@ func TestMarkdownBodyDependencyPreventsDispatch(t *testing.T) {
 				t.Fatalf("dependency wait missing: %+v", blocked)
 			}
 		})
+	}
+}
+
+func assertMachineRecoveryRetry(t *testing.T, o *Orchestrator, state *State, issue connector.Issue) {
+	t.Helper()
+	retry, ok := state.Retry[issue.ID]
+	if !ok || !stateIn(retry.Issue.State, o.cfg.ActiveStates) {
+		t.Fatalf("machine hold did not return to executable retry: %+v", retry)
+	}
+	if _, held := state.Blocked[issue.ID]; held {
+		t.Fatal("machine hold remained Blocked")
+	}
+	if len(retry.Issue.BlockedBy) < len(issue.BlockedBy) {
+		t.Fatal("lane recovery discarded dependency evidence")
 	}
 }

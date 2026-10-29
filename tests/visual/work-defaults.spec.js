@@ -1,34 +1,34 @@
 const path = require("node:path");
-const { test, expect } = require("@playwright/test");
+const { test: base, expect } = require("@playwright/test");
 const { startHostedHub, resetSavedWorkViews, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
 
-test.describe.configure({ mode: "serial" });
-
-let hub;
-
-test.beforeAll(async () => {
-  test.setTimeout(STARTUP_TIMEOUT_MS + 30_000);
-  hub = await startHostedHub("work-defaults", {
-    env: { DETENT_HOSTED_BROWSER_BOARD_DEFAULTS: "1" },
-  });
+const test = base.extend({
+  hub: [async ({}, use) => {
+    const hub = await startHostedHub("work-defaults", {
+      env: { DETENT_HOSTED_BROWSER_BOARD_DEFAULTS: "1" },
+    });
+    try {
+      await use(hub);
+    } finally {
+      await hub.stop();
+    }
+  }, { timeout: STARTUP_TIMEOUT_MS }],
 });
 
-test.afterAll(async () => { await hub?.stop(); });
-
-async function openWork(page, route, instance = hub) {
+async function openWork(page, route, instance) {
   await page.goto(instance.fixture.accounts.owner);
   await resetSavedWorkViews(page);
   await page.goto(new URL(route, instance.fixture.url).toString());
   await expect(page.getByTestId("work-board")).toBeVisible();
-  await expect(page.getByTestId("stat-completed")).toBeVisible();
+  await expect(page.getByRole("button", { name: /shipped ·/ })).toBeVisible();
 }
 
 const active = ["Triage", "Backlog", "Todo", "In Progress", "Rework", "Merging", "Blocked", "Human Review"];
 
 for (const scope of ["all", "project"]) {
-  test(`${scope} board shows only active lanes with a persisted Backlog rail`, async ({ page }) => {
+  test(`${scope} board shows only active lanes with a persisted Backlog rail`, async ({ page, hub }) => {
     const route = scope === "all" ? "/work" : `/work/p/${hub.fixture.project_id}`;
-    await openWork(page, route);
+    await openWork(page, route, hub);
     await expect(page.getByTestId("board-lane")).toHaveCount(8);
     expect(await page.getByTestId("board-lane").evaluateAll((lanes) => lanes.map((lane) => lane.dataset.lane))).toEqual(active);
     await expect(page.getByTestId("lane-count-Merging")).toHaveText("0");
@@ -116,9 +116,9 @@ for (const scope of ["all", "project"]) {
     await expect(page.getByTestId("work-list-row")).toHaveCount(130 * copies);
   });
 
-  test(`${scope} shipped window reads the Hub totals and survives reload and remembered navigation`, async ({ page }) => {
+  test(`${scope} shipped window reads the Hub totals and survives reload and remembered navigation`, async ({ page, hub }) => {
     const route = scope === "all" ? "/work" : `/work/p/${hub.fixture.project_id}`;
-    await openWork(page, route);
+    await openWork(page, route, hub);
     const copies = scope === "all" ? 2 : 1;
     const counter = page.getByTestId("stat-completed");
     await expect(counter).toHaveText(`${2 * copies} shipped · 24h`);
@@ -158,15 +158,15 @@ for (const scope of ["all", "project"]) {
     expect(new URL(page.url()).searchParams.has("completed")).toBe(false);
     await counter.click();
     await page.getByRole("menuitem", { name: /Open in Reports/ }).click();
-    await expect(page).toHaveURL(/\/reports\?range=24h$/);
+    await expect(page).toHaveURL(scope === "all" ? /\/reports\?project=all&range=24h$/ : /\/reports\?range=24h$/);
     await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveAttribute("aria-selected", "true");
     await expect(page.getByRole("group", { name: "Report range" }).getByRole("button", { name: "24h", exact: true })).toHaveAttribute("aria-pressed", "true");
   });
 
-  test(`${scope} saved 48h, 14d and all windows fall back to 24 hours`, async ({ page }) => {
+  test(`${scope} saved 48h, 14d and all windows fall back to 24 hours`, async ({ page, hub }) => {
     const route = scope === "all" ? "/work" : `/work/p/${hub.fixture.project_id}`;
     const copies = scope === "all" ? 2 : 1;
-    await openWork(page, route);
+    await openWork(page, route, hub);
     for (const legacy of ["48h", "14d", "all"]) {
       const stored = await page.evaluate(async ({ project, query }) => {
         const bootstrap = await (await fetch("/chat/bootstrap")).json();
@@ -185,9 +185,9 @@ for (const scope of ["all", "project"]) {
   });
 
   for (const theme of ["light", "dark"]) {
-    test(`${scope} open shipped menu in ${theme}`, async ({ page }) => {
+    test(`${scope} open shipped menu in ${theme}`, async ({ page, hub }) => {
       const route = scope === "all" ? "/work" : `/work/p/${hub.fixture.project_id}`;
-      await openWork(page, route);
+      await openWork(page, route, hub);
       await page.evaluate((value) => { document.documentElement.classList.add("no-transitions"); document.documentElement.classList.toggle("dark", value === "dark"); document.documentElement.dataset.theme = value; }, theme);
       await page.getByTestId("stat-completed").click();
       await expect(page.getByTestId("shipped-cancelled")).toBeVisible();
@@ -196,21 +196,21 @@ for (const scope of ["all", "project"]) {
   }
 }
 
-test("terminal URL and stored lane names never produce board lanes", async ({ page }) => {
+test("terminal URL and stored lane names never produce board lanes", async ({ page, hub }) => {
   const route = `/work/p/${hub.fixture.project_id}`;
-  await openWork(page, `${route}?lanes=Todo,Done`);
+  await openWork(page, `${route}?lanes=Todo,Done`, hub);
   await expect(page.getByTestId("board-lane")).toHaveCount(1);
   await expect(page.getByTestId("lane-body-Todo")).toBeVisible();
   await expect(page.getByTestId("lane-body-Done")).toHaveCount(0);
-  const stored = await page.evaluate(async (project) => {
+  const stored = await page.evaluate(async () => {
     const bootstrap = await (await fetch("/chat/bootstrap")).json();
-    const response = await fetch(`${bootstrap.api_base}/projects/${project}/work-view-preference`, {
+    const response = await fetch(`${bootstrap.api_base}/work-view-preference`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", "X-CSRF-Token": bootstrap.csrf_token },
       body: JSON.stringify({ query: "lanes=Backlog,Cancelled" }),
     });
     return response.status;
-  }, hub.fixture.project_id);
+  });
   expect(stored).toBe(200);
   await page.goto(new URL(route, hub.fixture.url).toString());
   await expect(page.getByTestId("board-lane")).toHaveCount(1);
@@ -229,7 +229,8 @@ test("a terminal move removes the card and refreshes the completed count", async
   const instance = await startHostedHub("work-terminal-move");
   try {
     await openWork(page, `/work/p/${instance.fixture.project_id}?collapsed=Backlog`, instance);
-    const completed = Number((await page.getByTestId("stat-completed").innerText()).split(" ")[0]);
+    const completed = page.getByRole("button", { name: /shipped ·/ });
+    await expect(completed).toHaveText("0 shipped · 24h");
     const title = "Renew the lease before the handoff completes";
     const saved = page.waitForResponse((response) =>
       response.url().endsWith(`/work-items/${instance.fixture.work_item}/workflow`) && response.request().method() === "POST",
@@ -238,11 +239,12 @@ test("a terminal move removes the card and refreshes the completed count", async
     await page.getByRole("menuitem", { name: "Done", exact: true }).click();
     expect((await saved).ok()).toBe(true);
     await expect(page.getByRole("button", { name: title, exact: true })).toHaveCount(0);
-    await expect(page.getByTestId("stat-completed")).toHaveText(`${completed + 1} shipped · 24h`);
+    await expect(completed).toHaveText("1 shipped · 24h");
     await page.reload();
-    await expect(page.getByTestId("stat-completed")).toHaveText(`${completed + 1} shipped · 24h`);
+    await expect(completed).toHaveText("1 shipped · 24h");
     await expect(page.getByRole("button", { name: title, exact: true })).toHaveCount(0);
-    await expect(page.locator('[data-testid="board-lane"][data-terminal="true"]')).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Done", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Cancelled", exact: true })).toHaveCount(0);
   } finally {
     await instance.stop();
   }

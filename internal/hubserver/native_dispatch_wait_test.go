@@ -15,9 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"modernc.org/sqlite"
-
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -93,7 +92,7 @@ func (r dispatchProbeRows) Next(values []driver.Value) error {
 	if err == nil {
 		r.probe.rows.Add(1)
 		for index, column := range r.Columns() {
-			if strings.Contains(column, "completion_body") && values[index] != nil && values[index] != "" {
+			if strings.Contains(column, "completion_evidence") && values[index] != nil && values[index] != "" {
 				r.probe.completionBodies.Add(1)
 			}
 		}
@@ -121,7 +120,7 @@ func measureDispatchQueries(t *testing.T, s *Service) *dispatchQueryProbe {
 	}
 	probe := &dispatchQueryProbe{}
 	name := newNativeID("dispatch_probe")
-	sql.Register(name, dispatchProbeDriver{&sqlite.Driver{}, probe})
+	sql.Register(name, dispatchProbeDriver{s.database.db.Driver(), probe})
 	db, err := sql.Open(name, sqliteDSN(s.database.path, s.config.BusyTimeout))
 	if err != nil {
 		t.Fatal(err)
@@ -154,23 +153,15 @@ func dispatchWaitCursor(t *testing.T, response *httptest.ResponseRecorder) strin
 
 func awaitDispatchSubscribers(t *testing.T, s *Service, organization tracker.OrganizationID, count int) {
 	t.Helper()
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	for {
+	testenv.WaitUntil(t, t.Context(), func() error {
 		s.notifications.mu.Lock()
 		got := len(s.notifications.subscribers[dispatchNotificationKey(organization)])
 		s.notifications.mu.Unlock()
 		if got == count && s.database.db.Stats().InUse == 0 {
-			return
+			return nil
 		}
-		select {
-		case <-deadline.C:
-			t.Fatalf("subscribers=%d, want %d", got, count)
-		case <-ticker.C:
-		}
-	}
+		return fmt.Errorf("subscribers=%d, want %d", got, count)
+	})
 }
 
 func TestNativeDispatchWaitLifecycle(t *testing.T) {
@@ -224,9 +215,7 @@ func TestNativeDispatchWaitLifecycle(t *testing.T) {
 			case "cancel":
 				cancel()
 			case "shutdown":
-				shutdownCtx, stop := context.WithTimeout(t.Context(), time.Second)
-				defer stop()
-				if err := f.service.Shutdown(shutdownCtx); err != nil {
+				if err := f.service.Shutdown(testenv.WaitContext(t, t.Context())); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -243,7 +232,7 @@ func TestNativeDispatchWaitLifecycle(t *testing.T) {
 						t.Fatal("notification did not advance cursor")
 					}
 				}
-			case <-time.After(5 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("held wait did not finish")
 			}
 			awaitDispatchSubscribers(t, f.service, f.project.OrganizationID, 0)
@@ -328,6 +317,7 @@ func TestNativeDispatchWaitScale(t *testing.T) {
 				}
 				granted := 0
 				var worst time.Duration
+				settleCtx := testenv.WaitContext(t, t.Context())
 				for range runners {
 					select {
 					case latency := <-results:
@@ -335,7 +325,7 @@ func TestNativeDispatchWaitScale(t *testing.T) {
 							granted++
 							worst = max(worst, latency)
 						}
-					case <-time.After(10 * time.Second):
+					case <-settleCtx.Done():
 						t.Fatal("scale request did not settle")
 					}
 				}
@@ -361,8 +351,9 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 	for _, test := range []struct {
 		size        int
 		unpublished bool
-	}{{size: 16}, {size: 256}, {size: 2048}, {size: 256, unpublished: true}} {
-		t.Run(fmt.Sprintf("queue_%d_unpublished_%t", test.size, test.unpublished), func(t *testing.T) {
+		filtered    bool
+	}{{size: 16}, {size: 256}, {size: 2048}, {size: 256, unpublished: true}, {size: 16, filtered: true}, {size: 256, filtered: true}, {size: 2048, filtered: true}} {
+		t.Run(fmt.Sprintf("queue_%d_unpublished_%t_filtered_%t", test.size, test.unpublished, test.filtered), func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "candidate-bound")
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}}
 			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
@@ -374,9 +365,16 @@ func TestNativeCandidateQueryBound(t *testing.T) {
 			var issues []tracker.NativeIssue
 			for index := range test.size {
 				request := tracker.CreateIssue{Title: fmt.Sprintf("candidate-%d", index), Body: issueContractTestSections, State: "Todo"}
+				if test.filtered {
+					request.Labels, request.Assignees = []string{"skip"}, []string{"other"}
+				}
 				if index == test.size-1 {
 					request.Priority = new(1)
 					request.Labels = []string{"hotfix"}
+					if test.filtered {
+						request.Priority = nil
+						request.Labels, request.Assignees = []string{" Required ", "second"}, []string{" Chosen "}
+					}
 				}
 				tail, err = createNativeFixtureIssueTx(t.Context(), tx, scope, request, f.service.config.now())
 				if err != nil {
@@ -442,6 +440,39 @@ FROM native_attempts a JOIN issues i ON i.native_id = ? WHERE a.work_item_id = ?
 			if err := tx.QueryRowContext(t.Context(), "SELECT id FROM issues WHERE native_id = ?", tail.WorkItemID).Scan(&tailID); err != nil {
 				t.Fatal(err)
 			}
+			if test.filtered {
+				for _, filter := range []struct {
+					name                          string
+					assignees, included, excluded []string
+					absent                        bool
+				}{
+					{name: "assignee", assignees: []string{"chosen"}},
+					{name: "included labels", included: []string{"required", "second"}},
+					{name: "excluded label", excluded: []string{"skip"}},
+					{name: "combined", assignees: []string{"chosen"}, included: []string{"required", "second"}, excluded: []string{"skip"}},
+					{name: "missing assignee", assignees: []string{"absent"}, absent: true},
+					{name: "missing label", included: []string{"absent"}, absent: true},
+					{name: "all labels required", included: []string{"required", "absent"}, absent: true},
+				} {
+					t.Run(filter.name, func(t *testing.T) {
+						probe.candidates.Store(0)
+						probe.rows.Store(0)
+						query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project), Limit: 1}
+						ids, err := nativeCandidateIDs(t.Context(), tx, query, nil, nil, nil, nil, filter.assignees, filter.included, filter.excluded)
+						if err != nil {
+							t.Fatal(err)
+						}
+						want := []tracker.WorkItemID{tailID}
+						if filter.absent {
+							want = nil
+						}
+						if !slices.Equal(ids, want) || probe.candidates.Load() != 1 || probe.rows.Load() != int64(len(want)) {
+							t.Fatalf("ids=%v want=%v candidate_queries=%d returned_rows=%d", ids, want, probe.candidates.Load(), probe.rows.Load())
+						}
+					})
+				}
+				return
+			}
 			query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project), Limit: 9, AvailableAt: f.service.config.now().Truncate(time.Second), DispatchPriorityByState: []string{"Todo"}, DispatchPriorityByLabel: []string{"hotfix"}}
 			began := time.Now()
 			ids, err := claimCandidateIDs(t.Context(), tx, query, nil, nil, []string{"todo"}, nil, nil, nil, nil, nil)
@@ -491,11 +522,8 @@ FROM native_attempts a JOIN issues i ON i.native_id = ? WHERE a.work_item_id = ?
 					t.Fatalf("paged=%d leased=%d bind_bytes=%d", len(seen), leasedID, probe.maxArgumentBytes.Load())
 				}
 				t.Logf("pages=%d candidates=%d legacy_bodies=%d max_bind_bytes=%d", pages, len(seen), probe.completionBodies.Load(), probe.maxArgumentBytes.Load())
-				for index, issue := range issues[:200] {
-					body := "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\n```"
-					if index%2 == 0 {
-						body = strings.Replace(body, "schema: 1", "schema: 2", 1)
-					}
+				for _, issue := range issues[:200] {
+					body := "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve scope\n```"
 					if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.completion_body', ?) WHERE work_item_id = ?`, body, issue.WorkItemID); err != nil {
 						t.Fatal(err)
 					}
@@ -538,7 +566,7 @@ FROM native_attempts a JOIN issues i ON i.native_id = ? WHERE a.work_item_id = ?
 			}
 			query.After = ids[0]
 			if test.unpublished {
-				if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.completion_body', ?) WHERE work_item_id = ?`, "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: null\n```", tail.WorkItemID); err != nil {
+				if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET data_json = json_set(data_json, '$.completion_body', ?) WHERE work_item_id = ?`, "```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve scope\n```", tail.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 				before := probe.completionBodies.Load()

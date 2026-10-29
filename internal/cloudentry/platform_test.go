@@ -5,6 +5,7 @@ package cloudentry
 import (
 	"context"
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -311,14 +312,15 @@ func TestPlatformStaffLanding(t *testing.T) {
 		chooserLocation                   string
 		platformRole                      string
 		canCreate                         bool
+		loginLocation                     string
 	}{
-		{"member with organizations", "/auth/oidc/start", "user_support:", "/organizations", "/organizations", http.StatusOK, "", "support", false},
-		{"member without organizations", "/auth/oidc/start", "user_staff:", "/platform", "/platform", http.StatusOK, "", "viewer", false},
-		{"customer default", "/auth/oidc/start", "user_alice:", "/organizations", "/organizations", http.StatusOK, "", "", false},
-		{"member organization session", "/auth/oidc/start", "user_support:porg_alpha", "/organizations", "/organizations", http.StatusOK, "", "support", false},
-		{"member without organizations may create", "/auth/oidc/start", "user_admin:", "/platform", "/platform", http.StatusOK, "", "admin", true},
-		{"member with one organization may create", "/auth/oidc/start", "user_support:", "/organizations", "/organizations", http.StatusOK, "", "support", true},
-		{"non-member may create", "/auth/oidc/start", "user_carol:", "/organizations", "/organizations", http.StatusOK, "", "", true},
+		{"member with organizations", "/auth/oidc/start", "user_support:", "/organizations", "/organizations", http.StatusOK, "", "support", false, ""},
+		{"member without organizations", "/auth/oidc/start", "user_staff:", "/platform", "/platform", http.StatusOK, "", "viewer", false, ""},
+		{"customer default", "/auth/oidc/start", "user_alice:", "/organizations", "/organizations", http.StatusOK, "", "", false, ""},
+		{"member organization session", "/auth/oidc/start", "user_support:porg_alpha", "/organizations", "/organizations", http.StatusOK, "", "support", false, "/organizations/org_alpha/organization"},
+		{"member without organizations may create", "/auth/oidc/start", "user_admin:", "/platform", "/platform", http.StatusOK, "", "admin", true, ""},
+		{"member with one organization may create", "/auth/oidc/start", "user_support:", "/organizations", "/organizations", http.StatusOK, "", "support", true, ""},
+		{"non-member may create", "/auth/oidc/start", "user_carol:", "/organizations", "/organizations", http.StatusOK, "", "", true, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f.service.config.Allocation = nil
@@ -334,9 +336,13 @@ func TestPlatformStaffLanding(t *testing.T) {
 			if err != nil || account.Destination != f.service.config.PublicURL+test.landing || account.CanCreate != test.canCreate {
 				t.Errorf("administration context = %+v (%v)", account, err)
 			}
+			loginLocation := test.landing
+			if test.loginLocation != "" {
+				loginLocation = test.loginLocation
+			}
 			b := newBrowser(t, f.service.Handler())
-			if location := b.login(test.target, test.code); location != test.landing {
-				t.Fatalf("post-login location = %q, want %q", location, test.landing)
+			if location := b.login(test.target, test.code); location != loginLocation {
+				t.Fatalf("post-login location = %q, want %q", location, loginLocation)
 			}
 			if home, _ := b.get("/"); home.StatusCode != http.StatusSeeOther || home.Header.Get("Location") != test.home {
 				t.Fatalf("home = %d %q", home.StatusCode, home.Header.Get("Location"))
@@ -873,8 +879,8 @@ func TestPlatformUsersSearch(t *testing.T) {
 		{"literal wildcard", "_%@", 200, 1, 0, 0},
 		{"session-only substring", "only", 200, 2, 0, 0},
 		{"no matches", "absent", 200, 0, -1, -1},
-		{"short", "ab", 400, 0, -1, -1},
-		{"empty", "", 400, 0, -1, -1},
+		{"short", "ab", 200, 0, -1, -1},
+		{"empty", "", 200, 8, -1, -1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response, body := staff.get("/api/cloud/platform/users?" + url.Values{"q": {test.query}}.Encode())
@@ -928,12 +934,90 @@ func TestPlatformUsersSearch(t *testing.T) {
 		if err := f.service.auth.createSession(t.Context(), email, "csrf", identity); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := f.service.auth.store.db.ExecContext(t.Context(), "UPDATE sessions SET created_at=? WHERE token_hash=?", formatTime(now.Add(time.Duration(i+1)*time.Hour)), email); err != nil {
+			t.Fatal(err)
+		}
 	}
-	_, body = staff.get("/api/cloud/platform/users?q=cap")
+	_, body = staff.get("/api/cloud/platform/users?q=cap&sort=email")
 	var capped platformusers.Result
 	decodeJSON(t, body, &capped)
 	if len(capped.Users) != 50 || capped.Users[49].Email != "cap49@example.test" {
 		t.Fatalf("cap = %+v", capped)
+	}
+	for _, test := range []struct {
+		name, query, first string
+		total, page, count int
+	}{
+		{"newest sign-in default", "q=cap", "cap59@example.test", 60, 1, 50},
+		{"oldest sign-in", "q=cap&sort=last_sign_in&direction=asc", "cap00@example.test", 60, 1, 50},
+		{"sign-in paging", "q=cap&page=2", "cap09@example.test", 60, 2, 10},
+		{"second page", "q=cap&sort=email&page=2", "cap50@example.test", 60, 2, 10},
+		{"descending before paging", "q=cap&sort=email&direction=desc&page=2", "cap09@example.test", 60, 2, 10},
+		{"clamp page", "q=cap&sort=email&page=999", "cap50@example.test", 60, 2, 10},
+		{"invalid page", "q=cap&sort=email&page=-1", "cap00@example.test", 60, 1, 50},
+		{"staff", "segment=staff", "staff@example.test", 3, 1, 3},
+		{"role", "role=viewer", "staff@example.test", 1, 1, 1},
+		{"role none before paging", "q=cap&role=none&page=2&sort=email", "cap50@example.test", 60, 2, 10},
+		{"no organization before paging", "q=cap&segment=no_organization&page=2&sort=email", "cap50@example.test", 60, 2, 10},
+		{"organization", "organization=org_alpha&q=alice", "alice@example.test", 1, 1, 1},
+		{"invited", "segment=invited", "carol@example.test", 1, 1, 1},
+		{"invitation organization", "organization=org_alpha&q=carol", "carol@example.test", 1, 1, 1},
+		{"combined filters", "organization=org_alpha&segment=staff", "", 0, 1, 0},
+		{"membership count sort", "sort=organizations&direction=desc", "alice@example.test", 68, 1, 50},
+		{"role sort", "sort=role&direction=desc", "staff@example.test", 68, 1, 50},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response, body := staff.get("/api/cloud/platform/users?" + test.query)
+			var result platformusers.Result
+			decodeJSON(t, body, &result)
+			if response.StatusCode != 200 || result.Total != test.total || result.Page != test.page || len(result.Users) != test.count || result.PageSize != 50 || len(result.Organizations) != 2 {
+				t.Fatalf("page result = %d %+v", response.StatusCode, result)
+			}
+			if test.first != "" && result.Users[0].Email != test.first {
+				t.Fatalf("first user = %s, want %s", result.Users[0].Email, test.first)
+			}
+		})
+	}
+	_, body = staff.get("/api/cloud/platform/users?segment=staff")
+	var counts platformusers.Result
+	decodeJSON(t, body, &counts)
+	if counts.Counts.All != 68 || counts.Counts.Staff != 3 || counts.Counts.Invited != 1 || counts.Counts.NoOrganization != 67 {
+		t.Fatalf("segment counts = %+v", counts.Counts)
+	}
+	alpha, ok := f.fixtures["org_alpha"]
+	if !ok {
+		t.Fatal("missing alpha tenant fixture")
+	}
+	db, err := sql.Open("sqlite", storeDSN(alpha.path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for i := range 900 {
+		email := fmt.Sprintf("large%03d@example.test", i)
+		if _, err := db.ExecContext(t.Context(), "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at,expires_at) VALUES(?,?,'org_alpha','member',?,?)", email, email, formatTime(now), formatTime(now.Add(time.Hour))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct {
+		query, first string
+		total        int
+	}{
+		{"", "cap59@example.test", 968},
+		{"q=large&sort=email", "large000@example.test", 900},
+		{"q=large&sort=email&page=18", "large850@example.test", 900},
+		{"q=large&segment=invited&sort=email&page=2", "large050@example.test", 900},
+		{"q=large&organization=org_alpha&sort=email&page=2", "large050@example.test", 900},
+		{"q=large899@example.test", "large899@example.test", 1},
+	} {
+		t.Run(test.query, func(t *testing.T) {
+			response, body := staff.get("/api/cloud/platform/users?" + test.query)
+			var result platformusers.Result
+			decodeJSON(t, body, &result)
+			if response.StatusCode != http.StatusOK || result.Total != test.total || len(result.Unsearched) != 0 || len(result.Users) == 0 || result.Users[0].Email != test.first {
+				t.Fatalf("large tenant = %d %+v", response.StatusCode, result)
+			}
+		})
 	}
 	original := f.service.config.transport
 	f.service.config.transport = func(org Organization) (http.RoundTripper, error) {
@@ -947,5 +1031,15 @@ func TestPlatformUsersSearch(t *testing.T) {
 	decodeJSON(t, body, &partial)
 	if len(partial.Users) != 1 || len(partial.Users[0].Memberships) != 1 || len(partial.Unsearched) != 1 || partial.Unsearched[0].ID != "org_beta" {
 		t.Fatalf("partial = %+v", partial)
+	}
+	for _, query := range []string{"q=only", "q=only&segment=no_organization", "q=staff&segment=no_organization", "q=carol&segment=no_organization"} {
+		t.Run("partial "+query, func(t *testing.T) {
+			_, body := staff.get("/api/cloud/platform/users?" + query)
+			var result platformusers.Result
+			decodeJSON(t, body, &result)
+			if len(result.Unsearched) != 1 || result.Counts.NoOrganization != 0 || strings.Contains(query, "segment=") && result.Total != 0 {
+				t.Fatalf("unknown memberships classified as absent: %+v", result)
+			}
+		})
 	}
 }

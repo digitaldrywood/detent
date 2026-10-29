@@ -2,6 +2,31 @@
 
 [Back to README](../README.md#documentation)
 
+## Commands
+
+Use `detent --help` for the top-level commands and `detent help --format json`
+for the full command catalog, including subcommands, flags and examples.
+
+| Area | Commands |
+| --- | --- |
+| Hub and runner | `hub`, `cloud`, `attach` |
+| Artifacts and installation | `artifacts`, `update`, `version`, `skill` |
+| Configuration and diagnostics | `config`, `doctor`, `fix`, `logs`, `help`, `completion` |
+| Project operations | `pause`, `unpause`, `resume`, `promote`, `budget`, `capacity`, `exposure` |
+| Application reads and tools | `audit`, `issue`, `mcp`, `state`, `report` |
+| Isolated browser fixtures | `dev-runtime` |
+
+Enroll a runner with `detent hub runner register --service` to install and start
+its background service. On Windows this is a per-user logon Scheduled Task;
+see [Windows runners](#windows-runners) for native and WSL2 setup.
+Run `detent --config /path/to/global.yaml --headless`
+to start an enrolled runner in the foreground. Hub API keys are managed in
+Settings > API & MCP.
+
+`config migrate` and `fix workflow-layout` remain available for repository
+workflow migrations. `dev-runtime` remains available for `tests/visual` and
+Browser Visual CI fixtures.
+
 ## CLI exit codes
 
 Detent uses stable process exit codes so scripts and agents can branch on the
@@ -132,10 +157,9 @@ Structured command objects:
 | `detent resume api --for 2h` | `{"status":"ok","project":"api","active_hours_override_until":"2026-08-07T21:00:00Z"}` |
 | `detent promote api --priority 1` | `{"status":"ok","project":"api","priority":1}` |
 | `detent config path` | `{"path":"/path/global.yaml","rule":"--config"}` |
-| `detent exposure [--project api]` | `{"findings":[{"source_project":"api","source_repository":"private/api","destination_repository":"public/detent","issue_number":42,"issue_url":"https://github.com/public/detent/issues/42","matched_identifier":"private/api"}],"warnings":[]}` |
-| `detent auth token enable` / `detent auth token rotate` | `{"url":"https://detent.example.com/?token=..."}` |
-| `detent issue '#1643' --explain --project detent` | The exact versioned issue explanation DTO returned by the running service, with no wrapper. |
-| `detent state [--project detent]` | A bounded projection of the public state response, plus `truncation`; internal `board_issues` are excluded. |
+| `detent exposure [--project api]` | `{"findings":[{"source_project":"api","source_repository":"example-org/private-api","destination_repository":"example-org/public-project","issue_number":42,"issue_url":"https://github.com/example-org/public-project/issues/42","matched_identifier":"example-org/private-api"}],"warnings":[]}` |
+| `detent issue '#42' --explain --project api` | The exact versioned issue explanation DTO returned by the running service, with no wrapper. |
+| `detent state [--project api]` | A bounded projection of the public state response, plus `truncation`; internal `board_issues` are excluded. |
 | `detent skill install --target codex --dry-run` | The complete skill install result, including bundle/build stamps, target intent and status, every planned filesystem action, and any rollback actions. |
 | `detent doctor` | `{"checks":[{"name":"Config resolution","status":"OK","detail":"...","hint":"..."}],"summary":{"ok":8,"warn":0,"fail":0},"result":"PASS"}` |
 | `detent fix worker-processes --dry-run` / `--yes` | The orphaned process groups reported by the live service, including session identity, PID, PGID, RSS, and the reap outcome when applied. |
@@ -300,7 +324,7 @@ After restoring subscription usage, request full configured dispatch capacity:
 detent capacity clear --scope codex --recovery immediate
 ```
 
-Use `--project detent` to select one project. Scope accepts a backend ID, kind,
+Use `--project api` to select one project. Scope accepts a backend ID, kind,
 provider, or backend/provider; omitting it selects all backend scopes.
 The default `--recovery ramping` and automatic recovery retain the gradual
 progress-based ramp. Immediate recovery also removes a matching ramp left by an
@@ -321,3 +345,201 @@ request. Other holds may still prevent dispatch after immediate recovery.
 Immediate mode requires a server that supports this option. If an older server
 accepts the clear but ignores the mode, the CLI reports that immediate recovery
 was not acknowledged; that older server may still apply its default ramp.
+
+### Worker CI trigger labels
+
+`detent hub ci-trigger-label` reapplies the configured pull-request CI label for
+Hub project workers, preserving host-wide staggering. The retired top-level
+`ci-trigger-label` command is no longer available.
+
+## Updates
+
+`detent update --check` (with `--json` for machine output) reports the current
+and latest versions, `update_available`, and `repair_available` for a
+same-version reinstall when the running release build lacks signature evidence.
+`detent update --yes` fetches the release's signed checksums, provenance and
+platform archive, verifies them with the pinned minisign key, executes the
+staged binary to confirm its version and full commit match the signed
+provenance, and installs it atomically. When a local runner service is running,
+its update owner prepares compatible worker artifacts while work is active and
+replaces the controller once idle; capacity, routing, credentials and
+workspaces are preserved. The updater fails closed when the signature,
+provenance checksum, repository, tag, commit or required release evidence is
+missing or inconsistent. Do not edit verification metadata to clear a refused
+state; the signed updater can recreate it.
+
+Enrolled runners also learn the Hub's target version on every heartbeat and
+apply compatible releases the same way. Older runners keep taking work during an
+update: the Hub refuses claims only from runners below its minimum supported
+runner version. A failed update is reported on the next heartbeat, and a newer
+release replaces an update that was refused or interrupted.
+
+Self-update depends on how the binary was installed:
+
+| Install source | `detent update` behavior |
+| --- | --- |
+| Release installer (`install.sh`, `install.ps1`) | Verifies and replaces the binary |
+| Homebrew | Reports `brew upgrade digitaldrywood/tap/detent`; an enrolled runner following its Hub applies the signed release |
+| `go install` | Reports the prepared source archive build path; `--from-release` switches to the release-managed binary |
+| Development build without release metadata | Refused |
+| Any other source (Scoop, Winget, deb/rpm, manual copy) | Refused; Detent does not overwrite a binary it cannot attribute to the release installer |
+
+Go module archives and automatic GitHub source archives do not contain the
+generated web assets. The release's `detent_<version>_source.tar.gz`, covered by
+the signed checksums, contains them and the build flags, so it builds with Go
+alone. The shell and PowerShell installers fall back to that archive when no
+platform binary is published.
+
+## Windows runners
+
+Windows has two runner paths:
+
+| Path | Agent access | Background runner |
+| --- | --- | --- |
+| Native Windows | Full access (`native-trusted`) only | Per-user logon Scheduled Task |
+| Linux inside WSL2 | Sandbox (`sandbox`) or Full access | Linux systemd user service |
+
+Full access lets agents use the runner user's files, credentials and network.
+
+### Native Windows
+
+Git for Windows (including Git Bash), the provider CLIs and the project's build
+tools must be installed for, and signed in as, the Windows user who enrolls and
+runs Detent, and be on that user's `PATH` at registration: the Scheduled Task
+captures the enrolling session's `PATH`. Install from a non-elevated PowerShell
+session:
+
+```powershell
+irm https://raw.githubusercontent.com/digitaldrywood/detent/main/install.ps1 | iex
+```
+
+The installer places `detent.exe` in `%LOCALAPPDATA%\detent\bin` and adds it to
+the user `PATH`. Obtain a one-time enrollment command from **Settings > Runners >
+Enroll a runner** with Full access selected, and pass the token through the
+environment:
+
+```powershell
+$env:DETENT_RUNNER_ENROLLMENT_TOKEN = 'TOKEN'
+detent hub runner register --url https://cloud.detent.build/organizations/ORGANIZATION_ID --name "Windows runner" --isolation-tier native-trusted --service
+Remove-Item Env:DETENT_RUNNER_ENROLLMENT_TOKEN
+```
+
+Native Windows rejects the default `sandbox` tier before enrollment.
+`--service` installs and starts a per-user logon Scheduled Task that runs
+without elevation as the enrolling user and starts again when that user signs
+in; it is not a machine service that runs before logon.
+
+| File | Default Windows path |
+| --- | --- |
+| Runner configuration | `%USERPROFILE%\.config\detent-runner\global.yaml` |
+| Private runner identity | `%USERPROFILE%\.config\detent-runner\identity.json` |
+| Service standard output | `%USERPROFILE%\.config\detent-runner\logs\service.out.log` |
+| Service standard error | `%USERPROFILE%\.config\detent-runner\logs\service.err.log` |
+| Scheduled Task definition | `%USERPROFILE%\.config\detent-runner\detent.runner.task.xml` |
+
+`--config` (an absolute path) moves the configuration; the identity, task
+definition and logs live beside it. The default checkout root is
+`%USERPROFILE%\detent-runner`; `--workspace-root` selects another absolute path.
+
+An omitted `hooks.shell` uses `cmd` on Windows. `hooks.shell: bash` resolves
+`bash` from `PATH`, falling back to `C:\Program Files\Git\bin\bash.exe`; a full
+executable path, `pwsh` or `powershell` can also be declared. A missing declared
+shell fails the hook instead of falling back to another shell.
+
+`detent update --yes` drains active work, exits, and Task Scheduler restarts the
+updated executable through the task's one-minute restart-on-failure policy. The
+executable must stay at its registered path. On native Windows the Sandbox tier
+and the workspace terminal are unavailable, and the executable is not
+code-signed, so SmartScreen may warn.
+
+### Linux inside WSL2
+
+A WSL2 distribution runs the Linux Detent binary, with Git, provider CLIs and
+project dependencies installed and signed in inside the distribution; Windows
+installations do not carry over. `--service` requires systemd, enabled in the
+distribution's `/etc/wsl.conf`:
+
+```ini
+[boot]
+systemd=true
+```
+
+After `wsl.exe --shutdown` (which stops every running distribution) and reopening
+the distribution, `systemctl status` confirms systemd. Install and enroll from the
+Linux shell with a fresh enrollment token:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh
+export DETENT_RUNNER_ENROLLMENT_TOKEN='TOKEN'
+detent hub runner register --url https://cloud.detent.build/organizations/ORGANIZATION_ID --name "WSL2 runner" --isolation-tier sandbox --service
+unset DETENT_RUNNER_ENROLLMENT_TOKEN
+```
+
+Sandbox availability still depends on the selected backend's isolation support
+and the runner's isolation probe. Keep the workspace root on the Linux
+filesystem, such as `~/detent-runner`, rather than under `/mnt/c`, and keep
+Windows and WSL configurations, identities and workspace roots separate. The
+runner is available only while its distribution is running.
+
+## OpenCode backend
+
+The `opencode` backend kind runs OpenCode v2 through ACP protocol version 1 over
+a private subprocess's stdin and stdout:
+
+```yaml
+agents:
+  backends:
+    - id: opencode
+      kind: opencode
+      protocol: acp
+      command: opencode
+      options:
+        turn_timeout_ms: 1800000
+        stall_timeout_ms: 300000
+```
+
+Options are `turn_timeout_ms`, `stall_timeout_ms` and `shell`. Routes select it
+with an exact OpenCode `provider/model` ID; `opencode models --standalone` lists
+the available IDs. The backend does not advertise a model catalog, so issue-level
+model or effort overrides are unavailable, and a model-selection policy whose
+backend kinds include `opencode` fails instead of selecting a model. An
+unavailable model or unsupported explicit effort fails before the prompt instead
+of falling back to another model.
+
+The runner's service account authenticates with `opencode auth login`; a login
+by another OS user does not authenticate the service, and `opencode auth list`
+lists connections without exporting secrets. A login or catalog entry does not
+prove remaining subscription capacity, and readiness reports authentication as
+unknown until a real request succeeds.
+
+Execution contract:
+
+- Native-trusted only. Sandboxed, read-only and text-only requests fail before
+  launch. OpenCode configuration, plugins and credentials are trusted runner
+  inputs, not a sandbox.
+- Each turn creates a new session at its exact workspace; persisted OpenCode
+  sessions are not resumed, and history hydration is unsupported.
+- Scoped Detent tools are served by a per-turn authenticated loopback MCP server
+  whose token travels through ACP, not command-line arguments or repository
+  files.
+- ACP permission requests receive only `allow_once` in a trusted coding turn;
+  unknown client methods are rejected.
+- Cancellation, the configured turn duration, stream stall detection and
+  process-group cleanup bound the process. ACP exposes no per-model-call counter,
+  so Detent's turn limit cannot bound OpenCode's internal iterations.
+- Launch, protocol and provider request errors use the instance-owned
+  backend-capacity recovery path. A refusal because a model requires OpenCode's
+  Global region setting fails the run with a message pointing to the workspace's
+  Settings > Privacy > Regions in the OpenCode console; it is not treated as a
+  code defect.
+- End-turn token usage is provider-reported. Cache reads and writes are
+  normalized into input and reasoning into output; missing counters are not
+  zero consumption, and no subscription cost is inferred.
+
+An opt-in live test exercises the installed CLI, authentication, a real model
+and a scoped MCP tool in a temporary workspace, consuming provider capacity:
+
+```sh
+DETENT_OPENCODE_SMOKE_MODEL=provider/model \
+  go test -timeout=150s ./internal/opencode -run '^TestOpenCodeLive$' -v
+```

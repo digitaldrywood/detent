@@ -95,6 +95,7 @@ func TestMakeCheckFastOverlapsWorktrees(t *testing.T) {
 		git("worktree", "add", "--detach", dir, "HEAD")
 		for file, content := range map[string]string{
 			"Makefile": string(makefile), ".golangci-version": "test\n", "go.mod": "module fixture\n",
+			"python3": "#!/bin/sh\ntest \"$*\" = \"scripts/check-runner-enrollment-docs.py\"\n",
 			"go": `#!/bin/sh
 set -eu
 case "$*" in
@@ -239,7 +240,8 @@ func TestMakeCheckPreflightWithoutSharedLock(t *testing.T) {
 	}{
 		{"stale SQL", "", false, "invariants\nmigrations\nconfigdoc\nsqlc\n", true, true},
 		{"broken config generator", "configdoc", false, "invariants\nmigrations\nconfigdoc\n", true, false},
-		{"generation succeeds", "", false, "invariants\nmigrations\nconfigdoc\nsqlc\n", false, false},
+		{"generation succeeds", "", false, "invariants\nmigrations\nconfigdoc\nsqlc\nenrollmentdocs\n", false, false},
+		{"broken enrollment docs", "enrollmentdocs", false, "invariants\nmigrations\nconfigdoc\nsqlc\nenrollmentdocs\n", true, false},
 		{"invariant failure", "", true, "invariants\n", true, false},
 	}
 	for _, target := range []string{"check", "check-fast"} {
@@ -265,6 +267,12 @@ func TestMakeCheckPreflightWithoutSharedLock(t *testing.T) {
 					write("invalid-invariants", "", 0o600)
 				}
 				write("git", "#!/bin/sh\npwd\n", 0o700)
+				write("python3", `#!/bin/sh
+set -eu
+test "$*" = "scripts/check-runner-enrollment-docs.py"
+echo enrollmentdocs >> trace
+test ! -f broken-enrollmentdocs
+`, 0o700)
 				write("go", `#!/bin/sh
 set -eu
 case "$*" in

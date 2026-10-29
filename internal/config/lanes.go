@@ -143,6 +143,9 @@ func rejectLegacyTrackerStates(root *yaml.Node) error {
 	if root == nil {
 		return nil
 	}
+	if err := validateRetiredWorkflowKeys(root); err != nil {
+		return err
+	}
 	var fields map[string]yaml.Node
 	if err := root.Decode(&fields); err != nil {
 		return err

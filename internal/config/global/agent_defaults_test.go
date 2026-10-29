@@ -19,7 +19,7 @@ func TestParseGlobalAgentDefaults(t *testing.T) {
 		{name: "ignored invalid preset", extra: "model_selection: {preset: unknown}"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			raw, err := yaml.Marshal(map[string]any{"apiVersion": "detent/v1", "kind": "GlobalConfig", "global": map[string]any{"max_concurrent_agents": 2, "scheduling": "weighted", "agents": map[string]any{}}, "projects": []any{}})
+			raw, err := yaml.Marshal(map[string]any{"apiVersion": "detent/v1", "kind": "GlobalConfig", "global": map[string]any{"max_concurrent_agents": 2, "scheduling": "weighted", "agents": map[string]any{}}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -67,12 +67,12 @@ func TestWorkerLocalBindingDefaults(t *testing.T) {
 			if tt.global != "" {
 				raw += "  " + tt.global + "\n"
 			}
-			raw += "projects: []\n"
+			raw += ""
 			global, err := Parse([]byte(raw), "", WithHome(t.TempDir()))
 			if err != nil {
 				t.Fatal(err)
 			}
-			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker: {kind: memory}\n" + tt.project + "\n---\nDo work.\n"))
+			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker: {kind: hub_native}\n" + tt.project + "\n---\nDo work.\n"))
 			if err != nil {
 				t.Fatal(err)
 			}

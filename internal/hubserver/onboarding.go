@@ -18,6 +18,7 @@ import (
 )
 
 func (s *Service) registerOnboardingRoutes(e *echo.Echo) {
+	s.registerRunnerRepositoryRoutes(e)
 	e.GET(nativeBase+"/onboarding/issue-intake", s.getGitHubBatch, s.requireNativeScope(apiScopeOperator, apiScopeAdmin))
 	e.POST(nativeBase+"/onboarding/issue-intake", s.commandGitHubBatch, s.requireOnboardingAdmin())
 	e.POST(nativeBase+"/onboarding/issue-intake/result", s.reportGitHubBatch, s.requireNativeScope(apiScopeWorker))
@@ -53,14 +54,16 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 	if err != nil {
 		return result, err
 	}
-	approval, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
-	if err == nil {
+	var organizationProjects int
+	if err := s.database.reader.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM projects sibling WHERE sibling.organization_id=p.organization_id AND sibling.deleted_at IS NULL AND sibling.id!=p.id), coalesce(nullif(p.checkout_repository,''),r.github_owner||'/'||r.github_name,'') FROM projects p LEFT JOIN repositories r ON r.id=p.repository_id WHERE p.organization_id=? AND p.id=? AND p.deleted_at IS NULL`, scope.organization, scope.project).Scan(&organizationProjects, &result.Repository); err != nil {
+		return result, err
+	}
+	approval, found, err := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
+	if err != nil {
+		return result, err
+	}
+	if found {
 		result.Policy = &approval
-	} else {
-		var missing *nativeError
-		if !errors.As(err, &missing) || missing.Code != "policy_mismatch" {
-			return result, err
-		}
 	}
 	result.ObservedPolicies, err = readObservedPolicies(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project), approval.Policy, s.config.now())
 	if err != nil {
@@ -114,6 +117,10 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 		}
 		exclusions := runner.Exclusions(scope.project, approval.Policy.Requirements, false)
 		runner.Problems = slices.DeleteFunc(slices.Clone(runner.Problems), func(p runnerauth.Problem) bool { return p.ProjectID != "" && p.ProjectID != string(scope.project) })
+		otherProjects := len(slices.DeleteFunc(slices.Clone(runner.ProjectIDs), func(id tracker.ProjectID) bool { return id == scope.project }))
+		if runner.Scope == "organization" {
+			otherProjects = organizationProjects
+		}
 		runner.ProjectIDs = []tracker.ProjectID{scope.project}
 		runner.ProjectRanks = map[tracker.ProjectID]int{scope.project: runner.ProjectRanks[scope.project]}
 		runner.Leases = nil
@@ -126,7 +133,16 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 		if err := json.Unmarshal([]byte(checksJSON), &checks); err != nil {
 			return result, err
 		}
-		result.Runners = append(result.Runners, runnerauth.Eligibility{Runner: runner, Exclusions: exclusions, LocalChecks: checks[scope.project]})
+		var repositories *runnerauth.RepositoryList
+		if scope.credential.Runner.RunnerID == "" {
+			if _, accessErr := s.readRunnerRouting(ctx, scope, id); accessErr == nil {
+				repositories, err = readRunnerRepositories(ctx, s.database.reader, id)
+				if err != nil {
+					return result, err
+				}
+			}
+		}
+		result.Runners = append(result.Runners, runnerauth.Eligibility{RepositoryList: repositories, OtherProjectCount: otherProjects, Runner: runner, Exclusions: exclusions, LocalChecks: checks[scope.project]})
 	}
 	rows, err = s.database.reader.QueryContext(ctx, "SELECT binding_json FROM artifact_services WHERE organization_id=? AND project_id=? ORDER BY id", scope.organization, scope.project)
 	if err != nil {
@@ -152,6 +168,15 @@ func (s *Service) projectOnboarding(ctx context.Context, scope nativeScope) (onb
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return result, err
 	}
+	slices.SortStableFunc(result.Runners, func(a, b runnerauth.Eligibility) int {
+		if (a.Runner.ConnectionHealth == "online") == (b.Runner.ConnectionHealth == "online") {
+			return 0
+		}
+		if a.Runner.ConnectionHealth == "online" {
+			return -1
+		}
+		return 1
+	})
 	result.Evaluate()
 	return result, nil
 }
@@ -172,7 +197,7 @@ type saveOnboardingRequest struct {
 func (s *Service) saveOnboarding(c echo.Context) error {
 	var request saveOnboardingRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := request.Progress.Validate(); err != nil {
 		return s.nativeAPIError(c, nativeInvalid(err.Error()))

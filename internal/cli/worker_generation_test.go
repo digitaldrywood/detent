@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestStartupReapSkipsLiveSiblingGeneration(t *testing.T) {
@@ -72,6 +73,10 @@ func TestStartupReapSkipsLiveSiblingGeneration(t *testing.T) {
 				t.Fatal(err)
 			}
 
+			nativeAttempt := tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: legacyAttempt}}, StartedAt: now}
+			if stopped, err := releasedExecutionWorkersStopped(t.Context(), current, "legacy", nativeAttempt); err != nil || stopped {
+				t.Fatalf("live provider acknowledged: stopped=%t error=%v", stopped, err)
+			}
 			var reaped []int
 			err := reapWorkerProcessesWithCleanup(t.Context(), current, nil, "startup", time.Second, func() time.Time { return now },
 				func(_ context.Context, identity procgroup.Identity, _ time.Duration) (procgroup.TerminationOutcome, error) {
@@ -92,6 +97,15 @@ func TestStartupReapSkipsLiveSiblingGeneration(t *testing.T) {
 				attempt, err := current.WorkAttempt(t.Context(), check.id)
 				if err != nil {
 					t.Fatal(err)
+				}
+
+				nativeAttempt.Runtime.LocalAttemptID = check.id
+				stopped, err := releasedExecutionWorkersStopped(t.Context(), current, tracker.NativeWorkItemID(attempt.IssueID), nativeAttempt)
+				if err != nil || stopped == check.wantActive {
+					t.Fatalf("reaped native execution stopped=%t active=%t error=%v", stopped, check.wantActive, err)
+				}
+				if stopped, err := releasedExecutionWorkersStopped(t.Context(), current, "unrelated", nativeAttempt); err != nil || stopped {
+					t.Fatalf("foreign local attempt acknowledged: stopped=%t error=%v", stopped, err)
 				}
 				if active := attempt.Status == store.WorkAttemptStatusActive; active != check.wantActive {
 					t.Fatalf("attempt %s active = %t, want %t (%+v)", attempt.IssueID, active, check.wantActive, attempt)

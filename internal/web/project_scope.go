@@ -78,7 +78,6 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 	out.ForgeUnavailable = scopedForgeUnavailable(snapshot.ForgeUnavailable, selectedProjectID, fallbackProjectID)
 	out.CIUnavailable = scopedCIUnavailable(snapshot.CIUnavailable, selectedProjectID, fallbackProjectID)
 	out.FailureBreakers = scopedFailureBreakers(snapshot.FailureBreakers, selectedProjectID, fallbackProjectID)
-	out.DispatchLoops = scopedDispatchLoops(snapshot.DispatchLoops, selectedProjectID, fallbackProjectID)
 	out.DispatchRecoveries = scopedDispatchRecoveries(snapshot.DispatchRecoveries, selectedProjectID, fallbackProjectID)
 	out.DispatchStalls = scopedDispatchStatuses(snapshot.DispatchStalls, selectedProjectID, fallbackProjectID)
 	out.LaneSignalWarnings = scopedLaneSignalWarnings(snapshot.LaneSignalWarnings, selectedProjectID, fallbackProjectID)
@@ -260,20 +259,6 @@ func scopedFailureBreakers(breakers []telemetry.FailureBreaker, selectedProjectI
 		}
 		if projectID == selectedProjectID {
 			out = append(out, breaker)
-		}
-	}
-	return out
-}
-
-func scopedDispatchLoops(loops []telemetry.DispatchLoop, selectedProjectID string, fallbackProjectID string) []telemetry.DispatchLoop {
-	out := make([]telemetry.DispatchLoop, 0, len(loops))
-	for _, loop := range loops {
-		projectID := strings.TrimSpace(loop.ProjectID)
-		if projectID == "" {
-			projectID = fallbackProjectID
-		}
-		if projectID == selectedProjectID {
-			out = append(out, loop)
 		}
 	}
 	return out

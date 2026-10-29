@@ -1,2 +1,2 @@
 tracker:
-  kind: memory
+  kind: hub_native

@@ -94,7 +94,7 @@ interface Pending {
 /**
  * The composer's attachment state for one conversation. `conversationId` is
  * null on a surface with no conversation yet (the new-chat hero), and the
- * controller is then inert: §17.1 stages a file against a conversation, so
+ * controller is then inert: the attachment contract stages a file against a conversation, so
  * there is nothing to upload to until the first send has made one.
  */
 export function useComposerAttachments(
@@ -216,7 +216,7 @@ export function useComposerAttachments(
       files.current.delete(localId);
       setStaged((current) => current.filter((candidate) => candidate.localId !== localId));
       // An upload that already landed is released on the hub too, so a file the
-      // reader changed their mind about does not outlive the draft (§17.1).
+      // reader changed their mind about does not outlive the draft.
       if (entry?.id != null && conversationId !== null) {
         // Nothing is reported if it fails: the chip is gone and the hub
         // expires an unsent attachment anyway.

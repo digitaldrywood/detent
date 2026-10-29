@@ -246,3 +246,46 @@ export interface ReportsFilters {
   readonly stages: readonly string[];
 }
 export type ReportsTimeView = "system" | "lead";
+
+const ProductivityMetrics = Schema.Struct({
+  filed: Schema.Number,
+  completed: Schema.Number,
+  cancelled: Schema.Number,
+  net_backlog: Schema.Number,
+  changes_landed: Schema.Number,
+  worked: Schema.Number,
+  reworked: Schema.Number,
+  completion_cost_usd: Schema.Number,
+  cost_per_completed_usd: Schema.NullOr(Schema.Number),
+  cycle_p50_seconds: Schema.NullOr(Schema.Number),
+  rework_percent: Schema.NullOr(Schema.Number),
+});
+const ProductivityCount = Schema.Struct({ filed: Schema.Number, completed: Schema.Number });
+const ProductivityBucket = Schema.Struct({
+  from: Schema.String,
+  to: Schema.String,
+  ...ProductivityCount.fields,
+  projects: Schema.Record(Schema.String, ProductivityCount),
+});
+const ProductivityActor = Schema.Struct({
+  kind: Schema.String,
+  id: Schema.optional(Schema.String),
+  name: Schema.optional(Schema.String),
+  current: Schema.Number,
+  previous: Schema.Number,
+});
+const ProductivityWindow = Schema.Struct({ from: Schema.String, to: Schema.String });
+export const OrganizationReports = Schema.Struct({
+  organization_id: Schema.String,
+  prior_recorded: Schema.Boolean,
+  window: ProductivityWindow,
+  previous_window: ProductivityWindow,
+  current: ProductivityMetrics,
+  previous: ProductivityMetrics,
+  projects: Schema.Array(Schema.Struct({ project_id: Schema.String, current: ProductivityMetrics, previous: ProductivityMetrics })),
+  series: Schema.Array(ProductivityBucket),
+  previous_series: Schema.Array(ProductivityBucket),
+  filed_by: Schema.Array(ProductivityActor),
+  completed_by: Schema.Array(ProductivityActor),
+});
+export type OrganizationReports = typeof OrganizationReports.Type;

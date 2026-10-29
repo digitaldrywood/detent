@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func TestHealthEndpoint(t *testing.T) {
@@ -140,9 +142,7 @@ func TestServeShutsDownGracefully(t *testing.T) {
 		t.Fatalf("GET /health status = %d, want 200", response.StatusCode)
 	}
 
-	shutdownContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := service.Shutdown(shutdownContext); err != nil {
+	if err := service.Shutdown(testenv.WaitContext(t, context.Background())); err != nil {
 		t.Fatalf("Shutdown() error = %v", err)
 	}
 	select {
@@ -150,7 +150,7 @@ func TestServeShutsDownGracefully(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Serve() error = %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("Serve() did not return after Shutdown()")
 	}
 	if err := service.Backup(t.Context(), filepath.Join(t.TempDir(), "backup.db")); !errors.Is(err, ErrNotReady) {
@@ -173,8 +173,6 @@ func TestRunStopsOnContextCancellationAndReleasesDatabase(t *testing.T) {
 	}
 
 	t.Parallel()
-
-	const runDeadlockGuard = time.Minute
 
 	databasePath := filepath.Join(t.TempDir(), "hub.db")
 	listenerAccepting := make(chan struct{})
@@ -201,20 +199,21 @@ func TestRunStopsOnContextCancellationAndReleasesDatabase(t *testing.T) {
 		select {
 		case <-runDone:
 			return true
-		case <-time.After(runDeadlockGuard):
+		case <-testenv.WaitContext(t, t.Context()).Done():
 			t.Error("Run() did not stop after cancellation")
 			return false
 		}
 	}
 	t.Cleanup(func() {
-		cancelAndJoin()
+		cancel()
+		<-runDone
 	})
 
 	select {
 	case <-listenerAccepting:
 	case <-runDone:
 		t.Fatalf("Run() returned before accepting listener connections: %v", <-runResult)
-	case <-time.After(runDeadlockGuard):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("Run() did not start accepting listener connections")
 	}
 	if !cancelAndJoin() {

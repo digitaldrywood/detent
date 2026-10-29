@@ -23,7 +23,7 @@ import (
 var ErrNoPTY = errors.New("workspaceterminal: this platform has no pseudo-terminal")
 
 // Supported reports whether this build can open a terminal at all. The runner
-// reports the terminal capability only where it is true (section 18.10): a
+// reports the terminal capability only where it is true: a
 // runner that claimed a workspace it would then refuse frame by frame is worse
 // for the person than one that was never offered it, because an unclaimed
 // workspace fails with no_runner and says so.

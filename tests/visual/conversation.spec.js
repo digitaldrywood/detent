@@ -41,10 +41,10 @@ const UNLINKED_CONVERSATION = /\/api\/v2\/organizations\/[^/]+\/projects\/[^/]+\
 const NOT_FOUND = /status of 404\b/;
 
 /** Collects everything the page logs as an error, for a per-test assertion. */
-function watchConsole(page) {
+function watchConsole(page, expected = () => false) {
   const errors = [];
   page.on("console", (message) => {
-    if (message.type() !== "error") return;
+    if (message.type() !== "error" || expected(message)) return;
     const url = message.location().url ?? "";
     const expected404 =
       NOT_FOUND.test(message.text()) &&
@@ -67,7 +67,7 @@ async function openChat(page, route = "") {
  * accounts come from `internal/hubserver/hosted_browser_test.go`: `owner` is
  * the organization owner with a writable grant, `viewer` holds the WorkOS
  * `viewer` role and a read-only grant on the same project, so the hub reports
- * `can_write: false` for it (decisions.md §10.11).
+ * `can_write: false` for it.
  */
 async function openChatAs(page, account, route = "") {
   await page.goto(hub.fixture.accounts[account], { waitUntil: "domcontentloaded" });
@@ -188,7 +188,7 @@ function focusInsideDrawer(page) {
 /**
  * Asserts the route names itself once, at level one. A page with no `h1` gives
  * a screen reader nothing to jump to; a page with several gives it no answer
- * to "what is this" (B.14).
+ * to "what is this".
  */
 async function expectOneHeadingOne(page, text) {
   const heading = page.getByRole("heading", { level: 1 });
@@ -260,7 +260,7 @@ function headerActionsTrigger(page) {
 
 /**
  * Opens the handoff form the way the ported header offers it: the actions menu
- * carries "Create linked issue" in Detent's own group (§15, §18.12).
+ * carries "Create linked issue" in Detent's own group.
  */
 async function openCreateLinkedIssue(page) {
   await headerActionsTrigger(page).click();
@@ -670,7 +670,7 @@ test("lists the chat in the sidebar and filters it from the search box", async (
   expect(errors).toEqual([]);
 });
 
-// §19.4. Both of the old chat entry points for a linked conversation now land
+// Both of the old chat entry points for a linked conversation now land
 // on the issue page: `/chat/issues/:workItem` is a plain redirect, and
 // `/chat/c/:conversation` redirects with `?panel=conversation` so the chat is
 // open beside the issue rather than instead of it.
@@ -693,7 +693,7 @@ test("sends both linked-conversation paths to the issue page", async ({ page }) 
 
   await expect(surface.getByTestId("composer-context-strip")).toContainText("#");
 
-  // Waiting for a runner and running must not share a treatment (A.11), so the
+  // Waiting for a runner and running must not share a treatment, so the
   // strip says which one is true in words.
   await expect(page.getByTestId("execution-copy")).toContainText("Waiting for a runner");
   await expect(page.getByTestId("execution-copy")).toContainText(
@@ -734,7 +734,7 @@ test("answers the search and new-chat keyboard shortcuts", async ({ page }) => {
   await expect(search).toHaveValue("");
 
   // There is one new-chat control in this context, and the shortcut is not a
-  // second one: it calls the same action the compose pencil does (B.13).
+  // second one: it calls the same action the compose pencil does.
   await expect(sidebar(page).getByRole("button", { name: "New thread" })).toHaveCount(1);
   await page.keyboard.press("ControlOrMeta+Shift+N");
   await expect(page).toHaveURL(/\/chat\/?$/);
@@ -767,7 +767,7 @@ test("confirms automatic chat linking when creating an issue on a phone", async 
   await page.keyboard.press("Tab");
   await expect(form.getByLabel("Objective")).toBeFocused();
 
-  // §13.8 and §14: the next step comes before the confirmation, and it opens
+  // The next step comes before the confirmation, and it opens
   // on Detent's own defaults rather than on a blank.
   const next = form.getByTestId("handoff-next");
   await expect(next).toContainText("What happens next");
@@ -777,7 +777,7 @@ test("confirms automatic chat linking when creating an issue on a phone", async 
   await expect(next.getByLabel("Lane")).toBeFocused();
   await page.keyboard.press("Tab");
   // The tracker's own rank, 0-3, left unset so the hub applies the project's
-  // default (§14).
+  // default.
   await expect(next.getByLabel("Priority")).toBeFocused();
   await expect(next.getByLabel("Priority")).toHaveValue("");
   await page.keyboard.press("Tab");
@@ -801,8 +801,8 @@ test("confirms automatic chat linking when creating an issue on a phone", async 
   await page.keyboard.press("Enter");
 
   await expect(form).toBeHidden();
-  // Linking moves the reader to the issue page with the chat in the panel
-  // (§19.4); everything the link produced is still there, in the panel.
+  // Linking moves the reader to the issue page with the chat in the panel;
+  // everything the link produced is still there, in the panel.
   await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/\d+(?:\?|$)/);
   await expect(page.getByTestId("issue-card").last()).toContainText(
     "Move the renewal behind the acknowledgement",
@@ -962,14 +962,14 @@ test.describe("narrow viewport", () => {
   });
 });
 
-// The corrections in decisions.md §10, against the same hosted hub as
+// The corrections after the first-slice review, against the same hosted hub as
 // everything above. Two of them cannot be reached end to end from a browser
 // because the preview fixture has no runner and no way to fail a coordinator
 // turn; each of those says so at the top of the test and asserts the half the
 // fixture can reach. The rest are driven through the client, from the
 // keyboard, exactly like the tests above.
-test.describe("decisions.md §10 corrections", () => {
-  // §10.2. `POST /conversations` carries a client-generated `key` and runs
+test.describe("first-slice review corrections", () => {
+  // `POST /conversations` carries a client-generated `key` and runs
   // through the idempotent mutation path, so the create that a dropped
   // response makes the client repeat returns the stored conversation instead
   // of opening a second one. The client's own request is captured and replayed
@@ -1056,7 +1056,7 @@ test.describe("decisions.md §10 corrections", () => {
     expect(errors.filter((entry) => !entry.includes("422"))).toEqual([]);
   });
 
-  // §10.4. Not covered end to end for the same reason: `resume` is written
+  // Not covered end to end for the same reason: `resume` is written
   // when a runner binds an attempt
   // (`internal/hubserver/conversation_worker.go`, the bind handler), and this
   // fixture enrolls no runner. What is checked is that the execution resource
@@ -1079,7 +1079,7 @@ test.describe("decisions.md §10 corrections", () => {
     expect(errors).toEqual([]);
   });
 
-  // §10.5. The share confirmation states the whole history, taken from the
+  // The share confirmation states the whole history, taken from the
   // conversation's `message_count` rather than from the page that happens to
   // be loaded.
   test("states the whole history in the audience preview", async ({ page }) => {
@@ -1110,7 +1110,7 @@ test.describe("decisions.md §10 corrections", () => {
     expect(errors).toEqual([]);
   });
 
-  // §10.11. The `viewer` account holds a read-only grant on the same project,
+  // The `viewer` account holds a read-only grant on the same project,
   // so the hub reports `can_write: false` and every control that would write
   // is gone rather than merely inert-looking.
   test("gives a read-only viewer no controls", async ({ page }) => {
@@ -1127,7 +1127,7 @@ test.describe("decisions.md §10 corrections", () => {
     );
 
     // And the issue's own write controls are gone rather than greyed out: no
-    // lane menu, no priority menu, no label removal (§10.11, §19.1).
+    // lane menu, no priority menu, no label removal.
     const properties = page.getByTestId("issue-properties");
     await expect(properties.getByTestId("state-menu")).toHaveCount(0);
     await expect(properties.getByTestId("priority-menu")).toHaveCount(0);
@@ -1151,11 +1151,17 @@ test.describe("decisions.md §10 corrections", () => {
     await expect(page.getByTestId("execution-strip").getByRole("button")).toHaveCount(0);
 
     await expectOneHeadingOne(page, "Renew the lease before the handoff completes");
-    await expectNoSeriousAxeViolations(page, "a read-only viewer");
+    for (const width of [1440, 1000, 390]) {
+      await page.setViewportSize({ width, height: 1100 });
+      const preferences = surface.getByRole("group", { name: "Turn preferences" });
+      await preferences.focus();
+      await expect(preferences).toBeFocused();
+      await expectNoSeriousAxeViolations(page, `a read-only viewer at ${width}px`);
+    }
     expect(errors).toEqual([]);
   });
 
-  // §13.9 and §14. Settled replaced Archive: a conversation settles on its own
+  // Settled replaced Archive: a conversation settles on its own
   // and unsettles on activity, so the client offers no archive action, no
   // banner and no "Show archived" toggle, and the Settled shelf is a group in
   // the list rather than a filter the reader has to remember to turn on.
@@ -1183,7 +1189,7 @@ test.describe("decisions.md §10 corrections", () => {
     expect(errors).toEqual([]);
   });
 
-  // §13.14 and §14. The composer's three chips are real pickers, and "Auto" is
+  // The composer's three chips are real pickers, and "Auto" is
   // what every one of them opens on. This is the browser's job: a Base UI
   // select needs layout to open, which jsdom does not have.
   test("opens the composer's model, effort and access pickers", async ({ page }) => {
@@ -1307,7 +1313,7 @@ test.describe("decisions.md §10 corrections", () => {
     expect(errors).toEqual([]);
   });
 
-  // §19.5. The issue page's composer offers the commands that page has, and
+  // The issue page's composer offers the commands that page has, and
   // only those: a comment has no model, no effort or access, and
   // there is no runner working on this issue to send to.
   test("offers the issue page's own slash commands", async ({ page }) => {
@@ -1402,7 +1408,7 @@ test.describe("decisions.md §10 corrections", () => {
     }
   });
 
-  // §10.14, restated for the one frontend (§11). There are no hosted Templ
+  // The first-slice corrections, restated for the one frontend. There are no hosted Templ
   // pages left to link from: the sidebar is the shell for every route, so the
   // assertion is that its own Work and Chat destinations navigate the client.
   test("links the hosted pages to the client", async ({ page }) => {
@@ -1438,7 +1444,7 @@ test.describe("decisions.md §10 corrections", () => {
     expect(errors).toEqual([]);
   });
 
-  // §11. `/` is not a second front door: it sends the reader to Work.
+  // `/` is not a second front door: it sends the reader to Work.
   test("sends the root path to the Work board", async ({ page }) => {
     await page.goto(hub.fixture.accounts.owner, { waitUntil: "domcontentloaded" });
     await page.goto(hub.fixture.url, { waitUntil: "domcontentloaded" });
@@ -1605,7 +1611,7 @@ test.describe("the ported shell's interactions", () => {
 
     expect(byLabel.Agents, "Agents card is gone").toBeUndefined();
     // The Browser has no Detent counterpart: present, inert, and saying so —
-    // never quietly removed (§16).
+    // never quietly removed.
     expect(byLabel.Browser.openable, "Browser is inert").toBe(false);
     expect(byLabel.Browser.reason, "Browser says why").toBe("Not available on Detent Cloud yet.");
     // The Terminal needs an issue-linked worktree. The draft has no issue,
@@ -1631,7 +1637,7 @@ test.describe("the ported shell's interactions", () => {
     expect(errors).toEqual([]);
   });
 
-  // §19.3. On a page that has a conversation, the panel toggle and
+  // On a page that has a conversation, the panel toggle and
   // `rightPanel.toggle` open the same surface the live row does: the
   // conversation, not an empty launcher.
   test("opens the conversation surface from the panel toggle on an issue", async ({ page }) => {
@@ -1751,7 +1757,9 @@ test.describe("the ported shell's interactions", () => {
   });
 
   test("masks the settings scroller with the scroll fade", async ({ page }) => {
-    const errors = watchConsole(page);
+    // General's account widgets get `503` from `widget-token` because the
+    // fixture's sign-in provider issues no WorkOS widget tokens.
+    const errors = watchConsole(page, (message) => /503 \(Service Unavailable\)/.test(message.text()) && /\/widget-token$/.test(message.location().url ?? ""));
     await page.goto(hub.fixture.accounts.owner, { waitUntil: "domcontentloaded" });
     await page.goto(`${hub.fixture.url}/settings`, { waitUntil: "domcontentloaded" });
 
@@ -1790,7 +1798,7 @@ test.describe("the ported shell's interactions", () => {
 
     await expect(palette).toHaveCount(0);
     // A linked conversation's destination is its issue page with the chat open
-    // in the panel (§19.4) — the same rule the sidebar's rows follow.
+    // in the panel — the same rule the sidebar's rows follow.
     await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/2(?:\?|$)/);
     await expect(page.getByTestId("conversation-surface")).toBeVisible();
     await expect(page.getByRole("heading", { level: 1 })).toContainText(
@@ -1799,13 +1807,13 @@ test.describe("the ported shell's interactions", () => {
     expect(errors).toEqual([]);
   });
 
-  // §18.10. The right panel's chord, driven from the composer where a bare
+  // The right panel's chord, driven from the composer where a bare
   // letter would be typing — the one place a keybinding has to beat a focused
   // editor to the keystroke, which is why the listener captures.
   test("toggles the right panel from its keybinding", async ({ page }) => {
     const errors = watchConsole(page);
     // The new-chat page: a linked conversation now lands on its issue page
-    // with the conversation panel already open (decisions §19.4), so the
+    // with the conversation panel already open, so the
     // toggle's starting state is only "closed" here.
     await openChat(page);
 
@@ -1856,7 +1864,7 @@ test.describe("the ported shell's interactions", () => {
 
 test.describe("the header's git action group", () => {
   // A plain chat has no issue, so it has no worktree, and the whole group says
-  // so in one sentence (§18.13).
+  // so in one sentence.
   test("disables the whole group on a chat with no linked issue", async ({ page }) => {
     const errors = watchConsole(page);
     await openChat(page);
@@ -1899,7 +1907,7 @@ test.describe("the footer's update check", () => {
     expect(errors).toEqual([]);
   });
 
-  test("shows the behind state on its own and walks to Providers & runners", async ({ page }) => {
+  test("shows the behind state on its own and walks to Runners", async ({ page }) => {
     const errors = watchConsole(page);
     await page.route("**/app/updates", async (route) => {
       await route.fulfill({

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func TestNativeReadsDoNotWaitForTheWriter(t *testing.T) {
@@ -35,7 +36,7 @@ func TestNativeReadsDoNotWaitForTheWriter(t *testing.T) {
 				if code != http.StatusOK {
 					t.Fatalf("status = %d while the writer is held", code)
 				}
-			case <-time.After(5 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("read waited for the held writer transaction")
 			}
 		})

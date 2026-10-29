@@ -53,8 +53,8 @@ func TestUnfinishedCompletionClassification(t *testing.T) {
 					if len(tracker.updates) != 0 {
 						t.Fatalf("unexpected lane updates: %#v", tracker.updates)
 					}
-					if changed && (len(state.FailureBreaker.Failures) != 0 || len(state.RepeatedFailures) != 0 || len(state.InstantFailures) != 0 || attempts.completions[0].ErrorClass != "") {
-						t.Fatal("genuine progress recorded failure evidence")
+					if changed && (len(state.FailureBreaker.Failures) != 0 || attempts.completions[0].ErrorClass != "") {
+						t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
 					}
 					if _, ok := state.Retry[issue.ID]; !ok {
 						t.Fatal("missing allowance-controlled continuation")
@@ -274,17 +274,17 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 			if mode != tt.mode {
 				t.Fatalf("conflict repair mode = %s, want %s", mode, tt.mode)
 			}
-			start := newDispatchLoopStartRecord(before, mode)
+			start := newCompletionSourceStartRecord(before, mode)
 			start.PRDiffFingerprint = before.PullRequest.DiffFingerprint
 			start.PRMergeableState = before.PullRequest.MergeableState
-			id, ok := orch.startDurableWorkAttempt(t.Context(), &state, before, 1, time.Now(), "local", mode, start)
+			id, ok := orch.startDurableWorkAttempt(t.Context(), &state, before, 1, time.Now(), "local", mode, start, orch.cfg.Policy)
 			if !ok {
 				t.Fatal("start attempt failed")
 			}
 			// Workspace snapshots and heartbeat serialization must preserve PR evidence.
-			running := Running{Issue: before, Mode: mode, DispatchLoopStart: start}
-			running.DispatchLoopStart = dispatchLoopStartRecordFromSnapshot(running, runpkg.DispatchLoopStartSnapshot{WorkspaceDiffAvailable: true})
-			persisted := dispatchLoopStartFromMetadata(t, runningWorkAttemptMetadataJSON(running, nil))
+			running := Running{Issue: before, Mode: mode, CompletionSourceStart: start}
+			running.CompletionSourceStart = completionSourceStartRecordFromSnapshot(running, runpkg.CompletionSourceStartSnapshot{WorkspaceDiffAvailable: true})
+			persisted := completionSourceStartFromMetadata(t, runningWorkAttemptMetadataJSON(running, nil))
 			if persisted.PRDiffFingerprint != start.PRDiffFingerprint || persisted.PRMergeableState != "dirty" {
 				t.Fatalf("heartbeat baseline = %#v", persisted)
 			}
@@ -318,8 +318,8 @@ func TestCompletionRebaseAfterRestart(t *testing.T) {
 			if attempt.TerminalState != tt.want {
 				t.Fatalf("terminal state = %s, want %s", attempt.TerminalState, tt.want)
 			}
-			if tt.want == store.WorkAttemptTerminalSuccess && (attempt.ErrorClass != "" || len(state.FailureBreaker.Failures) != 0 || len(state.RepeatedFailures) != 0 || len(state.InstantFailures) != 0) {
-				t.Fatalf("progress recorded failure evidence: %#v", attempt)
+			if tt.want == store.WorkAttemptTerminalSuccess && (attempt.ErrorClass != "" || len(state.FailureBreaker.Failures) != 0) {
+				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
 			}
 		})
 	}

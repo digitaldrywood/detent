@@ -1,6 +1,7 @@
 import { Building2Icon, CheckIcon, ChevronUpIcon, PlusIcon } from "lucide-react";
 import { useContext, useEffect, useRef, useState } from "react";
 
+import { OrganizationImage } from "../../app/components/OrganizationImage";
 import { ClientContext } from "../../app/client";
 import { useAccountApi } from "../../app/account/context";
 import { newKey } from "../../app/account/idempotency";
@@ -12,6 +13,7 @@ import {
   useSharedOrganizations,
 } from "../../app/entry/shared";
 import type { AccountBootstrap } from "../../contracts/account";
+import { signInPath } from "../../runtime/basePath";
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
@@ -21,19 +23,21 @@ import { SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
 type Workspace = {
   readonly id: string;
   readonly name: string;
+  readonly logoUrl?: string | undefined;
+  readonly role?: string;
 };
 
-function WorkspaceBadge({ name }: { name: string }) {
+function WorkspaceBadge({ name, url }: { name: string; url?: string | undefined }) {
   const initials = name.trim().split(/\s+/).slice(0, 2)
     .map((word) => Array.from(word)[0]).join("").toLocaleUpperCase();
   return (
-    <Badge
+    <OrganizationImage name={name} url={url} className="size-5.5" fallback={<Badge
       aria-hidden
       className="size-5.5 shrink-0 justify-center rounded-sm p-0 text-xs sm:size-5.5"
       variant="secondary"
     >
       {initials}
-    </Badge>
+    </Badge>} />
   );
 }
 
@@ -47,6 +51,7 @@ export function WorkspacePicker({
   loading = false,
   error = null,
   signInHref,
+  onSignOut,
 }: {
   readonly current: Workspace;
   readonly organizations: readonly Workspace[];
@@ -57,6 +62,7 @@ export function WorkspacePicker({
   readonly loading?: boolean;
   readonly error?: string | null;
   readonly signInHref?: string;
+  readonly onSignOut?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -64,7 +70,7 @@ export function WorkspacePicker({
   const trigger = useRef<HTMLButtonElement>(null);
   const popup = useRef<HTMLDivElement>(null);
   const workspaces = organizations.some((workspace) => workspace.id === current.id)
-    ? organizations
+    ? organizations.map((workspace) => workspace.id === current.id ? { ...workspace, logoUrl: current.logoUrl ?? workspace.logoUrl, role: workspace.role ?? current.role } : workspace)
     : [current, ...organizations];
   const filtered = workspaces.filter((workspace) =>
     workspace.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()),
@@ -93,8 +99,9 @@ export function WorkspacePicker({
               title={current.name}
               className="w-auto gap-1 px-1"
             >
-              <WorkspaceBadge name={current.name} />
+              <WorkspaceBadge name={current.name} url={current.logoUrl} />
               <ChevronUpIcon className="size-3" />
+              {current.role === "reporter" ? <span className="truncate text-xs text-muted-foreground">{current.name}</span> : null}
             </SidebarMenuButton>
           }
         />
@@ -134,6 +141,8 @@ export function WorkspacePicker({
           {filtered.map((workspace) => (
             <MenuItem
               key={workspace.id}
+              aria-label={workspace.name}
+              aria-description={workspace.role}
               aria-current={workspace.id === current.id ? true : undefined}
               title={workspace.name}
               className={cn(
@@ -146,8 +155,9 @@ export function WorkspacePicker({
                 if (workspace.id !== current.id) onSelect(workspace.id);
               }}
             >
-              <WorkspaceBadge name={workspace.name} />
+              <WorkspaceBadge name={workspace.name} url={workspace.logoUrl} />
               <span className="min-w-0 flex-1 truncate">{workspace.name}</span>
+              {workspace.role ? <span className="text-xs capitalize text-muted-foreground">{workspace.role}</span> : null}
               {workspace.id === current.id ? <CheckIcon aria-hidden className="size-3.5" /> : null}
             </MenuItem>
           ))}
@@ -182,6 +192,7 @@ export function WorkspacePicker({
               Platform console
             </MenuItem>
           ) : null}
+          {onSignOut ? <><MenuSeparator /><MenuItem disabled={pending} onClick={onSignOut}>Sign out</MenuItem></> : null}
         </MenuPopup>
       </Menu>
     </SidebarMenuItem>
@@ -208,15 +219,20 @@ function AccountWorkspacePicker({ account }: { readonly account: AccountBootstra
     globalThis.location.assign(result.next);
     return result;
   });
+  const signOut = useMutation(async () => {
+    await api.logout();
+    globalThis.location.assign(signInPath());
+  });
 
   return (
     <WorkspacePicker
-      current={account.organization}
-      organizations={isShared ? shared.value ?? [] : account.organizations}
+      current={{ ...account.organization, logoUrl: account.organization.logo?.url, role: account.actor.role }}
+      organizations={isShared ? (shared.value ?? []).map((item) => ({ ...item, logoUrl: item.logo_url })) : account.organizations.map((item) => ({ ...item, logoUrl: item.logo?.url }))}
       onSelect={(id) => void switchTo.call(id)}
-      pending={switchTo.pending}
+      pending={switchTo.pending || signOut.pending}
       loading={isShared && shared.loading}
-      error={listingError ?? switchTo.error?.message ?? null}
+      error={listingError ?? switchTo.error?.message ?? signOut.error?.message ?? null}
+      onSignOut={() => void signOut.call()}
       signInHref={sessionEnded ? SIGN_IN_ORGANIZATIONS : undefined}
       addHref={isShared ? ENTRY_CREATE_ORGANIZATION : "/organization"}
       platformHref={account.actor.platform_role ? PLATFORM : undefined}

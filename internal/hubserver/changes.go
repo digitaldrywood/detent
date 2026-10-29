@@ -125,7 +125,7 @@ func readChangePolicy(ctx context.Context, query nativeQueryer, scope nativeScop
 	if err := query.QueryRowContext(ctx, "SELECT policy_json FROM change_review_policies WHERE organization_id = ? AND project_id = ?", scope.organization, scope.project).Scan(&raw); err != nil {
 		return result, err
 	}
-	err := json.Unmarshal([]byte(raw), &result)
+	err := decodeStorageJSON(ctx, []byte(raw), &result)
 	return result, err
 }
 
@@ -142,7 +142,7 @@ func (s *Service) getChangeReviewPolicy(c echo.Context) error {
 func (s *Service) approveChangeReviewPolicy(c echo.Context) error {
 	var request tracker.ApproveChangeReviewPolicy
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.approveChangeReviewPolicyCommand(ctx, tx, scope, request)
@@ -160,7 +160,7 @@ WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? AND c.id
 	if err != nil {
 		return change, fmt.Errorf("read snapshot: %w", err)
 	}
-	err = json.Unmarshal([]byte(raw), &change)
+	err = decodeStorageJSON(ctx, []byte(raw), &change)
 	if err != nil {
 		return change, fmt.Errorf("decode snapshot: %w", err)
 	}
@@ -180,8 +180,11 @@ func readChangeVersionSnapshot(ctx context.Context, query nativeQueryer, changeI
 	if err := query.QueryRowContext(ctx, "SELECT record_json FROM change_versions WHERE change_id = ? AND id = ?", changeID, versionID).Scan(&raw); err != nil {
 		return version, fmt.Errorf("read version snapshot: %w", err)
 	}
-	if err := json.Unmarshal([]byte(raw), &version); err != nil {
+	if err := decodeStorageJSON(ctx, []byte(raw), &version); err != nil {
 		return version, fmt.Errorf("decode version snapshot: %w", err)
+	}
+	if err := hydrateChangeRecord(ctx, query, &version); err != nil {
+		return version, err
 	}
 	return version, nil
 }
@@ -218,11 +221,30 @@ func resolveVersionPublication(ctx context.Context, query nativeQueryer, changeI
 	if version.External != nil {
 		return nil
 	}
+	var confirmed tracker.NativePRPublication
+	err := query.QueryRowContext(ctx, `SELECT p.change_id, p.version_id, p.repository, p.base_ref, p.branch, p.head_sha,
+p.policy_id, p.source_attempt_id, p.provider, p.external_id, p.external_url
+FROM native_pr_publications p JOIN change_requests c ON c.id=p.change_id
+JOIN native_attempts a ON a.id=p.recorder_attempt_id
+AND a.organization_id=c.organization_id AND a.project_id=c.project_id AND a.work_item_id=c.work_item_id
+WHERE p.change_id=? AND p.version_id=?`, changeID, version.ID).Scan(&confirmed.ChangeID, &confirmed.VersionID, &confirmed.Repository,
+		&confirmed.BaseRef, &confirmed.Branch, &confirmed.HeadSHA, &confirmed.PolicyID, &confirmed.SourceAttemptID,
+		&confirmed.External.Provider, &confirmed.External.ID, &confirmed.External.URL)
+	if err == nil {
+		confirmed.SourceVersion = tracker.NativeChangeReference{ChangeID: confirmed.ChangeID, VersionID: confirmed.VersionID, HeadSHA: confirmed.HeadSHA}
+		if confirmed.Matches(changeID, *version) {
+			version.External = &confirmed.External
+		}
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	var raw string
-	err := query.QueryRowContext(ctx, `SELECT json_extract(a.data_json, '$.finalization.publication')
+	err = query.QueryRowContext(ctx, `SELECT a.data_json
 FROM native_attempts a JOIN change_requests c ON c.id=?
 AND c.organization_id=a.organization_id AND c.project_id=a.project_id AND c.work_item_id=a.work_item_id
-WHERE json_extract(a.data_json, '$.finalization.publication.version_id')=?
+WHERE a.finalization_version_id=?
 ORDER BY a.fencing_token DESC LIMIT 1`, changeID, version.ID).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
@@ -230,12 +252,12 @@ ORDER BY a.fencing_token DESC LIMIT 1`, changeID, version.ID).Scan(&raw)
 	if err != nil {
 		return err
 	}
-	var publication tracker.NativePRPublication
-	if err := json.Unmarshal([]byte(raw), &publication); err != nil {
+	var run tracker.NativeRunData
+	if err := decodeRunDetail(ctx, query, raw, &run); err != nil {
 		return err
 	}
-	if publication.Matches(changeID, *version) {
-		version.External = &publication.External
+	if run.Finalization != nil && run.Finalization.Publication != nil && run.Finalization.Publication.Matches(changeID, *version) {
+		version.External = &run.Finalization.Publication.External
 	}
 	return nil
 }
@@ -244,45 +266,53 @@ ORDER BY a.fencing_token DESC LIMIT 1`, changeID, version.ID).Scan(&raw)
 // evidence cannot cause a scan of older attempts. Checkpoints remain available
 // after event compaction and after the recorder replaces its latest handoff.
 const versionPublicationPushSQL = `WITH checkpoint AS (
- SELECT data_json FROM collaboration_events
- WHERE organization_id=? AND project_id=? AND work_item_id=?
- AND type='run.checkpointed'
- AND json_extract(data_json,'$.run.handoff.external_effect')='git_push'
- AND json_extract(data_json,'$.run.handoff.effect_state')='confirmed'
- AND json_extract(data_json,'$.run.handoff.change.change_id')=?
- AND json_extract(data_json,'$.run.handoff.change.version_id')=?
- AND json_extract(data_json,'$.run.handoff.change.head_sha')=?
+ SELECT * FROM collaboration_events
+ WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='run.checkpointed' AND claim_attempt_id IS NOT NULL
+ AND push_external_effect='git_push' AND push_effect_state='confirmed'
+ AND push_change_id=? AND push_version_id=? AND push_head_sha=?
  ORDER BY sequence DESC LIMIT 1
 )
-SELECT json_extract(e.data_json,'$.run') FROM checkpoint e
-JOIN native_attempts a ON a.id=json_extract(e.data_json,'$.run.attempt_id')
+SELECT e.data_json FROM checkpoint e
+JOIN native_attempts a ON a.id=e.claim_attempt_id
  AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?
- AND a.run_id=json_extract(e.data_json,'$.run.run_id')
- AND a.lease_id=json_extract(e.data_json,'$.run.lease_id')
- AND a.fencing_token=json_extract(e.data_json,'$.run.fencing_token')
- AND json_extract(a.data_json,'$.policy_id')=json_extract(e.data_json,'$.run.policy_id')
-JOIN native_attempt_events ae ON ae.attempt_id=a.id AND ae.sequence=json_extract(e.data_json,'$.run.sequence')
+ AND a.run_id=e.run_id AND a.lease_id=e.run_lease_id AND a.fencing_token=e.run_fencing_token
+ AND a.policy_id=e.run_policy_id
+JOIN native_attempt_events ae ON ae.attempt_id=a.id AND ae.sequence=e.run_sequence
 JOIN leases l ON l.lease_id=a.lease_id AND l.fencing_token=a.fencing_token
 JOIN issues i ON i.id=l.issue_id AND i.organization_id=a.organization_id AND i.project_id=a.project_id AND i.native_id=a.work_item_id
 JOIN lease_policies p ON p.lease_id=a.lease_id AND p.scope=a.organization_id || '/' || a.project_id
- AND p.policy_id=json_extract(e.data_json,'$.run.policy_id')`
+ AND p.policy_id=e.run_policy_id`
 
 func resolveVersionPublicationPush(ctx context.Context, query nativeQueryer, scope nativeScope, item string, version tracker.ChangeVersion) (tracker.ChangePublicationPush, bool, error) {
 	if version.External != nil || version.AttemptID == "" || !version.Policy.Gates.GitHubPullRequest || version.Landing != nil && version.Landing.Landed {
 		return tracker.ChangePublicationPush{}, false, nil
 	}
-	var raw string
-	err := query.QueryRowContext(ctx, versionPublicationPushSQL, scope.organization, scope.project, item, version.ChangeID, version.ID, version.HeadSHA, scope.organization, scope.project, item).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return tracker.ChangePublicationPush{}, false, nil
-	}
+	run, handled, err := legacyPublicationPush(ctx, query, scope, item, version)
 	if err != nil {
 		return tracker.ChangePublicationPush{}, false, err
 	}
-	var run tracker.NativeRunData
-	if err := json.Unmarshal([]byte(raw), &run); err != nil {
-		return tracker.ChangePublicationPush{}, false, err
+	if handled && run == nil {
+		return tracker.ChangePublicationPush{}, false, nil
 	}
+	if !handled {
+		var raw string
+		err := query.QueryRowContext(ctx, versionPublicationPushSQL, scope.organization, scope.project, item, version.ChangeID, version.ID, version.HeadSHA, scope.organization, scope.project, item).Scan(&raw)
+		if errors.Is(err, sql.ErrNoRows) {
+			return tracker.ChangePublicationPush{}, false, nil
+		}
+		if err != nil {
+			return tracker.ChangePublicationPush{}, false, err
+		}
+		var data tracker.CollaborationData
+		if err := decodeRunHistory(ctx, query, raw, &data); err != nil {
+			return tracker.ChangePublicationPush{}, false, err
+		}
+		run = data.Run
+	}
+	if run == nil {
+		return tracker.ChangePublicationPush{}, false, nil
+	}
+
 	ref := tracker.NativeChangeReference{ChangeID: version.ChangeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
 	checkpoint := run.Handoff
 	if checkpoint == nil || checkpoint.Change == nil || *checkpoint.Change != ref || checkpoint.HeadSHA != version.HeadSHA || !validNativeID(checkpoint.EffectID, "effect") {
@@ -304,13 +334,21 @@ func changeRows[T any](ctx context.Context, query nativeQueryer, statement strin
 		if err := rows.Scan(&raw); err != nil {
 			return nil, fmt.Errorf("scan snapshot: %w", err)
 		}
-		if err := json.Unmarshal([]byte(raw), &item); err != nil {
+		if err := decodeStorageJSON(ctx, []byte(raw), &item); err != nil {
 			return nil, fmt.Errorf("decode snapshot: %w", err)
 		}
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read snapshot rows: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for i := range result {
+		if err := hydrateChangeRecord(ctx, query, &result[i]); err != nil {
+			return nil, err
+		}
 	}
 	return result, nil
 }
@@ -353,7 +391,7 @@ WHERE c.organization_id = ? AND c.project_id = ? AND l.work_item_id = ? ORDER BY
 func (s *Service) createChange(c echo.Context) error {
 	var request tracker.CreateChange
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return s.createChangeCommand(ctx, tx, scope, c.Param("item"), request, now)
@@ -361,6 +399,9 @@ func (s *Service) createChange(c echo.Context) error {
 }
 
 func (s *Service) getChange(c echo.Context) error {
+	if handled, err := s.archiveView(c, c.Param("item"), "change:"+c.Param("change"), nil); handled {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
 	scope, ctx := nativeRequestScope(c), ctx
@@ -374,7 +415,7 @@ func (s *Service) getChange(c echo.Context) error {
 		if c.QueryParam("limit") != "" {
 			args.Limit, err = strconv.Atoi(c.QueryParam("limit"))
 			if err != nil {
-				return s.nativeAPIError(c, nativeInvalid("limit must be an integer"))
+				return s.nativeAPIError(c, nativePublicInvalid("limit must be an integer"))
 			}
 		}
 		raw, err := json.Marshal(args)
@@ -383,20 +424,20 @@ func (s *Service) getChange(c echo.Context) error {
 		}
 		args, err = operatortool.DecodeChangeArguments(operatortool.GetChange, raw)
 		if err != nil {
-			return s.nativeAPIError(c, nativeInvalid("invalid Change read selector"))
+			return s.nativeAPIError(c, nativePublicInvalid("invalid Change read selector"))
 		}
 		result := (hubChangeApplication{service: s}).result(scope, args)
 		result, err = readBoundedChange(ctx, tx, scope, args, result)
 		if err != nil {
 			var refusal *operatortool.RequestError
 			if errors.As(err, &refusal) {
-				return c.JSON(http.StatusUnprocessableEntity, refusal)
+				return s.nativeAPIError(c, refusal)
 			}
 			if errors.Is(err, mutation.ErrConflict) {
 				return s.nativeAPIError(c, nativeConflict(0))
 			}
 			if errors.Is(err, operatortool.ErrInvalidArguments) {
-				return s.nativeAPIError(c, nativeInvalid("invalid Change read cursor"))
+				return s.nativeAPIError(c, nativePublicInvalid("invalid Change read cursor"))
 			}
 			return s.nativeAPIError(c, err)
 		}
@@ -405,7 +446,7 @@ func (s *Service) getChange(c echo.Context) error {
 		}
 		bounded, err := operatortool.BoundedChangeResult(result)
 		if err != nil {
-			return c.JSON(http.StatusUnprocessableEntity, err)
+			return s.nativeAPIError(c, err)
 		}
 		return c.Blob(http.StatusOK, "application/json", bounded.Content)
 	}
@@ -417,10 +458,17 @@ func (s *Service) getChange(c echo.Context) error {
 	if err := tx.Commit(); err != nil {
 		return s.nativeAPIError(c, err)
 	}
-	return c.JSON(http.StatusOK, result)
+	return nativeArchiveJSON(c, http.StatusOK, result)
 }
 
 func readChangeDetail(ctx context.Context, query nativeQueryer, scope nativeScope, item, id string, now time.Time) (tracker.ChangeDetail, error) {
+	if explanationRead(ctx) {
+		change, err := readChange(ctx, query, scope, item, id)
+		if err != nil {
+			return tracker.ChangeDetail{}, err
+		}
+		return readRuntimeChangeDetail(ctx, query, scope, change, now)
+	}
 	return readChangeDetailView(ctx, query, scope, item, id, now, false)
 }
 
@@ -430,6 +478,10 @@ func readChangeDetailView(ctx context.Context, query nativeQueryer, scope native
 	result.Change, err = readChange(ctx, query, scope, item, id)
 	if err != nil {
 		return result, fmt.Errorf("load change: %w", err)
+	}
+	query, err = archiveQuery(ctx, query, item, "change", id, 0)
+	if err != nil {
+		return result, err
 	}
 	result.SourceIssues, err = readChangeSourceIssues(ctx, query, scope, id)
 	if err != nil {
@@ -482,8 +534,7 @@ func readChangeDetailView(ctx context.Context, query nativeQueryer, scope native
 	}
 	var staleApproval bool
 	if current {
-		err = query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_evidence WHERE change_id = ? AND kind = 'review'
-AND json_extract(record_json, '$.decision') = 'approved' AND json_extract(record_json, '$.validator') IS NULL AND json_extract(record_json, '$.implementation_review') IS NULL AND version_id != ?)`, id, result.Change.CurrentVersion).Scan(&staleApproval)
+		staleApproval, err = readPriorChangeApproval(ctx, query, id, result.Change.CurrentVersion)
 		if err != nil {
 			return result, fmt.Errorf("load stale approval: %w", err)
 		}
@@ -522,8 +573,7 @@ func readCurrentChangeDetailWithPolicy(ctx context.Context, query nativeQueryer,
 		if err != nil {
 			return result, err
 		}
-		err = query.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM change_evidence WHERE change_id = ? AND kind = 'review'
-AND json_extract(record_json, '$.decision') = 'approved' AND json_extract(record_json, '$.validator') IS NULL AND json_extract(record_json, '$.implementation_review') IS NULL AND version_id != ?)`, change.ID, version.ID).Scan(&staleApproval)
+		staleApproval, err = readPriorChangeApproval(ctx, query, change.ID, version.ID)
 		if err != nil {
 			return result, err
 		}
@@ -551,12 +601,9 @@ type changeSummaryPolicy struct {
 }
 
 func readChangeSummaryPolicy(ctx context.Context, query nativeQueryer, scope nativeScope) (changeSummaryPolicy, error) {
-	approval, err := readProjectPolicy(ctx, query, string(scope.organization)+"/"+string(scope.project))
+	approval, _, err := readProjectPolicy(ctx, query, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
-		var failure *nativeError
-		if !errors.As(err, &failure) || failure.Code != "policy_mismatch" {
-			return changeSummaryPolicy{}, err
-		}
+		return changeSummaryPolicy{}, err
 	}
 	rules, err := readChangePolicy(ctx, query, scope)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -574,20 +621,7 @@ func readChangeSummary(ctx context.Context, query nativeQueryer, scope nativeSco
 }
 
 func (p changeSummaryPolicy) identities(version *tracker.ChangeVersion) (string, string) {
-	policyID, reviewID := p.approval.Policy.ID, p.rules.ID
-	if version != nil {
-		if version.Policy.Gates.LandingMode == "rolling_barrier" {
-			return "", reviewID
-		}
-		currentRules := p.rules
-		currentRules.PolicyID = policyID
-		if policyID != "" && p.rules.ID != "" && version.PolicyID == version.Policy.ID && version.ReviewPolicy.ID != "" &&
-			version.Policy.Gates == p.approval.Policy.Gates && version.ReviewPolicy.RequireReview == p.rules.RequireReview &&
-			slices.Equal(version.ReviewPolicy.RequiredChecks, p.rules.RequiredChecks) && changerequest.ValidatePolicy(currentRules, p.approval.Policy) == nil {
-			policyID, reviewID = version.PolicyID, version.ReviewPolicy.ID
-		}
-	}
-	return policyID, reviewID
+	return changerequest.CurrentPolicyIdentities(version, p.approval.Policy, p.rules)
 }
 
 func (p changeSummaryPolicy) summarize(detail tracker.ChangeDetail, now time.Time, priorApproval bool) tracker.ChangeSummary {
@@ -637,7 +671,7 @@ WHERE p.organization_id = ? AND p.id = ? AND pr.url = ? AND pr.issue_id IS NOT N
 
 func (s *Service) createChangeCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, item string, request tracker.CreateChange, now time.Time) (any, error) {
 	if strings.TrimSpace(request.Title) == "" || len(request.Title) > 512 || len(request.Body) > 64<<10 || len(request.LinkedIssues) > 32 {
-		return nil, nativeInvalid("Change requires a title up to 512 bytes, discussion up to 64 KiB, and at most 32 linked issues")
+		return nil, nativePublicInvalid("Change requires a title up to 512 bytes, discussion up to 64 KiB, and at most 32 linked issues")
 	}
 	change := tracker.ChangeRequest{ID: newNativeID("change"), OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(item), Title: request.Title, Body: request.Body, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	change.LinkedIssues = append([]tracker.NativeWorkItemID{change.WorkItemID}, request.LinkedIssues...)
@@ -648,11 +682,25 @@ func (s *Service) createChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 			return nil, err
 		}
 	}
+	fields := []cloudContentField{{name: "title", value: request.Title}, {name: "body", value: request.Body}}
+	if err := validateCloudChangeReferences(ctx, tx, scope, fields, nil, ""); err != nil {
+		return nil, err
+	}
+	if err := bindCloudChangeReferences(ctx, tx, scope, item, fields, nil, ""); err != nil {
+		return nil, err
+	}
+
 	raw, err := marshalNative(change)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO change_requests (id, organization_id, project_id, work_item_id, record_json) VALUES (?, ?, ?, ?, ?)", change.ID, scope.organization, scope.project, change.WorkItemID, raw); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO change_requests (id, organization_id, project_id, work_item_id, record_json, claim_version_id, claim_head_sha, landed_version_id, activity_created_at, activity_current_version_id) VALUES (?, ?, ?, ?, ?, '', '', '', julianday(?), '')", change.ID, scope.organization, scope.project, change.WorkItemID, raw, formatHubTime(change.CreatedAt)); err != nil {
+		return nil, err
+	}
+	if err := writeArchiveChangeFacts(ctx, tx, change, ""); err != nil {
+		return nil, err
+	}
+	if err := projectChangeColumns(ctx, tx, "change_requests", change.ID, raw); err != nil {
 		return nil, err
 	}
 	for _, id := range change.LinkedIssues {
@@ -667,7 +715,7 @@ func (s *Service) createChangeCommand(ctx context.Context, tx *sql.Tx, scope nat
 }
 
 func (s *Service) approveChangeReviewPolicyCommand(ctx context.Context, tx *sql.Tx, scope nativeScope, request tracker.ApproveChangeReviewPolicy) (any, error) {
-	approved, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
+	approved, err := requireProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
 		return nil, err
 	}
@@ -679,7 +727,7 @@ func (s *Service) approveChangeReviewPolicyCommand(ctx context.Context, tx *sql.
 		err := tx.QueryRowContext(ctx, `SELECT scope FROM api_tokens t WHERE id = ? AND revoked_at IS NULL
 AND EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id = t.id AND g.organization_id = ? AND g.project_id = ?)`, check.PrincipalID, scope.organization, scope.project).Scan(&role)
 		if errors.Is(err, sql.ErrNoRows) || err == nil && check.Source == "independent" && role == string(apiScopeWorker) {
-			return nil, nativeInvalid("Expected CI principals must have a project grant; independent validation requires an operator credential")
+			return nil, nativePublicInvalid("Expected CI principals must have a project grant; independent validation requires an operator credential")
 		}
 		if err != nil {
 			return nil, err

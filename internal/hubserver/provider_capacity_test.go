@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -108,6 +109,7 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 					}
 				}
 			}
+			assertRunnerAdmissionFacts(t, f, r)
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 			requireNativeStatus(t, response, test.want)
 			var count int
@@ -124,6 +126,14 @@ func TestProviderCapacityClaimObservations(t *testing.T) {
 			decodeHubResponse(t, response, &lease)
 			if lease.WorkItemID != issue.WorkItemID || count != 1 || lease.ProviderReservation == nil || lease.ProviderReservation.Model != "test-model" {
 				t.Fatalf("lease = %+v", lease)
+			}
+			assertRunnerAdmissionFacts(t, f, r)
+			response = performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", testHubAdminToken, nil)
+			requireNativeStatus(t, response, http.StatusOK)
+			var full runnerauth.Runner
+			decodeHubResponse(t, response, &full)
+			if len(full.Leases) != 1 || full.Leases[0].ID != lease.ID || full.Leases[0].Title != issue.Title || full.Leases[0].Policy.ID != hubTestPolicy().ID || full.Leases[0].ProviderReservation == nil || !reflect.DeepEqual(full.Leases[0].ProviderReservation, lease.ProviderReservation) {
+				t.Fatalf("runner response lost lease enrichment: %+v", full.Leases)
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 			requireNativeStatus(t, response, http.StatusOK)
@@ -169,6 +179,7 @@ func TestProviderProjectBackendReservations(t *testing.T) {
 			if lease.WorkItemID != issue.WorkItemID || lease.ProviderReservation == nil || lease.ProviderReservation.Backend != test.backend || lease.ProviderReservation.Model != test.model || lease.ProviderReservation.Report.Backend != test.backend || lease.ProviderReservation.Report.AccountAlias != "runner" || lease.ProviderReservation.Report.Availability != "unknown" {
 				t.Fatalf("project reservation=%+v", lease)
 			}
+			assertRunnerAdmissionFacts(t, f, r)
 		})
 	}
 	response := performHubAPIRequest(t, service, http.MethodGet, r.identityPath()+"/capacity", testHubAdminToken, nil)
@@ -338,15 +349,17 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 		unavailable string
 		want        []int
 		winner      int
+		targeted    bool
 	}{
+		{name: "single provider candidate bypasses unrequested project head", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, want: []int{0, 1, 2}, winner: 1, targeted: true},
 		{name: "resolved health finding leaves preview read-only", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, unavailable: "resolved health", want: []int{0, 1, 2}},
 		{name: "legacy numeric order", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{0, 1, 2}, unavailable: "provider", want: []int{0, 1, 2}, winner: 1},
-		{name: "issue priority beats merging lane", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{0, 3, 2}, order: []string{"Merging", "Rework", "In Progress", "Todo"}, want: []int{0, 2, 1}},
+		{name: "reviewed merging beats higher priority implementation", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{0, 3, 2}, order: []string{"Merging", "Rework", "In Progress", "Todo"}, want: []int{1, 0, 2}, winner: 1},
 		{name: "merging lane lands before newer work of the same priority", states: []string{"Todo", "Merging", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo", "Merging"}, want: []int{1, 0, 2}, winner: 1},
-		{name: "configured lane preference yields to age", states: []string{"Merging", "Todo", "Rework"}, priorities: []int{1, 1, 1}, order: []string{"Todo", "Rework", "Merging"}, want: []int{0, 1, 2}},
-		{name: "source lanes yield to age", states: []string{"Todo", "In Progress", "Rework"}, priorities: []int{1, 1, 1}, order: []string{"Rework", "In Progress", "Todo"}, want: []int{0, 1, 2}},
-		{name: "numeric priority precedes source lane", states: []string{"Todo", "In Progress", "Rework"}, priorities: []int{0, 1, 2}, order: []string{"Rework", "In Progress", "Todo"}, want: []int{0, 1, 2}},
-		{name: "configured labels and lanes yield to age", states: []string{"Todo", "Rework", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Rework", "Todo"}, labels: []string{"hotfix", "bug"}, want: []int{0, 1, 2}},
+		{name: "merging then rework precede configured lane preference", states: []string{"Merging", "Todo", "Rework"}, priorities: []int{1, 1, 1}, order: []string{"Todo", "Rework", "Merging"}, want: []int{0, 2, 1}},
+		{name: "rework then in progress precede older todo", states: []string{"Todo", "In Progress", "Rework"}, priorities: []int{1, 1, 1}, order: []string{"Rework", "In Progress", "Todo"}, want: []int{2, 1, 0}, winner: 2},
+		{name: "rework then in progress precede higher priority todo", states: []string{"Todo", "In Progress", "Rework"}, priorities: []int{0, 1, 2}, order: []string{"Rework", "In Progress", "Todo"}, want: []int{2, 1, 0}, winner: 2},
+		{name: "rework precedes configured labels and older todo", states: []string{"Todo", "Rework", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Rework", "Todo"}, labels: []string{"hotfix", "bug"}, want: []int{1, 0, 2}, winner: 1},
 		{name: "queue rank yields to age", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, ranks: []string{"c", "a", "b"}, want: []int{0, 1, 2}},
 		{name: "precise creation order breaks unranked ties", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, ranks: []string{" ", "  ", "   "}, created: []string{"2026-10-02T12:00:00.000000002Z", "2026-10-02T12:00:00Z", "2026-10-02T12:00:00.000000001Z"}, want: []int{1, 2, 0}, winner: 1},
 		{name: "unblocker count yields to age", states: []string{"Todo", "Todo", "Todo"}, priorities: []int{1, 1, 1}, order: []string{"Todo"}, unavailable: "unblocker", want: []int{0, 1}},
@@ -361,9 +374,22 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
 			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			if test.targeted {
+				higher := newNativeFixture(t, f.service, f.project.OrganizationID, "higher-ranked")
+				approveHubTestPolicy(t, f.service, higher.base+"/policy", hubTestPolicy())
+				higher.create(t, "unrequested head")
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=CASE WHEN id=? THEN 0 ELSE 1 END WHERE organization_id=?", higher.project.ID, f.project.OrganizationID); err != nil {
+					t.Fatal(err)
+				}
+				routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Provider runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{f.project.ID, higher.project.ID}}}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
+			}
 			states := []tracker.NativeState{
 				{Name: "Merging", Dispatchable: true, Transitions: []string{"Rework"}},
 				{Name: "Rework", Dispatchable: true},
@@ -384,6 +410,9 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: rules}), http.StatusOK)
 			report := capacityReport(f.service.config.now())
 			report.MaxConcurrent = 2
+			if test.targeted {
+				report.Models = append(report.Models, "gpt-6.1-sol")
+			}
 			publishCapacity(t, f, r, report)
 			issues := []tracker.NativeIssue{f.create(t, "head"), f.create(t, "next"), f.create(t, "tail")}
 			claim := providerClaim(r, issues[0], "fair")
@@ -471,7 +500,7 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 				if _, err := writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now, []healthFinding{finding}); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := tx.ExecContext(t.Context(), `INSERT INTO health_finding_issues(finding_id,project_id,work_item_id,reported_evidence_json) SELECT id,?,?,evidence_json FROM health_findings`, f.project.ID, issues[0].WorkItemID); err != nil {
+				if _, err := tx.ExecContext(t.Context(), `INSERT INTO health_finding_issues(finding_id,project_id,work_item_id,reported_evidence_digest) SELECT id,?,?,'' FROM health_findings`, f.project.ID, issues[0].WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := writeHealthEvaluation(t.Context(), tx, f.project.OrganizationID, now.Add(time.Minute), nil); err != nil {
@@ -539,6 +568,9 @@ func TestProviderQueueOrderAndSelectors(t *testing.T) {
 				if paged[index] != issues[want].WorkItemID {
 					t.Fatalf("paged=%v want=%v", paged, test.want)
 				}
+			}
+			if test.targeted {
+				claim.ProviderCandidates = claim.ProviderCandidates[test.winner : test.winner+1]
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
 			requireNativeStatus(t, response, http.StatusOK)
@@ -798,7 +830,7 @@ func TestProviderPreviewAnswersWhileTheWriterIsHeld(t *testing.T) {
 	select {
 	case response := <-done:
 		requireNativeStatus(t, response, http.StatusOK)
-	case <-time.After(5 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("claim preview waited on the held writer")
 	}
 }

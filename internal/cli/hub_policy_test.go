@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -29,7 +32,7 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	workflowPath := filepath.Join(root, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: memory\n  repository: acme/orders\n---\nPRIVATE WORKFLOW\n"), 0o600); err != nil {
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n  api_key: fixture-token\n  repository: example-org/orders\n---\nWork the issue.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(root, "global.yaml")
@@ -41,16 +44,22 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 	cfg.Global.ActiveHours = &activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}}
 	cfg.Global.RateWindowPacing = workflowconfig.RateWindowPacing{Mode: workflowconfig.RateWindowPacingOff}
 	cfg.Global.Identity.Name = "repository-operator"
-	cfg.Client = globalconfig.HubClient{URL: "http://127.0.0.1:1", MachineID: "machine_test"}
-	if err := globalconfig.Write(configPath, cfg); err != nil {
+	if err := writeLocalConfigurationFile(configPath, cfg); err != nil {
 		t.Fatal(err)
 	}
 	_, _, descriptor, err := resolveHubPolicy(t.Context(), configPath, "orders")
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Run("canceled configuration read", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if _, _, _, err := resolveHubPolicy(ctx, configPath, "orders"); !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled policy read = %v, want context canceled", err)
+		}
+	})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/repositories/acme/orders/policy" || r.Header.Get("Authorization") != "Bearer fixture-admin" {
+		if r.URL.Path != "/api/v1/repositories/example-org/orders/policy" || r.Header.Get("Authorization") != "Bearer fixture-admin" {
 			t.Errorf("unexpected request %s", r.URL.Path)
 		}
 		if r.Method == http.MethodPut {
@@ -90,14 +99,14 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 			if test.valid && !strings.Contains(output.String(), descriptor.ID) {
 				t.Fatalf("missing policy output: %s", output.String())
 			}
-			for _, private := range []string{"PRIVATE WORKFLOW", "fixture-admin", root} {
+			for _, private := range []string{"fixture-token", "fixture-admin", root} {
 				if test.valid && strings.Contains(output.String(), private) {
 					t.Fatalf("private value in policy output: %s", private)
 				}
 			}
 		})
 	}
-	loaded, err := globalconfig.Read(configPath)
+	loaded, err := readLocalConfigurationFile(t.Context(), configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +115,7 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtimeProject, err := project.New(project.Config{Project: managed, Workflow: workflow}, project.Dependencies{Runner: orchestrator.FakeRunner{}})
+	runtimeProject, err := projectfixture.New(project.Config{Project: managed, Workflow: workflow}, project.Dependencies{Runner: orchestrator.FakeRunner{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,11 +139,17 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 		organization := "org_" + strings.Repeat("a", 32)
 		projectID := "prj_" + strings.Repeat("b", 32)
 		var credential string
+		mappedWorkflow := workflow
+		mappedWorkflow.Config = project.MapNativeTracker(mappedWorkflow.Config, true)
+		enrolledPolicy, err := project.ResolvePolicy(managed, mappedWorkflow)
+		if err != nil {
+			t.Fatal(err)
+		}
 		hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/api/v2/organizations/"+organization+"/projects/"+projectID+"/policy" || r.Header.Get("Authorization") != "Bearer "+credential {
 				t.Error("doctor did not use the enrolled policy credential and project scope")
 			}
-			if err := json.NewEncoder(w).Encode(policy.Approval{Policy: descriptor}); err != nil {
+			if err := json.NewEncoder(w).Encode(policy.Approval{Policy: enrolledPolicy}); err != nil {
 				t.Error(err)
 			}
 		}))
@@ -159,13 +174,29 @@ func TestHubPolicyCommandsAndDoctor(t *testing.T) {
 			t.Fatalf("enrolled doctor policy = %#v", check)
 		}
 	})
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: memory\n  repository: acme/orders\ngate:\n  kind: artifact\n---\nChanged instructions\n"), 0o600); err != nil {
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n  api_key: fixture-token\n  repository: example-org/orders\ngate:\n  kind: artifact\n---\nChanged instructions\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	check = checkDoctorHubPolicy(t.Context(), loaded, loaded.Projects[0], doctorDeps{lookupEnv: func(string) string { return "fixture-admin" }})
-	if check.Status != doctorFail || !strings.Contains(check.Detail, "policy_mismatch") || !strings.Contains(check.Hint, "hub policy inspect") {
-		t.Fatalf("doctor mismatch = %#v", check)
+	if check.Status != doctorOK || !strings.Contains(check.Detail, descriptor.ID) || !strings.Contains(check.Detail, "gate=command") {
+		t.Fatalf("doctor did not preserve approved native policy = %#v", check)
 	}
+	t.Run("invalid approved descriptor", func(t *testing.T) {
+		invalid := descriptor
+		invalid.ID = "policy_" + strings.Repeat("0", 64)
+		hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := json.NewEncoder(w).Encode(policy.Approval{Policy: invalid}); err != nil {
+				t.Error(err)
+			}
+		}))
+		t.Cleanup(hub.Close)
+		configured := loaded
+		configured.Client.URL = hub.URL
+		check := checkDoctorHubPolicy(t.Context(), configured, configured.Projects[0], doctorDeps{lookupEnv: func(string) string { return "fixture-admin" }})
+		if check.Status != doctorFail || !strings.Contains(check.Detail, "policy_mismatch") || !strings.Contains(check.Hint, "hub policy inspect") {
+			t.Fatalf("doctor accepted invalid policy = %#v", check)
+		}
+	})
 }
 
 func TestHubPolicyInspectRejectsMappedNativeUnsupportedWork(t *testing.T) {
@@ -173,13 +204,13 @@ func TestHubPolicyInspectRejectsMappedNativeUnsupportedWork(t *testing.T) {
 	for _, test := range []struct {
 		name, feature, want string
 	}{
-		{"intake", "intake:\n  sources:\n    - name: errors\n      kind: webhook\n      secret: test-secret\n      creates:\n        status: Backlog\n", "intake.sources"},
-		{"routines", "schedule_ownership:\n  enabled: true\n  key: acme/orders\n  repository: acme/orders\nroutines:\n  - name: audit\n    schedule: '0 * * * *'\n    prompt: Inspect.\n", "routines"},
+		{"intake", "intake:\n  sources:\n    - name: errors\n      kind: webhook\n      secret: test-secret\n      creates:\n        status: Backlog\n", "intake"},
+		{"routines", "schedule_ownership:\n  enabled: true\n  key: example-org/orders\n  repository: example-org/orders\nroutines:\n  - name: audit\n    schedule: '0 * * * *'\n    prompt: Inspect.\n", "routines"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
 			workflowPath := filepath.Join(root, "WORKFLOW.md")
-			raw := "---\ntracker:\n  kind: github\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"
+			raw := "---\ntracker:\n  kind: hub_native\n  repository: example-org/orders\n  api_key: test-token\n" + test.feature + "---\nPrompt\n"
 			if err := os.WriteFile(workflowPath, []byte(raw), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -189,17 +220,20 @@ func TestHubPolicyInspectRejectsMappedNativeUnsupportedWork(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg.Projects = []globalconfig.Project{{ID: "orders", Workflow: workflowPath, Workdir: root, Weight: 1}}
+			if err := writeLocalConfigurationFile(configPath, cfg); err != nil {
+				t.Fatal(err)
+			}
 			cfg.Client = globalconfig.HubClient{URL: "http://127.0.0.1:1", OrganizationID: "org_test", NativeProjects: map[string]string{"orders": "prj_test"}}
 			if err := globalconfig.Write(configPath, cfg); err != nil {
 				t.Fatal(err)
 			}
 			_, _, _, err = resolveHubPolicy(t.Context(), configPath, "orders")
-			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "migrate") {
-				t.Fatalf("mapped policy inspection error = %v, want %s migration guidance", err, test.want)
+			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "retired configuration key") {
+				t.Fatalf("mapped policy inspection error = %v, want %s retired-key guidance", err, test.want)
 			}
 			check := checkDoctorHubPolicy(t.Context(), cfg, cfg.Projects[0], doctorDeps{})
-			if check.Status != doctorFail || !strings.Contains(check.Detail, test.want) || !strings.Contains(check.Detail, "migrate") {
-				t.Fatalf("mapped doctor policy = %#v, want %s migration guidance", check, test.want)
+			if check.Status != doctorFail || !strings.Contains(check.Detail, test.want) || !strings.Contains(check.Detail, "retired configuration key") {
+				t.Fatalf("mapped doctor policy = %#v, want %s retired-key guidance", check, test.want)
 			}
 		})
 	}
@@ -209,7 +243,7 @@ func TestHubPolicyInspectUsesNativeStartupTracker(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	workflowPath := filepath.Join(root, "WORKFLOW.md")
-	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n  project_slug: PVT_test\n  repository: acme/orders\n  api_key: test-token\n---\nPrompt\n"), 0o600); err != nil {
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: hub_native\n  repository: example-org/orders\n  api_key: test-token\n---\nPrompt\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(root, "global.yaml")
@@ -218,6 +252,9 @@ func TestHubPolicyInspectUsesNativeStartupTracker(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.Projects = []globalconfig.Project{{ID: "orders", Workflow: workflowPath, Workdir: root, Weight: 1}}
+	if err := writeLocalConfigurationFile(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
 	cfg.Client = globalconfig.HubClient{URL: "http://127.0.0.1:1", OrganizationID: "org_test", NativeProjects: map[string]string{"orders": "prj_test"}}
 	if err := globalconfig.Write(configPath, cfg); err != nil {
 		t.Fatal(err)

@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -13,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const capacityGiB = 1024 * 1024 * 1024
@@ -352,32 +354,45 @@ func readRunnerRecommendation(ctx context.Context, q nativeQueryer, r runnerauth
 	if err != nil {
 		return runnerRecommendation{}, err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT a.started_at,json_extract(a.data_json,'$.process_usage') FROM native_attempts a JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.organization_id=? AND lr.runner_id=? AND a.status IN ('succeeded','failed','cancelled') AND a.started_at>=? AND a.updated_at<=? AND json_extract(a.data_json,'$.process_usage.peak_memory_bytes')>0 ORDER BY a.started_at DESC LIMIT 10001`, r.OrganizationID, r.RunnerID, formatHubTime(from), formatHubTime(to))
+	rows, err := q.QueryContext(ctx, `SELECT a.started_at,a.process_peak_memory_bytes,a.process_user_cpu_seconds,a.process_system_cpu_seconds,a.process_wall_seconds,CASE WHEN a.usage_facts_ready IS NULL THEN a.data_json END FROM native_attempts a JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.organization_id=? AND lr.runner_id=? AND a.status IN ('succeeded','failed','cancelled') AND a.started_at>=? AND a.updated_at<=? AND (a.process_peak_memory_bytes>0 OR a.usage_facts_ready IS NULL) ORDER BY a.started_at DESC LIMIT 10001`, r.OrganizationID, r.RunnerID, formatHubTime(from), formatHubTime(to))
 	if err != nil {
 		return runnerRecommendation{}, err
 	}
 	defer rows.Close()
 	runs := []recommendationRun{}
+	scanned := 0
 	for rows.Next() {
-		var started, raw string
+		scanned++
+		var started string
+		var raw sql.NullString
+		var peak sql.NullInt64
+		var user, system, wall sql.NullFloat64
 		var run recommendationRun
-		if err := rows.Scan(&started, &raw); err != nil {
+		if err := rows.Scan(&started, &peak, &user, &system, &wall, &raw); err != nil {
 			return runnerRecommendation{}, err
 		}
 		run.StartedAt, err = parseTimeValue(started)
 		if err != nil {
 			return runnerRecommendation{}, err
 		}
-		if err := json.Unmarshal([]byte(raw), &run.Usage); err != nil {
-			return runnerRecommendation{}, err
+		run.Usage = procgroup.Usage{PeakMemoryBytes: peak.Int64, UserCPUSeconds: user.Float64, SystemCPUSeconds: system.Float64, WallSeconds: wall.Float64}
+		if raw.Valid {
+			var data tracker.NativeRunData
+			if err := decodeRunDetail(ctx, q, raw.String, &data); err != nil {
+				return runnerRecommendation{}, err
+			}
+			if data.ProcessUsage == nil || data.ProcessUsage.PeakMemoryBytes <= 0 {
+				continue
+			}
+			run.Usage = *data.ProcessUsage
 		}
 		runs = append(runs, run)
 	}
 	if err := rows.Err(); err != nil {
 		return runnerRecommendation{}, err
 	}
-	partial := len(runs) > 10000
-	if partial {
+	partial := scanned > 10000
+	if len(runs) > 10000 {
 		runs = runs[:10000]
 	}
 	out, err := recommendRunner(r.Routing, hours, runs)

@@ -36,8 +36,6 @@ func TestWorkspaceBranchHoldCompletionIsNotWorkFailure(t *testing.T) {
 	})
 	orch := Orchestrator{cfg: cfg, connector: &terminalRetryConnector{}, workAttempts: attempts, now: func() time.Time { return now }}
 	state := newState(cfg)
-	state.InstantFailures[issue.ID] = InstantFailure{Issue: issue, Count: 2}
-	state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: 2}
 	state.FailureBreaker.Failures["existing"] = []ProjectFailure{{IssueID: "other", At: now.Add(-time.Minute)}}
 	state.Running[issue.ID] = Running{Issue: issue, Attempt: 4, WorkAttemptID: 42, StartedAt: now.Add(-time.Minute)}
 
@@ -54,12 +52,6 @@ func TestWorkspaceBranchHoldCompletionIsNotWorkFailure(t *testing.T) {
 		RetryDelay:   time.Minute,
 	})
 
-	if got := state.InstantFailures[issue.ID].Count; got != 2 {
-		t.Fatalf("instant failure count = %d, want unchanged", got)
-	}
-	if got := state.RepeatedFailures[issue.ID].Count; got != 2 {
-		t.Fatalf("repeated failure count = %d, want unchanged", got)
-	}
 	if got := len(state.FailureBreaker.Failures["existing"]); got != 1 || state.FailureBreaker.Active() {
 		t.Fatalf("FailureBreaker = %#v, want existing evidence unchanged and inactive", state.FailureBreaker)
 	}

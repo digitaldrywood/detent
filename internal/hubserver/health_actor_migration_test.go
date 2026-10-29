@@ -25,6 +25,9 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID,
 				sourceActor: &tracker.Actor{Kind: test.kind, PrincipalID: test.principal}}
 			now := f.service.config.now()
@@ -106,6 +109,9 @@ func TestHealthDetectorActorMigration(t *testing.T) {
 						actor["kind"] = wantActor.Kind
 					}
 				}
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL WHERE native_id=?", issue.WorkItemID); err != nil {
+				t.Fatal(err)
 			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM hub_schema_version WHERE version_id=20261006192328"); err != nil {
 				t.Fatal(err)

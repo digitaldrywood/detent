@@ -34,10 +34,10 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 		{"member cannot convert", "member", "convert_runner_scope", "", false, false, 0},
 		{"admin full access", "admin", "set_runner_tier", isolation.NativeTrusted, true, true, http.StatusOK},
 		{"owner sandbox", "owner", "set_runner_tier", isolation.Sandbox, true, true, http.StatusOK},
-		{"sprite sandbox refused", "owner", "set_runner_tier", isolation.Sandbox, false, false, 0},
+		{"sprite sandbox requests a fresh probe", "owner", "set_runner_tier", isolation.Sandbox, true, true, http.StatusOK},
 		{"sprite sandbox after passing probe", "owner", "set_runner_tier", isolation.Sandbox, true, true, http.StatusOK},
 		{"sprite full access", "owner", "set_runner_tier", isolation.NativeTrusted, true, true, http.StatusOK},
-		{"sprite detected after preview", "owner", "set_runner_tier", isolation.Sandbox, true, true, http.StatusUnprocessableEntity},
+		{"sprite detected after preview", "owner", "set_runner_tier", isolation.Sandbox, true, true, http.StatusOK},
 		{"unapproved preview", "owner", "set_runner_tier", isolation.NativeTrusted, true, false, 0},
 		{"member cannot change", "member", "set_runner_tier", isolation.NativeTrusted, false, false, 0},
 		{"invalid tier", "owner", "set_runner_tier", "user", false, false, 0},
@@ -134,9 +134,6 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 			if err != nil || result.Success != test.preview {
 				t.Fatalf("tool=%+v err=%v", result, err)
 			}
-			if test.name == "sprite sandbox refused" && !strings.Contains(result.Content, spriteSandboxUnavailableReason) {
-				t.Fatalf("sandbox refusal=%s", result.Content)
-			}
 			if test.tool == "get_runners" && test.preview {
 				var view struct {
 					Runners []runnerauth.Runner `json:"runners"`
@@ -167,7 +164,7 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 				}
 				switch test.name {
 				case "sprite detected after preview":
-					operatorSQL(t, f, "UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_name',hostname) WHERE id=?", r.binding.MachineID)
+					operatorSQL(t, f, "UPDATE machines SET machine_facts_ready=NULL,capabilities_json=json_set(capabilities_json,'$.sprite_name',hostname) WHERE id=?", r.binding.MachineID)
 				case "stale preview":
 					operatorSQL(t, f, "UPDATE runner_identities SET revision=revision+1 WHERE id=?", r.binding.RunnerID)
 				case "role revoked after preview":
@@ -177,9 +174,6 @@ func TestCoordinatorRunnerTools(t *testing.T) {
 				}
 				response = f.request(t, user, http.MethodPost, f.base+"/conversations/"+created.Conversation.ID+"/actions", action)
 				requireNativeStatus(t, response, test.status)
-				if test.name == "sprite detected after preview" && !strings.Contains(response.Body.String(), spriteSandboxUnavailableReason) {
-					t.Fatalf("sandbox execution refusal=%s", response.Body.String())
-				}
 			}
 			if test.execute && test.status == http.StatusOK {
 				heartbeat["problems"] = []runnerauth.Problem{}

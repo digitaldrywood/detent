@@ -67,6 +67,7 @@ const ALERT_ICONS: Record<AlertVariant, React.ReactNode> = {
 };
 
 const BADGE_VARIANTS = keysOf<BadgeVariant>({
+  "warning-outline": true,
   default: true,
   secondary: true,
   outline: true,

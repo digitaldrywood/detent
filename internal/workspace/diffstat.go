@@ -36,6 +36,7 @@ type DiffStat struct {
 	Added          int       `json:"added"`
 	Removed        int       `json:"removed"`
 	Fingerprint    string    `json:"fingerprint,omitempty"`
+	TreeSHA        string    `json:"tree_sha,omitempty"`
 	HeadSHA        string    `json:"head_sha,omitempty"`
 	HeadObservedAt time.Time `json:"head_observed_at,omitzero"`
 }
@@ -96,6 +97,13 @@ func (l *LocalGit) SeedReviewHead(ctx context.Context, info Info, issue Issue) e
 }
 
 func fetchReviewHead(ctx context.Context, path, fallbackBranch string, issue Issue) (string, error) {
+	if issue.Source != nil {
+		if issue.Source.Version.HeadSHA != strings.TrimSpace(issue.PullRequestHeadSHA) {
+			return "", refuse(LandRefusalHeadMoved, "retained review source differs from the requested head")
+		}
+		head, err := runGitAt(ctx, path, "rev-parse", "--verify", issue.Source.Version.HeadSHA+"^{commit}")
+		return strings.TrimSpace(head), err
+	}
 	branch := strings.TrimSpace(issue.PullRequestBranch)
 	if branch == "" {
 		branch = strings.TrimSpace(fallbackBranch)
@@ -115,6 +123,9 @@ func fetchReviewHead(ctx context.Context, path, fallbackBranch string, issue Iss
 	remote := "origin"
 	if issue.PullRequestNumber > 0 && strings.TrimSpace(issue.PullRequestRepository) != "" {
 		repository := strings.TrimSpace(issue.PullRequestRepository)
+		if name, _, ok := githubLandingRepository(repository); ok {
+			repository = strings.TrimSuffix(name, ".git")
+		}
 		parts := strings.Split(repository, "/")
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(repository, " \\:@") {
 			return "", fmt.Errorf("invalid pull request repository %q", repository)
@@ -382,6 +393,11 @@ func gitDiffStatOutput(ctx context.Context, workspacePath string, includeIndex b
 			return DiffStat{}, err
 		}
 	}
+	tree, err := runGitAt(ctx, workspacePath, "rev-parse", index.HeadSHA+"^{tree}")
+	if err != nil {
+		return DiffStat{}, err
+	}
+	stat.TreeSHA = strings.TrimSpace(tree)
 	stat.HeadSHA = index.HeadSHA
 	stat.HeadObservedAt = index.HeadObservedAt
 	return stat, nil
@@ -643,7 +659,7 @@ func gitDiffOutputWithinLimit(ctx context.Context, workspacePath string, env []s
 
 // gitDiffArgsWithinLimit streams one git diff invocation through a byte cap.
 // The arguments are explicit so a caller that needs different diff options --
-// the per-file diff of decisions section 18.5 pins --find-renames -- gets the
+// the per-file attempt diff pins --find-renames -- gets the
 // same bounded read instead of a second copy of it.
 func gitDiffArgsWithinLimit(ctx context.Context, workspacePath string, env []string, maxBytes int, args ...string) (string, bool, error) {
 	gitArgs := append([]string{"git", "-C", workspacePath}, args...)

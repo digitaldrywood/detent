@@ -31,6 +31,7 @@ func TestReporterReadIsolation(t *testing.T) {
 		issues[user] = issue
 	}
 	own, other := issues["reporter"], issues["tester"]
+	operatorSQL(t, v.hostedSecurityFixture, "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL WHERE native_id IN (?,?)", own.WorkItemID, other.WorkItemID)
 	contexts := make(chan context.Context, 1)
 	v.service.echo.POST("/reporter-read-context", func(c echo.Context) error {
 		contexts <- operatortool.BindConnection(c.Request().Context(), "reporter-read", "test")
@@ -43,6 +44,7 @@ func TestReporterReadIsolation(t *testing.T) {
 		v.users[role] = v.user(t, role, role, role+"@example.test", "read", "")
 		v.grant(t, v.users[role], true, false)
 	}
+	drainTestNativeBoard(t, v.service)
 	for _, user := range []string{"reporter", "tester", "member", "owner", "admin", "viewer"} {
 		for _, suffix := range []string{"", "?include=work", "?include=summary", "?include=board", "?fields=picker", "?q=Shared", "?include=board&q=Shared", "?created_by=me"} {
 			t.Run(user+suffix, func(t *testing.T) {
@@ -243,6 +245,7 @@ func TestReporterLinksAttachmentsAndBoardStream(t *testing.T) {
 	requireNativeStatus(t, v.request(t, v.users["reporter"], http.MethodGet, v.base+"/reporter-board-scope", nil), http.StatusOK)
 	scope := <-contexts
 	scope.organization, scope.project = "org_security", v.project
+	drainTestNativeBoard(t, v.service)
 	frame, err := readNativeBoardFrame(t.Context(), v.service.database.reader, scope, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -365,6 +368,7 @@ func TestReporterIdentityAcrossEntryPoints(t *testing.T) {
 				}
 			}
 			if deployment == "dedicated" {
+				drainTestNativeBoard(t, f.service)
 				scanner := openHostedTestStream(t, f.hostedSecurityFixture, f.user, "?board=true")
 				kind, data := readHostedEvent(t, scanner)
 				if kind != "activity" || strings.Contains(data, string(other.WorkItemID)) || !strings.Contains(data, string(own.WorkItemID)) {
@@ -391,7 +395,7 @@ func TestReporterAggregateReads(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		operatorSQL(t, v.hostedSecurityFixture, "UPDATE issues SET labels_json=? WHERE native_id=?", string(labels), item.WorkItemID)
+		operatorSQL(t, v.hostedSecurityFixture, "UPDATE issues SET page_filters_ready=NULL,labels_json=? WHERE native_id=?", string(labels), item.WorkItemID)
 		key := fmt.Sprintf("reporter-attempt-%d", index)
 		lease, err := v.service.database.db.ExecContext(t.Context(), "INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,released_at,created_at,updated_at) SELECT ?,id,'reporter-fixture',?,?,?,?,?,?,? FROM issues WHERE native_id=?", key, key, formatHubTime(now), formatHubTime(now.Add(-time.Minute)), formatHubTime(now), formatHubTime(now), formatHubTime(now.Add(-time.Minute)), formatHubTime(now), item.WorkItemID)
 		if err != nil {

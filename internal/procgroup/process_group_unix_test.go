@@ -212,7 +212,7 @@ func TestObserveMeasuresMatchingProcessGroupAndRejectsStaleIdentity(t *testing.T
 				t.Fatalf("Observe() len = %d, want 1", len(observations))
 			}
 			got := observations[0]
-			if got.Alive != tt.wantAlive || got.Stale != tt.wantStale {
+			if !got.GroupObserved || got.Alive != tt.wantAlive || got.Stale != tt.wantStale {
 				t.Fatalf("Observe() = %#v, want alive=%t stale=%t", got, tt.wantAlive, tt.wantStale)
 			}
 			if tt.wantAlive && (got.ProcessCount < 2 || got.RSSBytes <= 0) {

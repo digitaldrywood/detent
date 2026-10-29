@@ -2,23 +2,21 @@ package orchestrator_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
-// tokenCeilingRunner fails every attempt with an error whose text varies per
-// call, the way a session token ceiling failure reports a different
-// total_tokens each attempt. The varying text keeps the instant-failure
-// breaker from matching consecutive errors, which is exactly the gap the
-// repeated-failure breaker covers.
 type tokenCeilingRunner struct {
 	calls        atomic.Int64
 	failureCount int64
+	onSuccess    func()
 }
 
 type restBudgetHeadroomRunner struct {
@@ -37,7 +35,10 @@ func (r *restBudgetHeadroomRunner) Run(_ context.Context, _ orchestrator.RunRequ
 func (r *tokenCeilingRunner) Run(_ context.Context, _ orchestrator.RunRequest) (orchestrator.RunResult, error) {
 	n := r.calls.Add(1)
 	if r.failureCount > 0 && n > r.failureCount {
-		return orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted}, nil
+		if r.onSuccess != nil {
+			r.onSuccess()
+		}
+		return orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted, DiffStats: orchestrator.DiffStats{Status: "clean"}}, nil
 	}
 	return orchestrator.RunResult{TurnStarted: true}, fmt.Errorf(
 		"run agent turn: claude update rejected: session token ceiling exceeded: total_tokens=%d ceiling_tokens=2000000 source=max_session_tokens",
@@ -45,12 +46,14 @@ func (r *tokenCeilingRunner) Run(_ context.Context, _ orchestrator.RunRequest) (
 	)
 }
 
-func TestRunParksIssueAfterRepeatedCostlyWorkerFailures(t *testing.T) {
+func TestRunRetriesRepeatedCostlyWorkerFailures(t *testing.T) {
 	t.Parallel()
 
 	issue := testIssue("issue-repeated-fail", "wi-011cd179bc7ecf36b7197e4b", "Todo")
 	tracker := newFakeConnector(issue)
-	runner := &tokenCeilingRunner{}
+	runner := &tokenCeilingRunner{failureCount: 6, onSuccess: func() {
+		tracker.setCandidatePullRequest(issue.ID, &connector.PullRequest{Number: 1, HeadSHA: "published-head", State: "OPEN", Draft: true})
+	}}
 
 	orch, err := orchestrator.New(orchestrator.Config{
 		PollInterval:           time.Millisecond,
@@ -71,82 +74,31 @@ func TestRunParksIssueAfterRepeatedCostlyWorkerFailures(t *testing.T) {
 	stop := runOrchestrator(t, orch)
 	defer stop()
 
-	// Multiple worker completions may exceed one second under aggregate-suite load.
-	// This timeout is a deadlock guard, not an assertion about failure latency.
-	state := waitForStateWithin(t, orch, slowCIIntegrationWaitTimeout, func(state orchestrator.State) bool {
-		_, ok := state.Blocked[issue.ID]
-		return ok
+	var state orchestrator.State
+	testenv.WaitUntil(t, t.Context(), func() error {
+		var err error
+		state, err = orch.State(t.Context())
+		if err != nil {
+			return err
+		}
+		if _, ok := state.Completed[issue.ID]; !ok {
+			return errors.New("awaiting successful completion")
+		}
+		return nil
 	})
-
-	if got := runner.calls.Load(); got != 5 {
-		t.Fatalf("runner calls = %d, want 5", got)
+	if runner.calls.Load() < 7 {
+		t.Fatal("repeated failures stopped before success")
 	}
-	// Recovery refresh replaces the descriptive Reason with the persisted cause.
-	// Assert the stable cause here; the comment below retains the worker error.
-	blocked := state.Blocked[issue.ID]
-	if blocked.Recovery == nil || blocked.Recovery.Cause != "repeated_failure_circuit_breaker" {
-		t.Fatalf("Blocked[%q].Recovery = %#v, want repeated failure cause", issue.ID, blocked.Recovery)
+	if len(state.Blocked) != 0 {
+		t.Fatal("machine failure created a hold")
 	}
-	if _, ok := state.Retry[issue.ID]; ok {
-		t.Fatalf("Retry[%q] present after circuit breaker", issue.ID)
+	if retry, ok := state.Retry[issue.ID]; ok && retry.Attempt > 1 {
+		t.Fatalf("successful completion retained failure backoff: %+v", retry)
 	}
-	if _, ok := state.Claimed[issue.ID]; ok {
-		t.Fatalf("Claimed[%q] present after circuit breaker", issue.ID)
-	}
-	if _, ok := state.RepeatedFailures[issue.ID]; ok {
-		t.Fatalf("RepeatedFailures[%q] present after park", issue.ID)
-	}
-	updates := tracker.stateUpdateCalls()
-	if len(updates) == 0 || updates[len(updates)-1] != (stateUpdateCall{issueID: issue.ID, state: "Blocked"}) {
-		t.Fatalf("state updates = %#v, want final Blocked transition", updates)
-	}
-	comments := tracker.commentCalls()
-	if len(comments) != 1 {
-		t.Fatalf("comments = %#v, want one circuit breaker comment", comments)
-	}
-	if !strings.Contains(comments[0].body, "consecutive failed attempts") || !strings.Contains(comments[0].body, "session token ceiling exceeded") {
-		t.Fatalf("comment body missing repeated failure details:\n%s", comments[0].body)
-	}
-}
-
-func TestRunRepeatedFailureCounterSurvivesYieldlessCompletion(t *testing.T) {
-	t.Parallel()
-
-	issue := testIssue("issue-repeated-fail-reset", "digitaldrywood/detent#980", "Todo")
-	tracker := newFakeConnector(issue)
-	runner := &tokenCeilingRunner{failureCount: 4}
-
-	orch, err := orchestrator.New(orchestrator.Config{
-		PollInterval:           time.Millisecond,
-		MaxConcurrentAgents:    1,
-		MaxRetryBackoff:        time.Millisecond,
-		FailureRetryBaseDelay:  time.Millisecond,
-		ActiveStates:           []string{"Todo", "In Progress"},
-		ObservedStates:         []string{"Blocked"},
-		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
-		ContinuationRetryDelay: time.Second,
-	}, orchestrator.Dependencies{
-		Connector: tracker,
-		Runner:    runner,
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	stop := runOrchestrator(t, orch)
-	defer stop()
-
-	// Multiple worker completions may exceed one second under aggregate-suite load.
-	// This timeout is a deadlock guard, not an assertion about failure latency.
-	state := waitForStateWithin(t, orch, slowCIIntegrationWaitTimeout, func(state orchestrator.State) bool {
-		_, ok := state.Completed[issue.ID]
-		return ok
-	})
-
-	if _, ok := state.Blocked[issue.ID]; ok {
-		t.Fatalf("Blocked[%q] present after successful completion", issue.ID)
-	}
-	if got := state.RepeatedFailures[issue.ID].Count; got != 4 {
-		t.Fatalf("RepeatedFailures[%q].Count = %d, want 4 after yieldless completion", issue.ID, got)
+	for _, update := range tracker.stateUpdateCalls() {
+		if update.state == "Blocked" {
+			t.Fatal("machine failure wrote Blocked")
+		}
 	}
 }
 
@@ -192,9 +144,6 @@ func TestRunDefersRESTBudgetFailureAsCapacityWithoutBreaker(t *testing.T) {
 	}
 	if _, ok := state.Blocked[issue.ID]; ok {
 		t.Fatalf("Blocked[%q] present after capacity deferral", issue.ID)
-	}
-	if _, ok := state.RepeatedFailures[issue.ID]; ok {
-		t.Fatalf("RepeatedFailures[%q] present after capacity deferral", issue.ID)
 	}
 	if state.FailureBreaker.Active() {
 		t.Fatalf("FailureBreaker = %#v, want inactive", state.FailureBreaker)

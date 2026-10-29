@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/changerequest"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -19,23 +21,6 @@ const nativeCandidateDependenciesSatisfied = `(p.require_dependencies = 0 OR NOT
  SELECT 1 FROM issue_dependencies dependency JOIN issues blocker ON blocker.id = dependency.blocker_issue_id
  LEFT JOIN workflow_states blocker_state ON blocker_state.id = blocker.workflow_state_id
  WHERE dependency.dependent_issue_id = i.id AND (blocker_state.id IS NULL OR blocker_state.terminal = 0)))`
-
-const nativeCandidateRecordedDependenciesSatisfied = `NOT EXISTS (
- SELECT 1 FROM native_attempts reported
- WHERE reported.organization_id = i.organization_id AND reported.project_id = i.project_id
- AND reported.work_item_id = i.native_id AND reported.status = 'succeeded'
- AND reported.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest
-   WHERE latest.organization_id = i.organization_id AND latest.project_id = i.project_id AND latest.work_item_id = i.native_id)
- AND json_extract(reported.data_json, '$.disposition.status') = 'blocked'
- AND EXISTS (SELECT 1 FROM json_each(reported.data_json, '$.disposition.blocker_evidence') blocker
-   WHERE json_extract(blocker.value, '$.predicate.type') = 'issue_state')
- AND NOT EXISTS (SELECT 1 FROM collaboration_events recovered
-   WHERE recovered.organization_id = i.organization_id AND recovered.project_id = i.project_id AND recovered.work_item_id = i.native_id
-   AND recovered.type = 'workflow.transitioned' AND julianday(recovered.recorded_at) >= julianday(reported.updated_at)
-   AND ((json_extract(recovered.data_json, '$.reason') = 'dependency_ready'
-     AND json_extract(recovered.data_json, '$.blocker_attempt_id') = reported.id)
-     OR (json_extract(recovered.data_json, '$.reason') = 'user_requested'
-       AND json_extract(recovered.actor_json, '$.kind') = 'human'))))`
 
 type nativeCandidateSnapshot struct {
 	AnsweredExclusion      *tracker.NativeAnsweredExclusion
@@ -53,15 +38,15 @@ func readNativeCandidateSnapshot(ctx context.Context, q nativeQueryer, query cla
 	}
 	var dependenciesSatisfied bool
 	var dispatchable, terminal bool
-	var kind, attemptID, updatedAt string
+	var kind, attemptID string
 	err = q.QueryRowContext(ctx, `SELECT `+nativeCandidateDependenciesSatisfied+`,
  CASE WHEN answered.id IS NULL THEN '' ELSE `+nativeAnsweredClassification+` END,
- COALESCE(answered.id, ''), COALESCE(answered.updated_at, ''), ws.dispatchable, ws.terminal
+ COALESCE(answered.id, ''), ws.dispatchable, ws.terminal
 FROM issues i JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
 JOIN workflow_states ws ON ws.id = i.workflow_state_id
 LEFT JOIN native_attempts answered ON answered.id = (SELECT answered.id `+nativeAnsweredAttemptFrom+`
  AND p.profile = 'native' AND lower(trim(ws.detent_state)) <> 'merging')
-WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, query.WorkItemID, query.NativeScope.organization, query.NativeScope.project).Scan(&dependenciesSatisfied, &kind, &attemptID, &updatedAt, &dispatchable, &terminal)
+WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, query.WorkItemID, query.NativeScope.organization, query.NativeScope.project).Scan(&dependenciesSatisfied, &kind, &attemptID, &dispatchable, &terminal)
 	if err != nil {
 		return snapshot, err
 	}
@@ -70,25 +55,23 @@ WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, query.WorkItemID
 	} else if !dispatchable {
 		snapshot.StateExclusion = fmt.Sprintf("Native workflow state %s is not dispatchable", issue.State)
 	}
-	if kind != "" {
-		snapshot.AnsweredExclusion = &tracker.NativeAnsweredExclusion{Kind: kind, AttemptID: attemptID}
-		if kind == "untyped_cooldown" || kind == "instance_cooldown" {
-			updated, err := parseTimeValue(updatedAt)
-			if err != nil {
-				snapshot.Unavailable = append(snapshot.Unavailable, "answered_retry_eligibility")
-			} else {
-				eligible := updated.Add(30 * time.Minute)
-				snapshot.AnsweredExclusion.RetryEligibleAt = &eligible
-			}
-		}
-	}
-	if snapshot.AnsweredExclusion == nil {
-		waiting, err := readPublishedReviewWait(ctx, q, query.WorkItemID, time.Now().UTC())
+	if kind == "" {
+		legacy, err := readUnknownAnsweredClaim(ctx, q, query.WorkItemID)
 		if err != nil {
 			return snapshot, err
 		}
-		if waiting.Kind != "" {
-			snapshot.AnsweredExclusion = &waiting
+		kind, attemptID = legacy.Kind, legacy.AttemptID
+	}
+	if kind != "" {
+		snapshot.AnsweredExclusion = &tracker.NativeAnsweredExclusion{Kind: kind, AttemptID: attemptID}
+	}
+	if snapshot.AnsweredExclusion == nil {
+		review, attempt, err := readPublishedReview(ctx, q, query.WorkItemID, time.Now().UTC())
+		if err != nil {
+			return snapshot, err
+		}
+		if review.AwaitingEvidence() {
+			snapshot.AnsweredExclusion = &tracker.NativeAnsweredExclusion{Kind: string(gate.ReasonAutomatedReviewMissing), AttemptID: attempt}
 		}
 	}
 	if !dependenciesSatisfied {
@@ -111,28 +94,51 @@ WHERE i.id = ? AND i.organization_id = ? AND i.project_id = ?`, query.WorkItemID
 }
 
 func nativeCandidateIDs(ctx context.Context, tx nativeQueryer, query claimCandidateQuery, repositoryIDs []tracker.RepositoryID, repositories, states, authors, assignees, included, excluded []string) ([]tracker.WorkItemID, error) {
+	projectRanks, err := nativeCandidateProjectRanks(ctx, tx, query.NativeScope.credential.ID)
+	if err != nil {
+		return nil, err
+	}
 	args := []any{}
 	bind := func(value any) string {
 		args = append(args, value)
 		return "?"
 	}
-	var encodingErr error
-	jsonList := func(value any) string {
-		raw, err := marshalNative(value)
-		if err != nil {
-			encodingErr = err
+	projectRank := "p.scheduling_rank"
+	if len(projectRanks) > 0 {
+		projects := make([]string, 0, len(projectRanks))
+		for project := range projectRanks {
+			projects = append(projects, string(project))
 		}
-		return bind(raw)
+		sort.Strings(projects)
+		var rank strings.Builder
+		rank.WriteString("CASE p.id")
+		for _, project := range projects {
+			rank.WriteString(" WHEN " + bind(project) + " THEN " + bind(projectRanks[tracker.ProjectID(project)]))
+		}
+		rank.WriteString(" ELSE p.scheduling_rank END")
+		projectRank = rank.String()
+	}
+	now := query.AvailableAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	bindList := func(values []any) string {
+		args = append(args, values...)
+		return placeholders(len(values))
+	}
+	laneOrder := "CASE WHEN lower(trim(ws.detent_state)) = 'merging' THEN 0 ELSE 1 END"
+	if query.NativeScope.credential.Runner.Valid() {
+		laneOrder = "CASE lower(trim(ws.detent_state)) WHEN 'merging' THEN 0 WHEN 'rework' THEN 1 WHEN 'in progress' THEN 2 ELSE 3 END"
 	}
 	statement := strings.Join([]string{`WITH candidates AS NOT MATERIALIZED (
-SELECT i.id,
+SELECT i.id, `, projectRank, ` AS project_rank,
  CASE WHEN q.priority_override BETWEEN 0 AND 3 THEN q.priority_override + 1 ELSE 5 END AS priority,
  substr(COALESCE(i.native_created_at, i.created_at), 1, 19) || '.' || substr(CASE
   WHEN substr(COALESCE(i.native_created_at, i.created_at), 20, 1) = '.'
   THEN substr(COALESCE(i.native_created_at, i.created_at), 21, length(COALESCE(i.native_created_at, i.created_at)) - 21) || '000000000'
   ELSE '000000000' END, 1, 9) AS created,
- COALESCE((SELECT json_extract(routing_settings_json, '$.project_ranks.' || p.id) FROM runner_identities WHERE token_id = `, bind(query.NativeScope.credential.ID), `), p.scheduling_rank) AS project_rank,
- CASE WHEN lower(trim(ws.detent_state)) = 'merging' THEN 0 ELSE 1 END AS landing,
+ CASE WHEN p.aging_enabled = 1 THEN -min(3, max(0, CAST(julianday(`, bind(formatHubTime(now)), `) - julianday(COALESCE(i.dispatch_wait_since, `, bind(formatHubTime(now)), `)) AS INTEGER))) ELSE 0 END AS aging_boost,
+ `, laneOrder, ` AS landing,
  i.project_id || '#' || i.number AS identifier
 FROM issues i
 JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
@@ -159,9 +165,7 @@ WHERE i.organization_id = `,
 		notWorkspaceItemClause,
 		`)
  AND `,
-		nativeCandidateDependenciesSatisfied,
-		` AND `,
-		nativeCandidateRecordedDependenciesSatisfied}, "")
+		nativeCandidateDependenciesSatisfied}, "")
 	if query.NativeScope.project != "" {
 		statement += ` AND i.project_id = ` + bind(query.NativeScope.project)
 	} else {
@@ -176,14 +180,14 @@ WHERE i.organization_id = `,
 		statement += ` AND i.id = ` + bind(query.WorkItemID)
 	}
 	if len(query.OnlyIDs) > 0 {
-		statement += ` AND i.id IN (SELECT value FROM json_each(` + jsonList(query.OnlyIDs) + `))`
+		statement += ` AND i.id IN (` + bindList(nativeCandidateValues(query.OnlyIDs)) + `)`
 	}
 	if len(query.ProviderCandidates) > 0 {
-		ids := make([]tracker.NativeWorkItemID, 0, len(query.ProviderCandidates))
+		ids := make([]any, 0, len(query.ProviderCandidates))
 		for _, candidate := range query.ProviderCandidates {
 			ids = append(ids, candidate.WorkItemID)
 		}
-		statement += ` AND i.native_id IN (SELECT value FROM json_each(` + jsonList(ids) + `))`
+		statement += ` AND i.native_id IN (` + bindList(ids) + `)`
 	}
 	var filters strings.Builder
 	for _, filter := range []struct {
@@ -194,38 +198,52 @@ WHERE i.organization_id = `,
 		{"lower(trim(r.github_owner)) || '/' || lower(trim(r.github_name))", repositories},
 	} {
 		if len(filter.values) > 0 {
-			filters.WriteString(` AND ` + filter.expression + ` IN (SELECT value FROM json_each(` + jsonList(filter.values) + `))`)
+			filters.WriteString(` AND ` + filter.expression + ` IN (` + bindList(nativeCandidateValues(filter.values)) + `)`)
 		}
 	}
 	statement += filters.String()
 	if len(repositoryIDs) > 0 {
-		statement += ` AND i.repository_id IN (SELECT value FROM json_each(` + jsonList(repositoryIDs) + `))`
+		statement += ` AND i.repository_id IN (` + bindList(nativeCandidateValues(repositoryIDs)) + `)`
 	}
 	if len(assignees) > 0 {
-		statement += ` AND EXISTS (SELECT 1 FROM json_each(i.assignees_json) a WHERE lower(trim(a.value)) IN (SELECT value FROM json_each(` + jsonList(assignees) + `)))`
+		statement += ` AND EXISTS (SELECT 1 FROM issue_filter_values WHERE issue_id=i.id AND kind='assignee' AND value IN (` + bindList(nativeCandidateValues(assignees)) + `))`
 	}
-	if len(included) > 0 {
-		statement += ` AND NOT EXISTS (SELECT 1 FROM json_each(` + jsonList(included) + `) required WHERE NOT EXISTS (SELECT 1 FROM json_each(i.labels_json) l WHERE lower(trim(l.value)) = required.value))`
+	filters.Reset()
+	for _, label := range included {
+		filters.WriteString(` AND EXISTS (SELECT 1 FROM issue_filter_values WHERE issue_id=i.id AND kind='label' AND value=` + bind(label) + `)`)
 	}
+	statement += filters.String()
 	if len(excluded) > 0 {
-		statement += ` AND NOT EXISTS (SELECT 1 FROM json_each(i.labels_json) l WHERE lower(trim(l.value)) IN (SELECT value FROM json_each(` + jsonList(excluded) + `)))`
-	}
-	if encodingErr != nil {
-		return nil, encodingErr
+		statement += ` AND NOT EXISTS (SELECT 1 FROM issue_filter_values WHERE issue_id=i.id AND kind='label' AND value IN (` + bindList(nativeCandidateValues(excluded)) + `))`
 	}
 	statement += `)`
-	order := "priority, landing, project_rank, created, identifier, id"
+	order := "priority, aging_boost, landing, project_rank, created, identifier, id"
 	if query.NativeScope.credential.Runner.Valid() {
-		order = "project_rank, priority, landing, created, identifier, id"
+		order = "landing, project_rank, priority, aging_boost, created, identifier, id"
 	}
 	baseArgs := args
 	readPage := func(after tracker.WorkItemID, limit int, anchor bool) ([]tracker.WorkItemID, tracker.WorkItemID, int, error) {
+		prepared := claimPrepared(ctx)
+		bounded := prepared != nil && !anchor && len(query.OnlyIDs) == 0
+		if bounded {
+			limit = min(limit, claimPreparationLimit-prepared.candidateRows)
+			if limit <= 0 {
+				return nil, 0, 0, nil
+			}
+		}
+
 		args = append([]any(nil), baseArgs...)
 		page := statement + `, page AS MATERIALIZED (SELECT * FROM candidates WHERE 1 = 1`
 		if anchor {
 			page += ` AND id = ` + bind(after)
 		} else {
-			if after > 0 {
+			if cursor := query.SelectionCursor; cursor != nil && cursor.ID > 0 {
+				if query.NativeScope.credential.Runner.Valid() {
+					page += ` AND (landing, priority, aging_boost, created, identifier, id) > (` + bind(cursor.Landing) + `,` + bind(cursor.Priority) + `,` + bind(cursor.Aging) + `,` + bind(cursor.Created) + `,` + bind(cursor.Identifier) + `,` + bind(cursor.ID) + `)`
+				} else {
+					page += ` AND (priority, aging_boost, landing, created, identifier, id) > (` + bind(cursor.Priority) + `,` + bind(cursor.Aging) + `,` + bind(cursor.Landing) + `,` + bind(cursor.Created) + `,` + bind(cursor.Identifier) + `,` + bind(cursor.ID) + `)`
+				}
+			} else if after > 0 {
 				page += ` AND (` + order + `) > (SELECT ` + order + ` FROM candidates WHERE id = ` + bind(after) + `)`
 			}
 			if !query.AvailableAt.IsZero() {
@@ -233,7 +251,11 @@ WHERE i.organization_id = `,
 			}
 		}
 		page += ` ORDER BY ` + order + ` LIMIT ` + bind(limit) + `)`
-		return readNativeCandidatePage(ctx, tx, page+nativeCandidateCompletionEvidence+` ORDER BY page.`+strings.ReplaceAll(order, ", ", ", page."), args)
+		ids, last, scanned, err := readNativeCandidatePage(ctx, tx, page+nativeCandidateCompletionEvidence+` ORDER BY page.`+strings.ReplaceAll(order, ", ", ", page."), args, query.SelectionCursor)
+		if bounded {
+			prepared.candidateRows += scanned
+		}
+		return ids, last, scanned, err
 	}
 	if query.After > 0 {
 		ids, _, _, err := readPage(query.After, 1, true)
@@ -254,11 +276,19 @@ WHERE i.organization_id = `,
 	}
 	var ids []tracker.WorkItemID
 	after := query.After
+	scannedTotal := 0
 	for len(ids) < limit {
+		if claimPrepared(ctx) != nil && scannedTotal >= claimPreparationLimit {
+			break
+		}
 		remaining := limit - len(ids)
 		page, last, scanned, err := readPage(after, remaining, false)
 		if err != nil {
 			return nil, err
+		}
+		scannedTotal += scanned
+		if query.SelectionCursor != nil {
+			return page, nil
 		}
 		ids = append(ids, page...)
 		if scanned < remaining {
@@ -270,13 +300,8 @@ WHERE i.organization_id = `,
 }
 
 const nativeCandidateCompletionEvidence = `
- SELECT page.id, ` + notAlreadyAnsweredClause + `, i.project_id,
- json_type(a.data_json, '$.disposition') = 'object',
- CASE WHEN COALESCE(json_type(a.data_json, '$.disposition'), 'null') = 'null'
-   AND length(CAST(COALESCE(json_extract(a.data_json, '$.completion_body'), '') AS BLOB)) <= 65536
-   THEN COALESCE(json_extract(a.data_json, '$.completion_body'), '') ELSE '' END AS completion_body,
- COALESCE(json_extract(a.checkpoint_json, '$.head_sha'), ''),
- COALESCE(json_extract(a.checkpoint_json, '$.workspace_digest'), '')
+ SELECT page.id, page.priority, page.aging_boost, page.landing, page.created, page.identifier, ` + notAlreadyAnsweredClause + `, i.project_id,
+ COALESCE(a.data_json, '{}') AS completion_evidence, COALESCE(a.checkpoint_json,'null'), a.claim_facts_known
  FROM page JOIN issues i ON i.id = page.id
  JOIN projects p ON p.id = i.project_id AND p.organization_id = i.organization_id
  JOIN workflow_states ws ON ws.id = i.workflow_state_id
@@ -284,27 +309,9 @@ const nativeCandidateCompletionEvidence = `
  AND lower(trim(ws.detent_state)) <> 'merging'
  AND a.status = 'succeeded' AND a.work_item_revision >= i.revision AND a.dispatch_generation >= i.dispatch_generation
  AND a.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest
-   WHERE latest.organization_id = a.organization_id AND latest.project_id = a.project_id AND latest.work_item_id = a.work_item_id)
- AND (COALESCE(json_type(a.data_json, '$.disposition'), 'null') = 'null'
-   OR (json_extract(a.data_json, '$.disposition.status') = 'complete'
-     AND json_extract(a.data_json, '$.disposition.blockers') = 0
-     AND json_extract(a.data_json, '$.disposition.human_action') = 0
-     AND COALESCE(json_extract(a.data_json, '$.disposition.reason_code'), '') = ''
-     AND COALESCE(json_array_length(a.data_json, '$.disposition.blocker_evidence'), 0) = 0))
- AND json_extract(a.checkpoint_json, '$.worktree_state') IN ('dirty', 'unpushed')
- AND json_extract(a.checkpoint_json, '$.resume') = 'resume_session'
- AND json_extract(a.checkpoint_json, '$.availability') = 'available'
- AND json_extract(a.checkpoint_json, '$.storage') IN ('local_only', 'git_ref')
- AND json_extract(a.checkpoint_json, '$.external_effect') = 'none'
- AND json_extract(a.checkpoint_json, '$.effect_state') = 'none'
- AND COALESCE(json_extract(a.checkpoint_json, '$.effect_id'), '') = ''
- AND json_extract(a.checkpoint_json, '$.head_sha') IS NOT NULL
- AND json_extract(a.checkpoint_json, '$.workspace_digest') IS NOT NULL
- AND NOT EXISTS (SELECT 1 FROM change_issue_links l JOIN change_versions v ON v.change_id = l.change_id
-   WHERE l.organization_id = a.organization_id AND l.project_id = a.project_id AND l.work_item_id = a.work_item_id
-   AND json_extract(v.record_json, '$.head_sha') = json_extract(a.checkpoint_json, '$.head_sha'))`
+   WHERE latest.organization_id = a.organization_id AND latest.project_id = a.project_id AND latest.work_item_id = a.work_item_id)`
 
-func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement string, args []any) ([]tracker.WorkItemID, tracker.WorkItemID, int, error) {
+func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement string, args []any, cursor *runnerSelectionCursor) ([]tracker.WorkItemID, tracker.WorkItemID, int, error) {
 	rows, err := q.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("query native candidates: %w", err)
@@ -313,24 +320,38 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 	var ids []tracker.WorkItemID
 	var last tracker.WorkItemID
 	scanned := 0
+	var position runnerSelectionCursor
 	for rows.Next() {
 		var unanswered bool
-		var project, body, head, digest string
-		var typed sql.NullBool
-		if err := rows.Scan(&last, &unanswered, &project, &typed, &body, &head, &digest); err != nil {
+		var project, runRaw, checkpointRaw string
+		var known sql.NullInt64
+		if err := rows.Scan(&last, &position.Priority, &position.Aging, &position.Landing, &position.Created, &position.Identifier, &unanswered, &project, &runRaw, &checkpointRaw, &known); err != nil {
 			return nil, 0, 0, err
 		}
 		scanned++
+		position.ID = last
 		if !unanswered {
-			if !validCommitID(head) || !validCommitID(digest) {
+			continue
+		}
+		var run tracker.NativeRunData
+		if err := json.Unmarshal([]byte(runRaw), &run); err != nil {
+			return nil, 0, 0, err
+		}
+		if !known.Valid && run.AttemptID != "" {
+			var checkpoint *tracker.NativeCheckpoint
+			if err := json.Unmarshal([]byte(checkpointRaw), &checkpoint); err != nil {
+				return nil, 0, 0, err
+			}
+			if answeredClaimKind(run, checkpoint) != "" {
 				continue
 			}
-			if !typed.Bool {
-				signal, reported := workpad.SignalFromComment(body, "", project)
-				if !reported || signal == nil || signal.Invalid != nil || signal.Status != workpad.StatusComplete || len(signal.Blockers) != 0 ||
-					signal.HumanAction != "" || signal.ReasonCode != "" || signal.Fields["completion_kind"] == "operational" {
-					continue
-				}
+		}
+		if run.Disposition == nil {
+			if err := decodeRunDetail(ctx, q, runRaw, &run); err != nil {
+				return nil, 0, 0, err
+			}
+			if signal, reported := workpad.SignalFromComment(run.CompletionBody, "", project); reported && signal != nil && signal.Invalid == nil && (signal.HumanAction != "" || signal.ReasonCode == "permission_wait") {
+				continue
 			}
 		}
 		ids = append(ids, last)
@@ -343,18 +364,21 @@ func readNativeCandidatePage(ctx context.Context, q nativeQueryer, statement str
 	}
 	runnable := ids[:0]
 	for _, id := range ids {
-		waiting, err := readPublishedReviewWait(ctx, q, id, time.Now().UTC())
+		review, _, err := readPublishedReview(ctx, q, id, time.Now().UTC())
 		if err != nil {
 			return nil, last, scanned, err
 		}
-		if waiting.Kind == "" {
+		if !review.AwaitingEvidence() {
 			runnable = append(runnable, id)
 		}
+	}
+	if cursor != nil {
+		*cursor = position
 	}
 	return runnable, last, scanned, nil
 }
 
-func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.WorkItemID, now time.Time) (tracker.NativeAnsweredExclusion, error) {
+func readPublishedReview(ctx context.Context, q nativeQueryer, id tracker.WorkItemID, now time.Time) (connector.ChangeReview, string, error) {
 	var scope nativeScope
 	var item, attempt, raw, checkpoint string
 	err := q.QueryRowContext(ctx, `SELECT i.organization_id, i.project_id, i.native_id, a.id, a.data_json, COALESCE(a.checkpoint_json, 'null')
@@ -366,47 +390,78 @@ func readPublishedReviewWait(ctx context.Context, q nativeQueryer, id tracker.Wo
  AND a.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest WHERE latest.organization_id = i.organization_id AND latest.project_id = i.project_id AND latest.work_item_id = i.native_id)
  LIMIT 1`, id).Scan(&scope.organization, &scope.project, &item, &attempt, &raw, &checkpoint)
 	if errors.Is(err, sql.ErrNoRows) {
-		return tracker.NativeAnsweredExclusion{}, nil
+		return connector.ChangeReview{}, "", nil
 	}
 	if err != nil {
-		return tracker.NativeAnsweredExclusion{}, err
+		return connector.ChangeReview{}, "", err
 	}
 	var data tracker.NativeRunData
 	var source tracker.NativeCheckpoint
-	if err := json.Unmarshal([]byte(raw), &data); err != nil {
-		return tracker.NativeAnsweredExclusion{}, err
+	if err := decodeRunDetail(ctx, q, raw, &data); err != nil {
+		return connector.ChangeReview{}, "", err
 	}
 	if err := json.Unmarshal([]byte(checkpoint), &source); err != nil {
-		return tracker.NativeAnsweredExclusion{}, err
+		return connector.ChangeReview{}, "", err
 	}
 	disposition := data.Disposition
 	if disposition == nil {
 		signal, reported := workpad.SignalFromComment(data.CompletionBody, "", string(scope.project))
 		if !reported || signal == nil || signal.Invalid != nil || signal.Fields["completion_kind"] == "operational" {
-			return tracker.NativeAnsweredExclusion{}, nil
+			return connector.ChangeReview{}, "", nil
 		}
 		disposition = &tracker.NativeDisposition{Status: signal.Status, Blockers: len(signal.Blockers) != 0, HumanAction: signal.HumanAction != "", ReasonCode: signal.ReasonCode}
 	}
 	if disposition.Status != workpad.StatusComplete || disposition.Blockers || disposition.HumanAction || disposition.ReasonCode != "" || len(disposition.BlockerEvidence) != 0 {
-		return tracker.NativeAnsweredExclusion{}, nil
+		return connector.ChangeReview{}, "", nil
 	}
 	if source.WorktreeState != "clean" && source.WorktreeState != "unpushed" || !validCommitID(source.HeadSHA) {
-		return tracker.NativeAnsweredExclusion{}, nil
+		return connector.ChangeReview{}, "", nil
 	}
 	if source.EffectState == "pending" || source.EffectState == "ambiguous" {
-		return tracker.NativeAnsweredExclusion{}, nil
+		return connector.ChangeReview{}, "", nil
 	}
 	finalization := data.Finalization
 	if finalization == nil || !finalization.Changed || finalization.ChangeID == "" || finalization.VersionID == "" || finalization.HeadSHA != source.HeadSHA || finalization.VersionError != "" {
-		return tracker.NativeAnsweredExclusion{}, nil
+		return connector.ChangeReview{}, "", nil
 	}
-	detail, err := readChangeDetail(ctx, q, scope, item, finalization.ChangeID, now)
+	change, err := readChange(ctx, q, scope, item, finalization.ChangeID)
 	if err != nil {
-		return tracker.NativeAnsweredExclusion{}, err
+		return connector.ChangeReview{}, "", err
 	}
-	review := changerequest.ReviewState(detail, finalization.VersionID, source.HeadSHA)
-	if !review.Current || review.ChangesRequested || detail.Change.CurrentLanding() != nil {
-		return tracker.NativeAnsweredExclusion{}, nil
+	if change.CurrentVersion != finalization.VersionID {
+		return connector.ChangeReview{}, "", nil
 	}
-	return tracker.NativeAnsweredExclusion{Kind: string(gate.ReasonAutomatedReviewMissing), AttemptID: attempt}, nil
+	version, err := readClaimVersion(ctx, q, change.ID, change.CurrentVersion)
+	if err != nil {
+		return connector.ChangeReview{}, "", err
+	}
+	detail, err := readClaimLandingDetail(ctx, q, scope, change, version, now)
+	if err != nil {
+		return connector.ChangeReview{}, "", err
+	}
+	return changerequest.ReviewState(detail, finalization.VersionID, source.HeadSHA), attempt, nil
+}
+
+func nativeCandidateProjectRanks(ctx context.Context, q nativeQueryer, token string) (map[tracker.ProjectID]int, error) {
+	var raw string
+	err := q.QueryRowContext(ctx, "SELECT routing_settings_json FROM runner_identities WHERE token_id = ?", token).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return map[tracker.ProjectID]int{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var settings runnerSettings
+	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
+		return nil, err
+	}
+	return settings.ProjectRanks, nil
+}
+
+func nativeCandidateValues[T ~string | ~int64](values []T) []any {
+	args := make([]any, len(values))
+	for index, value := range values {
+		args[index] = value
+	}
+	return args
 }

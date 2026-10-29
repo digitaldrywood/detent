@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"reflect"
 	"strings"
 	"time"
@@ -533,4 +534,20 @@ func projectIDs(ids []project.ID) []string {
 		out = append(out, string(id))
 	}
 	return out
+}
+
+func environmentWithoutKeys(keys []string) []string {
+	remove := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		remove[key] = true
+	}
+	env := make([]string, 0, len(os.Environ()))
+	for _, entry := range os.Environ() {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && remove[key] {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return env
 }

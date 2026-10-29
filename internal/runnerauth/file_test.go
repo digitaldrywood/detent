@@ -20,6 +20,9 @@ func TestPrivateIdentityLifecycle(t *testing.T) {
 	if !file.Identity.Valid() || !ValidCredential(file.Credential) || file.HubURL != "https://hub.example.test" {
 		t.Fatal("invalid generated identity")
 	}
+	if info, err := os.Stat(path); err != nil || runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("identity permissions = %v, %v", info, err)
+	}
 	if _, err := Initialize(path, "https://hub.example.test"); err == nil {
 		t.Fatal("initialization overwrote an existing identity")
 	}
@@ -176,12 +179,16 @@ func TestIdentityFilesRejectUnsafeInput(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "private", "identity.json")
-			if _, err := Initialize(path, "https://hub.example.test"); err != nil {
+			original, err := Initialize(path, "https://hub.example.test")
+			if err != nil {
 				t.Fatal(err)
 			}
 			test.change(t, path)
 			if _, err := Load(path); err == nil || strings.Contains(err.Error(), "private-provider-key") || strings.Contains(err.Error(), "invalid-private-credential") {
 				t.Fatal("unsafe file accepted or error exposed content")
+			}
+			if err := Save(path, original); err == nil {
+				t.Fatal("unsafe identity accepted for update")
 			}
 		})
 	}

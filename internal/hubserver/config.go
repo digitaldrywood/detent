@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/update"
 )
@@ -43,6 +45,11 @@ var (
 )
 
 type Config struct {
+	dashboardDelivery              *dashboardDeliveryConfig
+	ArchiveReader                  entryauthority.ArchiveReader
+	content                        entryauthority.ContentHandler
+	RunDetails                     attachment.DetailStore
+	Icons                          attachment.IconStore
 	RunnerReleaseClient            update.ReleaseClient
 	runnerReleaseSignatureVerifier update.ChecksumSignatureVerifier
 	SecretKeys                     *hubsecrets.Keyring
@@ -52,8 +59,8 @@ type Config struct {
 	Hosted                         *HostedConfig
 	Conversation                   *ConversationConfig
 	Usage                          *UsageConfig
-	// Workspace enables workspace sessions and the relay (decisions section
-	// 18.1). Nil means the surfaces stay disabled with their reason.
+	// Workspace enables workspace sessions and the relay.
+	// Nil means the surfaces stay disabled with their reason.
 	Workspace                  *WorkspaceConfig
 	GitHubRequestCounts        func() []GitHubRequestCount
 	GitHubAppInstallation      func(context.Context, string) (GitHubAppInstallation, error)
@@ -86,6 +93,7 @@ type Config struct {
 	validateDatabaseFilesystem func(string) error
 	listen                     func(context.Context, string, string) (net.Listener, error)
 	now                        func() time.Time
+	retentionTimeout           func(context.Context, time.Duration) (context.Context, context.CancelFunc)
 	jitter                     func() float64
 	newLeaseID                 func() string
 	newTokenID                 func() string

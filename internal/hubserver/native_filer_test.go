@@ -81,6 +81,7 @@ func TestNativeIssueCreatedBy(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	drainTestNativeBoard(t, f.service)
 	call := hostedContextProtocol(t, f.service, changeOperatorContext(t, f.service, f.token, string(scope.organization)), "http")
 	for _, test := range []struct {
 		name, creator, state, archived, query, label string

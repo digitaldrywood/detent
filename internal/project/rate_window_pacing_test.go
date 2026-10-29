@@ -24,7 +24,7 @@ func TestEffectiveRateWindowPacingProjectOverride(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: memory\n" + tt.yaml + "---\n"))
+			workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n" + tt.yaml + "---\n"))
 			if err != nil {
 				t.Fatalf("ParseWorkflow() error = %v", err)
 			}

@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
@@ -120,7 +121,10 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 		return func(c echo.Context) error {
 			credential, status, err := s.authenticateAPIRequest(c)
 			if err != nil {
-				return c.JSON(status, apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
+				if errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
+					return s.nativeAPIError(c, err)
+				}
+				return s.refusedAPIError(c, status, "unauthorized", "Valid scoped API token is required", apiErrorResponse{Code: "unauthorized", Message: "Valid scoped API token is required"})
 			}
 			if s.config.Hosted != nil {
 				if credential.Hosted != nil && c.Path() == runnerBase+"/:runner/routing" && c.Request().Method == http.MethodGet {
@@ -135,14 +139,14 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 				}
 			}
 			if credential.HostedKeyScope != "" && !hostedKeyAllows(credential.HostedKeyScope, apikey.ScopeWrite) && !hostedReadRequest(c) {
-				return c.NoContent(http.StatusForbidden)
+				return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "API key permission does not permit writes", nil)
 			}
 			if credential.Runner.RunnerID != "" && !runnerOperationAllowed(c, credential.Runner.Operations) {
-				return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "insufficient_scope", Message: "Runner does not permit this operation"})
+				return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "Runner does not permit this operation", apiErrorResponse{Code: "insufficient_scope", Message: "Runner does not permit this operation"})
 			}
 			if strings.HasPrefix(c.Path(), "/api/v1/") {
 				if credential.NativeOnly {
-					return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "native_protocol_required", Message: "Scoped tokens require the native protocol"})
+					return s.refusedAPIError(c, http.StatusForbidden, "native_protocol_required", "Scoped tokens require the native protocol", apiErrorResponse{Code: "native_protocol_required", Message: "Scoped tokens require the native protocol"})
 				}
 				if err := s.requireCompatibilityResource(c); err != nil {
 					return err
@@ -157,12 +161,19 @@ func (s *Service) requireAPIScope(allowed ...apiScope) echo.MiddlewareFunc {
 					return next(c)
 				}
 			}
-			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
+			return s.refusedAPIError(c, http.StatusForbidden, "insufficient_scope", "API token scope does not permit this operation", apiErrorResponse{Code: "insufficient_scope", Message: "API token scope does not permit this operation"})
 		}
 	}
 }
 
 func (s *Service) authenticateAPIRequest(c echo.Context) (apiCredential, int, error) {
+	if s.config.Hosted == nil && (c.Request().Header.Get(echo.HeaderAuthorization) == "" || strings.HasPrefix(c.Request().Header.Get(echo.HeaderAuthorization), "Basic ")) {
+		credential, status, err := s.localAppCredential(c)
+		if status == http.StatusUnauthorized {
+			c.Response().Header().Set("WWW-Authenticate", `Basic realm="Detent Hub", charset="UTF-8"`)
+		}
+		return credential, status, err
+	}
 	if claims, ok := hostedSharedClaims(c); ok && claims.Kind == cloudassert.KindKey {
 		return s.entryKeyCredential(c.Request().Context(), claims)
 	}
@@ -227,6 +238,9 @@ WHERE t.token_hash = ?`, hash).Scan(&credential.ID, &credential.Name, &credentia
 	if s.config.Hosted != nil {
 		credential, err = s.hostedAPITokenCredential(ctx, credential, createdAt, expiresAt)
 		if err != nil {
+			if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable {
+				return apiCredential{}, http.StatusServiceUnavailable, err
+			}
 			return apiCredential{}, http.StatusUnauthorized, auth.ErrHostedIdentity
 		}
 	}
@@ -304,7 +318,7 @@ func apiBearerToken(c echo.Context) (string, error) {
 func (s *Service) createAPIToken(c echo.Context) error {
 	var request tokenRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	response, err := s.createAPITokenFor(c.Request().Context(), request)
 	if err != nil {

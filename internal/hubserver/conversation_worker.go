@@ -114,7 +114,7 @@ type conversationBindResponse struct {
 	Continuation   bool   `json:"continuation"`
 	// Preferences are the conversation's turn preferences. The runner
 	// applies the explicit ones to its turn request and leaves "auto" to the
-	// project's configured defaults (decisions section 14).
+	// project's configured defaults.
 	Preferences conversation.Preferences   `json:"preferences"`
 	Resume      conversationResumeResource `json:"resume"`
 	Pending     []conversationControl      `json:"pending"`
@@ -127,8 +127,8 @@ type conversationResumeResource struct {
 	// use belongs to: conversation.ThreadOriginCoordinator or
 	// conversation.ThreadOriginWorker. It is the origin this bind's turn
 	// records, so a runner holding a thread of the other kind in its own
-	// registry can see that the hub did not hand it back (decisions section
-	// 9.3). Empty when the bind resumed nothing and started no turn.
+	// registry can see that the hub did not hand it back.
+	// Empty when the bind resumed nothing and started no turn.
 	ThreadOrigin string `json:"thread_origin,omitempty"`
 	// Transcript carries the recent history when the provider thread cannot
 	// be resumed, so the runner can prepend it as clearly delimited data.
@@ -172,7 +172,7 @@ type conversationControl struct {
 	Answers    map[string][]string `json:"answers,omitempty"`
 	// Attachments are the files the message carries, each with the hub path
 	// that streams it. The worker downloads them with its own token through
-	// the conversation's read rule (decisions section 17.1).
+	// the conversation's read rule.
 	Attachments []conversation.Attachment `json:"attachments,omitempty"`
 	Expected    conversation.Expected     `json:"expected"`
 }
@@ -212,7 +212,7 @@ type conversationTurnEvent struct {
 	Kind           string `json:"kind,omitempty"`
 	Summary        string `json:"summary,omitempty"`
 	// Data carries structured status for an item event, such as a
-	// coordinator proposal (decisions section 9.3).
+	// coordinator proposal.
 	Data      json.RawMessage       `json:"data,omitempty"`
 	RequestID string                `json:"request_id,omitempty"`
 	Prompts   []conversation.Prompt `json:"prompts,omitempty"`
@@ -240,7 +240,7 @@ type conversationTurnEventsResponse struct {
 
 func (identity conversationWorkerIdentity) validate() error {
 	if strings.TrimSpace(string(identity.LeaseID)) == "" || identity.FencingToken <= 0 || strings.TrimSpace(identity.AttemptID) == "" {
-		return nativeInvalid("lease_id, fencing_token and attempt_id are required")
+		return nativePublicInvalid("lease_id, fencing_token and attempt_id are required")
 	}
 	return nil
 }
@@ -249,7 +249,7 @@ func conversationIdentityFromHeaders(c echo.Context) (conversationWorkerIdentity
 	header := c.Request().Header
 	token, err := strconv.ParseInt(strings.TrimSpace(header.Get(conversationHeaderFencingToken)), 10, 64)
 	if err != nil {
-		return conversationWorkerIdentity{}, nativeInvalid("A numeric fencing token header is required")
+		return conversationWorkerIdentity{}, nativePublicInvalid("A numeric fencing token header is required")
 	}
 	identity := conversationWorkerIdentity{
 		LeaseID:      tracker.LeaseID(strings.TrimSpace(header.Get(conversationHeaderLease))),
@@ -363,7 +363,7 @@ func requireConversationRecordOwner(record conversationRecord, identity conversa
 
 // readLinkedConversation resolves the canonical conversation of a work item
 // in the request scope.
-func (c *conversationService) readLinkedConversation(ctx context.Context, tx *sql.Tx, scope nativeScope, item string) (conversationRecord, error) {
+func (c *conversationService) readLinkedConversation(ctx context.Context, tx nativeQueryer, scope nativeScope, item string) (conversationRecord, error) {
 	record, err := readLinkedConversationRecord(ctx, tx, scope, item)
 	if err != nil {
 		return record, err
@@ -374,7 +374,7 @@ func (c *conversationService) readLinkedConversation(ctx context.Context, tx *sq
 	return record, nil
 }
 
-func readLinkedConversationRecord(ctx context.Context, tx *sql.Tx, scope nativeScope, item string) (conversationRecord, error) {
+func readLinkedConversationRecord(ctx context.Context, tx nativeQueryer, scope nativeScope, item string) (conversationRecord, error) {
 	record, err := scanConversation(tx.QueryRowContext(ctx, "SELECT "+conversationReadColumns+" FROM conversations WHERE organization_id = ? AND project_id = ? AND work_item_id = ?", scope.organization, scope.project, item))
 	if errors.Is(err, sql.ErrNoRows) {
 		return record, nativeNotFound()
@@ -437,7 +437,7 @@ func (c *conversationService) ensureWorkerConversation(ctx context.Context, tx *
 // constant condition so the full statement is a compile-time string.
 const conversationMessageQuery = "SELECT " + conversationMessageColumns + " FROM conversation_messages WHERE "
 
-func (c *conversationService) queryMessages(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]conversationMessageRecord, error) {
+func (c *conversationService) queryMessages(ctx context.Context, tx nativeQueryer, query string, args ...any) ([]conversationMessageRecord, error) {
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query messages: %w", err)
@@ -460,6 +460,9 @@ func (c *conversationService) queryMessages(ctx context.Context, tx *sql.Tx, que
 	for i := range messages {
 		pointers = append(pointers, &messages[i])
 	}
+	if err := c.store.resolveMessageContents(ctx, tx, pointers); err != nil {
+		return nil, err
+	}
 	if err := resolveMessageReferences(ctx, tx, pointers); err != nil {
 		return nil, err
 	}
@@ -471,7 +474,7 @@ func (c *conversationService) queryMessages(ctx context.Context, tx *sql.Tx, que
 
 // readReceipt returns the stored receipt for a command key; found is false
 // when the key was never reserved.
-func (c *conversationService) readReceipt(ctx context.Context, tx *sql.Tx, conversationID, key string) (receipt conversation.Receipt, found bool, err error) {
+func (c *conversationService) readReceipt(ctx context.Context, tx nativeQueryer, conversationID, key string) (receipt conversation.Receipt, found bool, err error) {
 	var encoded string
 	err = tx.QueryRowContext(ctx, "SELECT receipt_json FROM conversation_commands WHERE conversation_id = ? AND key = ?", conversationID, key).Scan(&encoded)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -520,8 +523,8 @@ func (c *conversationService) handOffControls(ctx context.Context, tx *sql.Tx, r
 	owner := record.Execution.Owner
 	// A queued control has not been handed to this owner whatever its seq
 	// is, so a retry that re-queues an older message still reaches a worker
-	// whose cursor is already past it (decisions section 10.3).
-	messages, err := c.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND (seq > ? OR delivery = 'queued') AND ((delivery IN ('queued', 'sending') AND kind IN ('text', 'answer', 'interrupt', 'continue')) OR (delivery = 'saved' AND kind = 'continue')) ORDER BY seq", record.ID, after)
+	// whose cursor is already past it.
+	messages, err := c.pendingControlMessages(ctx, tx, record.ID, after)
 	if err != nil {
 		return nil, false, err
 	}
@@ -571,7 +574,7 @@ func (c *conversationService) handOffControls(ctx context.Context, tx *sql.Tx, r
 // resolveAnswer finds the question an answer control targets: named on the
 // receipt or in the message data. The answers come from the question row
 // when the operator API recorded them there, otherwise from the message.
-func (c *conversationService) resolveAnswer(ctx context.Context, tx *sql.Tx, conversationID string, message conversationMessageRecord) (conversationQuestionRecord, map[string][]string, error) {
+func (c *conversationService) resolveAnswer(ctx context.Context, tx nativeQueryer, conversationID string, message conversationMessageRecord) (conversationQuestionRecord, map[string][]string, error) {
 	data := decodeConversationAnswer(message.Data)
 	questionID := data.QuestionID
 	if questionID == "" && message.CommandKey != "" {
@@ -602,7 +605,7 @@ func (c *conversationService) resolveAnswer(ctx context.Context, tx *sql.Tx, con
 // the ended attempt becomes unknown rather than being replayed, a control
 // that was never handed out stays queued, and pending questions expire.
 // Nothing is retried automatically; the user retries explicitly with a retry
-// command (decisions section 10.3).
+// command.
 func (c *conversationService) finishExecution(ctx context.Context, tx *sql.Tx, record *conversationRecord, status conversation.ExecutionStatus, failure string, settled bool, now time.Time) error {
 	execution := record.Execution
 	responding, err := c.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id = ? AND attempt_id = ? AND delivery = 'responding' ORDER BY seq", record.ID, execution.Owner.AttemptID)
@@ -700,20 +703,58 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 	c, s := r.service, r.service.server
 	var request conversationBindRequest
 	if err := decodeAPIJSON(e, &request); err != nil {
-		return invalidAPIRequest(e, err)
+		return s.invalidAPIRequest(e, err)
 	}
 	if err := request.validate(); err != nil {
 		return s.nativeAPIError(e, err)
 	}
 	if strings.TrimSpace(request.RunID) == "" {
-		return s.nativeAPIError(e, nativeInvalid("run_id is required"))
+		return s.nativeAPIError(e, nativePublicInvalid("run_id is required"))
 	}
 	ctx := e.Request().Context()
 	scope := nativeRequestScope(e)
 	item := e.Param("item")
+	if c.store.contents != nil {
+		authTx, err := c.store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			return s.nativeAPIError(e, err)
+		}
+		now, err := s.database.currentTime()
+		if err == nil {
+			_, err = c.requireWorkerOwner(ctx, authTx, scope, item, request.conversationWorkerIdentity, request.RunID, false, now)
+		}
+		rollbackErr := authTx.Rollback()
+		if err == nil {
+			err = rollbackErr
+		}
+		if err != nil {
+			return s.nativeAPIError(e, err)
+		}
+		linked, err := c.readLinkedConversation(ctx, c.store.reader, scope, item)
+		var failure *nativeError
+		if err != nil && (!errors.As(err, &failure) || failure.status != http.StatusNotFound) {
+			return s.nativeAPIError(e, err)
+		}
+		if err == nil {
+			prepared, err := c.prepareTurnContents(ctx, string(scope.organization), linked.ID, nil, true)
+			if err != nil {
+				return s.nativeAPIError(e, err)
+			}
+			ctx = prepared
+			prepared, err = c.prepareBindNotice(ctx, scope, linked, request)
+			if err != nil {
+				return s.nativeAPIError(e, err)
+			}
+			ctx = prepared
+		}
+	}
+	legacyContinuation, err := c.prepareLegacyContinuation(ctx, scope, item)
+	if err != nil {
+		return s.nativeAPIError(e, err)
+	}
 	var record conversationRecord
 	var response conversationBindResponse
-	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+	err = c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 		if err := s.recheckHostedMutation(ctx, tx, &scope); err != nil {
 			return err
 		}
@@ -732,6 +773,9 @@ func (r *conversationWorkerRouter) bind(e echo.Context) error {
 			}
 			return err
 		}
+		if legacyContinuation.id != "" && (record.ID != legacyContinuation.id || record.EventSeq != legacyContinuation.head) {
+			return conversationStale("The conversation changed before the turn was bound")
+		}
 		previous := record.Execution
 		operation := nativeOperation(scope, "POST", "/conversations/"+record.ID+"/link")
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
@@ -739,15 +783,10 @@ SELECT 1 FROM native_commands WHERE organization_id = ? AND (operation = ? OR su
 ) OR EXISTS (
 SELECT 1 FROM conversation_messages WHERE conversation_id = ? AND role = 'user' AND kind = 'continue'
 AND delivery IN ('saved', 'queued', 'sending')
-) OR EXISTS (
-SELECT 1 FROM conversation_events WHERE conversation_id = ? AND type = 'message.updated'
-AND json_extract(body_json, '$.role') = 'user' AND json_extract(body_json, '$.kind') = 'continue'
-AND COALESCE(json_extract(body_json, '$.attempt_id'), '') <> ''
-AND seq > COALESCE((
-SELECT MAX(seq) FROM conversation_events WHERE conversation_id = ? AND type = 'execution.updated'
-AND json_extract(body_json, '$.status') = 'completed'
-), 0)
-)`, scope.organization, operation, operation, operation, record.ID, record.ID, record.ID).Scan(&response.Continuation); err != nil {
+) OR (
+max(COALESCE((SELECT MAX(seq) FROM conversation_events WHERE conversation_id=? AND type='message.updated' AND message_role='user' AND message_kind='continue' AND attempt_id<>''),0),?)
+>max(COALESCE((SELECT MAX(seq) FROM conversation_events WHERE conversation_id=? AND type='execution.updated' AND execution_status='completed'),0),?)
+)`, scope.organization, operation, operation, operation, record.ID, record.ID, legacyContinuation.continued, record.ID, legacyContinuation.completed).Scan(&response.Continuation); err != nil {
 			return err
 		}
 		if !previous.Status.Terminal() && previous.Owner.AttemptID != "" && previous.Owner.AttemptID != request.AttemptID {
@@ -763,7 +802,7 @@ AND json_extract(body_json, '$.status') = 'completed'
 			thread = record.ProviderThreadID
 		} else {
 			// The runner named the thread, so the thread is its own and this
-			// bind's kind of turn is its origin (decisions section 9.3).
+			// bind's kind of turn is its origin.
 			record.ProviderThreadID = thread
 			record.ProviderThreadRunnerID = scope.credential.Runner.RunnerID
 			record.ProviderThreadOrigin = conversation.ThreadOriginWorker
@@ -778,7 +817,7 @@ AND json_extract(body_json, '$.status') = 'completed'
 		}
 		// The owner tuple is taken in memory first so the hand-off and the
 		// transcript see the new generation; the execution is persisted once,
-		// with the resume it ends up reporting (decisions section 10.4).
+		// with the resume it ends up reporting.
 		record.Execution = execution
 		pending, _, err := c.handOffControls(ctx, tx, &record, 0, now)
 		if err != nil {
@@ -794,7 +833,7 @@ AND json_extract(body_json, '$.status') = 'completed'
 		}
 		if execution.Resume == conversation.ResumeTranscript {
 			// Transcript recovery is visible in the history rather than only
-			// in the runner's prompt (decisions section 10.4).
+			// in the runner's prompt.
 			notice := conversationMessageRecord{
 				Role: conversation.RoleSystem, Kind: conversation.MessageStatus,
 				Text:      conversationTranscriptNotice(len(resume.Transcript)),
@@ -814,7 +853,7 @@ AND json_extract(body_json, '$.status') = 'completed'
 		return nil
 	})
 	if err != nil {
-		c.logStaleExecution("bind", record.ID, err)
+		err = conversationStaleExecutionError("bind", record.ID, err)
 		return s.nativeAPIError(e, err)
 	}
 	c.committed(record)
@@ -825,7 +864,7 @@ func (r *conversationWorkerRouter) unbind(e echo.Context) error {
 	c, s := r.service, r.service.server
 	var request conversationUnbindRequest
 	if err := decodeAPIJSON(e, &request); err != nil {
-		return invalidAPIRequest(e, err)
+		return s.invalidAPIRequest(e, err)
 	}
 	if err := request.validate(); err != nil {
 		return s.nativeAPIError(e, err)
@@ -835,11 +874,25 @@ func (r *conversationWorkerRouter) unbind(e echo.Context) error {
 		"cancelled": conversation.ExecutionInterrupted, "interrupted": conversation.ExecutionInterrupted,
 	}[request.Outcome]
 	if !ok {
-		return s.nativeAPIError(e, nativeInvalid("outcome must be succeeded, failed, cancelled or interrupted"))
+		return s.nativeAPIError(e, nativePublicInvalid("outcome must be succeeded, failed, cancelled or interrupted"))
 	}
 	ctx := e.Request().Context()
 	scope := nativeRequestScope(e)
 	item := e.Param("item")
+	if c.store.contents != nil {
+		linked, err := c.readLinkedConversation(ctx, c.store.reader, scope, item)
+		if err != nil {
+			return s.nativeAPIError(e, err)
+		}
+		if err := c.authorizeWorkerContent(ctx, scope, linked.ID, item, request.conversationWorkerIdentity, true); err != nil {
+			return s.nativeAPIError(e, err)
+		}
+		prepared, err := c.prepareTurnContents(ctx, string(scope.organization), linked.ID, nil, true)
+		if err != nil {
+			return s.nativeAPIError(e, err)
+		}
+		ctx = prepared
+	}
 	var record conversationRecord
 	changed := false
 	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
@@ -875,11 +928,11 @@ func (r *conversationWorkerRouter) unbind(e echo.Context) error {
 		}
 		// A turn that reported interrupted or failed already made the
 		// execution terminal; the unbind outcome still wins and the
-		// controls still settle (decisions section 10.7).
+		// controls still settle.
 		return c.finishExecution(ctx, tx, &record, status, strings.TrimSpace(request.Error), true, now)
 	})
 	if err != nil {
-		c.logStaleExecution("unbind", record.ID, err)
+		err = conversationStaleExecutionError("unbind", record.ID, err)
 		return s.nativeAPIError(e, err)
 	}
 	if changed {
@@ -912,7 +965,7 @@ func (r *conversationWorkerRouter) controls(e echo.Context) error {
 	for {
 		page, err := c.pollControls(ctx, scope, id, identity, after)
 		if err != nil {
-			c.logStaleExecution("controls", id, err)
+			err = conversationStaleExecutionError("controls", id, err)
 			return s.nativeAPIError(e, err)
 		}
 		if len(page.Controls) > 0 || wait == 0 {
@@ -934,13 +987,13 @@ func conversationControlQuery(e echo.Context) (after int64, wait time.Duration, 
 	if raw := strings.TrimSpace(e.QueryParam("after")); raw != "" {
 		after, err = strconv.ParseInt(raw, 10, 64)
 		if err != nil || after < 0 {
-			return 0, 0, nativeInvalid("after must be a non-negative cursor")
+			return 0, 0, nativePublicInvalid("after must be a non-negative cursor")
 		}
 	}
 	if raw := strings.TrimSpace(e.QueryParam("wait")); raw != "" {
 		seconds, err := strconv.Atoi(raw)
 		if err != nil || seconds < 0 {
-			return 0, 0, nativeInvalid("wait must be a number of seconds")
+			return 0, 0, nativePublicInvalid("wait must be a number of seconds")
 		}
 		wait = min(time.Duration(seconds)*time.Second, conversationControlMaxWait)
 	}
@@ -1011,21 +1064,31 @@ func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
 	c, s := r.service, r.service.server
 	var request conversationTurnEventsRequest
 	if err := decodeAPIJSON(e, &request); err != nil {
-		return invalidAPIRequest(e, err)
+		return s.invalidAPIRequest(e, err)
 	}
 	if err := request.validate(); err != nil {
 		return s.nativeAPIError(e, err)
 	}
 	if len(request.Events) > conversationMaxTurnEvents {
-		return s.nativeAPIError(e, nativeInvalid("Too many events in one batch"))
+		return s.nativeAPIError(e, nativePublicInvalid("Too many events in one batch"))
 	}
 	request.BatchKey = strings.TrimSpace(request.BatchKey)
 	if len(request.BatchKey) > conversation.MaxCommandKeyBytes {
-		return s.nativeAPIError(e, nativeInvalid(fmt.Sprintf("batch_key must be at most %d bytes", conversation.MaxCommandKeyBytes)))
+		return s.nativeAPIError(e, nativePublicInvalid(fmt.Sprintf("batch_key must be at most %d bytes", conversation.MaxCommandKeyBytes)))
 	}
 	ctx := e.Request().Context()
 	scope := nativeRequestScope(e)
 	id := e.Param("conversation")
+	if c.store.contents != nil {
+		if err := c.authorizeWorkerContent(ctx, scope, id, "", request.conversationWorkerIdentity, false); err != nil {
+			return s.nativeAPIError(e, err)
+		}
+		prepared, err := c.prepareTurnContents(ctx, string(scope.organization), id, request.Events, false)
+		if err != nil {
+			return s.nativeAPIError(e, err)
+		}
+		ctx = prepared
+	}
 	var record conversationRecord
 	var response conversationTurnEventsResponse
 	replayed := false
@@ -1081,7 +1144,7 @@ func (r *conversationWorkerRouter) turnEvents(e echo.Context) error {
 		return nil
 	})
 	if err != nil {
-		c.logStaleExecution("turn_events", id, err)
+		err = conversationStaleExecutionError("turn_events", id, err)
 		return s.nativeAPIError(e, err)
 	}
 	if !replayed {
@@ -1107,7 +1170,7 @@ func (c *conversationService) applyTurnEvent(ctx context.Context, tx *sql.Tx, tu
 	case "execution_status":
 		status := conversation.ExecutionStatus(event.Status)
 		if !status.Valid() {
-			return nativeInvalid("execution_status carries an unknown status")
+			return nativePublicInvalid("execution_status carries an unknown status")
 		}
 		turn.execution.Status = status
 		turn.execution.Error = strings.TrimSpace(event.Error)
@@ -1121,7 +1184,7 @@ func (c *conversationService) applyTurnEvent(ctx context.Context, tx *sql.Tx, tu
 func (c *conversationService) applyTurnStarted(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	turnID := strings.TrimSpace(event.TurnID)
 	if turnID == "" {
-		return nativeInvalid("turn_started requires a turn_id")
+		return nativePublicInvalid("turn_started requires a turn_id")
 	}
 	if current := turn.execution.Owner.TurnID; current != "" && current != turnID {
 		return conversationStale("Another turn is still in progress")
@@ -1130,7 +1193,7 @@ func (c *conversationService) applyTurnStarted(ctx context.Context, tx *sql.Tx, 
 		turn.execution.Owner.ThreadID = thread
 		turn.record.ProviderThreadID = thread
 		// The thread belongs to the provider login of the runner reporting
-		// it; only that runner may resume it (decisions section 9.3).
+		// it; only that runner may resume it.
 		turn.record.ProviderThreadRunnerID = turn.scope.credential.Runner.RunnerID
 		// It also carries the instructions and permission set of the kind of
 		// turn that opened it, so a later bind of the other kind is handed a
@@ -1158,10 +1221,10 @@ func (c *conversationService) applyTurnStarted(ctx context.Context, tx *sql.Tx, 
 func (c *conversationService) applyDelta(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	item := strings.TrimSpace(event.ProviderItemID)
 	if item == "" {
-		return nativeInvalid("delta requires a provider_item_id")
+		return nativePublicInvalid("delta requires a provider_item_id")
 	}
 	if len(event.Text) > conversationMaxDeltaBytes {
-		return nativeInvalid("delta text is too long")
+		return nativePublicInvalid("delta text is too long")
 	}
 	owner := turn.execution.Owner
 	// Only the message identity and its stored length are needed: the
@@ -1196,7 +1259,7 @@ func (c *conversationService) applyDelta(ctx context.Context, tx *sql.Tx, turn *
 func (c *conversationService) applyItem(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	kind := conversation.MessageKind(event.Kind)
 	if kind != conversation.MessageTool && kind != conversation.MessageStatus {
-		return nativeInvalid("item kind must be tool or status")
+		return nativePublicInvalid("item kind must be tool or status")
 	}
 	data, err := conversationItemData(event.Data)
 	if err != nil {
@@ -1218,11 +1281,11 @@ func conversationItemData(raw json.RawMessage) (json.RawMessage, error) {
 		return nil, nil
 	}
 	if len(raw) > conversationMaxItemDataBytes {
-		return nil, nativeInvalid("item data is too long")
+		return nil, nativePublicInvalid("item data is too long")
 	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &object); err != nil {
-		return nil, nativeInvalid("item data must be a JSON object")
+		return nil, nativePublicInvalid("item data must be a JSON object")
 	}
 	return raw, nil
 }
@@ -1241,7 +1304,7 @@ func conversationTruncate(value string, limit int) string {
 func (c *conversationService) applyQuestionOpened(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	requestID := strings.TrimSpace(event.RequestID)
 	if requestID == "" {
-		return nativeInvalid("question_opened requires a request_id and prompts")
+		return nativePublicInvalid("question_opened requires a request_id and prompts")
 	}
 	if err := conversation.ValidatePrompts(event.Prompts); err != nil {
 		return nativeInvalid(err.Error())
@@ -1293,7 +1356,7 @@ func (c *conversationService) applyQuestionOpened(ctx context.Context, tx *sql.T
 func (c *conversationService) applyControlResult(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	key := strings.TrimSpace(event.Key)
 	if key == "" {
-		return nativeInvalid("control_result requires a key")
+		return nativePublicInvalid("control_result requires a key")
 	}
 	messages, err := c.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND command_key = ? ORDER BY seq", turn.record.ID, key)
 	if err != nil {
@@ -1323,7 +1386,7 @@ func (c *conversationService) applyControlResult(ctx context.Context, tx *sql.Tx
 		delivery, questionStatus = conversation.DeliveryUnknown, conversation.QuestionUnknown
 		failure = &conversation.ReceiptError{Code: "unknown", Message: strings.TrimSpace(event.Error)}
 	default:
-		return nativeInvalid("control_result status must be delivered, rejected or unknown")
+		return nativePublicInvalid("control_result status must be delivered, rejected or unknown")
 	}
 	if err := c.setControlDelivery(ctx, tx, message, delivery, failure, turn.now); err != nil {
 		return err
@@ -1366,7 +1429,7 @@ func (c *conversationService) applyControlResult(ctx context.Context, tx *sql.Tx
 func (c *conversationService) applyTurnCompleted(ctx context.Context, tx *sql.Tx, turn *conversationTurn, event conversationTurnEvent) error {
 	turnID := strings.TrimSpace(event.TurnID)
 	if turnID == "" {
-		return nativeInvalid("turn_completed requires a turn_id")
+		return nativePublicInvalid("turn_completed requires a turn_id")
 	}
 	if current := turn.execution.Owner.TurnID; current != "" && current != turnID {
 		return conversationStale("The completed turn is not the current turn")
@@ -1380,7 +1443,7 @@ func (c *conversationService) applyTurnCompleted(ctx context.Context, tx *sql.Tx
 	case "failed":
 		delivery = conversation.DeliveryFailed
 	default:
-		return nativeInvalid("turn_completed status must be completed, interrupted or failed")
+		return nativePublicInvalid("turn_completed status must be completed, interrupted or failed")
 	}
 	responding, err := c.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id = ? AND role = 'assistant' AND attempt_id = ? AND turn_id = ? AND delivery = 'responding' ORDER BY seq", turn.record.ID, turn.execution.Owner.AttemptID, turnID)
 	if err != nil {
@@ -1397,8 +1460,7 @@ func (c *conversationService) applyTurnCompleted(ctx context.Context, tx *sql.Tx
 	}
 	turn.execution.Owner.TurnID = ""
 	// An interrupted or failed turn stays interrupted or failed: the
-	// execution must not report running until the runner unbinds
-	// (decisions section 10.7).
+	// execution must not report running until the runner unbinds.
 	switch delivery {
 	case conversation.DeliveryInterrupted:
 		turn.execution.Status = conversation.ExecutionInterrupted
@@ -1418,7 +1480,7 @@ func (c *conversationService) applyTurnCompleted(ctx context.Context, tx *sql.Tx
 // lease's release committed. Failures are logged: the release itself has
 // already succeeded and the reconcile loop retries.
 func (c *conversationService) leaseReleased(ctx context.Context, leaseID tracker.LeaseID) {
-	candidates, err := c.inFlightExecutions(ctx, conversationInFlightQuery+"AND json_extract(execution_json, '$.lease_id') = ?", leaseID)
+	candidates, err := c.inFlightExecutions(ctx, conversationInFlightQuery+"AND (query_metadata_version=0 OR execution_lease_id = ?)", leaseID)
 	if err != nil {
 		c.logger.Warn("conversation lease release lookup failed", "lease", leaseID, "error", err)
 		return
@@ -1453,8 +1515,7 @@ type conversationExecutionRef struct {
 // inFlightExecutions lists conversations whose execution is live, or ended by
 // a turn report but never settled by an unbind. It runs outside any
 // transaction; settlement re-reads the state under one.
-const conversationInFlightQuery = `SELECT id, organization_id, project_id FROM conversations WHERE (json_extract(execution_json, '$.status') IN ('starting', 'running', 'waiting_input', 'interrupting')
- OR (json_extract(execution_json, '$.status') IN ('completed', 'interrupted', 'failed', 'unknown') AND COALESCE(json_extract(execution_json, '$.settled'), 0) = 0 AND COALESCE(json_extract(execution_json, '$.lease_id'), '') <> '')) `
+const conversationInFlightQuery = `SELECT id,organization_id,project_id,execution_status,execution_lease_id,execution_settled,CASE WHEN query_metadata_version=0 THEN execution_json ELSE '' END FROM conversations WHERE (query_metadata_version=0 OR execution_status IN ('starting','running','waiting_input','interrupting') OR (execution_status IN ('completed','interrupted','failed','unknown') AND execution_settled=0 AND execution_lease_id<>'')) `
 
 func (c *conversationService) inFlightExecutions(ctx context.Context, query string, args ...any) ([]conversationExecutionRef, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
@@ -1467,8 +1528,24 @@ func (c *conversationService) inFlightExecutions(ctx context.Context, query stri
 	var refs []conversationExecutionRef
 	for rows.Next() {
 		var ref conversationExecutionRef
-		if err := rows.Scan(&ref.id, &ref.organization, &ref.project); err != nil {
+		var raw string
+		var status, lease sql.NullString
+		var settled sql.NullBool
+		if err := rows.Scan(&ref.id, &ref.organization, &ref.project, &status, &lease, &settled, &raw); err != nil {
 			return nil, fmt.Errorf("scan in-flight conversation: %w", err)
+		}
+		execution := conversation.Execution{Status: conversation.ExecutionStatus(status.String), Settled: settled.Bool, Owner: conversation.Owner{LeaseID: lease.String}}
+		if raw != "" {
+			if err := json.Unmarshal([]byte(raw), &execution); err != nil {
+				return nil, err
+			}
+		}
+		live := execution.Status == conversation.ExecutionStarting || execution.Status == conversation.ExecutionRunning || execution.Status == conversation.ExecutionWaitingInput || execution.Status == conversation.ExecutionInterrupting
+		if !live && (!execution.Status.Terminal() || execution.Settled || execution.Owner.LeaseID == "") {
+			continue
+		}
+		if len(args) > 0 && execution.Owner.LeaseID != fmt.Sprint(args[0]) {
+			continue
 		}
 		refs = append(refs, ref)
 	}
@@ -1479,9 +1556,14 @@ func (c *conversationService) inFlightExecutions(ctx context.Context, query stri
 }
 
 func (c *conversationService) settleLostExecution(ctx context.Context, ref conversationExecutionRef) error {
+	prepared, err := c.prepareTurnContents(ctx, string(ref.organization), ref.id, nil, true)
+	if err != nil {
+		return err
+	}
+	ctx = prepared
 	var record conversationRecord
 	changed := false
-	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+	err = c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 		var err error
 		record, err = c.store.readConversation(ctx, tx, ref.organization, ref.project, ref.id)
 		if err != nil {
@@ -1526,4 +1608,35 @@ func (c *conversationService) settleLostExecution(ctx context.Context, ref conve
 		c.committed(record)
 	}
 	return nil
+}
+
+func (c *conversationService) authorizeWorkerContent(ctx context.Context, scope nativeScope, id, item string, identity conversationWorkerIdentity, terminal bool) error {
+	tx, err := c.store.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	record, err := c.store.readConversation(ctx, tx, scope.organization, scope.project, id)
+	if err != nil {
+		return err
+	}
+	if err := c.authorizeRead(ctx, tx, scope, record); err != nil {
+		return err
+	}
+	if err := requireConversationRecordOwner(record, identity, terminal); err != nil {
+		return err
+	}
+	if item == "" {
+		item = record.WorkItemID
+	}
+	now, err := c.server.database.currentTime()
+	if err != nil {
+		return err
+	}
+	_, err = c.requireWorkerOwner(ctx, tx, scope, item, identity, "", terminal, now)
+	return err
+}
+
+func (c *conversationService) pendingControlMessages(ctx context.Context, q nativeQueryer, id string, after int64) ([]conversationMessageRecord, error) {
+	return c.queryMessages(ctx, q, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND (seq > ? OR delivery = 'queued') AND ((delivery IN ('queued', 'sending') AND kind IN ('text', 'answer', 'interrupt', 'continue')) OR (delivery = 'saved' AND kind = 'continue')) ORDER BY seq", id, after)
 }

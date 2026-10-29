@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestPoolContentionTelemetryEndToEnd(t *testing.T) {
@@ -80,7 +80,7 @@ func TestPoolContentionTelemetryEndToEnd(t *testing.T) {
 		TerminalStates:      []string{"Done"},
 		Project:             cloudProject,
 	}, orchestrator.Dependencies{
-		Connector:          memory.New(memory.Config{Issues: []connector.Issue{issue}}),
+		Connector:          fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}}),
 		WorkAttempts:       runtimeStore,
 		GlobalDispatchGate: dispatchGate,
 		Logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),

@@ -20,7 +20,7 @@ type validatorCommands struct {
 	mu               sync.Mutex
 	results          []gate.CommandResult
 	failure          error
-	validationFailed bool
+	failedValidation map[string]bool
 	run              workspace.ReviewCommandRunner
 	info             workspace.Info
 	issue            workspace.Issue
@@ -89,16 +89,28 @@ func (v *validatorCommands) execute(ctx context.Context, command string, validat
 		return result, fmt.Errorf("%w: validation command evidence differs from reviewed content", ErrValidatorInfrastructure)
 	}
 
-	v.results = append(v.results, result)
 	if validation && result.ExitCode != 0 {
-		v.validationFailed = true
+		attributeCommandFailure(ctx, v.run, v.info, v.issue, v.base, &result)
+	}
+
+	v.results = append(v.results, result)
+	if validation {
+		key := result.Command + "\x00" + result.TreeSHA
+		if result.ExitCode == 0 {
+			delete(v.failedValidation, key)
+		} else {
+			if v.failedValidation == nil {
+				v.failedValidation = make(map[string]bool)
+			}
+			v.failedValidation[key] = true
+		}
 	}
 	return result, nil
 }
 
 func (v *validatorCommands) tools() ([]AgentTool, AgentToolHandler) {
 	return []AgentTool{
-			{Name: "detent_run_validation", Description: "Run one required acceptance validation command through the host on the immutable reviewed head; any failed command prevents a passing review. Use detent_read_source for source inspection.", InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}`)},
+			{Name: "detent_run_validation", Description: "Run one required acceptance validation command through the host on the immutable reviewed head; a failed command prevents a passing review unless a later run of the same command passes on the same head and tree. Use detent_read_source for source inspection.", InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"],"additionalProperties":false}`)},
 			{Name: "detent_read_source", Description: "Read a file or list files from the pinned review head or base. Returns a host command receipt for source inspection, never test execution. Pages start at byte offset 0 and default to 16384 bytes; length must be 1..16384. Text boundaries align to complete UTF-8 characters; a short length may return one whole character and an offset within a character includes its beginning. Receipts identify the actual byte range, total size, next_offset and eof; request subsequent relevant pages explicitly. A failed read is retained but may be recovered by a successful read; missing criterion evidence remains unverified.", InputSchema: json.RawMessage(`{"type":"object","properties":{"operation":{"type":"string","enum":["read","list"]},"revision":{"type":"string","enum":["head","base"]},"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"length":{"type":"integer","minimum":1,"maximum":16384}},"required":["operation","revision","path"],"additionalProperties":false}`)},
 		}, func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
 			var command string
@@ -181,7 +193,7 @@ func (v *validatorCommands) apply(result *gate.ValidatorResult) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	result.Commands = slices.Clone(v.results)
-	if v.validationFailed && result.Verdict == gate.ValidatorVerdictPass {
+	if len(v.failedValidation) != 0 && result.Verdict == gate.ValidatorVerdictPass {
 		result.Verdict = gate.ValidatorVerdictWait
 		result.Summary += "\nHost validation command failed; passing test evidence is required."
 	}
@@ -192,4 +204,18 @@ func (v *validatorCommands) evidence() ([]gate.CommandResult, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	return slices.Clone(v.results), v.failure
+}
+
+func attributeCommandFailure(ctx context.Context, runner workspace.ReviewCommandRunner, info workspace.Info, issue workspace.Issue, base string, result *gate.CommandResult) {
+	if result.ExitCode == 0 {
+		return
+	}
+	var reproduction gate.CommandResult
+	err := errors.New("base reproduction is unavailable")
+	if host, ok := runner.(interface {
+		RunBaseCommand(context.Context, workspace.Info, workspace.Issue, string, string) (gate.CommandResult, error)
+	}); ok {
+		reproduction, err = host.RunBaseCommand(ctx, info, issue, base, result.Command)
+	}
+	workspace.AttributeCommandFailure(result, base, reproduction, err)
 }

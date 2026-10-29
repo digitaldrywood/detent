@@ -477,8 +477,8 @@ func TestDispatchReadyIssuesRevisitsDeferredMergeWhenCurrentHeadBecomesReady(t *
 	if running.Issue.PullRequest == nil || running.Issue.PullRequest.CIStatus != "success" {
 		t.Fatalf("Running[%q].Issue.PullRequest = %#v, want refreshed green head", deferred.ID, running.Issue.PullRequest)
 	}
-	if running.Attempt != 2 {
-		t.Fatalf("Running[%q].Attempt = %d, want 2 after CI wait ended", deferred.ID, running.Attempt)
+	if running.Attempt != 1 {
+		t.Fatalf("Running[%q].Attempt = %d, want 1 after CI wait ended", deferred.ID, running.Attempt)
 	}
 	if _, ok := state.Running[queueHead.ID]; ok {
 		t.Fatalf("Running[%q] present while refreshed deferred head was ready", queueHead.ID)
@@ -592,17 +592,11 @@ func TestDispatchReadyIssuesPollsCurrentHeadCIWithoutWorkerAdmission(t *testing.
 				}
 			}
 			if tt.wantBlocked {
-				if _, ok := state.Retry[issue.ID]; ok {
-					t.Fatalf("Retry[%q] present after CI wait deadline", issue.ID)
+				retry, ok := state.Retry[issue.ID]
+				if !ok || !strings.Contains(retry.Error, pendingCheck) || len(state.Blocked) != 0 {
+					t.Fatalf("CI deadline lost retry: %+v", retry)
 				}
-				blocked, ok := state.Blocked[issue.ID]
-				if !ok || !strings.Contains(blocked.Reason, pendingCheck) {
-					t.Fatalf("Blocked[%q] = %#v, want pending check at one-hour bound", issue.ID, blocked)
-				}
-				timing := state.MergeTimings[issue.ID]
-				if !timing.MergeFailedAt.Equal(now) || !timing.CIWaitFinishedAt.Equal(now) {
-					t.Fatalf("MergeTimings[%q] = %#v, want failed CI wait closed at %s", issue.ID, timing, now)
-				}
+
 			}
 		})
 	}

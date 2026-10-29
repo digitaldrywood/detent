@@ -57,6 +57,7 @@ No safety-critical path is touched; onboarding repository binding and runner che
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body = ?, labels_json = ?, native_created_at = ?, native_updated_at = ? WHERE native_id = ?", body, `["search-fixture","unique-xyz"]`, "2026-10-12T00:00:00Z", "2026-10-13T00:00:00Z", target.WorkItemID); err != nil {
 		t.Fatal(err)
 	}
+	syncNativeIssueFixtureFacts(t, f.service.database.db, target.WorkItemID)
 	for index := range 8 {
 		f.create(t, fmt.Sprintf("Organization names background %d", index))
 		f.create(t, fmt.Sprintf("Names catalog %d", index))
@@ -89,6 +90,11 @@ No safety-critical path is touched; onboarding repository binding and runner che
 	requireNativeStatus(t, performHubAPIRequest(t, numberFixture.service, http.MethodPost, numberFixture.base+"/work-items/"+string(mentioned.WorkItemID)+"/comments", numberFixture.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "number-mentions"}, Body: "References #1 and #10003"}), http.StatusOK)
 	archived := numberFixture.create(t, "Archived number lookup")
 	requireNativeStatus(t, performHubAPIRequest(t, numberFixture.service, http.MethodPost, numberFixture.base+"/work-items/"+string(archived.WorkItemID)+"/archive", numberFixture.token, archiveRequest(archived, "archive-number-search")), http.StatusOK)
+	if _, err := numberFixture.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", strings.Repeat("Unrelated preview. ", 2000)+"archivebodytoken", archived.WorkItemID); err != nil {
+		t.Fatal(err)
+	}
+	requireNativeStatus(t, performHubAPIRequest(t, numberFixture.service, http.MethodPost, numberFixture.base+"/work-items/"+string(archived.WorkItemID)+"/comments", numberFixture.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "archived-search-comment"}, Body: strings.Repeat("Unrelated comment. ", 2000) + "archivecommenttoken"}), http.StatusOK)
+	drainTestNativeBoard(t, numberFixture.service)
 	numberContext := changeOperatorContext(t, numberFixture.service, numberFixture.token, string(numberFixture.project.OrganizationID))
 	numberProtocols := map[string]func(string, string, any) hostedContextReply{}
 	for _, transport := range []string{"stdio", "http"} {
@@ -109,6 +115,9 @@ No safety-critical path is touched; onboarding repository binding and runner che
 		{"other project number", "1", numberForeign, nil, []tracker.NativeWorkItemID{numberHidden.WorkItemID}},
 		{"archived excluded", "#3", numberFixture, nil, nil},
 		{"archived included", "#3", numberFixture, url.Values{"archived": {"true"}}, []tracker.NativeWorkItemID{archived.WorkItemID}},
+		{"archived title", "Archived", numberFixture, url.Values{"archived": {"all"}}, []tracker.NativeWorkItemID{archived.WorkItemID}},
+		{"archived body", "archivebodytoken", numberFixture, url.Values{"archived": {"all"}}, []tracker.NativeWorkItemID{archived.WorkItemID}},
+		{"archived comment", "archivecommenttoken", numberFixture, url.Values{"archived": {"all"}}, []tracker.NativeWorkItemID{archived.WorkItemID}},
 		{"lane excluded", "1", numberFixture, url.Values{"state": {"Backlog"}}, nil},
 		{"lane included", "1", numberFixture, url.Values{"state": {"Todo"}}, []tracker.NativeWorkItemID{numbered.WorkItemID, mentioned.WorkItemID}},
 	} {
@@ -362,7 +371,7 @@ func TestNativeWorkSearchIndexMaintenance(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusOK)
 	var comment tracker.NativeComment
 	decodeHubResponse(t, response, &comment)
-	migration, err := migrationFiles.ReadFile("migrations/20261012201500_native_work_search.sql")
+	migration, err := migrationFiles.ReadFile("migrations/20261021171000_native_work_search_content.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,8 +1,10 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -11,8 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/labstack/echo/v4"
+
 	"github.com/digitaldrywood/detent/internal/apikey"
+	chatpkg "github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -26,13 +32,16 @@ func TestRunnerRemoval(t *testing.T) {
 		expired  bool
 		revoked  bool
 		sibling  bool
+		mcp      bool
 		want     int
 	}{
 		{name: "idle", want: http.StatusNoContent},
 		{name: "already revoked", revoked: true, want: http.StatusNoContent},
 		{name: "claimed work", want: http.StatusUnprocessableEntity},
 		{name: "running attempt", attempt: true, want: http.StatusUnprocessableEntity},
-		{name: "expired running attempt", attempt: true, expired: true, want: http.StatusUnprocessableEntity},
+		{name: "expired running attempt", attempt: true, expired: true, want: http.StatusNoContent},
+		{name: "mcp expired running attempt", attempt: true, expired: true, mcp: true, want: http.StatusNoContent},
+		{name: "mcp running attempt", attempt: true, mcp: true, want: http.StatusUnprocessableEntity},
 		{name: "finished attempt", attempt: true, finished: true, want: http.StatusNoContent},
 		{name: "busy sibling", attempt: true, sibling: true, want: http.StatusNoContent},
 	} {
@@ -76,11 +85,25 @@ func TestRunnerRemoval(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			response := performHubAPIRequest(t, f.service, http.MethodDelete, r.identityPath(), testHubAdminToken, nil)
-			requireNativeStatus(t, response, test.want)
 			removed := test.want == http.StatusNoContent
-			if !removed && !strings.Contains(response.Body.String(), "active work") {
-				t.Fatalf("missing active-work explanation: %s", response.Body.String())
+			if test.mcp {
+				result, err := removeRunnerThroughMCP(t, f, r.binding.RunnerID)
+				var refusal *operatortool.RequestError
+				var action struct {
+					Status chatpkg.ActionStatus `json:"status"`
+				}
+				switch {
+				case removed && (err != nil || json.Unmarshal(result.Content, &action) != nil || action.Status != chatpkg.ActionSucceeded):
+					t.Fatalf("MCP removal = %s, %v", result.Content, err)
+				case !removed && (!errors.As(err, &refusal) || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, "active work")):
+					t.Fatalf("MCP refusal = %v", err)
+				}
+			} else {
+				response := performHubAPIRequest(t, f.service, http.MethodDelete, r.identityPath(), testHubAdminToken, nil)
+				requireNativeStatus(t, response, test.want)
+				if !removed && !strings.Contains(response.Body.String(), "active work") {
+					t.Fatalf("missing active-work explanation: %s", response.Body.String())
+				}
 			}
 			var removedAt, revokedAt sql.NullString
 			var name string
@@ -146,6 +169,20 @@ func TestRunnerRemoval(t *testing.T) {
 			}
 		})
 	}
+}
+
+func removeRunnerThroughMCP(t *testing.T, f nativeFixture, runnerID string) (operatortool.Result, error) {
+	t.Helper()
+	contexts := make(chan context.Context, 1)
+	path := "/api/v2/organizations/" + string(f.project.OrganizationID) + "/runner-removal-context"
+	f.service.echo.GET("/api/v2/organizations/:organization/runner-removal-context", func(c echo.Context) error { contexts <- c.Request().Context(); return c.NoContent(http.StatusOK) }, f.service.operatorAuthority)
+	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, path, testHubAdminToken, nil), http.StatusOK)
+	ctx := operatortool.BindConnection(<-contexts, "runner-removal", "direct-test")
+	executor := hubFleetExecutor{service: f.service}
+	if err := executor.OpenConnection(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return executor.Execute(ctx, operatortool.Call{Name: operatortool.RevokeRunnerIdentity, Arguments: json.RawMessage(`{"request_id":"remove","runner_id":"` + runnerID + `"}`)})
 }
 
 type runnerFixture struct {

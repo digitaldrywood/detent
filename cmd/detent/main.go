@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,10 +15,17 @@ import (
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/service"
-	"github.com/digitaldrywood/detent/internal/shadow"
+	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == toolcache.ProgramArgument {
+		if err := toolcache.RunProgram(os.Getenv("GOCACHE"), os.TempDir(), os.Stdin, os.Stdout); err != nil {
+			slog.Error("managed Go cache program failed", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == cli.SSHProbeArgument {
 		fmt.Fprintln(os.Stdout, runnerpkg.SSHProtocolVersion)
 		return
@@ -34,18 +40,22 @@ func main() {
 	if gobudget.IsWrapperInvocation(os.Args[0]) {
 		os.Exit(gobudget.RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
 	}
-	exitCode, restartBinary := runCLIResult(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	exitCode, restartBinary := runCLIResultWithRestart(context.Background(), os.Args[1:], os.Stdout, os.Stderr, automaticRestartRequest())
+	manager := service.ManagerFromProcessEnvironment(runtime.GOOS, os.LookupEnv)
+	os.Exit(finishCLI(exitCode, restartBinary, manager, restartProcess))
+}
+
+func finishCLI(exitCode int, restartBinary string, manager service.ManagerName, restart func(string, []string, []string) error) int {
 	if exitCode == cli.ExitSuccess && restartBinary != "" {
-		manager := service.ManagerFromProcessEnvironment(runtime.GOOS, os.LookupEnv)
-		if manager == service.ManagerLaunchd || manager == service.ManagerSystemd {
-			os.Exit(cli.ExitGeneral)
+		if manager == service.ManagerScheduledTask {
+			return cli.ExitGeneral
 		}
-		if err := restartProcess(restartBinary, os.Args, os.Environ()); err != nil {
+		if err := restart(restartBinary, os.Args, os.Environ()); err != nil {
 			slog.Error("restart updated Detent process", "binary", restartBinary, "error", err)
-			os.Exit(cli.ExitGeneral)
+			return cli.ExitGeneral
 		}
 	}
-	os.Exit(exitCode)
+	return exitCode
 }
 
 func runCLI(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
@@ -54,6 +64,10 @@ func runCLI(ctx context.Context, args []string, stdout io.Writer, stderr io.Writ
 }
 
 func runCLIResult(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) (int, string) {
+	return runCLIResultWithRestart(ctx, args, stdout, stderr, cli.NewRestartRequest())
+}
+
+func runCLIResultWithRestart(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer, restartRequest *cli.RestartRequest) (int, string) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -62,7 +76,6 @@ func runCLIResult(ctx context.Context, args []string, stdout io.Writer, stderr i
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	shutdownController := cli.NewShutdownController()
-	restartRequest := cli.NewRestartRequest()
 	stopSignals := notifyShutdownRequests(shutdownController, cancel, stderr, os.Exit)
 	defer stopSignals()
 
@@ -139,59 +152,9 @@ func newRootCommandWithRestart(ctx context.Context, shutdownController *cli.Shut
 		newVersionCommand(),
 		newUpdateCommand(ctx, newDefaultUpdateRunner),
 		newSkillCommand(build),
-		newShadowRunCommand(),
 	)
 	cli.ConfigureExamplesFirstHelp(cmd)
 	cli.ConfigureCommandSuggestions(cmd)
 
 	return cmd
-}
-
-func newShadowRunCommand() *cobra.Command {
-	var inputPath string
-	var allowDiff bool
-
-	cmd := &cobra.Command{
-		Use:          "shadow-run",
-		Short:        "Compare read-only Go decisions with an Elixir shadow report",
-		Args:         cli.NoArgs,
-		Example:      "detent shadow-run --input ./shadow.json --allow-diff",
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			if inputPath == "" {
-				return cli.NewValidationError("shadow-run --input is required", "Run detent shadow-run --input ./shadow.json.", nil)
-			}
-			return runShadowRun(cmd.OutOrStdout(), inputPath, allowDiff)
-		},
-	}
-	cmd.Flags().StringVar(&inputPath, "input", "", "Path to shadow-run JSON input")
-	cmd.Flags().BoolVar(&allowDiff, "allow-diff", false, "Return success even when differences are found")
-	return cmd
-}
-
-func runShadowRun(out io.Writer, inputPath string, allowDiff bool) error {
-	raw, err := os.ReadFile(inputPath)
-	if err != nil {
-		return fmt.Errorf("read shadow-run input: %w", err)
-	}
-
-	var input shadow.Input
-	if err := json.Unmarshal(raw, &input); err != nil {
-		return fmt.Errorf("decode shadow-run input: %w", err)
-	}
-
-	report, err := shadow.Run(input)
-	if err != nil {
-		return err
-	}
-
-	encoder := json.NewEncoder(out)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(report); err != nil {
-		return fmt.Errorf("write shadow-run report: %w", err)
-	}
-	if report.HasDifferences() && !allowDiff {
-		return shadow.ErrDifferences
-	}
-	return nil
 }

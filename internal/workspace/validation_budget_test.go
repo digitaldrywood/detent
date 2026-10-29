@@ -64,12 +64,16 @@ func TestReviewCommandSharesGoBudget(t *testing.T) {
 				wantFlags += " -toolexec=" + budget.WrapperPath()
 				wantDir, wantSlots = budget.Dir, "8"
 			}
-			command := `cd apps/api && printf '%s\n' "$GOFLAGS" "$GOMAXPROCS" "$DETENT_GO_BUDGET_DIR" "$DETENT_GO_BUDGET_SLOTS"`
+			t.Setenv("EXPECTED_GOFLAGS", wantFlags)
+			t.Setenv("EXPECTED_GOMAXPROCS", test.wantProcs)
+			t.Setenv("EXPECTED_BUDGET_DIR", wantDir)
+			t.Setenv("EXPECTED_BUDGET_SLOTS", wantSlots)
+			command := `cd apps/api && test "$GOFLAGS" = "$EXPECTED_GOFLAGS" && test "$GOMAXPROCS" = "$EXPECTED_GOMAXPROCS" && test "$DETENT_GO_BUDGET_DIR" = "$EXPECTED_BUDGET_DIR" && test "$DETENT_GO_BUDGET_SLOTS" = "$EXPECTED_BUDGET_SLOTS" && printf 'budget environment verified\n'`
 			receipt, err := backend.RunReviewCommand(ctx, info, issue, command)
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := strings.Join([]string{wantFlags, test.wantProcs, wantDir, wantSlots, ""}, "\n")
+			want := "budget environment verified\n"
 			if receipt.ExitCode != 0 || receipt.Output != want {
 				t.Fatalf("child environment: exit=%d output=%q, want %q", receipt.ExitCode, receipt.Output, want)
 			}

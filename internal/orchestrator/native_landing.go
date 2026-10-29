@@ -39,16 +39,24 @@ func (o *Orchestrator) completeNativeLandingRun(
 	running Running,
 ) bool {
 	landing := event.Result.NativeLanding
-	if landing == nil || !o.nativeWorkflow() {
+	reader, ok := o.connector.(connector.WorkflowStateReader)
+	if landing == nil || !ok {
 		return false
 	}
 	issue := running.Issue
 	issueID := strings.TrimSpace(event.IssueID)
-	if !landing.Landed && (landing.Waiting || landing.Path == "batch_member" && landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending" || landing.RefusalKind == workspace.LandRefusalBaseMoved) {
+	if !landing.Landed && !landing.RequiresRework() && landing.RefusalKind == workspace.LandRefusalProtected {
+		if wait, reported := terminalPermissionWait(event.Result.FinalMessage); reported && wait.Source == "terminal_detent_status" && permissionWaitCompletionAllowed(event) {
+			running.Issue = cloneIssue(issue)
+			running.Issue.NativeLandingHeadSHA = landing.HeadSHA
+			return o.parkPermissionWait(ctx, state, event, running, wait)
+		}
+	}
+	if !landing.Landed && (landing.Waiting || (landing.Path == "batch_member" || landing.Path == "merge_resolution_pending") && landing.RefusalKind == workspace.LandRefusalConflict || landing.RefusalKind == "" && landing.CI != nil && landing.CI.State == "pending" || landing.RefusalKind == workspace.LandRefusalBaseMoved) {
 		if landing.Waiting && !mergeWorkerIssue(issue) {
 			issue.NativeLandingHeadSHA = landing.HeadSHA
 		}
-		o.waitForMergeWorkerRetry(ctx, state, event, running, issue, running.Attempt, landing.Refusal,
+		o.waitForMergeWorkerRetry(ctx, state, event, running, issue, landing.Refusal,
 			"merge_worker_waiting", "waiting to retry landing of ")
 		return true
 	}
@@ -75,25 +83,52 @@ func (o *Orchestrator) completeNativeLandingRun(
 		if target == "" {
 			return handoff(fmt.Errorf("the landed item %s was not returned by the hub", issueID))
 		}
-	} else {
-		reader, ok := o.connector.(connector.WorkflowStateReader)
-		if !ok {
-			return false
+		terminal := stateIn(target, o.cfg.TerminalStates)
+		if !terminal {
+			states, err := reader.WorkflowStates(ctx)
+			if err != nil {
+				return handoff(fmt.Errorf("read native workflow states: %w", err))
+			}
+			for _, candidate := range states {
+				if normalizeState(candidate.Name) == normalizeState(target) && candidate.Terminal {
+					terminal = true
+				}
+			}
+			if !terminal {
+				from := cloneIssue(issue)
+				from.State = target
+				lane, allowed := connector.CompletionLane(states, target, "", false)
+				if !allowed {
+					return handoff(fmt.Errorf("native workflow allows no move from %s to a terminal lane", target))
+				}
+				if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issueID, from, lane, event.CompletedAt, "completed_active_review_transition", workflowLaneMetadata{}); err != nil {
+					return handoff(fmt.Errorf("complete landed native item: %w", err))
+				}
+				target = lane
+			}
 		}
+	} else {
 		states, err := reader.WorkflowStates(ctx)
 		if err != nil {
 			return handoff(fmt.Errorf("read native workflow states: %w", err))
 		}
 		cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
-		destination := cfg.reviewTargetState()
-		if autoPromoteOptoutLabel(issue, cfg) {
-			destination = cfg.SourceState
+		destination := cfg.ReworkState
+		lane, ok := nativeRetryLane(states, issue.State, destination)
+		if !ok && destination != autoPromoteReworkState {
+			lane, ok = nativeRetryLane(states, issue.State, autoPromoteReworkState)
 		}
-		rework := landing.RequiresRework()
-		if rework {
-			destination = cfg.ReworkState
+		if !ok {
+			for _, candidate := range states {
+				if candidate.Terminal || candidate.OperatorOnly || !candidate.Dispatchable || normalizeState(candidate.Name) == normalizeState(issue.State) || normalizeState(candidate.Name) == normalizeState(blockedStatusState) {
+					continue
+				}
+				lane, ok = nativeRetryLane(states, issue.State, candidate.Name)
+				if ok {
+					break
+				}
+			}
 		}
-		lane, ok := connector.LandingRefusalLane(states, issue.State, destination, rework)
 		if !ok {
 			return handoff(fmt.Errorf("native workflow allows no move from %s to the landing refusal lane %s", strings.TrimSpace(issue.State), destination))
 		}
@@ -121,6 +156,12 @@ func (o *Orchestrator) completeNativeLandingRun(
 	}
 	o.recordCompletionUsage(ctx, state, event, issue)
 	o.recordCompletedActiveReviewTransition(state, issue, completed, target)
+	if !landing.Landed {
+		issue.State = target
+		delete(state.Completed, issueID)
+		attempt := nextAttempt(running.Attempt)
+		o.scheduleRetryAfter(state, issue, attempt, event.CompletedAt, o.machineRetryDelay(attempt), landing.Refusal, running.WorkerHost)
+	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
 		Event:   "completed_native_landing",
@@ -140,6 +181,9 @@ func nativeLandingMetadata(landing *runpkg.NativeLanding) map[string]any {
 		return nil
 	}
 	metadata := map[string]any{"native_landing_path": landing.Path, "native_landing_packages": landing.Packages, "native_landed": landing.Landed, "native_change_id": landing.ChangeID, "native_version_id": landing.VersionID, "native_head_sha": landing.HeadSHA}
+	if len(landing.ConflictFiles) > 0 {
+		metadata["native_conflict_files"] = landing.ConflictFiles
+	}
 	if landing.CI != nil {
 		metadata["native_ci"] = landing.CI
 	}
@@ -165,6 +209,9 @@ func nativeLandingMetadata(landing *runpkg.NativeLanding) map[string]any {
 func nativeLandingComment(landing *runpkg.NativeLanding, from, to string) string {
 	from, to = displayStateName(from), displayStateName(to)
 	if landing.Landed {
+		if landing.ChangeID == "" {
+			return fmt.Sprintf("Verified source %s already delivered on %s as %s. Moved from %s to %s.", shortCommit(landing.HeadSHA), landing.BaseRef, shortCommit(landing.MergeSHA), from, to)
+		}
 		return fmt.Sprintf("Landed Change Request %s (head %s) on %s as %s by %s. Moved from %s to %s.",
 			landing.ChangeID, shortCommit(landing.HeadSHA), landing.BaseRef, shortCommit(landing.MergeSHA), landing.Method, from, to)
 	}

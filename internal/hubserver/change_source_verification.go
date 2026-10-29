@@ -28,7 +28,7 @@ func (s *Service) prepareChangeSource(ctx context.Context, scope nativeScope, it
 
 func (s *Service) authorizeChangeSource(ctx context.Context, scope nativeScope, item, changeID, operation string, request tracker.PublishChangeVersion) (replay bool, err error) {
 	if strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return false, nativeInvalid("An idempotency key of at most 128 bytes is required")
+		return false, nativePublicInvalid("An idempotency key of at most 128 bytes is required")
 	}
 	hash, err := nativeCommandHash(request)
 	if err != nil {
@@ -66,9 +66,12 @@ func (s *Service) authorizeChangeSource(ctx context.Context, scope nativeScope, 
 		return false, err
 	}
 	if change.WorkItemID != tracker.NativeWorkItemID(item) {
-		return false, nativeInvalid("Publish through the Change Request's primary issue")
+		return false, nativePublicInvalid("Publish through the Change Request's primary issue")
 	}
-	return false, requireChangeRun(ctx, tx, scope, change, request)
+	if err := requireChangeRun(ctx, tx, scope, change, request); err != nil {
+		return false, err
+	}
+	return false, validateCloudChangeReferences(ctx, tx, scope, nil, request.Artifacts, "artifacts")
 }
 
 func (s *Service) verifyChangeSource(ctx context.Context, source tracker.ChangeSource, bundle []byte) error {

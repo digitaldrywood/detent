@@ -17,7 +17,7 @@ import (
 
 // The shared contract fixtures live with the client, which validates every
 // payload against them. They are the cross-language truth for
-// docs/conversation/decisions.md section 5: this test decodes each fixture
+// the Hub conversation API: this test decodes each fixture
 // into the Go type that carries it and re-encodes the value the real
 // projection functions produce, so a field the hub adds, drops or renames
 // fails here before it reaches the client.
@@ -231,7 +231,7 @@ func conversationFixtureReceipt() conversation.Receipt {
 }
 
 // conversationFixtureBootstrap is the payload /chat/bootstrap answers with.
-// Since decisions section 12 it is the same extended payload /app/bootstrap
+// It is the same extended payload /app/bootstrap
 // carries, so the conversation fixture reads a subset of the account one.
 func conversationFixtureLinkResult() conversationLinkResult {
 	record := conversationFixtureLinkedRecord()
@@ -318,7 +318,7 @@ func conversationFixtureCases(t *testing.T) map[string]conversationFixtureCase {
 				t.Fatalf("decode create request: %v", err)
 			}
 			// The top-level key makes creation idempotent; the first
-			// message keeps its own command key (decisions section 10.2).
+			// message keeps its own command key.
 			if request.Key == "" || request.FirstMessage == nil || request.FirstMessage.Key == "" || request.FirstMessage.Key == request.Key || request.FirstMessage.Text == "" {
 				t.Fatalf("create request = %#v", request)
 			}
@@ -395,8 +395,8 @@ func conversationFixtureCases(t *testing.T) map[string]conversationFixtureCase {
 	}
 }
 
-// conversationSection14Fields names the fields decisions sections 14 and 17
-// add to the conversation and message resources and to the link response. The
+// conversationSection14Fields names the fields the preferences and attachments
+// contracts add to the conversation and message resources and to the link response. The
 // client owns the shared fixtures; until it has bound these fields, the hub
 // carries more than the fixture shows, and the Go half of the contract says so
 // here rather than by dropping the field. Each returned path names one key of

@@ -46,7 +46,7 @@ func providerServicePath(cfg globalconfig.Config, base, home string) (string, er
 			}
 		}
 		if found == "" {
-			return "", fmt.Errorf("provider CLI %q for backend %s is missing from the service PATH; install it and export PATH with its bin directory, then rerun detent start --yes", binary, backend.ID)
+			return "", fmt.Errorf("provider CLI %q for backend %s is missing from the service PATH; install it and export PATH with its bin directory, then retry runner service registration with detent hub runner register --service", binary, backend.ID)
 		}
 		if !slices.Contains(directories, found) {
 			if path != "" {
@@ -99,7 +99,7 @@ func (r runnerHeartbeatService) Start(ctx context.Context, opts servicepkg.Start
 	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := waitRunnerProviderHeartbeat(checkCtx, r.read, r.id, heartbeat); err != nil {
-		return result, fmt.Errorf("runner service started but readiness check failed: %w; check provider CLI installation, sign-in and service PATH, and logs in %s; after fixing, run detent start --config %s --restart", err, filepath.Join(filepath.Dir(r.cfg.Path), "logs"), shellQuote(r.cfg.Path))
+		return result, fmt.Errorf("runner service started but readiness check failed: %w; check provider CLI installation, sign-in and service PATH, and logs in %s; after fixing, restart the runner service for %s", err, filepath.Join(filepath.Dir(r.cfg.Path), "logs"), shellQuote(r.cfg.Path))
 	}
 	return result, nil
 }

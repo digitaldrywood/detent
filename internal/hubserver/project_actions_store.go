@@ -11,8 +11,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Durable storage for project actions and their runs (decisions section
-// 18.12). Like the workspace store, every write takes a transaction from the
+// Durable storage for project actions and their runs.
+// Like the workspace store, every write takes a transaction from the
 // caller.
 
 // actionRecord is one row of project_actions.
@@ -67,7 +67,7 @@ type actionRunRecord struct {
 	// person's relay connection, or the hub's own dispatch when it handed the
 	// run to the runner holding the workspace. It is written in the same
 	// transaction that moves the row, so two executors racing for one run
-	// cannot both start a process (decisions section 18.12, migration 00032).
+	// cannot both start a process (migration 00032).
 	ClaimedBy string
 	Revision  int64
 	CreatedAt time.Time
@@ -392,7 +392,7 @@ const boundWorkspaceStates = `('ready', 'idle')`
 const actionRunDispatchBatch = 20
 
 // readDispatchableActionRuns lists the runs still queued past the grace period
-// on a workspace a runner has bound, oldest first (decisions section 18.12).
+// on a workspace a runner has bound, oldest first.
 //
 // The grace period is the whole of the rule, which is why it is in the
 // predicate rather than applied to the rows afterwards. A person who queued a

@@ -1,3 +1,4 @@
+import { validateUserSearch } from "./userList.ts";
 // The shared entry's route tree. It is separate from the organization client's
 // tree: the entry serves this shell with an empty base path and a
 // `detent-surface=entry` marker, and none of these screens needs the
@@ -99,13 +100,13 @@ const platformRoutes = platformRoute.addChildren([
   createRoute({
     getParentRoute: () => platformRoute,
     path: "/users",
-    validateSearch: (search: Record<string, unknown>) => ({ q: typeof search.q === "string" ? search.q : undefined }),
+    validateSearch: validateUserSearch,
     component: PlatformUsersPage,
   }),
   createRoute({
     getParentRoute: () => platformRoute,
     path: "/users/$email",
-    validateSearch: (search: Record<string, unknown>) => ({ q: typeof search.q === "string" ? search.q : undefined }),
+    validateSearch: validateUserSearch,
     component: PlatformUserPage,
   }),
   createRoute({

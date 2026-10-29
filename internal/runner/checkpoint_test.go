@@ -232,7 +232,7 @@ func TestCheckpointPullRequestAssociation(t *testing.T) {
 
 func TestCheckpointBoundedPeriodicAndTerminalTurns(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"duration", "cancelled", "hard reap failure", "periodic", "checkpoint timeout", "duration during checkpoint"} {
+	for _, scenario := range []string{"duration", "cancelled", "hard reap failure", "completed with survivors", "periodic", "checkpoint timeout", "duration during checkpoint"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			runner, checkpoint, publication := checkpointRunnerFixture(t)
@@ -273,6 +273,8 @@ func TestCheckpointBoundedPeriodicAndTerminalTurns(t *testing.T) {
 						return agentTurnExecution{err: context.Canceled}
 					case "hard reap failure":
 						return agentTurnExecution{err: errors.Join(ErrSessionDurationExceeded, ErrWorkerProcessReap)}
+					case "completed with survivors":
+						return agentTurnExecution{cleanupErr: ErrWorkerProcessReap, result: RunResult{FinalState: FinalStateCompleted}}
 					case "periodic":
 						if calls == 3 {
 							return agentTurnExecution{result: RunResult{FinalState: FinalStateCompleted}}
@@ -286,10 +288,14 @@ func TestCheckpointBoundedPeriodicAndTerminalTurns(t *testing.T) {
 					if result.err != nil || calls != 3 || handshakes != 1 || publication.calls != 1 {
 						t.Fatalf("repeated checkpoint made progress: calls=%d handshake=%d publication=%d result=%+v", calls, handshakes, publication.calls, result)
 					}
+				} else if scenario == "completed with survivors" {
+					if result.err != nil || result.result.FinalState != FinalStateCompleted || !errors.Is(result.cleanupErr, ErrWorkerProcessReap) {
+						t.Fatalf("cleanup changed turn outcome: %+v", result)
+					}
 				} else if result.err == nil {
 					t.Fatal("checkpoint converted failure into completion")
 				}
-				if scenario == "cancelled" || scenario == "hard reap failure" {
+				if scenario == "cancelled" || scenario == "hard reap failure" || scenario == "completed with survivors" {
 					if handshakes != 0 || publication.calls != 0 {
 						t.Fatal("unreachable epilogue ran")
 					}

@@ -35,20 +35,29 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 		name            string
 		updatePolicy    bool
 		republish       bool
+		transferDirty   bool
+		transfer        bool
+		transferCode    bool
 		workerOwnership bool
+		planning        bool
 	}{
 		{name: "same policy"},
+		{name: "planning enabled Rework restores missing published head before provider", planning: true},
 		{name: "retained source waits for writer cleanup before replacement", workerOwnership: true},
 		{name: "updated policy", updatePolicy: true},
 		{name: "operator republished same tree", republish: true},
 		{name: "operator republished same tree with policy update", republish: true, updatePolicy: true},
+		{name: "version-bound transfer restores selected source", republish: true, transfer: true},
+		{name: "same-runner transfer restores source and preserves dirty custody", republish: true, transferDirty: true, transfer: true},
+		{name: "code-lane transfer restores source and preserves dirty custody", republish: true, transferDirty: true, transfer: true, transferCode: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			updatePolicy := test.updatePolicy
 			h := newNativeChangeHubWithStates(t, "In Review", []tracker.NativeState{
 				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "Done"}},
 				{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Done"}},
-				{Name: "In Review", Transitions: []string{"Rework"}},
+				{Name: "In Review", Transitions: []string{"Rework", "In Progress"}},
 				{Name: "Rework", Dispatchable: true, Transitions: []string{"In Review", "Done"}},
 				{Name: "Done", Terminal: true},
 			})
@@ -83,27 +92,54 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 			}
 			initialBase := head(sourceA)
 			run := func(source string, provider *committingAgent, candidate connector.Issue, execution runner.Execution) runner.RunResult {
-				backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+				root := filepath.Join(t.TempDir(), "workspaces")
+				backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
 				if err != nil {
 					t.Fatal(err)
 				}
-				if candidate.State == "Rework" && !updatePolicy {
+				transferredCode := test.transferCode && execution.Recovery().SourceVersionID != ""
+				if (candidate.State == "Rework" || transferredCode) && !updatePolicy {
 					info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: candidate.ID, Identifier: candidate.Identifier})
 					if err != nil {
 						t.Fatal(err)
 					}
 					nativeChangeGit(t, info.Path, "reset", "--hard", initialBase)
+					if test.transferDirty {
+						if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("local staged source\n"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+						nativeChangeGit(t, info.Path, "add", "README.md")
+						if err := os.WriteFile(filepath.Join(info.Path, "PENDING.md"), []byte("local untracked source\n"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
 				}
 				runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
 				if err != nil {
 					t.Fatal(err)
 				}
 				defer runtimeStore.Close()
-				agent, err := runner.NewRunner(runner.Dependencies{Store: runtimeStore, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
+				agent, err := runner.NewRunner(runner.Dependencies{Store: runtimeStore, ProjectID: "local", Workflow: config.Workflow{Config: config.Config{Plan: gate.PlanConfig{Enabled: test.planning}, Gate: gate.Config{Run: "test -f CHANGE.md", Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: provider})
 				if err != nil {
 					t.Fatal(err)
 				}
 				result, err := agent.Run(t.Context(), runner.RunRequest{Execution: execution, ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+				if test.transferDirty && (candidate.State == "Rework" || transferredCode) {
+					paths, err := filepath.Glob(filepath.Join(root, ".detent", "quarantine", "*"))
+					if err != nil || len(paths) != 1 || head(paths[0]) != initialBase {
+						t.Fatalf("transfer did not preserve old source: paths=%v error=%v", paths, err)
+					}
+					for name, want := range map[string]string{"README.md": "local staged source\n", "PENDING.md": "local untracked source\n"} {
+						data, err := os.ReadFile(filepath.Join(paths[0], name))
+						if err != nil || string(data) != want {
+							t.Fatalf("refusal lost %s: %q, %v", name, data, err)
+						}
+					}
+					data, err := exec.CommandContext(t.Context(), "git", "-C", paths[0], "show", ":README.md").Output()
+					if err != nil || string(data) != "local staged source\n" {
+						t.Fatalf("refusal lost index custody: %q, %v", data, err)
+					}
+				}
 				if err != nil || result.NativeChange == nil || !result.NativeChange.Reviewed {
 					t.Fatalf("runner did not publish newly validated source: %+v, %v", result.NativeChange, err)
 				}
@@ -206,14 +242,18 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Rework", Reason: "user_requested"}); err != nil {
+			state := "Rework"
+			if test.transferCode {
+				state = "In Progress"
+			}
+			if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: state, Reason: "user_requested"}); err != nil {
 				t.Fatal(err)
 			}
 			h.scheduler, err = NewScheduler(h.native.client, SchedulerConfig{OrganizationID: h.organization, NativeProjects: map[string]tracker.ProjectID{"local": h.project}, Machine: Machine{ID: "machine-air", Hostname: "Air", Capacity: 1, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: 90 * time.Second})
 			if err != nil {
 				t.Fatal(err)
 			}
-			candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{"Rework"}})
+			candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{state}})
 			if err != nil || len(candidates) != 1 {
 				t.Fatalf("second Mac did not claim Rework: %+v, %v", candidates, err)
 			}
@@ -224,9 +264,35 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 			if err != nil || slices.Contains(recovered.PreviousHeads, oldHead) != test.republish {
 				t.Fatalf("superseded source provenance=%v: %v", recovered.PreviousHeads, err)
 			}
+			if test.transfer {
+				execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+				execution.claim.recovery.SourceVersionID = recovered.Version.ID
+				execution.claim.recovery.SourceAttempt().MachineID = execution.claim.lease.MachineID
+				recovered, err = execution.RecoverChangeSource(t.Context())
+				if err != nil || !recovered.Transferred || recovered.Version.ID != execution.claim.recovery.SourceVersionID {
+					t.Fatalf("transfer lost exact source selection: %+v, %v", recovered.Version, err)
+				}
+			}
 			providerB := &committingAgent{validator: "pass", complete: true}
 			providerB.duringTurn = func() {
-				for name, expected := range map[string]string{"CHANGE.md": "changed\n", "UPSTREAM.md": "new dev base\n"} {
+				if identity := h.scheduler.RunExecution(issue.ID).(*nativeExecution).data.Identity; !test.transferCode && (identity == nil || identity.Role != runner.RoleRework) {
+					t.Fatalf("Rework provider identity = %+v, want role=rework", identity)
+				}
+				expectedFiles := map[string]string{"CHANGE.md": "changed\n"}
+				if test.transferCode {
+					if got := head(providerB.workspace); got != recovered.Version.HeadSHA {
+						t.Fatalf("code transfer started at %s, want selected head %s", got, recovered.Version.HeadSHA)
+					}
+				} else {
+					expectedFiles["UPSTREAM.md"] = "new dev base\n"
+				}
+				if test.transferDirty {
+					status, err := exec.CommandContext(t.Context(), "git", "-C", providerB.workspace, "status", "--porcelain").Output()
+					if err != nil || len(status) != 0 {
+						t.Fatalf("transfer resumed local dirty bytes: %q, %v", status, err)
+					}
+				}
+				for name, expected := range expectedFiles {
 					data, err := os.ReadFile(filepath.Join(providerB.workspace, name))
 					if err != nil || string(data) != expected {
 						t.Fatalf("second Mac started without recovered/refreshed source: %s = %q, %v", name, data, err)
@@ -234,7 +300,11 @@ func TestNativeReworkRecoversReviewedSourceAcrossMachines(t *testing.T) {
 				}
 			}
 			second := run(sourceB, providerB, candidates[0], h.scheduler.RunExecution(issue.ID))
-			if second.NativeChange.HeadSHA == oldHead || second.NativeChange.BaseSHA != newBase || providerB.calls != 2 {
+			expectedBase := newBase
+			if test.transferCode {
+				expectedBase = initialBase
+			}
+			if second.NativeChange.HeadSHA == oldHead || second.NativeChange.BaseSHA != expectedBase || providerB.calls != 2 {
 				t.Fatalf("rework reused old head or validation: %+v, calls=%d", second.NativeChange, providerB.calls)
 			}
 			detail, err := h.admin.Change(context.Background(), item, first.NativeChange.ChangeID)
@@ -272,19 +342,42 @@ func TestNativeRecoveredSourceRequiresCurrentVersion(t *testing.T) {
 	}
 }
 
-func TestNativeDamagedSourceRecoversOnlyVerifiedOwner(t *testing.T) {
+func TestNativeChangeSourceRecoversOnlyVerifiedOwner(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
 	isolateNativeChangeGit(t)
 	for _, test := range []struct {
-		name                                     string
-		status                                   int
-		foreign, wrongHead, lostLease, wrongDiff bool
-		missingCapture, wrongWorktree            bool
-		wantError                                bool
+		name                                       string
+		status                                     int
+		foreign, wrongHead, lostLease, wrongDiff   bool
+		missingCapture, wrongWorktree              bool
+		wantError                                  bool
+		transferred, staleTransfer, recovered      bool
+		foreignChange, dirty, unpublished, unknown bool
+		available, retained, activePublication     bool
+		uncertain                                  bool
+		currentCheckpoint, cleanCheckpoint         bool
 	}{
 		{name: "owner recaptures missing artifact", status: http.StatusInternalServerError},
+		{name: "transferred version retains exact selection during recapture", status: http.StatusInternalServerError, transferred: true},
+		{name: "stale transfer advances to current published source", transferred: true, staleTransfer: true, available: true},
+		{name: "stale transfer with current unpushed checkpoint advances", transferred: true, staleTransfer: true, currentCheckpoint: true, available: true},
+		{name: "stale transfer with current clean checkpoint advances", transferred: true, staleTransfer: true, currentCheckpoint: true, cleanCheckpoint: true, available: true},
+		{name: "current dirty checkpoint refuses substitution", transferred: true, staleTransfer: true, currentCheckpoint: true, dirty: true, available: true, wantError: true},
+		{name: "current uncertain checkpoint refuses substitution", transferred: true, staleTransfer: true, currentCheckpoint: true, uncertain: true, available: true, wantError: true},
+		{name: "current checkpoint cannot accept corrupt current bundle", transferred: true, staleTransfer: true, currentCheckpoint: true, missingCapture: true, wantError: true},
+		{name: "recovered source advances without transfer selection", staleTransfer: true, recovered: true, available: true},
+		{name: "recovered transfer advances to current published source", transferred: true, staleTransfer: true, recovered: true, available: true},
+		{name: "different Change transfer refuses substitution", transferred: true, staleTransfer: true, foreignChange: true, available: true, wantError: true},
+		{name: "different Change refuses substitution", transferred: true, staleTransfer: true, recovered: true, foreignChange: true, available: true, wantError: true},
+		{name: "unknown version refuses substitution", transferred: true, staleTransfer: true, unknown: true, available: true, wantError: true},
+		{name: "uncertain checkpoint refuses substitution", transferred: true, staleTransfer: true, uncertain: true, available: true, wantError: true},
+		{name: "dirty checkpoint refuses substitution", transferred: true, staleTransfer: true, dirty: true, available: true, wantError: true},
+		{name: "unpublished checkpoint refuses substitution", transferred: true, staleTransfer: true, unpublished: true, available: true, wantError: true},
+		{name: "retained unpublished source refuses substitution", transferred: true, staleTransfer: true, retained: true, available: true, wantError: true},
+		{name: "active publication refuses substitution", transferred: true, staleTransfer: true, activePublication: true, available: true, wantError: true},
+		{name: "stale selection cannot accept corrupt current bundle", transferred: true, staleTransfer: true, missingCapture: true, wantError: true},
 		{name: "owner recaptures corrupt artifact"},
 		{name: "foreign runner cannot recapture", foreign: true, wantError: true},
 		{name: "wrong local checkpoint cannot recapture", wrongHead: true, wantError: true},
@@ -348,12 +441,79 @@ func TestNativeDamagedSourceRecoversOnlyVerifiedOwner(t *testing.T) {
 				checkpointHead = base
 			}
 			execution.claim.recovery.SourceAttemptID = "saved-source"
+			if test.transferred {
+				execution.claim.recovery.SourceVersionID = version.ID
+			}
+			if test.recovered {
+				execution.recoveredSource = &tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: exactHead}
+			}
+			if test.activePublication {
+				execution.change = &runner.NativeChange{ChangeID: change.ID, VersionID: version.ID, HeadSHA: exactHead}
+			}
+			if test.staleTransfer {
+				if err := os.WriteFile(filepath.Join(repo, "NEWER.md"), []byte("newer published work\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				nativeChangeGit(t, repo, "add", "NEWER.md")
+				nativeChangeGit(t, repo, "commit", "-m", "newer source")
+				capture, err = workspace.CaptureChangeSource(t.Context(), repo, base, head())
+				if err != nil {
+					t.Fatal(err)
+				}
+				input := version.ChangeVersionInput
+				input.HeadSHA, input.Source = head(), &capture.Source
+				input.Code.SHA256 = strings.Repeat("a", 64)
+				expected := version.ID
+				if test.foreignChange {
+					change, err = h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Other Change"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					expected = ""
+				}
+				version, err = h.admin.PublishChangeVersion(t.Context(), item, change.ID, tracker.PublishChangeVersion{
+					Mutation: nativeMutationKey(), ExpectedVersionID: expected, ChangeVersionInput: input, SourceBundle: capture.Bundle,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if version.ID == execution.claim.recovery.SourceVersionID {
+					t.Fatal("publication did not advance the current version")
+				}
+			}
 			execution.claim.recovery.Attempts = []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "saved-source", MachineID: owner}, Checkpoint: &tracker.NativeCheckpoint{Resume: "resume_session", WorktreeState: "unpushed", HeadSHA: checkpointHead, Availability: "available", Storage: "local_only"}}}
+			if test.unknown {
+				execution.claim.recovery.SourceVersionID = "version_unknown"
+			}
+			checkpoint := execution.claim.recovery.SourceAttempt().Checkpoint
+			if test.currentCheckpoint {
+				checkpoint.HeadSHA = version.HeadSHA
+			}
+			if test.cleanCheckpoint {
+				checkpoint.WorktreeState = "clean"
+			}
+			if test.uncertain {
+				checkpoint.ExternalEffect, checkpoint.EffectState = "git_push", "ambiguous"
+			}
+			if test.dirty {
+				checkpoint.WorktreeState, checkpoint.WorkspaceDigest = "dirty", "unpublished-digest"
+			}
+			if test.unpublished {
+				checkpoint.HeadSHA = strings.Repeat("e", 40)
+			}
+			if test.retained {
+				execution.retainedSource = &tracker.ChangeSourceCapture{Source: tracker.ChangeSource{HeadSHA: strings.Repeat("e", 40)}}
+			}
 			original := h.native.client.httpClient.Transport
+			downloads := 0
 			h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 				if strings.HasSuffix(request.URL.Path, "/source") {
+					downloads++
 					status := test.status
 					body := []byte("corrupt source")
+					if test.available {
+						body = capture.Bundle
+					}
 					if status != 0 {
 						body = []byte(`{"error":{"code":"internal_error","message":"source unavailable"}}`)
 					} else {
@@ -382,12 +542,52 @@ func TestNativeDamagedSourceRecoversOnlyVerifiedOwner(t *testing.T) {
 			if err := os.WriteFile(pending, []byte("pending local work"), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			selected := execution.claim.recovery.SourceVersionID
+			previousSource, retainedSource := execution.recoveredSource, execution.retainedSource
 			recovered, err := execution.RecoverChangeSource(t.Context())
 			if (err != nil) != test.wantError {
 				t.Fatalf("recovery error = %v", err)
 			}
-			if !test.wantError && (calls != 1 || recovered.Version.ID != version.ID || recovered.Version.BaseSHA != base || recovered.Version.HeadSHA != exactHead || !bytes.Equal(recovered.Bundle, capture.Bundle)) {
+			if test.staleTransfer && test.wantError && !test.missingCapture {
+				if !errors.Is(err, runner.ErrChangeSourceVersionSuperseded) {
+					t.Fatalf("stale selection lost refusal classification: %v", err)
+				}
+				for _, identity := range []string{change.ID, selected, version.ID} {
+					if !strings.Contains(err.Error(), identity) {
+						t.Errorf("refusal omits source identity %q: %v", identity, err)
+					}
+				}
+				if !strings.Contains(err.Error(), "re-read source recovery") || !strings.Contains(err.Error(), "before transfer") {
+					t.Errorf("refusal omits reconciliation action: %v", err)
+				}
+				if calls != 0 || downloads != 0 || recovered.Version.ID != "" || execution.claim.recovery.SourceVersionID != selected || execution.recoveredSource != previousSource {
+					t.Fatal("stale selection downloaded, recaptured or substituted source")
+				}
+				if err := execution.Validate(t.Context()); err != nil {
+					t.Fatalf("source refusal changed execution authority: %v", err)
+				}
+			}
+			wantCalls := 1
+			if test.available {
+				wantCalls = 0
+			}
+			if !test.wantError && (calls != wantCalls || recovered.Version.ID != version.ID || recovered.Version.BaseSHA != base || recovered.Version.HeadSHA != version.HeadSHA || !bytes.Equal(recovered.Bundle, capture.Bundle)) {
 				t.Fatalf("exact source not recovered: %+v calls=%d", recovered.Version, calls)
+			}
+			if !test.wantError && recovered.Transferred != (test.transferred && !test.staleTransfer) {
+				t.Fatal("source recovery lost transfer binding")
+			}
+			if test.wantError && (execution.recoveredSource != previousSource || execution.retainedSource != retainedSource) {
+				t.Fatal("refusal changed recovered or retained unpublished source")
+			}
+			if !test.wantError && (execution.recoveredSource == nil || execution.recoveredSource.ChangeID != change.ID || execution.recoveredSource.VersionID != version.ID || execution.recoveredSource.HeadSHA != version.HeadSHA) {
+				t.Fatal("recovery did not retain the validated current publication identity")
+			}
+			if test.currentCheckpoint && !test.wantError {
+				retried, err := execution.RecoverChangeSource(t.Context())
+				if err != nil || retried.Version.ID != version.ID || !bytes.Equal(retried.Bundle, capture.Bundle) {
+					t.Fatalf("repeated recovery did not retain current published source: %q, %v", retried.Version.ID, err)
+				}
 			}
 			if test.foreign || test.wrongHead || test.status == http.StatusForbidden {
 				if calls != 0 {

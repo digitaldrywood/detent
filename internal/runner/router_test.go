@@ -137,6 +137,9 @@ func TestRouterRoutesValidatorRoleWithFallbackDefault(t *testing.T) {
 	t.Parallel()
 
 	router, err := NewRouter([]Route{
+		{Name: "pilot-code", Role: RoleCode, BackendID: "opencode", Model: "opencode-go/deepseek-v4.1-flash", Selector: selector.Selector{Labels: selector.Labels{Include: []string{"pilot:deepseek"}}}},
+		{Name: "pilot-rework", Role: RoleRework, BackendID: "opencode", Model: "opencode-go/deepseek-v4.1-flash", Selector: selector.Selector{Labels: selector.Labels{Include: []string{"pilot:deepseek"}}}},
+		{Name: "security", Role: RoleSecurityAudit, BackendID: "codex-review", Model: "gpt-6-astra"},
 		{
 			Name:      "validator",
 			Role:      RoleValidator,
@@ -168,6 +171,26 @@ func TestRouterRoutesValidatorRoleWithFallbackDefault(t *testing.T) {
 	}
 	if code.BackendID != "codex-code" || code.Model != "gpt-5-code" || code.RouteName != "default" {
 		t.Fatalf("Route(code) = %#v, want code default", code)
+	}
+
+	for _, labeled := range []bool{false, true} {
+		issue := connector.Issue{}
+		if labeled {
+			issue.Labels = []string{"pilot:deepseek"}
+		}
+		for _, role := range []string{RoleCode, RoleRework, RoleValidator, RoleSecurityAudit} {
+			got, err := router.RouteForRole(issue, selector.Context{}, role)
+			want := "codex-code"
+			if labeled && (role == RoleCode || role == RoleRework) {
+				want = "opencode"
+			}
+			if role == RoleValidator || role == RoleSecurityAudit {
+				want = "codex-review"
+			}
+			if err != nil || got.BackendID != want {
+				t.Fatalf("labeled=%v role=%s route=%+v err=%v", labeled, role, got, err)
+			}
+		}
 	}
 
 	fallback, err := NewRouter([]Route{{

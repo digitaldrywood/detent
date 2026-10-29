@@ -46,6 +46,8 @@ const readerCachePragma = "cache_size(-8000)"
 const readerConnectionLifetime = time.Hour
 
 type database struct {
+	policies               projectPolicyCache
+	dashboardCommitted     chan struct{}
 	analyticsRetryMu       sync.Mutex
 	analyticsRetryCursor   string
 	linkedSourceBase       string
@@ -69,7 +71,7 @@ type database struct {
 	// workspaceRetainAfterRun is workspaces.retain_after_run, read by the
 	// claim gate: inside that window an attempt's worktree still exists on
 	// the runner that produced it, and only that runner may serve a
-	// workspace on the attempt (decisions section 18.1).
+	// workspace on the attempt.
 	workspaceRetainAfterRun time.Duration
 	// workspaceTerminalIsolation is workspaces.terminal.isolation, read by the
 	// claim gate so a runner whose terminal is less confined than the
@@ -98,7 +100,8 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 		return nil, errors.Join(err, lock.Close())
 	}
 
-	db, err := openTimedWriter(sqliteWriterDSN(path, cfg.BusyTimeout, cfg.Hosted != nil))
+	dashboardCommitted := make(chan struct{}, 1)
+	db, err := openTimedWriter(sqliteWriterDSN(path, cfg.BusyTimeout, cfg.Hosted != nil), cfg.Logger, dashboardCommitted)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("open hub database: %w", err), lock.Close())
 	}
@@ -109,7 +112,7 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	store := &database{logger: logger, db: db, lock: lock, path: path, now: cfg.now, newLeaseID: cfg.newLeaseID, aiCreditCostMultiplier: defaultAICreditCostMultiplier}
+	store := &database{dashboardCommitted: dashboardCommitted, logger: logger, db: db, lock: lock, path: path, now: cfg.now, newLeaseID: cfg.newLeaseID, aiCreditCostMultiplier: defaultAICreditCostMultiplier}
 	if cfg.Hosted != nil {
 		store.linkedSourceBase = cfg.Hosted.PublicURL
 		if cfg.Hosted.SharedEntry != nil {
@@ -119,6 +122,9 @@ func openDatabase(ctx context.Context, cfg Config) (*database, error) {
 	if cfg.Workspace != nil {
 		store.workspaceRetainAfterRun = cfg.Workspace.RetainAfterRun
 		store.workspaceTerminalIsolation = cfg.Workspace.Terminal.Isolation
+	}
+	if err := store.initializeAutoVacuum(ctx); err != nil {
+		return nil, errors.Join(err, store.Close())
 	}
 	if err := store.configure(ctx, cfg.BusyTimeout, cfg.Hosted != nil); err != nil {
 		return nil, errors.Join(err, store.Close())
@@ -364,6 +370,19 @@ func isWindowsDrivePath(path string) bool {
 		return false
 	}
 	return path[0] >= 'A' && path[0] <= 'Z' || path[0] >= 'a' && path[0] <= 'z'
+}
+
+func (d *database) initializeAutoVacuum(ctx context.Context) error {
+	var pageCount int
+	if err := d.db.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pageCount); err != nil {
+		return fmt.Errorf("inspect hub sqlite pages: %w", err)
+	}
+	if pageCount == 0 {
+		if _, err := d.db.ExecContext(ctx, "PRAGMA auto_vacuum = INCREMENTAL"); err != nil {
+			return fmt.Errorf("configure hub sqlite incremental vacuum: %w", err)
+		}
+	}
+	return nil
 }
 
 func (d *database) configure(ctx context.Context, busyTimeout time.Duration, hosted bool) error {

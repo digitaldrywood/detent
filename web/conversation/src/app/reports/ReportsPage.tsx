@@ -18,7 +18,7 @@ import {
 } from "../../components/WorkspaceBreadcrumb.tsx";
 import { WorkspacePageContainer } from "../../components/WorkspacePageContainer.tsx";
 import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
-import type { ReportsFacets, ReportsReport } from "../../contracts/reports.ts";
+import type { OrganizationReports, ReportsFacets, ReportsReport } from "../../contracts/reports.ts";
 import type { BootstrapProject } from "../../contracts/index.ts";
 import { useAccountApi } from "../account/context.ts";
 import { useSidebarData } from "../adapters/sidebarData.tsx";
@@ -45,9 +45,10 @@ import {
   type ReportsSearch,
   type ReportTab,
 } from "./model.ts";
+import { OrganizationOverview } from "./OrganizationOverview.tsx";
 import { OverviewTab } from "./OverviewTab.tsx";
 import { QualityTab } from "./QualityTab.tsx";
-import { useReportOptions, useReports } from "./reportsQuery.ts";
+import { useOrganizationReports, useReportOptions, useReports } from "./reportsQuery.ts";
 
 const ISSUE_FILTERS = ["labels", "priorities", "types", "filedBy", "runners"] as const;
 /** The chips each tab offers; a chip set on another tab stays visible so it can be cleared. */
@@ -82,12 +83,25 @@ export function ReportsRoute(): React.ReactElement {
   const params = useParams({ strict: false }) as { tab?: string };
   const rawSearch = useSearch({ strict: false }) as Record<string, unknown>;
   const tab: ReportTab = isReportTab(params.tab) ? params.tab : "overview";
-  const search = parseReportsSearch(rawSearch);
-  const project = sidebar?.projects.find((p) => p.id === sidebar.activeProjectId);
-  const projectId = search.project === ALL_PROJECTS && (sidebar?.projects.length ?? 0) > 0 ? ALL_PROJECTS : (project?.id ?? null);
+  const parsedSearch = parseReportsSearch(rawSearch);
+  const orgScope = parsedSearch.project === ALL_PROJECTS || (sidebar !== null && sidebar.activeProjectId === null && parsedSearch.project === null);
+  const search = orgScope ? { ...parsedSearch, filters: { ...parsedSearch.filters, models: [], stages: [] } } : parsedSearch;
+  const project = sidebar?.projects.find((p) => p.id === (search.project ?? sidebar.activeProjectId));
+  const projectId = orgScope ? ALL_PROJECTS : (project?.id ?? null);
   const range = search.range === CUSTOM_RANGE.value && search.from !== null && search.to !== null ? { from: search.from, to: search.to } : search.range === CUSTOM_RANGE.value ? "7d" : search.range;
-  const reports = useReports(api, projectId === null ? null : { projectId, range, filters: reportsQueryFilters(search.filters) });
+  const reports = useReports(api, orgScope || projectId === null ? null : { projectId, range, filters: reportsQueryFilters(search.filters) });
+  const organization = useOrganizationReports(api, !orgScope || tab !== "overview" ? null : { projectId: ALL_PROJECTS, range, filters: reportsQueryFilters(search.filters), projects: search.projects, compare: search.compare });
   const options = useReportOptions(api, projectId, range);
+  React.useEffect(() => {
+    const currentSearch = parseReportsSearch(rawSearch);
+    if (!orgScope || (rawSearch.project !== undefined && currentSearch.filters.models.length === 0 && currentSearch.filters.stages.length === 0)) return;
+    void navigate({
+      to: tab === "overview" ? "/reports" : "/reports/$tab",
+      params: tab === "overview" ? {} : { tab },
+      search: reportsSearchParams({ ...currentSearch, project: ALL_PROJECTS, filters: { ...currentSearch.filters, models: [], stages: [] } }),
+      replace: true,
+    } as never);
+  }, [navigate, orgScope, rawSearch, tab]);
   const go = (nextTab: ReportTab, nextSearch: ReportsSearch) => {
     void navigate({
       to: nextTab === "overview" ? "/reports" : "/reports/$tab",
@@ -97,17 +111,20 @@ export function ReportsRoute(): React.ReactElement {
   };
   return (
     <ReportsView
-      report={withPriorPeriod(reports.report)}
+      report={orgScope ? null : withPriorPeriod(reports.report)}
+      organizationReport={organization.report}
+      orgScope={orgScope}
       options={options}
-      pending={projectId !== null && reports.pending}
-      error={reports.error}
+      pending={orgScope ? tab === "overview" && organization.pending : projectId !== null && reports.pending}
+      refreshing={orgScope ? organization.refreshing : reports.refreshing}
+      error={orgScope ? tab === "overview" ? organization.error : null : reports.error}
       projects={sidebar?.projects ?? []}
       project={project ?? null}
       onProjectChange={sidebar?.onProjectChange}
       tab={tab}
       search={search}
       onNavigate={go}
-      onRefresh={() => void reports.refresh()}
+      onRefresh={() => void (orgScope ? organization.refresh() : reports.refresh())}
     />
   );
 }
@@ -138,8 +155,11 @@ export function windowLabel(report: ReportsReport): string {
 
 export function ReportsView({
   report,
+  organizationReport = null,
+  orgScope = false,
   options,
   pending,
+  refreshing,
   error,
   projects,
   project,
@@ -150,8 +170,11 @@ export function ReportsView({
   onRefresh,
 }: {
   readonly report: ReportsReport | null;
+  readonly organizationReport?: OrganizationReports | null;
+  readonly orgScope?: boolean;
   readonly options?: ReportsFacets | undefined;
   readonly pending: boolean;
+  readonly refreshing: boolean;
   readonly error: string | null;
   readonly projects: readonly BootstrapProject[];
   readonly project: BootstrapProject | null;
@@ -169,19 +192,30 @@ export function ReportsView({
   };
   const setCustom = (from: string, to: string) => setSearch({ range: CUSTOM_RANGE.value, from, to });
   const custom = search.range === CUSTOM_RANGE.value && search.from !== null && search.to !== null ? customRangeLabel(search.from, search.to) : null;
-  const allProjects = search.project === ALL_PROJECTS;
+  const allProjects = orgScope || search.project === ALL_PROJECTS;
   const projectName = allProjects ? "All projects" : (project?.name ?? "Choose a project");
   const rangeName = custom === null ? search.range : `${search.from}-${search.to}`;
-  const chips = REPORT_FILTERS.filter((filter) => TAB_FILTERS[tab].includes(filter.key) || search.filters[filter.key].length > 0).map((filter) => (
-    <ReportFilterChip
-      key={filter.key}
-      label={filter.label}
-      options={filterOptions(filter.key, options, search.filters[filter.key])}
-      selected={search.filters[filter.key]}
-      onChange={(values) => setSearch({ filters: { ...search.filters, [filter.key]: values } })}
-    />
-  ));
-  const setCount = Object.values(search.filters).filter((values) => values.length > 0).length;
+  const chips = [
+    ...(orgScope && tab === "overview" ? [
+      <ReportFilterChip
+        key="projects"
+        label="Project"
+        options={projects.map((item) => ({ value: item.id, label: item.name }))}
+        selected={search.projects}
+        onChange={(values) => setSearch({ projects: values })}
+      />,
+    ] : []),
+    ...REPORT_FILTERS.filter((filter) => TAB_FILTERS[tab].includes(filter.key) || search.filters[filter.key].length > 0).map((filter) => (
+      <ReportFilterChip
+        key={filter.key}
+        label={filter.label}
+        options={filterOptions(filter.key, options, search.filters[filter.key])}
+        selected={search.filters[filter.key]}
+        onChange={(values) => setSearch({ filters: { ...search.filters, [filter.key]: values } })}
+      />
+    )),
+  ];
+  const setCount = Object.values(search.filters).filter((values) => values.length > 0).length + (orgScope && search.projects.length > 0 ? 1 : 0);
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
       <WorkspacePageHeader className="h-auto min-h-(--workspace-topbar-height) border-border border-b">
@@ -201,7 +235,7 @@ export function ReportsView({
                       setSearch({ project: ALL_PROJECTS });
                       return;
                     }
-                    if (allProjects) setSearch({ project: null });
+                    setSearch({ project: value, projects: [] });
                     onProjectChange(value);
                   }}
                 >
@@ -254,14 +288,14 @@ export function ReportsView({
                 Export CSV
               </Button>
             ) : null}
-            <Button size="icon-sm" variant="ghost" aria-label="Refresh reports" disabled={pending} onClick={onRefresh}>
-              <RefreshIcon refreshing={pending} />
+            <Button size="icon-sm" variant="ghost" aria-label="Refresh reports" disabled={pending || refreshing} onClick={onRefresh}>
+              <RefreshIcon refreshing={pending || refreshing} />
             </Button>
           </div>
         </div>
       </WorkspacePageHeader>
       <Tabs value={tab} onValueChange={(value) => isReportTab(value) && onNavigate(value, search)} className="min-h-0 flex-1">
-        <div className="flex items-center gap-2 ps-(--workspace-gutter-start) pe-(--workspace-gutter-end) pt-3 sm:hidden">
+        <div className={`flex items-center gap-2 ps-(--workspace-gutter-start) pe-(--workspace-gutter-end) pt-3 sm:hidden ${orgScope && tab === "overview" ? "flex-wrap" : ""}`}>
           <Select value={search.range} onValueChange={setRange}>
             <SelectTrigger aria-label="Report range" className="w-auto min-w-0">
               <SelectValue>{custom ?? range.long}</SelectValue>
@@ -289,15 +323,16 @@ export function ReportsView({
               <div role="group" aria-label="Filters" className="flex flex-wrap items-center gap-2 pointer-coarse:gap-4">
                 {chips}
               </div>
-              {anyFilterSet(search.filters) ? (
-                <Button size="compact" variant="ghost" className="mt-2" onClick={() => setSearch({ filters: NO_FILTERS })}>
+              {anyFilterSet(search.filters) || search.projects.length > 0 ? (
+                <Button size="compact" variant="ghost" className="mt-2" onClick={() => setSearch({ filters: NO_FILTERS, projects: [] })}>
                   Clear filters
                 </Button>
               ) : null}
             </PopoverPopup>
           </Popover>
-          <Button size="icon" variant="ghost" aria-label="Refresh reports" disabled={pending} onClick={onRefresh} className="ml-auto">
-            <RefreshIcon refreshing={pending} />
+          {orgScope && tab === "overview" ? <Toggle size="sm" variant="outline" pressed={search.compare} onPressedChange={(pressed) => setSearch({ compare: pressed })}>vs {range.prior}</Toggle> : null}
+          <Button size="icon" variant="ghost" aria-label="Refresh reports" disabled={pending || refreshing} onClick={onRefresh} className="ml-auto">
+            <RefreshIcon refreshing={pending || refreshing} />
           </Button>
         </div>
         <TabsList aria-label="Report sections" className="ps-(--workspace-gutter-start) pe-(--workspace-gutter-end)">
@@ -352,6 +387,8 @@ export function ReportsView({
                 <p role="status" className="text-muted-foreground text-sm">
                   {error}
                 </p>
+              ) : orgScope && tab === "overview" && organizationReport ? (
+                <OrganizationOverview report={organizationReport} search={search} projects={projects} options={options} onSearch={setSearch} onProjectChange={onProjectChange} />
               ) : !report ? (
                 <p className="text-muted-foreground text-xs">Choose a project in the sidebar to view its reports.</p>
               ) : tab === "flow" ? (

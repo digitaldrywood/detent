@@ -4,8 +4,7 @@ import "testing"
 
 // TestPrepareTurnAppliesPreferences proves the conversation's turn
 // preferences reach the turn request: an explicit model and effort replace
-// the run's own selection and read-only access forbids writes (decisions
-// section 14).
+// the run's own selection and read-only access forbids writes.
 func TestPrepareTurnAppliesPreferences(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

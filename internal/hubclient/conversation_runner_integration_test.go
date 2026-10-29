@@ -20,6 +20,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -69,12 +70,12 @@ func TestConversationRunnerExecutesLiveTurns(t *testing.T) {
 				}
 			}
 
-			backend := &liveConversationBackend{started: make(chan struct{}, 2)}
+			backend := &liveConversationBackend{started: make(chan struct{}, 2), waitDone: testenv.WaitContext(t, t.Context()).Done()}
 			scheduler := hub.scheduler(t)
 			first := hub.startAttempt(t, scheduler, backend, issueID)
 			select {
 			case <-backend.started:
-			case <-time.After(30 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("worker did not start a provider turn")
 			}
 			var canonical runnerSnapshot
@@ -197,7 +198,7 @@ func TestConversationRunnerExecutesLiveTurns(t *testing.T) {
 
 	t.Run("completion before steering handoff", func(t *testing.T) {
 		hub := newConversationRunnerHub(t)
-		ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+		ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 		defer cancel()
 		running, completed, acknowledged := make(chan struct{}), make(chan struct{}), make(chan struct{})
 		handed := make(chan ConversationControlsPage, 1)
@@ -569,17 +570,15 @@ func (s runnerSnapshot) assistantText() string {
 // await polls the snapshot until want is satisfied.
 func (h *conversationRunnerHub) await(t *testing.T, id, reason string, want func(runnerSnapshot) bool) runnerSnapshot {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
 	var last runnerSnapshot
-	for time.Now().Before(deadline) {
+	testenv.WaitUntil(t, t.Context(), func() error {
 		last = runnerSnapshot{}
 		h.expect(t, http.MethodGet, "/conversations/"+id, nil, http.StatusOK, &last)
 		if want(last) {
-			return last
+			return nil
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("snapshot never satisfied %s: execution %q, %d messages, assistant %q", reason, last.Conversation.Execution.Status, len(last.Messages), last.assistantText())
+		return fmt.Errorf("snapshot never satisfied %s: execution %q, %d messages, assistant %q", reason, last.Conversation.Execution.Status, len(last.Messages), last.assistantText())
+	})
 	return last
 }
 
@@ -646,7 +645,7 @@ func awaitRunnerAttempt(t *testing.T, done <-chan runnerAttemptOutcome) runnerAt
 	select {
 	case outcome := <-done:
 		return outcome
-	case <-time.After(60 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("attempt did not finish")
 	}
 	return runnerAttemptOutcome{}
@@ -685,15 +684,15 @@ func (w *conversationStubWorkspace) RecoveryState(context.Context, workspace.Inf
 // streams until it is interrupted.
 type liveConversationBackend struct {
 	started  chan struct{}
+	waitDone <-chan struct{}
 	mu       sync.Mutex
 	requests []runner.AgentTurnRequest
 	consumed []runner.AgentControlKind
 }
 
 const (
-	liveThreadID    = "thread-live-1"
-	liveControlWait = 30 * time.Second
-	liveQuestion    = `[{"id":"approach","header":"Approach","question":"Which approach should I take?","options":[{"label":"Incremental","description":"Small steps"},{"label":"Rewrite","description":"Start over"}]}]`
+	liveThreadID = "thread-live-1"
+	liveQuestion = `[{"id":"approach","header":"Approach","question":"Which approach should I take?","options":[{"label":"Incremental","description":"Small steps"},{"label":"Rewrite","description":"Start over"}]}]`
 )
 
 func (*liveConversationBackend) SupportsLiveControl() bool { return true }
@@ -780,7 +779,6 @@ func streamLiveDeltas(onUpdate runner.AgentUpdateHandler, thread, turn, item str
 // real transport does immediately before writing to the provider, and settles
 // its reply. A control of another kind is consumed and recorded too.
 func (b *liveConversationBackend) consume(ctx context.Context, request runner.AgentTurnRequest, kind runner.AgentControlKind) (runner.AgentControl, error) {
-	deadline := time.After(liveControlWait)
 	for {
 		select {
 		case command, ok := <-request.ConversationControl.Commands:
@@ -813,8 +811,8 @@ func (b *liveConversationBackend) consume(ctx context.Context, request runner.Ag
 			}
 		case <-ctx.Done():
 			return runner.AgentControl{}, ctx.Err()
-		case <-deadline:
-			return runner.AgentControl{}, fmt.Errorf("no %s control arrived within %s", kind, liveControlWait)
+		case <-b.waitDone:
+			return runner.AgentControl{}, fmt.Errorf("no %s control arrived before the test deadline", kind)
 		}
 	}
 }

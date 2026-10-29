@@ -33,10 +33,6 @@ func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
 	state.Claimed[unrelated.ID] = Claimed{Issue: unrelated}
 	state.Retry[moved.ID] = Retry{Issue: moved}
 	state.Retry[unrelated.ID] = Retry{Issue: unrelated}
-	state.InstantFailures[moved.ID] = InstantFailure{Issue: moved, Count: 2}
-	state.InstantFailures[unrelated.ID] = InstantFailure{Issue: unrelated, Count: 1}
-	state.RepeatedFailures[moved.ID] = RepeatedFailure{Issue: moved, Count: 2}
-	state.RepeatedFailures[unrelated.ID] = RepeatedFailure{Issue: unrelated, Count: 1}
 	state.WorkAttempts = []telemetry.WorkAttempt{
 		{
 			AttemptID:          4,
@@ -44,7 +40,7 @@ func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
 			Identifier:         moved.Identifier,
 			Status:             string(store.WorkAttemptStatusTerminal),
 			CompletedAt:        timePointer(at.Add(-time.Minute)),
-			WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{implementProgressMetadataKey: implementProgressRecord{Outcome: "no_progress", Reason: dispatchLoopDetectedReason, TrackerState: "Rework", ConsecutiveNoProgress: 4, NoProgressLimit: 3}}),
+			WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{implementProgressMetadataKey: implementProgressRecord{Outcome: "no_progress", Reason: "dispatch_loop_detected", TrackerState: "Rework"}}),
 		},
 		{
 			AttemptID:          2,
@@ -52,7 +48,7 @@ func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
 			Identifier:         unrelated.Identifier,
 			Status:             string(store.WorkAttemptStatusTerminal),
 			CompletedAt:        timePointer(at.Add(-2 * time.Minute)),
-			WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{implementProgressMetadataKey: implementProgressRecord{Outcome: "no_progress", Reason: dispatchLoopDetectedReason, TrackerState: "Blocked", ConsecutiveNoProgress: 2, NoProgressLimit: 3}}),
+			WorkerMetadataJSON: marshalWorkAttemptJSON(map[string]any{implementProgressMetadataKey: implementProgressRecord{Outcome: "no_progress", Reason: "dispatch_loop_detected", TrackerState: "Blocked"}}),
 		},
 	}
 	state.FailureBreaker.Failures[class] = []ProjectFailure{
@@ -80,7 +76,6 @@ func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
 		ClaimCleared:         true,
 		RetryCleared:         true,
 		FailureMemoryCleared: true,
-		DispatchLoopCleared:  true,
 	}) {
 		t.Fatalf("handleOperatorMove() = %#v", result)
 	}
@@ -96,12 +91,6 @@ func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
 	if _, ok := state.Retry[moved.ID]; ok {
 		t.Fatalf("Retry[%q] remains", moved.ID)
 	}
-	if _, ok := state.InstantFailures[moved.ID]; ok {
-		t.Fatalf("InstantFailures[%q] remains", moved.ID)
-	}
-	if _, ok := state.RepeatedFailures[moved.ID]; ok {
-		t.Fatalf("RepeatedFailures[%q] remains", moved.ID)
-	}
 	if _, ok := state.Blocked[unrelated.ID]; !ok {
 		t.Fatalf("Blocked[%q] missing", unrelated.ID)
 	}
@@ -110,12 +99,6 @@ func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
 	}
 	if _, ok := state.Retry[unrelated.ID]; !ok {
 		t.Fatalf("Retry[%q] missing", unrelated.ID)
-	}
-	if _, ok := state.InstantFailures[unrelated.ID]; !ok {
-		t.Fatalf("InstantFailures[%q] missing", unrelated.ID)
-	}
-	if _, ok := state.RepeatedFailures[unrelated.ID]; !ok {
-		t.Fatalf("RepeatedFailures[%q] missing", unrelated.ID)
 	}
 	if state.FailureBreaker.Active() {
 		t.Fatalf("FailureBreaker = %#v, want inactive after moved issue signal cleared", state.FailureBreaker)
@@ -131,11 +114,8 @@ func TestHandleOperatorMoveClearsOnlyMovedIssueRuntimeMemory(t *testing.T) {
 	if len(state.RecentEvents) != 1 || state.RecentEvents[0].Event != "operator_kanban_move_reconciled" {
 		t.Fatalf("RecentEvents = %#v, want operator move audit event", state.RecentEvents)
 	}
-	if loops := snapshot.DispatchLoops; len(loops) != 1 || loops[0].IssueID != unrelated.ID {
-		t.Fatalf("DispatchLoops = %#v, want only unrelated issue", loops)
-	}
 	progress := snapshot.BoardIssues[0].CompletionProgress
-	if progress.Outcome != "no_progress" || progress.Reason != dispatchLoopDetectedReason || progress.ConsecutiveNoProgress != 0 || progress.NoProgressLimit != 3 {
+	if progress.Outcome != "no_progress" || progress.Reason != "dispatch_loop_detected" {
 		t.Fatalf("moved issue CompletionProgress = %#v, want preserved result with reset counter", progress)
 	}
 	if got := len(snapshot.WorkAttempts); got != 2 {

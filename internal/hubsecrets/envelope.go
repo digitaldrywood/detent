@@ -2,13 +2,18 @@
 package hubsecrets
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"slices"
 	"strconv"
+	"strings"
 )
 
 var ErrUnavailable = errors.New("hub secret master key version is unavailable")
@@ -34,21 +39,49 @@ func FromEnvironment(lookup func(string) string) (*Keyring, error) {
 	if err != nil || version < 1 {
 		return nil, errors.New("DETENT_HUB_SECRET_KEY_VERSION must be a positive integer")
 	}
-	var encoded map[string]string
-	if json.Unmarshal([]byte(raw), &encoded) != nil {
-		return nil, errors.New("DETENT_HUB_SECRET_KEYS must be a JSON object of versioned base64 keys")
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	invalid := errors.New("DETENT_HUB_SECRET_KEYS must be a JSON object of versioned base64 keys")
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return nil, invalid
 	}
 	k := &Keyring{keys: make(map[int][]byte), version: version}
-	for name, value := range encoded {
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, invalid
+		}
+		name, ok := token.(string)
+		if !ok {
+			return nil, invalid
+		}
 		v, err := strconv.Atoi(name)
 		if err != nil || v < 1 || strconv.Itoa(v) != name {
 			return nil, errors.New("hub secret key versions must be canonical positive integers")
+		}
+		if _, exists := k.keys[v]; exists {
+			return nil, fmt.Errorf("hub secret key version %d appears more than once", v)
+		}
+		var value string
+		if err := decoder.Decode(&value); err != nil {
+			return nil, invalid
 		}
 		key, err := base64.StdEncoding.DecodeString(value)
 		if err != nil || len(key) != 32 {
 			return nil, errors.New("hub secret master keys must be base64-encoded 32-byte values")
 		}
+		for _, existing := range k.keys {
+			if bytes.Equal(existing, key) {
+				return nil, errors.New("hub secret master keys must be distinct across versions")
+			}
+		}
 		k.keys[v] = key
+	}
+	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		return nil, invalid
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, invalid
 	}
 	if len(k.keys[version]) != 32 {
 		return nil, ErrUnavailable
@@ -61,6 +94,17 @@ func (k *Keyring) Version() int {
 		return 0
 	}
 	return k.version
+}
+
+func (k *Keyring) Versions() []int {
+	versions := []int{}
+	if k != nil {
+		for version := range k.keys {
+			versions = append(versions, version)
+		}
+	}
+	slices.Sort(versions)
+	return versions
 }
 
 // Envelope contains no plaintext. WrappedKey includes its own GCM nonce prefix.

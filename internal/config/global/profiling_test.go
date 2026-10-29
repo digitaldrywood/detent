@@ -31,7 +31,7 @@ func TestProfilingConfig(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
 			path := filepath.Join(root, "global.yaml")
-			raw := "apiVersion: detent/v1\nkind: GlobalConfig\nglobal: {max_concurrent_agents: 2, scheduling: weighted}\nprojects: []\n" + test.block
+			raw := "apiVersion: detent/v1\nkind: GlobalConfig\nglobal: {max_concurrent_agents: 2, scheduling: weighted}\n" + test.block
 			cfg, err := Parse([]byte(raw), path, WithHome(root))
 			if (err == nil) != test.valid {
 				t.Fatalf("Parse() = %v, valid = %v", err, test.valid)

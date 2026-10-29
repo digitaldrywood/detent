@@ -5,6 +5,10 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"log/slog"
+	"runtime"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,8 +20,11 @@ import (
 // connection, so slow requests can be attributed to their own writes or to
 // waiting behind someone else's.
 type writerTiming struct {
-	hold atomic.Int64
-	txs  atomic.Int64
+	route string
+	hold  atomic.Int64
+	txs   atomic.Int64
+	mu    sync.Mutex
+	spans []timingSpan
 }
 
 type writerTimingKey struct{}
@@ -42,20 +49,54 @@ func (t *writerTiming) add(start time.Time) {
 	t.txs.Add(1)
 }
 
+func heartbeatWriterSteps(ctx context.Context) func(string) {
+	timing := writerTimingFrom(ctx)
+	if timing == nil {
+		return func(string) {}
+	}
+	var name string
+	var start time.Time
+	return func(next string) {
+		now := time.Now()
+		if name != "" {
+			timing.mu.Lock()
+			timing.spans = append(timing.spans, timingSpan{name: name, duration: now.Sub(start)})
+			timing.mu.Unlock()
+		}
+		name, start = next, now
+	}
+}
+
+func (t *writerTiming) logAttrs() []any {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.spans) == 0 {
+		return nil
+	}
+	spans := make([]any, 0, len(t.spans))
+	for _, span := range t.spans {
+		spans = append(spans, slog.Float64(span.name, milliseconds(span.duration)))
+	}
+	return []any{slog.Group("heartbeat_writer_ms", spans...)}
+}
+
 // openTimedWriter opens the writer pool through a connector that records each
 // transaction's and auto-commit statement's hold time against the request
 // context that started it.
-func openTimedWriter(dsn string) (*sql.DB, error) {
-	return openTimedDB(dsn, true)
+func openTimedWriter(dsn string, logger *slog.Logger, committed ...chan struct{}) (*sql.DB, error) {
+	return openTimedDB(dsn, true, logger, committed...)
 }
 
 // openTimedReader opens a reader pool whose statements count toward the
 // request's db span but never toward writer hold time.
 func openTimedReader(dsn string) (*sql.DB, error) {
-	return openTimedDB(dsn, false)
+	return openTimedDB(dsn, false, nil)
 }
 
-func openTimedDB(dsn string, writer bool) (*sql.DB, error) {
+func openTimedDB(dsn string, writer bool, logger *slog.Logger, committed ...chan struct{}) (*sql.DB, error) {
+	if err := registerStorageConversionDigest(); err != nil {
+		return nil, err
+	}
 	probe, err := sql.Open("sqlite", "")
 	if err != nil {
 		return nil, err
@@ -64,13 +105,20 @@ func openTimedDB(dsn string, writer bool) (*sql.DB, error) {
 	if err := probe.Close(); err != nil {
 		return nil, err
 	}
-	return sql.OpenDB(timedConnector{dsn: dsn, driver: base, writer: writer}), nil
+	var wake chan struct{}
+	if len(committed) > 0 {
+		wake = committed[0]
+	}
+	return sql.OpenDB(timedConnector{dsn: dsn, driver: base, writer: writer, logger: logger, committed: wake}), nil
 }
 
 type timedConnector struct {
-	driver driver.Driver
-	dsn    string
-	writer bool
+	committed chan struct{}
+	driver    driver.Driver
+	dsn       string
+	writer    bool
+	logger    *slog.Logger
+	now       func() time.Time
 }
 
 func (c timedConnector) Connect(context.Context) (driver.Conn, error) {
@@ -78,37 +126,131 @@ func (c timedConnector) Connect(context.Context) (driver.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &timedConn{Conn: conn, writer: c.writer}, nil
+	now := c.now
+	if now == nil {
+		now = time.Now
+	}
+	logger := c.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &timedConn{Conn: conn, writer: c.writer, committed: c.committed, logger: logger, now: now}, nil
 }
 
 func (c timedConnector) Driver() driver.Driver { return c.driver }
 
 type timedConn struct {
+	committed chan struct{}
 	driver.Conn
 	inTx   bool
 	writer bool
+	logger *slog.Logger
+	now    func() time.Time
 }
 
 type timedTx struct {
 	driver.Tx
-	conn   *timedConn
-	timing *writerTiming
-	start  time.Time
+	conn    *timedConn
+	timing  *writerTiming
+	request *requestTiming
+	start   time.Time
+	holder  writerHold
+}
+
+type writerHold struct {
+	start time.Time
+	pcs   [32]uintptr
+	n     int
+	route string
+}
+
+type writerHoldOwner string
+
+func (o writerHoldOwner) LogValue() slog.Value {
+	return slog.StringValue(string(o))
+}
+
+func (c *timedConn) startWriterHold(ctx context.Context) writerHold {
+	if !c.writer || c.inTx {
+		return writerHold{}
+	}
+	hold := writerHold{start: c.now()}
+	hold.n = runtime.Callers(2, hold.pcs[:])
+	if timing := writerTimingFrom(ctx); timing != nil {
+		hold.route = timing.route
+	}
+	return hold
+}
+
+func (c *timedConn) endWriterHold(hold *writerHold) {
+	n := hold.n
+	hold.n = 0
+	if n == 0 {
+		return
+	}
+	elapsed := c.now().Sub(hold.start)
+	if elapsed < time.Second {
+		return
+	}
+	owner := "unknown"
+	frames := runtime.CallersFrames(hold.pcs[:n])
+	for {
+		frame, more := frames.Next()
+		if writerHoldOwnerFrame(frame) {
+			owner = frame.Function
+			break
+		}
+		if !more {
+			break
+		}
+	}
+	attrs := []any{"owner", writerHoldOwner(owner), "hold_ms", elapsed.Milliseconds(), "txs", 1}
+	if hold.route != "" {
+		attrs = append(attrs, "route", hold.route)
+	}
+	c.logger.Warn("hub writer held", attrs...)
+}
+
+func writerHoldOwnerFrame(frame runtime.Frame) bool {
+	if strings.HasSuffix(frame.File, "/writer_timing.go") || strings.HasPrefix(frame.Function, "database/sql.") {
+		return false
+	}
+	switch strings.TrimPrefix(frame.Function, "github.com/digitaldrywood/detent/internal/hubserver.") {
+	case "(*Service).runnerTransaction", "(*Service).runnerAdminTransaction", "(*Service).runnerReadTransaction",
+		"(*Service).hubTransact", "(*conversationService).transact", "(*conversationTurnCoordinator).write",
+		"(*Service).executeNativeMutation", "(*Service).nativeMutation", "(*Service).nativeMutationStatus",
+		"(*Service).commitOutbox", "(*Service).secretMutation":
+		return false
+	}
+	return true
 }
 
 func (t *timedTx) Commit() error {
 	defer t.end()
-	return t.Tx.Commit()
+	start := time.Now()
+	defer t.request.addDB(start)
+	defer t.request.span("tx_commit", start)
+	err := t.Tx.Commit()
+	if err == nil {
+		t.conn.notifyCommit()
+	}
+	return err
 }
 
 func (t *timedTx) Rollback() error {
 	defer t.end()
+	start := time.Now()
+	defer t.request.addDB(start)
 	return t.Tx.Rollback()
 }
 
 func (t *timedTx) end() {
+	if t.conn.writer && t.request != nil && t.request.writerTransaction != nil {
+		t.request.writerTransaction(false)
+	}
 	t.conn.inTx = false
 	t.timing.add(t.start)
+	t.conn.endWriterHold(&t.holder)
 }
 
 func (c *timedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
@@ -117,16 +259,21 @@ func (c *timedConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.
 	if !ok {
 		return nil, errors.New("sqlite driver does not support contextual transactions")
 	}
+	holder := c.startWriterHold(ctx)
 	tx, err := beginner.BeginTx(ctx, opts)
+	requestTimingFrom(ctx).addDB(start)
 	if err != nil {
 		return nil, err
 	}
 	c.inTx = true
+	if request := requestTimingFrom(ctx); c.writer && request != nil && request.writerTransaction != nil {
+		request.writerTransaction(true)
+	}
 	var timing *writerTiming
 	if c.writer {
 		timing = writerTimingFrom(ctx)
 	}
-	return &timedTx{Tx: tx, conn: c, timing: timing, start: start}, nil
+	return &timedTx{Tx: tx, conn: c, timing: timing, request: requestTimingFrom(ctx), start: start, holder: holder}, nil
 }
 
 func (c *timedConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
@@ -142,11 +289,20 @@ func (c *timedConn) ExecContext(ctx context.Context, query string, args []driver
 		return nil, driver.ErrSkip
 	}
 	start := time.Now()
+	holder := c.startWriterHold(ctx)
 	result, err := execer.ExecContext(ctx, query, args)
-	requestTimingFrom(ctx).statement(start, query, args)
+	timing := requestTimingFrom(ctx)
+	timing.statement(start, query, args)
+	if c.writer && c.inTx && timing != nil && timing.writerTrace != nil {
+		timing.writerTrace(query, args)
+	}
 	if c.writer && !c.inTx {
 		writerTimingFrom(ctx).add(start)
+		if err == nil {
+			c.notifyCommit()
+		}
 	}
+	c.endWriterHold(&holder)
 	return result, err
 }
 
@@ -157,12 +313,27 @@ func (c *timedConn) QueryContext(ctx context.Context, query string, args []drive
 	}
 	timing := requestTimingFrom(ctx)
 	start := time.Now()
+	holder := c.startWriterHold(ctx)
 	rows, err := queryer.QueryContext(ctx, query, args)
 	timing.statement(start, query, args)
-	if err != nil || timing == nil {
+	if c.writer && c.inTx && timing != nil && timing.writerTrace != nil {
+		timing.writerTrace(query, args)
+	}
+	if err != nil {
+		if holder.n != 0 {
+			writerTimingFrom(ctx).add(start)
+			c.endWriterHold(&holder)
+		}
 		return rows, err
 	}
-	return &timedRows{Rows: rows, timing: timing}, nil
+	var committed func()
+	if c.writer && !c.inTx && c.committed != nil {
+		committed = c.notifyCommit
+	}
+	if timing == nil && holder.n == 0 && committed == nil {
+		return rows, nil
+	}
+	return &timedRows{Rows: rows, timing: timing, committed: committed, writer: c, holder: holder, writerTiming: writerTimingFrom(ctx), writerStart: start}, nil
 }
 
 func (c *timedConn) Ping(ctx context.Context) error {
@@ -218,13 +389,17 @@ func (s *Service) timeWriterUse(next echo.HandlerFunc) echo.HandlerFunc {
 			ctx = withRequestTiming(ctx, request)
 		}
 		ctx, timing := withWriterTiming(ctx)
+		timing.route = c.Path()
 		c.SetRequest(c.Request().WithContext(ctx))
 		err := next(c)
 		elapsed := time.Since(start)
 		hold := time.Duration(timing.hold.Load())
 		if elapsed >= slowRequest || hold >= slowRequest/5 {
-			s.config.Logger.Info("hub request timing", append([]any{"method", c.Request().Method, "route", c.Path(), "status", c.Response().Status,
-				"duration_ms", elapsed.Milliseconds(), "writer_hold_ms", hold.Milliseconds(), "writer_txs", timing.txs.Load()}, request.logAttrs()...)...)
+			attrs := []any{"method", c.Request().Method, "route", c.Path(), "status", c.Response().Status,
+				"duration_ms", elapsed.Milliseconds(), "writer_hold_ms", hold.Milliseconds(), "writer_txs", timing.txs.Load()}
+			attrs = append(attrs, request.logAttrs()...)
+			attrs = append(attrs, timing.logAttrs()...)
+			s.config.Logger.Info("hub request timing", attrs...)
 		}
 		s.logWriterWaits()
 		return err
@@ -246,4 +421,13 @@ func (s *Service) logWriterWaits() {
 	}
 	s.config.Logger.Info("hub writer waits", "waits", waits, "wait_ms", waited.Milliseconds(), "in_use", stats.InUse, "interval_s", (now-last)/int64(time.Second),
 		"reader_waits", readerWaits, "reader_wait_ms", readerWaited.Milliseconds(), "reader_in_use", reader.InUse, "reader_max", reader.MaxOpenConnections)
+}
+
+func (c *timedConn) notifyCommit() {
+	if c.writer && c.committed != nil {
+		select {
+		case c.committed <- struct{}{}:
+		default:
+		}
+	}
 }

@@ -1,16 +1,22 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -25,12 +31,12 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 		removed          int64
 		extraActivity    int
 	}{
-		{name: "archived", archived: true, removed: 19},
+		{name: "archived", archived: true, removed: 0},
 		{name: "open"},
 		{name: "archived with live lease", archived: true, leased: true},
-		{name: "closed for three days", closedAgo: 73 * time.Hour, removed: 19},
+		{name: "closed for three days", closedAgo: 73 * time.Hour, removed: 0},
 		{name: "closed recently", closedAgo: time.Hour},
-		{name: "closed activity spans span batches", closedAgo: 73 * time.Hour, removed: 19, extraActivity: 500},
+		{name: "unpublished closed activity stays hot", closedAgo: 73 * time.Hour, removed: 0, extraActivity: 500},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -62,7 +68,12 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 					copies += test.extraActivity
 					data.Run = &tracker.NativeRunData{AttemptID: "attempt_first", Runtime: &tracker.NativeRuntimeObservation{Activity: &workflowmetrics.ActivityProfile{Schema: 1, Spans: []workflowmetrics.ActivitySpan{{ID: "span", Kind: "tool", Evidence: strings.Repeat("x", 4096)}}}}}
 				}
-				for range copies {
+				for duplicate := range copies {
+					if duplicate > 0 {
+						run := *data.Run
+						run.AttemptID = fmt.Sprintf("attempt_checkpoint_%d", duplicate)
+						data.Run = &run
+					}
 					if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), kind, data, now); err != nil {
 						t.Fatal(err)
 					}
@@ -98,11 +109,15 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 			if before.NextCursor == "" {
 				t.Fatal("missing initial cursor")
 			}
+			beforeSchema := storageSchemaVersion(t, f.service.database.reader)
 			if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
 				t.Fatal(err)
 			}
+			if after := storageSchemaVersion(t, f.service.database.reader); after != beforeSchema {
+				t.Fatalf("event maintenance changed schema: %d -> %d", beforeSchema, after)
+			}
 			if test.extraActivity > 0 {
-				for _, want := range []struct{ compacted, remaining int64 }{{481, 20}, {501, 0}, {501, 0}} {
+				for _, want := range []struct{ compacted, remaining int64 }{{0, 501}} {
 					summary, err := readEventCompaction(t.Context(), f.service.database.db, scope.organization, scope.project, "work_item", string(issue.WorkItemID))
 					if err != nil {
 						t.Fatal(err)
@@ -111,7 +126,7 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 					if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT count(*),coalesce(sum(json_type(data_json,'$.run.runtime.activity.spans') IS NOT NULL),0) FROM collaboration_events WHERE work_item_id=? AND type='run.checkpointed'`, issue.WorkItemID).Scan(&checkpoints, &remaining); err != nil {
 						t.Fatal(err)
 					}
-					if summary.RemovedEvents != 19 || summary.CompactedActivityEvents != want.compacted || remaining != want.remaining || checkpoints != 501 {
+					if summary.RemovedEvents != 0 || summary.CompactedActivityEvents != want.compacted || remaining != want.remaining || checkpoints != 501 {
 						t.Fatalf("compaction=%+v remaining=%d checkpoints=%d want=%+v", summary, remaining, checkpoints, want)
 					}
 					if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
@@ -204,18 +219,20 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 func TestEventCompactionConversations(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name    string
-		settled bool
-		age     int
-		status  conversation.ExecutionStatus
-		compact bool
+		name      string
+		settled   bool
+		age       int
+		status    conversation.ExecutionStatus
+		compact   bool
+		streaming bool
 	}{
-		{"settled past retention", true, 31, conversation.ExecutionCompleted, true},
-		{"active", false, 31, conversation.ExecutionCompleted, false},
-		{"recently settled", true, 29, conversation.ExecutionCompleted, false},
-		{"retention boundary", true, 30, conversation.ExecutionCompleted, false},
-		{"running", true, 31, conversation.ExecutionRunning, false},
-		{"unknown execution", true, 31, conversation.ExecutionUnknown, false},
+		{"settled past retention", true, 31, conversation.ExecutionCompleted, true, false},
+		{"active", false, 31, conversation.ExecutionCompleted, false, false},
+		{"recently settled", true, 29, conversation.ExecutionCompleted, false, false},
+		{"retention boundary", true, 30, conversation.ExecutionCompleted, false, false},
+		{"running", true, 31, conversation.ExecutionRunning, false, false},
+		{"unknown execution", true, 31, conversation.ExecutionUnknown, false, false},
+		{"still streaming", false, 0, conversation.ExecutionRunning, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -231,6 +248,9 @@ func TestEventCompactionConversations(t *testing.T) {
 			record = f.create(t, record)
 			tx := f.tx(t)
 			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "Final answer retained", Delivery: conversation.DeliveryCompleted, CreatedAt: at, UpdatedAt: at, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "test"}}
+			if test.streaming {
+				message.Delivery = conversation.DeliveryResponding
+			}
 			if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
 				t.Fatal(err)
 			}
@@ -266,8 +286,11 @@ func TestEventCompactionConversations(t *testing.T) {
 					t.Fatal(err)
 				}
 				want := 620
-				if test.compact {
-					want = 13
+				if !test.streaming {
+					want = 20
+					if test.compact {
+						want = 13
+					}
 					if pass == 0 {
 						want = 120
 					}
@@ -301,11 +324,14 @@ func TestEventCompactionConversations(t *testing.T) {
 			if test.compact && (summary.RemovedEvents != 607 || summary.RetainedEvents != 13) {
 				t.Fatalf("summary=%+v", summary)
 			}
-			if !test.compact && summary.RemovedEvents != 0 {
+			if !test.compact && !test.streaming && (summary.RemovedEvents != 600 || summary.RetainedEvents != 20) {
+				t.Fatalf("settled delta compaction=%+v", summary)
+			}
+			if test.streaming && summary.RemovedEvents != 0 {
 				t.Fatalf("protected conversation compacted: %+v", summary)
 			}
 			_, err = f.store.replayEvents(t.Context(), f.service.database.reader, record.ID, 0)
-			if test.compact != errors.Is(err, errConversationCursorExpired) {
+			if !test.streaming != errors.Is(err, errConversationCursorExpired) {
 				t.Fatalf("stale replay: %v", err)
 			}
 			events, err := f.store.replayEvents(t.Context(), f.service.database.reader, record.ID, 612)
@@ -326,37 +352,336 @@ func TestEventCompactionConversations(t *testing.T) {
 
 func TestEventCompactionRollback(t *testing.T) {
 	t.Parallel()
-	f := newDefaultNativeFixture(t, Config{})
-	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-	issue := f.create(t, "rollback compaction")
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	a := newTerminalAttemptFixture(t)
+	a.snapshots(t, 2)
+	a.finish(t)
+	a.advance(2 * time.Hour)
+	if _, err := a.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER fail_compaction BEFORE INSERT ON event_compactions BEGIN SELECT RAISE(ABORT,'injected failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err == nil || !strings.Contains(err.Error(), "injected failure") {
+		t.Fatalf("expected failure: %v", err)
+	}
+	counts := a.runEvents(t)
+	if counts["run.started"] != 1 || counts["run.checkpointed"] != 2 || counts["run.observed"] != 2 || counts["run.finished"] != 1 {
+		t.Fatalf("rollback lost run events: %v", counts)
+	}
+	var spans int
+	if err := a.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND json_type(data_json,'$.run.runtime.activity.spans')='array'`, a.issue.WorkItemID).Scan(&spans); err != nil {
+		t.Fatal(err)
+	}
+	if spans != 6 {
+		t.Fatalf("rollback lost activity payloads: %d", spans)
+	}
+	if _, err := a.service.database.db.ExecContext(t.Context(), "DELETE FROM collaboration_events WHERE work_item_id=?", a.issue.WorkItemID); err == nil {
+		t.Fatal("rollback lost deletion protection")
+	}
+}
+
+type terminalAttemptFixture struct {
+	nativeFixture
+	clock   *atomic.Int64
+	issue   tracker.NativeIssue
+	worker  string
+	lease   tracker.NativeLease
+	start   tracker.NativeRunEvent
+	path    string
+	scope   nativeScope
+	posted  int64
+	runtime func(string) *tracker.NativeRuntimeObservation
+}
+
+func newTerminalAttemptFixture(t *testing.T) *terminalAttemptFixture {
+	t.Helper()
+	clock := &atomic.Int64{}
+	clock.Store(time.Now().UTC().Truncate(time.Second).UnixNano())
+	now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+	f := newDefaultNativeFixture(t, Config{now: now})
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	a := &terminalAttemptFixture{nativeFixture: f, clock: clock, issue: f.create(t, "terminal history"), worker: f.worker(t, "worker")}
+	a.scope = nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	a.path = f.base + "/work-items/" + string(a.issue.WorkItemID) + "/events"
+	a.lease = claimNativeAttempt(t, f, a.worker, "machine", "session", a.issue.WorkItemID)
+	a.runtime = func(phase string) *tracker.NativeRuntimeObservation {
+		at := now()
+		activity := &workflowmetrics.ActivityProfile{Schema: 1, AttemptID: 7, Generation: 1, SessionID: 1, Stage: "implementation", Status: "running", Coverage: "partial", StartedAt: at, AsOf: at,
+			Spans: []workflowmetrics.ActivitySpan{{ID: "edit", Kind: "implementation", Evidence: "edit_tool", Outcome: "running", StartedAt: at}}}
+		return &tracker.NativeRuntimeObservation{LocalAttemptID: 7, Generation: 1, Phase: phase, HeartbeatAt: at, Phases: []tracker.NativePhase{{Name: phase, StartedAt: at}}, Activity: activity}
+	}
+	a.start = nativeStartedEvent(a.lease)
+	a.start.Data.Runtime = a.runtime("implementation")
+	a.post(t, a.start)
+	return a
+}
+
+func (a *terminalAttemptFixture) advance(d time.Duration) {
+	a.clock.Add(int64(d))
+}
+
+func (a *terminalAttemptFixture) post(t *testing.T, event tracker.NativeRunEvent) {
+	t.Helper()
+	a.posted++
+	event.Data.Sequence = a.posted
+	event.IdempotencyKey = fmt.Sprintf("%s-%d", event.Type, a.posted)
+	requireNativeStatus(t, performHubAPIRequest(t, a.service, http.MethodPost, a.path, a.worker, event), http.StatusOK)
+}
+
+func (a *terminalAttemptFixture) snapshots(t *testing.T, count int) {
+	t.Helper()
+	for index := range count {
+		a.advance(time.Second)
+		checkpoint := a.start
+		checkpoint.Type = "run.checkpointed"
+		checkpoint.Data.Handoff = nativeTestCheckpoint()
+		checkpoint.Data.Runtime = a.runtime("implementation")
+		checkpoint.Data.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "test-model", Input: int64(10 * (index + 1)), Output: int64(index + 1), Currency: "USD"}}
+		a.post(t, checkpoint)
+		observed := a.start
+		observed.Type = "run.observed"
+		observed.Data.Runtime = a.runtime([]string{"validation", "implementation"}[index%2])
+		a.post(t, observed)
+	}
+}
+
+func (a *terminalAttemptFixture) finish(t *testing.T) {
+	t.Helper()
+	a.advance(time.Second)
+	finish := a.start
+	finish.Type, finish.Data.Outcome = "run.finished", "succeeded"
+	finish.Data.CompletionBody = "Completed attempt details"
+	finish.Data.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "test-model", Input: 500, Output: 50, Currency: "USD"}}
+	finish.Data.Disposition = &tracker.NativeDisposition{Status: "complete"}
+	finish.Data.Runtime = a.runtime("completed")
+	finish.Data.Runtime.Validation = &gate.CommandResult{Command: "focused test", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), DurationNS: 1, Output: "ok"}
+	finish.Data.Runtime.Landing = &tracker.NativeLandingReceipt{Waiting: true, HeadSHA: strings.Repeat("a", 40)}
+	a.post(t, finish)
+	requireNativeStatus(t, performHubAPIRequest(t, a.service, http.MethodPost, a.base+"/leases/"+string(a.lease.ID)+"/release", a.worker, tracker.NativeLeaseMutation{FencingToken: a.lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
+}
+
+func (a *terminalAttemptFixture) runEvents(t *testing.T) map[string]int {
+	t.Helper()
+	rows, err := a.service.database.db.QueryContext(t.Context(), `SELECT type,count(*) FROM collaboration_events WHERE work_item_id=? AND type LIKE 'run.%' GROUP BY type`, a.issue.WorkItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var kind string
+		var count int
+		if err := rows.Scan(&kind, &count); err != nil {
+			t.Fatal(err)
+		}
+		counts[kind] = count
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return counts
+}
+
+func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
+	t.Parallel()
+	a := newTerminalAttemptFixture(t)
+	runtime := a.runtime
+	a.runtime = func(phase string) *tracker.NativeRuntimeObservation {
+		r := runtime(phase)
+		r.Validation = &gate.CommandResult{Command: "focused test", HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), DurationNS: 1, Output: strings.Repeat("historical output\n", 2048)}
+		return r
+	}
+	a.snapshots(t, 12)
+	if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
+		t.Fatal(err)
+	}
+	if counts := a.runEvents(t); counts["run.checkpointed"] != 12 || counts["run.observed"] != 12 {
+		t.Fatalf("running attempt was compacted: %v", counts)
+	}
+	a.finish(t)
+	if _, err := a.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.completion_body',?) WHERE id=?", strings.Repeat("legacy attempt detail", 2048), a.start.Data.AttemptID); err != nil {
+		t.Fatal(err)
+	}
+	a.advance(2 * time.Hour)
+	if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
+		t.Fatal(err)
+	}
+	objects := &changeObjectFixture{}
+	a.service.config.content = objects.call
+	ctx := changeOperatorContext(t, a.service, a.token, string(a.project.OrganizationID))
+	executor := hostedOperatorExecutor{service: a.service}
+	reads := func() map[string]string {
+		t.Helper()
+		answers := map[string]string{}
+		for _, tool := range []string{operatortool.ExplainItem, operatortool.WorkRuns, operatortool.WorkAttemptReceipt, operatortool.BoardSessionHistory, operatortool.BoardSession, operatortool.WorkItem} {
+			args, err := json.Marshal(map[string]any{"project_id": a.project.ID, "reference": a.issue.WorkItemID, "native_attempt_id": a.start.Data.AttemptID})
+			if tool == operatortool.ExplainItem || tool == operatortool.WorkRuns || tool == operatortool.WorkItem || tool == operatortool.BoardSession {
+				args, err = json.Marshal(map[string]any{"project_id": a.project.ID, "reference": a.issue.WorkItemID})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := executor.Execute(ctx, operatortool.Call{Name: tool, Arguments: args})
+			if err != nil {
+				t.Fatalf("%s: %v", tool, err)
+			}
+			answers[tool] = string(result.Content)
+		}
+		return answers
+	}
+	before := reads()
+	for _, tool := range []string{operatortool.ExplainItem, operatortool.WorkRuns, operatortool.WorkAttemptReceipt, operatortool.BoardSessionHistory} {
+		if !strings.Contains(before[tool], a.start.Data.AttemptID) && !strings.Contains(before[tool], `"edit"`) {
+			t.Fatalf("%s lacks the terminal attempt: %s", tool, before[tool])
+		}
+	}
+	if !strings.Contains(before[operatortool.WorkAttemptReceipt], `"status":"succeeded"`) || !strings.Contains(before[operatortool.WorkAttemptReceipt], `"cost_estimate"`) && !strings.Contains(before[operatortool.WorkAttemptReceipt], `"usage"`) {
+		t.Fatalf("receipt lacks the terminal answer: %s", before[operatortool.WorkAttemptReceipt])
+	}
+	for range 2 {
+		for {
+			err := a.service.convertLegacyStorage(t.Context(), a.service.config.now())
+			if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatal(err)
+			}
+			progress, progressErr := readStorageConversionProgress(t.Context(), a.service.database.reader, a.scope)
+			if progressErr != nil {
+				t.Fatal(progressErr)
+			}
+			if err == nil && len(progress) > 0 && !slices.ContainsFunc(progress, func(p storageConversionProgress) bool { return !p.Complete }) {
+				break
+			}
+		}
+		if err := a.service.maintainNativeRetention(t.Context(), a.service.config.now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	progress, err := readStorageConversionProgress(t.Context(), a.service.database.reader, a.scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptsConverted := false
+	for _, p := range progress {
+		if p.Family == "attempts" && p.Aggregate == string(a.issue.WorkItemID) {
+			attemptsConverted = p.Complete && p.Rows == 1
+		}
+	}
+	if !attemptsConverted {
+		t.Fatalf("legacy attempt detail was not converted: %+v", progress)
+	}
+	counts := a.runEvents(t)
+	if counts["run.started"] != 1 || counts["run.checkpointed"] != 12 || counts["run.observed"] != 12 || counts["run.finished"] != 1 {
+		t.Fatalf("terminal attempt history=%v", counts)
+	}
+	summary, err := readEventCompaction(t.Context(), a.service.database.db, a.scope.organization, a.scope.project, "work_item", string(a.issue.WorkItemID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.RemovedEvents != 0 || summary.CompactedActivityEvents != 26 {
+		t.Fatalf("compaction receipt=%+v", summary)
+	}
+	after := reads()
+	for tool, answer := range before {
+		var previous, current map[string]any
+		if err := json.Unmarshal([]byte(answer), &previous); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(after[tool]), &current); err != nil {
+			t.Fatal(err)
+		}
+		normalizeTestDashboardWatermark(t, previous, current)
+		field := "data"
+		if tool == operatortool.ExplainItem {
+			field = "native_runtime"
+		}
+		previousData, previousOK := previous[field].(map[string]any)
+		currentData, currentOK := current[field].(map[string]any)
+		if !previousOK || !currentOK {
+			t.Fatalf("%s lacks response data", tool)
+		}
+		normalizeTestDashboardWatermark(t, previousData, currentData)
+		if !reflect.DeepEqual(previous, current) {
+			t.Fatalf("%s changed after compaction:\nbefore=%s\nafter=%s", tool, answer, after[tool])
+		}
+	}
+	if _, err := a.service.readHistory(t.Context(), a.scope, string(a.issue.WorkItemID), url.Values{"limit": {"200"}}); err != nil {
+		t.Fatal(err)
+	}
+	response := performHubAPIRequest(t, a.service, http.MethodGet, a.base+"/work-items/"+string(a.issue.WorkItemID)+"/history?limit=200", a.token, nil)
+	requireNativeStatus(t, response, http.StatusOK)
+	var history tracker.Page[tracker.CollaborationEvent]
+	decodeHubResponse(t, response, &history)
+	if history.Compaction != nil {
+		t.Fatalf("history does not disclose compaction: %+v", history.Compaction)
+	}
+}
+
+func TestEventCompactionPassIsBoundedAndYieldsToWrites(t *testing.T) {
+	t.Parallel()
+	a := newTerminalAttemptFixture(t)
+	a.snapshots(t, 1)
+	tx, err := a.service.database.db.BeginTx(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	issue.Archived = true
-	if _, err := persistNativeIssue(t.Context(), tx, scope, issue, "issue.edited", tracker.CollaborationData{Operation: "archive"}, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	for range 2 {
-		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{}, time.Now()); err != nil {
+	backlog := 2*eventCompactionBatch + 37
+	for range backlog {
+		if err := appendNativeHistory(t.Context(), tx, a.scope, string(a.issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: a.start.Data.AttemptID, Runtime: a.runtime("implementation")}}, a.service.config.now()); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), `CREATE TRIGGER fail_compaction BEFORE INSERT ON event_compactions BEGIN SELECT RAISE(ABORT,'injected failure'); END`); err != nil {
-		t.Fatal(err)
+	a.finish(t)
+	a.advance(2 * time.Hour)
+	writes := make(chan error, 1)
+	stop := make(chan struct{})
+	var written atomic.Int64
+	go func() {
+		for index := 0; ; index++ {
+			select {
+			case <-stop:
+				writes <- nil
+				return
+			default:
+			}
+			body := tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("comment-%d", index)}, Body: "written during retention"}
+			response := performHubAPIRequest(t, a.service, http.MethodPost, a.base+"/work-items/"+string(a.issue.WorkItemID)+"/comments", a.token, body)
+			if response.Code != http.StatusOK {
+				writes <- fmt.Errorf("comment write status %d: %s", response.Code, response.Body.String())
+				return
+			}
+			written.Add(1)
+		}
+	}()
+	stopWriter := sync.OnceFunc(func() {
+		close(stop)
+		if err := <-writes; err != nil {
+			t.Error(err)
+		}
+	})
+	t.Cleanup(stopWriter)
+	var removed []int64
+	previous := int64(0)
+	for range 4 {
+		if err := a.service.compactRetainedEvents(t.Context(), a.service.config.now()); err != nil {
+			t.Fatal(err)
+		}
+		summary, err := readEventCompaction(t.Context(), a.service.database.db, a.scope.organization, a.scope.project, "work_item", string(a.issue.WorkItemID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		removed = append(removed, summary.CompactedActivityEvents-previous)
+		previous = summary.CompactedActivityEvents
 	}
-	if err := f.service.maintainNativeRetention(t.Context(), time.Now()); err == nil || !strings.Contains(err.Error(), "injected failure") {
-		t.Fatalf("expected failure: %v", err)
+	stopWriter()
+	if written.Load() == 0 {
+		t.Fatal("no request write completed while retention passes ran")
 	}
-	var count int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=?", issue.WorkItemID).Scan(&count); err != nil || count != 4 {
-		t.Fatalf("rollback events=%d err=%v", count, err)
+	if want := []int64{eventCompactionBatch, eventCompactionBatch, int64(backlog) + 4 - 2*eventCompactionBatch, 0}; !slices.Equal(removed, want) {
+		t.Fatalf("removed per pass=%v want %v", removed, want)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM collaboration_events WHERE work_item_id=?", issue.WorkItemID); err == nil {
-		t.Fatal("rollback lost deletion protection")
+	if counts := a.runEvents(t); counts["run.observed"] != backlog+1 || counts["run.checkpointed"] != 1 {
+		t.Fatalf("history after backfill=%v", counts)
 	}
 }

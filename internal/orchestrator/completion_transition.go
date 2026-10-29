@@ -2,11 +2,13 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
@@ -80,8 +82,8 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReviewWithHydratedValida
 			if !hydrated {
 				result.transitioned[issueID] = struct{}{}
 				if completed.successfulAttemptPersisted {
-					if _, claimed := state.Claimed[issueID]; claimed {
-						o.releaseCompletedAttemptClaim(ctx, state, issue)
+					if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(completed.Attempt), now, "review thread evidence unavailable", ""); err != nil && o.logger != nil {
+						o.logger.Warn("review thread retry failed", "issue_id", issueID, "error", err)
 					}
 				}
 				continue
@@ -126,6 +128,9 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReviewWithHydratedValida
 			}
 			o.finishCompletedActiveReviewTransition(ctx, state, issue, completed, promoted.State)
 			o.recordAutoPromoteReworkHandoff(state, issue, summary, decision, promoted.State)
+			continue
+		}
+		if _, retained := state.Completed[issueID]; !retained {
 			continue
 		}
 		if !cfg.humanReviewEnabled() && (decision.Reason == AutoPromoteReasonValidatorMissing || decision.QuietRemaining > 0 || autoPromoteActiveGatePendingIssue(issue, state, o.cfg, cfg)) {
@@ -304,6 +309,28 @@ func (o *Orchestrator) tryDirectCompletedActiveAutoPromote(
 	return true, promotedIssue(issue, effectiveTargetState, now), summary, decision
 }
 
+func (o *Orchestrator) discardUnavailableCompletedClaim(ctx context.Context, state *State, issueID string, err error) {
+	if state == nil || !errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) {
+		return
+	}
+	if _, completed := state.Completed[issueID]; !completed {
+		return
+	}
+	if running, active := state.Running[issueID]; active && !running.CompletionOwnershipReleased {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	if releaseErr := o.abandonClaim(cleanupCtx, issueID); releaseErr != nil && o.logger != nil {
+		o.logger.Warn("abandon obsolete review claim failed", "issue_id", issueID, "error", releaseErr)
+	}
+	delete(state.Completed, issueID)
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
+	delete(state.PriorAttempts, issueID)
+}
+
 func (o *Orchestrator) finishCompletedActiveReviewTransition(
 	ctx context.Context,
 	state *State,
@@ -321,7 +348,8 @@ func (o *Orchestrator) finishCompletedActiveReviewTransition(
 func (o *Orchestrator) recordCompletedActiveReviewTransition(state *State, issue connector.Issue, completed Completed, targetState string) {
 	issueID := strings.TrimSpace(issue.ID)
 	sameState := normalizeState(issue.State) == normalizeState(targetState)
-	if sameState {
+	terminal := stateIn(targetState, o.cfg.TerminalStates)
+	if sameState && !terminal {
 		delete(state.Completed, issueID)
 	} else {
 		updated := mergeIssueTrackerFields(completed.Issue, issue)
@@ -330,7 +358,7 @@ func (o *Orchestrator) recordCompletedActiveReviewTransition(state *State, issue
 		state.Completed[issueID] = completed
 	}
 	delete(state.Claimed, issueID)
-	if !sameState {
+	if !sameState || terminal {
 		delete(state.Retry, issueID)
 		delete(state.BudgetRefusals, issueID)
 	}
@@ -390,6 +418,9 @@ func completedActiveReviewTargetState(
 		return ""
 	}
 	targetState := cfg.reviewTargetState()
+	if explicitHumanAction(issue) != "" {
+		targetState = blockedStatusState
+	}
 	if autoPromoteOptoutLabel(issue, cfg) {
 		targetState = reviewState
 	}
@@ -531,6 +562,9 @@ func (o *Orchestrator) transitionTimedOutCompletedActiveGateWait(
 		return true, promoted
 	}
 	targetState := cfg.reviewTargetState()
+	if explicitHumanAction(issue) != "" {
+		targetState = blockedStatusState
+	}
 	if err := o.updateIssueStateByID(ctx, state, issueID, issue, targetState, now, "auto_promote_gate_wait_timeout"); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(

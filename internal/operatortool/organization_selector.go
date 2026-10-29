@@ -6,7 +6,7 @@ import (
 )
 
 func WithOrganizationSelector(definition Definition) (Definition, error) {
-	if definition.Name == OrganizationList || definition.Name == ConnectionInfo {
+	if definition.Name == OrganizationList || definition.Name == ConnectionInfo || definition.Name == OAuthGrantList || definition.Name == OAuthGrantRevoke {
 		return definition, nil
 	}
 	var schema map[string]json.RawMessage

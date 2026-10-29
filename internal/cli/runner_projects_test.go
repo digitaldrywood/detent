@@ -13,8 +13,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,20 +24,52 @@ import (
 
 	"github.com/spf13/cobra"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/hubclient"
+	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	schedulerpkg "github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	workspacepkg "github.com/digitaldrywood/detent/internal/workspace"
 )
+
+func TestRunnerProjectObservationDue(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	signedOut := runnerauth.LocalChecks{Checkout: "passed", Setup: "passed", Doctor: "passed", Provider: "failed", ProviderKinds: []string{"codex"}}
+	ready := runnerauth.LocalChecks{Checkout: "passed", Setup: "passed", Doctor: "passed", Provider: "passed", ProviderKinds: []string{"codex"}}
+	for _, test := range []struct {
+		name              string
+		previous          runnerauth.LocalChecks
+		reported          bool
+		observedAgo       time.Duration
+		prepare, observed bool
+	}{
+		{"unreported project prepares", runnerauth.LocalChecks{}, false, 0, true, false},
+		{"failed checkout prepares again", runnerauth.LocalChecks{Checkout: "failed", Setup: "failed", Doctor: "pending", Provider: "pending"}, true, 0, true, false},
+		{"signed-out provider is re-observed after console login", signedOut, true, runnerReadinessRecheck, false, true},
+		{"recent signed-out observation waits", signedOut, true, time.Second, false, false},
+		{"ready project checks configuration commits", ready, true, runnerReadinessRecheck, false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			prepare, observe := runnerProjectObservationDue(test.previous, test.reported, now.Add(-test.observedAgo), now)
+			if prepare != test.prepare || observe != test.observed {
+				t.Fatalf("prepare=%t observe=%t, want %t %t", prepare, observe, test.prepare, test.observed)
+			}
+		})
+	}
+}
 
 func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 	if testing.Short() {
@@ -50,20 +84,24 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 		cloneFailure bool
 		setupFailure bool
 		unbound      bool
+		missing      bool
+		generate     bool
+		incremental  bool
 	}{
-		{name: "new assignment"}, {name: "one clone fails", cloneFailure: true}, {name: "one setup hook fails", setupFailure: true}, {name: "wait for repository binding", unbound: true},
+		{name: "new assignment", incremental: true}, {name: "one clone fails", cloneFailure: true}, {name: "one setup hook fails", setupFailure: true}, {name: "wait for repository binding", unbound: true}, {name: "missing configuration appears next cycle", missing: true}, {name: "generate starter files", missing: true, generate: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_orders": "orders"})
-			hub.features = []string{tracker.NativeProjectCheckoutCapability}
-			hub.cloneURLs = map[tracker.ProjectID]string{"prj_later": "https://github.com/acme/later.git"}
+			hub.features = []string{"native_issues", "scoped_collaboration", "scoped_runner_identity", "repository_policy", tracker.NativeProjectCheckoutCapability, tracker.NativeLocalChecksCapability}
+			hub.cloneURLs = map[tracker.ProjectID]string{"prj_later": "https://github.com/example-org/later.git"}
+			hub.repositories["prj_orders"] = "example-org/prj_orders"
 			root := t.TempDir()
 			configPath := filepath.Join(root, "config", "global.yaml")
 			workspaceRoot := filepath.Join(root, "checkouts")
 			checkout(t, filepath.Join(workspaceRoot, "orders"))
-			runDoctorWorkflowSourceGit(t, filepath.Join(workspaceRoot, "orders"), "remote", "set-url", "origin", "https://github.com/acme/prj_orders.git")
-			runDoctorWorkflowSourceGit(t, filepath.Join(workspaceRoot, "orders"), "config", "url."+filepath.Join(workspaceRoot, "orders")+".insteadOf", "https://github.com/acme/prj_orders.git")
+			runDoctorWorkflowSourceGit(t, filepath.Join(workspaceRoot, "orders"), "remote", "set-url", "origin", "https://github.com/example-org/prj_orders.git")
+			runDoctorWorkflowSourceGit(t, filepath.Join(workspaceRoot, "orders"), "config", "url."+filepath.Join(workspaceRoot, "orders")+".insteadOf", "https://github.com/example-org/prj_orders.git")
 			_, err := runRegisterInTestWorkspace(t, nil, func(*cobra.Command, string) error { return nil }, "--url", hub.server.URL+"/organizations/org_example", "--token", "det_enroll_example", "--name", "Build host", "--capacity", "2", "--config", configPath, "--workspace-root", workspaceRoot)
 			if err != nil {
 				t.Fatal(err)
@@ -94,6 +132,26 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 			})
 			applied := cfg
 			p := &runnerProjects{client: client, cfg: cfg, setup: project.NewRunnerSetup("test-runner", localStore, logger), logger: logger, checks: make(map[string]runnerauth.LocalChecks), apply: func(_ context.Context, next globalconfig.Config) error { applied = next; return nil }}
+			doctorStarted, releaseDoctor := make(chan struct{}), make(chan struct{})
+			t.Cleanup(func() {
+				select {
+				case <-releaseDoctor:
+				default:
+					close(releaseDoctor)
+				}
+			})
+			p.inspect = func(ctx context.Context, cfg globalconfig.Config, name string, emit ...func(runnerauth.LocalChecks)) runnerauth.LocalChecks {
+				return collectRunnerLocalChecks(ctx, cfg, name, func(context.Context, doctorConfig) doctorReport {
+					if test.incremental && name == "prj_later" {
+						close(doctorStarted)
+						select {
+						case <-releaseDoctor:
+						case <-ctx.Done():
+						}
+					}
+					return doctorReport{}
+				}, func(context.Context, workflowconfig.AgentBackend) bool { return true }, emit...)
+			}
 			source := filepath.Join(root, "source")
 			checkout(t, source)
 			cloneCalls := 0
@@ -122,7 +180,10 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 					if err := runGit("config", "url."+selected.Workdir+".insteadOf", url); err != nil {
 						return err
 					}
-					workflow := "---\ntracker:\n  kind: memory\n  repository: acme/later\nhooks:\n  runner_setup: setup.sh\n  shell: sh\n---\nRun work.\n"
+					if err := runGit("config", "uploadpack.hideRefs", "refs/remotes"); err != nil {
+						return err
+					}
+					workflow := "---\ntracker:\n  kind: hub_native\n  repository: example-org/later\nhooks:\n  runner_setup: setup.sh\n  shell: sh\n---\nRun work.\n"
 					if err := os.WriteFile(filepath.Join(target, "WORKFLOW.md"), []byte(workflow), 0600); err != nil {
 						return err
 					}
@@ -139,7 +200,15 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 					if err := runGit("-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "setup definition"); err != nil {
 						return err
 					}
-					return nil
+					if test.missing {
+						if err := runGit("rm", "WORKFLOW.md"); err != nil {
+							return err
+						}
+						if err := runGit("-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "missing definition"); err != nil {
+							return err
+						}
+					}
+					return runGit("update-ref", "refs/remotes/origin/HEAD", "HEAD")
 				})
 			}
 			scheduler, err := hubclient.NewScheduler(client, hubclient.SchedulerConfig{OrganizationID: "org_example", NativeProjects: map[string]tracker.ProjectID{"orders": "prj_orders"}, Machine: hubclient.Machine{ID: "host", Hostname: "host", Capacity: 2, Version: "test"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
@@ -150,7 +219,7 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 				t.Fatalf("unassigned checkout declared setup: %v", declared)
 			}
 			hub.projects["prj_later"] = "Later"
-			hub.repositories["prj_later"] = "acme/later"
+			hub.repositories["prj_later"] = "example-org/later"
 			identity := hub.identity.Load().(runnerauth.Identity)
 			identity.ProjectIDs = append(identity.ProjectIDs, "prj_later")
 			hub.identity.Store(identity)
@@ -166,9 +235,35 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 						t.Fatal("unbound project entered checkout or startup")
 					}
 				}
-				hub.repositories["prj_later"] = "acme/later"
-				hub.cloneURLs["prj_later"] = "https://github.com/acme/later.git"
+				hub.repositories["prj_later"] = "example-org/later"
+				hub.cloneURLs["prj_later"] = "https://github.com/example-org/later.git"
 				p.lastRefresh = time.Time{}
+			}
+			if test.incremental {
+				if err := p.refresh(t.Context(), scheduler); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-doctorStarted:
+				case <-t.Context().Done():
+					t.Fatal(t.Context().Err())
+				}
+				p.lastRefresh = time.Time{}
+				if err := p.refresh(t.Context(), scheduler); err != nil {
+					t.Fatal(err)
+				}
+				checks := p.checks["prj_later"]
+				if checks.Checkout != "passed" || checks.Configuration != "passed" || checks.Doctor != "running" || checks.Provider != "pending" {
+					t.Fatalf("incremental checks unavailable: %+v", checks)
+				}
+				if err := scheduler.Heartbeat(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				report, ok := hub.localChecks.Load(tracker.ProjectID("prj_later"))
+				if !ok || report.(runnerauth.LocalChecks).Doctor != "running" {
+					t.Fatalf("incremental heartbeat missing: %+v", report)
+				}
+				close(releaseDoctor)
 			}
 			if err := refreshRunnerProjects(t, p, scheduler); err != nil {
 				t.Fatal(err)
@@ -176,12 +271,52 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 			if p.checks["orders"].Setup != "passed" {
 				t.Fatalf("ready project blocked: %+v", p.checks)
 			}
+			if test.missing {
+				checks := p.checks["prj_later"]
+				if checks.Checkout != "passed" || checks.Configuration != "missing" || checks.Doctor != "pending" || checks.Provider != "pending" {
+					t.Fatalf("missing configuration: %+v", checks)
+				}
+				if problems := p.reportedProblems(); checks.Setup != "failed" || len(problems) != 1 || problems[0].ErrorOutput == "" {
+					t.Fatalf("initial workflow load error was lost: checks=%+v problems=%+v", checks, problems)
+				}
+				if test.generate {
+					hub.setupProgress.Store(onboarding.Progress{Revision: 1, Repository: "generate"})
+				} else {
+					for file, content := range map[string]string{"detent.yaml": "schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/later\n", "WORKFLOW.md": "Work the assigned issue.\n"} {
+						if err := os.WriteFile(filepath.Join(workspaceRoot, "prj_later", file), []byte(content), 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					later := filepath.Join(workspaceRoot, "prj_later")
+					runDoctorWorkflowSourceGit(t, later, "add", "detent.yaml", "WORKFLOW.md")
+					runDoctorWorkflowSourceGit(t, later, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "add definition")
+					runDoctorWorkflowSourceGit(t, later, "update-ref", "refs/remotes/origin/HEAD", "HEAD")
+				}
+				p.lastRefresh = time.Time{}
+				if err := refreshRunnerProjects(t, p, scheduler); err != nil {
+					t.Fatal(err)
+				}
+				if !p.checks["prj_later"].Passed() {
+					t.Fatalf("configuration did not recover: %+v", p.checks["prj_later"])
+				}
+				if cloneCalls != 1 {
+					t.Fatalf("existing checkout was cloned %d times", cloneCalls)
+				}
+				raw, err := os.ReadFile(filepath.Join(workspaceRoot, "prj_later", "WORKFLOW.md"))
+				if err != nil || len(raw) == 0 {
+					t.Fatalf("workflow missing: %s %v", raw, err)
+				}
+				return
+			}
 			failed := test.cloneFailure || test.setupFailure
 			if (p.checks["prj_later"].Setup == "failed") != failed {
 				t.Fatalf("new project setup: %+v", p.checks)
 			}
 			if test.cloneFailure && p.checks["prj_later"].CheckoutFix != "gh auth login" {
 				t.Fatalf("missing authentication command: %+v", p.checks["prj_later"])
+			}
+			if !failed && !p.checks["prj_later"].Passed() {
+				t.Fatalf("newly routed project checks did not pass: %+v", p.checks["prj_later"])
 			}
 			if _, ok := scheduler.ConnectorForProject("prj_later"); !ok {
 				t.Fatal("new project was not assigned to scheduler")
@@ -236,21 +371,42 @@ func TestRunnerProjectsAssignmentRefresh(t *testing.T) {
 }
 
 func TestRunnerCloudProjects(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	for _, test := range []struct {
 		name               string
 		externalWorkspaces bool
-	}{{name: "machine only"}, {name: "external retained checkpoint", externalWorkspaces: true}} {
+		noInstallationAuth bool
+		staleDefinition    bool
+	}{{name: "machine only"}, {name: "external retained checkpoint", externalWorkspaces: true}, {name: "unavailable installation authentication", noInstallationAuth: true}, {name: "stale detached checkout retains native alias", staleDefinition: true}} {
 		t.Run(test.name, func(t *testing.T) {
 			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_orders": "Orders", "prj_tools": "Tools", "prj_unconfigured": "Unconfigured"})
+			hub.features = []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeProjectCheckoutCapability}
+			hub.repositories["prj_orders"] = "example-org/prj_orders"
+			hub.repositories["prj_tools"] = "example-org/prj_tools"
 			hub.repositories["prj_unconfigured"] = ""
 			root, err := filepath.EvalSymlinks(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
 			}
+			providerCommand := ""
+			if test.staleDefinition && runtime.GOOS != "windows" {
+				t.Setenv("HOME", root)
+				t.Setenv("CODEX_HOME", root)
+				t.Setenv("DETENT_SERVICE_MANAGER", "test")
+				provider := filepath.Join(root, "configured-codex")
+				if err := os.WriteFile(provider, []byte("#!/bin/sh\ncase \"$*\" in\n  --version) echo 'codex-cli 0.163.0' ;;\n  'login status') exit 0 ;;\n  *sandbox*) exit 0 ;;\n  *) exit 1 ;;\nesac\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				providerCommand = strconv.Quote(provider) + " app-server"
+			}
 			sources := filepath.Join(root, "sources")
 			for _, id := range []string{"prj_orders", "prj_tools"} {
 				checkout(t, filepath.Join(sources, id+".git"))
-				definition := "schema: 1\ntracker:\n  kind: memory\n  repository: acme/" + id + "\npolling:\n  interval_ms: 3210\nworkspace:\n  root: .detent/workspaces\n  source_root: .\n"
+				definition := "schema: 1\ntracker:\n  kind: hub_native\n  repository: example-org/" + id + "\npolling:\n  interval_ms: 123456\nworkspace:\n  root: .detent/workspaces\n  source_root: .\n"
+				if providerCommand != "" {
+					definition += "codex:\n  command: " + strconv.Quote(providerCommand) + "\n"
+				}
 				if test.externalWorkspaces {
 					definition = strings.Split(definition, "workspace:")[0]
 				}
@@ -265,14 +421,22 @@ func TestRunnerCloudProjects(t *testing.T) {
 			}
 			t.Setenv("GIT_CONFIG_COUNT", "2")
 			t.Setenv("GIT_CONFIG_KEY_0", "url."+sources+string(os.PathSeparator)+".insteadOf")
-			t.Setenv("GIT_CONFIG_VALUE_0", "git@github.com:acme/")
+			t.Setenv("GIT_CONFIG_VALUE_0", "git@github.com:example-org/")
 			t.Setenv("GIT_CONFIG_KEY_1", "url."+sources+string(os.PathSeparator)+".insteadOf")
-			t.Setenv("GIT_CONFIG_VALUE_1", "https://github.com/acme/")
+			t.Setenv("GIT_CONFIG_VALUE_1", "https://github.com/example-org/")
 			path := filepath.Join(root, "runner", "global.yaml")
 			workspace := filepath.Join(root, "checkouts")
 			legacy := filepath.Join(workspace, "orders")
-			if err := cloneRunnerRepository(t.Context(), "git@github.com:acme/prj_orders.git", legacy); err != nil {
+			if err := cloneRunnerRepository(t.Context(), "git@github.com:example-org/prj_orders.git", legacy); err != nil {
 				t.Fatal(err)
+			}
+			if test.staleDefinition {
+				if err := os.WriteFile(filepath.Join(legacy, "detent.yaml"), []byte("schema: 1\ntracker:\n  kind: github\n  repository: example-org/prj_orders\n  observed_states: [Todo]\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				runDoctorWorkflowSourceGit(t, legacy, "add", "detent.yaml")
+				runDoctorWorkflowSourceGit(t, legacy, "-c", "user.name=Detent Test", "-c", "user.email=detent@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "legacy definition")
+				runDoctorWorkflowSourceGit(t, legacy, "checkout", "--detach", "HEAD")
 			}
 			retainedIssue := workspacepkg.Issue{ProjectID: "orders", ID: "wi_retained", Identifier: "prj_orders#7"}
 			retainedRoot := filepath.Join(legacy, ".detent/workspaces")
@@ -314,8 +478,13 @@ func TestRunnerCloudProjects(t *testing.T) {
 					}
 					return resolveRunnerProjects(t.Context(), cfg)
 				}
+				ghCalls := 0
 				opts.ghAuthToken = func(context.Context) (string, error) {
-					return "", errors.New("gh auth status failed: exit status 1")
+					ghCalls++
+					if test.noInstallationAuth {
+						return "", errors.New("not logged in")
+					}
+					return "configured-token", nil
 				}
 				opts.lookupEnv = func(name string) string {
 					if name == "GITHUB_TOKEN" || name == "GH_TOKEN" {
@@ -326,6 +495,13 @@ func TestRunnerCloudProjects(t *testing.T) {
 				boot, err := resolveBootConfigWithRuntimeDeps(t.Context(), path, "", runtimeFlags{}, opts, bootRuntimeDeps(opts), true)
 				if err != nil {
 					t.Fatal(err)
+				}
+				wantToken := "configured-token"
+				if test.noInstallationAuth {
+					wantToken = ""
+				}
+				if ghCalls != 1 || boot.Runtime.GitHubToken.Value != wantToken {
+					t.Fatalf("startup authentication: resolver calls=%d, token present=%v", ghCalls, boot.Runtime.GitHubToken.Value != "")
 				}
 				cfg := boot.Global
 				if err := scheduler.SetNativeProjects("org_example", nativeProjectsFromConfig(cfg.Client.NativeProjects), nil); err != nil {
@@ -363,7 +539,7 @@ func TestRunnerCloudProjects(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if workflow.Config.Polling.IntervalMS != 3210 {
+					if workflow.Config.Polling.IntervalMS != 123456 {
 						t.Fatalf("repository detent.yaml was not loaded: %+v", workflow.Config.Polling)
 					}
 					if selected.ID == "orders" {
@@ -391,6 +567,44 @@ func TestRunnerCloudProjects(t *testing.T) {
 						if err != nil || strings.TrimSpace(current.Prompt) != "Current repository prompt." || current.Definition.Revision == workflow.Definition.Revision {
 							t.Fatalf("current workflow prompt = %q, revision = %s, %v", current.Prompt, current.Definition.Revision, err)
 						}
+						if test.staleDefinition {
+							local := selected
+							local.WorkflowRef = ""
+							if _, err := project.LoadWorkflowContext(t.Context(), local); err == nil || !strings.Contains(err.Error(), "tracker.observed_states") {
+								t.Fatalf("legacy checkout did not reproduce the recorded parser failure: %v", err)
+							}
+							logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+							applied := cfg
+							p := &runnerProjects{client: client, cfg: cfg, setup: project.NewRunnerSetup("runner", nil, logger), logger: logger, checks: map[string]runnerauth.LocalChecks{}, runtime: func() globalconfig.Config { return applied }, apply: func(_ context.Context, next globalconfig.Config) error { applied = next; return nil }}
+							p.inspect = func(ctx context.Context, cfg globalconfig.Config, name string, emit ...func(runnerauth.LocalChecks)) runnerauth.LocalChecks {
+								if _, _, _, err := resolveRunnerProjectPolicy(ctx, cfg, name); err != nil {
+									t.Errorf("resolve preparation policy: %v", err)
+								}
+								return collectRunnerLocalChecks(ctx, cfg, name, func(context.Context, doctorConfig) doctorReport { return doctorReport{} }, func(context.Context, workflowconfig.AgentBackend) bool { return true }, emit...)
+							}
+							for range 2 {
+								p.observed = nil
+								p.lastRefresh = time.Time{}
+								if err := refreshRunnerProjects(t, p, scheduler); err != nil {
+									t.Fatal(err)
+								}
+								if !p.checks["orders"].Passed() || applied.Client.NativeProjects["orders"] != "prj_orders" || !slices.ContainsFunc(applied.Projects, func(cfg globalconfig.Project) bool { return cfg.ID == "orders" && cfg.WorkflowRef == "origin/HEAD" }) {
+									t.Fatalf("preparation evicted the retained native alias: checks=%+v projects=%+v mapping=%v", p.checks, applied.Projects, applied.Client.NativeProjects)
+								}
+								if mustRead(t, filepath.Join(checkpoint.Path, "unfinished.txt")) != "retained source\n" {
+									t.Fatal("preparation discarded pending source")
+								}
+								if providerCommand != "" {
+									report, problems := probeRunnerIsolation(t.Context(), applied)
+									if !slices.Contains(report["orders/codex"], isolation.NativeTrusted) || len(problems) != 0 {
+										t.Fatalf("configured provider disappeared after preparation: report=%v problems=%+v", report, problems)
+									}
+								}
+							}
+							if _, ok := scheduler.ConnectorForProject("orders"); !ok {
+								t.Fatal("preparation lost the native connector")
+							}
+						}
 					}
 				}
 				ready := slices.DeleteFunc(slices.Clone(ids), func(id tracker.ProjectID) bool { return id == "prj_unconfigured" })
@@ -417,16 +631,20 @@ func TestRunnerCloudProjects(t *testing.T) {
 
 func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 	for _, test := range []struct {
-		name                string
-		status              int
-		kept                bool
-		revoked             bool
-		identityUnavailable bool
-		blockedCheckout     bool
+		name                   string
+		status                 int
+		kept                   bool
+		revoked                bool
+		identityUnavailable    bool
+		blockedCheckout        bool
+		preparationUnavailable bool
+		configurationCanceled  bool
 	}{
 		{name: "blocked checkout keeps the running project live", kept: true, blockedCheckout: true},
 		{name: "hub unavailable keeps the running project", status: http.StatusServiceUnavailable, kept: true},
 		{name: "identity unavailable keeps the runtime unapplied", kept: true, identityUnavailable: true},
+		{name: "preparation unavailable keeps the live registry and pending claim", status: http.StatusInternalServerError, kept: true, preparationUnavailable: true},
+		{name: "canceled configuration read keeps the native alias and pending claim", status: http.StatusInternalServerError, kept: true, configurationCanceled: true},
 		{name: "project unauthorized drops the project", status: http.StatusUnauthorized},
 		{name: "project forbidden drops the project", status: http.StatusForbidden},
 		{name: "project not found drops the project", status: http.StatusNotFound},
@@ -438,6 +656,7 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 				var identityReads, projectReads, legacyReads atomic.Int32
 				var reloading atomic.Bool
 				var heartbeats atomic.Int32
+				var releases atomic.Int32
 				var removeLater atomic.Bool
 				var checkoutReport atomic.Value
 				var checkoutProblems atomic.Value
@@ -449,10 +668,12 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
 					switch {
+					case strings.HasSuffix(r.URL.Path, "/onboarding"):
+						_ = json.NewEncoder(w).Encode(map[string]any{"progress": onboarding.Progress{}})
 					case strings.HasSuffix(r.URL.Path, "/capabilities"):
 						_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeProjectCheckoutCapability, tracker.NativeLocalChecksCapability}})
 					case strings.HasSuffix(r.URL.Path, "/runners/"+identity.RunnerID):
-						if reloading.Load() && !test.blockedCheckout && (identityReads.Add(1) > 1 || test.identityUnavailable) {
+						if reloading.Load() && !test.blockedCheckout && !test.preparationUnavailable && !test.configurationCanceled && (identityReads.Add(1) > 1 || test.identityUnavailable) {
 							w.WriteHeader(http.StatusServiceUnavailable)
 							return
 						}
@@ -505,8 +726,20 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 						_ = json.NewEncoder(w).Encode(lease)
 					case strings.HasSuffix(r.URL.Path, "/leases/lease_example/validate"):
 						_ = json.NewEncoder(w).Encode(runnerauth.Runner{})
+					case strings.HasSuffix(r.URL.Path, "/leases/lease_example/release"):
+						var mutation tracker.NativeLeaseMutation
+						if err := json.NewDecoder(r.Body).Decode(&mutation); err != nil || mutation.FencingToken != lease.FencingToken {
+							t.Errorf("release lost fencing: %+v, %v", mutation, err)
+						}
+						releases.Add(1)
+						w.WriteHeader(http.StatusNoContent)
 					case strings.HasSuffix(r.URL.Path, "/work-items/wi_example"):
-						_ = json.NewEncoder(w).Encode(tracker.NativeRecovery{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_orders", WorkItemID: "wi_example"}, State: "Todo"}})
+						issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: "org_example", ProjectID: "prj_orders", WorkItemID: "wi_example"}, State: "Todo", SchedulingEligible: new(true), DependencyReady: true}
+						if r.URL.Query().Get("view") == "recovery" {
+							_ = json.NewEncoder(w).Encode(tracker.NativeRecovery{Issue: issue})
+						} else {
+							_ = json.NewEncoder(w).Encode(issue)
+						}
 					default:
 						if strings.Contains(r.URL.Path, "/repositories/") {
 							legacyReads.Add(1)
@@ -553,6 +786,7 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 				if test.blockedCheckout {
 					checkout(t, files.workdirPath)
 					runDoctorWorkflowSourceGit(t, files.workdirPath, "remote", "set-url", "origin", "https://github.com/example-org/orders.git")
+					runDoctorWorkflowSourceGit(t, files.workdirPath, "config", "url."+files.workdirPath+".insteadOf", "https://github.com/example-org/orders.git")
 				}
 				running := globalconfig.Project{ID: "orders", Workflow: files.workflowPath, Workdir: files.workdirPath, Weight: 1}
 				current.Projects = []globalconfig.Project{running}
@@ -577,6 +811,94 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 					t.Fatal(err)
 				}
 				reloading.Store(true)
+				if test.preparationUnavailable || test.configurationCanceled {
+					logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+					var cancelRead context.CancelFunc
+					transport := http.DefaultTransport.(*http.Transport).Clone()
+					t.Cleanup(transport.CloseIdleConnections)
+					httpClient := &http.Client{Transport: workerHubTransport(func(request *http.Request) (*http.Response, error) {
+						if test.configurationCanceled && strings.HasSuffix(request.URL.Path, "/projects/prj_orders") {
+							cancelRead()
+							body := `{"project_id":"prj_orders","organization_id":"org_example","profile":"native","repository":"example-org/orders"}`
+							return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+						}
+						return transport.RoundTrip(request)
+					})}
+					client, err := hubclient.New(hubclient.Config{URL: server.URL, IdentityFile: identityPath, HTTPClient: httpClient})
+					if err != nil {
+						t.Fatal(err)
+					}
+					current.Projects[0].Paused = true
+					live, err := projectfixture.NewManager(project.ManagerConfigFromGlobal(current), project.ManagerDependencies{ProjectFactory: func(selected globalconfig.Project) (*project.Project, error) {
+						return projectfixture.New(project.Config{Project: selected}, project.Dependencies{Runner: orchestrator.FakeRunner{}, Logger: logger})
+					}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := live.Start(t.Context()); err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() {
+						for _, selected := range live.Registry().List() {
+							if err := selected.Close(); err != nil {
+								t.Error(err)
+							}
+						}
+					})
+					applied := current
+					runtimeConfig := func() globalconfig.Config { return applied }
+					registration := runnerProjectConfigurationOwner(current, runtimeConfig, project.NewConfigurationOwner(t.Context(), current, runtimeConfig, live, nil, nil))
+					p := &runnerProjects{client: client, cfg: current, setup: project.NewRunnerSetup("runner", nil, logger), logger: logger, checks: map[string]runnerauth.LocalChecks{"orders": {Checkout: "passed", Configuration: "passed", Setup: "passed", Doctor: "passed", Provider: "passed"}}, runtime: runtimeConfig, apply: func(ctx context.Context, next globalconfig.Config) error {
+						if _, err := live.Reconcile(ctx, project.ManagerConfigFromGlobal(next)); err != nil {
+							return err
+						}
+						applied = next
+						return nil
+					}}
+					pending := filepath.Join(files.workdirPath, "unfinished.txt")
+					if err := os.WriteFile(pending, []byte("pending source\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					for range 2 {
+						p.lastRefresh = time.Time{}
+						if test.configurationCanceled {
+							var ctx context.Context
+							ctx, cancelRead = context.WithCancel(t.Context())
+							err := p.refresh(ctx, scheduler)
+							cancelRead()
+							if !errors.Is(err, context.Canceled) || len(p.cfg.Projects) != 1 || p.cfg.Client.NativeProjects["orders"] != "prj_orders" {
+								t.Fatalf("canceled read replaced the resolved configuration: projects=%+v mapping=%v error=%v", p.cfg.Projects, p.cfg.Client.NativeProjects, err)
+							}
+						} else {
+							if err := refreshRunnerProjects(t, p, scheduler); err != nil {
+								t.Fatal(err)
+							}
+							if p.checks["orders"].Setup != "failed" || len(p.reportedProblems()) != 1 {
+								t.Fatalf("failed preparation was hidden: %+v, %+v", p.checks, p.reportedProblems())
+							}
+						}
+						if len(applied.Projects) != 1 || applied.Projects[0].ID != "orders" || applied.Client.NativeProjects["orders"] != "prj_orders" {
+							t.Fatalf("failed preparation evicted the live registry: %+v, mapping=%v", applied.Projects, applied.Client.NativeProjects)
+						}
+						if _, ok := live.Registry().Get("orders"); !ok {
+							t.Fatal("refresh evicted the live project")
+						}
+						if view := registration(t.Context(), "prj_orders", nil); !view.Registered || !view.RuntimeRegistered {
+							t.Fatalf("refresh lost native runtime registration: %+v", view)
+						}
+						_, renewErr := scheduler.RenewClaim(t.Context(), "wi_example", time.Now())
+						if test.configurationCanceled && renewErr != nil || !test.configurationCanceled && !errors.Is(renewErr, hubclient.ErrUnavailable) {
+							t.Fatalf("claim renewal after configuration read: %v", renewErr)
+						}
+					}
+					if err := scheduler.ReleaseClaim(t.Context(), "wi_example", "unused claim"); err != nil {
+						t.Fatal(err)
+					}
+					if releases.Load() != 1 || mustRead(t, pending) != "pending source\n" {
+						t.Fatalf("unused claim was not safely released: releases=%d", releases.Load())
+					}
+					return
+				}
 				if test.blockedCheckout {
 					logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 					client, err = hubclient.New(hubclient.Config{URL: server.URL, IdentityFile: identityPath})
@@ -610,7 +932,7 @@ func TestRunnerProjectsKeepAssignedProjectThroughHubOutage(t *testing.T) {
 					ticks := make(chan struct{}, 2)
 					orch, err := orchestrator.New(orchestrator.Config{
 						Project: schedulerpkg.ProjectCandidate{ID: "orders"}, PollInterval: 10 * time.Millisecond,
-					}, orchestrator.Dependencies{Connector: memory.New(memory.Config{}), Logger: logger,
+					}, orchestrator.Dependencies{Connector: fakehub.New(fakehub.Config{}), Logger: logger,
 						Scheduling: runnerProjectTickScheduling{SchedulingSource: scheduler, projects: p, ticks: ticks},
 					})
 					if err != nil {
@@ -811,7 +1133,7 @@ func TestRunnerProjectsNewRepositoryBinding(t *testing.T) {
 			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 			t.Cleanup(func() { slog.SetDefault(previousLogger) })
 			for _, prepare := range []bool{true, false, false} {
-				cfg, err = runnerProjectsForIdentity(t.Context(), cfg, client, identity, prepare)
+				cfg, err = runnerProjectsForIdentity(t.Context(), cfg, client, identity, prepare, false)
 				if err != nil || len(cfg.Projects) != 0 {
 					t.Fatalf("waiting project starts (prepare=%v): %+v: %v", prepare, cfg.Projects, err)
 				}
@@ -829,7 +1151,7 @@ func TestRunnerProjectsNewRepositoryBinding(t *testing.T) {
 			}
 			hub.repositories["prj_new"] = test.repository
 			hub.cloneURLs = map[tracker.ProjectID]string{"prj_new": "https://github.com/" + test.repository + ".git"}
-			cfg, err = runnerProjectsForIdentity(t.Context(), cfg, client, identity, true)
+			cfg, err = runnerProjectsForIdentity(t.Context(), cfg, client, identity, true, false)
 			if err != nil || (len(cfg.Projects) == 1) != test.wantCheckout {
 				t.Fatalf("bound project checkouts = %+v: %v", cfg.Projects, err)
 			}
@@ -883,4 +1205,63 @@ func (s runnerProjectTickScheduling) FetchCandidateIssues(ctx context.Context, r
 	default:
 	}
 	return nil, nil
+}
+
+func TestRunnerProjectsRejectHostAuthorization(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		auth selector.Selector
+	}{
+		{name: "include", auth: selector.Selector{Labels: selector.Labels{Include: []string{"canary"}}}},
+		{name: "exclude", auth: selector.Selector{Labels: selector.Labels{Exclude: []string{"manual"}}}},
+		{name: "composed", auth: selector.Selector{And: []selector.Selector{{Labels: selector.Labels{Include: []string{"canary"}}}, {Labels: selector.Labels{Exclude: []string{"manual"}}}}}},
+		{name: "invalid", auth: selector.Selector{Labels: selector.Labels{Include: []string{" "}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hub := newRegisterHub(t, map[tracker.ProjectID]string{"prj_new": "new"})
+			hub.credential.Store("test")
+			hub.repositories["prj_new"] = "example-org/example-project"
+			client, err := hubclient.New(hubclient.Config{URL: hub.server.URL + "/organizations/org_example", TokenSource: func() string { return "test" }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := globalconfig.Config{WorkspaceRoot: t.TempDir()}
+			cfg.Client.OrganizationID = "org_example"
+			auth := test.auth
+			cfg.Projects = []globalconfig.Project{{ID: "prj_new", Authorization: auth}}
+			identity := runnerauth.Identity{OrganizationID: "org_example", ProjectIDs: []tracker.ProjectID{"prj_new"}}
+			cfg.Client.NativeProjects = map[string]string{"prj_new": "prj_new"}
+			for range 2 {
+				cfg, err = runnerProjectsForIdentity(t.Context(), cfg, client, identity, false, false)
+				if err == nil || !strings.Contains(err.Error(), "do not support host project authorization") {
+					t.Fatalf("unsupported host authorization was not refused: %v", err)
+				}
+				if !reflect.DeepEqual(cfg.Projects[0].Authorization, auth) {
+					t.Fatalf("refusal changed configured authorization: %#v", cfg.Projects[0].Authorization)
+				}
+				hub.server.Close()
+			}
+			cfg.Client.URL = hub.server.URL
+			cfg.Client.IdentityFile = filepath.Join(t.TempDir(), "identity.json")
+			current := cfg
+			current.Projects = []globalconfig.Project{{ID: "prj_new"}}
+			manager := &globalReloadManager{}
+			runtimeApplied := false
+			reloader := &globalConfigReloader{
+				current: current,
+				manager: manager,
+				applyRuntime: func(globalconfig.Config) error {
+					runtimeApplied = true
+					return nil
+				},
+			}
+			_, err = reloader.applyCandidate(t.Context(), configwatcher.FileUpdate[globalconfig.Config]{Value: cfg})
+			if err == nil || !strings.Contains(err.Error(), "do not support host project authorization") {
+				t.Fatalf("reload discarded host authorization before refusal: %v", err)
+			}
+			if manager.calls != 0 || runtimeApplied || !reflect.DeepEqual(reloader.current, current) {
+				t.Fatal("rejected reload replaced the accepted runtime configuration")
+			}
+		})
+	}
 }

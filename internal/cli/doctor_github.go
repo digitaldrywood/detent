@@ -56,16 +56,6 @@ func checkDoctorGitHubReadiness(
 	return out
 }
 
-func doctorGitHubReadinessRequiresWrites(cfg ghconnector.ReadinessConfig) bool {
-	return cfg.RequireProjectStatusWrite ||
-		cfg.RequireIssueFieldStatusWrite ||
-		cfg.RequireLabelStatusWrite ||
-		cfg.RequireIssueComments ||
-		cfg.RequireAssigneeWrite ||
-		cfg.RequireIssueClose ||
-		len(cfg.ProjectFieldWrites) > 0
-}
-
 func doctorGitHubConnectorConfig(cfg workflowconfig.Config) ghconnector.Config {
 	return ghconnector.Config{
 		Endpoint: cfg.Tracker.Endpoint,
@@ -82,18 +72,11 @@ func doctorGitHubConnectorConfig(cfg workflowconfig.Config) ghconnector.Config {
 		GitHubAppPrivateKey:     cfg.Tracker.GitHubAppPrivateKey,
 		GitHubAppPrivateKeyPath: cfg.Tracker.GitHubAppPrivateKeyPath,
 		GitHubAppInstallationID: cfg.Tracker.GitHubAppInstallationID,
-		GitHubStatusSource:      cfg.Tracker.GitHubStatusSource,
-		DependencySource:        cfg.Dependencies.Source,
-		ProjectSlug:             cfg.Tracker.ProjectSlug,
-		Repository:              cfg.Tracker.Repository,
-		StatusField:             cfg.Tracker.StatusField,
-		StatusLabelPrefix:       cfg.Tracker.StatusLabelPrefix,
-		ActiveStates:            cfg.Tracker.ActiveStates,
-		ObservedStates:          cfg.Tracker.ObservedStates,
-		PlanStop:                cfg.Plan.Stop,
-		TerminalStates:          cfg.Tracker.TerminalStates,
-		StateMap:                doctorTrackerStateMap(cfg.Tracker.StateMap),
-		Logger:                  doctorConnectorLogger(),
+
+		ProjectSlug: cfg.Tracker.ProjectSlug,
+		Repository:  cfg.Tracker.Repository,
+
+		Logger: doctorConnectorLogger(),
 	}
 }
 
@@ -109,20 +92,7 @@ func doctorGitHubReadinessConfig(
 	githubToken RuntimeSecret,
 	sourceRoot string,
 ) ghconnector.ReadinessConfig {
-	if cfg.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
-		return ghconnector.ReadinessConfig{
-			AuthPath:                      doctorGitHubAuthPath(cfg, githubToken, deps.lookupEnv),
-			LocalStatusMode:               true,
-			Repositories:                  doctorGitHubRepositories(ctx, project, cfg, deps, sourceRoot),
-			RequireIssueCommentsRead:      true,
-			RequireDependencyMetadataRead: true,
-			RequireIssueChildrenRead:      doctorRequiresIssueChildrenRead(cfg),
-			RequireIssueParentsRead:       doctorRequiresIssueParentsRead(cfg),
-			RequirePullRequestRead:        true,
-			RequirePullRequestReviews:     true,
-			RequirePullRequestChecks:      true,
-		}
-	}
+
 	return ghconnector.ReadinessConfig{
 		AuthPath:                      doctorGitHubAuthPath(cfg, githubToken, deps.lookupEnv),
 		WriteProbeIssue:               cfg.Tracker.WriteProbeIssue,
@@ -410,7 +380,7 @@ func doctorWorkflowConfigWithRuntimeGitHubToken(cfg workflowconfig.Config, token
 }
 
 func doctorTrackerUsesGitHubReads(kind string) bool {
-	return kind == workflowconfig.TrackerGitHub || kind == workflowconfig.TrackerGitHubLocal
+	return kind == workflowconfig.TrackerGitHub
 }
 
 func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, token RuntimeSecret, deps doctorDeps) (check doctorCheck) {
@@ -565,10 +535,7 @@ func doctorRequiredGitHubScopes(ctx context.Context, cfg *globalconfig.Config, d
 		if trackerHasGitHubAppCredentials(workflow.Config.Tracker, deps.lookupEnv) {
 			continue
 		}
-		if workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
-			add(requiredLabelGitHubScopes)
-			continue
-		}
+
 		switch workflow.Config.Tracker.GitHubStatusSource {
 		case workflowconfig.GitHubStatusSourceProjectV2:
 			add(requiredProjectV2GitHubScopes)

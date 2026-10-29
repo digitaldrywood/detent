@@ -23,7 +23,7 @@ func (s *Service) restoreNativeIssue(c echo.Context) error { return s.setNativeA
 func (s *Service) setNativeArchive(c echo.Context, archived bool) error {
 	var request archiveIssueRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.setNativeArchiveCommand(c.Request().Context(), nativeRequestScope(c), c.Param("item"), request, archived)
 	if err != nil {
@@ -41,7 +41,7 @@ func readNativeArchiveIssue(ctx context.Context, query nativeQueryer, scope nati
 		return tracker.NativeIssue{}, err
 	}
 	if scope.credential.Scope == apiScopeWorker {
-		return tracker.NativeIssue{}, nativeInvalid("Archive and restore require an operator")
+		return tracker.NativeIssue{}, nativePublicInvalid("Archive and restore require an operator")
 	}
 	if archived && !issue.Archived {
 		lease, found, err := readUnreleasedLease(ctx, query, id)

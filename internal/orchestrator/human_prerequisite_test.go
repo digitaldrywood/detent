@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/dependencyline"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestHumanAndEpicDispatchExclusion(t *testing.T) {
@@ -58,7 +58,7 @@ func TestHumanDependencyChildrenAndPriorPhase(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			blocker := humanDependencyIssue(tt.evidence, tt.closed)
-			tracker := memory.New(memory.Config{Issues: []connector.Issue{blocker}, Stateful: true})
+			tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{blocker}, Stateful: true})
 			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo", "Rework", "Merging"}, TerminalStates: []string{"Done"}, MaxConcurrentAgents: 2})
 			o := &Orchestrator{cfg: cfg, connector: tracker}
 			for _, lane := range []string{"Todo", "Rework", "Merging"} {
@@ -111,7 +111,7 @@ func TestDependencyWaitRestoresLaneAndKeepsDeliverable(t *testing.T) {
 			if tt.pr {
 				issue.PullRequest = &connector.PullRequest{Number: 40, State: "open", HeadSHA: "accepted-head"}
 			}
-			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 			o := &Orchestrator{cfg: normalizeConfig(Config{}), connector: tracker}
 			state := newState(o.cfg)
 			o.finishImplementDependencyDeferral(t.Context(), &state, issue, time.Now())
@@ -126,7 +126,7 @@ func TestDependencyWaitRestoresLaneAndKeepsDeliverable(t *testing.T) {
 	}
 }
 
-func TestHumanClosurePreservesBreakerPark(t *testing.T) {
+func TestHumanClosureIgnoresHistoricalBreakerReason(t *testing.T) {
 	t.Parallel()
 	child := dependencyAutoUnblockIssue("child", "Blocked")
 	child.Identifier = "owner/repo#20"
@@ -135,15 +135,12 @@ func TestHumanClosurePreservesBreakerPark(t *testing.T) {
 	tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{child}, hydratedIssues: []connector.Issue{child}, blockers: []connector.Issue{blocker}}
 	o := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{Enabled: true, SourceStates: []string{"Blocked"}, TargetState: "Todo"})
 	state := newState(o.cfg)
-	state.Blocked[child.ID] = Blocked{Issue: child, Reason: repeatedFailureCircuitBreakerCause}
-	if got := o.autoUnblockDependencyIssues(t.Context(), &state, []connector.Issue{child}, time.Now()); len(got) != 0 {
-		t.Fatal("closure bypassed breaker")
+	state.Blocked[child.ID] = Blocked{Issue: child, Reason: "repeated_failure_circuit_breaker"}
+	if got := o.autoUnblockDependencyIssues(t.Context(), &state, []connector.Issue{child}, time.Now()); len(got) != 1 {
+		t.Fatal("historical reason vetoed current closure")
 	}
-	if len(tracker.updates) != 0 || state.Blocked[child.ID].Reason != repeatedFailureCircuitBreakerCause {
-		t.Fatal("breaker was acknowledged")
-	}
-	if o.applyBlockerAutoPromote(t.Context(), &state, connector.Issue{Identifier: "owner/repo#21"}, child, "Todo", time.Now()) {
-		t.Fatal("auto-promotion bypassed breaker")
+	if len(tracker.updates) != 1 || tracker.updates[0].state != "Todo" {
+		t.Fatal("current dependency readiness did not restore Todo")
 	}
 }
 

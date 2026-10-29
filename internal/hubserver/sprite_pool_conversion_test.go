@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/chat"
@@ -48,6 +49,9 @@ func TestSpritePoolConversion(t *testing.T) {
 			var lease tracker.NativeLease
 			decodeHubResponse(t, response, &lease)
 			db := f.service.database.db
+			if _, err := db.ExecContext(t.Context(), `ALTER TABLE organization_sprite_pools DROP COLUMN share_idle_capacity`); err != nil {
+				t.Fatal(err)
+			}
 			legacy, err := migrationFiles.ReadFile("migrations/00071_migration.sql")
 			if err != nil {
 				t.Fatal(err)
@@ -93,7 +97,7 @@ func TestSpritePoolConversion(t *testing.T) {
 					}
 				}
 			}
-			if _, err := db.ExecContext(t.Context(), "DELETE FROM "+hubSchemaTable+" WHERE version_id IN ("+versions+")"); err != nil {
+			if _, err := db.ExecContext(t.Context(), "DELETE FROM "+hubSchemaTable+" WHERE version_id IN ("+versions+",20261019160000)"); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := runMigrations(t.Context(), db, discardLogger()); err != nil {
@@ -166,6 +170,29 @@ func TestSpritePoolConversion(t *testing.T) {
 			if activeLease != string(lease.ID) {
 				t.Fatal("pool migration interrupted active work")
 			}
+			if _, err := db.ExecContext(t.Context(), "UPDATE leases SET expires_at=? WHERE lease_id=?", formatHubTime(f.service.config.now().Add(-time.Hour)), lease.ID); err != nil {
+				t.Fatal(err)
+			}
+			var converted spritePoolMember
+			for _, member := range view.Members {
+				if member.EnrollmentID == r.enrollment.ID {
+					converted = member
+				}
+			}
+			if _, err := db.ExecContext(t.Context(), "UPDATE organization_sprite_members SET state='deleting' WHERE enrollment_id=?", converted.EnrollmentID); err != nil {
+				t.Fatal(err)
+			}
+			converted.State = "deleting"
+			if err := f.service.deletePoolSprite(t.Context(), nativeScope{organization: f.project.OrganizationID}, converted); err != nil {
+				t.Fatalf("retiring a converted member with unpublished work: %v", err)
+			}
+			retained := []spritePoolMember{converted}
+			if err := f.service.describeSpritePoolMembers(t.Context(), scope, retained); err != nil {
+				t.Fatal(err)
+			}
+			if retained[0].Status != "draining" {
+				t.Fatalf("converted member with an expired unreleased lease = %s, want draining", retained[0].Status)
+			}
 			var secrets, legacyTables int
 			if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM organization_secrets WHERE organization_id=?`, f.project.OrganizationID).Scan(&secrets); err != nil {
 				t.Fatal(err)
@@ -185,10 +212,10 @@ func TestPromoteSpritesToken(t *testing.T) {
 		t.Skip("durable SQLite integration")
 	}
 	for _, test := range []struct {
-		name                               string
-		changed, existing, ranked, revoked bool
+		name                                       string
+		changed, existing, ranked, revoked, rewrap bool
 	}{
-		{name: "confirmed token"}, {name: "changed source", changed: true}, {name: "existing organization token", existing: true},
+		{name: "confirmed token"}, {name: "rewrapped after preview", rewrap: true}, {name: "changed source", changed: true}, {name: "existing organization token", existing: true},
 		{name: "first token follows project rank", ranked: true},
 		{name: "authority revoked after preview", revoked: true},
 	} {
@@ -222,6 +249,16 @@ func TestPromoteSpritesToken(t *testing.T) {
 			}
 			if strings.Contains(string(raw), spritesSecretSentinel) {
 				t.Fatal("preview exposed token")
+			}
+			if test.rewrap {
+				f.service.signalSecretRewrap()
+				<-f.service.secretRewrapDone
+				f.service.config.SecretKeys = secretTestKeys(t, "2", "1", "2")
+				f.service.rewrapSecrets(t.Context())
+				current, _, envelope, err := firstProjectSpritesToken(t.Context(), f.service.database.reader, scope)
+				if err != nil || current.Fingerprint != change.Fingerprint || envelope.Version != 2 {
+					t.Fatalf("preview changed after rewrap: %v", err)
+				}
 			}
 			if test.changed {
 				storeSpriteWakeSecret(t, f, "replacement")

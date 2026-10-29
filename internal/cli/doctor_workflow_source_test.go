@@ -32,7 +32,7 @@ func TestDefaultDoctorWorkflowSourcePolicy(t *testing.T) {
 			name: "drift present",
 			mutate: func(t *testing.T, repo string, _ string, _ *globalconfig.Project) {
 				runDoctorWorkflowSourceGit(t, repo, "checkout", "-b", "feature")
-				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\ntracker:\n  kind: github\n")
+				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\ntracker:\n  kind: hub_native\nworkspace:\n  kind: filesystem\n")
 			},
 			wantStatus: doctorFail,
 			wantDetail: []string{"project alpha", "omits workflow_ref", "branch feature differs from default branch main", "effective detent.yaml differs from origin/main"},
@@ -45,7 +45,7 @@ func TestDefaultDoctorWorkflowSourcePolicy(t *testing.T) {
 		{
 			name: "line ending difference is not drift",
 			mutate: func(t *testing.T, repo string, _ string, _ *globalconfig.Project) {
-				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\r\ntracker:\r\n  kind: memory\r\n")
+				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\r\ntracker:\r\n  kind: hub_native\r\n")
 			},
 			wantStatus: doctorWarn,
 			wantDetail: []string{"project alpha", "effective detent.yaml matches origin/main"},
@@ -55,7 +55,7 @@ func TestDefaultDoctorWorkflowSourcePolicy(t *testing.T) {
 			mutate: func(t *testing.T, repo string, _ string, project *globalconfig.Project) {
 				project.WorkflowRef = "origin/main"
 				runDoctorWorkflowSourceGit(t, repo, "checkout", "-b", "feature")
-				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\ntracker:\n  kind: github\n")
+				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\ntracker:\n  kind: hub_native\nworkspace:\n  kind: filesystem\n")
 			},
 			wantStatus: doctorOK,
 			wantDetail: []string{"project alpha", "workflow_ref origin/main is fresh", "ignores the working-tree branch"},
@@ -101,7 +101,7 @@ func TestDefaultDoctorWorkflowSourcePolicy(t *testing.T) {
 				runDoctorWorkflowSourceGit(t, "", "clone", remote, updater)
 				runDoctorWorkflowSourceGit(t, updater, "config", "user.name", "Detent Test")
 				runDoctorWorkflowSourceGit(t, updater, "config", "user.email", "detent@example.com")
-				writeDoctorWorkflowSourceFile(t, filepath.Join(updater, "detent.yaml"), "schema: 1\ntracker:\n  kind: github\n")
+				writeDoctorWorkflowSourceFile(t, filepath.Join(updater, "detent.yaml"), "schema: 1\ntracker:\n  kind: hub_native\nworkspace:\n  kind: filesystem\n")
 				runDoctorWorkflowSourceGit(t, updater, "add", "detent.yaml")
 				runDoctorWorkflowSourceGit(t, updater, "commit", "-m", "advance workflow policy")
 				runDoctorWorkflowSourceGit(t, updater, "push", "origin", "main")
@@ -163,7 +163,7 @@ func TestCheckDoctorWorkflowRefDrift(t *testing.T) {
 			name:        "config keys differ",
 			workflowRef: "origin/main",
 			mutate: func(t *testing.T, repo string) {
-				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\ntracker:\n  kind: memory\nagent:\n  max_turns: 99\n")
+				writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), "schema: 1\ntracker:\n  kind: hub_native\nagent:\n  max_turns: 99\n")
 			},
 			wantFinding: true,
 			wantStatus:  doctorWarn,
@@ -186,9 +186,9 @@ func TestCheckDoctorWorkflowRefDrift(t *testing.T) {
 			wantFinding: true,
 			wantStatus:  doctorFail,
 			wantDetail: []string{
-				"detent.yaml keys differ: schedule_ownership.enabled, schedule_ownership.key, schedule_ownership.repository",
+				"detent.yaml keys differ: workspace.kind",
 				"working-tree configuration passes validation while ref-backed configuration fails",
-				"schedule_ownership.enabled must be true",
+				"workspace.kind must be one of local_git, filesystem",
 			},
 		},
 		{
@@ -278,7 +278,7 @@ func TestCheckDoctorProjectReportsWorkflowRefDriftWhenEffectiveConfigIsInvalid(t
 	deps.loadWorkflow = workflowconfig.LoadWorkflow
 
 	checks := checkDoctorProject(context.Background(), project, deps, RuntimeSecret{}, false)
-	assertDoctorCheck(t, doctorReport{Checks: checks}, "Project alpha workflow", doctorFail, "schedule_ownership.enabled must be true")
+	assertDoctorCheck(t, doctorReport{Checks: checks}, "Project alpha workflow", doctorFail, "workspace.kind must be one of local_git, filesystem")
 	assertDoctorCheck(t, doctorReport{Checks: checks}, "Project alpha workflow ref drift", doctorFail, "working-tree configuration passes validation")
 }
 
@@ -330,9 +330,9 @@ func TestCheckDoctorProjectRunsWorkflowSourcePolicyBeforeMutableKinds(t *testing
 		mutate func(*workflowconfig.Config)
 	}{
 		{
-			name: "tracker kind drifted",
+			name: "deliverable GitHub integration enabled",
 			mutate: func(cfg *workflowconfig.Config) {
-				cfg.Tracker.Kind = workflowconfig.TrackerMemory
+				cfg.Deliverable.GitHubPullRequest = true
 			},
 		},
 		{
@@ -354,7 +354,7 @@ func TestCheckDoctorProjectRunsWorkflowSourcePolicyBeforeMutableKinds(t *testing
 			t.Parallel()
 
 			sourceRoot := t.TempDir()
-			workflow := validDoctorDependencyWorkflow(false)
+			workflow := validDoctorWorkflow(sourceRoot)
 			workflow.Workspace.Root = sourceRoot
 			tt.mutate(&workflow)
 
@@ -394,7 +394,7 @@ func TestCheckDoctorWorkflowSourcePolicySkipsNonGitHubMutableProject(t *testing.
 		context.Background(),
 		"alpha",
 		globalconfig.Project{Workflow: "WORKFLOW.md", Workdir: "/repo"},
-		workflowconfig.Config{Tracker: workflowconfig.Tracker{Kind: workflowconfig.TrackerMemory}},
+		workflowconfig.Config{Tracker: workflowconfig.Tracker{Kind: workflowconfig.TrackerHubNative}},
 		"/repo",
 		doctorDeps{
 			gitRemoteURL: func(context.Context, string) (string, error) {
@@ -424,7 +424,7 @@ func initDoctorWorkflowSourceRepository(t *testing.T) (string, string) {
 	runDoctorWorkflowSourceGit(t, seed, "config", "user.name", "Detent Test")
 	runDoctorWorkflowSourceGit(t, seed, "config", "user.email", "detent@example.com")
 	writeDoctorWorkflowSourceFile(t, filepath.Join(seed, "WORKFLOW.md"), "Agent direction.\n")
-	writeDoctorWorkflowSourceFile(t, filepath.Join(seed, "detent.yaml"), "schema: 1\ntracker:\n  kind: memory\n")
+	writeDoctorWorkflowSourceFile(t, filepath.Join(seed, "detent.yaml"), "schema: 1\ntracker:\n  kind: hub_native\n")
 	runDoctorWorkflowSourceGit(t, seed, "add", "WORKFLOW.md", "detent.yaml")
 	runDoctorWorkflowSourceGit(t, seed, "commit", "-m", "initial workflow policy")
 	runDoctorWorkflowSourceGit(t, seed, "remote", "add", "origin", remote)
@@ -438,12 +438,12 @@ func initDoctorWorkflowSourceRepository(t *testing.T) (string, string) {
 func writeDoctorWorkflowSourceValidationDrift(t *testing.T, repo string) {
 	t.Helper()
 
-	invalid := "schema: 1\ntracker:\n  kind: github\n  api_key: token\n  github_status_source: label\n  repository: example/issues\nroutines:\n  - name: audit\n    schedule: 0 * * * *\n    prompt: Inspect.\n"
+	invalid := "schema: 1\ntracker:\n  kind: hub_native\nworkspace:\n  kind: unsupported\n"
 	writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), invalid)
 	runDoctorWorkflowSourceGit(t, repo, "add", "detent.yaml")
-	runDoctorWorkflowSourceGit(t, repo, "commit", "-m", "add scheduled routine")
+	runDoctorWorkflowSourceGit(t, repo, "commit", "-m", "change workspace kind")
 	runDoctorWorkflowSourceGit(t, repo, "push", "origin", "main")
-	valid := invalid + "schedule_ownership:\n  enabled: true\n  key: example/production\n  repository: example/coordination\n"
+	valid := strings.Replace(invalid, "kind: unsupported", "kind: local_git", 1)
 	writeDoctorWorkflowSourceFile(t, filepath.Join(repo, "detent.yaml"), valid)
 }
 

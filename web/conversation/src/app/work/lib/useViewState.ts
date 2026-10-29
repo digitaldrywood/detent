@@ -1,3 +1,4 @@
+import type { SavedView } from "./savedViews.tsx";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import React from "react";
 
@@ -22,6 +23,7 @@ function viewSearch(state: WorkViewState): Record<string, unknown> {
 
 export function useViewState(
   projectId: string | null,
+  savedView?: SavedView,
 ): readonly [WorkViewState, (next: WorkViewState) => void] {
   const navigate = useNavigate();
   const http = useWorkHttp();
@@ -31,14 +33,15 @@ export function useViewState(
   search.current = searchStr;
   const scope = JSON.stringify([client.http.origin, client.http.apiBase, client.bootstrap.organization.id,
     client.bootstrap.actor?.principal_id, viewScopeKey(projectId)]);
-  const cached = React.useMemo(() => readStoredViewState(scope) ?? DEFAULT_VIEW_STATE, [scope]);
+  const cached = React.useMemo(() => savedView?.state ?? readStoredViewState(scope) ?? DEFAULT_VIEW_STATE, [scope, savedView]);
   const [resolved, setResolved] = React.useState({ scope, view: cached });
   const session = React.useRef<{ scope: string; changed: boolean; save: (next: WorkViewState) => void } | null>(null);
   const writes = React.useRef<Promise<unknown>>(Promise.resolve());
-  const fallback = resolved.scope === scope ? resolved.view : cached;
+  const fallback = savedView?.state ?? (resolved.scope === scope ? resolved.view : cached);
   const view = searchStr.replace(/^\?/, "").length > 0 ? parseViewState(searchStr) : fallback;
 
   React.useEffect(() => {
+    if (savedView !== undefined) return;
     const controller = new AbortController();
     const initialSearch = search.current;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -74,17 +77,17 @@ export function useViewState(
       clearTimeout(timer);
       flush();
     };
-  }, [http, navigate, projectId, scope]);
+  }, [http, navigate, projectId, scope, savedView]);
 
   const setView = React.useCallback((next: WorkViewState) => {
     const current = session.current;
-    if (current?.scope === scope) {
+    if (savedView === undefined && current?.scope === scope) {
       current.changed = true;
       current.save(next);
     }
     setResolved({ scope, view: next });
-    void navigate({ to: ".", search: viewSearch(next), replace: true });
-  }, [navigate, scope]);
+    void navigate({ to: ".", search: { ...viewSearch(next), ...(savedView === undefined ? {} : { edited: "true" }) }, replace: true });
+  }, [navigate, scope, savedView]);
 
   return [view, setView] as const;
 }

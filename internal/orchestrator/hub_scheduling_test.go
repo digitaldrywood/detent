@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hostpressure"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -194,12 +195,8 @@ func TestHubSchedulingCycle(t *testing.T) {
 				state.RateLimits = &telemetry.RateLimits{GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 0, Limit: 5000, Used: 5000, ResetAt: &resetAt}}
 			}
 			state.Retry["preserved"] = Retry{Attempt: 3, DueAt: now.Add(time.Hour)}
-			state.InstantFailures["preserved"] = InstantFailure{Count: 2}
-			state.RepeatedFailures["preserved"] = RepeatedFailure{Count: 2}
 			state.FailureBreaker.Failures["existing"] = []ProjectFailure{{IssueID: "preserved", At: now.Add(-time.Minute)}}
 			beforeRetry := state.Retry["preserved"]
-			beforeInstant := state.InstantFailures["preserved"]
-			beforeRepeated := state.RepeatedFailures["preserved"]
 			beforeBreaker := cloneProjectFailureBreaker(state.FailureBreaker)
 
 			if test.capacityWait == "quota-recovered" {
@@ -302,8 +299,8 @@ func TestHubSchedulingCycle(t *testing.T) {
 				if !strings.Contains(state.LastRefreshError, "Hub unavailable") || !state.Snapshot(now).Refresh.Degraded() {
 					t.Fatalf("refresh = %#v", state.Snapshot(now).Refresh)
 				}
-				if !reflect.DeepEqual(state.Retry["preserved"], beforeRetry) || !reflect.DeepEqual(state.InstantFailures["preserved"], beforeInstant) || !reflect.DeepEqual(state.RepeatedFailures["preserved"], beforeRepeated) || !reflect.DeepEqual(state.FailureBreaker, beforeBreaker) {
-					t.Fatalf("outage changed work budgets: retry=%#v instant=%#v repeated=%#v breaker=%#v", state.Retry, state.InstantFailures, state.RepeatedFailures, state.FailureBreaker)
+				if !reflect.DeepEqual(state.Retry["preserved"], beforeRetry) || !reflect.DeepEqual(state.FailureBreaker, beforeBreaker) {
+					t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
 				}
 				if state.PollInterval <= cfg.PollInterval {
 					t.Fatalf("outage poll interval = %s, want backoff above %s", state.PollInterval, cfg.PollInterval)
@@ -425,8 +422,8 @@ func TestHubSchedulingPreservesOverloadRetryAcrossAdmissions(t *testing.T) {
 			if retained == test.wantReleased || claimed != (hadClaim && !test.wantReleased) {
 				t.Fatalf("retry retained=%t claimed=%t, want released=%t", retained, claimed, test.wantReleased)
 			}
-			if len(state.InstantFailures) != 0 || len(state.RepeatedFailures) != 0 || len(state.BackendOutages) != 0 {
-				t.Fatal("provider overload spent issue failure allowance or created a backend outage")
+			if len(state.BackendOutages) != 0 {
+				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
 			}
 			if test.wantReleased {
 				return
@@ -508,6 +505,7 @@ func TestHubSchedulingHeartbeatPreservesClaimedIssue(t *testing.T) {
 }
 
 type hubSchedulingSource struct {
+	repository      string
 	admission       tracker.NativeAdmissionContext
 	execution       runpkg.Execution
 	issues          []connector.Issue
@@ -546,7 +544,11 @@ func (s *hubSchedulingSource) HeartbeatInterval() time.Duration {
 func (s *hubSchedulingSource) FetchCandidateIssues(ctx context.Context, request SchedulingRequest) ([]connector.Issue, error) {
 	s.fetches++
 	s.request = request
-	if request.Repository != "acme/widgets" {
+	repository := s.repository
+	if repository == "" {
+		repository = "acme/widgets"
+	}
+	if request.Repository != repository {
 		return nil, errors.New("unexpected repository")
 	}
 	if s.fetchError != nil {
@@ -720,6 +722,7 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
 		name            string
+		pressure        string
 		state           string
 		setup           func(*State, connector.Issue)
 		want            bool
@@ -771,8 +774,12 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 		{name: "running work never preempted", state: "Merging", knownWait: dispatchSkipAlreadyRunning, setup: func(s *State, issue connector.Issue) {
 			s.Running[issue.ID] = Running{Issue: issue, cancel: func() { t.Error("preview cancelled running work") }}
 		}},
-		{name: "deferred completion keeps its owner", state: "Todo", knownWait: dispatchSkipCompletionDeferred, setup: func(s *State, issue connector.Issue) {
+		{name: "completion payload alone owns no claim", state: "Todo", want: true, setup: func(s *State, issue connector.Issue) {
 			s.deferredCompletions[issue.ID] = deferredCompletion{Running: Running{Issue: issue}}
+		}},
+		{name: "completion lease keeps its owner", state: "Todo", knownWait: dispatchSkipAlreadyClaimed, setup: func(s *State, issue connector.Issue) {
+			s.deferredCompletions[issue.ID] = deferredCompletion{Running: Running{Issue: issue}}
+			s.Claimed[issue.ID] = Claimed{Issue: issue, LeaseExpiresAt: now.Add(time.Hour)}
 		}},
 		{name: "claimed work keeps its owner", state: "Todo", knownWait: dispatchSkipAlreadyClaimed, setup: func(s *State, issue connector.Issue) {
 			s.Claimed[issue.ID] = Claimed{Issue: issue}
@@ -806,12 +813,8 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 			s.BackendOutages["github"] = BackendOutage{Kind: githubRESTCapacityKind, ResumeAt: now.Add(time.Hour)}
 			s.Retry[issue.ID] = Retry{Issue: issue, DueAt: now.Add(-time.Minute), Attempt: 2}
 		}},
-		{name: "io pressure hold refuses readiness before a claim", state: "Merging", native: true, setup: func(s *State, issue connector.Issue) {
-			s.IOPressure.DispatchHeld = true
-		}},
-		{name: "memory pressure hold refuses readiness before a claim", state: "Todo", native: true, setup: func(s *State, issue connector.Issue) {
-			s.MemoryPressure.DispatchHeld = true
-		}},
+		{name: "io pressure hold refuses readiness before a claim", state: "Merging", native: true, pressure: "io"},
+		{name: "memory pressure hold refuses readiness before a claim", state: "Todo", native: true, pressure: "memory"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, MaxConcurrentAgentsByState: map[string]int{"Merging": 1}, ActiveStates: []string{"Merging", "Rework", "Todo"}, TerminalStates: []string{"Done"}, Project: schedulerProjectCandidate("widgets"), SchedulingRepository: "acme/widgets"})
@@ -827,6 +830,15 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 				backend = &nativeHubSchedulingConnector{&hubSchedulingConnector{}}
 			}
 			o := Orchestrator{cfg: cfg, connector: backend, scheduling: source, now: func() time.Time { return now }}
+			switch test.pressure {
+			case "io":
+				o.cfg.IOPressureFullAvg10Max = 5
+				o.readIOPressure = pressureReader(now, hostpressure.Sample{Full: hostpressure.Pressure{Avg10: 6}}, nil)
+			case "memory":
+				o.cfg.MemoryPressureSomeAvg60Max = 5
+				o.readMemoryPressure = pressureReader(now, hostpressure.Sample{Some: hostpressure.Pressure{Avg60: 6}}, nil)
+			}
+
 			state := newState(cfg)
 			if test.setup != nil {
 				test.setup(&state, issue)
@@ -863,6 +875,16 @@ func TestHubSchedulingReadinessBeforeClaim(t *testing.T) {
 			}
 			if ready := source.request.CandidateReady(t.Context(), issue); ready != test.want {
 				t.Errorf("ready = %t, want %t", ready, test.want)
+			}
+			if payload, present := state.deferredCompletions[issue.ID]; present {
+				delete(state.deferredCompletions, issue.ID)
+				if ready := source.request.CandidateReady(t.Context(), issue); ready != test.want {
+					t.Fatalf("wiping completion payload changed readiness to %t", ready)
+				}
+				if waits := source.request.CandidateKnownWait(issue); waits != (test.knownWait != "") {
+					t.Fatal("wiping completion payload changed ownership")
+				}
+				state.deferredCompletions[issue.ID] = payload
 			}
 			observed := state.ProjectDiagnostics(nil, time.Now())
 			if len(observed.Admissions) == 0 || observed.Admissions[0].IssueID != issue.ID || observed.Admissions[0].Predicate == "" || ((observed.Admissions[0].Result == "eligible") != test.want) {

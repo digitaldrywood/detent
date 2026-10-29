@@ -3,6 +3,7 @@ package hubclient
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -56,6 +57,21 @@ func (e *nativeExecution) RecoverChangeSource(ctx context.Context) (workspace.Ch
 	if err != nil {
 		return workspace.ChangeSource{}, err
 	}
+	recovery := e.Recovery()
+	selected, selectedChange := recovery.SourceVersionID, detail.Change.ID
+	e.mu.Lock()
+	if e.change != nil && e.change.VersionID != "" {
+		selected, selectedChange = e.change.VersionID, e.change.ChangeID
+	} else if e.recoveredSource != nil {
+		selected, selectedChange = e.recoveredSource.VersionID, e.recoveredSource.ChangeID
+	} else if recovery.Change != nil && recovery.Change.VersionID == selected {
+		selectedChange = recovery.Change.ChangeID
+	}
+	canAdvance := e.change == nil && e.retainedSource == nil && publishedChangeSourceSupersedes(detail, selected, recovery)
+	e.mu.Unlock()
+	if selected != "" && (selectedChange != detail.Change.ID || selected != detail.Change.CurrentVersion && !canAdvance) {
+		return workspace.ChangeSource{}, fmt.Errorf("%w (Change %q, selected version %q, current version %q)", runner.ErrChangeSourceVersionSuperseded, detail.Change.ID, selected, detail.Change.CurrentVersion)
+	}
 	if detail.Change.CurrentVersion == "" {
 		return workspace.ChangeSource{}, nil
 	}
@@ -64,6 +80,7 @@ func (e *nativeExecution) RecoverChangeSource(ctx context.Context) (workspace.Ch
 			continue
 		}
 		source := workspace.ChangeSource{Version: version}
+		source.Transferred = version.ID == e.Recovery().SourceVersionID
 		for _, previous := range detail.Versions {
 			if previous.Number <= 0 || previous.Number >= version.Number || previous.Repository != version.Repository || previous.Source == nil ||
 				previous.Source.Format != "git-bundle" || previous.Source.HeadSHA != previous.HeadSHA || previous.Source.BaseSHA != previous.BaseSHA ||
@@ -98,6 +115,30 @@ func (e *nativeExecution) RecoverChangeSource(ctx context.Context) (workspace.Ch
 		return source, nil
 	}
 	return workspace.ChangeSource{}, runner.ErrNativeRecoveryRequired
+}
+
+func publishedChangeSourceSupersedes(detail tracker.ChangeDetail, selected string, recovery tracker.NativeRecovery) bool {
+	var previous, current *tracker.ChangeVersion
+	for i := range detail.Versions {
+		version := &detail.Versions[i]
+		if version.ID == selected {
+			previous = version
+		}
+		if version.ID == detail.Change.CurrentVersion {
+			current = version
+		}
+	}
+	if previous == nil || current == nil || previous.ChangeID != detail.Change.ID || current.ChangeID != detail.Change.ID ||
+		previous.Number <= 0 || previous.Number >= current.Number || previous.Repository != current.Repository || previous.Source == nil || current.Source == nil {
+		return false
+	}
+	if owner := recovery.SourceAttempt(); owner != nil && owner.Checkpoint.PreservesSource() {
+		checkpoint := owner.Checkpoint
+		if checkpoint.UncertainForgeEffect() || checkpoint.HeadSHA != previous.HeadSHA && checkpoint.HeadSHA != current.HeadSHA || checkpoint.WorktreeState != "clean" && checkpoint.WorktreeState != "unpushed" {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *nativeExecution) requireRecoveredSource(detail tracker.ChangeDetail, diff tracker.AttemptDiffRequest) error {

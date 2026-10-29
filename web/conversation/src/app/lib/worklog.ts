@@ -1,7 +1,7 @@
 import type { Message } from "../../contracts/index.ts";
 import { readAttention, readIssueProposal, readIssueResult } from "../../contracts/index.ts";
 
-/** True for a status or tool message that carries one of the cards (B.8.6). */
+/** True for a status or tool message that carries one of the cards. */
 export function carriesCard(message: Message): boolean {
   if (message.kind !== "status" && message.kind !== "tool") return false;
   return (

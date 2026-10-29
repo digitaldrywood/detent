@@ -3,9 +3,11 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -192,7 +194,7 @@ func TestConversationStoreCreateReadAndList(t *testing.T) {
 			t.Fatalf("next cursor = %q, want empty", next)
 		}
 		// Settled sorts after every active conversation, however recent its
-		// own activity is (decisions section 14).
+		// own activity is.
 		wantIDs := []string{shared.ID, newer.ID, older.ID, settled.ID}
 		if len(got) != len(wantIDs) {
 			t.Fatalf("listConversations() returned %d conversations, want %d: %#v", len(got), len(wantIDs), got)
@@ -658,6 +660,128 @@ func TestConversationStoreEvents(t *testing.T) {
 	if got.EventSeq != 0 || len(events) != 0 {
 		t.Fatalf("rollback left event_seq=%d events=%d", got.EventSeq, len(events))
 	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("external content stays isolated across conversations and organizations", func(t *testing.T) {
+		objects := &conversationContentFixture{}
+		f.store.contents = objects
+		f.store.database = f.service.database
+		chat := &conversationService{server: f.service, store: f.store}
+		response := performHubAPIRequest(t, f.service, http.MethodPost, "/api/v2/organizations", testHubAdminToken, map[string]any{"name": "Second organization"})
+		requireNativeStatus(t, response, http.StatusCreated)
+		var organization nativeOrganization
+		decodeHubResponse(t, response, &organization)
+		foreign := newNativeFixture(t, f.service, organization.ID, "second-org-project")
+		records := []conversationRecord{}
+		text := strings.Repeat("shared tool output ", 200)
+		for index := range 4 {
+			record := f.record(f.owner, "content", now)
+			if index >= 2 {
+				record.OrganizationID = organization.ID
+				record.ProjectID = foreign.project.ID
+			}
+			record = f.create(t, record)
+			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleSystem, Kind: conversation.MessageTool, Delivery: conversation.DeliveryCompleted, Text: text, Data: []byte("{}"), Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: f.owner}, CreatedAt: now, UpdatedAt: now}
+			ctx, err := chat.prepareContents(t.Context(), string(record.OrganizationID), string(record.ProjectID), f.owner, message)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tx := f.tx(t)
+			if err := f.store.appendMessage(ctx, tx, &message); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.store.appendEvent(ctx, tx, record.ID, conversation.EventMessageAccepted, projectMessage(message), now); err != nil {
+				t.Fatal(err)
+			}
+			f.commit(t, tx)
+			records = append(records, record)
+		}
+		var ids []string
+		for _, record := range records {
+			messages, err := f.store.listMessages(t.Context(), f.service.database.reader, record.ID, 0, 50)
+			if err != nil || len(messages) != 1 || messages[0].Text != text {
+				t.Fatalf("content read for %s: %v", record.ID, err)
+			}
+			ids = append(ids, messages[0].ContentID)
+			replay, err := f.store.replayEvents(t.Context(), f.service.database.reader, record.ID, 0)
+			if err != nil || len(replay) != 1 {
+				t.Fatalf("replay for %s: %v", record.ID, err)
+			}
+			var got conversationMessageResource
+			if err := json.Unmarshal(replay[0].Data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.ConversationID != record.ID || got.Text != text {
+				t.Fatal("replay crossed a conversation boundary")
+			}
+		}
+		if ids[0] != ids[1] || ids[2] != ids[3] || ids[0] == ids[2] || len(objects.content) != 2 {
+			t.Fatalf("org deduplication=%v objects=%d", ids, len(objects.content))
+		}
+		if _, err := f.store.readConversation(t.Context(), f.service.database.reader, f.organization, f.project.ID, records[2].ID); err == nil {
+			t.Fatal("foreign conversation was readable")
+		}
+		f.store.contents = nil
+		for index, record := range records {
+			tool := "tool-" + strconv.Itoa(index)
+			data, err := json.Marshal(map[string]string{"tool": tool, "item_id": record.ID, "status": "running"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleSystem, Kind: conversation.MessageTool, Text: "Running " + tool, Data: data, Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}, CreatedAt: now, UpdatedAt: now}
+			tx := f.tx(t)
+			if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventMessageAccepted, projectMessage(message), now); err != nil {
+				t.Fatal(err)
+			}
+			for _, status := range []string{"completed", "saved"} {
+				message.Text = status + " " + tool
+				message.Data, err = json.Marshal(map[string]string{"tool": tool, "item_id": record.ID, "status": status})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := chat.updateMessage(t.Context(), tx, message, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.commit(t, tx)
+			replay, err := f.store.replayEvents(t.Context(), f.service.database.reader, record.ID, 1)
+			if err != nil || len(replay) != 3 {
+				t.Fatalf("inline tool replay: events=%d error=%v", len(replay), err)
+			}
+			for revision, status := range []string{"running", "completed", "saved"} {
+				var got struct {
+					Text string
+					Data map[string]string
+				}
+				if err := json.Unmarshal(replay[revision].Data, &got); err != nil {
+					t.Fatal(err)
+				}
+				wantText := status + " " + tool
+				if revision == 0 {
+					wantText = "Running " + tool
+				}
+				if got.Text != wantText || got.Data["tool"] != tool || got.Data["item_id"] != record.ID || got.Data["status"] != status {
+					t.Fatalf("inline revision crossed a boundary: %+v", got)
+				}
+			}
+			var oversized int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM conversation_events WHERE conversation_id=? AND (length(CAST(body_json AS BLOB))>2048 OR json_type(body_json,'$.text') IS NOT NULL OR json_type(body_json,'$.data') IS NOT NULL)`, record.ID).Scan(&oversized); err != nil || oversized != 0 {
+				t.Fatalf("noncompact events=%d error=%v", oversized, err)
+			}
+		}
+		f.store.contents = objects
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversation_messages SET content_attachment_id=? WHERE conversation_id=?", ids[2], records[0].ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.store.listMessages(t.Context(), f.service.database.reader, records[0].ID, 0, 50); err == nil {
+			t.Fatal("foreign object reference was hydrated")
+		}
+	})
+
 }
 
 func TestConversationStoreStartsAndAudience(t *testing.T) {

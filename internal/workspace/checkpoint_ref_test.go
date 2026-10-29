@@ -19,6 +19,7 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 	owned := func(ctx context.Context) error { return ctx.Err() }
 	for _, test := range []struct {
 		name        string
+		finalize    bool
 		edit        func(t *testing.T, path string)
 		validate    func(context.Context) error
 		want        error
@@ -27,6 +28,7 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 		transaction *portableReworkCheckpointCase
 	}{
 		{name: "runner killed mid-stage resumes elsewhere", validate: owned},
+		{name: "completed source finalizes apart from survivors", validate: owned, finalize: true},
 		{name: "clean environment templates restore elsewhere", validate: owned, templates: map[string]string{".env.example": "API_TOKEN=''\n", ".envrc.example": "export API_TOKEN=''\n"}},
 		{name: "unfinished two-commit rework restores exact transaction", validate: owned, transaction: &portableReworkCheckpointCase{}},
 		{name: "native alias drift", validate: owned, transaction: &portableReworkCheckpointCase{alias: "local-alias"}},
@@ -148,6 +150,33 @@ func TestCheckpointRefRestoresOnAnotherRunner(t *testing.T) {
 			}
 			if quarantined := runGit(t, first, "worktree", "list", "--porcelain"); strings.Count(quarantined, "worktree ") != 2 {
 				t.Fatalf("matching worktree was quarantined:\n%s", quarantined)
+			}
+
+			if test.finalize {
+				writeCheckpointFile(t, info.Path, "committed.go", "late survivor write\n")
+				restored, restoredIssue, err := source.RestoreCheckpointForFinalization(t.Context(), info, issue, checkpoint)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if restored.Path == info.Path || restored.Branch == info.Branch {
+					t.Fatal("finalization reused survivor workspace")
+				}
+				if tree := strings.TrimSpace(runGit(t, restored.Path, "write-tree")); tree != checkpoint.TreeSHA {
+					t.Fatalf("staged tree=%s, want checkpoint %s", tree, checkpoint.TreeSHA)
+				}
+				if got, err := os.ReadFile(filepath.Join(restored.Path, "committed.go")); err != nil || string(got) != "package committed // edited\n" {
+					t.Fatalf("captured source changed: %q %v", got, err)
+				}
+				if _, err := source.FinalizeNativeWork(t.Context(), restored, restoredIssue, owned); err != nil {
+					t.Fatal(err)
+				}
+				if tree := strings.TrimSpace(runGit(t, restored.Path, "rev-parse", "HEAD^{tree}")); tree != checkpoint.TreeSHA {
+					t.Fatalf("finalized tree=%s, want checkpoint %s", tree, checkpoint.TreeSHA)
+				}
+				if got, err := os.ReadFile(filepath.Join(info.Path, "committed.go")); err != nil || string(got) != "late survivor write\n" {
+					t.Fatalf("original workspace changed: %q %v", got, err)
+				}
+				return
 			}
 
 			restorer, err := NewLocalGit(LocalGitOptions{Root: filepath.Join(t.TempDir(), "b"), SourceRoot: second, AutoBranch: true})

@@ -9,12 +9,10 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/observability"
-	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
-	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 const (
@@ -218,14 +216,10 @@ func (o *Orchestrator) stalenessMergeQueueItems(state *State) []staleness.Item {
 
 func (o *Orchestrator) stalenessItem(ctx context.Context, issue connector.Issue, state *State, now time.Time) staleness.Item {
 	item := o.stalenessBasicItem(issue, state)
+	if normalizeState(issue.State) == "blocked" {
+		item.WaitingOnHuman = o.currentBlockedHumanIntent(ctx, state, issue)
+	}
 	timeline, _ := o.issueWorkflowTimeline(ctx, issue)
-	parkCause, recordedPark := recordedStalenessPark(issue, state, timeline.Events)
-	parkCauseKey, parkCauseStale, parkCauseDetail, parkCauseSince := staleRecordedParkCause(issue, state, item.EnteredAt, parkCause, o.cfg.TerminalStates, now)
-	item.RecordedPark = recordedPark
-	item.ParkCauseKey = parkCauseKey
-	item.ParkCauseStale = parkCauseStale
-	item.ParkCauseDetail = parkCauseDetail
-	item.ParkCauseSince = parkCauseSince
 	item.LaneVisits = stalenessLaneVisits(timeline.Events)
 	return item
 }
@@ -254,142 +248,11 @@ func (o *Orchestrator) stalenessBasicItem(issue connector.Issue, state *State) s
 	}
 }
 
-func recordedStalenessPark(issue connector.Issue, state *State, events []store.WorkflowPhaseEvent) (string, bool) {
-	if normalizeState(issue.State) != normalizeState("Blocked") {
-		return "", false
-	}
-	var blocked *Blocked
-	if current, ok := state.Blocked[strings.TrimSpace(issue.ID)]; ok && blockedEntryMatchesCurrent(issue, current.BlockedAt) {
-		blocked = &current
-	}
-	latest, _ := latestCurrentLaneEntry(events, issue.State)
-	if !latest.StartedAt.IsZero() && !blockedEntryMatchesCurrent(issue, latest.StartedAt) {
-		latest = store.WorkflowPhaseEvent{}
-	}
-	metadata, _ := workflowLaneMetadataFromJSON(latest.MetadataJSON)
-	for _, cause := range []string{
-		strings.TrimSpace(issue.BlockerReason),
-		blockedReason(blocked),
-		blockedRecoveryCause(blocked),
-		strings.TrimSpace(latest.Reason),
-		blockedRecoveryMetadataCause(metadata.BlockedRecovery),
-	} {
-		if stickyBlockReason(cause) {
-			return cause, true
-		}
-	}
-	if blocked != nil && blocked.Source == BlockedSourceOperatorStop {
-		if cause := firstNonBlank(blocked.StopReason, blocked.Reason); cause != "" {
-			return cause, true
-		}
-	}
-	if blocked != nil && blocked.Recovery != nil {
-		owner := strings.ToLower(strings.TrimSpace(blocked.Recovery.Owner))
-		if owner == blockedRecoveryOwnerHuman || owner == blockedRecoveryOwnerOperator {
-			if cause := blockedRecoveryMetadataCause(blocked.Recovery); cause != "" {
-				return cause, true
-			}
-		}
-	}
-	if metadata.BlockedRecovery != nil && strings.EqualFold(strings.TrimSpace(metadata.BlockedRecovery.Owner), blockedRecoveryOwnerHuman) {
-		if cause := blockedRecoveryMetadataCause(metadata.BlockedRecovery); cause != "" {
-			return cause, true
-		}
-	}
-	attribution := state.laneProvenance[workflowLaneEntryKey(issue)]
-	if provenance.NormalizeOrigin(attribution.Origin) != provenance.OriginHuman {
-		return "", false
-	}
-	cause := firstNonBlank(strings.TrimSpace(issue.BlockerReason), blockedReason(blocked), blockedStopReason(blocked), workpadParkCause(issue))
-	return cause, cause != ""
-}
-
-func blockedReason(blocked *Blocked) string {
-	if blocked == nil {
-		return ""
-	}
-	return strings.TrimSpace(blocked.Reason)
-}
-
-func blockedStopReason(blocked *Blocked) string {
-	if blocked == nil {
-		return ""
-	}
-	return strings.TrimSpace(blocked.StopReason)
-}
-
-func blockedRecoveryCause(blocked *Blocked) string {
-	if blocked == nil || blocked.Recovery == nil {
-		return ""
-	}
-	return blockedRecoveryMetadataCause(blocked.Recovery)
-}
-
 func blockedRecoveryMetadataCause(recovery *workflowLaneBlockedRecoveryMetadata) string {
 	if recovery == nil {
 		return ""
 	}
 	return firstNonBlank(strings.TrimSpace(recovery.Cause), strings.TrimSpace(recovery.HoldReason))
-}
-
-func workpadParkCause(issue connector.Issue) string {
-	signal := issue.WorkpadSignal
-	if signal == nil || strings.TrimSpace(signal.Status) != workpad.StatusBlocked {
-		return ""
-	}
-	if cause := strings.TrimSpace(signal.HumanAction); cause != "" {
-		return cause
-	}
-	for _, blocker := range signal.Blockers {
-		if cause := strings.TrimSpace(blocker.Reason); cause != "" {
-			return cause
-		}
-	}
-	return ""
-}
-
-func staleRecordedParkCause(issue connector.Issue, state *State, enteredAt time.Time, cause string, terminalStates []string, now time.Time) (string, bool, string, time.Time) {
-	keyParts := []string{strings.TrimSpace(cause)}
-	since := enteredAt.UTC()
-	if blocked, ok := state.Blocked[strings.TrimSpace(issue.ID)]; ok {
-		if !blocked.BlockedAt.IsZero() {
-			since = blocked.BlockedAt.UTC()
-		}
-		for _, evidence := range blocked.BlockerEvidence {
-			status := strings.ToLower(strings.TrimSpace(evidence.Status))
-			expired := evidence.ExpiresAt != nil && !evidence.ExpiresAt.IsZero() && !evidence.ExpiresAt.After(now)
-			if status != blockerEvidenceStatusCleared && status != blockerEvidenceStatusUnverifiable && !evidence.Unverifiable && !expired {
-				continue
-			}
-			recordedAtKey := ""
-			if evidence.RecordedAt != nil {
-				recordedAtKey = stalenessEventTimestampKey(*evidence.RecordedAt)
-			}
-			expiresAtKey := ""
-			if evidence.ExpiresAt != nil {
-				expiresAtKey = stalenessEventTimestampKey(*evidence.ExpiresAt)
-			}
-			keyParts = append(keyParts, evidence.Type, evidence.Reference, evidence.Reason, status, recordedAtKey, expiresAtKey)
-			if expired {
-				since = evidence.ExpiresAt.UTC()
-			} else if evidence.RecordedAt != nil && !evidence.RecordedAt.IsZero() {
-				since = evidence.RecordedAt.UTC()
-			}
-			fallback := "the recorded park evidence is no longer verifiable"
-			if expired {
-				fallback = "the recorded park evidence expired"
-			}
-			detail := firstNonBlank(strings.TrimSpace(evidence.Detail), strings.TrimSpace(evidence.Reason), fallback)
-			return strings.Join(keyParts, "\x00"), true, detail, since
-		}
-	}
-	if len(issue.BlockedBy) > 0 && !blockedRefsUnresolved(issue.BlockedBy, terminalStates) {
-		for _, ref := range issue.BlockedBy {
-			keyParts = append(keyParts, ref.Identifier, ref.ID, ref.State, ref.TrackerState)
-		}
-		return strings.Join(keyParts, "\x00"), true, "the recorded dependencies no longer block this item", since
-	}
-	return strings.Join(keyParts, "\x00"), false, "", since
 }
 
 func stalenessLaneVisits(events []store.WorkflowPhaseEvent) []staleness.LaneVisit {

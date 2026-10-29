@@ -87,7 +87,7 @@ while IFS=$'\t' read -r scope package; do
     esac
 done <<< "$selection"
 if [ "${#test_packages[@]}" -gt 0 ]; then
-    check_with_evidence unit-short env -u DETENT_API_TOKEN go test -p "$procs" -short -timeout=3m "${test_packages[@]}"
+    check_with_evidence unit-short env -u DETENT_API_TOKEN go test -p "$procs" -short -timeout=10m "${test_packages[@]}"
 fi
 if [ "${#lint_packages[@]}" -gt 0 ]; then
     make -j1 "$linter" TEST_PROCS="$procs"

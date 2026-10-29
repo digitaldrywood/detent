@@ -20,11 +20,22 @@ type NativeBoardChange struct {
 	External *ChangeExternalReference `json:"external,omitempty"`
 }
 
+type NativeBoardExecution struct {
+	ID        string                   `json:"id"`
+	Running   bool                     `json:"running"`
+	Stage     string                   `json:"stage,omitempty"`
+	RunnerID  string                   `json:"runner_id,omitempty"`
+	Identity  *NativeExecutionIdentity `json:"identity,omitempty"`
+	StartedAt *time.Time               `json:"started_at,omitempty"`
+	ExpiresAt time.Time                `json:"expires_at"`
+}
+
 type NativeBoardCard struct {
-	Issue      NativeIssue         `json:"issue"`
-	StatusLine string              `json:"status_line"`
-	Attempt    *NativeBoardAttempt `json:"attempt"`
-	Change     *NativeBoardChange  `json:"change"`
+	Issue      NativeIssue           `json:"issue"`
+	StatusLine string                `json:"status_line"`
+	Attempt    *NativeBoardAttempt   `json:"attempt"`
+	Execution  *NativeBoardExecution `json:"execution,omitempty"`
+	Change     *NativeBoardChange    `json:"change"`
 }
 
 type NativeBoardDelta struct {

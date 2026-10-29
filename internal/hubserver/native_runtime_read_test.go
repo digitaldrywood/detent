@@ -2,16 +2,23 @@ package hubserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"database/sql/driver"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"modernc.org/sqlite"
 
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
@@ -78,10 +85,24 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	previous, count := 0, 0
+	if err := f.service.maintainNativeRetention(t.Context(), now); err != nil {
+		t.Fatal(err)
+	}
+	previous, count, explanationCount := 0, 0, 0
 	for _, history := range []int{1, 64, 256} {
 		t.Run(strconv.Itoa(history), func(t *testing.T) {
 			for i := previous; i < history; i++ {
+				decisionTx, err := db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := appendNativeHistory(t.Context(), decisionTx, scope, string(f.issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped", Reason: "recorded refusal", At: now}}, now); err != nil {
+					decisionTx.Rollback()
+					t.Fatal(err)
+				}
+				if err := decisionTx.Commit(); err != nil {
+					t.Fatal(err)
+				}
 				old := version
 				old.ID, old.Number = newNativeID("version"), int64(i+1000)
 				raw, err := marshalNative(old)
@@ -105,6 +126,7 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 					}
 				}
 			}
+			projectTestChangeColumns(t, f.service)
 			previous = history
 			q := &runtimeReadQuery{nativeQueryer: db}
 			evidence, err := readNativeRuntime(t.Context(), q, scope, string(f.issue.WorkItemID), "", f.service.config.now())
@@ -149,8 +171,12 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 					t.Fatal(err)
 				}
 				index := "change_evidence_current_idx"
-				if strings.Contains(statement, "FROM change_versions") {
+				if strings.Contains(statement, "v.attempt_id IS NULL") {
+					index = "change_versions_change_attempt_unknown"
+				} else if strings.Contains(statement, "FROM change_versions") {
 					index = "sqlite_autoindex_change_versions_1 (id=?)"
+				} else if strings.Contains(statement, "has_validator IS NULL") {
+					index = "change_evidence_change_unknown"
 				} else if strings.Contains(statement, "SELECT EXISTS") {
 					index = "change_evidence_approval_idx"
 				}
@@ -158,6 +184,20 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 					t.Fatalf("evidence query scans history: %v", plans)
 				}
 			}
+			explanationQuery := &runtimeReadQuery{nativeQueryer: f.service.database.reader}
+			ctx := context.WithValue(t.Context(), explanationReadKey{}, true)
+			current, err := readNativeRuntime(ctx, explanationQuery, scope, string(f.issue.WorkItemID), "", now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if explanationCount == 0 {
+				explanationCount = len(explanationQuery.statements)
+			}
+			result := explain.FromNativeEvidence(current)
+			if len(explanationQuery.statements) != explanationCount || result.RequiredGate.State != projected.RequiredGate.State || result.RequiredGate.Reason != finding || result.Attempt.NativeID != repair || current.LatestDecision == nil || current.NativeCandidateExclusion == nil || current.NativeCandidateExclusion.Data.Decision.Reason != "recorded refusal" {
+				t.Fatalf("explanation lost current evidence or grew with history: queries=%d gate=%+v", len(explanationQuery.statements), result.RequiredGate)
+			}
+			t.Logf("explanation history=%d queries=%d latest_decision=%s", history, len(explanationQuery.statements), current.LatestDecision.ID)
 			t.Logf("%d historical versions: %d runtime queries; indexed current evidence", history, len(q.statements))
 		})
 	}
@@ -170,6 +210,132 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 	projected := explain.FromNativeEvidence(evidence)
 	if evidence.CurrentVersion.VersionID != newVersion.ID || evidence.CurrentVersion.Landing != nil || projected.RequiredGate.State == explain.GateFailed || projected.RequiredGate.State == explain.GatePassed || len(projected.Reasons) != 0 || projected.RequiredGate.ExternalMerge.State != explain.GateUnknown {
 		t.Fatalf("superseding publication retained an old blocker: %#v", projected)
+	}
+	for _, payload := range []string{"dependencies", "validation", "retained_fields", "failure_signature", "gate_identity"} {
+		t.Run(payload, func(t *testing.T) {
+			oversized := evidence
+			current := *evidence.CurrentVersion
+			oversized.CurrentVersion = &current
+			var failure *explain.FailureSignature
+			switch payload {
+			case "dependencies":
+				for runner := range 16 {
+					admission := tracker.NativeRuntimeAdmission{RunnerID: "runner_" + strconv.Itoa(runner), Outcome: "skipped"}
+					for dependency := range 100 {
+						admission.UnresolvedDependencies = append(admission.UnresolvedDependencies, tracker.NativeDependency{ID: tracker.NativeWorkItemID("wi_" + strconv.Itoa(dependency)), Title: strings.Repeat("example ", 256)})
+					}
+					oversized.Admission = append(oversized.Admission, admission)
+				}
+			case "validation":
+				current.Validation = &gate.CommandResult{ReceiptID: "validation_receipt", Command: "make check-landing", HeadSHA: current.HeadSHA, TreeSHA: strings.Repeat("c", 40), ExitCode: 1, Pipeline: &gate.PipelineEvidence{}, Evidence: &gate.CommandEvidence{}}
+				for range 1024 {
+					current.Validation.Pipeline.Timings = append(current.Validation.Pipeline.Timings, gate.PipelineTiming{ReceiptID: "timing_" + strings.Repeat("a", 32), Stage: "landing_validation", Command: "go test " + strings.Repeat("a", 240), HeadSHA: current.HeadSHA, TreeSHA: strings.Repeat("c", 40), StartedAt: now, FinishedAt: now.Add(time.Second)})
+					if len(current.Validation.Evidence.Checks) < 32 {
+						current.Validation.Evidence.Checks = append(current.Validation.Evidence.Checks, gate.CheckObservation{Scope: "unit", Command: "go test " + strings.Repeat("a", 240), HeadSHA: current.HeadSHA, TreeSHA: strings.Repeat("c", 40), StartedAt: now, FinishedAt: now.Add(time.Second)})
+					}
+				}
+				if !current.Validation.Pipeline.Valid() || !current.Validation.Evidence.Valid() {
+					t.Fatal("invalid oversized validation fixture")
+				}
+				raw, err := json.Marshal(current.Validation)
+				if err != nil || len(raw) <= 256*1024 {
+					t.Fatalf("validation fixture does not exceed response budget: %d %v", len(raw), err)
+				}
+
+			case "retained_fields":
+				oversized.Scheduling.Reason = strings.Repeat("large retained reason ", 32768)
+			case "failure_signature":
+				failure = &explain.FailureSignature{Signature: strings.Repeat("failure ", 65536), Count: 1}
+			case "gate_identity":
+				current.Validation = &gate.CommandResult{ReceiptID: strings.Repeat("identity", 65536)}
+			}
+			bounded, err := boundedNativeExplanation(oversized, failure)
+			if payload == "gate_identity" {
+				if err == nil {
+					t.Fatal("oversized retained gate identity escaped final budget")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(bounded)
+			wantGate := explain.FromNativeEvidence(oversized).RequiredGate
+			if err != nil || len(encoded) > 256*1024 || bounded.NativeRuntime == nil || bounded.Identity.IssueID != string(f.issue.WorkItemID) || bounded.RequiredGate.State != wantGate.State || bounded.RequiredGate.EvidenceID != wantGate.EvidenceID || !reflect.DeepEqual(bounded.RequiredGate.LocalValidation, wantGate.LocalValidation) {
+				t.Fatalf("response bound lost current fields: bytes=%d error=%v", len(encoded), err)
+			}
+			if payload == "validation" {
+				validation := bounded.NativeRuntime.CurrentVersion.Validation
+				if validation.Pipeline != nil || validation.Evidence != nil || !slices.Contains(bounded.NativeRuntime.Unavailable, "current_version_validation_evidence_omitted") || current.Validation.Pipeline == nil {
+					t.Fatal("validation compaction lost omission marker or mutated source")
+				}
+			} else if !slices.Contains(bounded.NativeRuntime.Unavailable, "explanation_evidence_truncated") {
+				t.Fatal("missing response omission marker")
+			}
+		})
+	}
+
+}
+
+func TestNativeExplanationIncompleteGateHistory(t *testing.T) {
+	t.Parallel()
+	for _, decision := range []string{"approved", "changes_requested", "checks"} {
+		t.Run(decision, func(t *testing.T) {
+			f := newChangeFixture(t, nil)
+			if decision == "checks" {
+				check := f.rules.RequiredChecks[0]
+				f.rules.RequiredChecks = nil
+				for i := range 65 {
+					next := check
+					next.Name = "test-" + strconv.Itoa(i)
+					f.rules.RequiredChecks = append(f.rules.RequiredChecks, next)
+				}
+				response := performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "many-checks"}, ExpectedID: f.rules.ID, Policy: f.rules})
+				requireNativeStatus(t, response, http.StatusOK)
+			}
+			version := f.publish(t, "current", "")
+			review := decision
+			if decision == "checks" {
+				review = "approved"
+			}
+			path := f.path + "/versions/" + version.ID
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "effective-review"}, Decision: review}), http.StatusOK)
+			for i, check := range version.Checks {
+				result := changeTestResult(version)
+				result.IdempotencyKey, result.CheckRunID = "check-"+strconv.Itoa(i), check.CheckRunID
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/checks", f.token, result), http.StatusOK)
+			}
+			if decision != "checks" {
+				for i := range 65 {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "comment-" + strconv.Itoa(i)}, Decision: "commented", Body: "Still discussing"}), http.StatusOK)
+				}
+			}
+			full := f.detail(t)
+			if full.Summary.NativeReview != review || full.Summary.Checks != "success" {
+				t.Fatalf("invalid complete fixture: %+v", full.Summary)
+			}
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			ctx := context.WithValue(t.Context(), explanationReadKey{}, true)
+			evidence, err := readNativeRuntime(ctx, f.service.database.reader, scope, string(f.issue.WorkItemID), "", f.service.config.now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if evidence.Change.Summary.Status != "evidence_incomplete" || !slices.Contains(evidence.Unavailable, "change_gate_history_truncated") {
+				t.Fatalf("history falsely complete: %+v", evidence.Change.Summary)
+			}
+			for _, oversized := range []bool{false, true} {
+				if oversized {
+					evidence.Scheduling.Reason = strings.Repeat("oversized reason ", 32768)
+				}
+				result, err := boundedNativeExplanation(evidence, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result.RequiredGate.State != explain.GateUnknown || result.RequiredGate.SourceState != explain.SourceUnavailable || result.RequiredGate.EvidenceID != version.ID || !slices.Contains(result.NativeRuntime.Unavailable, "change_gate_history_truncated") {
+					t.Fatalf("truncated history became complete gate: %+v", result.RequiredGate)
+				}
+			}
+		})
 	}
 }
 
@@ -238,9 +404,78 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 					t.Fatalf("bounded runtime projection dropped current registered runner: runners=%d truncated=%v queries=%d error=%v", len(current), truncated, len(currentQuery.statements), err)
 				}
 			}
+			bounded := &runtimeReadQuery{nativeQueryer: f.service.database.reader}
+			explanationRunners, partial, err := readRuntimeRunners(context.WithValue(t.Context(), explanationReadKey{}, true), bounded, scope, now)
+			if err != nil || len(explanationRunners) != min(total, 16) || partial != (total > 16) || len(bounded.statements) != 5 {
+				t.Fatalf("unbounded explanation capacity: runners=%d partial=%v queries=%d error=%v", len(explanationRunners), partial, len(bounded.statements), err)
+			}
+			landingQuery := &runtimeReadQuery{nativeQueryer: f.service.database.reader}
+			landingEvidence := tracker.NativeRuntimeEvidence{Issue: tracker.NativeIssue{State: "Merging"}}
+			landingReady, landingCapacity, err := readAdmissionLandingCapacity(context.WithValue(t.Context(), explanationReadKey{}, true), landingQuery, scope, 0, &landingEvidence, now)
+			if err != nil || landingReady != (total <= 64) || total > 64 && landingCapacity != nativeLandingCapacityUnknown {
+				t.Fatalf("landing capacity lost bounded current facts: ready=%v capacity=%d error=%v", landingReady, landingCapacity, err)
+			}
+			if total <= 64 {
+				rows, err := f.service.database.reader.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+landingQuery.statements[1], landingQuery.arguments[1]...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer rows.Close()
+				for rows.Next() {
+					var id, parent, unused int
+					var plan string
+					if err := rows.Scan(&id, &parent, &unused, &plan); err != nil {
+						t.Fatal(err)
+					}
+					if strings.Contains(plan, "SCAN i") || strings.Contains(plan, "USE TEMP B-TREE FOR ORDER BY") {
+						t.Fatalf("landing capacity scans project history: %s", plan)
+					}
+				}
+				if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+					t.Fatal(err)
+				}
+			}
 			t.Logf("%d runners sharing a host/provider: %d capacity queries", total, len(q.statements))
 		})
 	}
+	for _, sparse := range []string{"ungranted", "removed"} {
+		t.Run(sparse, func(t *testing.T) {
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			currentScope := scope
+			if err := tx.QueryRowContext(t.Context(), "SELECT id FROM runner_identities WHERE organization_id=? ORDER BY id DESC LIMIT 1", scope.organization).Scan(&currentScope.credential.Runner.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			if sparse == "ungranted" {
+				_, err = tx.ExecContext(t.Context(), "DELETE FROM token_grants WHERE organization_id=? AND token_id IN (SELECT token_id FROM runner_identities WHERE organization_id=? AND id<>?)", scope.organization, scope.organization, currentScope.credential.Runner.RunnerID)
+			} else {
+				_, err = tx.ExecContext(t.Context(), "UPDATE runner_identities SET removed_at=? WHERE organization_id=? AND id<>?", formatHubTime(now), scope.organization, currentScope.credential.Runner.RunnerID)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.WithValue(t.Context(), explanationReadKey{}, true)
+			candidates, partial, err := readRuntimeRunners(ctx, tx, scope, now)
+			if err != nil || !partial || len(candidates) != 0 {
+				t.Fatalf("candidate search escaped sparse owner window: count=%d partial=%v err=%v", len(candidates), partial, err)
+			}
+			candidates, partial, err = readRuntimeRunners(ctx, tx, currentScope, now)
+			if err != nil || !partial || len(candidates) != 1 || candidates[0].RunnerID != currentScope.credential.Runner.RunnerID {
+				t.Fatalf("selected runner lost priority: count=%d partial=%v err=%v", len(candidates), partial, err)
+			}
+			if _, err := tx.ExecContext(t.Context(), "DELETE FROM token_grants WHERE organization_id=? AND token_id=(SELECT token_id FROM runner_identities WHERE id=?)", scope.organization, currentScope.credential.Runner.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			candidates, partial, err = readRuntimeRunners(ctx, tx, currentScope, now)
+			if err != nil || !partial || len(candidates) != 0 {
+				t.Fatalf("selected runner bypassed grants: count=%d partial=%v err=%v", len(candidates), partial, err)
+			}
+		})
+	}
+
 	foreignOrganization := tracker.OrganizationID(newNativeID("org"))
 	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO organizations (id, name, created_at) VALUES (?, ?, ?)", foreignOrganization, "Foreign", formatHubTime(now)); err != nil {
 		t.Fatal(err)
@@ -279,6 +514,90 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 	for _, r := range runners {
 		if r.RunnerID == first.binding.RunnerID || r.HostUsed != 1 || r.Used != 0 || r.ProviderCapacity[0].Used != 1 {
 			t.Fatalf("occupancy outside the granted runner page was lost: %#v", r)
+		}
+	}
+}
+
+type capacityCandidateQuery struct {
+	nativeQueryer
+	probe string
+}
+
+func (q capacityCandidateQuery) QueryContext(ctx context.Context, statement string, args ...any) (*sql.Rows, error) {
+	statement = strings.ReplaceAll(statement, "l.expires_at>?", "l.expires_at>? AND "+q.probe+"(l.lease_id)")
+	return q.nativeQueryer.QueryContext(ctx, statement, args...)
+}
+
+func TestExplanationProviderCapacityCandidateWindow(t *testing.T) {
+	var examined atomic.Int64
+	probe := fmt.Sprintf("capacity_probe_%x", sha256.Sum256([]byte(t.TempDir())))
+	if err := sqlite.RegisterScalarFunction(probe, 1, func(_ *sqlite.FunctionContext, _ []driver.Value) (driver.Value, error) {
+		examined.Add(1)
+		return int64(1), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 2, 6, 0, 0, 0, time.UTC)
+	f := newNativeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }}), "", "capacity-window")
+	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+	first := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat, runnerauth.Events)
+	first.enroll(t)
+	publishCapacity(t, f, first, capacityReport(now))
+	issue := f.create(t, "reserved")
+	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", first.redemption.Credential, providerClaim(first, issue, "reserved"))
+	requireNativeStatus(t, response, http.StatusOK)
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	ctx := context.WithValue(t.Context(), explanationReadKey{}, true)
+	previous := 1
+	for _, total := range []int{1024, 2048} {
+		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		for i := previous; i < total; i++ {
+			id := "candidate-" + strconv.Itoa(i)
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO issues(workflow_state_id,native_id,organization_id,project_id,number,title,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,native_created_at,native_updated_at)
+SELECT workflow_state_id,?,organization_id,project_id,?,?,'','open',source_version,source_updated_at,synchronized_at,created_at,updated_at,native_created_at,native_updated_at FROM issues WHERE native_id=?`, id, i+1, id, issue.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO leases(lease_id,issue_id,machine_id,session_id,expires_at,acquired_at,renewed_at,created_at,updated_at) SELECT ?,id,?,?,?,?,?,?,? FROM issues WHERE native_id=?`, id, first.binding.MachineID, id, formatHubTime(now.Add(2*time.Minute)), formatHubTime(now), formatHubTime(now), formatHubTime(now), formatHubTime(now), id); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		previous = total
+		for _, absent := range []bool{false, true} {
+			t.Run(fmt.Sprintf("leases=%d/absent=%v", total, absent), func(t *testing.T) {
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				if absent {
+					if _, err := tx.ExecContext(t.Context(), "DELETE FROM provider_reservations WHERE organization_id=?", scope.organization); err != nil {
+						t.Fatal(err)
+					}
+				}
+				examined.Store(0)
+				snapshot, err := readProviderCapacitySnapshot(ctx, capacityCandidateQuery{nativeQueryer: tx, probe: probe}, scope.organization, now)
+				if got := examined.Load(); got != int64(min(total, 1025)) {
+					t.Errorf("examined %d live lease candidates from %d; want %d", got, total, min(total, 1025))
+				}
+				wantReservations := 1
+				if absent {
+					wantReservations = 0
+				}
+				if err != nil || snapshot.truncated != (total > 1024) || len(snapshot.reservations) != wantReservations {
+					t.Fatalf("reservations=%d partial=%v error=%v", len(snapshot.reservations), snapshot.truncated, err)
+				}
+				evidence, err := readNativeRuntime(ctx, tx, scope, string(issue.WorkItemID), "", now)
+				if err != nil || slices.Contains(evidence.Unavailable, "capacity_projection_truncated") != (total > 1024) {
+					t.Fatalf("unavailable=%v error=%v", evidence.Unavailable, err)
+				}
+			})
 		}
 	}
 }

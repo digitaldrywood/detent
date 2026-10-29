@@ -270,7 +270,7 @@ func newRepositoryWithOrigin(t *testing.T) (root, origin string) {
 	return root, origin
 }
 
-// TestCommitLeavesDeniedPathsOutOfTheCommit is section 18.4 applied to a write:
+// TestCommitLeavesDeniedPathsOutOfTheCommit is the Files contract applied to a write:
 // a path the files channel refuses to show is a path this package refuses to
 // stage, and it says which ones rather than dropping them quietly.
 func TestCommitLeavesDeniedPathsOutOfTheCommit(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/policy"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -32,6 +33,7 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 		name     string
 		fenceErr error
 		retired  bool
+		rejected bool
 	}{
 		{name: "503", fenceErr: completionDeferralAvailabilityError()},
 		{name: "403", fenceErr: &github.StatusError{StatusCode: 403, Err: github.ErrAuthenticationFailed}},
@@ -43,6 +45,10 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 		{name: "canceled read", fenceErr: context.Canceled},
 		{name: "transport", fenceErr: errors.New("connection reset by peer")},
 		{name: "retired native fencing token", fenceErr: fmt.Errorf("%w: stale_fencing_token", runpkg.ErrExecutionAuthorityUnavailable), retired: true},
+		{name: "event rejected", fenceErr: completionDeferralRejection{tracker.PublicationRejection{Category: "event_validation", Field: "data.outcome"}}, rejected: true},
+		{name: "runtime rejected", fenceErr: completionDeferralRejection{tracker.PublicationRejection{Category: "runtime_validation", Field: "data.runtime.activity"}}, rejected: true},
+		{name: "execution rejected", fenceErr: completionDeferralRejection{tracker.PublicationRejection{Category: "execution_validation", Field: "data.finalization"}}, rejected: true},
+		{name: "owner rejected", fenceErr: completionDeferralRejection{tracker.PublicationRejection{Category: "owner_validation", Field: "data.finalization"}}, rejected: true},
 	}
 
 	for _, tt := range tests {
@@ -63,6 +69,20 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
 
 			orch.handleQueuedRunResults(t.Context(), &state, completionDeferralEvent(issue, attemptID, now))
+			if tt.rejected {
+				if len(state.deferredCompletions) != 0 || len(state.Retry) != 0 || len(state.Running) != 0 || len(state.Claimed) != 0 {
+					t.Fatal("rejected completion retained live state")
+				}
+				receipt, err := runtimeStore.WorkAttempt(t.Context(), attemptID)
+				if err != nil || receipt.TerminalState != store.WorkAttemptTerminalFailure || receipt.ErrorClass != "event_publication" || receipt.ErrorMessage != tt.fenceErr.Error() {
+					t.Fatalf("rejected completion receipt = %+v, %v", receipt, err)
+				}
+				orch.retryDeferredCompletions(t.Context(), &state, now.Add(time.Hour))
+				if tracker.fetchCount() != 1 {
+					t.Fatal("rejected completion retried")
+				}
+				return
+			}
 			if tt.retired {
 				if len(state.deferredCompletions) != 0 || len(state.Retry) != 0 || len(state.Running) != 0 || len(state.Claimed) != 0 {
 					t.Fatal("obsolete native completion retained live state")
@@ -92,6 +112,9 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			if receipt.Status != store.WorkAttemptStatusActive || receipt.Phase != deferredCompletionPhase || receipt.WaitReason != connector.TrackerUnavailableCondition || receipt.NextAction != deferredCompletionNextAction {
 				t.Fatalf("deferred work attempt = %#v, want active tracker wait", receipt)
 			}
+			if !receipt.LeaseExpiresAt.After(now) {
+				t.Fatal("completion persistence removed its lease expiry")
+			}
 			if strings.Contains(receipt.WorkerMetadataJSON, `"lane_revocation"`) || len(tracker.comments) != 0 {
 				t.Fatalf("unreadable fence produced a revocation: %s", receipt.WorkerMetadataJSON)
 			}
@@ -105,11 +128,23 @@ func TestCompletionFenceDeferralOutcomes(t *testing.T) {
 			if len(snapshot.Queue) != 1 || snapshot.Queue[0].QueueState != telemetry.QueueStateWaitingOnTracker {
 				t.Fatalf("snapshot queue = %#v, want waiting_on_tracker", snapshot.Queue)
 			}
-			if outcome := orch.dispatchIssueWithOutcome(t.Context(), &state, issue, 1, now, ""); outcome.dispatched || outcome.reason != dispatchSkipCompletionDeferred {
-				t.Fatalf("dispatch while completion deferred = %#v, want suppressed", outcome)
+			if reason := knownDispatchWaitReason(issue, &state, nil, cfg.TerminalStates); reason != dispatchSkipRetryPending {
+				t.Fatalf("dispatch while completion deferred = %q, want pending replay", reason)
 			}
 		})
 	}
+}
+
+type completionDeferralRejection struct {
+	rejection tracker.PublicationRejection
+}
+
+func (e completionDeferralRejection) Error() string {
+	return e.rejection.DiagnosticError()
+}
+
+func (e completionDeferralRejection) NativeTerminalFailure() tracker.NativeTerminalFailure {
+	return tracker.NativeTerminalFailure{Rejection: &e.rejection}
 }
 
 func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
@@ -135,9 +170,17 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 		restoreError       error
 		restoreTransient   bool
 		wantRestores       int
+		resumedPolicy      bool
+		restartPolicy      bool
+		longRetry          bool
+		expired            bool
 	}{
+		{name: "native orphan continuation retains claim policy", nativeAuthority: true, resumedPolicy: true, wantRestores: 1, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
+		{name: "native orphan continuation after another policy change", nativeAuthority: true, resumedPolicy: true, restartPolicy: true, wantRestores: 1, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
 		{name: "native final checkpoint authority survives restart", nativeAuthority: true, wantRestores: 1, recoveredState: "In Progress", retryCount: 2, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
-		{name: "native completion waits for restoration transport", nativeAuthority: true, wantRestores: 2, restoreTransient: true, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
+		{name: "expired completion cannot publish", expired: true},
+		{name: "non-native renewal outlasts original lease", longRetry: true, recoveredState: "In Progress", retryCount: 2, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
+		{name: "native completion waits for restoration transport", longRetry: true, nativeAuthority: true, wantRestores: 2, restoreTransient: true, recoveredState: "In Progress", retryCount: 2, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
 		{name: "invalid restored authority cannot release another claim", nativeAuthority: true, wantRestores: 2, restoreError: runpkg.ErrExecutionAuthorityUnavailable, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalAbandoned},
 		{name: "intake off preserves deferred completion through restart", intakeOff: true, recoveredState: "In Progress", retryCount: 1, wantTerminal: store.WorkAttemptTerminalSuccess, wantAcceptedTokens: 37},
 		{
@@ -207,6 +250,20 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			initialOrch.localIntakeDisabled.Store(tt.intakeOff)
 			initialState := newState(cfg)
 			initialState.Running[issue.ID] = completionDeferralRunning(issue, attemptID, now)
+			var claimPolicy, continuationPolicy policy.Descriptor
+			if tt.resumedPolicy {
+				claimPolicy = orchestratorTestAuthoredPolicy("claim workflow")
+				running := initialState.Running[issue.ID]
+				continuationPolicy = orchestratorTestAuthoredPolicy("original workflow")
+				running.Policy = continuationPolicy
+				running.ClaimPolicy = claimPolicy
+				initialState.Running[issue.ID] = running
+				initialOrch.cfg.Policy = claimPolicy
+				cfg.Policy = claimPolicy
+				if tt.restartPolicy {
+					cfg.Policy = orchestratorTestAuthoredPolicy("restart workflow")
+				}
+			}
 			initialState.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
 			event := completionDeferralEvent(issue, attemptID, now)
 			if tt.nativeAuthority {
@@ -248,25 +305,42 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 				nativeTracker.stateIssues = []connector.Issue{recoveredIssue}
 			}
 			restartAt := now.Add(2 * time.Minute)
+			if tt.expired {
+				restartAt = now.Add(time.Hour)
+			}
 			restartedOrch := Orchestrator{cfg: cfg, connector: trackerOwner, workAttempts: restartedStore, now: func() time.Time { return restartAt }}
 			var restoredAuthority *completionRestartScheduling
 			if tt.nativeAuthority {
-				restoredAuthority = &completionRestartScheduling{hubSchedulingSource: &hubSchedulingSource{}, restoreError: tt.restoreError, restoreTransient: tt.restoreTransient}
+				restoredAuthority = &completionRestartScheduling{hubSchedulingSource: &hubSchedulingSource{}, restoreError: tt.restoreError, restoreTransient: tt.restoreTransient, policy: claimPolicy}
 				restoredAuthority.execution = &completionRestartExecution{owner: restoredAuthority}
 				restartedOrch.scheduling = restoredAuthority
-				restartedOrch.heartbeats = newHeartbeatManager(cfg, trackerOwner, restartedStore, restartedOrch.now, nil, restoredAuthority)
 			}
+			restartedOrch.heartbeats = newHeartbeatManager(cfg, trackerOwner, restartedStore, restartedOrch.now, nil, restartedOrch.scheduling)
 			restartedOrch.localIntakeDisabled.Store(tt.intakeOff)
 			restartedState := newState(cfg)
 			restartedOrch.recoverDurableWorkAttempts(t.Context(), &restartedState, restartAt)
 
+			if tt.expired {
+				restartedOrch.retryDeferredCompletions(t.Context(), &restartedState, restartAt)
+				if len(restartedState.deferredCompletions) != 0 || len(restartedOrch.heartbeats.targets) != 0 || restartedState.TokenTotals.TotalTokens != 0 {
+					t.Fatal("expired authority renewed or published")
+				}
+				return
+			}
+
 			if _, ok := restartedState.deferredCompletions[issue.ID]; !ok {
 				t.Fatalf("deferred completion missing after restart: %#v", restartedState.deferredCompletions)
+			}
+			if tt.resumedPolicy {
+				record := restartedState.deferredCompletions[issue.ID]
+				if record.Running.Policy.ID != continuationPolicy.ID || record.completion().Request.Policy.ID != record.Running.Policy.ID {
+					t.Fatal("restored completion lost the continuation policy")
+				}
 			}
 			if restartedState.UnsettledWork() != 1 || len(restartedState.Snapshot(restartAt).Running) != 0 {
 				t.Fatal("restored completion must remain unsettled without running a provider")
 			}
-			if tt.nativeAuthority && tt.restoreError == nil && !tt.restoreTransient {
+			if tt.restoreError == nil && !tt.restoreTransient {
 				if target, ok := restartedOrch.heartbeats.targets[issue.ID]; !ok || target.workAttemptHeartbeat.Phase != deferredCompletionPhase {
 					t.Fatal("restored completion lost its existing lease heartbeat owner")
 				}
@@ -290,8 +364,8 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 			if _, ok := restartedState.Claimed[issue.ID]; !ok {
 				t.Fatalf("Claimed[%q] missing after restart", issue.ID)
 			}
-			if outcome := restartedOrch.dispatchIssueWithOutcome(t.Context(), &restartedState, recoveredIssue, 1, restartAt, ""); outcome.dispatched || outcome.reason != dispatchSkipCompletionDeferred {
-				t.Fatalf("dispatch after restart = %#v, want suppressed", outcome)
+			if reason := knownDispatchWaitReason(recoveredIssue, &restartedState, nil, cfg.TerminalStates); reason != dispatchSkipRetryPending {
+				t.Fatalf("dispatch after restart = %q, want pending completion replay", reason)
 			}
 			if tt.retryCount > 1 {
 				fetchesBeforeDuplicate := tracker.fetchCount()
@@ -305,6 +379,36 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 				}
 				if receipt.Status != store.WorkAttemptStatusActive || receipt.Phase != deferredCompletionPhase {
 					t.Fatalf("duplicate delivery changed deferred receipt = %#v", receipt)
+				}
+			}
+
+			if tt.restoreError != nil && len(restartedOrch.heartbeats.targets) != 0 {
+				t.Fatal("invalid authority registered heartbeat renewal")
+			}
+			if tt.longRetry {
+				if tt.restoreTransient {
+					tracker.firstErr = completionDeferralAvailabilityError()
+					if restartedOrch.retryDeferredCompletions(t.Context(), &restartedState, restartAt) {
+						t.Fatal("publication unexpectedly settled during tracker outage")
+					}
+				}
+				for range 3 {
+					restartAt = restartAt.Add(4 * time.Minute)
+					targets := restartedOrch.heartbeats.due(restartAt)
+					if len(targets) != 1 {
+						t.Fatalf("heartbeat targets = %d, want one verified completion", len(targets))
+					}
+					for _, target := range targets {
+						restartedOrch.heartbeats.execute(t.Context(), target)
+					}
+					restartedOrch.expireOrphanedWorkAttempts(t.Context(), &restartedState, restartAt)
+				}
+				if tt.nativeAuthority && restoredAuthority.renewals != 3 {
+					t.Fatalf("native authority renewals = %d, want 3", restoredAuthority.renewals)
+				}
+				receipt, err := restartedStore.WorkAttempt(t.Context(), attemptID)
+				if err != nil || !receipt.LeaseExpiresAt.After(restartAt) || receipt.Status != store.WorkAttemptStatusActive {
+					t.Fatalf("deferred lease did not survive original expiry: %+v, %v", receipt, err)
 				}
 			}
 
@@ -370,17 +474,153 @@ func TestDeferredCompletionRestartAndRecovery(t *testing.T) {
 	}
 }
 
+func TestNativeCompletionHandoffSurvivesRestart(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name        string
+		humanReview bool
+		runFailed   bool
+		retryRead   bool
+	}{
+		{name: "failed worker release", humanReview: true, runFailed: true},
+		{name: "failed worker retry handoff", runFailed: true, retryRead: true},
+		{name: "no product retry handoff", retryRead: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := time.Date(2026, 10, 23, 5, 49, 19, 0, time.UTC)
+			issue := connector.NewIssue()
+			issue.ID, issue.Identifier, issue.State = "native-item", "example-org/example-project#1", "In Progress"
+			cfg := completionDeferralConfig()
+			cfg.ActiveStates = []string{"Todo", "In Progress", "Rework"}
+			cfg.AutoPromote.HumanReview = &tt.humanReview
+			cfg.AutoPromote.SourceState = "In Review"
+			cfg = normalizeConfig(cfg)
+			tick := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			native := &nativeWorkflowConnector{autoPromoteTickConnector: tick, states: []connector.WorkflowState{
+				{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress", "In Review"}},
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Todo", "In Review"}},
+				{Name: "In Review"}, {Name: "Done", Terminal: true},
+			}}
+			dbPath := filepath.Join(t.TempDir(), "detent.db")
+			initialStore := openCompletionDeferralStoreWithoutCleanup(t, dbPath)
+			attemptID := startCompletionDeferralAttempt(t, initialStore, issue, now)
+			other := connector.NewIssue()
+			other.ID = "unrelated-item"
+			otherID := startCompletionDeferralAttempt(t, initialStore, other, now)
+			if err := initialStore.CompleteWorkAttempt(t.Context(), store.WorkAttemptCompletion{AttemptID: otherID, CompletedAt: now, TerminalState: store.WorkAttemptTerminalSuccess}); err != nil {
+				t.Fatal(err)
+			}
+			authority := &completionRestartScheduling{hubSchedulingSource: &hubSchedulingSource{}, restored: true}
+			authority.execution = &completionRestartExecution{owner: authority}
+			if tt.retryRead {
+				reads := 0
+				native.beforeStates = func() {
+					reads++
+					if reads == 2 {
+						native.statesErr = completionDeferralAvailabilityError()
+					}
+				}
+			} else {
+				authority.releaseError = completionDeferralAvailabilityError()
+			}
+			orch := Orchestrator{cfg: cfg, connector: native, workAttempts: initialStore, scheduling: authority, now: func() time.Time { return now }}
+			state := newState(cfg)
+			state.Running[issue.ID] = completionDeferralRunning(issue, attemptID, now)
+			state.Claimed[issue.ID] = Claimed{Issue: issue}
+			event := completionDeferralEvent(issue, attemptID, now)
+			event.Result.TurnStarted = true
+			if tt.runFailed {
+				event.Err = errors.New("native worker interrupted")
+				event.Result.FinalState = runpkg.FinalStateFailed
+			}
+			running := state.Running[issue.ID]
+			running.TurnCount, running.Tokens = 1, event.Result.Tokens
+			if !orch.completeNativeChangeRun(t.Context(), &state, event, running, event.Result.FinalState) {
+				t.Fatal("native completion was not handled")
+			}
+			record, deferred := state.deferredCompletions[issue.ID]
+			receipt, err := initialStore.WorkAttempt(t.Context(), attemptID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !deferred || !record.Persisted {
+				t.Fatalf("native handoff did not durably defer: deferred=%t persisted=%t receipt_status=%s completed_at=%s", deferred, record.Persisted, receipt.Status, receipt.CompletedAt)
+			}
+			if receipt.Status != store.WorkAttemptStatusActive || !receipt.CompletedAt.IsZero() || receipt.Phase != deferredCompletionPhase {
+				t.Fatalf("still-deferable receipt was terminalized: %+v", receipt)
+			}
+			if err := initialStore.Close(); err != nil {
+				t.Fatal(err)
+			}
+			restartedStore := openCompletionDeferralStore(t, dbPath)
+			native.beforeStates, native.statesErr = nil, nil
+			restored := &completionRestartScheduling{hubSchedulingSource: &hubSchedulingSource{}}
+			restored.execution = &completionRestartExecution{owner: restored}
+			restartAt := now.Add(time.Minute)
+			restarted := Orchestrator{cfg: cfg, connector: native, workAttempts: restartedStore, scheduling: restored, now: func() time.Time { return restartAt }}
+			recovered := newState(cfg)
+			restarted.recoverDurableWorkAttempts(t.Context(), &recovered, restartAt)
+			saved, ok := recovered.deferredCompletions[issue.ID]
+			if !ok || len(recovered.deferredCompletions) != 1 || len(recovered.Running) != 0 {
+				t.Fatal("restart lost pending completion or restored an unrelated terminal attempt")
+			}
+			if saved.Request.WorkAttemptID != attemptID || saved.Request.Generation != 7 || saved.Result.DiffStats.TreeSHA != "committed-tree" || saved.Running.CompletionSourceStart.Fingerprint.WorkspaceTree != "dispatch-tree" || !saved.CompletedAt.Equal(event.CompletedAt) || saved.Error != errorString(event.Err) {
+				t.Fatalf("restart changed completion ownership or source: %+v", saved)
+			}
+			restartAt = now.Add(2 * time.Minute)
+			for range 2 {
+				if !restarted.retryDeferredCompletions(t.Context(), &recovered, restartAt) {
+					t.Fatal("recovered handoff did not settle")
+				}
+			}
+			receipt, err = restartedStore.WorkAttempt(t.Context(), attemptID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantTerminal := store.WorkAttemptTerminalSuccess
+			if tt.runFailed {
+				wantTerminal = store.WorkAttemptTerminalFailure
+			}
+			if receipt.TerminalState != wantTerminal || !receipt.CompletedAt.Equal(event.CompletedAt) || receipt.Phase == deferredCompletionPhase || restored.restores != 1 || restored.releases != 1 || restored.prepared != 0 || len(recovered.deferredCompletions) != 0 || len(recovered.Running) != 0 || len(recovered.Completed) != 0 || recovered.TokenTotals.TotalTokens != 37 {
+				t.Fatalf("completion did not settle once with original outcome: receipt=%+v restores=%d releases=%d prepared=%d deferred=%d running=%d completed=%d tokens=%d", receipt, restored.restores, restored.releases, restored.prepared, len(recovered.deferredCompletions), len(recovered.Running), len(recovered.Completed), recovered.TokenTotals.TotalTokens)
+			}
+			otherReceipt, err := restartedStore.WorkAttempt(t.Context(), otherID)
+			if err != nil || otherReceipt.TerminalState != store.WorkAttemptTerminalSuccess || !otherReceipt.CompletedAt.Equal(now) {
+				t.Fatalf("unrelated terminal history changed: %+v, %v", otherReceipt, err)
+			}
+			after := newState(cfg)
+			restarted.recoverDurableWorkAttempts(t.Context(), &after, restartAt)
+			if len(after.deferredCompletions) != 0 {
+				t.Fatal("settled completion replayed after another restart")
+			}
+		})
+	}
+}
+
 type completionRestartScheduling struct {
 	*hubSchedulingSource
 	restored         bool
 	restores         int
 	prepared         int
+	renewals         int
 	restoreError     error
 	restoreTransient bool
+	policy           policy.Descriptor
 }
 
-func (s *completionRestartScheduling) RestoreCompletion(_ context.Context, _ SchedulingRequest, issue connector.Issue, saved json.RawMessage) (Claimed, error) {
+func (s *completionRestartScheduling) RenewClaim(_ context.Context, _ string, _ time.Time) (Claimed, error) {
+	if !s.restored {
+		return Claimed{}, ErrSchedulingClaimLost
+	}
+	s.renewals++
+	return Claimed{}, nil
+}
+
+func (s *completionRestartScheduling) RestoreCompletion(_ context.Context, request SchedulingRequest, issue connector.Issue, saved json.RawMessage) (Claimed, error) {
 	s.restores++
+	if s.policy.ID != "" && request.Policy.ID != s.policy.ID {
+		return Claimed{}, runpkg.ErrExecutionAuthorityUnavailable
+	}
 	if s.restoreError != nil {
 		return Claimed{}, s.restoreError
 	}
@@ -483,13 +723,14 @@ func completionDeferralIssue(id string, state string) connector.Issue {
 
 func completionDeferralRunning(issue connector.Issue, attemptID int64, now time.Time) Running {
 	return Running{
-		Issue:         cloneIssue(issue),
-		Attempt:       2,
-		WorkAttemptID: attemptID,
-		Generation:    7,
-		Mode:          runpkg.RunModeImplement,
-		StartedAt:     now.Add(-time.Minute),
-		WorkerHost:    "worker-a",
+		Issue:                 cloneIssue(issue),
+		CompletionSourceStart: completionSourceStartRecord{Captured: true, Fingerprint: completionSourceFingerprint{WorkspaceTree: "dispatch-tree"}},
+		Attempt:               2,
+		WorkAttemptID:         attemptID,
+		Generation:            7,
+		Mode:                  runpkg.RunModeImplement,
+		StartedAt:             now.Add(-time.Minute),
+		WorkerHost:            "worker-a",
 	}
 }
 
@@ -510,7 +751,7 @@ func completionDeferralEvent(issue connector.Issue, attemptID int64, now time.Ti
 			FinalState: runpkg.FinalStateCompleted,
 			Output:     "validated completion",
 			Tokens:     runpkg.TokenTotals{InputTokens: 25, OutputTokens: 12, TotalTokens: 37},
-			DiffStats:  runpkg.DiffStats{FilesChanged: 2, AddedLines: 8, RemovedLines: 3, Status: "clean"},
+			DiffStats:  runpkg.DiffStats{TreeSHA: "committed-tree", FilesChanged: 2, AddedLines: 8, RemovedLines: 3, Status: "clean"},
 		},
 		CompletedAt: now,
 	}

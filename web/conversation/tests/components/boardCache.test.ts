@@ -27,6 +27,26 @@ async function fixture() {
 }
 
 describe("the Work snapshot ordering", () => {
+  it("keeps summary windows in the cache identity, page requests and stream", async () => {
+    const source = workPaginationFixture();
+    await source.control();
+    const http = makeWorkHttp({ ...source.client.http, fetch: source.fetch });
+    const window = { completedFrom: "2026-10-26T11:00:00Z", completedTo: "2026-10-27T11:00:00Z" };
+    const read = getBoardRead(source.client, http, "proj_alpha", { ...DEFAULT_VIEW_STATE, ...window, view: "list", tab: "closed", state: ["Done"] });
+    expect(read).not.toBe(getBoardRead(source.client, http, "proj_alpha", { ...DEFAULT_VIEW_STATE, view: "list", tab: "closed", state: ["Done"] }));
+    read.start();
+    await expect.poll(() => read.snapshot().error ?? read.snapshot().resolved).toBe(true);
+    const pages = source.requests.filter(({ url }) => url.pathname.endsWith("/work-items"));
+    expect(pages.length).toBeGreaterThan(0);
+    for (const { url } of pages) {
+      expect(url.searchParams.get("completed_from")).toBe(window.completedFrom);
+      expect(url.searchParams.get("completed_to")).toBe(window.completedTo);
+    }
+    const events = new URL(http.eventsUrl("proj_alpha", undefined, undefined, { since: 0, filters: read.streamFilters("proj_alpha") }), "http://example.test");
+    expect(events.searchParams.get("completed_from")).toBe(window.completedFrom);
+    expect(events.searchParams.get("completed_to")).toBe(window.completedTo);
+  });
+
   it("loads one page per lane and continues only Backlog", async () => {
     const source = workPaginationFixture();
     await source.control({ activeOverflow: true, backlogOverflow: true });
@@ -195,6 +215,46 @@ describe("the Work snapshot ordering", () => {
     await expect.poll(() => read.snapshot().refreshing).toBe(false);
     expect(read.snapshot().items.find((item) => item.id === native.work_item_id)).toMatchObject({ state: "Done", revision: "900", attempt: null });
     expect((stored.at(-1)!.entries as { issues: NativeIssue[] }[])[0]!.issues.find((issue) => issue.work_item_id === native.work_item_id)?.revision).toBe("900");
+  });
+
+  it.each([
+    { view: "board", order: "confirmation-first" },
+    { view: "board", order: "snapshot-first" },
+    { view: "list", order: "confirmation-first" },
+    { view: "list", order: "snapshot-first" },
+  ] as const)("refreshes shipped totals after a terminal move with $view and $order", async ({ view, order }) => {
+    vi.spyOn(disk, "updateBoardDisk").mockResolvedValue();
+    vi.spyOn(disk, "readBoardDisk").mockResolvedValue(null);
+    const source = await fixture();
+    let moved = false;
+    const http = makeWorkHttp({ ...source.client.http, fetch: async (...args) => {
+      const response = await source.fetch(...args);
+      if (!moved || !String(args[0]).includes("/work-items?")) return response;
+      const body = await response.json();
+      if (body.work) body.work.completed = 131;
+      return Response.json(body);
+    } });
+    const read = getBoardRead(source.client, http, "proj_alpha", { ...DEFAULT_VIEW_STATE, view, tab: "active" });
+    read.start();
+    await expect.poll(() => read.snapshot().resolved).toBe(true);
+    expect(read.snapshot().totals?.completed).toBe(130);
+    const item = read.snapshot().items.find((item) => item.state === "Todo")!;
+    let issue = await source.http.getWorkItem("proj_alpha", item.id);
+    for (const state of ["In Progress", "In Review", "Merging", "Done"]) {
+      issue = await source.http.transition({ projectId: "proj_alpha", itemId: item.id,
+        key: `terminal-move-${state}`, expectedRevision: issue.revision!, state, reason: "user_requested" });
+    }
+    moved = true;
+    if (order === "snapshot-first") {
+      read.reload();
+      await expect.poll(() => read.snapshot().refreshing).toBe(false);
+      expect(read.snapshot().totals?.completed).toBe(131);
+    }
+    confirmWorkItem(issue);
+    expect(read.snapshot().items.some((candidate) => candidate.id === item.id)).toBe(false);
+    await expect.poll(() => read.snapshot().totals?.completed).toBe(131);
+    await expect.poll(() => read.snapshot().refreshing).toBe(false);
+    expect(read.snapshot().totals?.completed).toBe(131);
   });
 
   it("keeps live summaries consistent across unchanged and revised reloads without per-card reads", async () => {

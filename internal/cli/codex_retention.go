@@ -69,10 +69,6 @@ func codexAppServerInProcessList(output string) bool {
 }
 
 func pruneCodexLogs(ctx context.Context, home string, now time.Time, limit int64, alive func(context.Context) (bool, error)) error {
-	running, err := alive(ctx)
-	if err != nil || running {
-		return err
-	}
 	for _, profile := range []string{workerCodexProfileDir, launchdCodexProfileDir} {
 		dir := filepath.Join(home, profile)
 		info, err := os.Lstat(dir)
@@ -131,6 +127,10 @@ func pruneCodexLogs(ctx context.Context, home string, now time.Time, limit int64
 			if !safe {
 				continue
 			}
+			running, err := alive(ctx)
+			if err != nil || running {
+				return err
+			}
 			if err := pruneCodexLog(ctx, path, now, limit, alive); err != nil {
 				return fmt.Errorf("prune %s: %w", path, err)
 			}
@@ -147,10 +147,17 @@ func pruneCodexLog(ctx context.Context, path string, now time.Time, limit int64,
 	db.SetMaxOpenConns(1)
 	_, pruneErr := db.ExecContext(ctx, "DELETE FROM logs WHERE ts < ?", now.Add(-7*24*time.Hour).Unix())
 	if pruneErr == nil {
-		_, pruneErr = db.ExecContext(ctx, "VACUUM")
+		_, pruneErr = db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
 	}
 	if pruneErr == nil {
-		_, pruneErr = db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
+		var info os.FileInfo
+		info, pruneErr = os.Stat(path)
+		if pruneErr == nil && info.Size() > limit {
+			_, pruneErr = db.ExecContext(ctx, "VACUUM")
+			if pruneErr == nil {
+				_, pruneErr = db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
+			}
+		}
 	}
 	if err := errors.Join(pruneErr, db.Close()); err != nil {
 		return err

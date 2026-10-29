@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -71,9 +72,20 @@ func promoteReviewedChange(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 	if detail.Summary.Status != "reviewed" {
 		return nil
 	}
+	return promoteReviewedIssue(ctx, tx, scope, change, now)
+}
+
+func promoteReviewedIssue(ctx context.Context, tx *sql.Tx, scope nativeScope, change tracker.ChangeRequest, now time.Time) error {
 	issue, _, err := readNativeIssue(ctx, tx, scope, string(change.WorkItemID))
 	if err != nil {
 		return err
+	}
+	reviewSource, err := nativeChangeReviewSource(ctx, tx, scope, issue.State)
+	if err != nil {
+		return err
+	}
+	if issue.Archived || issue.Terminal || !issue.DependencyReady || !reviewSource {
+		return nil
 	}
 	project, err := readNativeProject(ctx, tx, scope)
 	if err != nil {
@@ -138,8 +150,27 @@ func returnChangeForRework(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 	if issue.Terminal {
 		return nil
 	}
+	if len(review.RepairDependencies) == 0 && len(review.IndependentFailures()) != 0 && review.RepairRefusal == "" {
+		if err := routeIndependentReview(ctx, tx, scope, change, &review, now); err != nil {
+			return err
+		}
+	}
+	if len(review.RepairDependencies) != 0 {
+		return nil
+	}
 	if err := appendReviewInstructions(ctx, tx, scope, issue, change, review, now); err != nil {
 		return err
+	}
+	return routeChangeForRework(ctx, tx, scope, issue, now)
+}
+
+func routeChangeForRework(ctx context.Context, tx *sql.Tx, scope nativeScope, issue tracker.NativeIssue, now time.Time) error {
+	reviewSource, err := nativeChangeReviewSource(ctx, tx, scope, issue.State)
+	if err != nil {
+		return err
+	}
+	if issue.Archived || !reviewSource && !strings.EqualFold(issue.State, landingLane) {
+		return nil
 	}
 	project, err := readNativeProject(ctx, tx, scope)
 	if err != nil {
@@ -160,6 +191,21 @@ func returnChangeForRework(ctx context.Context, tx *sql.Tx, scope nativeScope, c
 	issue.State = target
 	_, err = persistNativeIssue(ctx, tx, scope, issue, "workflow.transitioned", tracker.CollaborationData{FromState: from, ToState: target, Reason: "user_requested"}, now)
 	return err
+}
+
+func nativeChangeReviewSource(ctx context.Context, q nativeQueryer, scope nativeScope, state string) (bool, error) {
+	cfg, err := nativeIssueContractConfig(ctx, q, scope)
+	if err != nil {
+		return false, err
+	}
+	if strings.EqualFold(state, cfg.Agent.AutoPromote.SourceState) {
+		return true, nil
+	}
+	approval, err := requireProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
+	if err != nil {
+		return false, err
+	}
+	return approval.Policy.Configuration == nil && approval.Policy.Authored == nil && (strings.EqualFold(state, "In Review") || strings.EqualFold(state, "Review")), nil
 }
 
 // appendReviewInstructions puts the review text on the primary issue as a
@@ -203,7 +249,7 @@ func reviewInstructions(change tracker.ChangeRequest, review tracker.ChangeRevie
 func (s *Service) landChange(c echo.Context) error {
 	var request tracker.LandChangeVersion
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		change, err := readChange(ctx, tx, scope, c.Param("item"), c.Param("change"))
@@ -211,24 +257,24 @@ func (s *Service) landChange(c echo.Context) error {
 			return nil, err
 		}
 		if change.WorkItemID != tracker.NativeWorkItemID(c.Param("item")) {
-			return nil, nativeInvalid("Land through the Change Request's primary issue")
+			return nil, nativePublicInvalid("Land through the Change Request's primary issue")
 		}
 		version, err := readChangeVersion(ctx, tx, change.ID, c.Param("version"))
 		if err != nil {
 			return nil, err
 		}
 		if !changerequest.ValidHash(request.MergeSHA, 40) && !changerequest.ValidHash(request.MergeSHA, 64) {
-			return nil, nativeInvalid("The landed commit must be a lowercase commit identity")
+			return nil, nativePublicInvalid("The landed commit must be a lowercase commit identity")
 		}
 		if strings.TrimSpace(request.BaseRef) == "" || len(request.BaseRef) > 256 || !slices.Contains([]string{"squash", "merge", "rebase"}, request.Method) {
-			return nil, nativeInvalid("Landing names the base branch and a merge method of squash, merge or rebase")
+			return nil, nativePublicInvalid("Landing names the base branch and a merge method of squash, merge or rebase")
 		}
 		delivery, associated, err := readReleaseDelivery(ctx, tx, scope, string(change.WorkItemID))
 		if err != nil {
 			return nil, err
 		}
 		if associated && (delivery.ChangeID != change.ID || delivery.VersionID != version.ID || delivery.HeadSHA != version.HeadSHA || delivery.BaseRef != request.BaseRef) {
-			return nil, nativeInvalid("Landing must cover the associated release version and branch")
+			return nil, nativePublicInvalid("Landing must cover the associated release version and branch")
 		}
 		if landed := change.CurrentLanding(); landed != nil {
 			if landed.VersionID == version.ID && landed.MergeSHA == request.MergeSHA {
@@ -246,11 +292,15 @@ func (s *Service) landChange(c echo.Context) error {
 		if detail.Summary.Status != "reviewed" {
 			return nil, &nativeError{Code: "not_reviewed", Message: "Only a reviewed current version lands: " + strings.Join(detail.Summary.Messages, " "), status: 409}
 		}
-		if version.Policy.Gates.SecurityAudit && !version.Policy.Gates.GitHubPullRequest {
+		if associated && (request.Receipt == nil || request.Receipt.BaseSHA != delivery.BaseSHA || request.Receipt.HeadSHA != version.HeadSHA || request.Receipt.MergeSHA != request.MergeSHA) {
+			return nil, nativePublicInvalid("Release landing must retain the reviewed base and head")
+		}
+		if version.Policy.Gates.SecurityAudit && !version.Policy.Gates.GitHubPullRequest && !associated {
 			if request.Receipt == nil || request.Receipt.SecurityAudit == nil || request.Receipt.BaseSHA == "" || request.Receipt.MergeSHA != request.MergeSHA {
-				return nil, nativeInvalid("landing requires security audit evidence for its exact base and head")
+				return nil, nativePublicInvalid("landing requires security audit evidence for its exact base and head")
 			}
 			audit := request.Receipt.SecurityAudit
+			securityaudit.NormalizeAttribution(&audit.Run)
 			run := audit.Run
 			evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: string(scope.project), Repository: version.Repository, PRNumber: run.PRNumber, BaseSHA: request.Receipt.BaseSHA, HeadSHA: request.MergeSHA}, "", []string{"none"})
 			auditRaw, err := marshalNative(audit)
@@ -271,7 +321,7 @@ func (s *Service) landChange(c echo.Context) error {
 				}
 			}
 			if !evaluation.Allowed || audit.Verdict != "pass" || !audit.Landing || !recorded {
-				return nil, nativeInvalid("landing security audit does not match recorded approval for the integrated change")
+				return nil, nativePublicInvalid("landing security audit does not match recorded approval for the integrated change")
 			}
 		}
 		quality, err := readLandingQualitySnapshot(ctx, tx, scope, change, version, now)
@@ -286,14 +336,26 @@ func (s *Service) landChange(c echo.Context) error {
 		if _, err := tx.ExecContext(ctx, "INSERT INTO quality_landings (version_id,record_json) VALUES (?,?)", version.ID, qualityRaw); err != nil {
 			return nil, err
 		}
+		if err := projectChangeColumns(ctx, tx, "quality_landings", version.ID, qualityRaw); err != nil {
+			return nil, err
+		}
 		change.UpdatedAt = now
 		change.Revision++
 		raw, err := marshalNative(change)
 		if err != nil {
 			return nil, err
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE change_requests SET record_json = ? WHERE id = ?", raw, change.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE change_requests SET record_json = ?, claim_version_id = ?, claim_head_sha = ?, landed_version_id=?, activity_created_at = julianday(?), activity_current_version_id = ? WHERE id = ?", raw, version.ID, version.HeadSHA, change.Landed.VersionID, formatHubTime(change.CreatedAt), change.CurrentVersion, change.ID); err != nil {
 			return nil, err
+		}
+		if err := writeArchiveChangeFacts(ctx, tx, change, ""); err != nil {
+			return nil, err
+		}
+		if err := projectChangeColumns(ctx, tx, "change_requests", change.ID, raw); err != nil {
+			return nil, err
+		}
+		if err := recordPolicyLandingProvenance(ctx, tx, string(scope.organization)+"/"+string(scope.project), 0, validationRepository(version.Repository), request.MergeSHA, policyLanding{ChangeID: change.ID}); err != nil {
+			return nil, fmt.Errorf("record change policy landing: %w", err)
 		}
 		issue, _, err := readNativeIssue(ctx, tx, scope, string(change.WorkItemID))
 		if err != nil {
@@ -394,44 +456,48 @@ func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nati
 		return false, false, 0, err
 	}
 	if !strings.EqualFold(strings.TrimSpace(state), "Merging") {
-		var pending bool
-		if err := query.QueryRowContext(ctx, `SELECT (`+nativePendingLandingClause+`) FROM issues i `+nativeLandingCapacityJoins+` WHERE i.id=?`, id).Scan(&pending); err != nil {
+		_, pending, err := readPendingLandingFact(ctx, query, id)
+		if err != nil {
 			return false, false, 0, err
 		}
 		if !pending {
 			return true, false, 0, nil
 		}
 	}
-	change, found, err := readLatestNativeChangeRequest(ctx, query, *scope, item)
+	change, found, err := readClaimChange(ctx, query, *scope, item)
 	if err != nil || !found {
 		return false, true, 0, err
 	}
 	if change.CurrentLanding() != nil || change.CurrentVersion == "" {
 		return false, true, 0, nil
 	}
-	detail, err := readCurrentChangeDetail(ctx, query, *scope, change, now)
+	version, err := readClaimVersion(ctx, query, change.ID, change.CurrentVersion)
+	if err != nil {
+		return false, true, 0, err
+	}
+	detail, err := readClaimLandingDetail(ctx, query, *scope, change, version, now)
 	if err != nil {
 		return false, true, 0, err
 	}
 	if !nativeChangeLandingReady("Merging", &detail) {
 		return false, true, 0, nil
 	}
-	version, err := readChangeVersion(ctx, query, change.ID, change.CurrentVersion)
-	if err != nil {
-		return false, true, 0, err
-	}
 	if version.External == nil && version.AttemptID != "" {
-		attempt, err := readNativeAttempt(ctx, query, *scope, item, version.AttemptID, now)
+		checkpoint, err := readClaimCheckpoint(ctx, query, *scope, item, version.AttemptID)
 		if err != nil {
 			return false, true, 0, err
 		}
-		checkpoint := attempt.Checkpoint
 		if checkpoint != nil && checkpoint.Storage == "local_only" && checkpoint.WorktreeState == "unpushed" && checkpoint.HeadSHA == version.HeadSHA {
-			stored, err := nativeChangeSourceStored(ctx, query, version)
+			stored, err := readClaimSourceStored(ctx, query, version)
 			if err != nil {
 				return false, true, 0, err
 			}
-			if !stored && (attempt.MachineID != machine || attempt.RunnerID != "" && attempt.RunnerID != scope.credential.Runner.RunnerID) {
+			var owner tracker.MachineID
+			var ownerRunner string
+			if err := query.QueryRowContext(ctx, `SELECT l.machine_id,COALESCE(lr.runner_id,'') FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id WHERE a.id=? AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?`, version.AttemptID, scope.organization, scope.project, item).Scan(&owner, &ownerRunner); err != nil {
+				return false, true, 0, err
+			}
+			if !stored && (owner != machine || ownerRunner != "" && ownerRunner != scope.credential.Runner.RunnerID) {
 				return false, true, 0, nil
 			}
 		}

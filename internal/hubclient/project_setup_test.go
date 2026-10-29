@@ -33,7 +33,7 @@ func TestProjectSetupFailurePrecedesNativeClaim(t *testing.T) {
 	}
 	root := t.TempDir()
 	selected := globalconfig.Project{ID: string(h.project), Workdir: root, Workflow: filepath.Join(root, "WORKFLOW.md")}
-	if err := os.WriteFile(selected.Workflow, []byte("---\ntracker:\n  kind: memory\nhooks:\n  runner_setup: setup.sh\n  shell: sh\n---\nRun work.\n"), 0o600); err != nil {
+	if err := os.WriteFile(selected.Workflow, []byte("---\ntracker:\n  kind: hub_native\nhooks:\n  runner_setup: setup.sh\n  shell: sh\n---\nRun work.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	writeSetup := func(content string) {
@@ -132,7 +132,7 @@ func TestProjectSetupFailurePrecedesNativeClaim(t *testing.T) {
 		t.Fatalf("changed native setup hash = %q, previous = %q, error = %v", changed, hash, err)
 	}
 	for _, declared := range []bool{false, true} {
-		body := "---\ntracker:\n  kind: memory\n"
+		body := "---\ntracker:\n  kind: hub_native\n"
 		if declared {
 			body += "hooks:\n  runner_setup: setup.sh\n  shell: sh\n"
 		}

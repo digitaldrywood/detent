@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func TestStartupDispatchPacerRampsInitialStarts(t *testing.T) {
@@ -132,7 +134,7 @@ func TestStartupDispatchPacerCensusDoesNotWaitForPacingSleep(t *testing.T) {
 		if got.concurrentStartups != 1 || got.activeWorkers != 1 {
 			t.Fatalf("snapshot = %#v, want 1 startup and 1 active worker", got)
 		}
-	case <-time.After(time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("Snapshot() waited for pacing sleep")
 	}
 

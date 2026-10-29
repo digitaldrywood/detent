@@ -19,7 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// The relay's two sockets (decisions section 18.2): the person's, opened with a
+// The relay's two sockets: the person's, opened with a
 // ticket, and the runner's, opened under the worker token and fenced by the
 // workspace tuple.
 
@@ -55,7 +55,7 @@ func (s *Service) openWorkspaceRelay(c echo.Context) error {
 	}
 	ticket := strings.TrimSpace(c.QueryParam("ticket"))
 	if ticket == "" {
-		return s.nativeAPIError(c, nativeInvalid("A relay ticket is required"))
+		return s.nativeAPIError(c, nativePublicInvalid("A relay ticket is required"))
 	}
 	scope := nativeRequestScope(c)
 	ctx := c.Request().Context()
@@ -109,7 +109,7 @@ func (s *Service) openWorkspaceRelay(c echo.Context) error {
 
 // relayActor is the stamp every person-originated frame carries: who asked,
 // from which connection, and -- for the git channel -- who a commit is
-// authored as (section 18.13).
+// authored as.
 //
 // The name and the email are the hub's to supply for the same reason the rest
 // of the tuple is: a client that could name its own author could attribute a
@@ -215,7 +215,7 @@ func (w *workspaceService) servePerson(c echo.Context, scope nativeScope, record
 		// socket is the only way left to say no.
 		//
 		// And it does have to say no. Every person connection writes an audit
-		// row (section 18.2); one that could not is a connection nobody could
+		// row; one that could not is a connection nobody could
 		// later account for, which is exactly what the row exists to prevent.
 		w.logger.Warn("workspace.relay_audit_unavailable", "workspace_id", record.ID,
 			"connection_id", connection.id, "error", err)
@@ -280,7 +280,7 @@ func relayCloseText(reason string) string {
 	return reason
 }
 
-// watchPersonAuthority is section 18.2's 30-second periodic re-check. Together
+// watchPersonAuthority is the relay protocol's 30-second periodic re-check. Together
 // with the re-check on every person-originated frame it is how a membership,
 // role, grant or session change closes a connection.
 func (w *workspaceService) watchPersonAuthority(ctx context.Context, c echo.Context, scope nativeScope, record workspaceRecord, connection *relayConnection) {
@@ -334,7 +334,7 @@ func (w *workspaceService) revalidatePerson(ctx context.Context, c echo.Context,
 	return nil
 }
 
-// revalidatePersonLocally is the per-frame half of section 18.2's authority
+// revalidatePersonLocally is the per-frame half of the relay protocol's authority
 // check: everything the hub can answer from its own database, run before a
 // frame is forwarded rather than on a timer.
 //
@@ -407,11 +407,11 @@ WHERE g.user_id = ? AND g.organization_id = ? AND g.project_id = ?`,
 	return nil
 }
 
-// refuseTerminal is the terminal's whole per-frame authority (section 18.3),
+// refuseTerminal is the terminal's whole per-frame authority,
 // and it is longer than any other channel's because a terminal is the runner
 // account's shell handed to a person and nothing else on this relay is.
 //
-// Section 18.3 lists the gate in order and this follows it in order:
+// The terminal contract lists the gate in order and this follows it in order:
 //
 //  1. the workspace is readable --- the connection proved that on the upgrade;
 //  2. `write` on the project;
@@ -422,7 +422,7 @@ WHERE g.user_id = ? AND g.organization_id = ? AND g.project_id = ?`,
 //  6. the workspace not being on a running attempt.
 //
 // Every one of them is asked per frame rather than cached from the upgrade, for
-// the reason section 18.2 gives about everything else: a socket that lives for
+// the reason the relay protocol gives about everything else: a socket that lives for
 // an hour would otherwise outlive the grant that opened it, and for a terminal
 // "outlive" means a person keeps typing into a worktree after their access was
 // withdrawn. The `runners` grant is the one that is checked at creation too
@@ -444,7 +444,7 @@ func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceR
 	}
 	if frame.Type == workspacesession.TypeTerminalOpen {
 		// And so is the open's shape. The hub reads this payload itself --- it
-		// is what a recording's header declares as the window (section 18.3) ---
+		// is what a recording's header declares as the window ---
 		// so an open it cannot parse is one it must refuse rather than forward:
 		// forwarding it would spend a stream and start a recording claiming a
 		// window nobody asked for, and the runner would refuse the frame a
@@ -458,7 +458,7 @@ func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceR
 	}
 	if record.ReadOnly {
 		// A read-only workspace is one whose subject attempt is still running,
-		// and section 18.1 refuses a terminal there outright: a person must not
+		// and the workspace session contract refuses a terminal there outright: a person must not
 		// type into a worktree the model is editing. read_only rather than
 		// forbidden, because the request was never allowed rather than the
 		// person being the wrong person.
@@ -472,7 +472,7 @@ func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceR
 		// reasoning refuseRelayWrite applies to a commit, which is the other
 		// frame on this relay that changes a worktree.
 		//
-		// Section 18.3's "a terminal requires a hosted session" is enforced
+		// The terminal contract's "a terminal requires a hosted session" is enforced
 		// where it can actually be enforced: authorizeRequires refuses a token
 		// that asks for `requires: ["terminal"]`, so no token can open a
 		// workspace with a terminal on it. What is left here is a token acting
@@ -483,7 +483,7 @@ func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceR
 	if w.config.Terminal.Isolation == workspacesession.IsolationUser &&
 		connection.hostedRole != "owner" && connection.hostedRole != "admin" {
 		// `user` isolation runs the shell as the runner's own account, with its
-		// credential store and its other checkouts in reach. Section 18.3
+		// credential store and its other checkouts in reach. The terminal contract
 		// allows it "only when the organization has set
 		// workspaces.terminal.isolation: user explicitly and the person is an
 		// owner or admin with the runners grant".
@@ -491,7 +491,7 @@ func (w *workspaceService) refuseTerminal(ctx context.Context, record workspaceR
 	}
 	if connection.supportReason != "" && w.config.Terminal.Isolation != workspacesession.IsolationContainer {
 		// A support actor gets a terminal "only with a support reason recorded
-		// and only at container" (section 18.3). The reason is recorded on the
+		// and only at container". The reason is recorded on the
 		// audit row and on the recording already; this is the other half.
 		return workspacesession.CodeForbidden
 	}
@@ -514,7 +514,7 @@ WHERE g.user_id = ? AND g.organization_id = ? AND g.project_id = ?
 		// Either the grant is read-only, or it lacks the runners flag, or the
 		// role is viewer. The viewer half mirrors requireHostedProject: a role
 		// demotion must not be survivable by holding an old grant row, and
-		// section 18.3 says outright that viewers never get a terminal.
+		// the terminal contract says outright that viewers never get a terminal.
 		return workspacesession.CodeForbidden
 	}
 	return ""
@@ -522,7 +522,7 @@ WHERE g.user_id = ? AND g.organization_id = ? AND g.project_id = ?
 
 // decodeTerminalOpen reads an open frame's window and working directory.
 //
-// An absent payload is not an error: section 18.3 lets a client that has not
+// An absent payload is not an error: the terminal contract lets a client that has not
 // measured its container yet open at the conventional size, which is what
 // ValidateTerminalOpen defaults to.
 func decodeTerminalOpen(frame workspacesession.Frame) (workspacesession.TerminalOpen, error) {
@@ -535,7 +535,7 @@ func decodeTerminalOpen(frame workspacesession.Frame) (workspacesession.Terminal
 	return workspacesession.ValidateTerminalOpen(open)
 }
 
-// refuseRelayWrite is the per-frame half of section 18.2's `write` rule for the
+// refuseRelayWrite is the per-frame half of the relay protocol's `write` rule for the
 // channels that write: a git commit or push, and an exec run, which executes
 // the project's command inside the worktree. It reports the code the frame is
 // refused with, or "" when it may be forwarded.
@@ -621,7 +621,7 @@ func (w *workspaceService) readFrame(ctx context.Context, connection *relayConne
 	}
 	connection.countIn(len(data))
 	if kind != websocket.MessageText {
-		// Binary data rides inside a frame as base64 (section 18.2), so a
+		// Binary data rides inside a frame as base64, so a
 		// binary message is not a frame at all.
 		connection.send(workspacesession.ErrorFrame("", "", workspacesession.CodeInvalidFrame, "Frames are JSON text"))
 		return workspacesession.Frame{}, true
@@ -644,7 +644,7 @@ func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *re
 		return
 	}
 	if frame.Type == workspacesession.TypeAck {
-		// An acknowledgement is not activity. Section 18.1 resets the idle
+		// An acknowledgement is not activity. The workspace session contract resets the idle
 		// clock on what a person does -- input, requests, resizes -- and a
 		// stream that is only receiving runner output would otherwise keep a
 		// workspace alive by acknowledging it, which is exactly the "busy
@@ -672,7 +672,7 @@ func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *re
 	}
 	// The terminal's authority is asked before a stream is allocated, so a
 	// refused open never costs the person a stream slot and never reaches a
-	// runner (section 18.3).
+	// runner.
 	if code := w.refuseTerminal(ctx, record, connection, frame); code != "" {
 		connection.send(workspacesession.ErrorFrame(frame.Channel, frame.Stream, code, relayCodeMessage(code)))
 		return
@@ -753,7 +753,7 @@ func (w *workspaceService) handlePersonFrame(ctx context.Context, connection *re
 // resolvePersonStream finds or opens the stream a person frame belongs to.
 //
 // A terminal opens explicitly and every open is its own PTY, so a terminal
-// frame with no stream always allocates: section 18.2 says a second tab that
+// frame with no stream always allocates: the relay protocol says a second tab that
 // wants the same shell opens its own stream.
 //
 // Files, diff and preview are request/response and open on their first
@@ -767,8 +767,8 @@ func (w *workspaceService) resolvePersonStream(connection *relayConnection, reco
 	if !w.channelPermitted(record, frame.Channel) {
 		return nil, workspacesession.CodeForbidden
 	}
-	// The exec channel defines exactly one person-originated frame (section
-	// 18.12), so this is where its vocabulary is checked: before a stream is
+	// The exec channel defines exactly one person-originated frame,
+	// so this is where its vocabulary is checked: before a stream is
 	// allocated, because a channel that allocated for anything it was sent
 	// would spend a connection's whole budget on typos. close is a shared
 	// control rather than a channel frame, and ack and resume never reach
@@ -789,7 +789,7 @@ func (w *workspaceService) resolvePersonStream(connection *relayConnection, reco
 	}
 	// Terminal and exec allocate per request instead of reusing. Every
 	// terminal open is its own PTY, and every exec run is its own process with
-	// its own seq space (section 18.12): two runs sharing a stream would share
+	// its own seq space: two runs sharing a stream would share
 	// one sequence, and a reader could not tell whose output it was reading or
 	// which run the exited frame ended.
 	if frame.Channel != workspacesession.ChannelTerminal && frame.Channel != workspacesession.ChannelExec {
@@ -826,8 +826,8 @@ func (w *workspaceService) channelPermitted(record workspaceRecord, channel stri
 	}
 	if channel == workspacesession.ChannelExec && record.ReadOnly {
 		// A read-only workspace is one whose attempt is still running, and an
-		// action's command writes into the worktree the model is editing
-		// (section 18.12). The run endpoint refuses one too; this is the check
+		// action's command writes into the worktree the model is editing.
+		// The run endpoint refuses one too; this is the check
 		// that holds when the frame is the last moment before something
 		// executes, and it is where the relay's own answer has to come from.
 		return false
@@ -890,8 +890,8 @@ func relayCodeMessage(code string) string {
 		// Several refusals share this code: a channel the workspace does not
 		// serve, a git write by a person who holds read and not write, and
 		// every one of the terminal's own gates --- the runners grant, the
-		// enabled setting, the isolation rule and the support window (section
-		// 18.3). The code is what a client switches on, so the sentence has to
+		// enabled setting, the isolation rule and the support window.
+		// The code is what a client switches on, so the sentence has to
 		// cover them all; naming only the channel would be a lie on the rest.
 		// A client that wants to say more shows the reason it already knows
 		// from the workspace and the capability, which is where its own
@@ -1042,8 +1042,8 @@ func (w *workspaceService) handleRunnerFrame(ctx context.Context, connection *re
 	outbound.Actor = nil
 	outbound.Seq = w.relay.nextToPerson(stream)
 	// A hub stream has no person to deliver to and none to acknowledge, so
-	// nothing is buffered on it for a replay nobody can ask for (section
-	// 18.12). Buffering would make a long build overflow a stream with no
+	// nothing is buffered on it for a replay nobody can ask for.
+	// Buffering would make a long build overflow a stream with no
 	// reader behind it and kill the very run the hub started.
 	overflow := false
 	if !stream.hubOwned {
@@ -1071,7 +1071,7 @@ func (w *workspaceService) handleRunnerFrame(ctx context.Context, connection *re
 	}
 	if stream.channel == workspacesession.ChannelTerminal {
 		// The hub is not only forwarding a terminal stream, it is recording
-		// it (section 18.3). A recording is the only thing a closed tab
+		// it. A recording is the only thing a closed tab
 		// leaves behind, and an owner auditing who was in a worktree has
 		// nothing else to read.
 		w.recordRunnerTerminalFrame(connection, stream, frame)
@@ -1087,7 +1087,7 @@ func (w *workspaceService) handleRunnerFrame(ctx context.Context, connection *re
 	}
 }
 
-// Recording action runs from relayed frames (decisions section 18.12).
+// Recording action runs from relayed frames.
 //
 // The hub forwards the exec channel like any other, and it also reads it. That
 // is the whole reason a run is a row before it is a process: the person who
@@ -1138,7 +1138,7 @@ func (w *workspaceService) startExecRun(ctx context.Context, connection, runner 
 		// The claim is what decides, and it decides once. A run the hub's own
 		// dispatch already handed to this workspace's runner is refused here
 		// with already_running rather than started a second time, so one row is
-		// never two processes in one worktree (section 18.12). The claimant is
+		// never two processes in one worktree. The claimant is
 		// the stream, here and in that dispatch, so claimed_by always names the
 		// thing actually carrying the run's frames rather than a connection for
 		// one of them and a stream for the other.

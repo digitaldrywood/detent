@@ -1,6 +1,7 @@
 package runtimeoutput
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -142,5 +143,47 @@ func TestBufferDoesNotBackfillHeadAfterMultibyteBoundary(t *testing.T) {
 	}
 	if got.Truncation.StoredBytes > got.Truncation.LimitBytes {
 		t.Fatalf("StoredBytes = %d, want at most %d", got.Truncation.StoredBytes, got.Truncation.LimitBytes)
+	}
+}
+
+func TestDiagnostic(t *testing.T) {
+	for _, limit := range []int{4096, 64 * 1024} {
+		for _, test := range []struct {
+			name  string
+			input string
+			want  []string
+		}{
+			{name: "mixed diagnostics", input: "assertion setup\nAssertionError: expected range\nexpected selection\nactual null\n" + strings.Repeat("assertion detail\n", 12) + "diagnostic region end\n" + strings.Repeat("ok example.org/passing\n", 8000) + "--- FAIL: TestLater (0.01s)\n", want: []string{"assertion setup\n", "AssertionError: expected range\n", "expected selection\n", "actual null\n", "diagnostic region end\n", "--- FAIL: TestLater (0.01s)\n"}},
+			{name: "separated failures", input: "--- FAIL: TestFirst (0.01s)\n" + strings.Repeat("ok example.org/passing\n", 4000) + "--- FAIL: TestSecond (0.02s)\n" + strings.Repeat("ok example.org/passing\n", 4000) + "FAIL\texample.org/second\t1s\n", want: []string{"--- FAIL: TestFirst (0.01s)\n", "--- FAIL: TestSecond (0.02s)\n", "FAIL\texample.org/second\t1s\n"}},
+			{name: "failure at EOF stays a complete line", input: strings.Repeat("ok example.org/passing\n", 4000) + "test timed out after 1m0s", want: []string{"test timed out after 1m0s\n"}},
+			{name: "failure overflow", input: strings.Repeat("--- FAIL: TestExample (0.01s)\n", limit), want: []string{"failure lines dropped]\n"}},
+			{name: "oversized failure before short failure", input: "panic: " + strings.Repeat("界", limit) + "\n--- FAIL: TestShort (0.01s)\n", want: []string{"--- FAIL: TestShort (0.01s)\n", "[1 failure lines dropped]\n"}},
+		} {
+			t.Run(fmt.Sprintf("%s/%d", test.name, limit), func(t *testing.T) {
+				got, truncated := Diagnostic(test.input, limit)
+				if !truncated || len(got) > limit || !utf8.ValidString(got) {
+					t.Fatalf("invalid diagnostic bounds: bytes=%d truncated=%v", len(got), truncated)
+				}
+				for _, want := range test.want {
+					if !strings.Contains(got, want) {
+						t.Errorf("missing %q", want)
+					}
+				}
+				if test.name == "failure overflow" {
+					kept := strings.Count(got, "--- FAIL: TestExample (0.01s)\n")
+					want := fmt.Sprintf("[%d failure lines dropped]\n", limit-kept)
+					if !strings.HasSuffix(got, want) || kept == 0 || strings.Count(got, "--- FAIL") != kept || limit-len(got) >= len("--- FAIL: TestExample (0.01s)\n") {
+						t.Fatalf("incomplete failure lines or incorrect dropped count: kept=%d", kept)
+					}
+					if limit == 64*1024 {
+						public, _ := Diagnostic(got, 4096)
+						publicKept := strings.Count(public, "--- FAIL: TestExample (0.01s)\n")
+						if !strings.HasSuffix(public, fmt.Sprintf("[%d failure lines dropped]\n", limit-publicKept)) {
+							t.Fatal("second truncation lost cumulative dropped count")
+						}
+					}
+				}
+			})
+		}
 	}
 }

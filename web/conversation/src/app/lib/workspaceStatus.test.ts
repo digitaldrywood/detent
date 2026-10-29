@@ -1,5 +1,5 @@
-// The words a surface shows for every workspace state and every reason
-// (decisions.md §18.1). The point of the module is that a reader is never left
+// The words a surface shows for every workspace state and every reason.
+// The point of the module is that a reader is never left
 // with a skeleton and no sentence, so the cases below are exhaustive over both
 // literal unions rather than a sample of them.
 import { describe, expect, it } from "vitest";

@@ -29,7 +29,7 @@ export interface PickerRow {
   readonly checkbox?: boolean;
   /**
    * A row that is listed but cannot be taken right now. It stays on the list
-   * with its reason in `detail` rather than disappearing (decisions.md §16):
+   * with its reason in `detail` rather than disappearing:
    * a workflow that does not allow a move is a fact about the workflow, and a
    * reader is owed it.
    */

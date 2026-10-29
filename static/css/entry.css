@@ -91,3 +91,10 @@
 @media (prefers-reduced-motion: reduce) {
   .detent-entry .entry-button { transition: none; }
 }
+
+.detent-entry .entry-workspaces { border: 0; margin: 24px 0; padding: 0; }
+.detent-entry .entry-workspaces legend { font-weight: 600; margin-bottom: 8px; }
+.detent-entry .entry-workspaces label { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 8px; overflow-wrap: anywhere; cursor: pointer; }
+.detent-entry .entry-workspaces input { flex-shrink: 0; accent-color: var(--primary); }
+.detent-entry .entry-workspaces input:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.detent-entry .entry-button:disabled { opacity: 0.5; cursor: default; }

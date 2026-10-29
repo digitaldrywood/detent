@@ -36,13 +36,13 @@ const STATES = [
 ];
 
 describe("HandoffForm", () => {
-  // §13.8 and §14: creating an issue from a chat asks what happens next, with
+  // Creating an issue from a chat asks what happens next, with
   // Detent's own defaults already chosen.
   it("preselects Backlog for drafts, the default priority and later", () => {
     renderForm({ states: STATES });
     expect(screen.getByLabelText<HTMLSelectElement>("Lane").value).toBe("Backlog");
     // Unset: the request asks the hub for the project's own default rather
-    // than guessing it (§14).
+    // than guessing it.
     expect(screen.getByLabelText<HTMLSelectElement>("Priority").value).toBe("");
     expect(screen.getByLabelText<HTMLSelectElement>("Dispatch").value).toBe("later");
   });
@@ -199,7 +199,7 @@ describe("HandoffForm", () => {
 
     const { onSubmit } = renderForm({ labels: ["bug", "chore"] });
     fireEvent.click(screen.getByLabelText("bug"));
-    // Priority is the tracker's own rank, 0-3 (§14): "High" is rank 1.
+    // Priority is the tracker's own rank, 0-3: "High" is rank 1.
     fireEvent.change(screen.getByLabelText("Priority"), { target: { value: "1" } });
     fireEvent.click(screen.getByRole("button", { name: "Create linked issue" }));
     expect(onSubmit).toHaveBeenCalledWith(

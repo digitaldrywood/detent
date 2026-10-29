@@ -10,14 +10,18 @@ import attemptsFixture from "../src/contracts/fixtures/work-attempt-list.json";
 import historyFixture from "../src/contracts/fixtures/work-history.json";
 import changeFixture from "../src/contracts/fixtures/work-change-detail.json";
 import type { ChangeDetail, CollaborationEvent, NativeAttempt, NativeIssue, NativeProject } from "../src/contracts/work.ts";
+import { hintIssueProject } from "../src/app/work/lib/issueQuery.ts";
 import { readLastProject } from "../src/app/client.ts";
 import { makeRouter } from "../src/app/router.tsx";
 import { changeResourceRows, selectChangeId, useIssue } from "../src/app/work/IssuePage.tsx";
 import { WorkApiError, type WorkHttp } from "../src/app/work/lib/workHttp.ts";
 import { routerBasePath } from "../src/runtime/basePath.ts";
 
+const pendingBarriers: (() => void)[] = [];
 afterEach(() => {
   cleanup();
+  pendingBarriers.splice(0).forEach((release) => release());
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   globalThis.localStorage?.clear();
 });
@@ -110,6 +114,7 @@ describe("issue live status", () => {
     const project = projectFixture as unknown as NativeProject;
     const initialAttempt = (attemptsFixture as { items: unknown[] }).items[0] as NativeAttempt;
     const event = (historyFixture as { items: unknown[] }).items[0] as CollaborationEvent;
+    hintIssueProject(issue.work_item_id, project.project_id);
     let sequence = "1";
     let status: NativeAttempt["status"] = "running";
     let hold: Promise<void> | null = null;
@@ -123,9 +128,9 @@ describe("issue live status", () => {
     const getWorkItemById = vi.fn(async () => {
       if (hold !== null) await hold;
       if (failure !== null) throw failure;
-      return { ...issue, state: status === "succeeded" ? "Done" : "In Progress", terminal: status === "succeeded" };
+      return { ...issue, change_sequence: Number(sequence), state: status === "succeeded" ? "Done" : "In Progress", terminal: status === "succeeded" };
     });
-    const eventsUrl = vi.fn((_project: string, _workspace?: string, item?: string) => "/events?work_item=" + item);
+    const eventsUrl = vi.fn((_project: string) => "/events");
     const http = {
       getWorkItemById, eventsUrl,
       getProject: vi.fn(async () => project),
@@ -149,14 +154,17 @@ describe("issue live status", () => {
       set: (next: string, nextStatus: NativeAttempt["status"] = "running") => { sequence = next; status = nextStatus; },
       hold: (value: Promise<void> | null) => { hold = value; },
       fail: (value: Error | null) => { failure = value; },
-      activity: (value: string) => sources[0]!.dispatchEvent(new MessageEvent("activity", { data: value })),
+      activity: (value: string) => sources[0]!.dispatchEvent(new MessageEvent("work_item", {
+        data: JSON.stringify(/^\d+$/.test(value) ? { entity_id: issue.work_item_id, entity_revision: Number(value) } : {}),
+        lastEventId: /^\d+$/.test(value) ? value : "",
+      })),
     };
   }
 
   it("updates native completion without remounting drafts or reacting to unchanged issue activity", async () => {
     const f = await fixture();
     await waitFor(() => expect(screen.getByTestId("issue-live-state").textContent).toBe("running:1:In Progress"));
-    expect(f.eventsUrl).toHaveBeenCalledWith(f.project.project_id, undefined, f.issue.work_item_id);
+    expect(f.eventsUrl).toHaveBeenCalledWith(f.project.project_id);
     const draft = screen.getByRole("textbox", { name: "draft" });
     fireEvent.change(draft, { target: { value: "keep this reply" } });
     const renders = f.renders();
@@ -200,10 +208,11 @@ describe("issue live status", () => {
     expect(f.getWorkItemById).toHaveBeenCalledTimes(3);
   });
 
-  it("finishes an in-flight read before one coalesced refresh", async () => {
+  it("finishes an in-flight snapshot and ignores buffered frames covered by its watermark", async () => {
     const f = await fixture();
     await waitFor(() => expect(screen.getByTestId("issue-live-state").textContent).toBe("running:1:In Progress"));
     let release!: () => void;
+    pendingBarriers.push(() => release?.());
     f.hold(new Promise<void>((resolve) => { release = resolve; }));
     f.set("2");
     act(() => f.activity("2"));
@@ -215,6 +224,6 @@ describe("issue live status", () => {
     f.hold(null);
     await act(async () => release());
     await waitFor(() => expect(screen.getByTestId("issue-live-state").textContent).toBe("succeeded:5:Done"));
-    expect(f.getWorkItemById).toHaveBeenCalledTimes(3);
+    expect(f.getWorkItemById).toHaveBeenCalledTimes(2);
   });
 });

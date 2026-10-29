@@ -34,7 +34,8 @@ function renderStrip(overrides: Partial<React.ComponentProps<typeof ExecutionStr
 
 // The strip is one line, so it prints a sentence only where the label does not
 // already say it (Michael's review, September 11). Every status still carries
-// its own label and tone, which is what A.11 is about.
+// its own label and tone: waiting for a runner and a working runner never
+// share a treatment.
 const LABELS: ReadonlyArray<readonly [ExecutionStatus, string]> = [
   ["idle", "Idle"],
   ["waiting_for_runner", "Waiting for a runner"],
@@ -190,8 +191,8 @@ describe("ExecutionStrip", () => {
   });
 });
 
-// An unlinked chat is answered by a coordinator turn on a customer runner
-// (decisions.md §1, §9). The strip is the same component with the chat
+// An unlinked chat is answered by a coordinator turn on a customer runner.
+// The strip is the same component with the chat
 // vocabulary: it never says "issue", it offers Stop rather than the issue
 // controls, and it offers no model, provider, cost or key choice at all.
 describe("ExecutionStrip on an unlinked chat", () => {
@@ -283,7 +284,7 @@ describe("ExecutionStrip on an unlinked chat", () => {
   it("offers no model, provider, cost or key choice", () => {
     chat("running");
     // Every turn runs on the customer's runner with that runner's own login,
-    // so there is nothing here for the reader to pick (decisions.md §1).
+    // so there is nothing here for the reader to pick.
     expect(screen.queryByRole("combobox")).toBeNull();
     const copy = screen.getByTestId("execution-strip").textContent ?? "";
     for (const word of ["model", "provider", "cost", "key", "token"]) {
@@ -291,7 +292,7 @@ describe("ExecutionStrip on an unlinked chat", () => {
     }
   });
 
-  // §10.4: transcript recovery is visible.
+  // Transcript recovery is visible.
   it("says when the runner continued from a transcript", () => {
     renderStrip({ execution: execution({ status: "running", resume: "transcript" }) });
     expect(screen.getByTestId("execution-resume").textContent).toBe(
@@ -304,7 +305,7 @@ describe("ExecutionStrip on an unlinked chat", () => {
     expect(screen.queryByTestId("execution-resume")).toBeNull();
   });
 
-  // §10.11: a viewer who cannot write gets no controls at all, not disabled
+  // A viewer who cannot write gets no controls at all, not disabled
   // ones.
   it("renders no controls for a read-only viewer", () => {
     renderStrip({

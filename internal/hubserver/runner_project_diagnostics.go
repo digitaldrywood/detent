@@ -10,6 +10,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -33,13 +34,13 @@ func (s *Service) getRunnerProjectDiagnostics(c echo.Context) error {
 	if value := c.QueryParam("limit"); value != "" {
 		n, err := strconv.Atoi(value)
 		if err != nil {
-			return s.nativeAPIError(c, nativeInvalid("Invalid diagnostic limit"))
+			return s.nativeAPIError(c, nativePublicInvalid("Invalid diagnostic limit"))
 		}
 		args.Limit = n
 	}
 	for key := range c.QueryParams() {
 		if !slices.Contains([]string{"runner_id", "issue_id", "attempt_id", "cursor", "limit"}, key) {
-			return s.nativeAPIError(c, nativeInvalid("Invalid diagnostic selector"))
+			return s.nativeAPIError(c, nativePublicInvalid("Invalid diagnostic selector"))
 		}
 	}
 	raw, err := json.Marshal(args)
@@ -47,7 +48,7 @@ func (s *Service) getRunnerProjectDiagnostics(c echo.Context) error {
 		return s.nativeAPIError(c, err)
 	}
 	if _, err := operatortool.DecodeLocalProjectArguments(operatortool.RunnerProjectDiagnostics, raw, true); err != nil {
-		return s.nativeAPIError(c, nativeInvalid("Invalid diagnostic selector"))
+		return s.nativeAPIError(c, nativePublicInvalid("Invalid diagnostic selector"))
 	}
 	page, err := s.readRunnerProjectDiagnostics(c.Request().Context(), scope, args)
 	if err != nil {
@@ -82,7 +83,7 @@ func (s *Service) readRunnerProjectDiagnostics(ctx context.Context, scope native
 	if err != nil {
 		return runnerauth.DiagnosticPage{}, err
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT id, json_extract(project_configuration_json, ?) FROM runner_identities WHERE organization_id = ? AND EXISTS(SELECT 1 FROM token_grants WHERE token_id = runner_identities.token_id AND project_id = ?) AND (? = '' OR id = ?) ORDER BY id LIMIT 101", "$."+jsonPathKey(args.ProjectID), scope.organization, scope.project, args.RunnerID, args.RunnerID)
+	rows, err := tx.QueryContext(ctx, "SELECT id, project_configuration_json FROM runner_identities WHERE organization_id = ? AND EXISTS(SELECT 1 FROM token_grants WHERE token_id = runner_identities.token_id AND project_id = ?) AND (? = '' OR id = ?) ORDER BY id LIMIT 101", scope.organization, scope.project, args.RunnerID, args.RunnerID)
 	if err != nil {
 		return runnerauth.DiagnosticPage{}, err
 	}
@@ -96,6 +97,16 @@ func (s *Service) readRunnerProjectDiagnostics(ctx context.Context, scope native
 		var r observation
 		if err := rows.Scan(&r.id, &r.raw); err != nil {
 			return runnerauth.DiagnosticPage{}, err
+		}
+		if r.raw != nil {
+			entry, err := projectConfigurationEntry(*r.raw, args.ProjectID)
+			if err != nil {
+				return runnerauth.DiagnosticPage{}, err
+			}
+			r.raw = nil
+			if entry.Valid {
+				r.raw = &entry.String
+			}
 		}
 		observed = append(observed, r)
 	}
@@ -128,6 +139,9 @@ func (s *Service) readRunnerProjectDiagnostics(ctx context.Context, scope native
 				return runnerauth.DiagnosticPage{}, errProjectServiceUnavailable
 			}
 		}
+		if err := overlayProjectConfigurationObservation(ctx, tx, scope, item.id, &view); err != nil {
+			return runnerauth.DiagnosticPage{}, err
+		}
 		if view.Diagnostics != nil {
 			if visibleIssues != nil {
 				view.Diagnostics.Records = slices.DeleteFunc(view.Diagnostics.Records, func(record runnerauth.DiagnosticAttempt) bool { return !visibleIssues[record.IssueID] })
@@ -144,6 +158,9 @@ func (s *Service) readRunnerProjectDiagnostics(ctx context.Context, scope native
 			return runnerauth.DiagnosticPage{}, operatortool.ErrInvalidArguments
 		}
 		page.ReceivedAt = view.ObservedAt
+		if err := isolation.ValidateTier(r.IsolationTier, r.OS); err != nil {
+			page.Unavailable["isolation_tier"] = err.Error()
+		}
 		if r.ConnectionHealth != "online" {
 			page.Status = "offline"
 			page.Unavailable["runner_reachability"] = "offline_or_revoked"

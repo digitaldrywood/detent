@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -12,10 +14,44 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+func TestNativePostDiffFailureClearsOperationPending(t *testing.T) {
+	h := newNativeChangeHub(t, true)
+	issue := h.createInProgress(t, "Diff diagnostics")
+	h.claim(t, issue.ID)
+	e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	e.SetDiffSource(nativeChangeDiff(nativeChangeFixtureHead("c"), "README.md"))
+	transport := h.native.client.httpClient.Transport
+	h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(request.URL.Path, "/diff") {
+			return &http.Response{StatusCode: http.StatusBadGateway, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"unavailable","message":"Hub unavailable"}`)), Request: request}, nil
+		}
+		return transport.RoundTrip(request)
+	})
+	t.Cleanup(func() { h.native.client.httpClient.Transport = transport })
+	for _, nested := range []bool{false, true} {
+		var done func(error)
+		if nested {
+			done = e.diagnosticOperation("native.finish")
+		}
+		var failure *APIError
+		err := e.postDiff(t.Context(), 1)
+		if !errors.As(err, &failure) || failure.Status != http.StatusBadGateway {
+			t.Fatalf("postDiff failure = %v, want Hub 502", err)
+		}
+		if nested {
+			done(err)
+		}
+		records := h.scheduler.projectDiagnosticClaims(e.claim.source)
+		if len(records) != 1 || records[0].OperationPending || records[0].LatestError == "" {
+			t.Fatalf("nested=%t failed operation remained pending: %+v", nested, records)
+		}
+	}
+}
+
 func TestNativeDiagnosticOwner(t *testing.T) {
 	now := time.Date(2026, 10, 9, 13, 20, 0, 0, time.UTC)
 	source := &NativeConnector{}
-	s := &Scheduler{now: func() time.Time { return now }, nativeClaims: map[string]nativeClaim{}}
+	s := &Scheduler{now: func() time.Time { return now }, leaseTTL: time.Minute, nativeClaims: map[string]nativeClaim{}}
 	c := nativeClaim{source: source, lease: tracker.NativeLease{ID: "lease_test", WorkItemID: "wi_completed", FencingToken: 22, RenewedAt: now}}
 	e := &nativeExecution{scheduler: s, claim: c, data: tracker.NativeRunData{AttemptID: "attempt_test", Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 4, Generation: 9, Phase: "completed"}}}
 	c.execution = e
@@ -74,6 +110,34 @@ func TestNativeDiagnosticOwner(t *testing.T) {
 	}
 	if len(s.nativeClaims) != 1 || s.nativeClaims["wi_completed"].lease.RenewedAt != now {
 		t.Fatal("claim changed")
+	}
+	for _, test := range []struct {
+		name     string
+		lost     bool
+		terminal bool
+		expires  time.Time
+		deadline time.Time
+		want     int
+	}{
+		{name: "lost claim", lost: true},
+		{name: "terminal observation", terminal: true},
+		{name: "expiry without monotonic deadline", expires: now.Add(-time.Minute - time.Nanosecond)},
+		{name: "server clock behind runner", expires: now.Add(-time.Hour), deadline: now.Add(time.Minute), want: 1},
+		{name: "server clock ahead of runner", expires: now.Add(time.Hour), deadline: now.Add(-time.Minute - time.Nanosecond)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			claim := c
+			claim.lost, claim.recovery.Issue.Terminal = test.lost, test.terminal
+			claim.lease.ExpiresAt, claim.deadline = test.expires, test.deadline
+			s.nativeClaims["wi_completed"] = claim
+			defer func() { s.nativeClaims["wi_completed"] = c }()
+			if records := s.projectDiagnosticClaims(source); len(records) != test.want {
+				t.Fatalf("native claim diagnostics = %+v, want %d records", records, test.want)
+			}
+			if s.nativeClaims["wi_completed"].execution != e || e.pending != pending || e.data.Sequence != 0 {
+				t.Fatal("claim diagnostics discarded or advanced completion custody")
+			}
+		})
 	}
 }
 

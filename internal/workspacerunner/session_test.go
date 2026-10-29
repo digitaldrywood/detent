@@ -43,7 +43,7 @@ type scriptedHub struct {
 	bindCalls int
 	// binds records every bind request, because what the runner claims at bind
 	// and what it narrows to on the first heartbeat are two different answers
-	// and the difference is load-bearing (section 18.12).
+	// and the difference is load-bearing.
 	binds        []hubclient.WorkspaceBindRequest
 	heartbeats   []hubclient.WorkspaceHeartbeatRequest
 	unbindReason string
@@ -483,7 +483,7 @@ func TestSessionAnswersAWatchWithUnsupported(t *testing.T) {
 	if err := json.Unmarshal(answer.Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	// Section 18.4 makes watching optional and says the client refreshes on
+	// The Files contract makes watching optional and says the client refreshes on
 	// focus instead. Claiming it would leave a reader believing a stale tree
 	// is current.
 	if payload.Code != workspacesession.CodeUnsupported {
@@ -629,7 +629,7 @@ func TestCapabilitiesReportOnlyWhatIsServed(t *testing.T) {
 	}
 }
 
-// The exec channel (section 18.12). A run is not request/response, so what the
+// The exec channel. A run is not request/response, so what the
 // tests below assert is the shape of a stream -- output spans, then one exited
 // frame, then the closed frame that gives the stream's slot back -- and what
 // stops a process that should not still be running.
@@ -836,7 +836,7 @@ func TestSessionRefusesASecondRunOnAStream(t *testing.T) {
 	}
 }
 
-// A run the hub dispatched itself (section 18.12). The eighth dogfood run
+// A run the hub dispatched itself. The eighth dogfood run
 // queued one through the API with no browser attached and it never executed:
 // the process only started when a person opened the exec channel for it, and
 // this session's lane runs a project's actions at worktree creation and never
@@ -951,7 +951,7 @@ func TestSessionStopsAHubDispatchedRunWhenTheLeaseIsLost(t *testing.T) {
 	}
 }
 
-// Run-on-worktree-creation (section 18.12). The set arrives with the bind and
+// Run-on-worktree-creation. The set arrives with the bind and
 // runs before the workspace is reported ready, so what these tests assert is
 // what a person finds when their panel first opens.
 

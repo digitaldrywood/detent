@@ -17,7 +17,7 @@ import (
 // reporting a succeeded outcome.
 //
 // The rule is origin equality: a thread is resumed only by the kind of turn
-// that opened it (decisions section 9.3).
+// that opened it.
 func TestConversationResumeDecision(t *testing.T) {
 	t.Parallel()
 	const (

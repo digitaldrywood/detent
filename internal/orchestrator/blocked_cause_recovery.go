@@ -5,15 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
 
-	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/provenance"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -27,19 +25,10 @@ const (
 	blockedRecoveryPredicateFingerprintChange      = "fingerprint_changed"
 	blockedRecoveryPredicateOncePerFingerprint     = "once_per_fingerprint"
 	blockedRecoveryPredicateManaged                = "managed"
-	blockedRecoveryPredicateBreakerCooldown        = "breaker_cooldown_elapsed"
-	blockedRecoveryReasonBreakerCooldownActive     = "breaker_cooldown_active"
 	blockedCauseFingerprintVersion                 = 3
 	workflowActionCauseBlockedRecovery             = "cause_blocked_recovery"
-	workflowActionBlockedReadyPRReconciliation     = "blocked_ready_pr_reconciliation"
-	blockedReadyPullRequestLookupAttempts          = 3
-	blockedReadyPullRequestLookupBackoff           = 250 * time.Millisecond
-	blockedReadyPullRequestLookupFoundReason       = "ready_pr_lookup_found"
 	blockedReadyPullRequestLookupNoneReason        = "ready_pr_lookup_none"
 	blockedReadyPullRequestLookupUnavailableReason = "ready_pr_lookup_unavailable"
-	instantFailureCircuitBreakerCause              = "instant_failure_circuit_breaker"
-	instantFailureCircuitBreakerLaneReason         = "instant_fail_circuit_breaker"
-	schedulerParkRecoveryUnavailableReason         = "scheduler_park_recovery_unavailable"
 )
 
 type blockedCauseSignals struct {
@@ -96,26 +85,20 @@ func (o *Orchestrator) newBlockedRecoveryMetadata(
 ) workflowLaneMetadata {
 	cause = strings.TrimSpace(cause)
 	predicate = strings.TrimSpace(predicate)
-	if breakerParkCause(cause) && predicate == blockedRecoveryPredicateFingerprintChange {
-		predicate = blockedRecoveryPredicateBreakerCooldown
-		if previousState := strings.TrimSpace(issue.State); previousState != "" && normalizeState(previousState) != normalizeState(blockedStatusState) {
-			targetState = previousState
-		}
-	}
 	signals := o.blockedCauseSignals(ctx, issue, runMode, targetState, fallback)
-	if predicate != blockedRecoveryPredicateBreakerCooldown || strings.TrimSpace(targetState) == "" {
-		targetState = blockedCauseTargetState(issue, signals, targetState)
-	}
+	targetState = blockedCauseTargetState(issue, signals, targetState)
 	return workflowLaneMetadata{
 		BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{
 			Owner:                   blockedRecoveryOwnerOrchestrator,
+			SourceRevision:          holdSourceRevision(issue),
+			ExpiresAt:               time.Now().UTC().Add(o.cfg.MaxRetryBackoff),
 			Cause:                   cause,
 			Predicate:               predicate,
 			CauseFingerprint:        blockedCauseFingerprint(cause, signals),
 			CauseFingerprintVersion: blockedCauseFingerprintVersion,
 			TargetState:             targetState,
 			RunMode:                 strings.TrimSpace(runMode),
-			IntentResumable:         predicate == blockedRecoveryPredicateBreakerCooldown || blockedCauseResumable(issue, signals),
+			IntentResumable:         blockedCauseResumable(issue, signals),
 		},
 	}
 }
@@ -251,35 +234,12 @@ func blockedCauseFingerprint(cause string, signals blockedCauseSignals) string {
 		PRBaseSHA:          signals.PRBaseSHA,
 		PRDiffFingerprint:  signals.PRDiffFingerprint,
 	}
-	if !breakerParkCause(cause) {
-		identity.BaseFingerprint = signals.BaseFingerprint
-	}
+	identity.BaseFingerprint = signals.BaseFingerprint
 	data, err := json.Marshal(identity)
 	if err != nil {
 		return blockedCauseHash(err.Error())
 	}
 	return blockedCauseHash(string(data))
-}
-
-func breakerParkCause(cause string) bool {
-	cause = strings.ToLower(strings.TrimSpace(cause))
-	if strings.HasPrefix(cause, tokenCeilingBlockedReasonPrefix) ||
-		strings.HasPrefix(cause, repeatedFailureBlockedReasonPrefix) {
-		return true
-	}
-	switch cause {
-	case dispatchLoopDetectedReason,
-		noProgressLimitReason,
-		spendProgressReason,
-		instantFailureCircuitBreakerCause,
-		repeatedFailureCircuitBreakerCause,
-		"token_ceiling_circuit_breaker",
-		terminalAttemptRetryLimitCause,
-		workspacePreparationRetryLimitCause:
-		return true
-	default:
-		return false
-	}
 }
 
 func blockedCauseHash(value string) string {
@@ -313,940 +273,60 @@ func (o *Orchestrator) recoverCauseBlockedIssue(
 	if normalizeState(issue.State) != normalizeState(blockedStatusState) && (issue.IssueContract == nil || issue.IssueContract.ReturnState == "" || normalizeState(issue.State) != normalizeState(o.cfg.StopRunTargetState)) {
 		return false
 	}
-	if issue.IssueContract != nil && issue.IssueContract.ReturnState != "" && o.cfg.IssueContract != nil {
-		if issue.IssueContract.HumanAction != "" || !o.cfg.IssueContract.Evaluate(issue).Satisfied() {
-			return false
-		}
-		parkedAt, found := o.currentBlockedRecoveryParkedAt(ctx, state, issue)
-		if found {
-			if evidence := clearedHumanActionEvidence(issue, parkedAt, now); evidence != nil {
-				return o.applyRecordedBlockerRecovery(ctx, state, issue, nil, []telemetry.BlockerEvidence{*evidence}, now)
-			}
-		}
-		return false
-	}
-	dependencyCfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
+	issue = issue.WithNativeWorkpadAuthority()
 	if o.currentBlockedOperatorStop(ctx, state, issue) {
 		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "operator_stop", nil, "")
 		return false
 	}
-	park, currentParkFound := o.currentBlockedRecoveryPark(ctx, state, issue)
-	if currentParkFound {
-		park = o.normalizeCurrentBreakerRecoveryPark(ctx, state, issue, park)
-		if handled, transitioned := o.reconcileLegacyDeliverableCredentialPark(ctx, state, issue, park, now); handled {
-			return transitioned
-		}
-	}
-	derivedLaneReason := ""
-	derivationFailure := ""
-	if !currentParkFound {
-		park, currentParkFound, derivedLaneReason, derivationFailure = o.deriveCurrentBreakerRecoveryPark(ctx, state, issue)
-	}
-	var evidence *blockedRecoveryDependencyEvidence
-	if len(cohort) > 0 {
-		evidence = cohort[0]
-	}
-	if evidence == nil {
-		withDependencies, workpadRefs, current := o.issueWithCurrentWorkpadDependencyRefs(ctx, o.issueWithDependencyRefs(issue))
-		blockers := o.resolveDependencyBlockers(ctx, withDependencies)
-		references := make(map[string]connector.Issue, len(blockers))
-		for _, blocker := range blockers {
-			if blocker.Resolved {
-				references[normalizedIssueIdentifier(blocker.Issue.Identifier)] = blocker.Issue
-			}
-		}
-		evidence = &blockedRecoveryDependencyEvidence{issue: withDependencies, workpadRefs: workpadRefs, workpadCurrent: current, blockers: blockers, references: references}
-	}
-	withDependencies, workpadRefs, workpadCurrent := evidence.issue, evidence.workpadRefs, evidence.workpadCurrent
-	blockers := evidence.blockers
-	withDependencies.BlockedBy = dependencyResolvedBlockerRefs(blockers)
-	recorded := recordedBlockerEvaluation{}
-	if issue.WorkpadSignal == nil || len(issue.WorkpadSignal.Blockers) == 0 || workpadCurrent {
-		recorded = o.evaluateRecordedBlockers(ctx, state, issue, evidence.references, now, len(cohort) > 0 && cohort[0] != nil)
-	}
-	instanceOnly := recorded.instanceOnly() && (issue.WorkpadSignal == nil || issue.WorkpadSignal.Invalid == nil && strings.TrimSpace(issue.WorkpadSignal.HumanAction) == "")
-	if recorded.Found {
-		if recorded.Unverifiable && !instanceOnly {
-			reason := "unverifiable_blocker"
-			if issue.WorkpadSignal != nil {
-				switch {
-				case issue.WorkpadSignal.Invalid != nil:
-					reason = BlockedRecoveryHumanHoldReason(issue, o.cfg.AutoPromote.OptoutLabel)
-					if reason == "invalid_workpad_signal" && len(dependencyBlockersNotReady(blockers, dependencyCfg, o.cfg.TerminalStates)) == 0 {
-						if handled, transitioned := o.reconcileInvalidWorkpadPark(ctx, state, issue, now); handled {
-							return transitioned
-						}
-					}
-				case strings.TrimSpace(issue.WorkpadSignal.HumanAction) != "":
-					reason = "human_action"
-				}
-			}
-			o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "hold", reason, nil, "")
-			setBlockedEvidence(state, issue.ID, recorded.Evidence)
-			return false
-		}
-		if recorded.Holds {
-			action := "defer"
-			if recorded.HumanOwned {
-				action = "hold"
-			}
-			o.recordBlockedRecoveryDecision(ctx, state, withDependencies, action, "recorded_blocker_holds", nil, "")
-			setBlockedEvidence(state, issue.ID, recorded.Evidence)
-			return false
-		}
-		if len(blockers) > 0 && !dependencyBlockersReady(blockers, dependencyCfg, o.cfg.TerminalStates) {
-			o.recordBlockedRecoveryDecision(
-				ctx,
-				state,
-				withDependencies,
-				"defer",
-				"dependency_recovery",
-				nil,
-				"",
-				dependencyBlockersNotReady(blockers, dependencyCfg, o.cfg.TerminalStates)...,
-			)
-			setBlockedEvidence(state, issue.ID, recorded.Evidence)
-			return false
-		}
-		if !currentParkFound {
-			if handled, transitioned := o.reconcileAttemptTriagePark(ctx, state, withDependencies, now); handled {
-				return transitioned
-			}
-			if o.applyRecordedBlockerRecovery(ctx, state, withDependencies, blockers, recorded.Evidence, now) {
-				return true
-			}
-			o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "hold", "transition_failed", nil, "")
-			setBlockedEvidence(state, issue.ID, recorded.Evidence)
-			return false
-		}
-		setBlockedEvidence(state, issue.ID, recorded.Evidence)
-	}
-	workpadBlockers := dependencyBlockersMatchingRefs(blockers, workpadRefs)
-	holdReason := o.blockedCauseHoldReason(issue, state, workpadBlockers, dependencyCfg, workpadCurrent)
-	if holdReason != "" && holdReason != "invalid_workpad_signal" {
-		o.recordBlockedRecoveryDecision(
-			ctx,
-			state,
-			withDependencies,
-			"hold",
-			holdReason,
-			nil,
-			"",
-			dependencyBlockersNotReady(workpadBlockers, dependencyCfg, o.cfg.TerminalStates)...,
-		)
+	if explicitHumanAction(issue) != "" {
+		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "human_action", nil, "")
 		return false
 	}
-	unresolvedBlockers := dependencyBlockersNotReady(blockers, dependencyCfg, o.cfg.TerminalStates)
-	if len(unresolvedBlockers) > 0 {
-		o.recordBlockedRecoveryDecision(ctx, state, withDependencies, "defer", "dependency_recovery", nil, "", unresolvedBlockers...)
-		return false
-	}
-	if holdReason == "invalid_workpad_signal" {
-		if handled, transitioned := o.reconcileInvalidWorkpadPark(ctx, state, issue, now); handled {
-			return transitioned
-		}
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", holdReason, nil, "")
-		return false
-	}
-	if park, ok := o.latestReworkBreakerPark(ctx, issue); ok {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "rework_breaker_recovery", nil, park.Signature)
-		return false
-	}
-	if !currentParkFound {
-		park, currentParkFound = o.currentBlockedRecoveryParkWithLegacyRESTBudget(ctx, state, issue)
-	}
-	if !currentParkFound {
-		if derivationFailure != "" {
-			o.logSchedulerBreakerRecoveryDerivationFailure(issue, derivedLaneReason, derivationFailure)
-			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", schedulerParkRecoveryUnavailableReason, nil, "")
-			return false
-		}
-		if handled, transitioned := o.reconcileAttemptTriagePark(ctx, state, issue, now); handled {
-			return transitioned
-		}
-		recoveryCfg := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery)
-		reasonCode, reasonFound := o.latestWorkflowLaneReason(ctx, issue, issue.State)
-		if recoveryCfg.Enabled && reasonFound && blockedRecoveryReasonAllowed(recoveryCfg, reasonCode) {
-			o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "pr_maintenance_recovery", nil, "")
-		} else {
-			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "no_recovery_predicate", nil, "")
-		}
-		return false
-	}
-	if handled, transitioned := o.reconcileObsoleteArtifactSpendProgressPark(ctx, state, issue, park, now); handled {
-		return transitioned
-	}
-	if handled, transitioned := o.reconcilePersistentlyMissingRequiredCheckPark(ctx, state, issue, park, now); handled {
-		return transitioned
-	}
-	if handled, transitioned := o.reconcileBlockedReadyPullRequest(ctx, state, issue, park, now); handled {
-		return transitioned
-	}
-	if park.Owner == blockedRecoveryOwnerHuman && park.Cause == workpadBlockedUnactionedReason {
-		parkedAt, ok := o.currentBlockedRecoveryParkedAt(ctx, state, issue)
-		if ok {
-			if evidence := clearedHumanActionEvidence(issue, parkedAt, now); evidence != nil {
-				if o.applyRecordedBlockerRecovery(ctx, state, issue, blockers, []telemetry.BlockerEvidence{*evidence}, now) {
-					return true
-				}
-				o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "transition_failed", &park, park.CauseFingerprint)
-				return false
-			}
-		}
-	}
-	if park.Owner == blockedRecoveryOwnerHuman || park.Owner == blockedRecoveryOwnerOperator {
-		reason := strings.TrimSpace(park.HoldReason)
-		if reason == "" {
-			reason = "human_recovery"
-		}
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", reason, &park, park.CauseFingerprint)
-		return false
-	}
-	if handled, transitioned := o.reconcileRepeatedFailureGitHubRESTBudgetPark(ctx, state, issue, park, now); handled {
-		return transitioned
-	}
-	if handled, transitioned := o.reconcileLifetimeLimitPark(ctx, state, issue, park, now); handled {
-		return transitioned
-	}
-	if park.Predicate == blockedRecoveryPredicateManaged {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "managed_recovery", &park, park.CauseFingerprint)
-		return false
-	}
-	breakerPark := breakerParkCause(park.Cause)
-	if !breakerPark && park.Predicate != blockedRecoveryPredicateFingerprintChange &&
-		park.Predicate != blockedRecoveryPredicateOncePerFingerprint {
-		derivedPark, found, laneReason, failure := o.deriveCurrentBreakerRecoveryPark(ctx, state, issue)
-		if !found {
-			if failure != "" {
-				o.logSchedulerBreakerRecoveryDerivationFailure(issue, laneReason, failure)
-				o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", schedulerParkRecoveryUnavailableReason, &park, park.CauseFingerprint)
-				return false
-			}
-			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "no_recovery_predicate", &park, park.CauseFingerprint)
-			return false
-		}
-		park = derivedPark
-		breakerPark = true
-	}
-	signals := blockedCauseSignals{}
-	currentFingerprint := ""
-	if park.CauseFingerprintVersion != blockedCauseFingerprintVersion {
-		signals = o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
-		currentFingerprint = blockedCauseFingerprint(park.Cause, signals)
-		rebased, ok := o.rebaselineLegacyBlockedRecoveryPark(ctx, state, issue, park, signals, currentFingerprint)
-		if !ok {
-			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "legacy_cause_fingerprint", &park, park.CauseFingerprint)
-			return false
-		}
-		park = rebased
-	}
-	var breakerParkedAt time.Time
-	if breakerPark {
+	if o.currentBlockedHumanIntent(ctx, state, issue) {
 		parkedAt, found := o.currentBlockedRecoveryParkedAt(ctx, state, issue)
 		if !found {
-			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "breaker_cooldown_unavailable", &park, park.CauseFingerprint)
 			return false
 		}
-		cooldown := normalizeBlockedRecoveryConfig(o.cfg.BlockedRecovery).BreakerCooldown
-		causeActive := true
-		if park.Cause == terminalAttemptRetryLimitCause {
-			count, _, known := o.consecutiveRetryCycleCount(ctx, state, issue, park.Cause, now)
-			if !known {
-				o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", schedulerParkRecoveryUnavailableReason, &park, park.CauseFingerprint)
+		evidence := clearedHumanActionEvidence(issue, parkedAt, now)
+		if evidence == nil {
+			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "human_action", nil, "")
+			return false
+		}
+		return o.applyRecordedBlockerRecovery(ctx, state, issue, nil, []telemetry.BlockerEvidence{*evidence}, now)
+	}
+	signal, _ := rawIssueWorkpadSignal(issue)
+	if signal != nil && signal.Invalid == nil {
+		dependencies := workpad.CloneSignal(signal)
+		dependencies.Blockers = nil
+		for _, blocker := range signal.Blockers {
+			if blocker.Owner == workpad.BlockerOwnerOrchestrator && blocker.Predicate != nil && blocker.Predicate.Type == workpad.PredicateIssueState {
+				dependencies.Blockers = append(dependencies.Blockers, blocker)
+			}
+		}
+		recorded := o.evaluateRecordedBlockerSignal(ctx, state, issue, dependencies, nil, now)
+		if recorded.Found {
+			o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", string(BlockedRecoveryReasonDependencyBlocker), nil, "")
+			setBlockedEvidence(state, issue.ID, recorded.Evidence)
+			if recorded.Holds {
 				return false
 			}
-			causeActive = count >= o.retryCycleFailureLimit(park.Cause)
-		}
-		if causeActive && now.Before(parkedAt.Add(cooldown)) {
-			o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", blockedRecoveryReasonBreakerCooldownActive, &park, park.CauseFingerprint)
-			return false
-		}
-		breakerParkedAt = parkedAt
-	}
-	if currentFingerprint == "" {
-		signals = o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
-		currentFingerprint = blockedCauseFingerprint(park.Cause, signals)
-	}
-	if !breakerPark && park.Predicate == blockedRecoveryPredicateFingerprintChange && currentFingerprint == park.CauseFingerprint {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "cause_unchanged", &park, currentFingerprint)
-		return false
-	}
-	signature := blockedCauseRecoverySignature(park.Cause, currentFingerprint)
-	if breakerPark {
-		signature = blockedCauseRecoverySignature(park.Cause, breakerParkedAt.UTC().Format(time.RFC3339Nano))
-	}
-	if _, consumed := o.workflowTimelineActionSignature(ctx, issue, workflowActionCauseBlockedRecovery, signature); consumed {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "fingerprint_already_consumed", &park, currentFingerprint)
-		return false
-	}
-	targetState := strings.TrimSpace(park.TargetState)
-	if !breakerPark || targetState == "" {
-		targetState = blockedCauseTargetState(issue, signals, targetState)
-	}
-	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionCauseBlockedRecovery, signature)
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, now, "cause_blocked_recovery", metadata); err != nil {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "transition_failed", &park, currentFingerprint)
-		return false
-	}
-	if o.connector != nil {
-		if err := o.connector.CreateComment(ctx, issue.ID, blockedCauseRecoveryComment(issue, park, targetState, currentFingerprint)); err != nil && o.logger != nil {
-			o.logger.Warn("blocked recovery comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+			if !recorded.Unverifiable {
+				withDependencies, _, _ := o.issueWithCurrentWorkpadDependencyRefs(ctx, o.issueWithDependencyRefs(issue))
+				blockers := o.resolveDependencyBlockers(ctx, withDependencies)
+				return o.applyRecordedBlockerRecovery(ctx, state, withDependencies, blockers, recorded.Evidence, now)
+			}
+			if o.logger != nil {
+				o.logger.Info("retry unverifiable dependency evaluation", "issue_id", issue.ID, "blocker_evidence", recorded.Evidence)
+			}
 		}
 	}
-	delete(state.Blocked, issue.ID)
-	o.logBlockedRecoveryDecision(issue, "transition", "recovery_predicate_satisfied", &park, currentFingerprint)
+	if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(state.Retry[issue.ID].Attempt), now, issue.BlockerReason, ""); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("blocked recovery retry failed", "issue_id", issue.ID, "error", err)
+		}
+		return false
+	}
 	return true
-}
-
-// A historical allowance park has no blocked-cause metadata. Its lane entry
-// still records the triage reason and PR head, so use the existing promotion
-// gate to reconcile it once Detent-owned waits have cleared.
-func (o *Orchestrator) reconcileAttemptTriagePark(ctx context.Context, state *State, issue connector.Issue, now time.Time) (bool, bool) {
-	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
-	if !ok || entry.Event.Reason != attemptAllowanceExhaustedReason ||
-		!workflowLaneEntryMatchesCurrent(issue, entry.Event) {
-		return false, false
-	}
-	if BlockedRecoveryHumanHoldReason(issue, o.cfg.AutoPromote.OptoutLabel) != "" {
-		return true, false
-	}
-	if stateIn(entry.Event.PreviousPhaseName, normalizedStates([]string{"In Progress", autoPromoteReworkState})) {
-		if err := o.updateIssueState(ctx, state, issue, entry.Event.PreviousPhaseName, now, workflowActionRecordedBlockerRecovery); err != nil {
-			return true, false
-		}
-		delete(state.Blocked, issue.ID)
-		o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
-		return true, true
-	}
-	if entry.Metadata.PullRequest == nil || strings.TrimSpace(entry.Metadata.PullRequest.HeadSHA) == "" || o.mergeLaneUnavailableReason() != "" {
-		return true, false
-	}
-	hydrator, ok := o.connector.(connector.PullRequestHydrator)
-	if !ok {
-		return true, false
-	}
-	live, err := hydrator.HydratePullRequest(ctx, issue)
-	if err != nil || live.PullRequest == nil || pullRequestHydrationBlocksProgress(live.PullRequest) {
-		return true, false
-	}
-	live, ok = o.hydrateAutoPromoteReviewThreads(ctx, live)
-	if !ok || !mergeWorkerProgrammaticMergeReady(live, o.cfg) || !reworkBreakerCIGreen(live.PullRequest) ||
-		len(live.PullRequest.StaleSuccessfulChecks) > 0 ||
-		entry.Metadata.PullRequest.Number != int64(pullRequestNumber(live)) ||
-		entry.Metadata.PullRequest.Repository != pullRequestRepository(live) {
-		return true, false
-	}
-	if entry.Metadata.PullRequest.HeadSHA != strings.TrimSpace(live.PullRequest.HeadSHA) &&
-		!pullRequestHeadAfter(live, workflowLaneTransitionAt(entry.Event)) {
-		return true, false
-	}
-	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
-	if !cfg.Enabled || autoPromoteHumanReviewRequired(live, cfg, cfg.Gate) {
-		return true, false
-	}
-	candidate := cloneIssue(live)
-	candidate.State = cfg.ReworkState
-	summary := AutoPromoteSummaryFromIssue(candidate)
-	summary.SecurityAudit = o.securityAuditEvaluation(ctx, candidate)
-	summary.CompletedFinalState = autoPromoteCompletedFinalState(state, live.ID)
-	summary.AutomatedReviewWaitExpired = autoPromoteReviewWaitExpired(state, live.ID, cfg, now)
-	if !reworkGateWaitAuditReady(cfg.Gate, summary.SecurityAudit) {
-		return true, false
-	}
-	// The recovery predicate owns audit eligibility here: a missing audit can
-	// run in Merging. Evaluate the remaining gates without repeating that check;
-	// the instance config still requires the exact-head audit before merging.
-	cfg.Gate.SecurityAudit.Enabled = false
-	candidate, decision := o.hydrateAutoPromoteWorkpadDecision(ctx, candidate, summary, cfg, now)
-	var validatorReady bool
-	decision, validatorReady = o.applyValidatorStage(ctx, state, candidate, &summary, decision, cfg, now)
-	if !validatorReady || decision.Action != AutoPromoteActionPromote {
-		return true, false
-	}
-	signature := blockedReadyPullRequestSignature(live, workflowLaneBlockedRecoveryMetadata{Cause: attemptAllowanceExhaustedReason})
-	if _, consumed := o.workflowTimelineActionSignature(ctx, live, workflowActionBlockedReadyPRReconciliation, signature); consumed {
-		return true, false
-	}
-	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionBlockedReadyPRReconciliation, signature)
-	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, live.ID, live, autoPromoteMergingState, now, workflowActionBlockedReadyPRReconciliation, metadata); err != nil {
-		return true, false
-	}
-	delete(state.Blocked, live.ID)
-	o.clearAutoPromotedIssueDispatchMemory(state, live.ID)
-	o.recordMergeQueueEntered(state, promotedIssue(live, autoPromoteMergingState, now), now, workflowActionBlockedReadyPRReconciliation)
-	return true, true
-}
-
-func (o *Orchestrator) reconcileLegacyDeliverableCredentialPark(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	park workflowLaneBlockedRecoveryMetadata,
-	now time.Time,
-) (bool, bool) {
-	if strings.TrimSpace(park.Cause) != deliverableConfigurationFailureCause {
-		return false, false
-	}
-	if o.workAttempts == nil {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "cause_unchanged", &park, park.CauseFingerprint)
-		return true, false
-	}
-	legacyAttempt, err := o.workAttempts.WorkAttempt(ctx, park.WorkAttemptID)
-	if err != nil {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "cause_unchanged", &park, park.CauseFingerprint)
-		return true, false
-	}
-	legacyCredentialFailure := strings.TrimSpace(legacyAttempt.ErrorClass) == deliverableConfigurationFailureCause &&
-		forgeavailability.WorkerGitHubCredentialUnavailable(legacyAttempt.ErrorMessage)
-	persistedMetadata, persistedCredentialWait := forgeWaitMetadataFromAttempt(legacyAttempt)
-	persistedCredentialWait = persistedCredentialWait && persistedMetadata.ErrorClass == forgeavailability.ClassWorkerGitHubCredentialUnavailable
-	if !legacyCredentialFailure && !persistedCredentialWait {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "cause_unchanged", &park, park.CauseFingerprint)
-		return true, false
-	}
-	targetState := strings.TrimSpace(park.TargetState)
-	if targetState == "" || normalizeState(targetState) == normalizeState(blockedStatusState) {
-		targetState = autoPromoteReworkState
-	}
-	operation := persistedMetadata.Operation
-	if operation == "" {
-		operation = "create_pull_request"
-		if strings.Contains(strings.ToLower(legacyAttempt.ErrorMessage), "git push") {
-			operation = "git push"
-		}
-	}
-	detail := strings.TrimSpace(legacyAttempt.ErrorMessage)
-	availabilityErr := forgeavailability.NewError(
-		forgeavailability.Scope{Host: forgeHostForIssue(issue, o.cfg.ForgeHost), Operation: operation},
-		forgeavailability.ClassWorkerGitHubCredentialUnavailable,
-		errors.New(detail),
-	)
-	running := Running{Issue: issue, Attempt: park.AttemptNumber, WorkAttemptID: park.WorkAttemptID}
-	var condition ForgeCondition
-	var forgeRetry *runpkg.ForgeRetry
-	if persistedCredentialWait {
-		o.restoreForgeAvailabilityWait(state, issue, legacyAttempt, persistedMetadata, now)
-		condition, _ = forgeCondition(state, persistedMetadata.Host)
-		forgeRetry = state.Retry[issue.ID].ForgeRetry
-	} else {
-		condition = o.registerForgeUnavailable(state, availabilityErr, running, now)
-		forgeRetry = &runpkg.ForgeRetry{
-			Host:      condition.Host,
-			Operation: operation,
-			Branch:    strings.TrimSpace(issue.BranchName),
-		}
-	}
-	message := strings.TrimSpace(availabilityErr.Error())
-	if legacyCredentialFailure && !o.persistLegacyForgeAvailabilityWait(ctx, running, condition, forgeRetry, message, legacyAttempt.WorkerMetadataJSON) {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", forgeavailability.ClassWorkerGitHubCredentialUnavailable, &park, park.CauseFingerprint)
-		return true, false
-	}
-	state.Retry[issue.ID] = Retry{
-		Issue:            cloneIssue(issue),
-		Attempt:          park.AttemptNumber,
-		DueAt:            condition.NextProbeAt,
-		Error:            detail,
-		ForgeUnavailable: true,
-		ForgeHost:        condition.Host,
-		ForgeRetry:       forgeRetry,
-	}
-	signature := blockedCauseRecoverySignature(deliverableConfigurationFailureCause, strings.TrimSpace(park.CauseFingerprint))
-	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionCauseBlockedRecovery, signature)
-	if err := o.updateIssueStateByIDStrictWithMetadata(ctx, state, issue.ID, issue, targetState, now, "cause_blocked_recovery", metadata); err != nil {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "transition_failed", &park, park.CauseFingerprint)
-		return true, false
-	}
-	issue.State = targetState
-	retry := state.Retry[issue.ID]
-	retry.Issue = cloneIssue(issue)
-	state.Retry[issue.ID] = retry
-	delete(state.Blocked, issue.ID)
-	o.logBlockedRecoveryDecision(issue, "transition", forgeavailability.ClassWorkerGitHubCredentialUnavailable, &park, park.CauseFingerprint)
-	return true, true
-}
-
-func (o *Orchestrator) reconcileObsoleteArtifactSpendProgressPark(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	park workflowLaneBlockedRecoveryMetadata,
-	now time.Time,
-) (bool, bool) {
-	if strings.TrimSpace(park.Cause) != spendProgressReason ||
-		o.spendProgressDeliverableKind(Running{Issue: issue}) != workflowconfig.DeliverableArtifact {
-		return false, false
-	}
-	record, ok := o.latestSpendProgressRecord(ctx, issue)
-	if !ok || strings.TrimSpace(record.BlockReason) != spendProgressReason || strings.TrimSpace(record.Case) != spendProgressCaseNoPR {
-		return false, false
-	}
-	signals := o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
-	fingerprint := blockedCauseFingerprint(park.Cause, signals)
-	signature := blockedCauseRecoverySignature("obsolete_artifact_pr_evidence", fingerprint)
-	if _, consumed := o.workflowTimelineActionSignature(ctx, issue, workflowActionCauseBlockedRecovery, signature); consumed {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "obsolete_artifact_spend_recovery_already_consumed", &park, fingerprint)
-		return true, false
-	}
-	targetState := blockedCauseTargetState(issue, signals, park.TargetState)
-	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionCauseBlockedRecovery, signature)
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, targetState, now, "obsolete_artifact_spend_recovery", metadata); err != nil {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "obsolete_artifact_spend_recovery_transition_failed", &park, fingerprint)
-		return true, false
-	}
-	if o.connector != nil {
-		comment := "Recovered this artifact-deliverable item from Blocked because its persisted spend breaker checked PR evidence that the project cannot produce. Future spend-progress checks use artifact receipts, status, deliverable metadata, and output evidence."
-		if err := o.connector.CreateComment(ctx, issue.ID, comment); err != nil && o.logger != nil {
-			o.logger.Warn("obsolete artifact spend recovery comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-		}
-	}
-	delete(state.Blocked, issue.ID)
-	o.logBlockedRecoveryDecision(issue, "transition", "obsolete_artifact_spend_recovery", &park, fingerprint)
-	return true, true
-}
-
-func (o *Orchestrator) rebaselineLegacyBlockedRecoveryPark(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	park workflowLaneBlockedRecoveryMetadata,
-	signals blockedCauseSignals,
-	fingerprint string,
-) (workflowLaneBlockedRecoveryMetadata, bool) {
-	if o == nil || o.workflowMetrics == nil || strings.TrimSpace(park.Cause) == "" || strings.TrimSpace(fingerprint) == "" {
-		return park, false
-	}
-	updater, ok := o.workflowMetrics.(WorkflowMetricsMetadataUpdater)
-	if !ok {
-		return park, false
-	}
-	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
-	if !ok ||
-		entry.Event.ID <= 0 ||
-		normalizeState(entry.Event.PhaseName) != normalizeState(blockedStatusState) ||
-		!blockedEntryMatchesCurrent(issue, entry.Event.StartedAt) ||
-		entry.Metadata.BlockedRecovery == nil ||
-		!sameBlockedRecoveryPark(*entry.Metadata.BlockedRecovery, park) {
-		return park, false
-	}
-
-	rebased := park
-	rebased.Cause = strings.TrimSpace(rebased.Cause)
-	rebased.CauseFingerprint = strings.TrimSpace(fingerprint)
-	rebased.CauseFingerprintVersion = blockedCauseFingerprintVersion
-	if rebased.Predicate != blockedRecoveryPredicateBreakerCooldown || strings.TrimSpace(rebased.TargetState) == "" {
-		rebased.TargetState = blockedCauseTargetState(issue, signals, rebased.TargetState)
-	}
-	rebased.RunMode = strings.TrimSpace(rebased.RunMode)
-	rebased.IntentResumable = rebased.Predicate == blockedRecoveryPredicateBreakerCooldown || blockedCauseResumable(issue, signals)
-	rebased.Resumable = false
-	rebased.Reachability = ""
-	rebased.HoldReason = ""
-	rebased.OperatorRemedy = ""
-
-	metadata := entry.Metadata
-	metadata.BlockedRecovery = &rebased
-	if err := updater.UpdateWorkflowPhaseEventMetadata(ctx, entry.Event.ID, workflowLaneMetadataJSON(issue, metadata)); err != nil {
-		if o.logger != nil {
-			o.logger.Warn("legacy blocked recovery fingerprint rebaseline failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-		}
-		return park, false
-	}
-	if state != nil {
-		if blocked, found := state.Blocked[strings.TrimSpace(issue.ID)]; found {
-			blocked.Recovery = &rebased
-			state.Blocked[strings.TrimSpace(issue.ID)] = blocked
-		}
-	}
-	if o.logger != nil {
-		o.logger.Info("legacy blocked recovery fingerprint rebaselined", "issue_id", issue.ID, "identifier", issue.Identifier, "cause", rebased.Cause, "fingerprint_version", blockedCauseFingerprintVersion)
-	}
-	return rebased, true
-}
-
-func sameBlockedRecoveryPark(left workflowLaneBlockedRecoveryMetadata, right workflowLaneBlockedRecoveryMetadata) bool {
-	return strings.EqualFold(strings.TrimSpace(left.Owner), strings.TrimSpace(right.Owner)) &&
-		strings.TrimSpace(left.Cause) == strings.TrimSpace(right.Cause) &&
-		strings.TrimSpace(left.Predicate) == strings.TrimSpace(right.Predicate) &&
-		strings.TrimSpace(left.CauseFingerprint) == strings.TrimSpace(right.CauseFingerprint) &&
-		left.CauseFingerprintVersion == right.CauseFingerprintVersion
-}
-
-func (o *Orchestrator) reconcileInvalidWorkpadPark(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	now time.Time,
-) (bool, bool) {
-	park, ok := o.currentBlockedRecoveryParkWithLegacyRESTBudget(ctx, state, issue)
-	if !ok {
-		return false, false
-	}
-	readyPullRequestIssue := cloneIssue(issue)
-	readyPullRequestIssue.WorkpadSignal = nil
-	readyPullRequestIssue.Comments = nil
-	if handled, transitioned := o.reconcileBlockedReadyPullRequest(ctx, state, readyPullRequestIssue, park, now); handled {
-		return true, transitioned
-	}
-	if !strings.EqualFold(strings.TrimSpace(park.Owner), blockedRecoveryOwnerOrchestrator) {
-		return false, false
-	}
-	return o.reconcileRepeatedFailureGitHubRESTBudgetPark(ctx, state, issue, park, now)
-}
-
-func (o *Orchestrator) reconcileBlockedReadyPullRequest(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	park workflowLaneBlockedRecoveryMetadata,
-	now time.Time,
-) (bool, bool) {
-	if !blockedReadyPullRequestRecoverableCause(park) {
-		return false, false
-	}
-	signals := o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
-	if !implementProgressLinkedPullRequest(issue) {
-		issue.BranchName = blockedReadyPullRequestBranch(state, issue)
-		if deliverableRecoveryPark(park) {
-			if issue.BranchName == "" {
-				_, suffix, found := strings.Cut(park.Cause, "pushed branch ")
-				if fields := strings.Fields(suffix); found && len(fields) > 0 {
-					issue.BranchName = fields[0]
-				}
-			}
-			if issue.BranchName != "" && strings.TrimSpace(signals.WorkspaceHeadSHA) == "" {
-				lookup, ok := o.connector.(connector.BranchHeadLookup)
-				var err error
-				if ok {
-					signals.WorkspaceHeadSHA, err = lookup.LookupBranchHead(ctx, pullRequestRepository(issue), issue.BranchName)
-				}
-				if err != nil || strings.TrimSpace(signals.WorkspaceHeadSHA) == "" {
-					o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", blockedReadyPullRequestLookupUnavailableReason, &park, blockedCauseFingerprint(park.Cause, signals))
-					if err != nil && o.logger != nil {
-						o.logger.Warn("blocked deliverable branch lookup unavailable", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-					}
-					return true, false
-				}
-			}
-		}
-		if issue.BranchName == "" || strings.TrimSpace(signals.WorkspaceHeadSHA) == "" {
-			return false, false
-		}
-		lookedUp, outcome, err := o.lookupBlockedReadyPullRequest(ctx, issue, signals)
-		switch outcome {
-		case blockedReadyPullRequestLookupFoundReason:
-			issue = lookedUp
-			signals = o.blockedCauseSignals(ctx, issue, park.RunMode, park.TargetState, DiffStats{})
-			o.recordBlockedRecoveryDecision(ctx, state, issue, "evaluate", outcome, &park, blockedCauseFingerprint(park.Cause, signals))
-			if issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "merged" {
-				summary := staleMergedPullRequestSummaryFromIssue(issue)
-				decision := staleMergedPullRequestDecision(issue, summary)
-				targetState := staleMergedPullRequestTargetState(decision, o.cfg.AutoPromote, o.cfg.TerminalStates)
-				if targetState == "" || !o.applyStaleMergedPullRequestDecision(ctx, state, issue, summary, decision, targetState, now) {
-					o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", outcome, &park, blockedCauseFingerprint(park.Cause, signals))
-					return true, false
-				}
-				o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
-				return true, true
-			}
-		case blockedReadyPullRequestLookupNoneReason:
-			if deliverableRecoveryPark(park) {
-				if _, ok := o.connector.(connector.PullRequestDraftCreator); !ok {
-					o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", blockedReadyPullRequestLookupUnavailableReason, &park, blockedCauseFingerprint(park.Cause, signals))
-					return true, false
-				}
-				lookup := deliverableRecoveryLookupResult{
-					Branch:               issue.BranchName,
-					Repository:           pullRequestRepository(issue),
-					HeadSHA:              signals.WorkspaceHeadSHA,
-					HydrationState:       deliverableRecoveryHydrationState(issue.PullRequest),
-					LookupResult:         "no exact-head pull request",
-					Attempts:             blockedReadyPullRequestLookupAttempts,
-					CommitsAhead:         1,
-					RemoteBranchExists:   true,
-					DeliveryStateChecked: true,
-				}
-				lookup = o.createDeliverableRecoveryPullRequest(ctx, Running{Issue: issue}, lookup)
-				if infrastructureErr, infrastructureFailure := o.deliverableRecoveryInfrastructureError(Running{Issue: issue}, lookup.CreateError); infrastructureFailure {
-					o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", blockedReadyPullRequestLookupUnavailableReason, &park, blockedCauseFingerprint(park.Cause, signals))
-					if o.logger != nil {
-						o.logger.Warn("blocked deliverable draft creation unavailable", "issue_id", issue.ID, "identifier", issue.Identifier, "error", infrastructureErr)
-					}
-					return true, false
-				}
-				if lookup.PullRequest != nil {
-					issue = deliverableRecoveryIssue(Running{Issue: issue}, lookup)
-				}
-				return o.returnBlockedDeliverableRecoveryToRework(ctx, state, issue, park, lookup.LookupResult, now)
-			}
-			o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", outcome, &park, blockedCauseFingerprint(park.Cause, signals))
-			return true, false
-		default:
-			o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", blockedReadyPullRequestLookupUnavailableReason, &park, blockedCauseFingerprint(park.Cause, signals))
-			if err != nil && o.logger != nil {
-				o.logger.Warn("blocked ready pull request lookup unavailable", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-			}
-			return true, false
-		}
-	}
-	if deliverableRecoveryPark(park) && issue.PullRequest != nil && issue.PullRequest.Draft {
-		return o.returnBlockedDeliverableRecoveryToRework(ctx, state, issue, park, "existing draft pull request", now)
-	}
-	if reason := o.blockedReadyPullRequestDeferredReason(ctx, state, issue, signals, now); reason != "" {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", reason, &park, blockedCauseFingerprint(park.Cause, signals))
-		return true, false
-	}
-	signature := blockedReadyPullRequestSignature(issue, park)
-	if _, consumed := o.workflowTimelineActionSignature(ctx, issue, workflowActionBlockedReadyPRReconciliation, signature); consumed {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "hold", "ready_pr_reconciliation_already_consumed", &park, signature)
-		return true, false
-	}
-	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionBlockedReadyPRReconciliation, signature)
-	if err := o.updateIssueStateByIDStrictWithMetadata(
-		ctx,
-		state,
-		issue.ID,
-		issue,
-		autoPromoteMergingState,
-		now,
-		workflowActionBlockedReadyPRReconciliation,
-		metadata,
-	); err != nil {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "ready_pr_reconciliation_transition_failed", &park, signature)
-		if o.logger != nil {
-			o.logger.Warn("blocked ready pull request reconciliation failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-		}
-		return true, false
-	}
-	if o.connector != nil {
-		if err := o.connector.CreateComment(ctx, issue.ID, blockedReadyPullRequestComment(issue, park)); err != nil && o.logger != nil {
-			o.logger.Warn("blocked ready pull request reconciliation comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-		}
-	}
-	delete(state.Blocked, issue.ID)
-	o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
-	promoted := promotedIssue(issue, autoPromoteMergingState, now)
-	o.recordMergeQueueEntered(state, promoted, now, workflowActionBlockedReadyPRReconciliation)
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      now,
-		Event:   workflowActionBlockedReadyPRReconciliation,
-		Message: "reconciled " + issueLabel(issue) + " from Blocked to Merging with its ready pull request",
-	})
-	return true, true
-}
-
-func deliverableRecoveryPark(park workflowLaneBlockedRecoveryMetadata) bool {
-	cause := strings.TrimSpace(park.Cause)
-	return cause == deliverableRecoveryNeedsHumanReason || strings.HasPrefix(cause, deliverableRecoveryNeedsHumanReason+":")
-}
-
-func (o *Orchestrator) returnBlockedDeliverableRecoveryToRework(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	park workflowLaneBlockedRecoveryMetadata,
-	detail string,
-	now time.Time,
-) (bool, bool) {
-	target := normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState
-	if strings.TrimSpace(target) == "" {
-		target = autoPromoteReworkState
-	}
-	signature := blockedCauseRecoverySignature(park.Cause, strings.Join([]string{strings.TrimSpace(issue.BranchName), strings.TrimSpace(detail)}, ":"))
-	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionCauseBlockedRecovery, signature)
-	if err := o.updateIssueStateByIDWithMetadata(ctx, state, issue.ID, issue, target, now, "cause_blocked_recovery", metadata); err != nil {
-		o.recordBlockedRecoveryDecision(ctx, state, issue, "defer", "transition_failed", &park, signature)
-		return true, false
-	}
-	if o.connector != nil {
-		comment := "Detent returned this retired deliverable-recovery park to " + target + ".\n\n- branch: `" + strings.TrimSpace(issue.BranchName) + "`\n- recovery: " + strings.TrimSpace(detail)
-		if err := o.connector.CreateComment(ctx, issue.ID, comment); err != nil && o.logger != nil {
-			o.logger.Warn("deliverable recovery rework comment failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-		}
-	}
-	delete(state.Blocked, issue.ID)
-	o.clearAutoPromotedIssueDispatchMemory(state, issue.ID)
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      now,
-		Event:   workflowActionCauseBlockedRecovery,
-		Message: "returned " + issueLabel(issue) + " from its retired deliverable-recovery park to " + target,
-	})
-	return true, true
-}
-
-func blockedReadyPullRequestBranch(state *State, issue connector.Issue) string {
-	if branch := strings.TrimSpace(issue.BranchName); branch != "" {
-		return branch
-	}
-	if state == nil {
-		return ""
-	}
-	blocked, ok := state.Blocked[strings.TrimSpace(issue.ID)]
-	if !ok {
-		return ""
-	}
-	return strings.TrimSpace(blocked.Issue.BranchName)
-}
-
-func (o *Orchestrator) lookupBlockedReadyPullRequest(
-	ctx context.Context,
-	issue connector.Issue,
-	signals blockedCauseSignals,
-) (connector.Issue, string, error) {
-	repository := pullRequestRepository(issue)
-	branch := strings.TrimSpace(issue.BranchName)
-	headSHA := strings.TrimSpace(signals.WorkspaceHeadSHA)
-	if repository == "" || branch == "" || headSHA == "" {
-		return issue, blockedReadyPullRequestLookupUnavailableReason, errors.New(
-			"exact-head pull request lookup requires repository, branch, and workspace head",
-		)
-	}
-	lookup, ok := o.connector.(connector.PullRequestHeadLookup)
-	if !ok {
-		return issue, blockedReadyPullRequestLookupUnavailableReason, errors.New("connector does not support exact-head pull request lookup")
-	}
-
-	var lookupErr error
-	for attempt := 1; attempt <= blockedReadyPullRequestLookupAttempts; attempt++ {
-		pullRequest, found, err := lookup.LookupPullRequestByHead(ctx, repository, branch, headSHA)
-		if err == nil {
-			if !found {
-				return issue, blockedReadyPullRequestLookupNoneReason, nil
-			}
-			if strings.TrimSpace(pullRequest.BranchName) != branch || strings.TrimSpace(pullRequest.HeadSHA) != headSHA {
-				return issue, blockedReadyPullRequestLookupUnavailableReason, fmt.Errorf(
-					"exact-head pull request lookup returned branch %q head %q",
-					strings.TrimSpace(pullRequest.BranchName),
-					strings.TrimSpace(pullRequest.HeadSHA),
-				)
-			}
-			state := normalizePullRequestState(pullRequest.State)
-			if state != "open" && state != "merged" {
-				return issue, blockedReadyPullRequestLookupNoneReason, nil
-			}
-			candidate := cloneIssue(issue)
-			candidate.PRRepository = repository
-			candidate.PullRequest = &pullRequest
-			candidate.PRNumber = &pullRequest.Number
-			hydrator, ok := o.connector.(connector.PullRequestHydrator)
-			if !ok {
-				return issue, blockedReadyPullRequestLookupUnavailableReason, errors.New("connector does not support pull request hydration")
-			}
-			hydrated, err := hydrator.HydratePullRequest(ctx, candidate)
-			if err != nil {
-				return issue, blockedReadyPullRequestLookupUnavailableReason, fmt.Errorf("hydrate exact-head pull request: %w", err)
-			}
-			if hydrated.PullRequest == nil || hydrated.PullRequest.Number != pullRequest.Number ||
-				strings.TrimSpace(hydrated.PullRequest.BranchName) != branch || strings.TrimSpace(hydrated.PullRequest.HeadSHA) != headSHA {
-				return issue, blockedReadyPullRequestLookupUnavailableReason, errors.New("exact-head pull request hydration returned inconsistent pull request data")
-			}
-			return hydrated, blockedReadyPullRequestLookupFoundReason, nil
-		}
-		lookupErr = err
-		if attempt == blockedReadyPullRequestLookupAttempts {
-			break
-		}
-		wait := o.deliverableRecoveryWait
-		if wait == nil {
-			wait = waitForDispatchBackoff
-		}
-		if !wait(ctx, blockedReadyPullRequestLookupBackoff*time.Duration(1<<(attempt-1))) {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				lookupErr = ctxErr
-			} else {
-				lookupErr = errors.New("exact-head pull request lookup retry interrupted")
-			}
-			break
-		}
-	}
-	return issue, blockedReadyPullRequestLookupUnavailableReason, lookupErr
-}
-
-func blockedReadyPullRequestRecoverableCause(park workflowLaneBlockedRecoveryMetadata) bool {
-	cause := strings.TrimSpace(park.Cause)
-	owner := strings.TrimSpace(park.Owner)
-	if cause == deliverableRecoveryNeedsHumanReason || strings.HasPrefix(cause, deliverableRecoveryNeedsHumanReason+":") {
-		return owner != blockedRecoveryOwnerOperator
-	}
-	if owner != blockedRecoveryOwnerOrchestrator || strings.TrimSpace(park.RunMode) != RunModeImplement {
-		return false
-	}
-	return cause == strandedUnpushedWorkReason ||
-		cause == noProgressLimitReason ||
-		cause == dispatchLoopDetectedReason ||
-		cause == repeatedFailureCircuitBreakerCause ||
-		cause == terminalAttemptRetryLimitCause
-}
-
-func (o *Orchestrator) blockedReadyPullRequestDeferredReason(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	signals blockedCauseSignals,
-	now time.Time,
-) string {
-	if reason := o.mergeLaneUnavailableReason(); reason != "" {
-		return reason
-	}
-	autoPromoteCfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
-	if !autoPromoteCfg.Enabled {
-		return "auto_promote_disabled"
-	}
-	pullRequest := issue.PullRequest
-	if pullRequest == nil || pullRequestHydrationBlocksProgress(pullRequest) ||
-		strings.TrimSpace(pullRequest.HeadSHA) == "" || strings.TrimSpace(pullRequest.BaseSHA) == "" {
-		return "pull_request_hydration_unavailable"
-	}
-	if !signals.WorkspacePresent || strings.TrimSpace(signals.WorkspaceStatus) != "present" || strings.TrimSpace(signals.WorkspaceHeadSHA) == "" {
-		return "workspace_head_unavailable"
-	}
-	if len(signals.TrackedPaths) > 0 || len(signals.UntrackedPaths) > 0 {
-		return "workspace_changes_present"
-	}
-	if signals.PullRequestComparisonAvailable {
-		if len(signals.CommitsNotInPullRequest) > 0 {
-			return "workspace_commits_not_in_pull_request"
-		}
-	} else if signals.UnpushedCommits > 0 && strings.TrimSpace(signals.WorkspaceHeadSHA) != strings.TrimSpace(pullRequest.HeadSHA) {
-		return "workspace_pull_request_head_mismatch"
-	}
-	if !mergeWorkerProgrammaticMergeReady(issue, o.cfg) || !reworkBreakerCIGreen(pullRequest) || len(pullRequest.StaleSuccessfulChecks) > 0 {
-		return "pull_request_not_merge_ready"
-	}
-	if !staleMergingIssueReadyForDispatch(issue, o.cfg) {
-		return "merge_dispatch_revoked"
-	}
-	if !o.reworkBreakerAutoPromoteGateReady(ctx, state, issue, autoPromoteCfg, now) {
-		return "pull_request_gate_not_ready"
-	}
-	return ""
-}
-
-func (o *Orchestrator) mergeLaneUnavailableReason() string {
-	if !o.cfg.MergeFastPathEnabled {
-		return "merge_fast_path_disabled"
-	}
-	if !stateIn(autoPromoteMergingState, o.cfg.ActiveStates) {
-		return "merging_lane_inactive"
-	}
-	return ""
-}
-
-func blockedReadyPullRequestSignature(issue connector.Issue, park workflowLaneBlockedRecoveryMetadata) string {
-	return fmt.Sprintf(
-		"cause=%s;pr=%d;head=%s",
-		blockedCauseHash(strings.TrimSpace(park.Cause)),
-		pullRequestNumber(issue),
-		strings.TrimSpace(issue.PullRequest.HeadSHA),
-	)
-}
-
-func blockedReadyPullRequestComment(issue connector.Issue, park workflowLaneBlockedRecoveryMetadata) string {
-	return fmt.Sprintf(
-		"Reconciled this issue from Blocked to Merging after its Detent-owned recovery cause cleared and the linked pull request met the current merge gate.\n\n- cause: %s\n- pull request: %s\n- head_sha: %s",
-		strings.TrimSpace(park.Cause),
-		strings.TrimSpace(issue.PullRequest.URL),
-		strings.TrimSpace(issue.PullRequest.HeadSHA),
-	)
 }
 
 func (o *Orchestrator) blockedCauseHoldReason(
@@ -1287,7 +367,7 @@ func workpadHasRecordedNonDependencyBlocker(signal *workpad.Signal) bool {
 
 func BlockedRecoveryHumanHoldReason(issue connector.Issue, optoutLabel string) string {
 	if issue.WorkpadSignal != nil {
-		if strings.TrimSpace(issue.WorkpadSignal.HumanAction) != "" {
+		if strings.TrimSpace(issue.WorkpadSignal.HumanAction) != "" || issue.WorkpadSignal.ReasonCode == "permission_wait" {
 			return "human_action"
 		}
 	}
@@ -1305,9 +385,8 @@ func BlockedRecoveryHumanHoldReason(issue connector.Issue, optoutLabel string) s
 }
 
 func (o *Orchestrator) currentBlockedOperatorStop(ctx context.Context, state *State, issue connector.Issue) bool {
-	issueID := strings.TrimSpace(issue.ID)
-	if state != nil && issueID != "" {
-		if blocked, ok := state.Blocked[issueID]; ok && blocked.Source == BlockedSourceOperatorStop {
+	if state != nil {
+		if intent, ok := state.Blocked[issue.ID]; ok && intent.Source == BlockedSourceOperatorStop {
 			return true
 		}
 	}
@@ -1315,124 +394,7 @@ func (o *Orchestrator) currentBlockedOperatorStop(ctx context.Context, state *St
 	return ok &&
 		normalizeState(entry.Event.PhaseName) == normalizeState(blockedStatusState) &&
 		workflowLaneEntryMatchesCurrent(issue, entry.Event) &&
-		strings.EqualFold(strings.TrimSpace(entry.Event.Reason), string(store.WorkAttemptTerminalOperatorStopped))
-}
-
-func breakerParkCauseFromLaneReason(reason string) (string, bool) {
-	reason = strings.TrimSpace(reason)
-	if reason == instantFailureCircuitBreakerLaneReason {
-		return instantFailureCircuitBreakerCause, true
-	}
-	return reason, breakerParkCause(reason)
-}
-
-func (o *Orchestrator) normalizeCurrentBreakerRecoveryPark(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	park workflowLaneBlockedRecoveryMetadata,
-) workflowLaneBlockedRecoveryMetadata {
-	if !breakerParkCause(park.Cause) ||
-		strings.EqualFold(strings.TrimSpace(park.Owner), blockedRecoveryOwnerHuman) ||
-		strings.EqualFold(strings.TrimSpace(park.Owner), blockedRecoveryOwnerOperator) {
-		return park
-	}
-	normalized := park
-	normalized.Predicate = strings.TrimSpace(normalized.Predicate)
-	if normalized.Predicate == "" || normalized.Predicate == blockedRecoveryPredicateFingerprintChange {
-		normalized.Predicate = blockedRecoveryPredicateBreakerCooldown
-	}
-	entry, entryFound := o.latestWorkflowLaneEntry(ctx, issue)
-	if entryFound && normalizeState(entry.Event.PhaseName) == normalizeState(blockedStatusState) && workflowLaneEntryMatchesCurrent(issue, entry.Event) {
-		previousState := strings.TrimSpace(entry.Event.PreviousPhaseName)
-		if previousState != "" && normalizeState(previousState) != normalizeState(blockedStatusState) {
-			normalized.TargetState = previousState
-		}
-	}
-	if normalized == park {
-		return normalized
-	}
-	o.persistCurrentBlockedRecoveryPark(ctx, state, issue, entry, entryFound, normalized)
-	return normalized
-}
-
-func (o *Orchestrator) deriveCurrentBreakerRecoveryPark(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-) (workflowLaneBlockedRecoveryMetadata, bool, string, string) {
-	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
-	if !ok || normalizeState(entry.Event.PhaseName) != normalizeState(blockedStatusState) || !workflowLaneEntryMatchesCurrent(issue, entry.Event) {
-		return workflowLaneBlockedRecoveryMetadata{}, false, "", ""
-	}
-	laneReason := strings.TrimSpace(entry.Event.Reason)
-	cause, schedulerPark := breakerParkCauseFromLaneReason(laneReason)
-	if !schedulerPark {
-		return workflowLaneBlockedRecoveryMetadata{}, false, "", ""
-	}
-	previousState := strings.TrimSpace(entry.Event.PreviousPhaseName)
-	if previousState == "" || normalizeState(previousState) == normalizeState(blockedStatusState) {
-		return workflowLaneBlockedRecoveryMetadata{}, false, laneReason, "previous_lane_unavailable"
-	}
-	runMode := RunModeImplement
-	if normalizeState(previousState) == normalizeState(autoPromoteMergingState) {
-		runMode = RunModeMerge
-	}
-	metadata := o.newBlockedRecoveryMetadata(
-		ctx,
-		issue,
-		runMode,
-		cause,
-		blockedRecoveryPredicateBreakerCooldown,
-		previousState,
-		DiffStats{},
-	)
-	park := *metadata.BlockedRecovery
-	park.TargetState = previousState
-	o.persistCurrentBlockedRecoveryPark(ctx, state, issue, entry, true, park)
-	return park, true, laneReason, ""
-}
-
-func (o *Orchestrator) persistCurrentBlockedRecoveryPark(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	entry workflowTimelineMetadataMatch,
-	entryFound bool,
-	park workflowLaneBlockedRecoveryMetadata,
-) {
-	if entryFound && entry.Event.ID > 0 {
-		if updater, ok := o.workflowMetrics.(WorkflowMetricsMetadataUpdater); ok {
-			metadata := entry.Metadata
-			metadata.BlockedRecovery = &park
-			if err := updater.UpdateWorkflowPhaseEventMetadata(ctx, entry.Event.ID, workflowLaneMetadataJSON(issue, metadata)); err != nil && o.logger != nil {
-				o.logger.Warn("scheduler breaker recovery metadata persistence failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
-			}
-		}
-	}
-	if state == nil {
-		return
-	}
-	blocked, ok := state.Blocked[strings.TrimSpace(issue.ID)]
-	if !ok || !blockedEntryMatchesCurrent(issue, blocked.BlockedAt) {
-		return
-	}
-	blocked.Recovery = &park
-	blocked.RecoveryTarget = park.TargetState
-	state.Blocked[strings.TrimSpace(issue.ID)] = blocked
-}
-
-func (o *Orchestrator) logSchedulerBreakerRecoveryDerivationFailure(issue connector.Issue, laneReason string, reason string) {
-	if o == nil || o.logger == nil {
-		return
-	}
-	o.logger.Warn(
-		"scheduler breaker recovery derivation failed",
-		"issue_id", strings.TrimSpace(issue.ID),
-		"identifier", strings.TrimSpace(issue.Identifier),
-		"lane_reason", strings.TrimSpace(laneReason),
-		"reason", strings.TrimSpace(reason),
-	)
+		(strings.EqualFold(strings.TrimSpace(entry.Event.Reason), string(store.WorkAttemptTerminalOperatorStopped)) || strings.TrimSpace(entry.Event.Reason) == "operator_move" && entry.Metadata.Provenance.Basis == provenance.BasisAuthenticatedHuman)
 }
 
 func (o *Orchestrator) currentBlockedRecoveryPark(
@@ -1444,7 +406,7 @@ func (o *Orchestrator) currentBlockedRecoveryPark(
 	if state != nil && issueID != "" {
 		if blocked, ok := state.Blocked[issueID]; ok &&
 			blocked.Recovery != nil &&
-			blockedEntryMatchesCurrent(issue, blocked.BlockedAt) {
+			blockedEntryMatchesCurrent(issue, blocked.BlockedAt) && blocked.Recovery.validate(issue, time.Now()) == nil {
 			return *blocked.Recovery, true
 		}
 	}
@@ -1454,20 +416,33 @@ func (o *Orchestrator) currentBlockedRecoveryPark(
 		!workflowLaneEntryMatchesCurrent(issue, entry.Event) {
 		return workflowLaneBlockedRecoveryMetadata{}, false
 	}
-	if entry.Metadata.BlockedRecovery != nil {
+	if entry.Metadata.BlockedRecovery != nil && entry.Metadata.BlockedRecovery.validate(issue, time.Now()) == nil {
 		return *entry.Metadata.BlockedRecovery, true
 	}
-	previousState := strings.TrimSpace(entry.Event.PreviousPhaseName)
-	parkedAt := workflowLaneTransitionAt(entry.Event)
-	if entry.Event.Reason != string(AutoPromoteReasonWorkpadBlocker) || !stateIn(previousState, normalizedStates([]string{"In Progress", autoPromoteReworkState})) ||
-		clearedHumanActionRecordedAt(issue, parkedAt, false) == nil {
-		return workflowLaneBlockedRecoveryMetadata{}, false
+	return workflowLaneBlockedRecoveryMetadata{}, false
+}
+
+func (o *Orchestrator) currentBlockedHumanIntent(ctx context.Context, state *State, issue connector.Issue) bool {
+	if explicitHumanAction(issue) != "" {
+		return true
 	}
-	return workflowLaneBlockedRecoveryMetadata{
-		Owner:       blockedRecoveryOwnerHuman,
-		Cause:       workpadBlockedUnactionedReason,
-		TargetState: previousState,
-	}, true
+	if state != nil {
+		if blocked, ok := state.Blocked[issue.ID]; ok && blockedEntryMatchesCurrent(issue, blocked.BlockedAt) && explicitHumanAction(blocked.Issue) != "" {
+			return true
+		}
+	}
+	entry, ok := o.latestWorkflowLaneEntry(ctx, issue)
+	if !ok || normalizeState(entry.Event.PhaseName) != normalizeState(blockedStatusState) || !workflowLaneEntryMatchesCurrent(issue, entry.Event) {
+		return false
+	}
+	if strings.TrimSpace(entry.Metadata.HumanAction) != "" {
+		return true
+	}
+	signal, parsed := workpad.SignalFromComment(entry.Metadata.ReasonDetail, "", "")
+	if parsed && signal != nil && signal.Invalid == nil && strings.TrimSpace(signal.HumanAction) != "" {
+		return true
+	}
+	return false
 }
 
 func (o *Orchestrator) currentBlockedRecoveryParkedAt(
@@ -1500,39 +475,6 @@ func (o *Orchestrator) currentBlockedRecoveryParkedAt(
 		return issue.StageUpdatedAt.UTC(), true
 	}
 	return time.Time{}, false
-}
-
-func (o *Orchestrator) currentBlockedRecoveryParkWithLegacyRESTBudget(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-) (workflowLaneBlockedRecoveryMetadata, bool) {
-	park, ok := o.currentBlockedRecoveryPark(ctx, state, issue)
-	if ok {
-		return park, true
-	}
-	return o.currentLegacyRepeatedFailureGitHubRESTBudgetPark(ctx, issue)
-}
-
-func blockedCauseRecoverySignature(cause string, fingerprint string) string {
-	return strings.TrimSpace(cause) + ":" + strings.TrimSpace(fingerprint)
-}
-
-func blockedCauseRecoveryComment(
-	issue connector.Issue,
-	park workflowLaneBlockedRecoveryMetadata,
-	targetState string,
-	fingerprint string,
-) string {
-	return fmt.Sprintf(
-		"Blocked recovery predicate satisfied. Moved %s from %s to %s.\n\n- cause: %s\n- predicate: %s\n- cause_fingerprint: %s",
-		issueLabel(issue),
-		strings.TrimSpace(issue.State),
-		strings.TrimSpace(targetState),
-		strings.TrimSpace(park.Cause),
-		strings.TrimSpace(park.Predicate),
-		strings.TrimSpace(fingerprint),
-	)
 }
 
 func (o *Orchestrator) recordBlockedRecoveryDecision(
@@ -1617,9 +559,6 @@ func (o *Orchestrator) recordBlockedRecoveryDecision(
 
 func blockedRecoveryDecisionShouldMaterialize(reason string) bool {
 	reason = strings.ToLower(strings.TrimSpace(reason))
-	if strings.Contains(reason, "already_consumed") {
-		return false
-	}
 	switch reason {
 	case "no_recovery_predicate", "pr_maintenance_recovery", "rework_breaker_recovery":
 		return false
@@ -1675,24 +614,10 @@ func BlockedRecoveryOperatorRemedy(issue connector.Issue, reason string) string 
 		return "Review the operator stop and route the issue to its intended lane."
 	case "cause_unchanged":
 		return "Change the blocking cause, or move the issue to a lane that starts fresh work."
-	case "fingerprint_already_consumed":
-		return "Change the blocking cause, or move the issue to a lane that starts fresh work."
-	case "legacy_cause_fingerprint":
-		return "Park predates the current recovery schema; move the issue to Todo or Rework to re-evaluate it."
-	case blockedRecoveryReasonBreakerCooldownActive:
-		return "Detent will return the issue to its prior lane after the breaker cooldown ends."
-	case "breaker_cooldown_unavailable":
-		return "Restore the recorded Blocked transition time or move the issue to a lane that starts fresh work."
-	case schedulerParkRecoveryUnavailableReason:
-		return "Restore the scheduler-recorded previous lane or move the issue to the intended recovery lane."
 	case "transition_failed":
 		return "Retry the lane transition after restoring tracker write access."
 	case githubRESTBudgetWaitingReason, githubRESTBudgetObservationPendingReason:
 		return "Detent will return the issue to its prior lane after the matching GitHub REST budget rises above the worker reserve."
-	case githubRESTBudgetRearmConsumedReason:
-		return "Wait for the next GitHub REST reset window, or move the issue manually after confirming capacity is stable."
-	case "managed_recovery":
-		return "Review the configured recovery owner and move the issue manually if that owner cannot recover it."
 	case blockedReadyPullRequestLookupNoneReason:
 		return "No PR found for the current workspace branch and head."
 	case blockedReadyPullRequestLookupUnavailableReason:
@@ -1736,4 +661,27 @@ func (o *Orchestrator) logBlockedRecoveryDecision(
 		attrs = append(attrs, "unresolved_workpad_blockers", dependencyAutoUnblockBlockerLabels(unresolvedWorkpadBlockers))
 	}
 	o.logger.Info("blocked recovery decision", attrs...)
+}
+
+func explicitHumanAction(issue connector.Issue) string {
+	if issue.IssueContract != nil && strings.TrimSpace(issue.IssueContract.HumanAction) != "" {
+		return issue.IssueContract.HumanAction
+	}
+	signal, _ := rawIssueWorkpadSignal(issue)
+	if current := issue.WorkpadSignal; current != nil && current.RecordedAt != nil && (signal == nil || signal.RecordedAt == nil || signal.RecordedAt.Before(*current.RecordedAt)) {
+		signal = current
+	}
+	if signal != nil && signal.Invalid == nil && signal.Source == workpad.SourceStructured && strings.TrimSpace(signal.HumanAction) != "" {
+		return strings.TrimSpace(signal.HumanAction)
+	}
+	index := currentWorkpadCommentIndex(issue.Comments)
+	if index >= 0 && (signal == nil || signal.Invalid != nil || signal.Source != workpad.SourceStructured || signal.Status != workpad.StatusInProgress || !issue.Comments[index].AuthorAuthorized) {
+		for _, comment := range issue.Comments {
+			prior, ok := workpad.SignalFromComment(comment.Body, comment.URL, dependencyIssueRepo(issue.Identifier))
+			if ok && prior != nil && prior.Invalid == nil && prior.Source == workpad.SourceStructured && strings.TrimSpace(prior.HumanAction) != "" {
+				return strings.TrimSpace(prior.HumanAction)
+			}
+		}
+	}
+	return ""
 }

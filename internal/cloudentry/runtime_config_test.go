@@ -27,12 +27,6 @@ import (
 
 type configurationLog struct{ records chan slog.Record }
 
-type runtimeTransport func(*http.Request) (*http.Response, error)
-
-func (f runtimeTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	return f(request)
-}
-
 func (h configurationLog) Enabled(context.Context, slog.Level) bool { return true }
 func (h configurationLog) WithAttrs([]slog.Attr) slog.Handler       { return h }
 func (h configurationLog) WithGroup(string) slog.Handler            { return h }
@@ -61,6 +55,118 @@ func entitlementFixture(t *testing.T, f entryFixture, token string) {
 			}
 		})
 		f.tenants[testSocketEndpoint(strings.TrimPrefix(id, "org_")+".sock")] = service.Handler()
+	}
+}
+
+func TestCloudReloadSignupAllowlist(t *testing.T) {
+	f := newEntryFixture(t)
+	launcher := &silentLauncher{running: map[string]bool{"org_alpha": true, "org_beta": true}}
+	f.service.config.Allocation = &AllocationConfig{
+		TenantRoot: t.TempDir(), SocketRoot: t.TempDir(), MaxTenants: 2, MaxConcurrent: 1, RetryLimit: 5,
+		Launcher: launcher, AllowedEmails: []string{"alice@example.test"},
+	}
+	f.service.config.ConfigureRuntime = func(update hubserver.HostedRuntimeUpdate) func(TenantSpec) ([]byte, error) {
+		return func(TenantSpec) ([]byte, error) { return json.Marshal(update) }
+	}
+	next := f.service.config
+	next.Runtime = &hubserver.HostedRuntimeUpdate{}
+	f.service.config.Reload = func() (Config, error) { return next, nil }
+	f.provider.users["user_staff"] = "staff@example.test"
+	staff := newBrowser(t, f.service.Handler())
+	staff.login("/auth/oidc/start", "user_staff:")
+	alice := newBrowser(t, f.service.Handler())
+	alice.login("/organizations/org_alpha/organization", "user_alice:porg_alpha")
+
+	check := func(t *testing.T, emails, domains []string, allowed []bool) {
+		t.Helper()
+		for i, email := range []string{"alice@example.test", "bob@example.test", "member@other.test"} {
+			got, err := f.service.canCreate(t.Context(), accountSession{Email: email})
+			if err != nil || got != allowed[i] {
+				t.Errorf("canCreate(%s) = %v, %v; want %v", email, got, err, allowed[i])
+			}
+		}
+		response, body := staff.get("/api/cloud/platform/allowlist")
+		var result struct {
+			SelfService    bool     `json:"self_service"`
+			Open           bool     `json:"open"`
+			AllowedEmails  []string `json:"allowed_emails"`
+			AllowedDomains []string `json:"allowed_domains"`
+		}
+		decodeJSON(t, body, &result)
+		if response.StatusCode != http.StatusOK || !result.SelfService || result.Open != (len(emails)+len(domains) == 0) ||
+			!reflect.DeepEqual(result.AllowedEmails, emails) || !reflect.DeepEqual(result.AllowedDomains, domains) {
+			t.Errorf("allowlist = %d %s; want emails %v, domains %v", response.StatusCode, body, emails, domains)
+		}
+	}
+	check(t, []string{"alice@example.test"}, []string{}, []bool{true, false, false})
+
+	stop := make(chan struct{})
+	var readers sync.WaitGroup
+	for reader := range 2 {
+		readers.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					if _, err := f.service.canCreate(t.Context(), accountSession{Email: "bob@example.test"}); err != nil {
+						t.Error(err)
+					}
+					if reader == 1 {
+						response, _ := staff.get("/api/cloud/platform/allowlist")
+						if response.StatusCode != http.StatusOK {
+							t.Errorf("concurrent allowlist read = %d", response.StatusCode)
+							return
+						}
+					}
+				}
+			}
+		})
+	}
+	defer func() { close(stop); readers.Wait() }()
+	for _, test := range []struct {
+		name    string
+		emails  []string
+		domains []string
+		allowed []bool
+		invalid bool
+	}{
+		{name: "empty", emails: []string{}, domains: []string{}, allowed: []bool{true, true, true}},
+		{name: "wider", emails: []string{"alice@example.test", "bob@example.test"}, domains: []string{"other.test"}, allowed: []bool{true, true, true}},
+		{name: "narrower", emails: []string{"bob@example.test"}, domains: []string{}, allowed: []bool{false, true, false}},
+		{name: "invalid", emails: []string{}, domains: []string{}, invalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			allocation := *f.service.config.Allocation
+			allocation.AllowedEmails, allocation.AllowedDomains = test.emails, test.domains
+			next.Allocation = &allocation
+			next.PublicURL = "https://changed.example.test"
+			if test.invalid {
+				next.PublicURL = "invalid"
+			}
+			err := f.service.reloadConfiguration(t.Context())
+			if test.invalid {
+				if err == nil || !strings.Contains(err.Error(), "validate cloud configuration") {
+					t.Fatalf("invalid reload error = %v", err)
+				}
+				check(t, []string{"bob@example.test"}, []string{}, []bool{false, true, false})
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				check(t, test.emails, test.domains, test.allowed)
+			}
+			if f.service.config.PublicURL != testPublicURL {
+				t.Error("reload changed restart-only public URL")
+			}
+			if launches, stops, running := launcher.counts(); launches != 0 || stops != 0 || running != 2 {
+				t.Errorf("reload changed tenant processes: launches=%d stops=%d running=%d", launches, stops, running)
+			}
+			response, body := alice.get("/organizations/org_alpha/organization")
+			if response.StatusCode != http.StatusOK || !strings.Contains(body, "Alpha secret project") {
+				t.Errorf("existing organization session = %d %s", response.StatusCode, body)
+			}
+		})
 	}
 }
 

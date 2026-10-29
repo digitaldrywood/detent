@@ -1,7 +1,6 @@
 package hubserver
 
 import (
-	"context"
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -20,8 +20,7 @@ func TestTenantServesRunnersWhileReadsAreSlow(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "tenant-load")
 	items := []tracker.NativeIssue{f.create(t, "first"), f.create(t, "second")}
 	worker := f.worker(t, "worker")
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
+	ctx := testenv.WaitContext(t, t.Context())
 	held, err := f.service.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -66,7 +65,7 @@ func TestTenantServesRunnersWhileReadsAreSlow(t *testing.T) {
 }
 
 func TestTenantRunnerWritesStayFlatWithHistory(t *testing.T) {
-	f := newNativeFixture(t, nil, "", "tenant-writes")
+	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC) }})
 	approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
 	worker := f.worker(t, "worker")
 	f.service.config.Hosted = &HostedConfig{}

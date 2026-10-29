@@ -413,7 +413,6 @@ func TestLaneAcknowledgementDoesNotHideLaterHumanReentry(t *testing.T) {
 				t.Fatal(err)
 			}
 			state.Blocked[issue.ID] = Blocked{Issue: issue, Source: BlockedSourceProjectStatus}
-			state.InstantFailures[issue.ID] = InstantFailure{Issue: issue, Count: 2}
 			orch = newLaneMutationTestOrchestrator(cfg, tracker, backend, nil, at)
 			orch.laneCoordination = peerStore
 			issue.State = "In Progress"
@@ -422,8 +421,8 @@ func TestLaneAcknowledgementDoesNotHideLaterHumanReentry(t *testing.T) {
 					t.Fatalf("human reentry: origin=%s err=%v", origin.Origin, err)
 				}
 			}
-			if _, blocked := state.Blocked[issue.ID]; blocked || len(state.InstantFailures) != 0 {
-				t.Fatal("human reentry did not clear failure memory")
+			if _, blocked := state.Blocked[issue.ID]; blocked {
+				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
 			}
 			timeline, err := backend.IssueWorkflowTimeline(t.Context(), store.IssueIdentity{ProjectID: cfg.Project.ID, IssueID: issue.ID})
 			want := 6

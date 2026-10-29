@@ -21,11 +21,25 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/testenv"
+	"github.com/digitaldrywood/detent/internal/toolcache"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestMain(m *testing.M) {
+	if len(os.Args) == 2 && os.Args[1] == toolcache.ProgramArgument {
+		if err := toolcache.RunProgram(os.Getenv("GOCACHE"), os.TempDir(), os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if err := testenv.ClearGitEnvironment(); err != nil {
 		panic(err)
+	}
+	for key, value := range map[string]string{"GIT_CONFIG_GLOBAL": os.DevNull, "GIT_CONFIG_NOSYSTEM": "1"} {
+		if err := os.Setenv(key, value); err != nil {
+			panic(err)
+		}
 	}
 	if err := flag.Set("test.parallel", "8"); err != nil {
 		panic(err)
@@ -549,60 +563,171 @@ func TestLocalGitCreateBasesNewBranchOnFetchedRemoteDefault(t *testing.T) {
 	}
 
 	t.Parallel()
+	skipWindows(t)
 
-	source := initSourceRepo(t)
-	remote := initBareRemote(t)
-	runGit(t, source, "remote", "add", "origin", remote)
-	runGit(t, source, "push", "-u", "origin", "main")
-	runGit(t, source, "switch", "-c", "dev")
-	if err := os.WriteFile(filepath.Join(source, "dev.txt"), []byte("dev\n"), 0o600); err != nil {
-		t.Fatalf("write dev file: %v", err)
-	}
-	runGit(t, source, "add", "dev.txt")
-	runGit(t, source, "commit", "-m", "add dev branch")
-	runGit(t, source, "push", "-u", "origin", "dev")
-	runGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/dev")
+	for _, name := range []string{"new branch", "empty stale branch", "unique source", "active holder", "bound checkpoint", "Change version"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			source := initSourceRepo(t)
+			issue := Issue{ID: "wi_remote_default", Identifier: "DD-REMOTE-DEFAULT"}
+			branch := "detent/dd-remote-default"
+			versionBase := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+			if name == "Change version" {
+				writeCheckpointFile(t, source, "version.txt", "selected version\n")
+				runGit(t, source, "add", "version.txt")
+				runGit(t, source, "commit", "-m", "selected version")
+			}
+			oldHead := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+			var holder, retainedHead string
+			if name != "new branch" {
+				runGit(t, source, "branch", branch)
+			}
+			if name == "unique source" || name == "active holder" {
+				holder = filepath.Join(t.TempDir(), "holder")
+				runGit(t, source, "worktree", "add", holder, branch)
+				writeCheckpointFile(t, holder, "retained.txt", "keep\n")
+				if name == "unique source" {
+					runGit(t, holder, "add", "retained.txt")
+					runGit(t, holder, "commit", "-m", "retained source")
+					retainedHead = strings.TrimSpace(runGit(t, holder, "rev-parse", "HEAD"))
+					runGit(t, source, "worktree", "remove", holder)
+				}
+			}
+			remote := initBareRemote(t)
+			runGit(t, source, "remote", "add", "origin", remote)
+			runGit(t, source, "push", "-u", "origin", "main")
+			runGit(t, source, "switch", "-c", "dev")
+			if err := os.WriteFile(filepath.Join(source, "dev.txt"), []byte("dev\n"), 0o600); err != nil {
+				t.Fatalf("write dev file: %v", err)
+			}
+			runGit(t, source, "add", "dev.txt")
+			runGit(t, source, "commit", "-m", "add dev branch")
+			runGit(t, source, "push", "-u", "origin", "dev")
+			runGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/dev")
 
-	runGit(t, source, "switch", "-c", "local-feature", "main")
-	if err := os.WriteFile(filepath.Join(source, "local-only.txt"), []byte("local only\n"), 0o600); err != nil {
-		t.Fatalf("write local-only file: %v", err)
-	}
-	runGit(t, source, "add", "local-only.txt")
-	runGit(t, source, "commit", "-m", "add local-only change")
+			runGit(t, source, "switch", "-c", "local-feature", "main")
+			if err := os.WriteFile(filepath.Join(source, "local-only.txt"), []byte("local only\n"), 0o600); err != nil {
+				t.Fatalf("write local-only file: %v", err)
+			}
+			runGit(t, source, "add", "local-only.txt")
+			runGit(t, source, "commit", "-m", "add local-only change")
 
-	publisher := filepath.Join(t.TempDir(), "publisher")
-	runCommand(t, t.TempDir(), "git", "clone", remote, publisher)
-	runGit(t, publisher, "config", "user.name", "Test Publisher")
-	runGit(t, publisher, "config", "user.email", "publisher@example.com")
-	if err := os.WriteFile(filepath.Join(publisher, "remote-latest.txt"), []byte("remote latest\n"), 0o600); err != nil {
-		t.Fatalf("write remote-latest file: %v", err)
-	}
-	runGit(t, publisher, "add", "remote-latest.txt")
-	runGit(t, publisher, "commit", "-m", "advance remote dev")
-	runGit(t, publisher, "push", "origin", "dev")
-	wantHead := strings.TrimSpace(runGit(t, publisher, "rev-parse", "HEAD"))
+			publisher := filepath.Join(t.TempDir(), "publisher")
+			runCommand(t, t.TempDir(), "git", "clone", remote, publisher)
+			runGit(t, publisher, "config", "user.name", "Test Publisher")
+			runGit(t, publisher, "config", "user.email", "publisher@example.com")
+			if err := os.WriteFile(filepath.Join(publisher, "remote-latest.txt"), []byte("remote latest\n"), 0o600); err != nil {
+				t.Fatalf("write remote-latest file: %v", err)
+			}
+			writeCheckpointFile(t, publisher, "prepare-workspace.sh", "printf 'prepared\\n' > prepared.txt\n")
+			runGit(t, publisher, "add", "remote-latest.txt", "prepare-workspace.sh")
+			runGit(t, publisher, "commit", "-m", "advance remote dev")
+			runGit(t, publisher, "push", "origin", "dev")
+			wantHead := strings.TrimSpace(runGit(t, publisher, "rev-parse", "HEAD"))
 
-	backend, err := NewLocalGit(LocalGitOptions{
-		Root:       filepath.Join(t.TempDir(), "workspaces"),
-		SourceRoot: source,
-		AutoBranch: true,
-	})
-	if err != nil {
-		t.Fatalf("NewLocalGit() error = %v", err)
-	}
-	info, err := backend.Create(context.Background(), Issue{Identifier: "DD-REMOTE-DEFAULT"})
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
-	}
+			backend, err := NewLocalGit(LocalGitOptions{
+				Root:       filepath.Join(t.TempDir(), "workspaces"),
+				SourceRoot: source,
+				AutoBranch: true,
+				Hooks:      Hooks{AfterCreate: "sh ./prepare-workspace.sh", Timeout: hookCompletionTimeout()},
+			})
+			if err != nil {
+				t.Fatalf("NewLocalGit() error = %v", err)
+			}
+			if name == "bound checkpoint" {
+				holder = filepath.Join(t.TempDir(), "checkpoint")
+				runGit(t, source, "worktree", "add", holder, branch)
+				writeCheckpointFile(t, holder, "retained.txt", "keep\n")
+				checkpoint, pushed, err := backend.PushCheckpointRef(t.Context(), Info{Path: holder, Branch: branch}, issue, CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() })
+				if err != nil || !pushed {
+					t.Fatalf("PushCheckpointRef() = %v, pushed=%v", err, pushed)
+				}
+				issue.Checkpoint = &checkpoint
+				runGit(t, source, "worktree", "remove", "--force", holder)
+			}
+			if name == "Change version" {
+				repository := "https://example.com/example-org/example-project"
+				runGit(t, source, "config", "remote.origin.url", repository)
+				runGit(t, source, "config", "url."+remote+".insteadOf", repository)
+				issue.FreshCheckout, issue.BaseRef = true, versionBase
+				issue.Source = &ChangeSource{Version: tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{
+					BaseSHA: versionBase, HeadSHA: oldHead, Repository: repository,
+				}}}
+			}
+			info, err := backend.Create(t.Context(), issue)
+			if name == "bound checkpoint" || name == "Change version" {
+				if !errors.Is(err, ErrHookFailed) {
+					t.Fatalf("Create() = %v, want missing hook script failure", err)
+				}
+				if got := strings.TrimSpace(runGit(t, source, "rev-parse", branch)); got != oldHead {
+					t.Fatalf("authoritative branch = %s, want %s", got, oldHead)
+				}
+				quarantines, err := filepath.Glob(filepath.Join(backend.root, ".detent", "quarantine", "*"))
+				if err != nil || len(quarantines) != 1 {
+					t.Fatalf("quarantines = %v, %v", quarantines, err)
+				}
+				if got := strings.TrimSpace(runGit(t, quarantines[0], "rev-parse", "HEAD")); got != oldHead {
+					t.Fatalf("quarantined head = %s, want %s", got, oldHead)
+				}
+				if name == "Change version" {
+					if got := readFile(t, filepath.Join(quarantines[0], "version.txt")); got != "selected version\n" {
+						t.Fatalf("version source = %q", got)
+					}
+				}
+				if name == "bound checkpoint" {
+					if got := readFile(t, filepath.Join(quarantines[0], "retained.txt")); got != "keep\n" {
+						t.Fatalf("checkpoint source = %q", got)
+					}
+					if got := runGit(t, quarantines[0], "status", "--porcelain"); got != "?? retained.txt\n" {
+						t.Fatalf("checkpoint status = %q", got)
+					}
+				}
+				return
+			}
+			if name == "active holder" {
+				if err == nil {
+					t.Fatal("Create() succeeded with an attached branch holder")
+				}
+				if got := strings.TrimSpace(runGit(t, source, "rev-parse", branch)); got != oldHead {
+					t.Fatalf("held branch = %s, want %s", got, oldHead)
+				}
+				if got := strings.TrimSpace(runGit(t, holder, "branch", "--show-current")); got != branch {
+					t.Fatalf("holder branch = %q, want %q", got, branch)
+				}
+				if got := readFile(t, filepath.Join(holder, "retained.txt")); got != "keep\n" {
+					t.Fatalf("holder source = %q", got)
+				}
+				return
+			}
+			if name == "unique source" {
+				if !errors.Is(err, ErrHookFailed) {
+					t.Fatalf("Create() = %v, want missing hook script failure", err)
+				}
+				if got := strings.TrimSpace(runGit(t, source, "rev-parse", branch)); got != retainedHead {
+					t.Fatalf("retained branch = %s, want %s", got, retainedHead)
+				}
+				if got := runGit(t, source, "show", branch+":retained.txt"); got != "keep\n" {
+					t.Fatalf("retained source = %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
 
-	if got := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")); got != wantHead {
-		t.Fatalf("worktree HEAD = %q, want remote default HEAD %q", got, wantHead)
-	}
-	if got := readFile(t, filepath.Join(info.Path, "remote-latest.txt")); got != "remote latest\n" {
-		t.Fatalf("remote-latest.txt = %q, want remote latest content", got)
-	}
-	if _, err := os.Stat(filepath.Join(info.Path, "local-only.txt")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("local-only.txt stat error = %v, want file absent", err)
+			if got := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")); got != wantHead {
+				t.Fatalf("worktree HEAD = %q, want remote default HEAD %q", got, wantHead)
+			}
+			if got := readFile(t, filepath.Join(info.Path, "prepared.txt")); got != "prepared\n" {
+				t.Fatalf("hook output = %q, want prepared", got)
+			}
+			if got := readFile(t, filepath.Join(info.Path, "remote-latest.txt")); got != "remote latest\n" {
+				t.Fatalf("remote-latest.txt = %q, want remote latest content", got)
+			}
+			if _, err := os.Stat(filepath.Join(info.Path, "local-only.txt")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("local-only.txt stat error = %v, want file absent", err)
+			}
+		})
 	}
 }
 
@@ -689,13 +814,28 @@ func TestLocalGitCreateSerializesRemoteOperations(t *testing.T) {
 		t.Fatalf("NewLocalGit() error = %v", err)
 	}
 
+	other, err := NewLocalGit(LocalGitOptions{
+		Root:       filepath.Join(t.TempDir(), "workspaces"),
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewLocalGit() error = %v", err)
+	}
 	const creates = 6
+	for i := 0; i < creates; i += 2 {
+		runGit(t, source, "branch", fmt.Sprintf("detent/dd-concurrent-%d", i))
+	}
 	start := make(chan struct{})
 	results := make(chan error, creates)
 	for i := range creates {
 		go func() {
 			<-start
-			_, err := backend.Create(context.Background(), Issue{Identifier: fmt.Sprintf("DD-CONCURRENT-%d", i)})
+			creator := backend
+			if i%2 == 0 {
+				creator = other
+			}
+			_, err := creator.Create(context.Background(), Issue{Identifier: fmt.Sprintf("DD-CONCURRENT-%d", i)})
 			results <- err
 		}()
 	}
@@ -2426,8 +2566,10 @@ func TestLocalGitCreateReleasesStaleBranchHolders(t *testing.T) {
 		rebasing  bool
 		vanished  bool
 		wantFiles bool
+		recorded  bool
 	}{
-		{name: "attached holder from an earlier layout", wantFiles: true},
+		{name: "active attached holder", wantFiles: true},
+		{name: "fresh recorded head", fresh: true, recorded: true, wantFiles: true},
 		{name: "attached holder before a fresh checkout", fresh: true, wantFiles: true},
 		{name: "holder stopped mid-rebase", fresh: true, rebasing: true, wantFiles: true},
 		{name: "holder directory deleted", fresh: true, vanished: true},
@@ -2459,12 +2601,38 @@ func TestLocalGitCreateReleasesStaleBranchHolders(t *testing.T) {
 				}
 			}
 
-			info, err := backend.Create(t.Context(), Issue{Identifier: "DD-STALE", BranchName: branch, FreshCheckout: tt.fresh})
+			head := strings.TrimSpace(runGit(t, source, "rev-parse", branch))
+			issue := Issue{Identifier: "DD-STALE", BranchName: branch, FreshCheckout: tt.fresh}
+			if tt.recorded {
+				issue.BaseRef = head
+				runGit(t, source, "commit", "--allow-empty", "-m", "advance default")
+			}
+			info, err := backend.Create(t.Context(), issue)
+			if !tt.fresh {
+				if err == nil {
+					t.Fatal("Create() succeeded with an attached branch holder")
+				}
+				if got := strings.TrimSpace(runGit(t, source, "rev-parse", branch)); got != head {
+					t.Fatalf("held branch = %s, want %s", got, head)
+				}
+				if got := strings.TrimSpace(runGit(t, holder, "branch", "--show-current")); got != branch {
+					t.Fatalf("holder branch = %q, want %q", got, branch)
+				}
+				if got := readFile(t, filepath.Join(holder, "kept.txt")); got != "kept\n" {
+					t.Fatalf("holder source = %q", got)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("Create() error = %v, want the stale holder released", err)
 			}
 			if got := strings.TrimSpace(runGit(t, info.Path, "branch", "--show-current")); got != branch {
 				t.Fatalf("new worktree branch = %q, want %q", got, branch)
+			}
+			if tt.recorded {
+				if got := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD")); got != head {
+					t.Fatalf("fresh head = %s, want recorded %s", got, head)
+				}
 			}
 			if !tt.wantFiles {
 				return
@@ -2997,7 +3165,7 @@ func waitForError(t *testing.T, result <-chan error, timeout time.Duration) erro
 func initSourceRepo(t *testing.T) string {
 	t.Helper()
 
-	dir := t.TempDir()
+	dir := testenv.TempDir(t)
 	initSourceRepoAt(t, dir)
 	return dir
 }
@@ -3022,8 +3190,9 @@ func initSourceRepoAt(t *testing.T, dir string) {
 func initBareRemote(t *testing.T) string {
 	t.Helper()
 
-	dir := filepath.Join(t.TempDir(), "origin.git")
-	runCommand(t, t.TempDir(), "git", "init", "--bare", "-b", "main", dir)
+	root := testenv.TempDir(t)
+	dir := filepath.Join(root, "origin.git")
+	runCommand(t, root, "git", "init", "--bare", "-b", "main", dir)
 	return dir
 }
 
@@ -3632,6 +3801,7 @@ func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
 
 	for _, tt := range []struct {
 		name        string
+		args        []string
 		redirection string
 		exitCode    int
 		wantDelay   bool
@@ -3640,6 +3810,9 @@ func TestRunGitAtBoundsInheritedOutput(t *testing.T) {
 		{name: "stderr retained", redirection: ">/dev/null", wantDelay: true},
 		{name: "failed command", exitCode: 23},
 		{name: "output closed", redirection: ">/dev/null 2>&1"},
+		{name: "worktree creation stdout retained", args: []string{"worktree", "add", "--detach", "new-worktree", "HEAD"}, redirection: "2>/dev/null"},
+		{name: "worktree creation stderr retained", args: []string{"worktree", "add", "--detach", "new-worktree", "HEAD"}, redirection: ">/dev/null"},
+		{name: "failed worktree creation retains diagnostics", args: []string{"worktree", "add", "--detach", "new-worktree", "HEAD"}, exitCode: 23},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -3671,10 +3844,14 @@ exit %d
 			joined := make(chan struct{})
 			go func() {
 				defer close(joined)
+				args := tt.args
+				if len(args) == 0 {
+					args = []string{"worktree", "prune"}
+				}
 				output, err := runGitAtWithEnv(ctx, dir, []string{
 					"DETENT_PIPE_RELEASE=" + fifoPath,
 					"DETENT_PIPE_DONE=" + donePath,
-				}, "worktree", "prune")
+				}, args...)
 				results <- result{output: output, err: err}
 			}()
 			defer func() {

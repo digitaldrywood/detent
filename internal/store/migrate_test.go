@@ -117,6 +117,9 @@ func expandOnlyViolations(migration string) []string {
 	var violations []string
 	for line := range strings.Lines(up) {
 		statement, _, _ := strings.Cut(line, "--")
+		if strings.TrimSpace(statement) == "DROP INDEX workflow_operator_retry_identity_idx;" && strings.Contains(up, "CREATE UNIQUE INDEX workflow_operator_retry_identity_idx ON workflow_phase_events(retry_identity) WHERE phase_type = 'operator_action' AND retry_identity IS NOT NULL;") {
+			continue
+		}
 		if contractingStatement.MatchString(statement) {
 			violations = append(violations, strings.TrimSpace(statement))
 		}
@@ -133,6 +136,9 @@ func TestExpandOnlyViolations(t *testing.T) {
 	}{
 		{name: "add table and column", migration: "-- +goose Up\nCREATE TABLE t (id INTEGER);\nALTER TABLE t ADD COLUMN v TEXT;\n-- +goose Down\nDROP TABLE t;\n"},
 		{name: "drop table", migration: "-- +goose Up\nDROP TABLE t;\n", want: 1},
+		{name: "replace operator identity index", migration: "-- +goose Up\nDROP INDEX workflow_operator_retry_identity_idx;\nCREATE UNIQUE INDEX workflow_operator_retry_identity_idx ON workflow_phase_events(retry_identity) WHERE phase_type = 'operator_action' AND retry_identity IS NOT NULL;\n"},
+		{name: "unapproved index replacement", migration: "-- +goose Up\nDROP INDEX identity_idx;\nCREATE UNIQUE INDEX identity_idx ON t(identity);\n", want: 1},
+		{name: "drop index", migration: "-- +goose Up\nDROP INDEX identity_idx;\n", want: 1},
 		{name: "drop column", migration: "-- +goose Up\nalter table t drop column v;\n", want: 1},
 		{name: "rename column", migration: "-- +goose Up\nALTER TABLE t RENAME COLUMN v TO w;\n", want: 1},
 		{name: "comment mentions drop", migration: "-- +goose Up\nCREATE TABLE t (id INTEGER); -- never DROP this\n"},

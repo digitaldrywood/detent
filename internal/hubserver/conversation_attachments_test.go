@@ -16,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/conversation"
 )
 
-// The attachment endpoints (decisions section 17.1). Uploads are sniffed and
+// The attachment endpoints. Uploads are sniffed and
 // bounded, they belong to the actor that made them until a message binds
 // them, reads follow the conversation's read rule, and an upload nobody sent
 // is swept with its bytes.
@@ -354,7 +354,7 @@ func TestConversationAttachmentSweep(t *testing.T) {
 
 // The worker control envelope carries the message's attachments so the
 // runner can download them, and the URL it names is one the worker's own
-// token can read (decisions section 17.1).
+// token can read.
 func TestConversationControlCarriesAttachments(t *testing.T) {
 	t.Parallel()
 	f := newConversationWorkerFixture(t)
@@ -396,7 +396,7 @@ func TestConversationControlCarriesAttachments(t *testing.T) {
 }
 
 // The upload accepts exactly two fields and exactly one file. Anything else
-// in the body is refused before a byte is stored (decisions section 17.1).
+// in the body is refused before a byte is stored.
 func TestConversationAttachmentUploadRefusesExtraParts(t *testing.T) {
 	t.Parallel()
 	f := newConversationAPIFixture(t, nil)

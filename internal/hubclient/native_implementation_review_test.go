@@ -1,7 +1,9 @@
 package hubclient
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"reflect"
@@ -20,15 +22,23 @@ import (
 func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name            string
-		validator       bool
-		verdict         string
-		decision        string
-		technicalResume bool
-		summaryFailure  bool
-		feedback        string
+		name              string
+		validator         bool
+		verdict           string
+		decision          string
+		technicalResume   bool
+		unsatisfiable     bool
+		summaryFailure    bool
+		feedback          string
+		acceptanceFailure string
 	}{
 		{name: "source pass leaves separate acceptance required", validator: true, verdict: "pass", decision: "approved"},
+		{name: "lost acceptance response preserves committed review", validator: true, verdict: "pass", decision: "approved", acceptanceFailure: "committed"},
+		{name: "uncommitted acceptance timeout remains failed", validator: true, verdict: "pass", decision: "approved", acceptanceFailure: "uncommitted"},
+		{name: "explicit acceptance refusal preserves failure", validator: true, verdict: "pass", decision: "approved", acceptanceFailure: "refused"},
+		{name: "cancelled acceptance preserves failure", validator: true, verdict: "pass", decision: "approved", acceptanceFailure: "cancelled"},
+		{name: "unreadable acceptance proof preserves failure", validator: true, verdict: "pass", decision: "approved", acceptanceFailure: "unreadable"},
+		{name: "unsatisfiable acceptance remains commented for completion", validator: true, verdict: "pass", decision: "approved", unsatisfiable: true},
 		{name: "source pass without acceptance validator", verdict: "pass", decision: "approved"},
 		{name: "source wait preserves typed pending evidence", validator: true, verdict: "wait", decision: "commented"},
 		{name: "operator evidence resume survives restart and uses new review sessions", validator: true, verdict: "wait", decision: "commented", technicalResume: true},
@@ -75,7 +85,7 @@ func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 			if err := execution.Checkpoint(ctx, tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "unverified", WorktreeState: "unpushed", HeadSHA: head, ExternalEffect: "none", EffectState: "none"}); err != nil {
 				t.Fatal(err)
 			}
-			receipt := gate.CommandResult{Command: "make check", HeadSHA: head, TreeSHA: strings.Repeat("a", 40), StartedAt: time.Now().UTC().Add(time.Hour), DurationNS: int64(time.Second), Evidence: &gate.CommandEvidence{Environment: gate.CheckEnvironment{OS: "linux", Architecture: "amd64", GoVersion: "go1.26.9"}}}
+			receipt := gate.CommandResult{Attribution: "unknown", Command: "make check", HeadSHA: head, TreeSHA: strings.Repeat("a", 40), StartedAt: time.Now().UTC().Add(time.Hour), DurationNS: int64(time.Second), Evidence: &gate.CommandEvidence{Environment: gate.CheckEnvironment{OS: "linux", Architecture: "amd64", GoVersion: "go1.26.9"}}}
 			receipt.FinishedAt = receipt.StartedAt.Add(time.Second)
 			receipt.ReceiptID = receipt.PipelineTiming("finalization").ID()
 			if err := execution.(runner.SourceValidationExecution).RecordSourceValidation(ctx, receipt); err != nil {
@@ -266,13 +276,46 @@ func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 						t.Fatalf("fresh acceptance did not receive source-review command evidence: %+v", acceptance.Commands)
 					}
 					validator := execution.(runner.NativeValidatorExecution)
-					if err := validator.RecordValidator(ctx, result); err == nil || !strings.Contains(err.Error(), "separate sessions") {
+					var rejection *APIError
+					if err := validator.RecordValidator(ctx, result); !errors.As(err, &rejection) || rejection.Rejection == nil || rejection.Rejection.Category != "acceptance_validation" || rejection.Rejection.Field != "validator.session_id" {
 						t.Fatalf("source-review session could also authorize acceptance: %v", err)
+					}
+					remote, _ := nativeSSHExecution(t, ctx, execution, t.TempDir())
+					err = remote.(runner.NativeValidatorExecution).RecordValidator(ctx, result)
+					var carrier interface {
+						NativeTerminalFailure() tracker.NativeTerminalFailure
+					}
+					if !errors.As(err, &carrier) {
+						t.Fatalf("worker transport lost acceptance rejection: %v", err)
+					}
+					failure := carrier.NativeTerminalFailure().Public()
+					if failure.Rejection == nil || failure.Rejection.Category != "acceptance_validation" || failure.Rejection.Field != "validator.session_id" || failure.Stage != "acceptance_publication" || failure.Attribution != "instance" {
+						t.Fatalf("worker acceptance failure = %+v", failure)
+					}
+					if test.unsatisfiable {
+						result.SessionID++
+						result.CriteriaEvidence = []gate.CriterionEvidence{{Criterion: "Complete the requested work.", Kind: gate.EvidenceNotVerified, UnverifiedClass: gate.CriterionUnsatisfiable, Reference: "Requires production"}}
+						gate.NormalizeCriterionEvidence(&result, []string{"Complete the requested work."}, receipt.TreeSHA)
+						cfg := gate.ValidatorConfig{Enabled: true}
+						gate.ApplyCriterionPolicy(cfg, &result)
+						if decision, stopped := gate.EvaluateValidator(cfg, result); stopped {
+							result.Verdict = string(decision.Action)
+						}
+						if err := validator.RecordValidator(ctx, result); err != nil {
+							t.Fatal(err)
+						}
+						detail, err := h.admin.runtimeChange(ctx, tracker.NativeWorkItemID(issue.ID), change.ChangeID)
+						completion := execution.(runner.ChangeExecution).NativeChange()
+						if err != nil || len(detail.Reviews) != 2 || detail.Reviews[1].Decision != "commented" || completion.Validator == nil || completion.Validator.Verdict != gate.ValidatorVerdictWait || !reflect.DeepEqual(completion.Validator.UnsatisfiableCriteria(), []string{"Complete the requested work."}) || completion.Reviewed {
+							t.Fatalf("unsatisfiable publication lost wait or criterion class: reviews=%+v completion=%+v error=%v", detail.Reviews, completion, err)
+						}
+						return
 					}
 					result.SessionID++
 					result.Verdict = gate.ValidatorVerdictRework
 					failed := receipt
 					failed.ExitCode, failed.StartedAt = 7, receipt.StartedAt.Add(-2*time.Hour)
+					failed.Findings = []gate.Finding{{Attribution: "unknown", Body: "Command failed", CheckCommand: failed.Command}}
 					failed.FinishedAt = failed.StartedAt.Add(time.Second)
 					failed.ReceiptID = failed.PipelineTiming("finalization").ID()
 					result.Commands = []gate.CommandResult{failed}
@@ -286,8 +329,72 @@ func TestNativeImplementationReviewIsRecordedSeparately(t *testing.T) {
 					result.SessionID++
 					result.Verdict = gate.ValidatorVerdictPass
 					result.Commands = []gate.CommandResult{receipt}
-					if err := validator.RecordValidator(ctx, result); err != nil {
-						t.Fatalf("independent acceptance retry was refused: %v", err)
+					publicationCalls := 0
+					reconciliationReads := 0
+					publicationCtx, cancelPublication := context.WithCancel(ctx)
+					defer cancelPublication()
+					if test.acceptanceFailure != "" {
+						transport := h.native.client.httpClient.Transport
+						h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+							if publicationCalls > 0 && request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/"+change.ChangeID) {
+								reconciliationReads++
+								if test.acceptanceFailure == "unreadable" {
+									return &http.Response{StatusCode: http.StatusForbidden, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"forbidden"}`))}, nil
+								}
+							}
+							if request.Method != http.MethodPost || !strings.HasSuffix(request.URL.Path, "/reviews") {
+								return transport.RoundTrip(request)
+							}
+							publicationCalls++
+							if test.acceptanceFailure != "uncommitted" {
+								response, err := transport.RoundTrip(request)
+								if err != nil {
+									return response, err
+								}
+								response.Body.Close()
+							}
+							if test.acceptanceFailure == "refused" {
+								return &http.Response{StatusCode: http.StatusUnprocessableEntity, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("invalid response"))}, nil
+							}
+							if test.acceptanceFailure == "cancelled" {
+								cancelPublication()
+							}
+							return nil, io.ErrUnexpectedEOF
+						})
+					}
+					publicationErr := validator.RecordValidator(publicationCtx, result)
+					if test.acceptanceFailure != "" && publicationCalls != 1 {
+						t.Fatalf("acceptance mutation was replayed: %d calls", publicationCalls)
+					}
+					if test.acceptanceFailure == "refused" {
+						var refusal *APIError
+						if !errors.As(publicationErr, &refusal) || refusal.Status != http.StatusUnprocessableEntity || reconciliationReads != 0 {
+							t.Fatalf("explicit refusal was reconciled: %v, %d reads", publicationErr, reconciliationReads)
+						}
+						return
+					}
+					if test.acceptanceFailure == "cancelled" || test.acceptanceFailure == "unreadable" {
+						wantReads := 0
+						if test.acceptanceFailure == "unreadable" {
+							wantReads = 1
+							var refusal *APIError
+							if !errors.As(publicationErr, &refusal) || refusal.Status != http.StatusForbidden {
+								t.Fatalf("proof read failure lost: %v", publicationErr)
+							}
+						}
+						if !errors.Is(publicationErr, ErrUnavailable) || reconciliationReads != wantReads || execution.(runner.ChangeExecution).NativeChange().Reviewed {
+							t.Fatalf("unavailable acceptance became reviewed: %v, %d reads", publicationErr, reconciliationReads)
+						}
+						return
+					}
+					if test.acceptanceFailure == "uncommitted" {
+						if !errors.Is(publicationErr, ErrUnavailable) || execution.(runner.ChangeExecution).NativeChange().Reviewed {
+							t.Fatalf("uncommitted acceptance became reviewed: %v", publicationErr)
+						}
+						return
+					}
+					if publicationErr != nil {
+						t.Fatalf("independent acceptance retry was refused: %v", publicationErr)
 					}
 					if test.technicalResume {
 						detail, err := h.admin.runtimeChange(ctx, tracker.NativeWorkItemID(issue.ID), change.ChangeID)

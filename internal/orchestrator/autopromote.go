@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/dependencyline"
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -27,9 +28,9 @@ type AutoPromoteConfig struct {
 	PassState             string
 	ReworkState           string
 	TerminalStates        []string
-	NoProgressLimit       int
 	WorkpadStructuredOnly bool
 	Gate                  gate.Config
+	ValidatorWorkflow     string
 }
 
 func (cfg AutoPromoteConfig) humanReviewEnabled() bool {
@@ -38,7 +39,7 @@ func (cfg AutoPromoteConfig) humanReviewEnabled() bool {
 
 func (cfg AutoPromoteConfig) reviewTargetState() string {
 	if !cfg.humanReviewEnabled() {
-		return "Blocked"
+		return cfg.ReworkState
 	}
 	return cfg.SourceState
 }
@@ -66,6 +67,11 @@ type AutoPromoteSummary struct {
 }
 
 type AutoPromoteFinding struct {
+	Attribution         string                       `json:"attribution"`
+	AttributionEvidence *failureattribution.Evidence `json:"attribution_evidence,omitempty"`
+	CheckCommand        string                       `json:"check_command,omitempty"`
+	CheckDiagnostic     string                       `json:"check_diagnostic,omitempty"`
+
 	Body string
 	URL  string
 	Path string
@@ -416,9 +422,6 @@ func normalizeAutoPromoteConfig(cfg AutoPromoteConfig) AutoPromoteConfig {
 		cfg.ReworkState = autoPromoteReworkState
 	}
 	cfg.TerminalStates = normalizedStates(cfg.TerminalStates)
-	if cfg.NoProgressLimit < 0 {
-		cfg.NoProgressLimit = 0
-	}
 	cfg.Gate = gate.Effective(cfg.Gate)
 	return cfg
 }
@@ -1076,10 +1079,14 @@ func gateFindings(findings []AutoPromoteFinding) []gate.Finding {
 	out := make([]gate.Finding, 0, len(findings))
 	for _, finding := range findings {
 		out = append(out, gate.Finding{
-			Body: finding.Body,
-			URL:  finding.URL,
-			Path: finding.Path,
-			Line: finding.Line,
+			Attribution:         finding.Attribution,
+			AttributionEvidence: finding.AttributionEvidence,
+			CheckCommand:        finding.CheckCommand,
+			CheckDiagnostic:     finding.CheckDiagnostic,
+			Body:                finding.Body,
+			URL:                 finding.URL,
+			Path:                finding.Path,
+			Line:                finding.Line,
 		})
 	}
 	return out
@@ -1089,10 +1096,14 @@ func autoPromoteFindingsFromGate(findings []gate.Finding) []AutoPromoteFinding {
 	out := make([]AutoPromoteFinding, 0, len(findings))
 	for _, finding := range findings {
 		out = append(out, AutoPromoteFinding{
-			Body: finding.Body,
-			URL:  finding.URL,
-			Path: finding.Path,
-			Line: finding.Line,
+			Attribution:         finding.Attribution,
+			AttributionEvidence: finding.AttributionEvidence,
+			CheckCommand:        finding.CheckCommand,
+			CheckDiagnostic:     finding.CheckDiagnostic,
+			Body:                finding.Body,
+			URL:                 finding.URL,
+			Path:                finding.Path,
+			Line:                finding.Line,
 		})
 	}
 	return out

@@ -8,12 +8,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 )
 
-// Regression test: a successful plan completion must clear both failure
-// circuit breakers. The reset used to live only in the implement completion
-// path, after the plan branch had already returned, so a plan that failed
-// repeatedly and then succeeded carried a stale count that could park the
-// issue prematurely on a later unrelated failure.
-func TestHandleRunResultPlanCompletionResetsFailureBreakers(t *testing.T) {
+func TestHandleRunResultPlanCompletionResetsRetry(t *testing.T) {
 	t.Parallel()
 
 	tracker := &dependencyAutoUnblockConnector{}
@@ -25,12 +20,10 @@ func TestHandleRunResultPlanCompletionResetsFailureBreakers(t *testing.T) {
 	now := time.Date(2026, 7, 9, 3, 0, 0, 0, time.UTC)
 	state.Running[issue.ID] = Running{
 		Issue:     issue,
-		Attempt:   repeatedFailureThreshold,
+		Attempt:   5,
 		Mode:      runpkg.RunModePlan,
 		StartedAt: now.Add(-3 * time.Minute),
 	}
-	state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: repeatedFailureThreshold - 1}
-	state.InstantFailures[issue.ID] = InstantFailure{Issue: issue, Count: instantFailureThreshold - 1}
 
 	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
 		IssueID:     issue.ID,
@@ -39,11 +32,8 @@ func TestHandleRunResultPlanCompletionResetsFailureBreakers(t *testing.T) {
 		CompletedAt: now,
 	})
 
-	if _, ok := state.RepeatedFailures[issue.ID]; ok {
-		t.Fatalf("RepeatedFailures[%q] present after successful plan completion", issue.ID)
-	}
-	if _, ok := state.InstantFailures[issue.ID]; ok {
-		t.Fatalf("InstantFailures[%q] present after successful plan completion", issue.ID)
+	if retry, ok := state.Retry[issue.ID]; ok && retry.Attempt > 1 {
+		t.Fatalf("plan success retained failure backoff: %+v", retry)
 	}
 	if len(tracker.comments) != 1 {
 		t.Fatalf("comments = %#v, want one plan artifact comment", tracker.comments)

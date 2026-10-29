@@ -40,11 +40,10 @@ type landingFixture struct {
 func newLandingFixture(t *testing.T) landingFixture {
 	t.Helper()
 	source := initSourceRepo(t)
-	runGit(t, source, "config", "commit.gpgsign", "false")
 	remote := initBareRemote(t)
 	runGit(t, source, "remote", "add", "origin", remote)
 	runGit(t, source, "push", "-u", "origin", "main")
-	backend, err := NewBackend(KindLocalGit, LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: source, AutoBranch: true})
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{Root: filepath.Join(testenv.TempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
 	if err != nil {
 		t.Fatalf("NewBackend() error = %v", err)
 	}
@@ -53,9 +52,13 @@ func newLandingFixture(t *testing.T) landingFixture {
 		t.Fatalf("backend is %T, want *LocalGit", backend)
 	}
 	issue := Issue{Identifier: "DD-LAND"}
-	info, err := backend.Create(context.Background(), issue)
+	info, err := local.infoForIssue(issue)
 	if err != nil {
-		t.Fatalf("Create() error = %v", err)
+		t.Fatal(err)
+	}
+	runGit(t, source, "worktree", "add", "-b", info.Branch, info.Path, "main")
+	if err := local.recordCleanupOwnership(t.Context(), info, issue, true); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(info.Path, "feature.txt"), []byte("feature\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -98,8 +101,7 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 		t.Skip("git subprocess integration")
 	}
 
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Parallel()
 	for _, test := range []struct {
 		name, change, refusal string
 		external, detached    bool
@@ -130,6 +132,7 @@ func TestLocalGitCreateReviewedLanding(t *testing.T) {
 		{name: "refuse cross-org external reference", external: true, change: "external", refusal: LandRefusalProtected},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			fixture := newLandingFixture(t)
 			branch := "detent/external-source"
 			runGit(t, fixture.source, "push", "origin", fixture.head+":refs/heads/"+branch, fixture.head+":refs/pull/7/head")
@@ -432,6 +435,129 @@ func TestLocalGitLandChangeMethods(t *testing.T) {
 	}
 }
 
+func TestLocalGitLandingAlreadyContains(t *testing.T) {
+	if testing.Short() {
+		t.Skip("git subprocess integration")
+	}
+	t.Parallel()
+	for _, native := range []bool{false, true} {
+		for _, test := range []struct {
+			name        string
+			method      string
+			ancestor    bool
+			trailer     string
+			partial     bool
+			unpublished bool
+			mismatch    string
+			wantReuse   bool
+			wantKind    string
+		}{
+			{name: "ancestor squash", method: "squash", ancestor: true, wantReuse: true},
+			{name: "ancestor merge", method: "merge", ancestor: true, wantReuse: true},
+			{name: "ancestor rebase", method: "rebase", ancestor: true, wantReuse: true},
+			{name: "exact squash trailer", trailer: "exact", wantReuse: true},
+			{name: "different head of same Change", trailer: "different head", wantKind: LandRefusalNothing},
+			{name: "different Change of same head", trailer: "different change", wantKind: LandRefusalNothing},
+			{name: "trailer with extra text", trailer: "extra text", wantKind: LandRefusalNothing},
+			{name: "identical content without trailer", wantKind: LandRefusalNothing},
+			{name: "partial change is not already delivered", partial: true, trailer: "different head"},
+			{name: "unpublished trailer still requires push", trailer: "exact", unpublished: true},
+			{name: "delivered head cannot bypass current head verification", ancestor: true, mismatch: "head", wantKind: LandRefusalHeadMoved},
+			{name: "delivered head cannot bypass worktree verification", ancestor: true, mismatch: "dirty", wantKind: LandRefusalHeadMoved},
+			{name: "delivered head cannot bypass validation receipt", ancestor: true, mismatch: "receipt", wantKind: LandRefusalHeadMoved},
+		} {
+			if test.mismatch == "receipt" && !native {
+				continue
+			}
+			t.Run(fmt.Sprintf("native=%t/%s", native, test.name), func(t *testing.T) {
+				t.Parallel()
+				f := newLandingFixture(t)
+				base := f.remoteMain(t)
+				integrated := f.head
+				if test.ancestor {
+					runGit(t, f.source, "merge", "--ff-only", f.head)
+				} else {
+					squashedHead := f.head
+					if test.partial {
+						squashedHead = strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^"))
+					}
+					runGit(t, f.source, "merge", "--squash", squashedHead)
+					change, trailerHead := "change_1", f.head
+					if test.trailer == "different head" {
+						trailerHead = strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^"))
+					}
+					if test.trailer == "different change" {
+						change = "change_other"
+					}
+					message := "Prior squash"
+					if test.trailer != "" {
+						message += fmt.Sprintf("\n\nChange Request %s, round 1, head %s.", change, trailerHead)
+						if test.trailer == "extra text" {
+							message += " unverified"
+						}
+					}
+					runGit(t, f.source, "commit", "-m", message)
+					integrated = strings.TrimSpace(runGit(t, f.source, "rev-parse", "HEAD"))
+				}
+				if !test.unpublished {
+					f.advanceMain(t, "later.txt", "later independent delivery\n")
+				}
+				before := f.remoteMain(t)
+				if err := os.WriteFile(filepath.Join(f.remote, "hooks", "pre-receive"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if test.partial || test.unpublished {
+					if err := os.Remove(filepath.Join(f.remote, "hooks", "pre-receive")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				opts := LandOptions{ChangeID: "change_1", Native: native, HeadSHA: f.head, Method: test.method}
+				if test.mismatch == "head" {
+					opts.HeadSHA = strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD^"))
+				}
+				if test.mismatch == "dirty" {
+					if err := os.WriteFile(filepath.Join(f.info.Path, "feature.txt"), []byte("unreviewed\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.mismatch == "receipt" {
+					opts.ValidationCommand = "true"
+					opts.Validation = &gate.CommandResult{Command: "true", HeadSHA: f.head, TreeSHA: strings.Repeat("a", 40), DurationNS: 1}
+				}
+				result, err := f.backend.LandChange(t.Context(), f.info, f.issue, opts)
+				wantKind := test.wantKind
+				if test.partial && !native {
+					wantKind = LandRefusalConflict
+				}
+				if wantKind != "" {
+					var refusal *LandRefusal
+					if !errors.As(err, &refusal) || refusal.Kind != wantKind || result.MergeSHA != "" || f.remoteMain(t) != before {
+						t.Fatalf("unproven source treated as delivered: result=%+v error=%v", result, err)
+					}
+					return
+				}
+				method := test.method
+				if method == "" {
+					method = "squash"
+				}
+				if err != nil || result.MergeSHA == "" || result.BaseRef != "main" || result.Method != method {
+					t.Fatalf("landing receipt = %+v, error = %v", result, err)
+				}
+				if test.wantReuse {
+					if result.MergeSHA != integrated || result.BaseBefore != before || f.remoteMain(t) != before {
+						t.Fatalf("existing delivery lost receipt or pushed: %+v", result)
+					}
+				} else if result.MergeSHA == integrated || f.remoteMain(t) == before || result.BaseBefore != base && test.unpublished {
+					t.Fatalf("undelivered source did not follow normal landing: %+v", result)
+				}
+				if got := strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD")); got != f.head {
+					t.Fatalf("reviewed head changed to %s", got)
+				}
+			})
+		}
+	}
+}
+
 func TestLocalGitLandingCleanup(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
@@ -595,7 +721,23 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 		}, wantKind: LandRefusalNothing},
 		{name: "unpublished checkpoint cannot identify the actual base", integration: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
 			return LandOptions{HeadSHA: f.head, Method: "squash"}
-		}, wantKind: LandRefusalHeadMoved},
+		}, wantKind: LandRefusalNothing},
+		{name: "unchanged reviewed source proves an existing squash", integration: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
+			runGit(t, f.source, "merge", "--squash", f.head)
+			runGit(t, f.source, "commit", "-m", "existing delivery")
+			runGit(t, f.source, "push", "origin", "main")
+			return LandOptions{HeadSHA: f.head, Method: "squash"}
+		}},
+		{name: "unchanged release source verifies its target branch", integration: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
+			runGit(t, f.source, "push", "origin", f.head+":refs/heads/release/v1.2")
+			return LandOptions{HeadSHA: f.head, Method: "squash", TargetBranch: "release/v1.2"}
+		}},
+		{name: "default branch delivery does not prove release delivery", integration: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
+			runGit(t, f.source, "push", "origin", "main:refs/heads/release/v1.2")
+			runGit(t, f.source, "merge", "--ff-only", f.head)
+			runGit(t, f.source, "push", "origin", "main")
+			return LandOptions{HeadSHA: f.head, Method: "squash", TargetBranch: "release/v1.2"}
+		}, wantKind: LandRefusalNothing},
 		{name: "empty published source is not a deliverable", integration: true, arrange: func(t *testing.T, f landingFixture) LandOptions {
 			f.absorb(t)
 			return LandOptions{HeadSHA: strings.TrimSpace(runGit(t, f.source, "rev-parse", "HEAD^")), Method: "squash"}
@@ -626,8 +768,10 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 		}, wantKind: LandRefusalHeadMoved},
 		{name: "nothing left to land", arrange: func(t *testing.T, f landingFixture) LandOptions {
 			t.Helper()
-			runGit(t, f.info.Path, "push", "origin", f.head+":refs/heads/main")
-			return LandOptions{HeadSHA: f.head, Method: "merge"}
+			runGit(t, f.source, "merge", "--squash", f.head)
+			runGit(t, f.source, "commit", "-m", "unattributed squash")
+			runGit(t, f.source, "push", "origin", "main")
+			return LandOptions{HeadSHA: f.head, Method: "squash"}
 		}, wantKind: LandRefusalNothing},
 		{name: "base branch requires pull requests", arrange: func(t *testing.T, f landingFixture) LandOptions {
 			t.Helper()
@@ -655,7 +799,12 @@ func TestLocalGitLandChangeRefusals(t *testing.T) {
 				result, verifyErr := f.backend.VerifyIntegratedChange(t.Context(), f.info, f.issue, opts, sourceBase, base)
 				err = verifyErr
 				if test.wantKind == "" {
-					if err != nil || result.MergeSHA != before || result.BaseRef != "main" || result.Method != "squash" || f.remoteMain(t) != before || strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD")) != base {
+					target, merge := "main", before
+					if opts.TargetBranch != "" {
+						target = opts.TargetBranch
+						merge = strings.TrimSpace(runGit(t, f.remote, "rev-parse", "refs/heads/"+target))
+					}
+					if err != nil || result.MergeSHA != merge || result.BaseRef != target || result.Method != "squash" || f.remoteMain(t) != before || strings.TrimSpace(runGit(t, f.info.Path, "rev-parse", "HEAD")) != base {
 						t.Fatalf("integration proof = %+v, error = %v", result, err)
 					}
 					return
@@ -701,6 +850,7 @@ func TestClassifyLandingPush(t *testing.T) {
 		want string
 	}{
 		{name: "github protected branch", out: "remote: error: GH006: Protected branch update failed for refs/heads/develop.", want: LandRefusalProtected},
+		{name: "github required checks rule", out: "remote: error: GH013: Repository rule violations: 3 of 3 required status checks are expected", want: LandRefusalProtected},
 		{name: "hook declined", out: "! [remote rejected] main -> main (pre-receive hook declined)", want: LandRefusalProtected},
 		{name: "base moved", out: "! [rejected] main -> main (fetch first)", want: LandRefusalBaseMoved},
 		{name: "stale lease", out: "! [rejected] main -> main (stale info)", want: LandRefusalBaseMoved},
@@ -708,10 +858,18 @@ func TestClassifyLandingPush(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			err := classifyLandingPush(&CommandError{Command: "git", Args: []string{"push"}, ExitCode: 1, Output: test.out}, "main")
+			command := &CommandError{Command: "git", Args: []string{"push"}, ExitCode: 1, Output: test.out}
+			err := classifyLandingPush(command, "main")
 			var refusal *LandRefusal
 			if errors.As(err, &refusal) != (test.want != "") || refusal != nil && refusal.Kind != test.want {
 				t.Fatalf("classifyLandingPush(%q) = %v, want kind %q", test.out, err, test.want)
+			}
+			if test.want == LandRefusalProtected && refusal.TargetBranch != "main" {
+				t.Fatalf("protected refusal lost push target: %#v", refusal)
+			}
+			var recorded *CommandError
+			if !errors.As(err, &recorded) || recorded != command {
+				t.Fatal("landing push classification discarded command diagnostics")
 			}
 		})
 	}
@@ -760,8 +918,7 @@ func TestLocalGitNativeLanding(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Parallel()
 	for _, test := range []struct {
 		name                    string
 		count                   int
@@ -772,7 +929,10 @@ func TestLocalGitNativeLanding(t *testing.T) {
 		audit                   string
 		advanced                bool
 		patchBytes              int
+		alreadyContains         string
 	}{
+		{name: "AlreadyContains ancestor does not hold the batch", count: 2, conflict: -1, invalid: -1, skip: -1, alreadyContains: "ancestor"},
+		{name: "AlreadyContains squash trailer does not hold the batch", count: 2, conflict: -1, invalid: -1, skip: -1, alreadyContains: "squash"},
 		{name: "legacy rolling batch preserves validated heads", count: 2, conflict: -1, invalid: -1, skip: -1, rolling: true},
 		{name: "legacy rolling moved base resquashes", count: 2, conflict: -1, invalid: -1, skip: -1, moved: true, rolling: true},
 		{name: "clean validated head skips gate", count: 1, conflict: -1, invalid: -1, skip: -1},
@@ -793,6 +953,7 @@ func TestLocalGitNativeLanding(t *testing.T) {
 		{name: "backend failure refuses push without finding", count: 1, conflict: -1, invalid: -1, skip: -1, audit: "failure"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newLandingFixture(t)
 			fixtureBase := f.remoteMain(t)
 			requests := make([]LandRequest, test.count)
@@ -818,6 +979,7 @@ func TestLocalGitNativeLanding(t *testing.T) {
 				originalPatch := runGit(t, info.Path, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", fixtureBase, head, "--")
 				originalHash := sha256.Sum256([]byte(originalPatch))
 				options := LandOptions{Native: true, HeadSHA: head, Method: "squash", TargetBranch: "main", Message: file, ValidationCommand: "exit 73", Validation: &gate.CommandResult{Command: "exit 73", HeadSHA: head, TreeSHA: tree, DurationNS: int64(time.Second)}}
+				options.ChangeID = fmt.Sprintf("change_%d", i)
 				if test.rolling {
 					options.LandingMode = gate.LandingRollingBarrier
 				}
@@ -867,6 +1029,15 @@ func TestLocalGitNativeLanding(t *testing.T) {
 				if i == test.conflict {
 					f.advanceMain(t, file, "base conflicts\n")
 				}
+			}
+			if test.alreadyContains != "" {
+				options := requests[0].Options
+				integrated := options.HeadSHA
+				if test.alreadyContains == "squash" {
+					message := fmt.Sprintf("Prior delivery\n\nChange Request %s, round 1, head %s.", options.ChangeID, options.HeadSHA)
+					integrated = strings.TrimSpace(runGit(t, f.source, "commit-tree", options.HeadSHA+"^{tree}", "-p", fixtureBase, "-m", message))
+				}
+				runGit(t, f.source, "push", "origin", integrated+":refs/heads/main")
 			}
 			if test.advanced {
 				f.advanceMain(t, "advanced.txt", "advanced after source approval\n")
@@ -950,8 +1121,14 @@ func TestLocalGitNativeLanding(t *testing.T) {
 					t.Fatalf("member %d = %#v, base %s", i, outcome, base)
 				}
 				wantPath := "clean_push"
-				if test.count > 1 {
+				if test.count > 1 && test.alreadyContains == "" {
 					wantPath = "batch_member"
+				}
+				if test.alreadyContains != "" && i == 0 {
+					wantPath = ""
+					if outcome.Result.MergeSHA != base {
+						t.Fatalf("already delivered member did not reuse the base: %+v", outcome.Result)
+					}
 				}
 				if outcome.Result.Path != wantPath {
 					t.Fatalf("path = %q", outcome.Result.Path)

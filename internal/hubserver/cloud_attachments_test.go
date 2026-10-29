@@ -16,7 +16,7 @@ import (
 
 func TestCloudAttachmentSavedReferences(t *testing.T) {
 	t.Parallel()
-	for _, source := range []string{"issue", "comment", "issue-path", "comment-path", "issue-path-other-item", "comment-path-other-item"} {
+	for _, source := range []string{"change-visual-path", "change-visual-short", "issue", "comment", "issue-path", "comment-path", "issue-path-other-item", "comment-path-other-item", "issue-visual-path", "comment-visual-path", "issue-visual-reference", "comment-visual-reference", "issue-visual-path-reference", "comment-visual-path-reference", "issue-visual-path-title"} {
 		t.Run(source, func(t *testing.T) {
 			f := newHostedSharedFixture(t)
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
@@ -46,13 +46,40 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 				t.Fatal(err)
 			}
 			body := "![image](attachment:" + record.ID + ")\n[file](attachment:" + record.ID + ")\n![foreign](attachment:" + foreign + ")"
+			if strings.HasPrefix(source, "change") {
+				body = "![image](attachment:" + record.ID + ")"
+			}
 			if strings.Contains(source, "-path") {
 				body = record.Markdown("org_security")
 			}
+			if strings.HasSuffix(source, "-reference") {
+				destination := "attachment:" + record.ID
+				if strings.Contains(source, "-path") {
+					destination = "/organizations/org_security/api/v2/projects/" + string(f.project) + "/attachments/" + record.ID
+				}
+				body = "![image][shot]\n\n[shot]: " + destination
+			}
+			if strings.Contains(source, "-visual") {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project); err != nil {
+					t.Fatal(err)
+				}
+				body = "Screenshot: https://example.test/preview " + body
+				if !strings.HasSuffix(source, "-reference") {
+					body += ". Documentation: [API guide](https://example.test/docs) [Pull request](https://github.com/example-org/example-project/pull/1)"
+				}
+			}
 			issue := tracker.NativeIssue{}
 			comment := tracker.NativeComment{}
-			if strings.HasPrefix(source, "issue") {
-				raw = send(http.MethodPost, "/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "save-image"}, Title: "Image issue", Body: body + issueContractTestSections, State: "Todo"}, http.StatusOK)
+			if strings.HasPrefix(source, "change") {
+				issue.WorkItemID = f.seedIssue(t, 1)
+				issue.Revision = 1
+				send(http.MethodPost, "/work-items/"+string(issue.WorkItemID)+"/changes", tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "save-image"}, Title: "Visual change", Body: body}, http.StatusOK)
+			} else if strings.HasPrefix(source, "issue") {
+				title, issueBody := "Image issue", body+issueContractTestSections
+				if strings.HasSuffix(source, "-title") {
+					title, issueBody = body, issueContractTestSections
+				}
+				raw = send(http.MethodPost, "/work-items", tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "save-image"}, Title: title, Body: issueBody, State: "Todo"}, http.StatusOK)
 				if err := json.Unmarshal(raw, &issue); err != nil {
 					t.Fatal(err)
 				}
@@ -74,6 +101,71 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 				}
 			}
 			assertReference(record.ID, string(issue.WorkItemID), comment.ID)
+			if strings.HasPrefix(source, "change") {
+				replacement := "Replacement" + issueContractTestSections
+				send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "replace-issue"}, ExpectedRevision: issue.Revision, Body: &replacement}, http.StatusOK)
+				assertReference(record.ID, string(issue.WorkItemID), "")
+				raw = send(http.MethodPost, "/work-items/"+string(issue.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "reuse-image"}, Body: body}, http.StatusOK)
+				var reused tracker.NativeComment
+				if err := json.Unmarshal(raw, &reused); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM native_comments WHERE id=?", reused.ID); err != nil {
+					t.Fatal(err)
+				}
+				assertReference(record.ID, string(issue.WorkItemID), "")
+				response := f.serve(t, hostedSharedRequest{user: &owner, target: f.base + "/attachment-metadata/" + record.ID})
+				if response.Code != http.StatusOK {
+					t.Fatalf("retained Change source read=%d", response.Code)
+				}
+				return
+			}
+
+			if strings.HasSuffix(source, "-reference") {
+				if strings.HasPrefix(source, "issue") {
+					changed := "Updated " + body + issueContractTestSections
+					raw = send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "edit-reference"}, ExpectedRevision: issue.Revision, Body: &changed}, http.StatusOK)
+					if err := json.Unmarshal(raw, &issue); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					raw = send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID)+"/comments/"+comment.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "edit-reference"}, ExpectedRevision: comment.Revision, Body: "Updated " + body}, http.StatusOK)
+					if err := json.Unmarshal(raw, &comment); err != nil {
+						t.Fatal(err)
+					}
+				}
+				assertReference(record.ID, string(issue.WorkItemID), comment.ID)
+			}
+			if strings.HasSuffix(source, "-title") {
+				send(http.MethodPut, "/content-settings", cloudContentSettingsRequest{Mutation: tracker.Mutation{IdempotencyKey: "disable-visual"}}, http.StatusOK)
+				raw = send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "priority-only"}, ExpectedRevision: issue.Revision, Priority: tracker.SetPriority(new(2))}, http.StatusOK)
+				if err := json.Unmarshal(raw, &issue); err != nil {
+					t.Fatal(err)
+				}
+				assertReference(record.ID, string(issue.WorkItemID), "")
+				changed := "Changed content" + issueContractTestSections
+				raw = send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "body-only"}, ExpectedRevision: issue.Revision, Body: &changed}, http.StatusOK)
+				if err := json.Unmarshal(raw, &issue); err != nil {
+					t.Fatal(err)
+				}
+				assertReference(record.ID, string(issue.WorkItemID), "")
+			}
+			if strings.Contains(source, "-visual") && !strings.HasSuffix(source, "-title") {
+				textFile := attachment.Metadata{ID: conversation.NewAttachmentID(), Name: "diagnostic.log", ContentType: "text/plain", Size: 10, SHA256: record.SHA256}
+				send(http.MethodPost, "/attachment-metadata", textFile, http.StatusCreated)
+				const visual = "https://figma.com/design/example "
+				for _, invalid := range []struct{ name, body string }{
+					{"unrelated binding", visual},
+					{"text file", visual + textFile.Markdown("org_security")},
+					{"fabricated", visual + "![upload](attachment:att_0123456789abcdef0123456789abcdef)"},
+					{"foreign", visual + "![upload](attachment:" + foreign + ")"},
+					{"foreign canonical", visual + "![upload](/organizations/org_security/api/v2/projects/prj_foreign/attachments/" + foreign + ")"},
+					{"wrong paragraph", visual + "\n\n" + record.Markdown("org_security")},
+					{"multiple sources", visual + "https://example.test/image.png " + record.Markdown("org_security")},
+				} {
+					send(http.MethodPost, "/work-items/"+string(issue.WorkItemID)+"/comments", tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "invalid-" + invalid.name}, Body: invalid.body}, http.StatusUnprocessableEntity)
+				}
+			}
 			assertReference(foreign, "", "")
 			var count int
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM attachment_references WHERE attachment_id=?", record.ID).Scan(&count); err != nil || count != 1 {
@@ -108,7 +200,11 @@ func TestCloudAttachmentSavedReferences(t *testing.T) {
 			}
 			if strings.HasPrefix(source, "issue") {
 				removed := "No image" + issueContractTestSections
-				send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID), tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "remove-image"}, ExpectedRevision: issue.Revision, Body: &removed}, http.StatusOK)
+				update := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "remove-image"}, ExpectedRevision: issue.Revision, Body: &removed}
+				if strings.HasSuffix(source, "-title") {
+					update.Title = new("Image issue")
+				}
+				send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID), update, http.StatusOK)
 			} else {
 				send(http.MethodPatch, "/work-items/"+string(issue.WorkItemID)+"/comments/"+comment.ID, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "remove-image"}, ExpectedRevision: comment.Revision, Body: "No image"}, http.StatusOK)
 			}
@@ -149,16 +245,31 @@ func TestCloudAttachmentQuota(t *testing.T) {
 		name                      string
 		allowance, apiLimit, used int64
 		status                    int
+		plan                      string
+		retained                  int64
 	}{
-		{"allowed", 10000, 2, 0, http.StatusCreated},
-		{"exact preflight limit", 100, 100, 0, http.StatusCreated},
-		{"refused", 99, 100, 0, http.StatusTooManyRequests},
-		{"API exhausted", 10000, 1, 1, http.StatusTooManyRequests},
-		{"outer API limit", 10000, 1, 0, http.StatusTooManyRequests},
+		{"Starter above Free storage", 25 << 30, 100, 0, http.StatusCreated, "starter", 2 << 30},
+		{"Free over storage", 1 << 30, 100, 0, http.StatusTooManyRequests, "free", 2 << 30},
+		{"allowed", 10000, 2, 0, http.StatusCreated, "", 0},
+		{"exact preflight limit", 100, 100, 0, http.StatusCreated, "", 0},
+		{"refused", 99, 100, 0, http.StatusTooManyRequests, "", 0},
+		{"API exhausted", 10000, 1, 1, http.StatusTooManyRequests, "", 0},
+		{"outer API limit", 10000, 1, 0, http.StatusTooManyRequests, "", 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newHostedSharedFixture(t)
-			plans := hostedTestPlans(t, f.service, map[string]int64{"collaboration_bytes": test.allowance, "api_mutations": test.apiLimit})
+			var plans HostedPlansConfig
+			if test.plan == "" {
+				plans = hostedTestPlans(t, f.service, map[string]int64{"collaboration_bytes": test.allowance, "api_mutations": test.apiLimit})
+			} else {
+				plans = capacityHostedPlans()
+				if err := f.service.database.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plan_assignments SET base_id=?,base_version=1", test.plan); err != nil {
+					t.Fatal(err)
+				}
+			}
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
 			record := attachment.Metadata{ID: conversation.NewAttachmentID(), Name: "file.txt", ContentType: "text/plain", Size: 100, SHA256: artifact.Digest([]byte("hello"))}
 			body, err := json.Marshal(record)
@@ -176,9 +287,14 @@ func TestCloudAttachmentQuota(t *testing.T) {
 			if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO machines(id,hostname,display_name,capacity,version,last_heartbeat_at,registered_at,updated_at,organization_id,token_id) VALUES('unrelated','unrelated','unrelated',1,'test','invalid',?,?,'org_security',?)`, formatHubTime(now), formatHubTime(now), bootstrapTokenID); err != nil {
 				t.Fatal(err)
 			}
+			if test.retained > 0 {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_usage_counters SET value=? WHERE name='collaboration_bytes'", test.retained); err != nil {
+					t.Fatal(err)
+				}
+			}
 			preflight := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: f.base + "/attachment-metadata/check", body: `{"size":100}`, csrf: csrf})
 			wantPreflight := http.StatusOK
-			if test.allowance < record.Size {
+			if test.allowance < record.Size+test.retained {
 				wantPreflight = http.StatusTooManyRequests
 			}
 			if preflight.Code != wantPreflight {
@@ -219,7 +335,7 @@ func TestCloudAttachmentQuota(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if usage["collaboration_bytes"] != record.Size {
+			if usage["collaboration_bytes"] != record.Size+test.retained {
 				t.Fatalf("attachment bytes=%d", usage["collaboration_bytes"])
 			}
 			replay := f.serve(t, hostedSharedRequest{user: &owner, method: http.MethodPost, target: f.base + "/attachment-metadata", body: string(body), csrf: csrf})
@@ -305,9 +421,10 @@ func TestCloudAttachmentRetention(t *testing.T) {
 func TestCloudAttachmentReferenceDeletion(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name    string
-		comment bool
-	}{{name: "issue"}, {name: "comment", comment: true}} {
+		name     string
+		comment  bool
+		retained bool
+	}{{name: "issue"}, {name: "retained work item", retained: true}, {name: "comment", comment: true}} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newHostedSharedFixture(t)
 			owner := f.user(t, "owner", "owner", "owner@example.test", "write", "")
@@ -337,6 +454,12 @@ func TestCloudAttachmentReferenceDeletion(t *testing.T) {
 			if response.Code != 204 {
 				t.Fatalf("reference=%d %s", response.Code, response.Body.String())
 			}
+			if test.retained {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE attachment_references SET retain_with_work_item=1 WHERE attachment_id=?", id); err != nil {
+					t.Fatal(err)
+				}
+			}
+
 			statement, args := "DELETE FROM issues WHERE native_id=?", []any{item}
 			if test.comment {
 				statement, args = "DELETE FROM native_comments WHERE id=?", []any{comment}

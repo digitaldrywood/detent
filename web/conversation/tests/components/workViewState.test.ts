@@ -41,6 +41,15 @@ describe("the board's view state", () => {
     expect(serializeViewState({ ...DEFAULT_VIEW_STATE, archived: false })).toBe("");
   });
 
+  it("preserves the daily summary's exact completion window", () => {
+    const state = parseViewState("tab=closed&state=Done&completed_from=2026-10-26T11%3A00%3A00Z&completed_to=2026-10-27T11%3A00%3A00Z");
+    expect(state.completedFrom).toBe("2026-10-26T11:00:00Z");
+    expect(state.completedTo).toBe("2026-10-27T11:00:00Z");
+    expect(state.state).toEqual(["Done"]);
+    expect(tabQuery({ ...state, view: "list" }, LANES)).toEqual({ open: false, state: ["Done"] });
+    expect(parseViewState(serializeViewState(state))).toEqual(state);
+  });
+
   it.each([
     { tab: "active", query: { open: true, state: ["Todo", "In progress", "Review"] }, sort: "default" },
     { tab: "backlog", query: { state: ["Backlog"] }, sort: "default" },

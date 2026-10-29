@@ -1,10 +1,8 @@
 package platformusers
 
 import (
-	"errors"
 	"net/mail"
 	"strings"
-	"unicode/utf8"
 )
 
 const Limit = 50
@@ -12,15 +10,13 @@ const Limit = 50
 type Query struct {
 	Text  string `json:"q"`
 	Exact bool   `json:"-"`
+	After string `json:"after,omitempty"`
 }
 
-func Parse(text string) (Query, error) {
+func Parse(text string) Query {
 	text = strings.ToLower(strings.TrimSpace(text))
-	if utf8.RuneCountInString(text) < 3 {
-		return Query{}, errors.New("enter at least three characters")
-	}
 	address, err := mail.ParseAddress(text)
-	return Query{Text: text, Exact: err == nil && address != nil && address.Address == text}, nil
+	return Query{Text: text, Exact: err == nil && address != nil && address.Address == text}
 }
 
 type Organization struct {
@@ -48,9 +44,22 @@ type User struct {
 	Invitations  []Invitation `json:"invitations"`
 }
 
+type Counts struct {
+	All            int `json:"all"`
+	Staff          int `json:"staff"`
+	NoOrganization int `json:"no_organization"`
+	Invited        int `json:"invited"`
+}
+
 type Result struct {
-	Users      []User         `json:"users"`
-	Unsearched []Organization `json:"unsearched"`
+	Total         int            `json:"total"`
+	TotalUsers    int            `json:"total_users"`
+	Page          int            `json:"page"`
+	PageSize      int            `json:"page_size"`
+	Counts        Counts         `json:"counts"`
+	Organizations []Organization `json:"organizations"`
+	Users         []User         `json:"users"`
+	Unsearched    []Organization `json:"unsearched"`
 }
 
 type TenantMember struct {
@@ -66,6 +75,7 @@ type TenantInvitation struct {
 }
 
 type TenantResult struct {
+	NextCursor  string             `json:"next_cursor,omitempty"`
 	Members     []TenantMember     `json:"members"`
 	Invitations []TenantInvitation `json:"invitations"`
 }

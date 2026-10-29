@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
@@ -9,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 )
 
 // conversationAPIFixture is a token-authenticated hub with the conversation
@@ -79,7 +82,7 @@ func (f conversationAPIFixture) create(t *testing.T, token string, body map[stri
 }
 
 // conversationCreateBody fills the top-level idempotency key creation
-// requires (decisions section 10.2) unless the test names one itself. Every
+// requires unless the test names one itself. Every
 // call gets a fresh key: the key is scoped to the actor and the route, so a
 // reused one would replay the first conversation.
 func conversationCreateBody(body map[string]any) map[string]any {
@@ -340,7 +343,7 @@ func TestConversationAPIListVisibility(t *testing.T) {
 		}
 	})
 	// Settled replaces Archive: both groups are listed by default, active
-	// first, and the settled filter selects one group (decisions section 14).
+	// first, and the settled filter selects one group.
 	t.Run("settled filter", func(t *testing.T) {
 		f.settle(t, private.ID)
 		if got := ids(list(f.token, f.base+"/conversations")); strings.Join(got, ",") != shared.ID+","+private.ID {
@@ -384,6 +387,94 @@ func TestConversationAPIMessagesPagination(t *testing.T) {
 	decodeHubResponse(t, response, &page)
 	if len(page.Messages) != 1 || page.Messages[0].Seq != 1 || page.NextCursor != nil {
 		t.Fatalf("oldest page = %#v next_cursor = %v", page.Messages, page.NextCursor)
+	}
+	f.settle(t, record.ID)
+	linked := f.link(t, f.token, record.ID, "archive-shared", true, "Archived chat")
+	requireNativeStatus(t, linked, http.StatusOK)
+	var link conversationLinkResponse
+	decodeHubResponse(t, linked, &link)
+	paths := []string{"", "/messages?before=4&limit=2", "/messages?before=2", "/messages?limit=2"}
+	hot := make([][]byte, len(paths))
+	for i, path := range paths {
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+record.ID+path, f.other, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		hot[i] = append([]byte(nil), response.Body.Bytes()...)
+	}
+	table := archiveTestTable(t, f.service, "conversation_messages", "conversation_id=?", record.ID)
+	messageCount := len(table.Rows)
+	ref, data := publishTestSection(t, f.nativeFixture, link.Issue.ID, "conversation", record.ID, 1, int64(messageCount), table)
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE conversation_messages SET text='' WHERE conversation_id=?", record.ID); err != nil {
+		t.Fatal(err)
+	}
+	fetches := 0
+	f.service.config.ArchiveReader = func(_ context.Context, got attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
+		fetches++
+		if got != ref {
+			t.Fatal("wrong conversation section")
+		}
+		return entryauthority.ArchiveResponse{Data: data}, nil
+	}
+	for i, path := range paths {
+		fetches = 0
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+record.ID+path, f.other, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		assertArchiveGolden(t, hot[i], response.Body.Bytes())
+		if fetches != 1 {
+			t.Fatalf("conversation fetches=%d", fetches)
+		}
+	}
+	full, err := attachment.DecodeArchiveSection(string(f.project.OrganizationID), ref, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM native_archive_sections WHERE subject_id=?", record.ID); err != nil {
+		t.Fatal(err)
+	}
+	objects := map[string][]byte{}
+	for _, part := range []struct {
+		first, last int64
+		start, end  int
+	}{{1, 3, 0, 3}, {4, int64(messageCount), 3, messageCount}} {
+		table := full.Tables[0]
+		table.Rows = table.Rows[part.start:part.end]
+		ref, bytes := publishTestSection(t, f.nativeFixture, link.Issue.ID, "conversation", record.ID, part.first, part.last, table)
+		objects[ref.Key] = bytes
+	}
+	f.service.config.ArchiveReader = func(_ context.Context, ref attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
+		fetches++
+		return entryauthority.ArchiveResponse{Data: objects[ref.Key]}, nil
+	}
+	for _, part := range []struct {
+		before string
+		want   int
+		next   string
+	}{{"", messageCount - 3, "4"}, {"4", 3, ""}, {"1", 0, ""}} {
+		fetches = 0
+		query := ""
+		if part.before != "" {
+			query = "?before=" + part.before
+		}
+		response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+record.ID+"/messages"+query, f.other, nil)
+		requireNativeStatus(t, response, http.StatusOK)
+		decodeHubResponse(t, response, &page)
+		if len(page.Messages) != part.want {
+			t.Fatalf("range page before=%s got=%d want=%d", part.before, len(page.Messages), part.want)
+		}
+		if (page.NextCursor == nil) != (part.next == "") || page.NextCursor != nil && *page.NextCursor != part.next {
+			t.Fatalf("range cursor=%v want %s", page.NextCursor, part.next)
+		}
+		for _, message := range page.Messages {
+			if message.Role == "user" && message.Text == "" {
+				t.Fatal("retired message stub escaped the section reader")
+			}
+		}
+		wantFetches := 1
+		if part.before == "1" {
+			wantFetches = 0
+		}
+		if fetches != wantFetches {
+			t.Fatalf("range fetches=%d want %d", fetches, wantFetches)
+		}
 	}
 	response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/conversations/"+record.ID+"/messages?before=x", f.token, nil)
 	requireNativeStatus(t, response, http.StatusUnprocessableEntity)
@@ -445,7 +536,7 @@ func TestConversationAPICommands(t *testing.T) {
 		requireNativeError(t, response, http.StatusNotFound, "not_found")
 	})
 	// A settled conversation is not read-only: the command is accepted and
-	// the conversation goes back to active (decisions section 14).
+	// the conversation goes back to active.
 	t.Run("a settled conversation accepts commands and unsettles", func(t *testing.T) {
 		settled := f.create(t, f.token, map[string]any{"title": "Old"}).Conversation
 		f.settle(t, settled.ID)
@@ -775,8 +866,7 @@ func TestConversationAPILinkedWorkItem(t *testing.T) {
 
 // TestConversationMessageCount proves the conversation resource reports the
 // whole history, not the page a read returned: the share confirmation shows
-// that number before a private chat becomes readable by the project
-// (decisions section 10.5).
+// that number before a private chat becomes readable by the project.
 func TestConversationMessageCount(t *testing.T) {
 	t.Parallel()
 	f := newConversationAPIFixture(t, nil)
@@ -811,7 +901,7 @@ func TestConversationMessageCount(t *testing.T) {
 // TestConversationCreateIsIdempotent covers the top-level key creation
 // requires: a retry returns the stored response instead of a second
 // conversation, a different payload under the same key conflicts, and a
-// request without a key is refused (decisions section 10.2).
+// request without a key is refused.
 func TestConversationCreateIsIdempotent(t *testing.T) {
 	t.Parallel()
 	f := newConversationAPIFixture(t, nil)
@@ -854,8 +944,7 @@ func TestConversationCreateIsIdempotent(t *testing.T) {
 
 // TestConversationContinueRequiresExpectedAttempt covers the attempt a
 // continue must name: null is only honest for a conversation that never had
-// an attempt, so a conversation that has or had one refuses it
-// (decisions section 10.8).
+// an attempt, so a conversation that has or had one refuses it.
 func TestConversationContinueRequiresExpectedAttempt(t *testing.T) {
 	t.Parallel()
 	f := newConversationAPIFixture(t, nil)

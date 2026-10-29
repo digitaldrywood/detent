@@ -4,14 +4,7 @@
 
 ### Tracker
 
-Projects use the Hub's native tracker (`tracker.kind: hub_native`). The Hub
-holds issues, lanes, comments, dependencies, the Workpad, and Change Requests.
-Enrolled runners claim dispatchable work from the Hub, run agents in local
-worktrees, publish Change Requests, and land accepted changes in `Merging`. See
-[Cloud onboarding](cloud-onboarding.md) for runner enrollment and
-[Hub self-hosting](hub-self-hosting.md) for running your own Hub. GitHub is an
-optional integration for native projects; see
-[GitHub profiles](github-profiles.md).
+Projects use the Hub's native tracker (`tracker.kind: hub_native`). The Hub holds issues, lanes, comments, dependencies, the Workpad, and Change Requests. Enrolled runners claim dispatchable work from the Hub, run agents in local worktrees, publish Change Requests, and land accepted changes in `Merging`. See [Cloud onboarding](cloud-onboarding.md) for runner enrollment and [Hub self-hosting](hub-self-hosting.md) for running your own Hub. GitHub is an optional integration for native projects: a native project can link a repository, receive linked GitHub issues in `Triage`, and publish pull requests, while the Hub stays the tracker of record. See [Hub API](hub-api.md) for the integration contracts.
 
 ### Board States
 
@@ -19,16 +12,17 @@ A new hosted project starts with this workflow:
 
 | State | Meaning |
 | --- | --- |
-| `Todo` | Ready for a runner to claim and dispatch. |
+| `Triage` | Linked GitHub issue intake and issues filed by the reporter role. Does not dispatch. |
+| `Backlog` | Drafts and work not yet ready. Does not dispatch. |
+| `Todo` | Ready for a runner to claim and dispatch once its dependencies are resolved. |
 | `In Progress` | An agent is actively working or continuing work. |
-| `Blocked` | Human-blocked work, or an unaccepted version or refused landing with its reason. Does not dispatch. |
+| `Blocked` | Waits on a person: an explicit `human_action` question or permission request, or an operator stop. Does not dispatch. Machine failures never enter it; they retry in a dispatchable lane. |
 | `Human Review` | A Change Request waits for a person when the project sets `review.human: true`. Does not dispatch. |
 | `Merging` | The runner that holds the project lands the accepted head on the base branch with plain git. |
 | `Done` | Complete. |
+| `Cancelled` | Terminal; Detent stops managing the item. |
 
-Customized workflows may add lanes such as `Backlog` (not dispatchable) or a
-terminal `Cancelled`. [Hub API](hub-api.md) describes the default transitions
-and the lane requirements for customized workflows.
+Customized workflows may add or rename lanes. [Hub API](hub-api.md) describes the default transitions and the lane requirements for customized workflows.
 
 ### Cancellation Lifecycle
 

@@ -197,13 +197,10 @@ func aiDebugProjectEvidence(ctx context.Context, trackedProject *project.Project
 		DetentDefectDestinationRepo: "digitaldrywood/detent",
 		ConfigDestinationRepo:       strings.TrimSpace(workflow.Tracker.Repository),
 		Brakes: aidebug.BrakeEvidence{
-			NoProgressLimit:      0,
-			MaxSessionTokens:     workflow.Agent.MaxSessionTokens,
-			LifetimeSessionLimit: workflow.Agent.LifetimeSessionLimit,
-			LifetimeTokenLimit:   workflow.Agent.LifetimeTokenLimit,
-			MaxConcurrentAgents:  workflow.Agent.MaxConcurrentAgents,
-			RateWindowPacing:     workflow.Agent.RateWindowPacing,
-			BillingMode:          workflow.Budget.EffectiveBillingMode(),
+			MaxSessionTokens:    workflow.Agent.MaxSessionTokens,
+			MaxConcurrentAgents: workflow.Agent.MaxConcurrentAgents,
+			RateWindowPacing:    workflow.Agent.RateWindowPacing,
+			BillingMode:         workflow.Budget.EffectiveBillingMode(),
 		},
 		Authorization: authorization,
 		Workflow: aidebug.WorkflowEvidence{
@@ -280,7 +277,6 @@ func (s *Server) aiDebugIssueEvidence(ctx context.Context, trackedProject *proje
 		CurrentLane:         strings.TrimSpace(issue.State),
 		TimeInLaneSeconds:   issue.CurrentLaneAgeSeconds,
 		Blocked:             aiDebugBlockedEvidence(issue, blocked, blockedFound),
-		Park:                aiDebugParkEvidence(snapshot, issue, 0),
 		Dependencies:        aiDebugDependencies(snapshot, issue),
 		Attempts:            aiDebugAttempts(attempts),
 		Sessions:            aiDebugSessions(sessions),
@@ -409,47 +405,6 @@ func aiDebugBlockedCauseAuthor(blocked telemetry.Blocked) string {
 		return "tracker"
 	}
 	return "detent"
-}
-
-func aiDebugParkEvidence(snapshot telemetry.Snapshot, issue telemetry.Issue, noProgressLimit int) aidebug.ParkEvidence {
-	evidence := aidebug.ParkEvidence{
-		Thresholds:        map[string]int64{"no_progress_limit": int64(noProgressLimit)},
-		ConsecutiveCounts: map[string]int64{"no_progress": int64(issue.CompletionProgress.ConsecutiveNoProgress)},
-		AttemptCount:      issue.ParkSummary.AttemptCount,
-		ParkCount:         issue.ParkSummary.ParkCount,
-		Causes:            []map[string]any{},
-	}
-	for _, cause := range issue.ParkSummary.Causes {
-		evidence.Causes = append(evidence.Causes, aiDebugMap(cause))
-	}
-	for _, loop := range snapshot.DispatchLoops {
-		if strings.TrimSpace(loop.ProjectID) == strings.TrimSpace(issue.ProjectID) && aiDebugIssueAliasMatches(issue, loop.IssueID, loop.Identifier, loop.IssueURL) {
-			evidence.BreakerKind = "dispatch_loop"
-			evidence.Thresholds["dispatch_limit"] = int64(loop.DispatchLimit)
-			evidence.ConsecutiveCounts["dispatches"] = int64(loop.ConsecutiveDispatches)
-			evidence.Parked = evidence.Parked || loop.Tripped
-		}
-	}
-	for _, breaker := range snapshot.FailureBreakers {
-		if strings.TrimSpace(breaker.ProjectID) != strings.TrimSpace(issue.ProjectID) {
-			continue
-		}
-		for _, item := range breaker.Items {
-			if !aiDebugIssueAliasMatches(issue, item.IssueID, item.Identifier, item.IssueURL) {
-				continue
-			}
-			evidence.BreakerKind = "failure_breaker"
-			evidence.Thresholds["window_seconds"] = breaker.WindowSeconds
-			evidence.Thresholds["cooldown_seconds"] = breaker.CooldownSeconds
-			evidence.ConsecutiveCounts["same_class_failures"] = int64(item.AttemptCount)
-			evidence.Parked = evidence.Parked || item.Parked
-			if !breaker.ResumeAt.IsZero() {
-				value := breaker.ResumeAt.UTC()
-				evidence.CooldownExpiresAt = &value
-			}
-		}
-	}
-	return evidence
 }
 
 func aiDebugDependencies(snapshot telemetry.Snapshot, issue telemetry.Issue) []aidebug.DependencyEvidence {
@@ -678,12 +633,6 @@ func aiDebugIssueMatches(left telemetry.Issue, right telemetry.Issue) bool {
 	return strings.TrimSpace(left.ProjectID) == strings.TrimSpace(right.ProjectID) && (strings.TrimSpace(left.ID) != "" && left.ID == right.ID ||
 		strings.TrimSpace(left.Identifier) != "" && left.Identifier == right.Identifier ||
 		strings.TrimSpace(left.URL) != "" && left.URL == right.URL)
-}
-
-func aiDebugIssueAliasMatches(issue telemetry.Issue, issueID string, identifier string, issueURL string) bool {
-	return strings.TrimSpace(issue.ID) != "" && strings.TrimSpace(issue.ID) == strings.TrimSpace(issueID) ||
-		strings.TrimSpace(issue.Identifier) != "" && strings.TrimSpace(issue.Identifier) == strings.TrimSpace(identifier) ||
-		strings.TrimSpace(issue.URL) != "" && strings.TrimSpace(issue.URL) == strings.TrimSpace(issueURL)
 }
 
 func aiDebugJSON(value any) json.RawMessage {

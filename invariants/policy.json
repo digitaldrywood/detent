@@ -13,6 +13,7 @@
       "TestBehaviorEvidence"
     ],
     "./internal/orchestrator": [
+      "TestDerivedHoldDispatchEquivalence",
       "TestOperatorRejectionPromotion",
       "TestOperatorRejectionRepairDispatch",
       "TestCompletedActiveReviewRequiresFinishedWork",
@@ -27,9 +28,10 @@
       "TestCompletedReworkCandidatesRemainVisible",
       "TestPolicyMismatchStopsDispatchWithoutAttempt",
       "TestAttemptMetadataRetainsApprovedPolicy",
-      "TestConfiguredTerminalRetryAfterStoreRestart",
-      "TestConsecutiveRetryCycleCountAcrossServiceRestarts",
+      "TestMachineRetrySurvivesStoreRestart",
       "TestStartupDoesNotReclaimLiveWorkAttempts",
+      "TestRetainedWorkAttemptsExpireOnTick",
+      "TestHubSchedulingReadinessBeforeClaim",
       "TestINV14DispatchQuestionTool",
       "TestINV14LegacyQuestionRowDispatch",
       "TestFirstHumanBlockerCompletionReachesBlocked",
@@ -62,7 +64,6 @@
       "TestCredentialConditionOutlivesOriginatingIssue",
       "TestCredentialClearSchedulesCanaryWithoutUnpausing",
       "TestObservedLaneCredentialCanaryCompletion",
-      "TestRecoverBlockedIssuesFoldsLegacyCredentialParkIntoProjectPause",
       "TestDelegateNativeMergeQueueIssuesEnqueuesGreenTrainWithoutWorkerDispatch",
       "TestMachineIssueTool",
       "TestRunDispatchesQueuedRequestsWithoutPolling",
@@ -74,20 +75,27 @@
       "TestStandingDispatchSurvivesProjectRefresh",
       "TestQueuedDispatchPreservesPullRequestEnrichment",
       "TestDispatchRetainsConfiguredModeAfterPriorSessions",
-      "TestRetiredAttemptTriageParkRestoresPriorLane",
+      "TestBlockedRecoveryRecomputesDispatchWithoutDerivedHolds",
       "TestAttemptAllowanceTriagePublication",
       "TestAttemptAllowanceNoteFormat",
       "TestAttemptAllowancePreservesOperatorCompletionLane",
       "TestTransitionAlreadyMergedCompletion",
       "TestSSHHostLossUsesInstanceRetry",
       "TestSSHHostLossClearsResumeOnSpillover",
-      "TestSSHQueuedPreferenceAndHostCaps"
+      "TestSSHQueuedPreferenceAndHostCaps",
+      "TestMachineFailuresUseRetryOwner",
+      "TestHandleRunResultResetsRetryAfterProgress",
+      "TestBackendCapacityHelperBoundaries",
+      "TestStoredHoldRequiresProvenance",
+      "TestPruneBudgetRefusalsReevaluatesDailyCap"
     ],
     "./internal/hubclient": [
       "TestNativePlannerAutomaticHandoff",
       "TestNativeExecutionSettlesFinishedRun"
     ],
     "./internal/runner": [
+      "TestNativeRecoveryWipeDerivedHold",
+      "TestNativePublicationRecoveryOnAnyRunner",
       "TestNativeInterruptedCodeRecoversPersistedSession",
       "TestNativeReworkFinalizesBeforeImmutableEvidence",
       "TestAgentRunProgressClassifiesPullRequestApprovalDecline",
@@ -102,6 +110,8 @@
       "TestGitMetadataWritableRootsForLinkedWorktree"
     ],
     "./internal/store": [
+      "TestTimeoutWorkAttemptsProcessEvidence",
+      "TestStartupTimeoutWorkAttemptsScope",
       "TestLegacyHumanQuestionReceiptsReadable",
       "TestIssueSpendSinceExcludesInstanceInfrastructureAttempts"
     ],
@@ -122,7 +132,6 @@
       "TestRepositorySources",
       "TestRepositoryWorkflow",
       "TestRepositoryHasNoPullRequestActions",
-      "TestPortabilityStressIsManualOnly",
       "TestSourceViolations",
       "TestWorkflowViolations",
       "TestMutationDocuments"
@@ -145,13 +154,6 @@
       "TestSSHProbeRequiresProvidedScratch"
     ],
     "./internal/connector/github": [
-      "TestRefreshBoardFilterCost",
-      "TestFilteredRefreshExternalBlocker",
-      "TestFilteredRefreshBlockerLookupFailure",
-      "TestRefreshFilterChangeRestartsInterruptedScan",
-      "TestMachineIssueDuplicate",
-      "TestMachineIssueSeparateConnectors",
-      "TestMachineOriginSurvivesBodyUpdates",
       "TestPullRequestMergeTimeSurvivesLaterActivity"
     ],
     "./internal/scheduler": [
@@ -182,6 +184,10 @@
     ],
     "./internal/hubserver": [
       "TestClaimCandidatesRequireUnansweredWorkItem",
+      "TestNativeDerivedHoldDispatchEquivalence",
+      "TestNativeRecordedDependencyUsesCurrentEdges",
+      "TestClaimCandidatesRetryInstancePreProviderFailures",
+      "TestReviewConversationHistoryDoesNotVetoLanding",
       "TestINV18RequestCommitDoesNoDerivedWork",
       "TestINV18HubMigrationsUseTypedColumns"
     ],

@@ -26,6 +26,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/instancelock"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -48,6 +49,7 @@ func TestOpenCreatesHubSchemaAndConfiguresSQLite(t *testing.T) {
 		want  string
 	}{
 		{name: "journal mode", query: "PRAGMA journal_mode", want: "wal"},
+		{name: "auto vacuum", query: "PRAGMA auto_vacuum", want: "2"},
 		{name: "foreign keys", query: "PRAGMA foreign_keys", want: "1"},
 		{name: "busy timeout", query: "PRAGMA busy_timeout", want: "2500"},
 		{name: "locking mode", query: "PRAGMA locking_mode", want: "normal"},
@@ -297,7 +299,12 @@ func TestHubTransactionsWaitForConcurrentReplicationWriter(t *testing.T) {
 		_, err := replicator.ExecContext(context.Background(), "INSERT INTO _litestream_seq (seq) VALUES (1)")
 		replicated <- err
 	}()
-	time.Sleep(200 * time.Millisecond)
+	testenv.WaitUntil(t, t.Context(), func() error {
+		if replicator.Stats().InUse == 0 {
+			return errors.New("replication write never reached the database")
+		}
+		return nil
+	})
 	if _, err := tx.ExecContext(t.Context(), "INSERT INTO _litestream_seq (seq) VALUES (2)"); err != nil {
 		t.Fatalf("hub write after a concurrent replication write: %v", err)
 	}
@@ -722,8 +729,7 @@ func TestOpenExcludesAnotherHubProcess(t *testing.T) {
 		{name: "shared entry refuses live sibling", shared: true, sibling: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			bound, release := context.WithTimeout(t.Context(), 2*time.Minute)
-			defer release()
+			bound := testenv.WaitContext(t, t.Context())
 			path := filepath.Join(t.TempDir(), "hub.db")
 			command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestHubOwnerHelperProcess$")
 			command.Env = append(os.Environ(), "DETENT_HUB_OWNER_HELPER="+path, "GOCOVERDIR="+t.TempDir())
@@ -1170,10 +1176,8 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 			held := test.hold(t, f.service)
 			defer func() { _ = held.Rollback() }()
 			for _, read := range test.reads {
-				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 				started := time.Now()
-				err := read.run(ctx, f, scope, item)
-				cancel()
+				err := read.run(testenv.WaitContext(t, t.Context()), f, scope, item)
 				if err != nil {
 					t.Fatalf("%s beside a held connection: %v after %s", read.name, err, time.Since(started))
 				}
@@ -1199,8 +1203,7 @@ func TestReaderPoolReadsBesideHeldConnections(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-				defer cancel()
+				ctx := testenv.WaitContext(t, t.Context())
 				request := httptest.NewRequest(http.MethodPost, f.base+"/work-items", strings.NewReader(string(body))).WithContext(ctx)
 				request.Header.Set("Authorization", "Bearer "+f.token)
 				request.Header.Set("Content-Type", "application/json")

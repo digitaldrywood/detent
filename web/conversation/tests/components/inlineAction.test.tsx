@@ -58,3 +58,28 @@ it.each(["edit_item", "update_project_integration", "approve_project_policy", "a
   expect((await screen.findByRole("alert")).textContent).toBe(`${message} (${status}).`);
   expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
  });
+
+it("previews a workflow approval and submits it only after Approve", async () => {
+  const submit = vi.fn().mockResolvedValue({ ok: true });
+  vi.stubGlobal("fetch", submit);
+  const action = { kind: "approve_project_policy", request_id: "approve", project_id: "prj_test", arguments: { selected_policy_id: "policy_selected" } };
+  render(<InlineActionCard proposal={{ action, conversation_id: "conv_test" }} text="gates.github_pull_request: false → true" />);
+  expect(screen.getByText("gates.github_pull_request: false → true")).toBeTruthy();
+  expect((screen.getByRole("checkbox", { name: "Ask me to confirm chat changes" }) as HTMLInputElement).checked).toBe(true);
+  expect(submit).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+  await screen.findByText("Change completed.");
+  expect(submit).toHaveBeenCalledTimes(1);
+  expect(submit).toHaveBeenCalledWith("/api/v2/projects/prj_test/conversations/conv_test/actions", expect.objectContaining({ body: JSON.stringify(action) }));
+});
+
+it("submits a pending workflow application once confirmations are turned off", async () => {
+  const submit = vi.fn().mockResolvedValue({ ok: true });
+  vi.stubGlobal("fetch", submit);
+  render(<InlineActionCard proposal={{ action: { kind: "apply_local_project_policy", request_id: "apply", project_id: "prj_test" }, conversation_id: "conv_test" }} text="Application is pending until this runner reports it applied" />);
+  expect(submit).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("checkbox", { name: "Ask me to confirm chat changes" }));
+  await screen.findByText("Change completed.");
+  expect(submit).toHaveBeenCalledTimes(1);
+  expect(localStorage.getItem("detent:chat-confirmation:tier-admin")).toBe("off");
+});

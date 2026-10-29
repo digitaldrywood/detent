@@ -1,7 +1,13 @@
+import { CircleDashedIcon, BookmarkIcon, LayoutListIcon } from "lucide-react";
+import { ThreadsSidebarBadge } from "../threads/ThreadBadge.tsx";
+import { ViewActions } from "../work/SavedViewActions.tsx";
+import { useSavedViews, savedViewPath } from "../work/lib/savedViews.tsx";
 import {
   ActivityIcon,
+  MessageSquareIcon,
   CircleAlertIcon,
   TriangleAlertIcon,
+  UsersIcon,
   BookOpenIcon,
   ChartNoAxesColumnIcon,
   ChevronDownIcon,
@@ -11,12 +17,15 @@ import {
 } from "lucide-react";
 import React from "react";
 
+import { ProjectSetupContext } from "../account/projectSetup.tsx";
+import { firstUnreadyStep, orderedSteps } from "../account/setupSteps.ts";
 import { Badge } from "../../components/ui/badge.tsx";
 import { relativeTimeLabel } from "../lib/sidebarLogic.ts";
-import { issueLane, issueNumberLabel } from "./sidebarThreads.ts";
 import { cn } from "../../lib/utils.ts";
 import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from "../../components/ui/sidebar.tsx";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip.tsx";
+import { useUiStateStore } from "../../uiStateStore.ts";
+import { sidebarProjectScopeKey } from "./shell.ts";
 import { useSidebarData } from "./sidebarData.tsx";
 
 export function SidebarLandmark({
@@ -38,7 +47,7 @@ export function SidebarLandmark({
 /**
  * The Browse group, from artifact screen 1's sidebar. `to: null` is a
  * destination this client does not serve yet: it renders disabled with one
- * tooltip saying so rather than as a link into a 404, because A.12's rule is
+ * tooltip saying so rather than as a link into a 404, because the rule is
  * that a control with nothing behind it must not look like a control that
  * works.
  */
@@ -65,6 +74,7 @@ function NavRow({
   disabled = false,
   trailing,
   testId,
+  action,
 }: {
   icon: React.ReactNode;
   label: string;
@@ -74,6 +84,7 @@ function NavRow({
   disabled?: boolean;
   trailing?: React.ReactNode;
   testId?: string;
+  action?: React.ReactNode;
 }): React.ReactElement {
   const button = (
     <SidebarMenuButton
@@ -86,7 +97,7 @@ function NavRow({
       onClick={disabled ? undefined : onClick}
       onPointerEnter={disabled ? undefined : onIntent}
       onFocus={disabled ? undefined : onIntent}
-      className="w-full min-w-0 focus-visible:ring-inset"
+      className={cn("w-full min-w-0 focus-visible:ring-inset", action && "pr-8")}
     >
       {icon}
       <span className="min-w-0 flex-1 truncate text-left">{label}</span>
@@ -117,6 +128,7 @@ function NavRow({
       ) : (
         button
       )}
+      {action}
     </SidebarMenuItem>
   );
 }
@@ -167,12 +179,22 @@ function SectionHeader({
 
 export function SidebarDestinations(): React.ReactElement | null {
   const data = useSidebarData();
+  const setup = React.useContext(ProjectSetupContext);
+  const saved = useSavedViews();
   const { isMobile, setOpenMobile } = useSidebar();
   const [browseExpanded, setBrowseExpanded] = React.useState(true);
   const navigation = data?.navigation;
   const findings = data?.findings ?? [];
+  const focus = useUiStateStore((state) => state.sidebarProjectScopeKey);
+  const workingKeys = useUiStateStore((state) => state.sidebarProjectWorkingSetKeys);
+  const visibleProjects = data?.projects.filter((project) => focus !== null ? sidebarProjectScopeKey(project) === focus : workingKeys.length === 0 || workingKeys.includes(sidebarProjectScopeKey(project)));
+  const humanActions = (data?.humanActions ?? []).filter((action) => action.projectId === undefined || (focus === null && workingKeys.length === 0) || visibleProjects?.some((project) => project.id === action.projectId));
   const [needsExpanded, setNeedsExpanded] = React.useState(true);
+  const [favoritesExpanded, setFavoritesExpanded] = React.useState(true);
   const activeProjectId = data?.activeProjectId ?? null;
+  const setupSteps = orderedSteps(setup?.onboarding.value, setup?.integration.value);
+  const setupPath = `/projects/${activeProjectId}/setup`;
+  const needsSetup = setup?.projectId === activeProjectId && setup?.onboarding.value?.ready === false;
 
   const navigate = React.useCallback(
     (to: string) => {
@@ -186,14 +208,21 @@ export function SidebarDestinations(): React.ReactElement | null {
 
   return (
     <>
-      {/* The artifact's primary destination (A.1). It sits directly above the
+      {/* The artifact's primary destination. It sits directly above the
           thread list because Work is the other half of the same question. */}
       <SidebarMenu className="gap-px pb-1">
+        {needsSetup ? <NavRow
+          icon={<CircleDashedIcon />}
+          label="Setup"
+          active={navigation.activePath === setupPath}
+          onClick={() => navigate(setupPath)}
+          trailing={<span className="text-xs text-muted-foreground">{firstUnreadyStep(setupSteps) + 1} of {setupSteps.length}</span>}
+        /> : null}
         <NavRow
           testId="nav-work"
           icon={<KanbanIcon />}
           label="Work"
-          active={navigation.activePath.startsWith("/work")}
+          active={navigation.activePath.startsWith("/work") && !navigation.activePath.startsWith("/work/views")}
           onClick={() =>
             navigate(activeProjectId === null ? "/work" : `/work/p/${activeProjectId}`)
           }
@@ -206,9 +235,52 @@ export function SidebarDestinations(): React.ReactElement | null {
           active={navigation.activePath.startsWith("/chat")}
           onClick={() => navigate("/chat")}
         />
+        <NavRow icon={<MessageSquareIcon />} label="Threads" active={navigation.activePath.startsWith("/threads")} onClick={() => navigate("/threads")} trailing={<ThreadsSidebarBadge />} />
       </SidebarMenu>
 
-      {findings.length > 0 ? (
+      {saved ? (
+        <section aria-label="Favorites" className="flex flex-col pb-1">
+          <SectionHeader
+            label="Favorites"
+            expanded={favoritesExpanded}
+            onToggle={() => setFavoritesExpanded((value) => !value)}
+          />
+          {favoritesExpanded ? (
+            <SidebarMenu className="gap-px">
+              {saved.views.filter((view) => view.favorite).map((view) => (
+                <NavRow
+                  key={view.id}
+                  testId={`favorite-${view.id}`}
+                  icon={view.state.view === "board" ? <KanbanIcon /> : <LayoutListIcon />}
+                  label={view.name}
+                  active={navigation.activePath === savedViewPath(view)}
+                  onClick={() => navigate(savedViewPath(view))}
+                  trailing={view.scope === "organization" && navigation.activePath !== savedViewPath(view) ? <UsersIcon aria-label="Shared with organization" /> : undefined}
+                  action={
+                    <ViewActions
+                      view={view}
+                      sidebar
+                      active={navigation.activePath === savedViewPath(view)}
+                      onDeleted={() => {
+                        if (navigation.activePath === savedViewPath(view)) navigate("/work");
+                      }}
+                    />
+                  }
+                />
+              ))}
+              <NavRow
+                testId="nav-views"
+                icon={<BookmarkIcon />}
+                label="Views"
+                active={navigation.activePath === "/work/views"}
+                onClick={() => navigate("/work/views")}
+              />
+            </SidebarMenu>
+          ) : null}
+        </section>
+      ) : null}
+
+      {humanActions.length > 0 ? (
         <section aria-label="Needs you" data-testid="sidebar-needs-you" className="flex flex-col pb-1">
           <SectionHeader
             label="Needs you"
@@ -217,30 +289,11 @@ export function SidebarDestinations(): React.ReactElement | null {
           />
           {needsExpanded ? (
             <SidebarMenu className="gap-px">
-              {data?.conversations
-                .filter((conversation) => conversation.work_item !== null && issueLane(conversation) === "Needs you")
-                .toSorted((a, b) => Date.parse(a.execution.updated_at) - Date.parse(b.execution.updated_at) || a.id.localeCompare(b.id))
-                .map((conversation) => (
-                  <NavRow
-                    key={conversation.id}
-                    testId={`attention-issue-${conversation.id}`}
-                    icon={<FindingStateIcon instance={conversation.execution.status === "failed" || conversation.execution.status === "unknown"} />}
-                    label={`${issueNumberLabel(conversation.work_item!.identifier)} ${conversation.work_item!.title}`}
-                    active={navigation.activePath === `/work/i/${conversation.work_item!.id}`}
-                    onClick={() => navigate(`/work/i/${conversation.work_item!.id}`)}
-                    onIntent={() => navigation.onPrefetch?.(`/work/i/${conversation.work_item!.id}`)}
-                    trailing={
-                      <span className="shrink-0 text-xs text-sidebar-muted-foreground">
-                        {relativeTimeLabel(conversation.execution.updated_at, { now: Date.now() })}
-                      </span>
-                    }
-                  />
-                ))}
-              {findings.map((finding) => (
+              {humanActions.map((finding) => (
                 <NavRow
                   key={finding.id}
-                  testId={`finding-${finding.id}`}
-                  icon={<FindingStateIcon instance={finding.class === "instance"} />}
+                  testId={`attention-issue-${finding.id}`}
+                  icon={<FindingStateIcon instance={false} />}
                   label={finding.label}
                   active={navigation.activePath === finding.to}
                   onClick={() => navigate(finding.to)}
@@ -260,7 +313,7 @@ export function SidebarDestinations(): React.ReactElement | null {
         </section>
       ) : null}
 
-      {/* Browse: the artifact's cross-cutting destinations (A.1, A.6). */}
+      {/* Browse: the artifact's cross-cutting destinations. */}
       <section aria-label="Browse" className="flex flex-col pb-1">
         <SectionHeader
           label="Browse"

@@ -2,9 +2,11 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -374,6 +376,9 @@ func (e hubFleetExecutor) Execute(ctx context.Context, call operatortool.Call) (
 	}
 	return e.actionResult(ctx, action)
 }
+func runnerRevisionConflict(current int64) error {
+	return &operatortool.ConflictError{Code: "revision_conflict", Message: "Runner has changed; read its current revision before retrying", CurrentRevision: current}
+}
 func safeHubOperatorError(err error) error {
 	var conflict *operatortool.ConflictError
 	if errors.As(err, &conflict) {
@@ -387,8 +392,14 @@ func safeHubOperatorError(err error) error {
 		}
 		return &operatortool.ConflictError{Code: problem.Code, Message: message, CurrentRevision: int64(problem.CurrentRevision)}
 	}
+	if errors.As(err, &problem) && problem.Code == "invalid_request" && problem.publicMessage {
+		return &operatortool.RequestError{Code: problem.Code, Message: problem.Message}
+	}
 	if errors.As(err, &problem) && problem.Code == "idempotency_conflict" {
 		return &operatortool.ConflictError{Code: problem.Code, Message: "The request_id was already used with different content"}
+	}
+	if errors.As(err, &problem) && problem.status == http.StatusUnprocessableEntity && problem.publicMessage {
+		return &operatortool.RequestError{Code: problem.Code, Message: problem.Message}
 	}
 	if errors.Is(err, mutation.ErrConflict) {
 		return &operatortool.ConflictError{Code: "idempotency_conflict", Message: "The request_id was already used with different content"}
@@ -441,6 +452,9 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 		a.MaterialChange = true
 	case operatortool.UpdateApply, operatortool.UpdateRunnerRouting, operatortool.UpdateRunnerCapacity, operatortool.RevokeRunnerIdentity:
 		runner, err := readRunnerWithClock(ctx, e.service.database.reader, tracker.OrganizationID(org), r.RunnerID, e.service.config.now)
+		if errors.Is(err, sql.ErrNoRows) {
+			return a, &operatortool.RequestError{Code: "not_found", Message: "runner_id: no runner with this ID exists in this organization"}
+		}
 		if err != nil {
 			return a, errHubOperatorUnavailable
 		}
@@ -464,15 +478,21 @@ func (e hubFleetExecutor) proposal(ctx context.Context, name string, arguments j
 		}
 		if name == operatortool.UpdateRunnerCapacity {
 			var change runnerCapacityChange
-			if operatortool.DecodeArguments(r.Change, &change) != nil || change.Validate() != nil || change.ExpectedRevision != runner.Revision {
-				return a, errHubOperatorUnavailable
+			if operatortool.DecodeArguments(r.Change, &change) != nil || change.Validate() != nil {
+				return a, operatortool.ErrInvalidArguments
+			}
+			if change.ExpectedRevision != runner.Revision {
+				return a, runnerRevisionConflict(runner.Revision)
 			}
 			a.MaterialChange = true
 		}
 		if name == operatortool.UpdateRunnerRouting {
 			var change runnerRoutingRequest
-			if operatortool.DecodeArguments(r.Change, &change) != nil || change.ExpectedRevision != runner.Revision || change.effective(runner.Routing).Validate() != nil {
-				return a, errHubOperatorUnavailable
+			if operatortool.DecodeArguments(r.Change, &change) != nil || change.effective(runner.Routing).Validate() != nil {
+				return a, operatortool.ErrInvalidArguments
+			}
+			if change.ExpectedRevision != runner.Revision {
+				return a, runnerRevisionConflict(runner.Revision)
 			}
 			a.MaterialChange = operatortool.RoutingRequiresApproval(runner.Routing, change.effective(runner.Routing).Routing) || runner.CapacityRequiresApplication(change.CapacityLimit)
 		}
@@ -595,6 +615,7 @@ func (e hubFleetExecutor) executeCommand(ctx context.Context, a chatpkg.Action) 
 		if operatortool.DecodeArguments(r.Change, &change) != nil {
 			return nil, operatortool.ErrInvalidArguments
 		}
+		change.IdempotencyKey = a.RequestID
 		return s.updateRunnerRoutingCommand(ctx, scope, r.RunnerID, change)
 	case operatortool.UpdateRunnerHost:
 		var change runnerauth.HostChange

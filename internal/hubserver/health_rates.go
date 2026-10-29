@@ -14,6 +14,9 @@ import (
 // tolerates slow work, clamped to 2h/12h to avoid both noise and indefinite stalls.
 // Five times median spend plus $25 isolates material outliers; quarter-throughput
 // detects a large drop against the same weekday hours rather than a quiet shift.
+// Without enough history the absolute floors still report clear delivery stalls:
+// five same-signature failures in an hour, twelve regardless of baseline, an
+// active item silent past the stall minimum, and no landing for six hours.
 const (
 	healthBaselineWindow     = 7 * 24 * time.Hour
 	healthShortWindow        = time.Hour
@@ -22,6 +25,7 @@ const (
 	healthBaselineQuantile   = 0.9
 	healthMedianQuantile     = 0.5
 	healthRetryCount         = 5
+	healthSetupFailureCount  = 3
 	healthRetryRatio         = 0.3
 	healthRecoveryCount      = 3
 	healthRecoveryWindow     = 30 * time.Minute
@@ -34,14 +38,17 @@ const (
 	healthCostMultiplier     = 5
 	healthCostMinimum        = 25
 	healthThroughputFraction = 0.25
+	healthRetryCeiling       = 12
+	healthAbsoluteFloor      = "absolute_floor"
 )
 
 type healthRateAttempt struct {
-	ID, Item, Status, Signature, Recovery, LandingKey string
-	At, Heartbeat                                     time.Time
-	Cost                                              float64
-	Landing, Conflict, Landed                         bool
-	LandingAt                                         time.Time
+	ID, Item, Status, Signature, Recovery, LandingKey, Runner string
+	At, Heartbeat, Started                                    time.Time
+	Session, Stage, SourceVersion                             string
+	Cost                                                      float64
+	Landing, Conflict, Landed, InstanceSetupFailure           bool
+	LandingAt                                                 time.Time
 }
 
 type healthItemCost struct {
@@ -225,6 +232,7 @@ func evaluateHealthRates(now time.Time, projects []healthRateProject) []healthFi
 	capacity := map[string]int{}
 	for _, p := range projects {
 		b := buildHealthRateBaseline(now, p)
+		out = append(out, healthProductivityFindings(now, p)...)
 		out = append(out, healthRetryFindings(now, p, b)...)
 		out = append(out, healthRecoveryFindings(now, p, b)...)
 		out = append(out, healthStallFindings(now, p, b)...)
@@ -253,13 +261,11 @@ func evaluateHealthRates(now time.Time, projects []healthRateProject) []healthFi
 			out = append(out, f)
 		}
 	}
-	return out
+	return append(out, healthRunnerSetupFindings(now, projects)...)
 }
 
 func healthRetryFindings(now time.Time, p healthRateProject, b healthRateBaseline) []healthFinding {
-	if len(b.RetryCounts) < healthBaselineSamples || len(b.RetryLong) < healthBaselineSamples {
-		return nil
-	}
+	baseline := len(b.RetryCounts) >= healthBaselineSamples && len(b.RetryLong) >= healthBaselineSamples
 	byItem := map[string][]healthRateAttempt{}
 	for _, a := range p.Attempts {
 		if healthInWindow(a.At, now.Add(-healthLongWindow), now) {
@@ -291,24 +297,71 @@ func healthRetryFindings(now time.Time, p healthRateProject, b healthRateBaselin
 				}
 			}
 		}
-		repeated := 0
+		repeated, relative := 0, false
 		for _, n := range signatures {
-			if float64(n) > healthQuantile(b.RetryCounts, healthBaselineQuantile) {
+			if baseline && float64(n) > healthQuantile(b.RetryCounts, healthBaselineQuantile) {
+				repeated, relative = max(repeated, n), relative || n >= healthRetryCount
+			} else if !baseline || n >= healthRetryCeiling {
 				repeated = max(repeated, n)
 			}
 		}
 		short, long := float64(failures[0])/float64(max(1, successes[0])), float64(failures[1])/float64(max(1, successes[1]))
-		if successes[0] > 0 && successes[1] > 0 && short > max(healthRetryRatio, healthQuantile(b.RetryShort, healthBaselineQuantile)) && long > max(healthRetryRatio, healthQuantile(b.RetryLong, healthBaselineQuantile)) {
-			repeated = max(repeated, failures[0])
+		if baseline && successes[0] > 0 && successes[1] > 0 && short > max(healthRetryRatio, healthQuantile(b.RetryShort, healthBaselineQuantile)) && long > max(healthRetryRatio, healthQuantile(b.RetryLong, healthBaselineQuantile)) {
+			repeated, relative = max(repeated, failures[0]), relative || failures[0] >= healthRetryCount
 		}
 		if repeated < healthRetryCount {
 			continue
+		}
+		if !relative {
+			evidence.Reason = healthAbsoluteFloor
 		}
 		slices.Sort(evidence.Signatures)
 		evidence.Signatures = slices.Compact(evidence.Signatures)
 		evidence.Values["retry_ratio_1h"], evidence.Values["retry_ratio_6h"] = short, long
 		evidence.Counts = map[string]int{"failures_1h": failures[0], "failures_6h": failures[1]}
 		out = append(out, newHealthFinding("retry_storm", "instance", "work_item", item, "Repeated failed attempts are wasting work on this item.", "The runner operator inspects the repeated failure signatures and attempts.", []string{p.ID}, evidence))
+	}
+	return out
+}
+
+// healthRunnerSetupFindings reports a runner whose workspace setup keeps
+// failing before the provider starts, counting its failures across every
+// project it serves. These failures are attributed to the instance and held by
+// the instance cooldown, so they need no baseline: any runner repeating them is
+// unhealthy until its operator repairs the host.
+func healthRunnerSetupFindings(now time.Time, projects []healthRateProject) []healthFinding {
+	attempts, served := map[string][]healthRateAttempt{}, map[string][]string{}
+	runners := []string{}
+	for _, p := range projects {
+		for _, a := range p.Attempts {
+			if !a.InstanceSetupFailure || a.Runner == "" || !healthInWindow(a.At, now.Add(-healthShortWindow), now) {
+				continue
+			}
+			if _, seen := attempts[a.Runner]; !seen {
+				runners = append(runners, a.Runner)
+			}
+			attempts[a.Runner] = append(attempts[a.Runner], a)
+			if !slices.Contains(served[a.Runner], p.ID) {
+				served[a.Runner] = append(served[a.Runner], p.ID)
+			}
+		}
+	}
+	out := []healthFinding{}
+	for _, runner := range runners {
+		failed := attempts[runner]
+		if len(failed) < healthSetupFailureCount {
+			continue
+		}
+		evidence := healthEvidence{Counts: map[string]int{"failures_1h": len(failed)}}
+		for _, a := range failed {
+			evidence.AttemptIDs = append(evidence.AttemptIDs, a.ID)
+			if a.Signature != "" {
+				evidence.Signatures = append(evidence.Signatures, a.Signature)
+			}
+		}
+		slices.Sort(evidence.Signatures)
+		evidence.Signatures = slices.Compact(evidence.Signatures)
+		out = append(out, newHealthFinding("runner_setup_failures", "instance", "runner", runner, "Workspace setup on this runner keeps failing before the provider starts.", "The runner operator checks the workspace hook output and the runner's repository credential.", served[runner], evidence))
 	}
 	return out
 }
@@ -349,7 +402,7 @@ func healthStallFindings(now time.Time, p healthRateProject, b healthRateBaselin
 	}
 	out := []healthFinding{}
 	for _, t := range p.Timelines {
-		if t.issue.partial || !slices.Contains([]string{"In Progress", "Rework", "Merging"}, t.state) || len(b.Lanes[t.state]) < healthBaselineSamples {
+		if t.issue.partial || !slices.Contains([]string{"In Progress", "Rework", "Merging"}, t.state) {
 			continue
 		}
 		last := t.entered
@@ -359,11 +412,14 @@ func healthStallFindings(now time.Time, p healthRateProject, b healthRateBaselin
 				last, attempt = a.Heartbeat, a.ID
 			}
 		}
-		threshold := min(healthStallMaximum.Seconds(), max(healthStallMinimum.Seconds(), healthStallMultiplier*healthQuantile(b.Lanes[t.state], healthBaselineQuantile)))
+		threshold, reason := healthStallMinimum.Seconds(), healthAbsoluteFloor
+		if len(b.Lanes[t.state]) >= healthBaselineSamples {
+			threshold, reason = min(healthStallMaximum.Seconds(), max(healthStallMinimum.Seconds(), healthStallMultiplier*healthQuantile(b.Lanes[t.state], healthBaselineQuantile))), ""
+		}
 		if last.IsZero() || now.Sub(last).Seconds() <= threshold {
 			continue
 		}
-		evidence := healthEvidence{Values: map[string]float64{"heartbeat_gap_seconds": now.Sub(last).Seconds(), "threshold_seconds": threshold}}
+		evidence := healthEvidence{Reason: reason, Values: map[string]float64{"heartbeat_gap_seconds": now.Sub(last).Seconds(), "threshold_seconds": threshold}}
 		if attempt != "" {
 			evidence.AttemptIDs = []string{attempt}
 		}
@@ -476,7 +532,17 @@ func healthThroughputFinding(now time.Time, p healthRateProject, b healthRateBas
 			priorShort++
 		}
 	}
+	if b.ThroughputSamples < healthBaselineSamples {
+		waiting := 0
+		for _, t := range p.Timelines {
+			if !t.issue.partial && slices.Contains([]string{"Todo", "In Progress", "Rework", "Merging"}, t.state) && !t.entered.IsZero() && !t.entered.After(now.Add(-healthLongWindow)) {
+				waiting++
+			}
+		}
+		f := newHealthFinding("throughput_collapse", "flow", "project", p.ID, fmt.Sprintf("Delivery stalled. Nothing has landed in six hours while %d items have waited in Todo or active lanes for at least that long.", waiting), "The project operator inspects why ready and active work is not landing.", []string{p.ID}, healthEvidence{Reason: healthAbsoluteFloor, Counts: map[string]int{"landings_6h": long, "waiting_6h": waiting, "ready_work": p.Candidates}})
+		return f, long == 0 && waiting > 0
+	}
 	f := newHealthFinding("throughput_collapse", "flow", "project", p.ID, "Landings fell below a quarter of the same weekday-hour windows last week.", "The project operator inspects ready work and landing progress.", []string{p.ID}, healthEvidence{Counts: map[string]int{"landings_1h": short, "landings_6h": long, "last_week_1h": priorShort, "last_week_6h": priorLong, "ready_work": p.Candidates}})
 	f.Severity = "watch"
-	return f, b.ThroughputSamples >= healthBaselineSamples && p.Candidates > 0 && priorShort > 0 && float64(short) < healthThroughputFraction*float64(priorShort) && float64(long) < healthThroughputFraction*float64(priorLong)
+	return f, p.Candidates > 0 && priorShort > 0 && float64(short) < healthThroughputFraction*float64(priorShort) && float64(long) < healthThroughputFraction*float64(priorLong)
 }

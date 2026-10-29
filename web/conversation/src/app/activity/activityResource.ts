@@ -1,7 +1,10 @@
+import type { WorkHttp } from "../work/lib/workHttp.ts";
+import { subscribeProjectQuery } from "../work/lib/projectEvents.ts";
+
 import type { AccountApi } from "../account/api.ts";
 import type { FleetRunner } from "../../contracts/account.ts";
 import type { ActivityReport } from "../../contracts/activity.ts";
-import { fetchQuery, getQueryData, prefetchQuery, scopeOf } from "../lib/queryCache.ts";
+import { getQueryData, prefetchQuery, scopeOf, setQueryData } from "../lib/queryCache.ts";
 
 export interface ActivityState {
   report: ActivityReport | null;
@@ -14,13 +17,6 @@ interface ActivityData {
   readonly report: ActivityReport;
   readonly runners: readonly FleetRunner[];
 }
-
-interface ActivityResource {
-  inFlight: Promise<void> | null;
-  startedAt: number;
-}
-
-const resources = new WeakMap<AccountApi, ActivityResource>();
 
 /** The cache key for one Activity scope: the selected project and the projects it spans. */
 export function activityKey(project: string, projects: readonly string[]): string {
@@ -37,6 +33,12 @@ function readActivity(api: AccountApi, project: string) {
     const cancel = () => controller.abort();
     signal.addEventListener("abort", cancel);
     let expiry: ReturnType<typeof setTimeout> | undefined;
+    let rejectAbort: () => void = () => {};
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectAbort = () => reject(new Error("Activity read cancelled"));
+      controller.signal.addEventListener("abort", rejectAbort, { once: true });
+    });
+    if (signal.aborted) controller.abort();
     const deadline = new Promise<never>((_resolve, reject) => {
       expiry = setTimeout(() => {
         controller.abort();
@@ -50,6 +52,7 @@ function readActivity(api: AccountApi, project: string) {
           api.fleet(controller.signal),
         ]),
         deadline,
+        aborted,
       ]);
       if (report.status === "rejected" || fleet.status === "rejected") throw new Error("Activity read failed");
       return { report: report.value, runners: fleet.value.runners };
@@ -59,6 +62,7 @@ function readActivity(api: AccountApi, project: string) {
     } finally {
       if (expiry !== undefined) clearTimeout(expiry);
       signal.removeEventListener("abort", cancel);
+      controller.signal.removeEventListener("abort", rejectAbort);
     }
   };
 }
@@ -73,60 +77,47 @@ export function observeActivity(
   key: string,
   project: string,
   update: (state: ActivityState) => void,
+  http: WorkHttp,
+  projects: readonly string[],
+  live: (value: boolean) => void,
 ) {
-  let resource = resources.get(api);
-  if (!resource) {
-    resource = { inFlight: null, startedAt: -Infinity };
-    resources.set(api, resource);
-  }
-  const shared = resource;
   const entry = cacheKey(api, key);
   let current = true;
-  let stale = true;
-  let waiting = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let scheduled = false;
+  const connected = new Set<string>();
   const cached = getQueryData<ActivityData>(entry);
   let state: ActivityState = cached === undefined
     ? { report: null, runners: [], pending: true, error: null }
     : { report: cached.report, runners: cached.runners, pending: false, error: null };
   update(state);
-
-  const schedule = () => {
-    if (!current || !stale || timer !== undefined || waiting || document.visibilityState !== "visible") return;
-    if (shared.inFlight) {
-      waiting = true;
-      void shared.inFlight.then(() => {
-        waiting = false;
-        schedule();
-      });
-      return;
-    }
-    const delay = Math.max(0, shared.startedAt + 2000 - performance.now());
-    if (delay > 0) {
-      timer = setTimeout(() => {
-        timer = undefined;
-        schedule();
-      }, delay);
-      return;
-    }
-    stale = false;
-    shared.startedAt = performance.now();
-    shared.inFlight = fetchQuery(entry, readActivity(api, project), { force: true, join: true }).then((data) => {
-      state = data === undefined
-        ? { ...state, pending: false, error: "Activity is temporarily unavailable." }
-        : { report: data.report, runners: data.runners, pending: false, error: null };
-      if (current) update(state);
-    }).then(() => {
-      shared.inFlight = null;
-      schedule();
-    });
+  const refresh = () => {
+    if (scheduled || !current) return;
+    scheduled = true;
+    queueMicrotask(() => { scheduled = false; if (current) void load(); });
   };
-  schedule();
-  return {
-    refresh: () => { stale = true; schedule(); },
-    close: () => {
-      current = false;
-      if (timer !== undefined) clearTimeout(timer);
+  const queries = projects.map((id) => subscribeProjectQuery(http, id, {
+    topics: ["activity", "work_item", "board", "lane"], apply: refresh, refresh,
+    connection: {
+      open: () => { connected.add(id); live(connected.size === projects.length); },
+      error: () => { connected.delete(id); live(false); },
     },
+  }));
+  let generation = 0;
+  let controller: AbortController | undefined;
+  const load = async () => {
+    const version = ++generation;
+    controller?.abort();
+    controller = new AbortController();
+    const snapshots = queries.map((query) => query.beginSnapshot());
+    const data = await readActivity(api, project)(controller.signal).catch(() => undefined);
+    if (!current || version !== generation || snapshots.some((snapshot) => !snapshot.current())) return;
+    state = data === undefined
+      ? { ...state, pending: false, error: "Activity is temporarily unavailable." }
+      : { report: data.report, runners: data.runners, pending: false, error: null };
+    if (data !== undefined) setQueryData(entry, data);
+    update(state);
+    snapshots.forEach((snapshot, index) => snapshot.complete(data?.report.change_sequences?.[projects[index]!]));
   };
+  void load();
+  return { refresh, close: () => { current = false; generation++; controller?.abort(); queries.forEach((query) => query.close()); } };
 }

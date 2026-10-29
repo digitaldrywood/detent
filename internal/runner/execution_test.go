@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -313,8 +315,8 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 		{name: "provider identity missing after turn without external effect", providerNotStarted: true, providerHadTurns: true, restartSession: true, startupFailsAgain: true},
 		{name: "dirty provider never started", providerNotStarted: true, dirty: true, blocked: true},
 		{name: "startup policy changed", providerNotStarted: true, changedPolicy: true},
-		{name: "startup host changed", providerNotStarted: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Lease.MachineID = "other-host" }},
-		{name: "startup digest changed", providerNotStarted: true, blocked: true, edit: func(e *testExecution, _ *fakeCodexClient) {
+		{name: "startup host changed", providerNotStarted: true, restartSession: true, startupFailsAgain: true, edit: func(e *testExecution, _ *fakeCodexClient) { e.recovery.Lease.MachineID = "other-host" }},
+		{name: "startup digest changed", providerNotStarted: true, restartSession: true, startupFailsAgain: true, edit: func(e *testExecution, _ *fakeCodexClient) {
 			e.recovery.Attempts[0].Checkpoint.WorkspaceDigest = "other-digest"
 		}},
 		{name: "dirty 181", dirty: true},
@@ -339,6 +341,7 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := t.Context()
 			db, err := store.Open(ctx, store.Config{Path: filepath.Join(t.TempDir(), "sessions.db")})
 			if err != nil {
@@ -792,6 +795,124 @@ func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 	}
 }
 
+type releaseDeliveryExecution struct {
+	testExecution
+	failure *tracker.NativeTerminalFailure
+}
+
+func (e *releaseDeliveryExecution) PrepareFinish(_ context.Context, _, _ string, failure *tracker.NativeTerminalFailure) error {
+	e.failure = failure
+	return nil
+}
+
+type releaseDeliveryAgent struct {
+	fakeCodexClient
+	head string
+}
+
+func (a *releaseDeliveryAgent) RunTurn(ctx context.Context, req AgentTurnRequest, update AgentUpdateHandler) (AgentTurnResult, error) {
+	a.calls++
+	head, err := exec.CommandContext(ctx, "git", "-C", req.Workspace, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return AgentTurnResult{}, err
+	}
+	a.head = strings.TrimSpace(string(head))
+	if err := update(AgentUpdate{Type: AgentUpdateTurnStarted, TurnID: "delivery-turn"}); err != nil {
+		return AgentTurnResult{}, err
+	}
+	return AgentTurnResult{}, errors.New("stop after observing delivery head")
+}
+
+func TestNativeReleaseDeliveryWorkspace(t *testing.T) {
+	for _, test := range []struct {
+		name                                            string
+		wrongBase, movedHead, hookFailure, advancedBase bool
+	}{
+		{name: "fresh checkout starts at delivery head"},
+		{name: "advanced release branch keeps frozen head", advancedBase: true},
+		{name: "head outside frozen lineage", wrongBase: true},
+		{name: "moved delivery head", movedHead: true},
+		{name: "workspace failure stays instance owned", hookFailure: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			writer := initRunnerSourceRepo(t)
+			remote := filepath.Join(t.TempDir(), "delivery.git")
+			runRunnerGit(t, writer, "clone", "--bare", writer, remote)
+			runRunnerGit(t, writer, "checkout", "-b", "release/v1.2")
+			runRunnerGit(t, writer, "commit", "--allow-empty", "-m", "freeze release")
+			base := strings.TrimSpace(runRunnerGit(t, writer, "rev-parse", "HEAD"))
+			runRunnerGit(t, writer, "push", remote, "HEAD:refs/heads/release/v1.2")
+			runRunnerGit(t, writer, "checkout", "-b", "operator/release-pick")
+			runRunnerGit(t, writer, "commit", "--allow-empty", "-m", "release pick")
+			head := strings.TrimSpace(runRunnerGit(t, writer, "rev-parse", "HEAD"))
+			runRunnerGit(t, writer, "push", remote, "HEAD:refs/heads/operator/release-pick")
+			receiver := filepath.Join(t.TempDir(), "receiver")
+			runRunnerGit(t, writer, "clone", "--no-local", "--single-branch", "--branch", "main", remote, receiver)
+			if err := exec.CommandContext(t.Context(), "git", "-C", receiver, "cat-file", "-e", head+"^{commit}").Run(); err == nil {
+				t.Fatal("fresh receiver already contains the delivery head")
+			}
+			repository := "https://github.com/example-org/example-project"
+			runRunnerGit(t, receiver, "config", "url."+remote+".insteadOf", repository+".git")
+			runRunnerGit(t, receiver, "remote", "remove", "origin")
+			if test.wrongBase || test.advancedBase {
+				runRunnerGit(t, writer, "checkout", "release/v1.2")
+				runRunnerGit(t, writer, "commit", "--allow-empty", "-m", "unrelated release tip")
+				if test.wrongBase {
+					base = strings.TrimSpace(runRunnerGit(t, writer, "rev-parse", "HEAD"))
+				}
+				runRunnerGit(t, writer, "push", remote, "HEAD:refs/heads/release/v1.2")
+			}
+			if test.movedHead {
+				runRunnerGit(t, writer, "commit", "--allow-empty", "-m", "moved pick")
+				runRunnerGit(t, writer, "push", remote, "HEAD:refs/heads/operator/release-pick")
+			}
+			options := workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "workspaces"), SourceRoot: receiver, AutoBranch: true}
+			if test.hookFailure {
+				options.Hooks.AfterCreate = "exit 17"
+			}
+			backend, err := workspace.NewLocalGit(options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			delivery := &tracker.ReleaseDelivery{ReleasePickInput: tracker.ReleasePickInput{Repository: repository, PRNumber: 7, BaseRef: "release/v1.2", BaseSHA: base, HeadRef: "operator/release-pick", HeadSHA: head}}
+			execution := &releaseDeliveryExecution{testExecution: testExecution{recovery: tracker.NativeRecovery{Issue: tracker.NativeIssue{ReleaseDelivery: delivery}}}}
+			agent := &releaseDeliveryAgent{}
+			cfg := config.Config{}
+			cfg.Tracker.Kind = config.TrackerHubNative
+			r, err := NewRunner(Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Complete the issue"}, Workspace: backend, AgentBackend: agent, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := connector.Issue{ID: "delivery", Identifier: "native#1", State: "Rework", BranchName: delivery.HeadRef, PRRepository: repository, PullRequest: &connector.PullRequest{Number: 7, State: "OPEN", BranchName: delivery.HeadRef, HeadSHA: head, BaseRef: delivery.BaseRef, BaseSHA: base}}
+			result, err := r.Run(t.Context(), RunRequest{ProjectID: "native", Execution: execution, Issue: issue, Mode: RunModeImplement})
+			if test.wrongBase || test.movedHead || test.hookFailure {
+				if err == nil || agent.calls != 0 || result.TurnStarted {
+					t.Fatalf("unsafe delivery started: result=%+v error=%v calls=%d", result, err, agent.calls)
+				}
+				if test.wrongBase || test.movedHead {
+					var refusal *workspace.LandRefusal
+					if !errors.As(err, &refusal) || refusal.Kind != workspace.LandRefusalHeadMoved {
+						t.Fatalf("delivery identity failure = %v, want head_moved", err)
+					}
+				}
+				if test.hookFailure {
+					var hook *workspace.HookError
+					if !errors.As(err, &hook) || hook.ExitCode != 17 {
+						t.Fatalf("workspace failure = %v, want after_create exit 17", err)
+					}
+				}
+				if test.hookFailure && (execution.failure == nil || execution.failure.Attribution != "instance" || execution.failure.ErrorClass != "workspace_hook" || execution.finish != "failed") {
+					t.Fatalf("workspace failure not instance owned: failure=%+v finish=%s error=%v", execution.failure, execution.finish, err)
+				}
+				return
+			}
+			if agent.calls != 1 || agent.head != head || !result.TurnStarted {
+				t.Fatalf("delivery turn: head=%s want=%s calls=%d result=%+v error=%v", agent.head, head, agent.calls, result, err)
+			}
+		})
+	}
+}
+
 func TestNativeStartupRecoveryTracksActualProviderTurn(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
@@ -880,12 +1001,9 @@ func TestNativeStartupRecoveryTracksActualProviderTurn(t *testing.T) {
 			identity := tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "provider_default"}
 			second := &testExecution{recovery: tracker.NativeRecovery{Lease: first.recovery.Lease, Attempts: []tracker.NativeAttempt{{Status: "interrupted", NativeRunData: tracker.NativeRunData{MachineID: "host", PolicyID: approved.ID, Identity: &identity, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: firstID}}, Checkpoint: first.checkpoint}}}}
 			_, secondErr := r.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, Execution: second, WorkAttemptID: secondID, Issue: issue, Mode: RunModeImplement})
-			if startedTurn {
-				if !errors.Is(secondErr, ErrNativeRecoveryRequired) || agent.calls != 1 {
-					t.Fatalf("started turn replayed: calls=%d checkpoint=%+v error=%v", agent.calls, first.checkpoint, secondErr)
-				}
-			} else if !errors.Is(secondErr, overload) || agent.calls != 2 {
-				t.Fatalf("second startup wedged: calls=%d checkpoint=%+v error=%v", agent.calls, first.checkpoint, secondErr)
+			// Approved hold redesign Step 4: prior activity alone is not a recovery hold.
+			if !errors.Is(secondErr, overload) || agent.calls != 2 || first.checkpoint.Resume != "fresh_checkout" {
+				t.Fatalf("verified source did not retry: calls=%d checkpoint=%+v error=%v", agent.calls, first.checkpoint, secondErr)
 			}
 		})
 	}
@@ -957,10 +1075,10 @@ func TestNativeRecoveryDecision(t *testing.T) {
 			r.Attempts[0].Checkpoint.WorktreeState = "clean"
 			r.Attempts[0].Identity = &tracker.NativeExecutionIdentity{Role: "rework", Backend: "codex", Model: "test"}
 			r.Attempts = append(r.Attempts, tracker.NativeAttempt{Status: "failed", NativeRunData: tracker.NativeRunData{AttemptID: "failed-plan", Identity: &tracker.NativeExecutionIdentity{Role: "plan", Backend: "codex", Model: "test"}}, Checkpoint: &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "clean"}})
-		}, "manual_recovery", "session_restart_required", nil},
+		}, "fresh_checkout", "session_restart_required", nil},
 		{"clean startup with uncertain publication remains source", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts = append(r.Attempts, tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{MachineID: "other"}, Checkpoint: &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "clean", ExternalEffect: "pr_create", EffectState: "ambiguous"}})
-		}, "manual_recovery", "external_effect_uncertain", nil},
+		}, "fresh_checkout", "publication_reconciliation_required", nil},
 		{"advertised source is missing", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.SourceAttemptID = "missing"
 			r.Attempts = nil
@@ -1007,14 +1125,14 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		{"push ambiguity", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.ExternalEffect = "git_push"
 			r.Attempts[0].Checkpoint.EffectState = "ambiguous"
-		}, "manual_recovery", "external_effect_uncertain", nil},
+		}, "fresh_checkout", "publication_reconciliation_required", nil},
 		{"PR pending", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.ExternalEffect = "pr_create"
 			r.Attempts[0].Checkpoint.EffectState = "pending"
-		}, "manual_recovery", "external_effect_uncertain", nil},
+		}, "fresh_checkout", "publication_reconciliation_required", nil},
 		{"manual checkpoint", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.Resume = "manual_recovery"
-		}, "manual_recovery", "checkpoint_requires_recovery", nil},
+		}, "fresh_checkout", "session_restart_required", nil},
 		{"git checkpoint restores on another runner", func(r *tracker.NativeRecovery, local **workspace.RecoveryState, _ *bool) {
 			r.Lease.MachineID = "other"
 			remoteCheckpoint(r.Attempts[0].Checkpoint)
@@ -1033,7 +1151,7 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		{"git checkpoint keeps an uncertain push", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			remoteCheckpoint(r.Attempts[0].Checkpoint)
 			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "git_push", "ambiguous"
-		}, "manual_recovery", "external_effect_uncertain", nil},
+		}, "fresh_checkout", "publication_reconciliation_required", nil},
 		{"current Change supersedes obsolete unpushed checkpoint", func(*tracker.NativeRecovery, **workspace.RecoveryState, *bool) {}, "fresh_checkout", "session_restart_required", current},
 		{"current Change on original machine", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].MachineID = "machine"
@@ -1052,13 +1170,13 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		}, "fresh_checkout", "checkpoint_unavailable", current},
 		{"current Change preserves ambiguous push", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "git_push", "ambiguous"
-		}, "manual_recovery", "external_effect_uncertain", current},
+		}, "fresh_checkout", "publication_reconciliation_required", current},
 		{"current Change preserves pending publication", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "pr_create", "pending"
-		}, "manual_recovery", "external_effect_uncertain", current},
-		{"current Change preserves manual recovery", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+		}, "fresh_checkout", "publication_reconciliation_required", current},
+		{"current Change ignores historical manual recovery", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts[0].Checkpoint.Resume = "manual_recovery"
-		}, "manual_recovery", "checkpoint_requires_recovery", current},
+		}, "fresh_checkout", "session_restart_required", current},
 	} {
 		for _, mode := range []RetryMode{"", RetryModeFresh} {
 			t.Run(test.name+"/"+string(mode), func(t *testing.T) {
@@ -1254,8 +1372,15 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 		ambiguous   bool
 		automatic   bool
 		lost        bool
+		cleanRole   string
+		effect      bool
+		dirty       bool
 	}{
 		{name: "first run without worker GitHub access"},
+		{name: "clean foreign plan", interrupted: true, cleanRole: RolePlan},
+		{name: "clean foreign rework", interrupted: true, cleanRole: RoleRework},
+		{name: "effect bearing foreign checkpoint", interrupted: true, cleanRole: RolePlan, effect: true, blocked: true},
+		{name: "dirty foreign checkpoint", interrupted: true, cleanRole: RolePlan, dirty: true, blocked: true},
 		{name: "lost legacy checkpoint starts fresh", lost: true},
 		{name: "preserved planner checkpoint", local: true},
 		{name: "explicit worker GitHub access", workerAuth: true},
@@ -1284,6 +1409,18 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 				previous := &execution.recovery.Attempts[0]
 				previous.Status = "interrupted"
 				previous.Identity = &tracker.NativeExecutionIdentity{Role: "plan", Backend: "codex", Model: "test"}
+			}
+			if test.cleanRole != "" {
+				previous := &execution.recovery.Attempts[0]
+				previous.Identity.Role = test.cleanRole
+				previous.Checkpoint = &tracker.NativeCheckpoint{Storage: "local_only", Resume: "resume_session", Availability: "available", WorktreeState: "clean", HeadSHA: "recorded-head", WorkspaceDigest: "digest", ExternalEffect: "none", EffectState: "none"}
+				if test.dirty {
+					previous.Checkpoint.WorktreeState = "dirty"
+				}
+				if test.effect {
+					previous.Checkpoint.ExternalEffect, previous.Checkpoint.EffectState = "provider_turn", "pending"
+				}
+				backend.recoveryStates = []workspace.RecoveryState{{HeadSHA: "recorded-head", WorkspaceFingerprint: "digest"}}
 			}
 			if test.ambiguous {
 				execution.recovery.Attempts[0].Checkpoint.ExternalEffect = "git_push"
@@ -1346,6 +1483,9 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 				t.Fatal(err)
 			}
 			request := RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan}
+			if test.cleanRole == RoleRework {
+				request.Mode, request.Issue.State = RunModeImplement, "Rework"
+			}
 			if test.fresh {
 				request.Mode, request.RetryMode = RunModeImplement, RetryModeFresh
 				if !test.automatic {
@@ -1377,6 +1517,11 @@ func TestNativeRunnerPublishesOnlyAfterRecovery(t *testing.T) {
 			}
 			if errors.Is(err, ErrNativeRecoveryRequired) != test.blocked || (!test.blocked && err != nil) {
 				t.Fatalf("run error = %v", err)
+			}
+			if test.cleanRole != "" && !test.blocked {
+				if !backend.createIssue.FreshCheckout || backend.createIssue.BaseRef != "recorded-head" || !agentResumeEmpty(agent.request.Resume) {
+					t.Fatalf("clean checkpoint did not restart at recorded head: issue=%+v resume=%+v", backend.createIssue, agent.request.Resume)
+				}
 			}
 			if test.blocked && execution.started {
 				t.Fatal("unresolved checkpoint was superseded by a new attempt")
@@ -1432,6 +1577,13 @@ type finalizingExecutionWorkspace struct {
 	finalized     bool
 }
 
+func (w *finalizingExecutionWorkspace) GitHubPublicationIdentity(_ context.Context, _ workspace.Info, issue workspace.Issue, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
+	if !w.finalized || opts.GitHubClient == nil {
+		return workspace.GitHubPublication{}, errors.New("publication identity lost finalized source or selected client")
+	}
+	return workspace.GitHubPublication{Repository: opts.Repository, HeadSHA: opts.HeadSHA, Branch: "detent/fixture", BaseRef: issue.ProgressBaseRef}, nil
+}
+
 func (w *finalizingExecutionWorkspace) PrepareGitHubPublication(ctx context.Context, _ workspace.Info, issue workspace.Issue, opts workspace.LandOptions) (workspace.GitHubPublication, error) {
 	if !w.finalized || opts.Repository != "https://github.com/example/repo" || opts.HeadSHA != strings.Repeat("c", 40) || opts.TargetBranch != issue.ProgressBaseRef || opts.GitHubClient == nil || opts.Authorize == nil {
 		return workspace.GitHubPublication{}, errors.New("publication hook lost finalized source, target, client or authority")
@@ -1439,7 +1591,13 @@ func (w *finalizingExecutionWorkspace) PrepareGitHubPublication(ctx context.Cont
 	if err := opts.Authorize(ctx); err != nil {
 		return workspace.GitHubPublication{}, err
 	}
-	return workspace.GitHubPublication{Repository: opts.Repository, HeadSHA: opts.HeadSHA, BaseRef: opts.TargetBranch}, nil
+	publication := workspace.GitHubPublication{Repository: opts.Repository, HeadSHA: opts.HeadSHA, Branch: "detent/fixture", BaseRef: opts.TargetBranch}
+	if opts.PublicationEffect != nil {
+		if err := opts.PublicationEffect(ctx, "git_push", "confirmed", publication); err != nil {
+			return workspace.GitHubPublication{}, err
+		}
+	}
+	return publication, nil
 }
 
 func (w *finalizingExecutionWorkspace) FinalizeNativeWork(ctx context.Context, _ workspace.Info, _ workspace.Issue, validate func(context.Context) error) (string, error) {
@@ -1483,9 +1641,13 @@ func TestNativeEpilogueStageContexts(t *testing.T) {
 		clean           bool
 		wantErr         error
 		publicationHook bool
+		remote          bool
+		sourceIteration bool
 	}{
 		{name: "slow finalization", finalDelay: 2 * time.Second},
 		{name: "required PR hook retains configured source and target", publicationHook: true},
+		{name: "SSH publication identity without source iteration", publicationHook: true, remote: true},
+		{name: "SSH publication identity with source iteration", publicationHook: true, remote: true, sourceIteration: true},
 		{name: "slow artifacts", artifactDelay: 2 * time.Second},
 		{name: "clean committed source cancelled during artifacts", finalDelay: 2 * time.Second, artifactDelay: 2 * time.Second, clean: true, cancel: true, wantErr: context.Canceled},
 		{name: "genuine parent deadline retains source without success", finalDelay: 2 * time.Second, artifactDelay: 2 * time.Second, parentDeadline: 3 * time.Second, clean: true, wantErr: context.DeadlineExceeded},
@@ -1496,8 +1658,14 @@ func TestNativeEpilogueStageContexts(t *testing.T) {
 		{name: "absent issue workspace has nothing to preserve", preserveErr: workspace.ErrMissingWorkspace},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			info := workspace.Info{}
+			head := "committed-head"
+			if test.remote {
+				info.Path = initRunnerSourceRepo(t)
+				head = strings.TrimSpace(runRunnerGit(t, info.Path, "rev-parse", "HEAD"))
+			}
 			synctest.Test(t, func(t *testing.T) {
-				state := workspace.RecoveryState{HeadSHA: "committed-head", WorkspaceFingerprint: "tested-source-digest", UnpushedCommits: 1}
+				state := workspace.RecoveryState{HeadSHA: head, WorkspaceFingerprint: "tested-source-digest", UnpushedCommits: 1}
 				if test.clean {
 					state.UnpushedCommits = 0
 				}
@@ -1521,23 +1689,48 @@ func TestNativeEpilogueStageContexts(t *testing.T) {
 				}
 				r := &Runner{workspace: backend, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), afterRunTimeout: time.Second}
 				issue := workspace.Issue{}
+				request := RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}, finalizeNativeWork: true}
+				var client *github.Client
 				if test.publicationHook {
 					issue.ProgressBaseRef = "develop"
-				}
-				err := r.afterExecution(ctx, RunRequest{Execution: execution, Issue: connector.Issue{ID: "work"}, finalizeNativeWork: true}, backend, workspace.Info{}, issue, AgentResume{}, true)
-				if test.publicationHook {
-					if err != nil || execution.publicationSource == nil || execution.checkpoint == nil {
-						t.Fatalf("host finalization omitted publication hook: %v", err)
-					}
-					client, clientErr := github.NewClient(github.ClientConfig{TokenSource: github.StaticTokenSource(t.Name()), HTTPClient: workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
+					var clientErr error
+					client, clientErr = github.NewClient(github.ClientConfig{TokenSource: github.StaticTokenSource(t.Name()), HTTPClient: workerGitHubHTTPClientFunc(func(*http.Request) (*http.Response, error) {
 						return nil, errors.New("publication fixture must not reach GitHub")
 					})})
 					if clientErr != nil {
 						t.Fatal(clientErr)
 					}
-					publication, publicationErr := execution.publicationSource(ctx, tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{Repository: "https://github.com/example/repo", HeadSHA: strings.Repeat("c", 40)}}, workspace.LandOptions{GitHubClient: client, Authorize: execution.Validate})
-					if publicationErr != nil || publication.Repository != "https://github.com/example/repo" || publication.HeadSHA != strings.Repeat("c", 40) || publication.BaseRef != "develop" {
-						t.Fatalf("publication hook changed source binding: %+v, %v", publication, publicationErr)
+					issue.Landing = &workspace.LandOptions{GitHubClient: client}
+				}
+				if test.remote {
+					r.workflow.Config.Gate.Kind = gate.KindArtifact
+					left, right := net.Pipe()
+					defer left.Close()
+					defer right.Close()
+					callbacks := r.SSHRunCallbacks(request)
+					central := NewSSHPeer(ctx, left, left, callbacks.Handle)
+					defer central.Close()
+					callbacks.BindExecutionSources(central, t.TempDir())
+					sources := &SSHExecutionSources{}
+					remote := NewSSHPeer(ctx, right, right, sources.Handle)
+					defer remote.Close()
+					wire := NewSSHRunRequest(request)
+					wire.Native, wire.SourceIteration, wire.Sources = true, test.sourceIteration, sources
+					bound := wire.Bind(ctx, remote)
+					request.Execution = bound.Execution
+					if _, supported := request.Execution.(NativeSourceIterationExecution); supported != test.sourceIteration {
+						t.Fatalf("source iteration support = %t, want %t", supported, test.sourceIteration)
+					}
+				}
+				err := r.afterExecution(ctx, request, backend, info, issue, AgentResume{}, true)
+				if test.publicationHook {
+					if err != nil || execution.publicationSource == nil || execution.checkpoint == nil {
+						t.Fatalf("host finalization omitted publication hook: %v", err)
+					}
+					effects := 0
+					publication, publicationErr := execution.publicationSource(ctx, tracker.ChangeVersion{ChangeVersionInput: tracker.ChangeVersionInput{Repository: "https://github.com/example/repo", HeadSHA: strings.Repeat("c", 40)}}, workspace.LandOptions{GitHubClient: client, Authorize: execution.Validate, PublicationEffect: func(context.Context, string, string, workspace.GitHubPublication) error { effects++; return nil }})
+					if publicationErr != nil || publication.Repository != "https://github.com/example/repo" || publication.HeadSHA != strings.Repeat("c", 40) || publication.BaseRef != "develop" || publication.Branch != "detent/fixture" || effects != 1 {
+						t.Fatalf("publication hook changed source binding: %+v, effects=%d, %v", publication, effects, publicationErr)
 					}
 				}
 				preserved := test.preserveErr == nil && test.preserveDelay == 0
@@ -1872,8 +2065,11 @@ func TestAvailabilityStopRetainsUnreapedWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
-	if !errors.Is(err, ErrWorkerProcessReap) || backend.published || !backend.retained || backend.afterRun {
+	if !errors.Is(err, ErrWorkerProcessReap) || !backend.published || !backend.retained || backend.afterRun {
 		t.Fatalf("error=%v published=%t retained=%t cleaned=%t", err, backend.published, backend.retained, backend.afterRun)
+	}
+	if checkpoint := execution.checkpoint; checkpoint == nil || !checkpoint.GitRef() || execution.finish != "interrupted" {
+		t.Fatalf("checkpoint=%+v finish=%q", checkpoint, execution.finish)
 	}
 }
 
@@ -1975,35 +2171,60 @@ func TestNativePublicationRecoveryOnAnyRunner(t *testing.T) {
 	change := tracker.NativeChangeReference{ChangeID: "change", VersionID: "version", HeadSHA: "head"}
 	for _, test := range []struct {
 		name string
-		edit func(*tracker.NativeRecovery, *workspace.RecoveryState)
+		role string
+		edit func(*tracker.NativeRecovery, **workspace.RecoveryState)
 		want bool
 	}{
-		{"source runner", func(*tracker.NativeRecovery, *workspace.RecoveryState) {}, true},
-		{"configuration changed", func(r *tracker.NativeRecovery, _ *workspace.RecoveryState) {
+		{"source runner", RoleRework, func(*tracker.NativeRecovery, **workspace.RecoveryState) {}, true},
+		{"configuration changed", RoleRework, func(r *tracker.NativeRecovery, _ **workspace.RecoveryState) {
 			r.Lease.PolicyID = "new-configuration"
 		}, true},
-		{"another runner restored the Change source", func(r *tracker.NativeRecovery, local *workspace.RecoveryState) {
+		{"another runner restored the Change source", RoleRework, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
 			r.Lease.MachineID = "other"
-			local.WorkspaceFingerprint = "fresh-checkout-digest"
+			(*local).WorkspaceFingerprint = "fresh-checkout-digest"
 		}, true},
-		{"restored head differs from the version", func(r *tracker.NativeRecovery, local *workspace.RecoveryState) {
+		{"another runner restored source under a stale policy", RoleCode, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
 			r.Lease.MachineID = "other"
-			local.HeadSHA = "other-head"
-		}, false},
-		{"restored workspace is dirty", func(r *tracker.NativeRecovery, local *workspace.RecoveryState) {
+			r.Lease.PolicyID = "new-policy"
+			r.ChangeDetail.Summary.Status = "stale_policy"
+			(*local).WorkspaceFingerprint = "fresh-checkout-digest"
+		}, true},
+		{"restored head differs from the version", RoleRework, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
 			r.Lease.MachineID = "other"
-			local.TrackedPaths = []string{"work.go"}
+			(*local).HeadSHA = "other-head"
 		}, false},
-		{"version superseded", func(r *tracker.NativeRecovery, _ *workspace.RecoveryState) {
+		{"restored workspace is dirty", RoleRework, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			(*local).TrackedPaths = []string{"work.go"}
+		}, false},
+		{"version superseded", RoleRework, func(r *tracker.NativeRecovery, _ **workspace.RecoveryState) {
 			r.ChangeDetail.Change.CurrentVersion = "newer"
 		}, false},
-		{"settled publication", func(r *tracker.NativeRecovery, _ *workspace.RecoveryState) {
+		{"settled publication", RoleRework, func(r *tracker.NativeRecovery, _ **workspace.RecoveryState) {
 			r.Attempts[0].Checkpoint.EffectState = "confirmed"
+		}, false},
+		{"interrupted implementation restored on another runner", RoleCode, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "git_push", "ambiguous"
+			(*local).WorkspaceFingerprint = "fresh-checkout-digest"
+		}, true},
+		{"interrupted implementation PR creation from a git checkpoint", RoleCode, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+			r.Attempts[0].Checkpoint.ExternalEffect = "pr_create"
+			(*local).WorkspaceFingerprint = "fresh-checkout-digest"
+		}, true},
+		{"implementation without a restored workspace", RoleCode, func(r *tracker.NativeRecovery, local **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
+			*local = nil
+		}, false},
+		{"planning never reconciles publication", RolePlan, func(r *tracker.NativeRecovery, _ **workspace.RecoveryState) {
+			r.Lease.MachineID = "other"
 		}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			identity := tracker.NativeExecutionIdentity{Role: RoleRework}
+			identity := tracker.NativeExecutionIdentity{Role: test.role}
 			recovery := tracker.NativeRecovery{
 				Lease: tracker.NativeLease{MachineID: "source", PolicyID: "policy"},
 				Attempts: []tracker.NativeAttempt{{
@@ -2018,7 +2239,7 @@ func TestNativePublicationRecoveryOnAnyRunner(t *testing.T) {
 				ChangeVersionInput: tracker.ChangeVersionInput{HeadSHA: "head", Repository: "owner/repo", PolicyID: "policy"},
 				Policy:             policy.Descriptor{ID: "policy", Gates: policy.Gates{GitHubPullRequest: true}},
 			}}
-			test.edit(&recovery, local)
+			test.edit(&recovery, &local)
 			if got := nativePublicationRecovery(recovery, local, identity, current); got != test.want {
 				t.Fatalf("nativePublicationRecovery() = %v, want %v", got, test.want)
 			}
@@ -2051,6 +2272,37 @@ func TestNativeDispositionFromMessageHostPublication(t *testing.T) {
 			got := NativeDispositionFromMessage(tt.message)
 			if got == nil || got.Status != tt.wantStatus || got.ReasonCode != tt.wantReason || tt.wantStatus == "complete" && (got.Blockers || len(got.BlockerEvidence) != 0) {
 				t.Fatalf("disposition = %+v, want status %q reason %q", got, tt.wantStatus, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestNativeRecoveryWipeDerivedHold(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name         string
+		availability string
+		effect       string
+		wantAction   string
+		wantReason   string
+	}{
+		{"verified source", "available", "none", "fresh_checkout", "session_restart_required"},
+		{"unavailable source", "inaccessible", "none", "manual_recovery", "checkpoint_unavailable"},
+		{"uncertain push", "available", "git_push", "fresh_checkout", "publication_reconciliation_required"},
+		{"uncertain PR", "available", "pr_create", "fresh_checkout", "publication_reconciliation_required"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, resume := range []string{"manual_recovery", "fresh_checkout"} {
+				checkpoint := &tracker.NativeCheckpoint{Resume: resume, Availability: test.availability, Storage: "local_only", WorktreeState: "unpushed", HeadSHA: "head", WorkspaceDigest: "digest", ExternalEffect: test.effect, EffectState: "none"}
+				if test.effect != "none" {
+					checkpoint.EffectState = "ambiguous"
+				}
+				recovery := tracker.NativeRecovery{SourceAttemptID: "source", Lease: tracker.NativeLease{MachineID: "runner"}, Attempts: []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{AttemptID: "source", MachineID: "runner"}, Checkpoint: checkpoint}}}
+				local := &workspace.RecoveryState{HeadSHA: "head", WorkspaceFingerprint: "digest"}
+				action, reason := nativeRecoveryAction(recovery, local, false, store.AgentResumeState{}, tracker.NativeExecutionIdentity{Role: RoleCode}, false, nil)
+				if action != test.wantAction || reason != test.wantReason {
+					t.Fatalf("resume=%s: decision=%s/%s, want %s/%s", resume, action, reason, test.wantAction, test.wantReason)
+				}
 			}
 		})
 	}

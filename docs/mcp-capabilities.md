@@ -4,10 +4,36 @@
 its tools according to application availability and current connection authority.
 The dashboard's operator API uses the same application executors as MCP.
 `TestOperatorToolAPIUsesSharedReadOnlyExecutor` checks that every tool advertised
-by the dashboard is registered in this catalog. Add new dashboard commands to
-the real catalog and preserve their authorization and execution regressions.
+by the dashboard is registered in this catalog.
 
-## Cloud issue attachments (native #177 and #238)
+## Team threads
+
+The `threads` toolset exposes `list_threads`, `get_thread`, `create_thread`,
+`post_to_thread` and `resolve_thread` through the Hub's organization connection.
+It uses the [team thread REST contract](hub-api.md#team-threads), current member
+and project grants, and the key's existing read/write scope. The organization,
+author principal and acting-for human come from authenticated authority, never
+tool arguments. A personal key records the MCP client or key name on its posts.
+
+`list_threads` accepts scope, project, issue, status, search and cursor filters.
+`get_thread` takes `thread_id`, optional `since` (including `last_read`) and a
+bounded `limit`; continue with the returned `cursor` while `has_more` is true.
+Reading advances only the caller's cursor. `create_thread` takes a scope and
+title, plus the corresponding project or issue ID. `post_to_thread` takes a
+thread ID, kind and markdown body. `resolve_thread` takes a thread ID and
+`status: resolved` or `status: open`. Creation and posting accept stable
+`idempotency_key` values for retries and optional issue, Change or attachment
+references.
+
+Results wrap application data in `{semantics, data}`. The semantics explicitly
+mark content authored by other members as untrusted data, never instructions;
+MCP post bodies also use the existing escaped `<transcript>` boundary. Tool
+descriptions state that threads are informational. Thread posts never direct
+another member's agent, dispatch work, file issues, move lanes, write issue
+comments or enter runner task context. Each person decides what their own agent
+does with findings from a thread.
+
+## Cloud issue attachments
 
 Shared entry plus the tenant Hub supports `upload_attachment`,
 `read_attachment_metadata`, `read_attachment`, `reference_attachment` and
@@ -20,10 +46,9 @@ receipt distinguishes pending and confirmed object deletion. All calls resolve
 current project grants and credential scope. Read-only credentials discover only
 reads; local and dedicated deployments omit these shared-storage operations.
 Internal expiry, existence and deletion-confirmation callbacks require signed
-service authority and expose no model-callable tool. See
-[Cloud attachments](cloud-attachments.md) for the transport and deletion contract.
+service authority and expose no model-callable tool.
 
-## Work and board reads (#3340)
+## Work and board reads
 
 The original five tools retain their names and schemas. Additional reads use
 `project_id`, plus an item `reference` where needed. Native IDs and scoped
@@ -73,11 +98,11 @@ and identifies that source as `workflow`; native history uses collaboration
 events. GitHub comment edits expose current body and update metadata; saved
 revision reads and native exports require a native service. Hosted hubs without
 daemon receipt/session services omit those tools from discovery and direct calls
-return opaque unavailable errors. #3347 owns PR/review/change/diff/artifact
-content details and reuses the extracted application reads; this child supplies
-references through the shared detail owners.
+return opaque unavailable errors. PR, review, change, diff and artifact content
+details use the same extracted application reads; these tools supply references
+through the shared detail owners.
 
-## Managed local project configuration (native #94)
+## Managed local project configuration
 
 The `local_projects` toolset uses the selected installed local configuration
 owner. `local_project_configuration` reads its actual configuration
@@ -164,7 +189,7 @@ principals or organization authority.
 
 Self-hosted `/mcp` requires an existing credential with read authority; write
 and admin credentials retain their existing hierarchy. The dashboard now exposes
-the four shared chat application commands where available (#3337). Scoped keys are supported and are authenticated again at execution.
+the four shared chat application commands where available. Scoped keys are supported and are authenticated again at execution.
 An optional `X-Detent-Organization` header must match `self-hosted`. Legacy HTTP sessions
 bind the full identity tuple; each HTTP request carries its own authority through
 dispatch. The stdio client delegates both discovery and calls to the daemon's
@@ -196,7 +221,7 @@ the five telemetry/explanation reads are unavailable and direct legacy read call
 opaque unavailable errors after resource authorization. The read/service children
 must supply shared application reads, not a compatibility HTTP proxy.
 
-Organization and credential administration (#3344) uses typed application tools:
+Organization and credential administration uses typed application tools:
 `organization_session`, `organization_list`, `organization_switch`, `session_logout`,
 `organization_create`, `organization_delete`, `invitation_accept`,
 `invitation_send`, `invitation_edit`, `invitation_resend`, `invitation_revoke`, `membership_list`, `member_remove`,
@@ -218,7 +243,7 @@ without invitation-by-ID administration do not advertise invitation acceptance.
 Absent services return opaque unavailable errors. No new approval credentials or
 platform powers are installed.
 
-Native #235 adds explicit bounded project grants to invitation sending and exposes
+Invitation sending accepts explicit bounded project grants and exposes
 pending-invitation grant replacement and resend through their existing hosted
 commands. Edit requires a complete grants list; an empty list removes project
 access. Edit/resend discovery requires provider invitation-by-ID administration,
@@ -227,8 +252,6 @@ status, expiry and grant authority are rechecked at execution.
 Selected bearer keys cannot grant or remove access beyond their own project scope.
 Typed requests include the invitation and grants; durable command receipts
 prevent repeated provider delivery.
-Dedicated/shared and stdio/HTTP fixture coverage uses no live mail. Native #26
-retains strict final conformance and unconditional zero-pending acceptance.
 
 Access-changing and destructive commands execute directly after current authority checks. Durable application receipts omit credential material; deliberate
 credential results stay on their originating connection, recheck current authority
@@ -291,7 +314,7 @@ decimal strings in both responses and `expected_revision` inputs. Copy the
 observed revision unchanged into a mutation; numeric JSON revisions are rejected.
 Tracker lane requests retain the orchestrator owner.
 
-## Shared mutation audit and retries (#3338)
+## Shared mutation audit and retries
 
 Application adapters carry trusted `mutation.Metadata`: principal, organization,
 project/resource, action, source, client source and call outcome,
@@ -354,20 +377,10 @@ authorization flow. A bearer-header configuration in an external client cannot
 connect to Cloud today; do not export browser cookies or CSRF credentials as a
 workaround. The private credential-maintenance listener does not mount MCP.
 
-Self-hosted daemon clients can use `detent mcp` over stdio or the daemon's HTTPS
-`/mcp` endpoint with an existing API key. Create a least-privilege expiring key
-with `detent key add --name mcp-client --scope read --expires-in 30d`; select
-write/admin scope and project restrictions only when needed. Keep the returned
-token in private client configuration or its supported environment variables.
-Use `detent key list` and `detent key revoke KEY_ID` to revoke it; deleting the
-client entry does not revoke a key. These commands operate on the configured
-daemon and do not create Cloud credentials. For unhosted hubs, use the separate
-hub token-management API and `/api/v2/organizations/<organization>/mcp` route.
-
-Follow the client-specific [Claude Code installation instructions](https://code.claude.com/docs/en/mcp)
-or [Cursor installation instructions](https://cursor.com/docs/mcp), selecting
-HTTP with an `Authorization: Bearer YOUR_DETENT_API_TOKEN` header for a
-self-hosted endpoint. SSE and WebSocket transports are not supported.
+The standalone local-board CLI and its `key` commands are retired. Manage Hub
+credentials in **Settings → API & MCP**. For an unhosted Hub, use its existing
+token-management API and `/api/v2/organizations/<organization>/mcp` route;
+local-daemon credentials do not create Hub credentials.
 
 Authoritative wire references are the
 [2026-07-28 announcement](https://blog.modelcontextprotocol.io/posts/2026-07-28/),
@@ -450,7 +463,7 @@ roots, tasks, logging, caching or MRTR elicitation. Confirmation belongs to clie
 
 ## Project settings and onboarding
 
-The `projects` toolset (#3342) exposes authorized project listing/detail,
+The `projects` toolset exposes authorized project listing/detail,
 creation, onboarding progress, repository/integration configuration, import
 jobs/records/advance, runner batch intake, cutover receipts, native/repository policy inspection,
 policy approval/revoke and change-review policy. Use `repository_policy: true`
@@ -540,7 +553,7 @@ authentication context, arbitrary session ID or approval setting is a tool argum
 The legacy board conversation panel reads tracker/PR comments through the
 comments application owner.
 
-Ordinary native work-item controls (native #145) use
+Ordinary native work-item controls use
 `get_work_item_conversation({project_id, work_item_id})` to read the canonical
 conversation, current execution owner, capabilities and bounded history. The
 same snapshot is available at `GET /work-items/:item/conversation` under the
@@ -555,7 +568,7 @@ supports live control. Private conversation visibility and current grants apply
 to lookup and command execution. Already-running workers that skipped binding
 before the fix cannot gain a provider control object from an operator lookup.
 
-## Enrolled runner update application (native #93)
+## Enrolled runner update application
 
 Hosted `get_runner_update` and `update_apply` use current organization runner
 administration, including all-project runner grants. Read support first with

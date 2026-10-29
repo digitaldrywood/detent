@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/BurntSushi/toml"
+
 	servicepkg "github.com/digitaldrywood/detent/internal/service"
 )
 
@@ -16,14 +19,36 @@ const (
 	workerCodexProfileDir     = ".detent-worker"
 	launchdCodexProfileDir    = ".detent-launchd"
 	launchdCodexProfileMarker = ".detent-profile-v1"
+	codexConfigFilename       = "config.toml"
 )
+
+var workerCodexLinkedEntries = []string{"auth.json"}
+
+var workerCodexConfigKeys = map[string]bool{
+	"model":                              true,
+	"model_provider":                     true,
+	"model_providers":                    true,
+	"mcp_servers":                        true,
+	"model_reasoning_effort":             true,
+	"model_reasoning_summary":            true,
+	"model_verbosity":                    true,
+	"model_context_window":               true,
+	"model_auto_compact_token_limit":     true,
+	"model_supports_reasoning_summaries": true,
+	"service_tier":                       true,
+	"preferred_auth_method":              true,
+	"forced_login_method":                true,
+	"forced_chatgpt_workspace_id":        true,
+	"chatgpt_base_url":                   true,
+	"openai_base_url":                    true,
+	"cli_auth_credentials_store":         true,
+}
 
 var launchdCodexProfileMu sync.Mutex
 
 type codexServiceCommand struct {
-	Command       string
-	Environment   map[string]string
-	OmittedSkills []string
+	Command     string
+	Environment map[string]string
 }
 
 func prepareCodexCommandForRuntime(command string) (codexServiceCommand, error) {
@@ -55,31 +80,30 @@ func prepareCodexCommandForService(
 		return codexServiceCommand{}, fmt.Errorf("resolve launchd user home: %w", err)
 	}
 	sourceHome := filepath.Dir(credentialPath)
-	profileHome, omittedSkills, err := prepareWorkerCodexHome(sourceHome, home, isLaunchd)
+	profileHome, err := prepareWorkerCodexHome(sourceHome, home, isLaunchd)
 	if err != nil {
 		return codexServiceCommand{}, err
 	}
 	prepared.Command = replaceCodexHomeAssignment(command, profileHome)
 	prepared.Environment = map[string]string{"CODEX_HOME": profileHome}
-	prepared.OmittedSkills = omittedSkills
 	return prepared, nil
 }
 
-func prepareWorkerCodexHome(sourceHome string, userHome string, isLaunchd bool) (string, []string, error) {
+func prepareWorkerCodexHome(sourceHome string, userHome string, isLaunchd bool) (string, error) {
 	launchdCodexProfileMu.Lock()
 	defer launchdCodexProfileMu.Unlock()
 
 	sourceHome = filepath.Clean(sourceHome)
 	userHome = filepath.Clean(userHome)
 	if err := os.MkdirAll(sourceHome, 0o700); err != nil {
-		return "", nil, fmt.Errorf("create Codex home %s: %w", sourceHome, err)
+		return "", fmt.Errorf("create Codex home %s: %w", sourceHome, err)
 	}
 	resolvedSource, err := filepath.EvalSymlinks(sourceHome)
 	if err != nil {
-		return "", nil, fmt.Errorf("resolve Codex home %s: %w", sourceHome, err)
+		return "", fmt.Errorf("resolve Codex home %s: %w", sourceHome, err)
 	}
 	if isLaunchd && launchdProtectedPath(resolvedSource, userHome) {
-		return "", nil, fmt.Errorf("codex home %s is in a macOS privacy-protected location", resolvedSource)
+		return "", fmt.Errorf("codex home %s is in a macOS privacy-protected location", resolvedSource)
 	}
 
 	profileDir := workerCodexProfileDir
@@ -88,72 +112,211 @@ func prepareWorkerCodexHome(sourceHome string, userHome string, isLaunchd bool) 
 	}
 	profileHome := filepath.Join(sourceHome, profileDir)
 	if err := ensureLaunchdCodexProfile(profileHome); err != nil {
-		return "", nil, err
+		return "", err
 	}
 	for _, name := range []string{"sessions", "archived_sessions"} {
 		path := filepath.Join(profileHome, name)
 		if _, err := removeManagedProfileLink(path); err != nil {
-			return "", nil, err
+			return "", err
 		}
 		if err := os.MkdirAll(path, 0o700); err != nil {
-			return "", nil, fmt.Errorf("create worker transcript directory: %w", err)
+			return "", fmt.Errorf("create worker transcript directory: %w", err)
 		}
 	}
 	profileEntries, err := os.ReadDir(profileHome)
 	if err != nil {
-		return "", nil, fmt.Errorf("read worker Codex profile: %w", err)
+		return "", fmt.Errorf("read worker Codex profile: %w", err)
 	}
 	for _, entry := range profileEntries {
 		path := filepath.Join(profileHome, entry.Name())
-		if codexSQLiteFilename(entry.Name()) {
+		switch {
+		case codexSQLiteFilename(entry.Name()):
 			if err := removeSharedSQLiteProfileEntry(filepath.Join(sourceHome, entry.Name()), path); err != nil {
-				return "", nil, err
+				return "", err
 			}
-			continue
-		}
-		if !codexInstructionFilename(entry.Name()) {
-			continue
-		}
-		local, err := removeManagedProfileLink(path)
-		if err != nil {
-			return "", nil, err
-		}
-		if local {
-			return "", nil, fmt.Errorf("worker Codex profile contains user instructions: %s", path)
+		case codexInstructionFilename(entry.Name()):
+			local, err := removeManagedProfileLink(path)
+			if err != nil {
+				return "", err
+			}
+			if local {
+				return "", fmt.Errorf("worker Codex profile contains user instructions: %s", path)
+			}
+		case entry.Name() == "skills" && entry.IsDir():
+			if err := removeInheritedSkillLinks(path); err != nil {
+				return "", err
+			}
+		case entry.Name() == codexConfigFilename || strings.HasPrefix(entry.Name(), "."+codexConfigFilename+"."):
+		case !workerCodexLinkedEntry(entry.Name()):
+			if err := removeInheritedProfileEntry(filepath.Join(sourceHome, entry.Name()), path); err != nil {
+				return "", err
+			}
 		}
 	}
-	entries, err := os.ReadDir(sourceHome)
+	for _, name := range workerCodexLinkedEntries {
+		source := filepath.Join(sourceHome, name)
+		if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return "", fmt.Errorf("inspect Codex home entry %s: %w", source, err)
+		}
+		if err := ensureProfileLink(source, filepath.Join(profileHome, name)); err != nil {
+			return "", err
+		}
+	}
+	disabledSkills, err := userScopeSkillFiles(userHome)
 	if err != nil {
-		return "", nil, fmt.Errorf("read Codex home %s: %w", sourceHome, err)
+		return "", err
 	}
-	for _, entry := range entries {
-		if codexTranscriptDirectory(entry.Name()) || codexInstructionFilename(entry.Name()) ||
-			entry.Name() == workerCodexProfileDir || entry.Name() == launchdCodexProfileDir ||
-			(isLaunchd && entry.Name() == "skills") {
-			continue
-		}
-		if codexSQLiteFilename(entry.Name()) {
-			continue
-		}
-		if err := ensureProfileLink(
-			filepath.Join(sourceHome, entry.Name()),
-			filepath.Join(profileHome, entry.Name()),
-		); err != nil {
-			return "", nil, err
-		}
+	if err := writeWorkerCodexConfig(filepath.Join(sourceHome, codexConfigFilename), filepath.Join(profileHome, codexConfigFilename), disabledSkills); err != nil {
+		return "", err
 	}
 
-	if !isLaunchd {
-		return profileHome, nil, nil
+	if isLaunchd {
+		if err := rejectProtectedAgentSkills(userHome); err != nil {
+			return "", err
+		}
 	}
-	omittedSkills, err := syncLaunchdCodexSkills(sourceHome, profileHome, userHome)
+	return profileHome, nil
+}
+
+func workerCodexLinkedEntry(name string) bool {
+	for _, linked := range workerCodexLinkedEntries {
+		if name == linked {
+			return true
+		}
+	}
+	return false
+}
+
+func removeInheritedProfileEntry(source string, destination string) error {
+	info, err := os.Lstat(destination)
 	if err != nil {
-		return "", nil, err
+		return fmt.Errorf("inspect worker Codex profile entry %s: %w", destination, err)
 	}
-	if err := rejectProtectedAgentSkills(userHome); err != nil {
-		return "", nil, err
+	inherited := info.Mode()&os.ModeSymlink != 0
+	if !inherited {
+		sourceInfo, sourceErr := os.Stat(source)
+		if sourceErr != nil && !errors.Is(sourceErr, os.ErrNotExist) {
+			return fmt.Errorf("inspect Codex home entry %s: %w", source, sourceErr)
+		}
+		destinationInfo, destinationErr := os.Stat(destination)
+		inherited = sourceErr == nil && destinationErr == nil && os.SameFile(sourceInfo, destinationInfo)
 	}
-	return profileHome, omittedSkills, nil
+	if !inherited {
+		return nil
+	}
+	if err := os.Remove(destination); err != nil {
+		return fmt.Errorf("remove inherited worker Codex profile entry %s: %w", destination, err)
+	}
+	return nil
+}
+
+func removeInheritedSkillLinks(skillsRoot string) error {
+	entries, err := os.ReadDir(skillsRoot)
+	if err != nil {
+		return fmt.Errorf("read worker Codex skills %s: %w", skillsRoot, err)
+	}
+	for _, entry := range entries {
+		if _, err := removeManagedProfileLink(filepath.Join(skillsRoot, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func userScopeSkillFiles(userHome string) ([]string, error) {
+	var files []string
+	visited := map[string]bool{}
+	var walk func(string) error
+	walk = func(directory string) error {
+		resolved, err := filepath.EvalSymlinks(directory)
+		if err != nil {
+			return fmt.Errorf("resolve user skill directory %s: %w", directory, err)
+		}
+		if visited[resolved] {
+			return nil
+		}
+		visited[resolved] = true
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			return fmt.Errorf("read user skill directory %s: %w", directory, err)
+		}
+		for _, entry := range entries {
+			path := filepath.Join(directory, entry.Name())
+			info, err := os.Stat(path)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("inspect user skill %s: %w", path, err)
+			}
+			switch {
+			case info.IsDir():
+				if err := walk(path); err != nil {
+					return err
+				}
+			case entry.Name() == "SKILL.md":
+				files = append(files, path)
+			}
+		}
+		return nil
+	}
+	root := filepath.Join(userHome, ".agents", "skills")
+	if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err := walk(root); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+func writeWorkerCodexConfig(source string, destination string, disabledSkills []string) error {
+	raw, err := os.ReadFile(source)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read Codex config %s: %w", source, err)
+	}
+	var settings map[string]any
+	if err := toml.Unmarshal(raw, &settings); err != nil {
+		return fmt.Errorf("parse Codex config %s: %w", source, err)
+	}
+	kept := make(map[string]any, len(settings)+1)
+	for key, value := range settings {
+		if workerCodexConfigKeys[key] {
+			kept[key] = value
+		}
+	}
+	if len(disabledSkills) > 0 {
+		entries := make([]map[string]any, 0, len(disabledSkills))
+		for _, path := range disabledSkills {
+			entries = append(entries, map[string]any{"path": path, "enabled": false})
+		}
+		kept["skills"] = map[string]any{"config": entries}
+	}
+	var encoded bytes.Buffer
+	if err := toml.NewEncoder(&encoded).Encode(kept); err != nil {
+		return fmt.Errorf("encode worker Codex config: %w", err)
+	}
+	return replaceFileAtomically(destination, encoded.Bytes())
+}
+
+func replaceFileAtomically(destination string, content []byte) error {
+	temporary, err := os.CreateTemp(filepath.Dir(destination), "."+filepath.Base(destination)+".*")
+	if err != nil {
+		return fmt.Errorf("create worker Codex config: %w", err)
+	}
+	name := temporary.Name()
+	_, writeErr := temporary.Write(content)
+	syncErr := temporary.Sync()
+	closeErr := temporary.Close()
+	if err := errors.Join(writeErr, syncErr, closeErr); err != nil {
+		return errors.Join(fmt.Errorf("write worker Codex config %s: %w", name, err), os.Remove(name))
+	}
+	if err := os.Rename(name, destination); err != nil {
+		return errors.Join(fmt.Errorf("publish worker Codex config %s: %w", destination, err), os.Remove(name))
+	}
+	return nil
 }
 
 func ensureLaunchdCodexProfile(profileHome string) error {
@@ -179,45 +342,6 @@ func ensureLaunchdCodexProfile(profileHome string) error {
 		return fmt.Errorf("launchd Codex profile %s permissions are broader than 0700", profileHome)
 	}
 	return nil
-}
-
-func syncLaunchdCodexSkills(sourceHome string, profileHome string, userHome string) ([]string, error) {
-	sourceSkills := filepath.Join(sourceHome, "skills")
-	profileSkills := filepath.Join(profileHome, "skills")
-	if err := os.MkdirAll(profileSkills, 0o700); err != nil {
-		return nil, fmt.Errorf("create launchd Codex skills profile %s: %w", profileSkills, err)
-	}
-	entries, err := os.ReadDir(sourceSkills)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read Codex skills %s: %w", sourceSkills, err)
-	}
-
-	omitted := make([]string, 0)
-	for _, entry := range entries {
-		source := filepath.Join(sourceSkills, entry.Name())
-		destination := filepath.Join(profileSkills, entry.Name())
-		protected, err := launchdProtectedSkillLink(source, userHome)
-		if err != nil {
-			return nil, fmt.Errorf("inspect Codex skill %s: %w", source, err)
-		}
-		if protected {
-			localFallback, err := removeManagedProfileLink(destination)
-			if err != nil {
-				return nil, err
-			}
-			if !localFallback {
-				omitted = append(omitted, entry.Name())
-			}
-			continue
-		}
-		if err := ensureProfileLink(source, destination); err != nil {
-			return nil, err
-		}
-	}
-	return omitted, nil
 }
 
 func rejectProtectedAgentSkills(userHome string) error {
@@ -408,8 +532,4 @@ func ensureWindowsCodexProfileLink(source string, destination string) error {
 		return nil
 	}
 	return createCodexProfileJunction(source, destination)
-}
-
-func codexTranscriptDirectory(name string) bool {
-	return name == "sessions" || name == "archived_sessions"
 }

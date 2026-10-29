@@ -17,7 +17,9 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/isolation"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -45,6 +47,7 @@ type claimCandidateQuery struct {
 	LandingBatchGroup       string
 	Limit                   int
 	After                   tracker.WorkItemID
+	SelectionCursor         *runnerSelectionCursor
 	WorkItemID              tracker.WorkItemID
 	OnlyIDs                 []tracker.WorkItemID
 	AvailableAt             time.Time
@@ -68,8 +71,7 @@ type claimCandidateQuery struct {
 	// lane, which asked for workspace items by declaring the workspace
 	// capability. Every other claim, and the provider candidate preview, is
 	// an ordinary issue claim and never sees a workspace item: a workspace
-	// is its own work item kind and not project work (decisions section
-	// 18.1).
+	// is its own work item kind and not project work.
 	WorkspaceLane bool
 	PageSize      int
 }
@@ -129,14 +131,14 @@ type machineResponse struct {
 func (s *Service) claimWorkItem(c echo.Context) error {
 	var request claimAPIRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if request.WorkItemID < 0 {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_claim", Message: "work_item_id must be positive when supplied"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_claim", "work_item_id must be positive when supplied", apiErrorResponse{Code: "invalid_claim", Message: "work_item_id must be positive when supplied"})
 	}
 	ttl, err := apiTTL(request.TTLSeconds)
 	if err != nil {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_claim", Message: err.Error()})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_claim", err.Error(), apiErrorResponse{Code: "invalid_claim", Message: err.Error()})
 	}
 	claim := tracker.ClaimRequest{WorkItemID: request.WorkItemID, MachineID: request.MachineID, SessionID: request.SessionID, TTL: ttl}
 	lease, err := s.database.claimNext(c.Request().Context(), claim, claimCandidateQuery{
@@ -165,15 +167,15 @@ func (s *Service) claimWorkItem(c echo.Context) error {
 func (s *Service) renewLease(c echo.Context) error {
 	leaseID, err := apiLeaseID(c)
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	var request renewLeaseAPIRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	ttl, err := apiTTL(request.TTLSeconds)
 	if err != nil {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_lease", Message: err.Error()})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_lease", err.Error(), apiErrorResponse{Code: "invalid_lease", Message: err.Error()})
 	}
 	lease, err := s.database.renew(c.Request().Context(), tracker.RenewRequest{LeaseID: leaseID, FencingToken: request.FencingToken, TTL: ttl}, true, 0)
 	if err != nil {
@@ -189,15 +191,15 @@ func (s *Service) renewLease(c echo.Context) error {
 func (s *Service) releaseLease(c echo.Context) error {
 	leaseID, err := apiLeaseID(c)
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	var request releaseLeaseAPIRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	err = s.tracker.Release(c.Request().Context(), tracker.ReleaseRequest{LeaseID: leaseID, FencingToken: request.FencingToken, Reason: request.Reason})
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	return c.NoContent(http.StatusNoContent)
 }
@@ -205,14 +207,14 @@ func (s *Service) releaseLease(c echo.Context) error {
 func (s *Service) appendWorkItemEvent(c echo.Context) error {
 	id, err := apiWorkItemID(c)
 	if err != nil {
-		return trackerAPIError(c, err)
+		return s.trackerAPIError(c, err)
 	}
 	var request workEventAPIRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if request.Kind != "progress" || request.Payload != nil && !slices.Contains([]string{"plan", "implement", "test", "review", "complete"}, request.Payload.Step) {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_event", Message: "Legacy progress requires an allowlisted step; use v2 for native events"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_event", "Legacy progress requires an allowlisted step; use v2 for native events", apiErrorResponse{Code: "invalid_event", Message: "Legacy progress requires an allowlisted step; use v2 for native events"})
 	}
 	var payload map[string]any
 	if request.Payload != nil {
@@ -232,7 +234,7 @@ func (s *Service) appendWorkItemEvent(c echo.Context) error {
 	return c.JSON(http.StatusCreated, event)
 }
 
-func trackerAPIError(c echo.Context, err error) error {
+func (s *Service) trackerAPIError(c echo.Context, err error) error {
 	status := http.StatusInternalServerError
 	code := "hub_operation_failed"
 	message := "Hub operation failed"
@@ -252,15 +254,13 @@ func trackerAPIError(c echo.Context, err error) error {
 	case errors.Is(err, tracker.ErrInvalidClaimRequest), errors.Is(err, tracker.ErrInvalidLeaseRequest), errors.Is(err, tracker.ErrInvalidWorkEvent), errors.Is(err, tracker.ErrInvalidCandidateQuery):
 		status, code, message = http.StatusUnprocessableEntity, "invalid_request", "Request is invalid"
 	}
-	return c.JSON(status, apiErrorResponse{Code: code, Message: message})
+	return s.refusedAPIError(c, status, code, message, apiErrorResponse{Code: code, Message: message})
 }
 
-// claimNext decides most claim attempts without the writer. A preflight runs
-// the whole claim on a read-only snapshot: refusals that record nothing new
-// are answered from it, and a selected candidate is claimed by a short write
-// transaction that re-validates only that candidate. Anything the preflight
-// cannot settle runs the full claim under the write lock, as before.
 func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, reconcileInterval time.Duration) (tracker.Lease, error) {
+	if query.NativeScope != nil {
+		return d.claimNativePrepared(ctx, request, query, reconcileInterval)
+	}
 	if d.claimReader != nil {
 		lease, err := d.claimPreflight(ctx, request, query, reconcileInterval)
 		var selected *claimSelected
@@ -284,6 +284,9 @@ func (d *database) claimNext(ctx context.Context, request tracker.ClaimRequest, 
 const claimPreflightAcquire = 250 * time.Millisecond
 
 func (d *database) claimPreflight(ctx context.Context, request tracker.ClaimRequest, query claimCandidateQuery, reconcileInterval time.Duration) (lease tracker.Lease, resultErr error) {
+	if d.claimReader == nil {
+		return tracker.Lease{}, context.DeadlineExceeded
+	}
 	acquire, cancel := context.WithTimeout(ctx, claimPreflightAcquire)
 	conn, err := d.claimReader.Conn(acquire)
 	cancel()
@@ -303,6 +306,7 @@ func (d *database) claimPreflight(ctx context.Context, request tracker.ClaimRequ
 // candidate, or the full write pass.
 type claimMode struct {
 	hint      *claimSelected
+	answer    error
 	preflight bool
 }
 
@@ -319,12 +323,13 @@ func (s *claimSelected) Error() string { return fmt.Sprintf("claim candidate %d 
 
 var errClaimHintStale = errors.New("selected claim candidate is no longer claimable")
 
-// preflightAnswered reports whether a preflight result is the claim's answer.
-// Write attempts on the read-only snapshot and unexpected failures defer to
-// the full write pass instead.
-func preflightAnswered(err error) bool {
+func preflightReadOnly(err error) bool {
 	var failure *sqlite.Error
-	if errors.As(err, &failure) && failure.Code()&0xff == sqlite3.SQLITE_READONLY {
+	return errors.As(err, &failure) && failure.Code()&0xff == sqlite3.SQLITE_READONLY
+}
+
+func preflightAnswered(err error) bool {
+	if preflightReadOnly(err) {
 		return false
 	}
 	var refusal *nativeError
@@ -332,6 +337,7 @@ func preflightAnswered(err error) bool {
 }
 
 func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *sql.TxOptions, mode claimMode, request tracker.ClaimRequest, query claimCandidateQuery, reconcileInterval time.Duration) (lease tracker.Lease, resultErr error) {
+	ctx = context.WithValue(ctx, claimWriterKey{}, !mode.preflight)
 	request.MachineID = tracker.MachineID(strings.TrimSpace(string(request.MachineID)))
 	request.SessionID = strings.TrimSpace(request.SessionID)
 	query.Scope = strings.TrimSpace(query.Scope)
@@ -372,7 +378,21 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 	}
 	commit := tx.Commit
 	if !mode.preflight {
-		commit = func() error { return d.commit(ctx, tx) }
+		commit = func() error {
+			if err := d.commit(ctx, tx); err != nil {
+				return err
+			}
+			if prepared := claimPrepared(ctx); prepared != nil {
+				for _, progress := range prepared.selection {
+					if progress.written {
+						progress.revision++
+						progress.dirty = false
+						progress.written = false
+					}
+				}
+			}
+			return nil
+		}
 	}
 	defer func() {
 		if resultErr != nil {
@@ -381,6 +401,9 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			}
 		}
 	}()
+	if prepared := claimPrepared(ctx); mode.hint != nil && prepared != nil {
+		prepared.selected = mode.hint.id
+	}
 	now, err := d.currentTime()
 	if err != nil {
 		return tracker.Lease{}, err
@@ -391,6 +414,17 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 	if query.NativeScope != nil {
 		if err := requireRunnerAuthority(ctx, tx, *query.NativeScope, now); err != nil {
 			return tracker.Lease{}, err
+		}
+	}
+	if !mode.preflight && claimPrepared(ctx) != nil {
+		if err := writePreparedClaimDecisions(ctx, tx, mode.hint, now); err != nil {
+			return tracker.Lease{}, err
+		}
+		if mode.answer != nil {
+			if err := commit(); err != nil {
+				return tracker.Lease{}, err
+			}
+			return tracker.Lease{}, mode.answer
 		}
 	}
 	var policyScope string
@@ -427,6 +461,9 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			return tracker.Lease{}, err
 		}
 		if query.NativeScope != nil && query.LandingCapacity > 0 {
+			if mode.preflight {
+				return tracker.Lease{}, &claimSelected{id: existing.issueID}
+			}
 			if err := tightenNativeLandingCapacity(ctx, tx, existing.session.ID, query.LandingCapacity); err != nil {
 				return tracker.Lease{}, err
 			}
@@ -453,26 +490,38 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		return tracker.Lease{}, err
 	}
 	query.LandingBatchGroup = joining
-	capacity, err := machineClaimCapacity(ctx, tx, request.MachineID, now, joining)
-	if err != nil {
-		return tracker.Lease{}, err
-	}
-	if capacity <= 0 {
-		if query.NativeScope != nil {
-			refusal := &nativeError{Code: "host_capacity", Message: "Shared host capacity is full or paused", status: http.StatusConflict}
-			recorded := d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_host_capacity", refusal, now)
-			if query.NativeScope.credential.Runner.RunnerID != "" || !errors.Is(recorded, refusal) {
-				return tracker.Lease{}, recorded
-			}
+	if query.NativeScope == nil || query.NativeScope.credential.Runner.RunnerID == "" {
+		capacity, err := machineClaimCapacity(ctx, tx, request.MachineID, now, "", joining)
+		if err != nil {
+			return tracker.Lease{}, err
 		}
-		return tracker.Lease{}, ErrNoClaimableWork
+		if capacity <= 0 {
+			if query.NativeScope != nil {
+				refusal := &nativeError{Code: "host_capacity", Message: "Shared host capacity is full or paused", status: http.StatusConflict, publicMessage: true}
+				recorded := d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_host_capacity", refusal, now)
+				if !errors.Is(recorded, refusal) {
+					return tracker.Lease{}, recorded
+				}
+			}
+			return tracker.Lease{}, ErrNoClaimableWork
+		}
 	}
+	var admission runnerauth.Runner
 	if query.NativeScope != nil && query.NativeScope.credential.Runner.RunnerID != "" {
-		if err := validateRunnerDispatch(ctx, tx, *query.NativeScope, now); err != nil {
-			return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_runner_routing", err, now)
+		admission, err = readRunnerForDispatch(ctx, tx, *query.NativeScope, now, joining)
+		if err == nil {
+			err = runnerExcluded(admission.Exclusions(query.NativeScope.project, policy.Requirements{}, false))
+		}
+		if err != nil {
+			source := "native_runner_routing"
+			var refusal *nativeError
+			if errors.As(err, &refusal) && refusal.Code == "host_capacity" {
+				source = "native_host_capacity"
+			}
+			return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, source, err, now)
 		}
 		if !query.WorkspaceLane {
-			if err := validateRunnerIsolation(ctx, tx, *query.NativeScope, now); err != nil {
+			if err := validateReadRunnerIsolation(ctx, tx, *query.NativeScope, admission); err != nil {
 				return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_runner_routing", err, now)
 			}
 		}
@@ -504,7 +553,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		}
 		ids = []tracker.WorkItemID{mode.hint.id}
 	} else {
-		selectedID, restricted, err := d.runnerAllowedSelection(ctx, tx, query, now)
+		selectedID, restricted, err := d.runnerAllowedSelection(ctx, tx, query, admission, now)
 		if err != nil {
 			var refusal *nativeError
 			if errors.As(err, &refusal) && refusal.Code == "issue_contract_unsatisfied" {
@@ -538,8 +587,8 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 	if len(ids) == 0 && request.WorkItemID > 0 {
 		return tracker.Lease{}, d.recordNativeClaimRefusal(ctx, tx, query, request.WorkItemID, "native_claim_eligibility", ErrNoClaimableWork, now)
 	}
-	// Workspace items are gated per candidate rather than per credential
-	// (decisions section 18.1): eligibility depends on the surfaces the
+	// Workspace items are gated per candidate rather than per credential:
+	// eligibility depends on the surfaces the
 	// workspace requires and on whether its attempt's worktree is still
 	// retained on one particular runner, so the answer differs between two
 	// workspaces the same runner is looking at.
@@ -603,7 +652,10 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			}
 		}
 		if query.NativeScope != nil && !query.WorkspaceLane {
-			allowed, reason, err := placementClaimAllowed(ctx, tx, *query.NativeScope, request.MachineID, id, now, query.ProviderCandidates)
+			allowed, reason, err := placementClaimAllowed(ctx, tx, *query.NativeScope, request.MachineID, id, now, query.ProviderCandidates, query.LandingBatchGroup)
+			if mode.preflight && errors.Is(err, errClaimHintStale) {
+				continue
+			}
 			if err != nil {
 				return tracker.Lease{}, err
 			}
@@ -615,7 +667,7 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 			}
 		}
 		// A workspace claim reserves one slot of the runner's capacity and
-		// nothing else (decisions section 18.1): the session serves files
+		// nothing else: the session serves files
 		// over the relay and runs no model, so it never goes through provider
 		// requirement matching and never carries a provider reservation.
 		var reservation providercapacity.Reservation
@@ -654,8 +706,14 @@ func (d *database) claimNextOn(ctx context.Context, db claimBeginner, options *s
 		}
 		if mode.preflight {
 			var revision int64
-			if err := tx.QueryRowContext(ctx, "SELECT revision FROM issues WHERE id = ?", id).Scan(&revision); err != nil {
+			var item string
+			if err := tx.QueryRowContext(ctx, "SELECT revision,COALESCE(native_id,'') FROM issues WHERE id = ?", id).Scan(&revision, &item); err != nil {
 				return tracker.Lease{}, err
+			}
+			if query.NativeScope != nil {
+				if _, err := readClaimReference(ctx, tx, *query.NativeScope, item); err != nil {
+					return tracker.Lease{}, err
+				}
 			}
 			return tracker.Lease{}, &claimSelected{id: id, revision: revision}
 		}
@@ -724,7 +782,7 @@ JOIN machines m ON m.id = l.machine_id
 WHERE l.session_id = ?`, sessionID))
 }
 
-func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.MachineID, now time.Time, joining ...string) (int, error) {
+func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.MachineID, now time.Time, runnerID, joining string) (int, error) {
 	var capacity int
 	if err := tx.QueryRowContext(ctx, "SELECT capacity FROM machines WHERE id = ?", machineID).Scan(&capacity); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -732,72 +790,17 @@ func machineClaimCapacity(ctx context.Context, tx *sql.Tx, machineID tracker.Mac
 		}
 		return 0, fmt.Errorf("read hub machine capacity: %w", err)
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT l.expires_at, l.session_id, l.lease_id, `+nativeLandingCapacityProject+` FROM leases l JOIN issues i ON i.id=l.issue_id `+nativeLandingCapacityJoins+` WHERE l.machine_id=? AND l.released_at IS NULL`, machineID)
+	used, _, err := machineClaimUsage(ctx, tx, machineID, runnerID, now, joining)
 	if err != nil {
-		return 0, fmt.Errorf("query hub machine leases: %w", err)
+		return 0, err
 	}
-	defer rows.Close()
-	active := 0
-	groups := map[string]bool{}
-	for rows.Next() {
-		var value, session, lease, project string
-		if err := rows.Scan(&value, &session, &lease, &project); err != nil {
-			return 0, fmt.Errorf("scan hub machine lease expiry: %w", err)
-		}
-		expiresAt, err := parseTimeValue(value)
-		if err != nil {
-			return 0, fmt.Errorf("parse hub machine lease expiry: %w", err)
-		}
-		if expiresAt.After(now) {
-			key := landingCapacityKey(machineID, project, session)
-			if key == "" {
-				key = lease
-			}
-			if !groups[key] {
-				active++
-				groups[key] = true
-			}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("iterate hub machine leases: %w", err)
-	}
-	if capacity > 0 && len(joining) > 0 && joining[0] != "" && groups[joining[0]] {
-		active--
-	}
-	return capacity - active, nil
+	return capacity - used, nil
 }
 
-// notAlreadyAnsweredClause excludes an item whose most recent attempt already
-// succeeded against the item as it stands, for an issue query that aliases the
-// issues table as i.
-//
-// A human-owned answer holds the item until the item changes: a human action,
-// a permission wait, recorded acceptance, or a blocker the instance does not
-// own. An instance-owned answer (an instance blocker, an instance reason code,
-// or an attempt without a typed disposition) holds it for 30 minutes and then
-// lets the next attempt retry, so a dispatchable item never waits forever on an
-// answer no human owns. A forge publication without a disposition never holds:
-// the next attempt continues from the published source.
-//
-// The latest attempt is the one with the highest fencing token. It applies to
-// native projects only: on a github_compatible project the issues row is a
-// projection whose writes never bump revision, so the clause would strand an
-// item whose lane moved on GitHub.
 const nativeAnsweredClassification = `CASE
- WHEN COALESCE(json_extract(answered.data_json, '$.disposition.human_action'), 0) <> 0 THEN 'human_action'
- WHEN COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') = 'permission_wait' THEN 'permission_wait'
- WHEN COALESCE(json_extract(answered.data_json, '$.runtime.completion.acceptance_recorded'), 0) = 1 THEN 'recorded_acceptance'
- WHEN COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 0) <> 0
-   AND (COALESCE(json_array_length(answered.data_json, '$.disposition.blocker_evidence'), 0) = 0
-     OR EXISTS (SELECT 1 FROM json_each(answered.data_json, '$.disposition.blocker_evidence') blocker
-       WHERE COALESCE(json_extract(blocker.value, '$.owner'), '') <> 'instance')) THEN 'external_blocker'
- WHEN (COALESCE(json_extract(answered.data_json, '$.disposition.status'), '') <> 'complete'
-     OR COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 0) <> 0
-     OR COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') <> '')
-   AND julianday(answered.updated_at) > julianday('now', '-30 minutes')
-   THEN CASE WHEN COALESCE(json_type(answered.data_json, '$.disposition'), 'null') = 'null'
-     THEN 'untyped_cooldown' ELSE 'instance_cooldown' END
+ WHEN answered.disposition_human_action <> 0 THEN 'human_action'
+ WHEN answered.disposition_reason_code = 'permission_wait' THEN 'permission_wait'
+ WHEN answered.acceptance_recorded = 1 THEN 'recorded_acceptance'
  ELSE '' END`
 
 const nativeAnsweredAttemptFrom = `FROM native_attempts answered
@@ -805,15 +808,16 @@ const nativeAnsweredAttemptFrom = `FROM native_attempts answered
    AND answered.project_id = i.project_id
    AND answered.work_item_id = i.native_id
    AND answered.status = 'succeeded'
+   AND answered.claim_facts_known=1
    AND (` + nativeAnsweredClassification + `) <> ''
-   AND NOT (json_type(answered.data_json, '$.disposition') IS NULL
-     AND COALESCE(json_extract(answered.checkpoint_json, '$.external_effect'), '') IN ('git_push', 'pr_create'))
-   AND NOT (COALESCE(json_extract(answered.data_json, '$.disposition.status'), '') = 'in_progress'
-     AND COALESCE(json_extract(answered.data_json, '$.disposition.blockers'), 1) = 0
-     AND COALESCE(json_extract(answered.data_json, '$.disposition.human_action'), 1) = 0
-     AND COALESCE(json_extract(answered.data_json, '$.disposition.reason_code'), '') = '')
-   AND NOT (COALESCE(json_extract(answered.checkpoint_json, '$.external_effect'), '') IN ('git_push', 'pr_create')
-     AND COALESCE(json_extract(answered.checkpoint_json, '$.effect_state'), '') IN ('pending', 'ambiguous'))
+   AND NOT (answered.disposition_present=0
+     AND answered.checkpoint_external_effect IN ('git_push', 'pr_create'))
+   AND NOT (answered.disposition_status = 'in_progress'
+     AND answered.disposition_blockers = 0
+     AND answered.disposition_human_action = 0
+     AND answered.disposition_reason_code = '')
+   AND NOT (answered.checkpoint_external_effect IN ('git_push', 'pr_create')
+     AND answered.checkpoint_effect_state IN ('pending', 'ambiguous'))
    AND answered.work_item_revision >= i.revision
    AND answered.dispatch_generation >= i.dispatch_generation
    AND answered.fencing_token = (SELECT max(latest.fencing_token) FROM native_attempts latest
@@ -827,7 +831,7 @@ const notAlreadyAnsweredClause = `(p.profile <> 'native' OR lower(trim(ws.detent
 // claimWorkspaceExclusionArg binds the candidate query's workspace exclusion.
 // A workspace session's dispatch issue is not project work and never becomes
 // project work: closing the workspace closes the association, it does not hand
-// the issue to the issue lane (decisions section 18.1). Only a claim that
+// the issue to the issue lane. Only a claim that
 // declared the workspace capability is offered one, and the exclusion lives in
 // the candidate query rather than in a skip set so that the provider candidate
 // preview, which shares this query, does not offer one either.
@@ -1013,18 +1017,18 @@ func setContainsAll(haystack map[string]struct{}, needles map[string]struct{}) b
 func (s *Service) registerMachine(c echo.Context) error {
 	var request machineRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	request.ID = tracker.MachineID(strings.TrimSpace(string(request.ID)))
 	request.Hostname = strings.TrimSpace(request.Hostname)
 	request.DisplayName = strings.TrimSpace(request.DisplayName)
 	request.Version = strings.TrimSpace(request.Version)
 	if request.ID == "" || request.Hostname == "" || request.Version == "" || request.Capacity < 0 {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_machine", Message: "Machine ID, hostname, version, and non-negative capacity are required"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_machine", "Machine ID, hostname, version, and non-negative capacity are required", apiErrorResponse{Code: "invalid_machine", Message: "Machine ID, hostname, version, and non-negative capacity are required"})
 	}
 	capabilities, err := json.Marshal(request.Capabilities)
 	if err != nil {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_machine", Message: "Machine capabilities are invalid"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_machine", "Machine capabilities are invalid", apiErrorResponse{Code: "invalid_machine", Message: "Machine capabilities are invalid"})
 	}
 	if string(capabilities) == "null" {
 		capabilities = []byte("{}")
@@ -1033,20 +1037,25 @@ func (s *Service) registerMachine(c echo.Context) error {
 	if err != nil {
 		return s.internalAPIError(c, "machine_register_failed", "Machine could not be registered", err)
 	}
+	var facts machineSpriteFacts
+	if err := json.Unmarshal(capabilities, &facts); err != nil {
+		return s.internalAPIError(c, "machine_register_failed", "Machine could not be registered", err)
+	}
 	result, err := s.database.db.ExecContext(c.Request().Context(), `
-INSERT INTO machines (id, hostname, display_name, capabilities_json, capacity, version, last_heartbeat_at, registered_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO machines (id, hostname, display_name, capabilities_json, capacity, version, last_heartbeat_at, registered_at, updated_at,sprite_name,sprite_woken_at,sprite_wake_failed_at,machine_facts_ready)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,?,?,?,1)
 ON CONFLICT(id) DO UPDATE SET
   hostname = excluded.hostname,
   display_name = excluded.display_name,
   capabilities_json = excluded.capabilities_json,
+ sprite_name=excluded.sprite_name,sprite_woken_at=excluded.sprite_woken_at,sprite_wake_failed_at=excluded.sprite_wake_failed_at,machine_facts_ready=1,
   capacity = excluded.capacity,
   version = excluded.version,
   last_heartbeat_at = excluded.last_heartbeat_at,
   updated_at = excluded.updated_at
 WHERE machines.organization_id IS NULL`,
 		request.ID, request.Hostname, request.DisplayName, string(capabilities), request.Capacity, request.Version,
-		formatHubTime(now), formatHubTime(now), formatHubTime(now),
+		formatHubTime(now), formatHubTime(now), formatHubTime(now), facts.Name, facts.WokenAt, facts.WakeFailedAt,
 	)
 	if err != nil {
 		return s.internalAPIError(c, "machine_register_failed", "Machine could not be registered", err)
@@ -1068,10 +1077,10 @@ func (s *Service) heartbeatMachine(c echo.Context) error {
 	}
 	var request machineHeartbeatRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if request.Capacity != nil && *request.Capacity < 0 {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_machine", Message: "Machine capacity must be non-negative"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_machine", "Machine capacity must be non-negative", apiErrorResponse{Code: "invalid_machine", Message: "Machine capacity must be non-negative"})
 	}
 	current, err := s.database.machine(c.Request().Context(), id)
 	if errors.Is(err, tracker.ErrMachineNotFound) {
@@ -1092,21 +1101,25 @@ func (s *Service) heartbeatMachine(c echo.Context) error {
 	if request.Version != nil {
 		current.Version = strings.TrimSpace(*request.Version)
 		if current.Version == "" {
-			return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_machine", Message: "Machine version must not be empty"})
+			return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_machine", "Machine version must not be empty", apiErrorResponse{Code: "invalid_machine", Message: "Machine version must not be empty"})
 		}
 	}
 	capabilities, err := json.Marshal(current.Capabilities)
 	if err != nil {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_machine", Message: "Machine capabilities are invalid"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_machine", "Machine capabilities are invalid", apiErrorResponse{Code: "invalid_machine", Message: "Machine capabilities are invalid"})
 	}
 	now, err := s.database.currentTime()
 	if err != nil {
 		return s.internalAPIError(c, "machine_heartbeat_failed", "Machine heartbeat could not be recorded", err)
 	}
+	var facts machineSpriteFacts
+	if err := json.Unmarshal(capabilities, &facts); err != nil {
+		return s.internalAPIError(c, "machine_heartbeat_failed", "Machine heartbeat could not be recorded", err)
+	}
 	result, err := s.database.db.ExecContext(c.Request().Context(), `
 UPDATE machines
-SET display_name = ?, capabilities_json = ?, capacity = ?, version = ?, last_heartbeat_at = ?, updated_at = ?
-WHERE id = ?`, current.DisplayName, string(capabilities), current.Capacity, current.Version, formatHubTime(now), formatHubTime(now), id)
+SET display_name = ?, capabilities_json = ?, capacity = ?, version = ?, last_heartbeat_at = ?, updated_at = ?,sprite_name=?,sprite_woken_at=?,sprite_wake_failed_at=?,machine_facts_ready=1
+WHERE id = ?`, current.DisplayName, string(capabilities), current.Capacity, current.Version, formatHubTime(now), formatHubTime(now), facts.Name, facts.WokenAt, facts.WakeFailedAt, id)
 	if err != nil {
 		return s.internalAPIError(c, "machine_heartbeat_failed", "Machine heartbeat could not be recorded", err)
 	}

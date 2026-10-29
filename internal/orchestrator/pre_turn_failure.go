@@ -45,7 +45,8 @@ func (o *Orchestrator) handleWorkspaceDiskExhaustion(ctx context.Context, state 
 	if !o.nativeWorkflow() {
 		complete()
 	}
-	if _, _, err := o.restorePreTurnIssue(ctx, state, running, event.CompletedAt); err != nil {
+	issue, _, err := o.restorePreTurnIssue(ctx, state, running, event.CompletedAt)
+	if err != nil {
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
 		return true
 	}
@@ -53,7 +54,10 @@ func (o *Orchestrator) handleWorkspaceDiskExhaustion(ctx context.Context, state 
 		complete()
 	}
 	attempt := nextAttempt(running.Attempt)
-	o.scheduleRetry(state, running.Issue, attempt, event.CompletedAt, telemetry.WorkspaceDiskExhaustionMessage, false, running.WorkerHost)
+	if err := o.retryMachineFailure(ctx, state, issue, attempt, event.CompletedAt, telemetry.WorkspaceDiskExhaustionMessage, running.WorkerHost); err != nil {
+		o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+		return true
+	}
 	o.deferProjectFailureBreakerCanary(state, running.Issue.ID, event.CompletedAt, o.retryDelay(attempt, false))
 	recordStateEvent(state, telemetry.ActivityEvent{At: event.CompletedAt, Event: "workspace_host_disk_full", Message: telemetry.WorkspaceDiskExhaustionMessage + "; retrying " + issueLabel(running.Issue)})
 	if o.logger != nil {
@@ -63,14 +67,15 @@ func (o *Orchestrator) handleWorkspaceDiskExhaustion(ctx context.Context, state 
 }
 
 func preTurnFailureClass(event runpkg.Completion, running Running) string {
-	if errors.Is(event.Err, runpkg.ErrValidatorInfrastructure) && running.Cancellation == nil && !errors.Is(event.Err, context.Canceled) {
+	if (errors.Is(event.Err, runpkg.ErrValidatorInfrastructure) || errors.Is(event.Err, runpkg.ErrReviewConversationsUnavailable)) && running.Cancellation == nil && !errors.Is(event.Err, context.Canceled) {
 		return workAttemptErrorRunner
 	}
 
 	if (errors.Is(event.Err, runpkg.ErrWorkerProcessReap) || errors.Is(event.Err, runpkg.ErrWorkspacePreparation)) && !errors.Is(event.Err, context.Canceled) && running.Cancellation == nil && !issueConfigurationFailure(event.Err, "", "") {
 		return workAttemptErrorWorkspace
 	}
-	if errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired) {
+	nativeRecovery := errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired)
+	if nativeRecovery && errors.Is(event.Err, runpkg.ErrExecutionAuthorityUnavailable) {
 		return ""
 	}
 	if issueConfigurationFailure(event.Err, "", "") || event.Err == nil || event.Result.TurnStarted || running.TurnCount > 0 || running.WorkProductPushed || running.Tokens.TotalTokens > 0 || event.Result.Tokens.TotalTokens > 0 {
@@ -96,6 +101,9 @@ func preTurnFailureClass(event runpkg.Completion, running Running) string {
 	var recoveryErr *runpkg.DeliverableRecoveryError
 	if errors.As(event.Err, &deliverableErr) || errors.As(event.Err, &recoveryErr) || runpkg.IsDeliverableConfigurationError(event.Err) || errors.Is(event.Err, runpkg.ErrSessionTokenCeilingExceeded) || isGitHubRESTBudgetHeadroomError(event.Err) {
 		return ""
+	}
+	if nativeRecovery {
+		return workAttemptErrorWorkspace
 	}
 	if runnerWorkAttemptErrorClass(event.Err) == workAttemptErrorRunner {
 		return workAttemptErrorRunner
@@ -142,9 +150,12 @@ func (o *Orchestrator) retryInstanceFailure(ctx context.Context, state *State, r
 		return err
 	}
 	if !stateIn(issue.State, o.cfg.ActiveStates) {
+		o.releaseTerminalAttemptClaim(ctx, state, issue, at)
 		return nil
 	}
-	o.scheduleRetry(state, issue, nextAttempt(running.Attempt), at, message, false, running.WorkerHost)
+	if err := o.retryMachineFailure(ctx, state, issue, nextAttempt(running.Attempt), at, message, running.WorkerHost); err != nil {
+		return err
+	}
 	recordStateEvent(state, telemetry.ActivityEvent{At: at, Event: "instance_failure_retry", Message: "instance failure for " + issueLabel(issue) + "; retrying without parking the issue or pausing the project"})
 	return nil
 }
@@ -208,7 +219,6 @@ func (o *Orchestrator) restorePreTurnIssue(ctx context.Context, state *State, ru
 		issue.State = target
 		changed = true
 	}
-	o.releaseTerminalAttemptClaim(ctx, state, issue, at)
 	delete(state.Retry, issue.ID)
 	delete(state.PriorAttempts, issue.ID)
 	return issue, changed, nil

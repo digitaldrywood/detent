@@ -19,3 +19,12 @@ func tryCacheLock(file *os.File, shared bool) error {
 	}
 	return err
 }
+
+func cacheEntryPinned(root *os.Root, name string) (bool, error) {
+	info, err := root.Lstat(name)
+	if err != nil {
+		return false, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return !ok || stat.Nlink > 1, nil
+}

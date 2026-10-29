@@ -110,7 +110,9 @@ import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useClientSettings } from "../hooks/useSettings";
-import { useSidebarData } from "../app/adapters/sidebarData";
+import { useSidebarData, useSidebarProjectCounts } from "../app/adapters/sidebarData";
+import { Checkbox } from "./ui/checkbox";
+import { Badge } from "./ui/badge";
 import { allProjectsLabel } from "../app/lib/projectScope";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
@@ -144,7 +146,6 @@ import {
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
-  filterSidebarProjectScopeItems,
   formatWorkingDurationLabel,
   firstValidTimestampMs,
   hasUnseenCompletion,
@@ -220,7 +221,7 @@ import {
   ComboboxTrigger,
   useComboboxFilter,
 } from "./ui/combobox";
-import { SidebarContent, SidebarGroup, SidebarMenuButton, useSidebar } from "./ui/sidebar";
+import { SidebarContent, SidebarGroup, SidebarMenu, SidebarMenuItem, SidebarMenuButton, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { SidebarDestinations, SidebarLandmark } from "../app/adapters/sidebarDestinations";
 import { useNewProject } from "../app/projects/NewProject";
@@ -2083,7 +2084,8 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
 });
 
 export default function Sidebar() {
-  const allProjects = allProjectsLabel(useSidebarData()?.organizationName);
+  const sidebarData = useSidebarData();
+  const allProjects = allProjectsLabel(sidebarData?.organizationName);
   const projects = useProjects();
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
@@ -2295,58 +2297,40 @@ export default function Sidebar() {
   // fresh clock whenever it recomputes.
   const [snoozeWakeTick, bumpSnoozeWakeTick] = useState(0);
 
-  // Project scope: one menu above the list. Scoping filters the list without
-  // making the header width depend on the number or length of project names.
-  // The selection lives in the persisted UI store next to the other sidebar
-  // project preferences, so routes that unmount the sidebar (Settings) and
-  // app restarts keep it.
   const projectScopeKey = useUiStateStore((store) => store.sidebarProjectScopeKey);
+  const workingSetKeys = useUiStateStore((store) => store.sidebarProjectWorkingSetKeys);
+  const setWorkingSetKeys = useUiStateStore((store) => store.setSidebarProjectWorkingSetKeys);
   const setProjectScopeKey = useUiStateStore((store) => store.setSidebarProjectScopeKey);
-  // {value, label} items let Base UI drive the combobox selection contract
-  // while the popup search filters the same collection.
-  const projectScopeItems = useMemo(
-    () => [
-      { value: "all", label: allProjects },
-      ...projectGroups.map((project) => ({
-        value: project.projectKey,
-        label: project.displayName,
-      })),
-    ],
-    [allProjects, projectGroups],
-  );
+  const projectCounts = useSidebarProjectCounts();
+  const projectScopeTriggerRef = useRef<HTMLButtonElement>(null);
+  const sortedProjects = useMemo(() => [...projectGroups].sort((a, b) =>
+    a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base" })), [projectGroups]);
+  const workingProjects = useMemo(() => sortedProjects.filter((project) => workingSetKeys.includes(project.projectKey)), [sortedProjects, workingSetKeys]);
+  const projectScopeItems = useMemo(() => sortedProjects.map((project) => ({
+    value: project.projectKey, label: project.displayName,
+  })), [sortedProjects]);
   const projectGroupByScopeKey = useMemo(
     () => new Map(projectGroups.map((project) => [project.projectKey, project] as const)),
     [projectGroups],
   );
-  const selectedProjectScopeItem = useMemo(
-    () =>
-      projectScopeItems.find((item) => item.value === (projectScopeKey ?? "all")) ??
-      projectScopeItems[0]!,
-    [projectScopeItems, projectScopeKey],
-  );
+  const selectedProjectScopeItems = useMemo(() => projectScopeItems.filter((item) => workingSetKeys.includes(item.value)), [projectScopeItems, workingSetKeys]);
+  const workingSetLabel = workingProjects.length === 0 ? allProjects : `${workingProjects.length} of ${projectGroups.length} projects`;
+  const countsFor = (project: SidebarProjectSnapshot) => project.memberProjectRefs.reduce((counts, ref) => {
+    const next = projectCounts[ref.projectId];
+    return { running: counts.running + (next?.running ?? 0), blocked: counts.blocked + (next?.blocked ?? 0) };
+  }, { running: 0, blocked: 0 });
+  const allCounts = (workingProjects.length === 0 ? sortedProjects : workingProjects).reduce((counts, project) => {
+    const next = countsFor(project);
+    return { running: counts.running + next.running, blocked: counts.blocked + next.blocked };
+  }, { running: 0, blocked: 0 });
   const [projectScopeMenuState, dispatchProjectScopeMenu] = useReducer(
     reduceSidebarProjectScopeMenuState,
     { open: false, query: "" },
   );
   const projectScopeFilter = useComboboxFilter();
-  // Filtering derives from the same React state that controls the input, so
-  // the visible query and the visible list can never desync — the peer wiring
-  // in DiffPanel and BranchToolbarBranchSelector. "All projects" is a scope
-  // reset, not a searchable entry: it only shows while a project scope is
-  // active (there is something to reset) and the query is empty, so it can't
-  // outrank a project match under autoHighlight and no-hit queries reach the
-  // empty state.
-  const filteredProjectScopeItems = useMemo(
-    () =>
-      filterSidebarProjectScopeItems({
-        items: projectScopeItems,
-        activeScopeKey: projectScopeKey,
-        query: projectScopeMenuState.query,
-        matches: (item, query) =>
-          projectScopeFilter.contains(item, query, (candidate) => candidate.label),
-      }),
-    [projectScopeFilter, projectScopeItems, projectScopeKey, projectScopeMenuState.query],
-  );
+  const filteredProjectScopeItems = useMemo(() => projectScopeItems.filter((item) =>
+    projectScopeFilter.contains(item, projectScopeMenuState.query.trim(), (candidate) => candidate.label)),
+    [projectScopeFilter, projectScopeItems, projectScopeMenuState.query]);
   const scopedProjectGroup = useMemo(
     () =>
       projectScopeKey === null
@@ -2356,24 +2340,24 @@ export default function Sidebar() {
   );
   const scopedProjectKeys = useMemo(
     () =>
-      scopedProjectGroup === null
+      scopedProjectGroup === null && workingProjects.length === 0
         ? null
         : new Set(
-            scopedProjectGroup.memberProjectRefs.map(
+            (scopedProjectGroup === null ? workingProjects : [scopedProjectGroup]).flatMap((project) => project.memberProjectRefs).map(
               (projectRef) => `${projectRef.environmentId}:${projectRef.projectId}`,
             ),
           ),
-    [scopedProjectGroup],
+    [scopedProjectGroup, workingProjects],
   );
   // A persisted scope whose project is gone falls back to all projects, but
   // only after every catalog environment has a live project snapshot. Cached
   // or disconnected environments cannot establish that the project is gone.
   const allProjectSnapshotsReady = useAllEnvironmentProjectSnapshotsReady();
   useEffect(() => {
-    if (projectScopeKey !== null && allProjectSnapshotsReady && scopedProjectGroup === null) {
-      setProjectScopeKey(null);
+    if (allProjectSnapshotsReady && workingSetKeys.some((key) => !projectGroupByScopeKey.has(key))) {
+      setWorkingSetKeys(workingSetKeys.filter((key) => projectGroupByScopeKey.has(key)));
     }
-  }, [allProjectSnapshotsReady, projectScopeKey, scopedProjectGroup, setProjectScopeKey]);
+  }, [allProjectSnapshotsReady, workingSetKeys, projectGroupByScopeKey, setWorkingSetKeys]);
   // Count-only subscription: the parent needs "are there draft rows" for the
   // empty state, while SidebarDraftBlock owns the per-keystroke content
   // subscription. Selecting a number keeps typing in a draft composer from
@@ -2404,7 +2388,7 @@ export default function Sidebar() {
   // hidden now, and bulk actions must never count or touch invisible rows.
   useEffect(() => {
     clearSelection();
-  }, [clearSelection, projectScopeKey]);
+  }, [clearSelection, projectScopeKey, workingSetKeys]);
 
   const openProjectSettings = useCallback(
     (projectGroup: SidebarProjectSnapshot) => {
@@ -2430,10 +2414,11 @@ export default function Sidebar() {
       event.preventDefault();
       event.stopPropagation();
       suppressNextScopeChangeRef.current = true;
+      sidebarData?.projectSwitcher?.setOpen(false);
       dispatchProjectScopeMenu({ type: "project-settings-opened" });
       openProjectSettings(projectGroup);
     },
-    [openProjectSettings],
+    [openProjectSettings, sidebarData?.projectSwitcher],
   );
 
   // Keep a dropped row at its destination while its server applies the
@@ -2610,7 +2595,7 @@ export default function Sidebar() {
   // filter context changes so a scope/search flip never inherits a deep
   // page state.
   const [settledVisibleCount, setSettledVisibleCount] = useState(SETTLED_TAIL_INITIAL_COUNT);
-  const settledResetKey = projectScopeKey ?? "all";
+  const settledResetKey = JSON.stringify([projectScopeKey, workingSetKeys]);
   const lastSettledResetKeyRef = useRef(settledResetKey);
   if (lastSettledResetKeyRef.current !== settledResetKey) {
     lastSettledResetKeyRef.current = settledResetKey;
@@ -4385,51 +4370,46 @@ export default function Sidebar() {
             {projectGroups.length > 0 ? (
               <div className="flex items-center gap-1">
                 <Combobox
+                  multiple
                   items={projectScopeItems}
                   filteredItems={filteredProjectScopeItems}
                   autoHighlight
                   itemToStringLabel={(item) => item.label}
                   isItemEqualToValue={(a, b) => a.value === b.value}
-                  open={projectScopeMenuState.open}
+                  open={sidebarData?.projectSwitcher?.open ?? projectScopeMenuState.open}
                   onOpenChange={(open) => {
+                    sidebarData?.projectSwitcher?.setOpen(open);
                     if (open) suppressNextScopeChangeRef.current = false;
                     dispatchProjectScopeMenu({ type: "open-changed", open });
                   }}
                   onItemHighlighted={(item) => {
                     highlightedProjectScopeKeyRef.current = item?.value ?? null;
                   }}
-                  value={selectedProjectScopeItem}
+                  value={selectedProjectScopeItems}
                   onValueChange={(item) => {
                     if (suppressNextScopeChangeRef.current) {
                       suppressNextScopeChangeRef.current = false;
                       return;
                     }
-                    if (!item) return;
-                    setProjectScopeKey(item.value === "all" ? null : item.value);
+                    setWorkingSetKeys(item.map((entry) => entry.value));
                   }}
                 >
                   <ComboboxTrigger
                     render={
                       <SidebarMenuButton
                         aria-label="Filter threads by project"
-                        title={selectedProjectScopeItem.label}
+                        ref={projectScopeTriggerRef}
+                        title={workingSetLabel}
                         className="min-w-0 flex-1 ps-[calc(var(--sidebar-row-content-inset)-1px)] focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
                       />
                     }
                   >
-                    {scopedProjectGroup ? (
-                      <span className="flex shrink-0">
-                        <ProjectFavicon project={scopedProjectGroup} className="size-4" />
-                      </span>
-                    ) : (
-                      <FolderIcon className="size-4 shrink-0" />
-                    )}
-                    <span className="min-w-0 flex-1 truncate">
-                      {scopedProjectGroup?.displayName ?? allProjects}
-                    </span>
+                    <FolderIcon className="size-4 shrink-0" />
+                    <span className="min-w-0 flex-1 truncate">{workingSetLabel}</span>
                     <ChevronDownIcon className="-mr-px size-4 shrink-0" />
                   </ComboboxTrigger>
                   <ComboboxPopup
+                    anchor={projectScopeTriggerRef}
                     align="start"
                     className="w-(--anchor-width) min-w-0 overflow-hidden"
                   >
@@ -4438,6 +4418,14 @@ export default function Sidebar() {
                       placeholder="Search projects..."
                       value={projectScopeMenuState.query}
                       onKeyDown={(event) => {
+                        if (event.key === " " && !event.nativeEvent.isComposing && !event.ctrlKey && !event.altKey && !event.metaKey) {
+                          const key = highlightedProjectScopeKeyRef.current;
+                          if (key) {
+                            event.preventDefault();
+                            setWorkingSetKeys(workingSetKeys.includes(key) ? workingSetKeys.filter((entry) => entry !== key) : [...workingSetKeys, key]);
+                          }
+                          return;
+                        }
                         if (
                           event.defaultPrevented ||
                           event.nativeEvent.isComposing ||
@@ -4470,11 +4458,12 @@ export default function Sidebar() {
                             key={item.value}
                             hideIndicator
                             value={item}
-                            className="h-8 min-h-8 py-0 font-medium"
+                            className="group/project-scope h-8 min-h-8 py-0 font-medium"
                             onContextMenu={(event) => {
                               if (project) handleProjectSettings(event, project);
                             }}
                           >
+                            <Checkbox render={<span />} checked={workingSetKeys.includes(item.value)} readOnly tabIndex={-1} aria-hidden="true" className="pointer-events-none" />
                             {project ? (
                               <ProjectFavicon project={project} className="size-4 shrink-0" />
                             ) : (
@@ -4488,7 +4477,7 @@ export default function Sidebar() {
                                 tabIndex={-1}
                                 aria-hidden="true"
                                 title={`Project settings for ${project.displayName}`}
-                                className="ml-auto size-6 [--control-icon-color:currentColor] text-icon-muted focus-visible:bg-accent focus-visible:text-foreground"
+                                className="ml-auto size-6 [--control-icon-color:currentColor] text-icon-muted opacity-0 group-hover/project-scope:opacity-100 group-data-highlighted/project-scope:opacity-100 pointer-coarse:opacity-100 focus-visible:bg-accent focus-visible:text-foreground focus-visible:opacity-100"
                                 onPointerDown={(event) => event.stopPropagation()}
                                 onClick={(event) => {
                                   void handleProjectSettings(event, project);
@@ -4501,6 +4490,10 @@ export default function Sidebar() {
                         );
                       }}
                     </ComboboxList>
+                    <div className="flex items-center justify-between border-t border-border px-2 py-1">
+                      <Button size="xs" variant="ghost" onClick={() => setWorkingSetKeys(projectScopeItems.map((item) => item.value))}>Select all</Button>
+                      <Button size="xs" variant="ghost" onClick={() => setWorkingSetKeys([])}>Clear</Button>
+                    </div>
                   </ComboboxPopup>
                 </Combobox>
                 <Tooltip>
@@ -4528,12 +4521,67 @@ export default function Sidebar() {
                 </Tooltip>
               </div>
             ) : null}
+            {projectGroups.length > 0 ? (
+              <SidebarMenu aria-label="Project working set" className="mt-1 ms-2 border-s border-sidebar-border ps-2">
+                {[null, ...workingProjects].map((project) => {
+                  const counts = project === null ? allCounts : countsFor(project);
+                  const focused = projectScopeKey === (project?.projectKey ?? null);
+                  return <SidebarMenuItem key={project?.projectKey ?? "all"}>
+                    <Tooltip>
+                      <TooltipTrigger render={<SidebarMenuButton
+                        isActive={focused}
+                        aria-label={project?.displayName ?? "All"}
+                        aria-pressed={focused}
+                        onClick={() => {
+                          setProjectScopeKey(project?.projectKey ?? null);
+                          if (isMobile) setOpenMobile(false);
+                        }}
+                        onContextMenu={project ? (event) => handleProjectSettings(event, project) : undefined}
+                        className="hover:bg-sidebar-row-hover"
+                      />}>
+                        {project ? <ProjectFavicon project={project} className="size-4 shrink-0" /> : (
+                          <span className="flex h-4 w-8 shrink-0 items-center -space-x-2">
+                            {workingProjects.length === 0 ? <FolderIcon className="size-4" /> : workingProjects.slice(0, 3).map((entry) =>
+                              <ProjectFavicon key={entry.projectKey} project={entry} className="size-4 shrink-0 ring-1 ring-sidebar rounded-xs" />)}
+                          </span>
+                        )}
+                        <span className="min-w-0 flex-1 truncate">{project?.displayName ?? "All"}</span>
+                        {counts.blocked > 0 ? <Badge variant="warning-outline" size="sm" aria-label={`${counts.blocked} blocked issues`}>{counts.blocked}</Badge> : null}
+                        {counts.running > 0 ? <span className="text-xs text-muted-foreground tabular-nums" aria-label={`${counts.running} active runners`}>{counts.running}</span> : null}
+                      </TooltipTrigger>
+                      <TooltipPopup role="tooltip" side="right" align="start">
+                        {project ? <span className="flex flex-col gap-1.5 py-1">
+                          <span className="flex items-center gap-1.5 font-medium">
+                            <ProjectFavicon project={project} className="size-3.5 shrink-0" />
+                            {project.displayName}
+                          </span>
+                          <span>{counts.running} {counts.running === 1 ? "runner" : "runners"} active</span>
+                          <span className="text-warning-foreground">{counts.blocked} blocked</span>
+                          <span className="border-t border-border pt-1.5 text-muted-foreground">Click to show only this project</span>
+                        </span> : <span className="flex flex-col gap-1.5 py-1">
+                          {(workingProjects.length === 0 ? sortedProjects : workingProjects).map((entry) => {
+                            const counts = countsFor(entry);
+                            return <span key={entry.projectKey} className="flex items-center gap-1.5">
+                              <ProjectFavicon project={entry} className="size-3.5 shrink-0" />
+                              <span className="min-w-0 flex-1 truncate">{entry.displayName}</span>
+                              {counts.blocked > 0 ? <Badge variant="warning-outline" size="sm" aria-label={`${counts.blocked} blocked issues`}>{counts.blocked}</Badge> : null}
+                              {counts.running > 0 ? <span className="text-muted-foreground tabular-nums" aria-label={`${counts.running} active runners`}>{counts.running}</span> : null}
+                            </span>;
+                          })}
+                          <span className="pt-1 text-muted-foreground">Click to show all {workingProjects.length || sortedProjects.length}</span>
+                        </span>}
+                      </TooltipPopup>
+                    </Tooltip>
+                  </SidebarMenuItem>;
+                })}
+              </SidebarMenu>
+            ) : null}
           </SidebarGroup>
         }
       >
         <SidebarGroup className="ps-[calc(var(--sidebar-content-inset)+1px)] pe-[var(--sidebar-content-inset)] pb-1 pt-0">
           {/* Seam (2 of 2): Detent's cross-cutting destinations, above the
-              thread list (decisions.md §17.4). */}
+              thread list. */}
           <SidebarDestinations />
           {isSearchingThreads ? (
             threadSearchResults.length > 0 ? (

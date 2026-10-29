@@ -31,7 +31,7 @@ func (credential apiCredential) projectGrantSQL(organization, project string) (s
 		return live, nil
 	}
 	if credential.Runner.RunnerID != "" {
-		return "EXISTS (SELECT 1 FROM runner_identities r WHERE r.token_id=? AND r.organization_id=" + organization + " AND r.removed_at IS NULL AND (r.scope='organization' OR EXISTS (SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=" + organization + " AND g.project_id=" + project + ")))", []any{credential.ID}
+		return "EXISTS (SELECT 1 FROM runner_identities r WHERE r.token_id=? AND " + runnerProjectAccessSQL(organization, project) + ")", []any{credential.ID}
 	}
 	principal := credential.ID
 	if credential.Hosted != nil && credential.HostedKeyScope != "" && credential.HostedProjectAccess == hostedProjectsAll {
@@ -89,7 +89,7 @@ func hostedRoleAllows(role string, scope apikey.Scope, action ...string) bool {
 				return false
 			}
 			switch action[0] {
-			case operatortool.EditItem, operatortool.FileIssue, operatortool.UploadAttachment, operatortool.ReferenceAttachment, operatortool.AddComment, operatortool.EditComment, operatortool.MoveItem, operatortool.VerifyFix, "credentials":
+			case operatortool.EditItem, operatortool.FileIssue, operatortool.UploadAttachment, operatortool.ReferenceAttachment, operatortool.AddComment, operatortool.EditComment, operatortool.MoveItem, operatortool.VerifyFix, "create_thread", "post_to_thread", "resolve_thread", "credentials":
 				return true
 			}
 			return false
@@ -130,7 +130,10 @@ func (s *Service) hostedAPITokenCredential(ctx context.Context, credential apiCr
 		}
 	}
 	current, err := s.hostedMembership(ctx, identity)
-	if err != nil || current.ID != membership.String {
+	if err != nil {
+		return apiCredential{}, err
+	}
+	if current.ID != membership.String {
 		return apiCredential{}, auth.ErrHostedIdentity
 	}
 	var local string
@@ -161,11 +164,17 @@ func (s *Service) hostedKeyCredentialFor(ctx context.Context, credential apiCred
 		return apiCredential{}, operatortool.ErrAccessDenied
 	}
 	session, err := s.WebSession(ctx, credential.SessionHash, s.config.now())
-	if err != nil || session.Identity.SupportActor != "" {
+	if err != nil {
+		return apiCredential{}, operatorAuthorizationError(err)
+	}
+	if session.Identity.SupportActor != "" {
 		return apiCredential{}, operatortool.ErrAccessDenied
 	}
 	current, _, err := s.hostedSessionCredential(ctx, session, credential.SessionHash)
-	if err != nil || current.ID != credential.ID || current.Hash != credential.Hash || current.HostedMembership != credential.HostedMembership {
+	if err != nil {
+		return apiCredential{}, operatorAuthorizationError(err)
+	}
+	if current.ID != credential.ID || current.Hash != credential.Hash || current.HostedMembership != credential.HostedMembership {
 		return apiCredential{}, operatortool.ErrAccessDenied
 	}
 	current.HostedRole = lesserHostedRole(current.HostedRole, credential.HostedRole)
@@ -328,12 +337,12 @@ func (s *Service) createHostedAPIKeyFor(ctx context.Context, credential apiCrede
 		return tokenResponse{}, err
 	}
 	if !request.validExpiry() || len(request.Projects) > 200 {
-		return tokenResponse{}, nativeInvalid("Choose Never or 1–90 days and at most 200 projects")
+		return tokenResponse{}, nativePublicInvalid("Choose Never or 1–90 days and at most 200 projects")
 	}
 	var message string
 	request.ProjectAccess, message = resolveHostedProjectAccess(request.ProjectAccess, request.Projects)
 	if message != "" {
-		return tokenResponse{}, nativeInvalid(message)
+		return tokenResponse{}, nativePublicInvalid(message)
 	}
 	var expiry *time.Time
 	if !request.NeverExpires {

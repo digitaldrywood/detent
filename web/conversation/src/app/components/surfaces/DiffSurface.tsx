@@ -86,7 +86,7 @@ function EmptyState({
 /**
  * Why a file the hub listed carries no patch, or null when it carries one.
  *
- * All three are §18.5's own distinctions and all three keep their counts, so
+ * All three are the Diff contract's own distinctions and all three keep their counts, so
  * the file is always listed — a reader is told that `.env.local` changed and
  * that its contents are not shown, rather than being shown a file list with a
  * hole in it.
@@ -386,7 +386,7 @@ export function DiffSurface({
           <EmptyState testId="diff-empty">
             {source.kind === "unavailable"
               ? source.reason
-              : // §18.5's other source. A change version's code is one opaque
+              : // The Diff contract's other source. A change version's code is one opaque
                 // artifact with no file names in it, so what follows is the
                 // round this issue published rather than its patch — and the
                 // reason there is no patch is that no attempt posted one, not

@@ -74,6 +74,10 @@ export const IssueExplanation = Schema.Struct({
   reasons: Schema.NullOr(Schema.Array(Schema.Struct({ code: Schema.String, detail: Schema.String, action: Schema.optional(Schema.String) }))),
   sources: Schema.NullOr(Schema.Array(Schema.Struct({ name: Schema.String, state: Schema.String, code: Schema.optional(Schema.String) }))),
   native_runtime: Schema.optional(Schema.Struct({
+    attempt: Schema.optional(Schema.Struct({
+      ...AttemptDiagnostics,
+      updated_at: Schema.String,
+    })),
     capacity: Schema.NullOr(Schema.Array(Schema.Struct({
       runner_id: Schema.String,
       observed_at: Schema.String,
@@ -122,6 +126,7 @@ export const HealthFinding = Schema.Struct({
 export type HealthFinding = typeof HealthFinding.Type;
 
 export const HealthFindingsRead = Schema.Struct({
+  change_sequence: Schema.optional(Schema.Number),
   items: Schema.Array(HealthFinding),
   last_tick_at: Schema.NullOr(Schema.String),
   next_cursor: Schema.optional(Schema.String),

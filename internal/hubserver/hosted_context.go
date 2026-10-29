@@ -221,6 +221,14 @@ func (e hostedContextExecutor) Execute(ctx context.Context, call operatortool.Ca
 }
 
 func (s *Service) readHostedEventObservation(ctx context.Context, scope nativeScope, workspace, item string) (hostedEventObservation, error) {
+	var query nativeQueryer = s.database.reader
+	if scope.credential.HostedRole == "reporter" {
+		prepared, prepareErr := prepareNativePageQuery(ctx, query, scope, "", "native_issue_actors")
+		if prepareErr != nil {
+			return hostedEventObservation{}, prepareErr
+		}
+		query = prepared
+	}
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	observation := hostedEventObservation{}
@@ -234,7 +242,7 @@ func (s *Service) readHostedEventObservation(ctx context.Context, scope nativeSc
 		if err := requireReporterItem(ctx, s.database.reader, scope, item); err != nil {
 			return observation, err
 		}
-		if err := s.database.reader.QueryRowContext(ctx, "SELECT event_sequence FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?", scope.organization, scope.project, item).Scan(&observation.Sequence); err != nil {
+		if err := query.QueryRowContext(ctx, "SELECT event_sequence FROM issues WHERE organization_id = ? AND project_id = ? AND native_id = ?", scope.organization, scope.project, item).Scan(&observation.Sequence); err != nil {
 			return observation, err
 		}
 	} else {
@@ -245,7 +253,7 @@ func (s *Service) readHostedEventObservation(ctx context.Context, scope nativeSc
 			statement += " AND work_item_id IN (SELECT i.native_id FROM issues i WHERE (" + visibility + "))"
 			args = append(args, visibilityArgs...)
 		}
-		if err := s.database.reader.QueryRowContext(ctx, statement, args...).Scan(&observation.Sequence); err != nil {
+		if err := query.QueryRowContext(ctx, statement, args...).Scan(&observation.Sequence); err != nil {
 			return observation, err
 		}
 	}

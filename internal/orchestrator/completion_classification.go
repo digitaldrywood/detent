@@ -12,7 +12,7 @@ import (
 )
 
 // Completion evidence classifies the session before review or gate-wait routing.
-// The existing issue allowance owns stopping repeated implementation attempts.
+// Unchanged or unavailable evidence uses the existing machine retry owner.
 func (o *Orchestrator) evaluateImplementCompletionProgress(ctx context.Context, running Running, finalState string, pullRequestUpdated bool) implementCompletionProgressDecision {
 	decision := o.evaluateImplementCompletionCandidate(ctx, running, finalState, pullRequestUpdated)
 	if strings.TrimSpace(finalState) != FinalStateCompleted || decision.DependencyDeferral {
@@ -41,7 +41,11 @@ func (o *Orchestrator) evaluateImplementCompletionProgress(ctx context.Context, 
 		// This is a completion decision, not an authored Workpad receipt.
 		decision.WorkpadStatus = workpad.StatusComplete
 	}
-	if !o.implementCompletionRebaseOnly(ctx, running, decision) {
+	if !o.implementCompletionRebaseOnly(ctx, running, &decision) {
+		if completionWorkpadUnfinished(decision.Issue) && len(decision.ProgressKinds) == 0 && decision.Outcome == store.WorkAttemptTerminalSuccess {
+			decision.Outcome = store.WorkAttemptTerminalNoProgress
+			decision.Reason = implementProgressOutcomeNoProgress
+		}
 		return decision
 	}
 	decision.Outcome = store.WorkAttemptTerminalNoProgress
@@ -85,7 +89,7 @@ func operationalCompletionReceiptMatches(issue connector.Issue, attempt store.Wo
 		(!operationalCompletionAttributed(signal) || workpad.CurrentAttemptCompletion(signal, attempt.ID, receipt.Generation))
 }
 
-func (o *Orchestrator) implementCompletionRebaseOnly(ctx context.Context, running Running, decision implementCompletionProgressDecision) bool {
+func (o *Orchestrator) implementCompletionRebaseOnly(ctx context.Context, running Running, decision *implementCompletionProgressDecision) bool {
 	signal, _ := autoPromoteIssueWorkpadSignal(decision.Issue)
 	pr := decision.Issue.PullRequest
 	if (workpad.CurrentAttemptCompletion(signal, running.WorkAttemptID, running.Generation) || completionForgeSupersedesWorkpad(pr, signal)) &&
@@ -93,12 +97,12 @@ func (o *Orchestrator) implementCompletionRebaseOnly(ctx context.Context, runnin
 		return false
 	}
 	before, after := running.Issue.PullRequest, decision.Issue.PullRequest
-	baseline := running.DispatchLoopStart
+	baseline := running.CompletionSourceStart
 	if baseline.PRDiffFingerprint == "" && running.WorkAttemptID > 0 && o.workAttempts != nil {
 		attempt, err := o.workAttempts.WorkAttempt(ctx, running.WorkAttemptID)
 		if err == nil {
 			var metadata struct {
-				Start dispatchLoopStartRecord `json:"dispatch_loop_start"`
+				Start completionSourceStartRecord `json:"completion_source"`
 			}
 			if json.Unmarshal([]byte(attempt.WorkerMetadataJSON), &metadata) == nil {
 				baseline = metadata.Start
@@ -117,11 +121,15 @@ func (o *Orchestrator) implementCompletionRebaseOnly(ctx context.Context, runnin
 	if stranded, unavailable := implementProgressUnpushedClassification(decision.WorkspaceDiffStats, after); stranded || unavailable != "" {
 		return false
 	}
-	if connector.PullRequestConflictCleared(before.MergeableState, after.MergeableState) {
+	current := o.implementCompletionDiffFingerprint(ctx, decision.Issue)
+	if connector.PullRequestConflictCleared(before.MergeableState, after.MergeableState) || current != "" && fingerprint != current {
+		if decision.Outcome == store.WorkAttemptTerminalSuccess {
+			decision.ProgressKinds = append(decision.ProgressKinds, "pull_request")
+		}
 		return false
 	}
 
-	return fingerprint == o.implementCompletionDiffFingerprint(ctx, decision.Issue)
+	return fingerprint == current
 }
 
 func (o *Orchestrator) implementCompletionDiffFingerprint(ctx context.Context, issue connector.Issue) string {

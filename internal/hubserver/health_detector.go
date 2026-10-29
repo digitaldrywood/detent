@@ -11,8 +11,9 @@ import (
 )
 
 type healthDetector struct {
-	cancel context.CancelFunc
-	done   chan struct{}
+	cancel    context.CancelFunc
+	done      chan struct{}
+	contracts healthContractCache
 }
 
 func (s *Service) startHealthDetector() {
@@ -43,7 +44,7 @@ func (s *Service) stopHealthDetector() {
 }
 
 func (s *Service) evaluateTenantHealth(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	ctx, cancel := context.WithTimeout(s.runDetailContext(ctx), 45*time.Second)
 	defer cancel()
 	if s.requestMetrics != nil {
 		if err := s.requestMetrics.flush(ctx, s.config.now()); err != nil {
@@ -81,28 +82,11 @@ func (s *Service) evaluateOrganizationHealth(ctx context.Context, organization t
 	if err != nil {
 		return err
 	}
-	unavailable := snapshot.BaselineUnavailable
-	if unavailable == nil {
-		unavailable = []healthBaselineUnavailable{}
-	}
-	raw, err := json.Marshal(unavailable)
-	if err != nil {
-		return err
-	}
-	tx, err := s.database.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO health_detector_ticks(organization_id,last_tick_at,baseline_unavailable_json) VALUES(?,?,?)
- ON CONFLICT(organization_id) DO UPDATE SET baseline_unavailable_json=excluded.baseline_unavailable_json`, organization, formatHubTime(now), string(raw)); err != nil {
-		return err
-	}
 	findings := evaluateHealth(now, snapshot)
 	if s.requestMetrics != nil && organization == s.requestMetrics.organization {
 		findings = append(findings, s.requestMetrics.findings(now)...)
 	}
-	return s.commitHealthEvaluation(ctx, tx, organization, now, findings)
+	return s.commitHealthEvaluation(ctx, organization, now, findings, snapshot.BaselineUnavailable)
 }
 
 func (s *Service) readHealthSnapshot(ctx context.Context, organization tracker.OrganizationID, now time.Time) (healthSnapshot, error) {
@@ -111,7 +95,7 @@ func (s *Service) readHealthSnapshot(ctx context.Context, organization tracker.O
 		return healthSnapshot{}, err
 	}
 	defer tx.Rollback()
-	return readHealthSnapshot(ctx, tx, organization, now)
+	return readHealthSnapshotWithContracts(ctx, tx, organization, now, &s.healthDetector.contracts)
 }
 
 func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, now time.Time, findings []healthFinding) ([]string, error) {
@@ -144,12 +128,25 @@ func writeHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker
 		if id == "" {
 			id = newNativeID("finding")
 			transitions = append(transitions, id)
-			_, err = tx.ExecContext(ctx, `INSERT INTO health_findings(id,organization_id,fingerprint,signal,class,subject_json,projects_json,opened_at,last_seen_at,severity,summary,next_action,evidence_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, organization, f.Fingerprint, f.Signal, f.Class, string(subject), string(projects), formatHubTime(now), formatHubTime(now), f.Severity, f.Summary, f.NextAction, string(evidence))
+			openedAt := now
+			if !f.ConditionSince.IsZero() && f.ConditionSince.Before(now) {
+				openedAt = f.ConditionSince
+			}
+			_, err = tx.ExecContext(ctx, `INSERT INTO health_findings(id,organization_id,fingerprint,signal,class,subject_json,projects_json,opened_at,last_seen_at,severity,summary,next_action,evidence_json,projects_projected) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,1)`, id, organization, f.Fingerprint, f.Signal, f.Class, string(subject), string(projects), formatHubTime(openedAt), formatHubTime(now), f.Severity, f.Summary, f.NextAction, string(evidence))
+			if err == nil {
+				err = syncHealthFindingProjects(ctx, tx, organization, id, f.Projects)
+			}
+			if err == nil {
+				err = appendDashboardHealthFinding(ctx, tx, id)
+			}
 			if err == nil && f.Severity == "attention" {
 				err = enqueueSlackOpened(ctx, tx, organization, id, now)
 			}
 		} else {
-			_, err = tx.ExecContext(ctx, `UPDATE health_findings SET last_seen_at=?,resolved_at=NULL,projects_json=?,summary=?,next_action=?,evidence_json=? WHERE id=? AND organization_id=?`, formatHubTime(now), string(projects), f.Summary, f.NextAction, string(evidence), id, organization)
+			if err := syncHealthFindingProjects(ctx, tx, organization, id, f.Projects); err != nil {
+				return nil, err
+			}
+			_, err = tx.ExecContext(ctx, `UPDATE health_findings SET last_seen_at=?,resolved_at=NULL,projects_json=?,severity=?,summary=?,next_action=?,evidence_json=?,projects_projected=1 WHERE id=? AND organization_id=?`, formatHubTime(now), string(projects), f.Severity, f.Summary, f.NextAction, string(evidence), id, organization)
 		}
 		if err != nil {
 			return nil, err

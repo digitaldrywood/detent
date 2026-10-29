@@ -4,13 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/chat"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/entryauthority"
@@ -20,6 +23,13 @@ import (
 )
 
 type operatorEntryOriginKey struct{}
+
+func operatorAuthorizationError(err error) error {
+	if auth.HostedIdentityReason(err) == auth.HostedReasonProviderUnavailable || errors.Is(err, operatortool.ErrProviderUnavailable) {
+		return operatortool.ErrProviderUnavailable
+	}
+	return operatortool.ErrAccessDenied
+}
 
 func (s *Service) registerOperatorTools(e *echo.Echo) {
 	// Hubs expose native work commands and hosted billing/usage operations.
@@ -39,23 +49,35 @@ func (s *Service) registerOperatorTools(e *echo.Echo) {
 	}
 }
 
+type operatorAccessTimeKey struct{}
+
+func operatorAccessTime(ctx context.Context, now time.Time) time.Time {
+	if accepted, ok := ctx.Value(operatorAccessTimeKey{}).(time.Time); ok {
+		return accepted
+	}
+	return now
+}
+
 func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		credential, status, err := s.authenticateAPIRequest(c)
-		if err != nil && s.config.Hosted != nil && !s.hostedShared() && c.Request().Header.Get(echo.HeaderAuthorization) == "" {
+		if err != nil && !errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) && s.config.Hosted != nil && !s.hostedShared() && c.Request().Header.Get(echo.HeaderAuthorization) == "" {
 			if _, hash, sessionErr := s.hostedSession(c.Request().Context(), c); sessionErr == nil {
 				credential, err = s.hostedAccountCredential(c.Request().Context(), hash)
 			}
 		}
 		if err != nil {
-			return c.JSON(status, apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
+			if errors.Is(operatorAuthorizationError(err), operatortool.ErrProviderUnavailable) {
+				return s.nativeAPIError(c, err)
+			}
+			return s.refusedAPIError(c, status, "access_denied", operatortool.ErrAccessDenied.Error(), apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
 		}
 		organization := c.Param("organization")
 		if organization == "" && s.config.Hosted != nil {
 			organization = s.config.Hosted.OrganizationID
 		}
 		if selected := strings.TrimSpace(c.Request().Header.Get("X-Detent-Organization")); selected != "" && selected != organization {
-			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
+			return s.refusedAPIError(c, http.StatusForbidden, "access_denied", operatortool.ErrAccessDenied.Error(), apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
 		}
 		identity := operatorIdentity(credential, organization)
 		var token string
@@ -90,7 +112,7 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 				var err error
 				current, _, err = s.authenticateAPIToken(ctx, token, "", "")
 				if err != nil {
-					return apiCredential{}, operatortool.ErrAccessDenied
+					return apiCredential{}, operatorAuthorizationError(err)
 				}
 			} else {
 				session, err := s.storedWebSession(ctx, credential.SessionHash, s.config.now())
@@ -98,7 +120,7 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 					return apiCredential{}, operatortool.ErrAccessDenied
 				}
 				if shared {
-					if claims.Kind != cloudassert.KindBrowser || !claims.AccessExpiresAt.After(s.config.now()) {
+					if claims.Kind != cloudassert.KindBrowser || !claims.AccessExpiresAt.After(operatorAccessTime(ctx, s.config.now())) {
 						return apiCredential{}, operatortool.ErrAccessDenied
 					}
 					current, _, err = s.hostedSharedCredential(ctx, session, credential.SessionHash, claims.Role)
@@ -110,7 +132,7 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 					}
 				}
 				if err != nil {
-					return apiCredential{}, operatortool.ErrAccessDenied
+					return apiCredential{}, operatorAuthorizationError(err)
 				}
 			}
 			return current, nil
@@ -137,7 +159,7 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 		})
 		authority, err := s.operatorCurrentAuthority(ctx, credential, organization)
 		if err != nil || !identity.Valid() || authority.Identity != identity || authority.Check(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, OrganizationID: organization}) != nil {
-			return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
+			return s.refusedAPIError(c, http.StatusForbidden, "access_denied", operatortool.ErrAccessDenied.Error(), apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
 		}
 		ctx = s.withOperatorCatalog(ctx, credential, organization)
 		request := c.Request().WithContext(ctx)
@@ -147,7 +169,7 @@ func (s *Service) operatorAuthority(next echo.HandlerFunc) echo.HandlerFunc {
 			// caller-supplied Forwarded/X-Forwarded-Host permission switch.
 			public, err := url.Parse(s.config.Hosted.PublicURL)
 			if err != nil || public.Host == "" {
-				return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
+				return s.refusedAPIError(c, http.StatusForbidden, "access_denied", operatortool.ErrAccessDenied.Error(), apiErrorResponse{Code: "access_denied", Message: operatortool.ErrAccessDenied.Error()})
 			}
 			request.Host = public.Host
 		}

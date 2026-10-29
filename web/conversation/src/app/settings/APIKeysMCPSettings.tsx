@@ -8,6 +8,20 @@ import {
   AlertDialogTitle,
 } from "../../components/ui/alert-dialog.tsx";
 import React from "react";
+import { formatRelativeTimeLabel } from "../../timestampFormat.ts";
+import { MoreHorizontal } from "lucide-react";
+import {
+  Tabs,
+  TabsList,
+  TabsTab,
+  TabsPanel,
+} from "../../components/ui/tabs.tsx";
+import {
+  Menu,
+  MenuTrigger,
+  MenuPopup,
+  MenuItem,
+} from "../../components/ui/menu.tsx";
 import type {
   AccessKey,
   CreatedAccessKey,
@@ -19,7 +33,11 @@ import { Toggle, ToggleGroup } from "../../components/ui/toggle-group.tsx";
 import { Button } from "../../components/ui/button.tsx";
 import { Badge } from "../../components/ui/badge.tsx";
 import { Radio, RadioGroup } from "../../components/ui/radio-group.tsx";
-import { OrganizationKeyControls } from "./OrganizationAPIKeysSettings.tsx";
+import {
+  OrganizationKeyControls,
+  useOrganizationKeyControls,
+} from "./OrganizationAPIKeysSettings.tsx";
+import { APIKeyTable } from "./APIKeyTable.tsx";
 import { Checkbox } from "../../components/ui/checkbox.tsx";
 import { Input } from "../../components/ui/input.tsx";
 import { Label } from "../../components/ui/label.tsx";
@@ -42,74 +60,9 @@ import { ControlError, NativeSelect } from "../account/controls.tsx";
 import { ConnectionValue, SetupPromptControl } from "./keySetup.tsx";
 import {
   SettingsPageContainer,
-  SettingsRow,
   SettingsSection,
   useRelativeTimeTick,
 } from "./settingsLayout.tsx";
-import { formatRelativeTimeLabel } from "../../timestampFormat.ts";
-
-export function lastKeyUse(value: string | null | undefined): React.ReactNode {
-  return value ? (
-    <span title={new Date(value).toLocaleString()}>
-      Last used {formatRelativeTimeLabel(value)}
-    </span>
-  ) : (
-    "Never used"
-  );
-}
-
-export function KeyScope({
-  apiKey,
-  context,
-}: {
-  readonly apiKey: AccessKey;
-  readonly context?: KeyContext | null;
-}) {
-  return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap gap-1.5">
-        <Badge variant="outline">
-          {apiKey.kind === "service"
-            ? "Organization projects"
-            : apiKey.access_context === "global"
-              ? "All my orgs"
-              : "Selected orgs"}
-        </Badge>
-        {(apiKey.organizations ?? []).map((org) => (
-          <Badge key={org.organization_id} variant="outline">
-            {context?.organizations.find(
-              (item) => item.organization_id === org.organization_id,
-            )?.name ?? org.organization_id}
-            :{" "}
-            {org.project_access === "all"
-              ? "All projects"
-              : `${org.project_ids.length} selected ${org.project_ids.length === 1 ? "project" : "projects"}`}
-          </Badge>
-        ))}
-      </div>
-      {apiKey.effective_reach && (
-        <div className="space-y-1 text-xs text-muted-foreground">
-          <p>Effective reach today</p>
-          {apiKey.effective_reach.length === 0 && (
-            <p>No organization access today.</p>
-          )}
-          {apiKey.effective_reach.map((org) => (
-            <p key={org.organization_id} className="break-words">
-              {org.name} ·{" "}
-              {org.status === "pending"
-                ? "Awaiting approval"
-                : org.status === "blocked"
-                  ? "Blocked"
-                  : org.status === "inactive"
-                    ? "Inactive"
-                    : `${org.role} · ${org.projects.length ? org.projects.map((project) => `${project.name}${project.can_write ? " (write)" : " (read)"}`).join(", ") : "No project access"}`}
-            </p>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 export function keySetupPrompt(
   endpoint: string,
@@ -120,28 +73,10 @@ export function keySetupPrompt(
   return `Use a Detent key from Settings → API keys & MCP. A key never grants more than its owner has. Store it privately as DETENT_API_KEY; never paste it into chat, logs or source files. ${direct ? `Use Authorization: Bearer with that private environment variable at ${origin}/api/v2. Read GET /api/v2/organizations, then GET /api/v2/organizations/ORG_ID/projects to choose a granted organization and project before using documented routes.` : `Configure one Streamable HTTP MCP server at ${endpoint}, with bearer_token_env_var = "DETENT_API_KEY". Initialize MCP, retain Mcp-Session-Id and protocol version, send notifications/initialized and discover every tools/list page. Call connection_info and confirm key.kind is ${kind ? `"${kind}"` : '"personal" or "service"'}${kind ? ", matching the key just created" : " and explain who it acts as"} before reporting success. Use organization_list and list_projects to choose granted organization_id and project_id selectors for calls.`} Check the returned organization and project before reporting success. Current membership, project grants, org policy, permission, expiry and revocation apply on every call. Your client's permission settings control sensitive-operation confirmation. This prompt contains no secret.`;
 }
 
-function CreatedKeySteps({
-  created,
-  endpoint,
-}: {
-  readonly created: CreatedAccessKey;
-  readonly endpoint: string;
-}) {
+function useKeyOwnerName(apiKey: AccessKey) {
   const api = useAccountApi();
-  const account = useAccountBootstrap();
-  const { id, kind, owner, owner_email: ownerEmail } = created;
-  const [revealed, setRevealed] = React.useState(false);
-  const [keyCopied, setKeyCopied] = React.useState(false);
-  const [copied, setCopied] = React.useState<string | null>(null);
-  const [error, setError] = React.useState<string | null>(null);
-  const [transport, setTransport] = React.useState("mcp");
-  const [fullPrompt, setFullPrompt] = React.useState(false);
-  const [firstUse, setFirstUse] = React.useState(created.last_used_at ?? null);
+  const { kind, owner, owner_email: ownerEmail } = apiKey;
   const [ownerName, setOwnerName] = React.useState(ownerEmail || owner);
-  useRelativeTimeTick(60_000);
-  const prompt = keySetupPrompt(endpoint, transport === "rest", kind);
-  const promptLabel = `${transport === "mcp" ? "MCP" : "REST API"} setup prompt`;
-
   React.useEffect(() => {
     if (kind !== "personal") return;
     let current = true;
@@ -158,6 +93,14 @@ function CreatedKeySteps({
       current = false;
     };
   }, [api, kind, owner, ownerEmail]);
+  return ownerName;
+}
+
+function useKeyLastCall(apiKey: AccessKey, preserveFirst = false) {
+  const api = useAccountApi();
+  const { id, kind } = apiKey;
+  const [lastCall, setLastCall] = React.useState(apiKey.last_used_at ?? null);
+  useRelativeTimeTick(60_000);
 
   React.useEffect(() => {
     let current = true;
@@ -169,7 +112,11 @@ function CreatedKeySteps({
           : api.serviceKeys());
         if (!current) return;
         const used = result.keys.find((key) => key.id === id)?.last_used_at;
-        if (used) setFirstUse((previous) => previous ?? used);
+        if (used) {
+          setLastCall((previous) =>
+            preserveFirst ? (previous ?? used) : used,
+          );
+        }
       } catch {
         if (!current) return;
       }
@@ -180,7 +127,152 @@ function CreatedKeySteps({
       current = false;
       clearTimeout(timer);
     };
-  }, [api, id, kind]);
+  }, [api, id, kind, preserveFirst]);
+
+  return lastCall;
+}
+
+function SetupTransport({
+  value,
+  onChange,
+}: {
+  readonly value: string;
+  readonly onChange: (value: string) => void;
+}) {
+  return (
+    <ToggleGroup
+      aria-label="Setup connection"
+      value={[value]}
+      onValueChange={(values) => {
+        if (values[0]) onChange(values[0]);
+      }}
+    >
+      <Toggle value="mcp">MCP</Toggle>
+      <Toggle value="rest">REST API</Toggle>
+    </ToggleGroup>
+  );
+}
+
+function ConnectKeySteps({
+  apiKey,
+  endpoint,
+  onRotate,
+}: {
+  readonly apiKey: AccessKey;
+  readonly endpoint: string;
+  readonly onRotate: () => void;
+}) {
+  const account = useAccountBootstrap();
+  const ownerName = useKeyOwnerName(apiKey);
+  const lastCall = useKeyLastCall(apiKey);
+  const [transport, setTransport] = React.useState("mcp");
+  const promptLabel = `${transport === "mcp" ? "MCP" : "REST"} setup prompt`;
+  const prompt = keySetupPrompt(endpoint, transport === "rest", apiKey.kind);
+  return (
+    <>
+      <DialogPanel>
+        <ol className="space-y-5">
+          <li className="flex gap-3">
+            <span className="font-semibold text-muted-foreground">1</span>
+            <div className="min-w-0 flex-1 space-y-2">
+              <h3 className="text-sm font-medium">Use the key you saved</h3>
+              <p className="text-sm text-muted-foreground">
+                The token was shown once, when the key was created. Your agent
+                reads it from DETENT_API_KEY. Lost it?{" "}
+                {apiKey.kind === "personal" ? (
+                  <Button size="sm" variant="link" onClick={onRotate}>
+                    Rotate this key
+                  </Button>
+                ) : (
+                  "Create a replacement key."
+                )}
+              </p>
+            </div>
+          </li>
+          <li className="flex gap-3">
+            <span className="font-semibold text-muted-foreground">2</span>
+            <div className="min-w-0 flex-1 space-y-2">
+              <h3 className="text-sm font-medium">
+                Give your agent the setup prompt
+              </h3>
+              <SetupTransport value={transport} onChange={setTransport} />
+              <pre
+                aria-label={`${promptLabel} preview`}
+                tabIndex={0}
+                className="max-h-48 overflow-y-auto rounded-lg border border-border bg-background p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]"
+              >
+                {prompt}
+              </pre>
+              <SetupPromptControl
+                key={transport}
+                label={promptLabel}
+                value={prompt}
+              />
+            </div>
+          </li>
+          <li className="flex gap-3">
+            <span
+              className={
+                lastCall
+                  ? "font-semibold text-success-foreground"
+                  : "font-semibold text-muted-foreground"
+              }
+            >
+              3
+            </span>
+            <div className="min-w-0 flex-1 space-y-2">
+              <h3 className="text-sm font-medium">Check it connected</h3>
+              <p
+                role="status"
+                className="flex items-center gap-2 text-sm break-words text-muted-foreground"
+              >
+                {lastCall ? (
+                  <>
+                    <span
+                      aria-hidden="true"
+                      className="size-1.5 shrink-0 rounded-full bg-success-foreground"
+                    />
+                    <span>
+                      Last call {formatRelativeTimeLabel(lastCall)} · acting as{" "}
+                      {apiKey.kind === "personal"
+                        ? ownerName
+                        : `${account?.organization.name} (service)`}
+                    </span>
+                  </>
+                ) : (
+                  "Waiting for the first call…"
+                )}
+              </p>
+            </div>
+          </li>
+        </ol>
+      </DialogPanel>
+      <DialogFooter>
+        <DialogClose render={<Button>Done</Button>} />
+      </DialogFooter>
+    </>
+  );
+}
+
+function CreatedKeySteps({
+  created,
+  endpoint,
+}: {
+  readonly created: CreatedAccessKey;
+  readonly endpoint: string;
+}) {
+  const account = useAccountBootstrap();
+  const { kind } = created;
+  const [revealed, setRevealed] = React.useState(false);
+  const [keyCopied, setKeyCopied] = React.useState(false);
+  const [copied, setCopied] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const [transport, setTransport] = React.useState("mcp");
+  const [fullPrompt, setFullPrompt] = React.useState(false);
+  const firstUse = useKeyLastCall(created, true);
+  const ownerName = useKeyOwnerName(created);
+  const prompt = keySetupPrompt(endpoint, transport === "rest", kind);
+  const promptLabel = `${transport === "mcp" ? "MCP" : "REST API"} setup prompt`;
 
   async function copy(value: string, target: string) {
     try {
@@ -402,8 +494,11 @@ export function APIKeysMCPSettings() {
   const [selections, setSelections] = React.useState<
     readonly KeyOrganization[]
   >([]);
-  const [personalHistory, setPersonalHistory] = React.useState(false);
-  const [serviceHistory, setServiceHistory] = React.useState(false);
+  const [showHistory, setShowHistory] = React.useState(false);
+  const [keyTab, setKeyTab] = React.useState("personal");
+  const memberControls = useOrganizationKeyControls(canManage);
+  const [transport, setTransport] = React.useState("mcp");
+  const [connectId, setConnectId] = React.useState<string | null>(null);
   const currentApi = React.useRef(api);
   currentApi.current = api;
   const list = React.useCallback(async () => {
@@ -423,6 +518,8 @@ export function APIKeysMCPSettings() {
     setOpen(false);
     setCreated(null);
     setAction(null);
+    setConnectId(null);
+    setKeyTab("personal");
     Promise.all([list(), api.keyContext()])
       .then(([listed, choices]) => {
         if (!current) return;
@@ -445,6 +542,11 @@ export function APIKeysMCPSettings() {
   const inactive = (key: AccessKey) =>
     Boolean(key.revoked_at) ||
     Boolean(key.expires_at && new Date(key.expires_at).getTime() <= now);
+
+  const connectKey = [...keys, ...(canManage ? serviceKeys : [])].find(
+    (key) => key.id === connectId && !inactive(key),
+  );
+  const promptLabel = `${transport === "mcp" ? "MCP" : "REST"} setup prompt`;
 
   function openCreate() {
     setName("");
@@ -579,115 +681,68 @@ export function APIKeysMCPSettings() {
     kind: "personal" | "service",
     listed: readonly AccessKey[],
   ) {
-    const history = kind === "personal" ? personalHistory : serviceHistory;
-    const setShowHistory =
-      kind === "personal" ? setPersonalHistory : setServiceHistory;
+    const visible = listed.filter((key) => showHistory || !inactive(key));
     return (
-      <SettingsSection
-        title={
-          kind === "personal"
-            ? "Your personal keys"
-            : "Organization service keys"
-        }
-      >
-        {!loaded && !error && (
-          <SettingsRow title="Loading API keys…" role="status" />
-        )}
-        {loaded &&
-          listed.filter((key) => (history ? inactive(key) : !inactive(key)))
-            .length === 0 && (
-            <SettingsRow
-              title={
-                history
-                  ? "No inactive keys"
-                  : kind === "service"
-                    ? "No active service keys"
-                    : "No active personal keys"
-              }
-              description={
-                history
-                  ? "Revoked and expired keys appear here."
-                  : "Create a key for your agent or integration."
-              }
-            />
-          )}
-        {listed
-          .filter((key) => (history ? inactive(key) : !inactive(key)))
-          .map((key) => (
-            <SettingsRow
-              key={key.id}
-              title={
-                <span className="flex flex-wrap items-center gap-2 break-words">
-                  {key.name}
-                  <Badge variant="outline">{key.permission}</Badge>
-                  <Badge variant="outline">
-                    {key.kind === "personal" ? "Personal" : "Service"}
-                  </Badge>
-                  {inactive(key) && (
-                    <Badge variant="outline">
-                      {key.revoked_at ? "Revoked" : "Expired"}
-                    </Badge>
-                  )}
-                </span>
-              }
-              description={
-                <span>
-                  {lastKeyUse(key.last_used_at)} ·{" "}
-                  {key.expires_at
-                    ? `Expires ${new Date(key.expires_at).toLocaleDateString()}`
-                    : "Never expires"}
-                </span>
-              }
-              status={<KeyScope apiKey={key} context={context} />}
-              control={
-                !inactive(key) && (
-                  <div className="flex flex-wrap gap-2">
-                    {key.kind === "personal" && (
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        disabled={busy}
-                        aria-label={`Rotate ${key.name}`}
+      <TabsPanel value={kind} className="space-y-2 pt-3">
+        <p className="text-xs text-muted-foreground">
+          {kind === "personal"
+            ? "Personal keys act as you: edits are recorded as you, and the key stops working if you leave an organization."
+            : `Service keys act as ${account?.organization.name ?? "the organization"} for CI, bots and team servers. Owners and admins manage them; they keep working when their creator leaves.`}
+        </p>
+        <APIKeyTable
+          label={kind === "personal" ? "Personal keys" : "Service keys"}
+          keys={visible}
+          context={context}
+          loaded={loaded}
+          error={Boolean(error)}
+          emptyMessage={`No active ${kind} keys. Create a key for your agent or integration.`}
+          renderActions={(key, isInactive) =>
+            !isInactive && (
+              <div className="flex items-center justify-end gap-1">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={!context || busy}
+                  aria-label={`Connect ${key.name}`}
+                  onClick={() => setConnectId(key.id)}
+                >
+                  Connect
+                </Button>
+                <Menu>
+                  <MenuTrigger
+                    render={<Button size="icon-xs" variant="ghost-muted" />}
+                    disabled={busy}
+                    aria-label={`More actions for ${key.name}`}
+                  >
+                    <MoreHorizontal aria-hidden="true" />
+                  </MenuTrigger>
+                  <MenuPopup align="end">
+                    {kind === "personal" && (
+                      <MenuItem
                         onClick={() => {
                           setDialogError(null);
                           setAction({ key, rotate: true });
                         }}
                       >
-                        Rotate
-                      </Button>
+                        Rotate token
+                      </MenuItem>
                     )}
-                    <Button
-                      size="xs"
-                      variant="destructive-outline"
-                      disabled={busy}
-                      aria-label={`Revoke ${key.name}`}
+                    <MenuItem
+                      variant="destructive"
                       onClick={() => {
                         setDialogError(null);
                         setAction({ key, rotate: false });
                       }}
                     >
                       Revoke
-                    </Button>
-                  </div>
-                )
-              }
-            />
-          ))}
-        {loaded && (
-          <SettingsRow
-            title="Key history"
-            control={
-              <Button
-                size="xs"
-                variant="ghost"
-                onClick={() => setShowHistory(!history)}
-              >
-                {history ? "Show active keys" : "Show revoked and expired keys"}
-              </Button>
-            }
-          />
-        )}
-      </SettingsSection>
+                    </MenuItem>
+                  </MenuPopup>
+                </Menu>
+              </div>
+            )
+          }
+        />
+      </TabsPanel>
     );
   }
   return (
@@ -702,66 +757,134 @@ export function APIKeysMCPSettings() {
             </Button>
           }
         >
-          <SettingsRow
-            title="API and MCP access"
-            description={`Connect Claude, Codex, scripts and CI to ${account?.organization.name ?? "your organization"}. A key never grants more than its owner has.`}
-          />
+          <p className="px-3 text-sm text-muted-foreground sm:px-4">
+            Connect Claude, Codex, scripts and CI to{" "}
+            {account?.organization.name ?? "your organization"}. A key never
+            grants more than its owner has.
+          </p>
         </SettingsSection>
-        <SettingsSection title="Which key do I need?" variant="plain">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <SettingsSection title="Personal key">
-              <SettingsRow
-                title="Acts as you"
-                description="For your own agents (Claude, Codex, CLI). Edits are recorded as you, so saving an issue confirms its contract. Stops working if you leave the org."
-              />
-            </SettingsSection>
-            <SettingsSection title="Service key">
-              <SettingsRow
-                title="Acts as the organization"
-                description="For shared automation (CI, bots, a team server). Edits are recorded as an integration and never count as a person. Owners/admins only. Keeps working when its creator leaves."
-              />
-            </SettingsSection>
+        <SettingsSection
+          title="Connect an agent"
+          headerAction={
+            <SetupTransport value={transport} onChange={setTransport} />
+          }
+        >
+          <div className="space-y-3 p-3 sm:p-4">
+            <p className="text-sm text-muted-foreground">
+              One endpoint for every key. The prompt reads DETENT_API_KEY and
+              holds no secret.
+            </p>
+            {context && (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <ConnectionValue
+                    label="MCP endpoint"
+                    value={context.mcp_endpoint}
+                    inline
+                  />
+                  <SetupPromptControl
+                    key={transport}
+                    label={promptLabel}
+                    value={keySetupPrompt(
+                      context.mcp_endpoint,
+                      transport === "rest",
+                    )}
+                    inlinePreview
+                  />
+                </div>
+                <p className="text-xs break-words text-muted-foreground">
+                  Claude Code:{" "}
+                  <code className="font-mono [overflow-wrap:anywhere]">{`claude mcp add --transport http detent ${context.mcp_endpoint} --header 'Authorization: Bearer \${DETENT_API_KEY}'`}</code>
+                </p>
+              </>
+            )}
           </div>
         </SettingsSection>
         {error && <ControlError message={error} />}
-        {renderKeys("personal", keys)}
-        {canManage && renderKeys("service", serviceKeys)}
-        <SettingsSection title="Connect">
-          <SettingsRow
-            title="One connection for every key"
-            description="The same endpoint for every key. The key decides who you are and what you reach."
-          />
-          {context && (
+        <Tabs
+          value={keyTab}
+          onValueChange={(value) => setKeyTab(String(value))}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            <TabsList aria-label="Key type">
+              <TabsTab value="personal">
+                Personal {keys.filter((key) => !inactive(key)).length}
+              </TabsTab>
+              {canManage && (
+                <TabsTab value="service">
+                  Service {serviceKeys.filter((key) => !inactive(key)).length}
+                </TabsTab>
+              )}
+              {canManage && (
+                <TabsTab value="member" className="gap-1.5">
+                  Member keys {memberControls.keys.length}
+                  {memberControls.pending.length > 0 && (
+                    <span
+                      role="img"
+                      aria-label="Keys awaiting approval"
+                      className="size-1.5 rounded-full bg-warning-foreground"
+                    />
+                  )}
+                </TabsTab>
+              )}
+            </TabsList>
+            <Label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Checkbox
+                checked={showHistory}
+                onCheckedChange={setShowHistory}
+              />
+              Show revoked and expired
+            </Label>
+          </div>
+          {renderKeys("personal", keys)}
+          {canManage && renderKeys("service", serviceKeys)}
+          {canManage && (
+            <TabsPanel value="member" className="space-y-2 pt-3">
+              <OrganizationKeyControls
+                controls={memberControls}
+                context={context}
+                showHistory={showHistory}
+              />
+            </TabsPanel>
+          )}
+        </Tabs>
+      </SettingsPageContainer>
+      <Dialog
+        open={Boolean(connectKey)}
+        onOpenChange={(value) => {
+          if (!value) setConnectId(null);
+        }}
+      >
+        <DialogPopup>
+          {connectKey && context && (
             <>
-              <ConnectionValue
-                label="MCP endpoint"
-                value={context.mcp_endpoint}
-              />
-              <SettingsRow
-                title="MCP setup prompt"
-                control={
-                  <SetupPromptControl
-                    label="MCP setup prompt"
-                    value={keySetupPrompt(context.mcp_endpoint)}
-                    preview
-                  />
-                }
-              />
-              <SettingsRow
-                title="Direct API setup prompt"
-                control={
-                  <SetupPromptControl
-                    label="Direct API setup prompt"
-                    value={keySetupPrompt(context.mcp_endpoint, true)}
-                    preview
-                  />
-                }
+              <DialogHeader>
+                <DialogTitle>Connect {connectKey.name}</DialogTitle>
+                <div>
+                  <Badge variant="outline">
+                    {connectKey.kind === "personal"
+                      ? "Personal · acts as you"
+                      : "Service · acts as the organization"}
+                  </Badge>
+                </div>
+                <DialogDescription className="sr-only">
+                  Three steps to connect your agent using the key you saved.
+                </DialogDescription>
+              </DialogHeader>
+              <ConnectKeySteps
+                key={connectKey.id}
+                apiKey={connectKey}
+                endpoint={context.mcp_endpoint}
+                onRotate={() => {
+                  setConnectId(null);
+                  setDialogError(null);
+                  setAction({ key: connectKey, rotate: true });
+                }}
               />
             </>
           )}
-        </SettingsSection>
-        {canManage && <OrganizationKeyControls />}
-      </SettingsPageContainer>
+        </DialogPopup>
+      </Dialog>
       <Dialog
         open={open}
         onOpenChange={(value) => {

@@ -1,29 +1,54 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/emailtemplate"
 )
 
 const smtpTimeout = 10 * time.Second
 
-type EmailMessage struct {
-	To      string
-	Subject string
-	Body    string
-}
+type EmailMessage = emailtemplate.Message
+
+type InlineImage = emailtemplate.InlineImage
 
 type EmailSender interface {
 	SendEmail(context.Context, EmailMessage) error
+}
+
+type EmailDeliveryError struct {
+	Err     error
+	Outcome string
+}
+
+func (e *EmailDeliveryError) Error() string { return e.Err.Error() }
+func (e *EmailDeliveryError) Unwrap() error { return e.Err }
+
+func EmailDeliveryOutcome(err error) string {
+	if err == nil {
+		return "committed"
+	}
+	var delivery *EmailDeliveryError
+	if errors.As(err, &delivery) {
+		return delivery.Outcome
+	}
+	return "uncertain"
 }
 
 type SMTPSender interface {
@@ -40,12 +65,14 @@ type SMTPConfig struct {
 }
 
 type smtpSender struct {
-	host     string
-	port     int
-	username string
-	password string
-	from     string
-	timeout  time.Duration
+	host        string
+	port        int
+	username    string
+	password    string
+	from        string
+	timeout     time.Duration
+	implicitTLS bool
+	tlsConfig   *tls.Config
 }
 
 func NewSMTPSender(cfg SMTPConfig) (SMTPSender, error) {
@@ -64,20 +91,41 @@ func NewSMTPSender(cfg SMTPConfig) (SMTPSender, error) {
 		return nil, errors.New("smtp username and password must be set together")
 	}
 	return &smtpSender{
-		host:     host,
-		port:     cfg.Port,
-		username: strings.TrimSpace(cfg.Username),
-		password: cfg.Password,
-		from:     from.Address,
-		timeout:  smtpTimeout,
+		host:        host,
+		port:        cfg.Port,
+		username:    strings.TrimSpace(cfg.Username),
+		password:    cfg.Password,
+		from:        from.Address,
+		timeout:     smtpTimeout,
+		implicitTLS: cfg.Port == 465,
+		tlsConfig:   &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host},
 	}, nil
 }
 
 func (s *smtpSender) SendMagicLink(ctx context.Context, message Message) error {
-	return s.SendEmail(ctx, EmailMessage{To: message.To, Subject: "Your Detent sign-in link", Body: magicLinkBody(message)})
+	email, err := emailtemplate.Render(emailtemplate.Content{
+		Title:       "Sign in to Detent",
+		Note:        "Use this button to sign in. This link can be used once and expires at " + message.ExpiresAt.UTC().Format("Jan 2, 2006 15:04:05 UTC") + ".",
+		ActionLabel: "Sign in",
+		ActionURL:   message.URL,
+		Footer:      "If you didn't request this, you can ignore this email.",
+	})
+	if err != nil {
+		return err
+	}
+	email.To = message.To
+	email.Subject = "Your Detent sign-in link"
+	email.Body = magicLinkBody(message)
+	return s.SendEmail(ctx, email)
 }
 
 func (s *smtpSender) SendEmail(ctx context.Context, message EmailMessage) (err error) {
+	outcome := "rejected"
+	defer func() {
+		if err != nil {
+			err = &EmailDeliveryError{Err: err, Outcome: outcome}
+		}
+	}()
 	if strings.ContainsAny(message.To+message.Subject, "\r\n") {
 		return errors.New("email headers are invalid")
 	}
@@ -85,12 +133,23 @@ func (s *smtpSender) SendEmail(ctx context.Context, message EmailMessage) (err e
 	if parseErr != nil || recipient == nil || recipient.Address == "" {
 		return errors.New("email recipient is invalid")
 	}
+	data, err := emailMessage(s.from, recipient.Address, message)
+	if err != nil {
+		return fmt.Errorf("encode email: %w", err)
+	}
 	deadline := time.Now().Add(s.timeout)
 	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
 		deadline = contextDeadline
 	}
 	dialer := net.Dialer{Deadline: deadline}
-	connection, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(s.host, strconv.Itoa(s.port)))
+	address := net.JoinHostPort(s.host, strconv.Itoa(s.port))
+	var connection net.Conn
+	if s.implicitTLS {
+		tlsDialer := tls.Dialer{NetDialer: &dialer, Config: s.tlsConfig}
+		connection, err = tlsDialer.DialContext(ctx, "tcp", address)
+	} else {
+		connection, err = dialer.DialContext(ctx, "tcp", address)
+	}
 	if err != nil {
 		return fmt.Errorf("connect smtp server: %w", err)
 	}
@@ -107,8 +166,8 @@ func (s *smtpSender) SendEmail(ctx context.Context, message EmailMessage) (err e
 		}
 	}()
 
-	if ok, _ := client.Extension("STARTTLS"); ok {
-		if err := client.StartTLS(&tls.Config{MinVersion: tls.VersionTLS12, ServerName: s.host}); err != nil {
+	if ok, _ := client.Extension("STARTTLS"); ok && !s.implicitTLS {
+		if err := client.StartTLS(s.tlsConfig); err != nil {
 			return fmt.Errorf("start smtp tls: %w", err)
 		}
 	}
@@ -127,12 +186,18 @@ func (s *smtpSender) SendEmail(ctx context.Context, message EmailMessage) (err e
 	if err != nil {
 		return fmt.Errorf("start smtp message: %w", err)
 	}
-	if _, err := writer.Write(emailMessage(s.from, recipient.Address, message)); err != nil {
+	outcome = "uncertain"
+	if _, err := writer.Write(data); err != nil {
 		return errors.Join(fmt.Errorf("write smtp message: %w", err), writer.Close())
 	}
 	if err := writer.Close(); err != nil {
+		var response *textproto.Error
+		if errors.As(err, &response) {
+			outcome = "rejected"
+		}
 		return fmt.Errorf("finish smtp message: %w", err)
 	}
+	outcome = "committed"
 	if err := client.Quit(); err != nil {
 		return fmt.Errorf("quit smtp client: %w", err)
 	}
@@ -144,13 +209,81 @@ func magicLinkBody(message Message) string {
 	return "Use this link to sign in to Detent:\r\n\r\n" + message.URL + "\r\n\r\nThis link can be used once and expires at " + message.ExpiresAt.UTC().Format(time.RFC3339) + ".\r\n"
 }
 
-func emailMessage(from string, to string, message EmailMessage) []byte {
+func emailMessage(from string, to string, message EmailMessage) ([]byte, error) {
 	headers := "From: " + from + "\r\n" +
 		"To: " + to + "\r\n" +
 		"Subject: " + mime.QEncoding.Encode("utf-8", message.Subject) + "\r\n" +
-		"MIME-Version: 1.0\r\n" +
-		"Content-Type: text/plain; charset=UTF-8\r\n" +
-		"Content-Transfer-Encoding: 8bit\r\n\r\n"
+		"MIME-Version: 1.0\r\n"
 	body := strings.ReplaceAll(strings.ReplaceAll(message.Body, "\r\n", "\n"), "\n", "\r\n")
-	return []byte(headers + body)
+	if message.HTMLBody == "" {
+		return []byte(headers + "Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n" + body), nil
+	}
+	var buffer bytes.Buffer
+	alternative := multipart.NewWriter(&buffer)
+	buffer.WriteString(headers + "Content-Type: " + mime.FormatMediaType("multipart/alternative", map[string]string{"boundary": alternative.Boundary()}) + "\r\n\r\n")
+	if err := writeEmailPart(alternative, "text/plain", message.Body); err != nil {
+		return nil, err
+	}
+	if len(message.InlineImages) == 0 {
+		if err := writeEmailPart(alternative, "text/html", message.HTMLBody); err != nil {
+			return nil, err
+		}
+	} else {
+		var relatedBody bytes.Buffer
+		related := multipart.NewWriter(&relatedBody)
+		if err := writeEmailPart(related, "text/html", message.HTMLBody); err != nil {
+			return nil, err
+		}
+		for _, image := range message.InlineImages {
+			if image.ContentID == "" || strings.ContainsAny(image.ContentID+image.ContentType, "\r\n<>") {
+				return nil, errors.New("inline image headers are invalid")
+			}
+			part, err := related.CreatePart(textproto.MIMEHeader{
+				"Content-Type":              {image.ContentType},
+				"Content-ID":                {"<" + image.ContentID + ">"},
+				"Content-Disposition":       {"inline"},
+				"Content-Transfer-Encoding": {"base64"},
+			})
+			if err != nil {
+				return nil, err
+			}
+			encoded := base64.StdEncoding.EncodeToString(image.Data)
+			for len(encoded) > 0 {
+				line := min(76, len(encoded))
+				if _, err := io.WriteString(part, encoded[:line]+"\r\n"); err != nil {
+					return nil, err
+				}
+				encoded = encoded[line:]
+			}
+		}
+		if err := related.Close(); err != nil {
+			return nil, err
+		}
+		part, err := alternative.CreatePart(textproto.MIMEHeader{"Content-Type": {mime.FormatMediaType("multipart/related", map[string]string{"boundary": related.Boundary(), "type": "text/html"})}})
+		if err != nil {
+			return nil, err
+		}
+		if _, err := part.Write(relatedBody.Bytes()); err != nil {
+			return nil, err
+		}
+	}
+	if err := alternative.Close(); err != nil {
+		return nil, err
+	}
+	return buffer.Bytes(), nil
+}
+
+func writeEmailPart(writer *multipart.Writer, contentType, body string) error {
+	part, err := writer.CreatePart(textproto.MIMEHeader{
+		"Content-Type":              {contentType + "; charset=UTF-8"},
+		"Content-Transfer-Encoding": {"quoted-printable"},
+	})
+	if err != nil {
+		return err
+	}
+	encoded := quotedprintable.NewWriter(part)
+	if _, err := io.WriteString(encoded, body); err != nil {
+		return errors.Join(err, encoded.Close())
+	}
+	return encoded.Close()
 }

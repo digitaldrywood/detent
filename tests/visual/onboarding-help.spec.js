@@ -4,6 +4,7 @@ const path = require("node:path");
 
 let server;
 let origin;
+let context;
 
 test.beforeEach(async () => {
   server = spawn(process.execPath, ["--import", path.resolve("web/conversation/node_modules/tsx/dist/loader.mjs"), "tests/visual/onboarding-help-server.ts"], { stdio: ["pipe", "pipe", "pipe"] });
@@ -23,6 +24,11 @@ test.beforeEach(async () => {
 });
 
 test.afterEach(async () => {
+  if (context) {
+    for (const page of context.pages()) await page.unrouteAll({ behavior: "wait" });
+    await context.close();
+    context = undefined;
+  }
   if (server?.exitCode === null) {
     await new Promise((resolve) => { server.once("exit", resolve); server.stdin.end(); });
   }
@@ -52,44 +58,69 @@ async function help(page, label, content, interaction = "click", screenshot, fie
 }
 
 for (const width of [1280, 390]) {
-  test(`onboarding help explains setup and enrollment at ${width}px`, async ({ browser }, testInfo) => {
-    const context = await browser.newContext({ viewport: { width, height: 900 }, hasTouch: width === 390, reducedMotion: "reduce" });
+  for (const colorScheme of ["light", "dark"]) {
+  test(`onboarding help explains setup and enrollment at ${width}px in ${colorScheme}`, async ({ browser }, testInfo) => {
+    context = await browser.newContext({ viewport: { width, height: 900 }, colorScheme, hasTouch: width === 390, reducedMotion: "reduce" });
     const page = await context.newPage();
     const tap = width === 390 ? "tap" : "click";
-    await page.goto(new URL("/projects/proj_alpha/setup", origin).href);
+    await page.goto(new URL(`/projects/proj_alpha/setup?theme=${colorScheme}`, origin).href);
     const steps = page.getByRole("list", { name: "Setup steps" });
-    await expect(steps.getByRole("button").nth(0)).toContainText("Repository");
+    await expect(steps.getByRole("button").nth(0)).toContainText("Runner");
+    await expect(page.getByRole("heading", { name: /is preparing mockorg\/alpha/ })).toBeVisible();
     await steps.getByRole("button", { name: /^.*Repository (ready|action required)$/ }).click();
-    const repositoryLabel = "Which repository should Detent work on?";
-    const repository = page.getByRole("textbox", { name: repositoryLabel, exact: true });
+    const repository = page.getByRole("combobox", { name: "Search or type owner/name" });
     await expect(repository).toHaveValue("");
-    await help(page, "Associate the runner checkout", "private repositories work too, without a GitHub integration", width === 1280 ? "hover" : tap);
-    await expect(repository).toHaveValue("");
-    await expect(page.getByRole("button", { name: "Associate", exact: true })).toBeDisabled();
-    await repository.fill("owner/repository");
-    await help(page, "Associate the runner checkout", "Enter owner/name and click Associate", width === 1280 ? "focus" : tap, undefined, repositoryLabel);
-    await expect(repository).toHaveValue("owner/repository");
-    await help(page, "Associate the runner checkout", "a repository your runner can download using its Git sign-in", tap);
-    await expect(repository).toHaveValue("owner/repository");
-    await expect(page.getByRole("button", { name: "Associate", exact: true })).toBeEnabled();
-    await steps.getByRole("button", { name: /Repository configuration/ }).click();
-    await expect(page.getByRole("heading", { name: "Repository configuration", exact: true })).toBeVisible();
-
-    await steps.getByRole("button", { name: /Local validation/ }).click();
+    await expect(page.getByRole("button", { name: "Use owner/name", exact: true })).toBeDisabled();
+    await repository.fill("example-");
+    await expect(page.getByRole("option", { name: /example-org\/example-project/ })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath(`repository-list-${width}.png`) });
+    await repository.fill("example-org/unlisted");
+    await expect(page.getByRole("option", { name: "Use example-org/unlisted as typed" })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath(`repository-typed-${width}.png`) });
+    await page.getByRole("button", { name: "Not listed?", exact: true }).click();
+    await expect(page.getByText("Type owner/name even if it is not listed.", { exact: false })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Use example-org/unlisted", exact: true })).toBeEnabled();
+    await steps.getByRole("button", { name: /Checkout/ }).click();
     await expect(page.getByRole("checkbox")).toHaveCount(0);
-    await help(page, "Project checkout and configuration", "Your runner needs a copy of your code", tap);
-    await help(page, "detent doctor", "checks whether Detent is set up correctly", tap);
-    await help(page, "Provider sign-in", "your sign-in details stay on that computer", tap);
+    const onboardingResponse = await page.request.get(new URL("/api/v2/organizations/org_mock/projects/proj_alpha/onboarding", origin).href);
+    expect(onboardingResponse.ok()).toBeTruthy();
+    const data = await onboardingResponse.json();
+    let configurationMissing = false;
+    let reportConfigurationMissing = false;
+    await page.route("**/projects/proj_alpha/onboarding", async (route) => {
+      if (route.request().method() !== "GET") {
+        configurationMissing = reportConfigurationMissing;
+        await route.continue();
+        return;
+      }
+      const at = new Date(Date.now() - 12_000).toISOString();
+      await route.fulfill({ json: { ...data, runners: data.runners.slice(0, 1).map((entry) => ({ ...entry, runner: { ...entry.runner, display_name: "Example runner", connection_health: "online" }, local_checks: { checkout: "passed", configuration: configurationMissing ? "missing" : "passed", doctor: configurationMissing ? "pending" : "running", provider: "pending", observed_at: at } })), steps: data.steps.map((step) => step.name === "Checkout" ? { ...step, state: "action_required" } : step) } });
+    });
+    await page.getByRole("button", { name: "Refresh runner checks" }).click();
+    const checks = page.getByRole("list", { name: "Runner checks" });
+    await expect(checks.getByText("Running", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeDisabled();
+    for (const name of ["Back", "Continue in background", "Continue"]) {
+      const button = page.getByRole("button", { name, exact: true });
+      await button.scrollIntoViewIfNeeded();
+      await expect(button).toBeInViewport({ ratio: 1 });
+    }
+    await page.screenshot({ path: testInfo.outputPath(`checkout-running-${width}.png`) });
+    reportConfigurationMissing = true;
+    await page.getByRole("button", { name: "Refresh runner checks" }).click();
+    await expect(checks.getByText("detent.yaml and WORKFLOW.md not found")).toBeVisible();
+    await expect(page.getByRole("radio", { name: "Create starter files on Example runner" })).toBeVisible();
+    await expect(page.getByRole("radio", { name: "I’ll add them myself" })).toBeVisible();
+    await expect(page.getByText(/restart/i)).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath(`checkout-missing-${width}.png`) });
 
-    await steps.getByRole("button", { name: /Execution runner/ }).click();
-    await help(page, "Runner eligibility", "a computer you control", tap);
-    await help(page, "Route here", "check the reason shown next to it", tap);
+    await steps.getByRole("button", { name: /Runner (ready|action required)/ }).click();
+    await expect(page.getByRole("group", { name: "Computer for this project" })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath(`runner-${width}.png`) });
     const enroll = page.getByRole("button", { name: "Enroll a runner", exact: true });
-    const intake = page.getByRole("region", { name: "Import GitHub issues", exact: true });
-    await expect(intake).toBeVisible();
-    expect(await enroll.evaluate(element => Boolean(element.compareDocumentPosition(document.querySelector('[aria-label="Import GitHub issues"]')) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+    await expect(page.getByRole("region", { name: "Import GitHub issues", exact: true })).toHaveCount(0);
     await enroll.click();
-    const dialog = page.getByRole("dialog", { name: "Enroll a runner", exact: true });
+    const dialog = page.getByRole("region", { name: "Enroll a runner", exact: true });
     await expect(page.getByText("Reading runners before creating a command…", { exact: true })).toHaveCount(0);
     await expect(dialog.getByRole("button", { name: "Create command", exact: true })).toBeDisabled();
     await dialog.getByRole("radio", { name: "Sandbox", exact: true }).check();
@@ -124,15 +155,27 @@ for (const width of [1280, 390]) {
       expect(capacityBounds.x).toBe(nameBounds.x);
       expect(capacityBounds.width).toBe(nameBounds.width);
     }
-    await dialog.screenshot({ path: testInfo.outputPath(`enrollment-${width}.png`) });
+    await page.setViewportSize({ width, height: 2600 });
+    await page.getByRole("heading", { level: 1 }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath(`enrollment-${width}.png`), fullPage: true });
+    await page.setViewportSize({ width, height: 900 });
     await capacity.fill("0");
     await help(page, "Concurrency", "independent work items concurrently", tap);
     await expect(page.getByText("A whole number from 1 to 16")).toBeVisible();
     await expect(page.getByRole("button", { name: "Create command" })).toBeDisabled();
-    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await capacity.fill("1");
+    await dialog.getByLabel("Name", { exact: true }).fill("Example build runner");
+    await dialog.getByRole("button", { name: "Create command", exact: true }).click();
+    await expect(dialog.getByRole("status")).toContainText("Waiting for Example build runner to check in");
+    await page.setViewportSize({ width, height: 1800 });
+    await page.getByRole("heading", { level: 1 }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath(`enrollment-command-${width}.png`), fullPage: true });
+    await page.setViewportSize({ width, height: 900 });
+    await page.getByRole("button", { name: "Use an existing runner", exact: true }).click();
 
-    await steps.getByRole("button", { name: /Artifact history/ }).click();
-    await help(page, "Your runner (local history)", "losing it also loses those files", tap);
+    await steps.getByRole("button", { name: /Run files/ }).click();
+    await page.screenshot({ path: testInfo.outputPath(`run-files-${width}.png`) });
+    await help(page, "Keep them on Example runner", "losing it also loses those files", tap);
     await help(page, "Your bucket and gateway", "you run and pay for", tap);
     await page.getByRole("radio", { name: "Your bucket and gateway", exact: true }).check();
     await help(page, "Service id", "does not create storage or check that it works", tap);
@@ -142,13 +185,21 @@ for (const width of [1280, 390]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
     await steps.getByRole("button", { name: /^.*Repository (ready|action required)$/ }).click();
     await repository.fill("mockorg/alpha");
-    await page.getByRole("button", { name: "Associate", exact: true }).click();
-    await steps.getByRole("button", { name: /Repository configuration/ }).click();
+    await page.getByRole("button", { name: "Use mockorg/alpha", exact: true }).click();
     await expect(page.getByText("Configuration files", { exact: true })).toBeVisible();
-    await expect(page.getByText(/The runner reads detent.yaml and WORKFLOW.md/)).toBeVisible();
+    await expect(page.getByRole("radio", { name: "Create starter files on Example runner" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Advanced policy details", exact: true })).toHaveCount(0);
     await expect(page.getByLabel("Resolved policy descriptor", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Approve settings", exact: true })).toHaveCount(0);
-    await context.close();
+    await page.route("**/projects/proj_alpha/onboarding", async (route) => {
+      const onboarding = data;
+      await route.fulfill({ json: { ...onboarding, ready: true, progress: { ...onboarding.progress, artifacts: "local" }, steps: onboarding.steps.map(step => ({ ...step, state: "ready" })) } });
+    });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: "alpha is ready for work", exact: true })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath(`ready-${width}.png`) });
+    await page.getByRole("button", { name: "Import issues", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Import GitHub issues", exact: true })).toBeVisible();
   });
+}
 }

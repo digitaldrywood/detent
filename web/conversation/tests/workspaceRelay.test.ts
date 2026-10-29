@@ -1,4 +1,4 @@
-// The workspace relay's wire behaviour (decisions.md §18.2, §18.4): frame
+// The workspace relay's wire behaviour: frame
 // assembly and chunk reassembly, stream allocation, the acknowledgement
 // cadence, resume across a reconnect, and the error codes a caller acts on.
 //
@@ -231,7 +231,7 @@ describe("the workspace relay", () => {
   // The sixth dogfood run's stream_limit, from the client's side. A client
   // that sends every `list` with no `stream` makes the hub allocate a stream
   // per request, and the ninth is refused with `stream_limit` on a connection
-  // that can then never list again. §18.2's rule is one stream per channel per
+  // that can then never list again. The relay protocol's rule is one stream per channel per
   // connection, so exactly one request in a run of nine may omit the id.
   it("keeps every later request on the one stream the hub allocated", async () => {
     const relay = harness();
@@ -436,7 +436,7 @@ describe("the workspace relay", () => {
   });
 });
 
-// The `git` channel (decisions.md §18.13). Same stream allocation, same
+// The `git` channel. Same stream allocation, same
 // correlation rule, three more answer kinds — and one error code that carries
 // the tool's own output, which is the only actionable thing about a refusal.
 describe("the git channel", () => {

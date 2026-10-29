@@ -13,11 +13,11 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestDurableRecoveryConvergesThroughPublicAPI(t *testing.T) {
@@ -41,7 +41,7 @@ func TestDurableRecoveryConvergesThroughPublicAPI(t *testing.T) {
 			issue.State, issue.Title = "Blocked", "Correct invalid effort"
 			issue.Description = "```detent-agent\nschema: 1\neffort: low\n```"
 			issue.AssignedToWorker = true
-			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 			runner := newClaimBlockingRunner()
 			newHost := func() *Orchestrator {
 				host, err := New(Config{PollInterval: time.Hour, MaxConcurrentAgents: 1,
@@ -66,8 +66,8 @@ func TestDurableRecoveryConvergesThroughPublicAPI(t *testing.T) {
 			}
 			parked := cloneIssue(issue)
 			parked.State = "In Progress"
-			host.recordLaneTransition(ctx, parked, "Blocked", now.Add(-time.Minute), repeatedFailureCircuitBreakerCause,
-				workflowLaneMetadata{BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{Owner: "human", Cause: repeatedFailureCircuitBreakerCause, CauseFingerprint: "invalid-effort-generation"}})
+			host.recordLaneTransition(ctx, parked, "Blocked", now.Add(-time.Minute), "repeated_failure_circuit_breaker",
+				workflowLaneMetadata{BlockedRecovery: &workflowLaneBlockedRecoveryMetadata{Owner: "human", Cause: "repeated_failure_circuit_breaker", CauseFingerprint: "invalid-effort-generation"}})
 			request := WorkAttemptRecoveryRequest{AttemptID: attemptID, Action: WorkAttemptRecoveryRetryFresh}
 			if boundary != "request" {
 				receipt, err := host.workAttemptRecoveryReceipt(ctx, "detent", attemptID, now)
@@ -189,7 +189,7 @@ func TestDurableRecoveryPreservesCurrentPredicates(t *testing.T) {
 				if condition == "multiple causes" && len(response.Blockers) < 3 {
 					t.Fatalf("response omitted current blockers: %v", response.Blockers)
 				}
-				if _, queued := state.Retry[issue.ID]; queued {
+				if retry, queued := state.Retry[issue.ID]; queued && (condition != "new invalid override" || !retry.DueAt.After(now)) {
 					t.Fatal("queued worker despite an independent predicate")
 				}
 				host.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
@@ -305,19 +305,19 @@ func TestRecoveryJournalFailureLeavesHoldsIntact(t *testing.T) {
 	}
 }
 
-func TestRecoveryIntentCannotAcknowledgeNewParkGeneration(t *testing.T) {
+func TestRecoveryIntentDoesNotReviveHistoricalPark(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
 	}
 
 	t.Parallel()
-	for _, cause := range []string{repeatedFailureCircuitBreakerCause, "operator_investigation"} {
+	for _, cause := range []string{"human_action", workpadBlockedUnactionedReason} {
 		t.Run(cause, func(t *testing.T) {
 			db := openWorkAttemptRecoveryStore(t, t.Context())
 			host := newWorkAttemptRecoveryOrchestrator(t, db, nil)
 			issue := recoveryTestIssue()
 			now := time.Now().UTC().Truncate(time.Second)
-			oldPark := workflowLaneBlockedRecoveryMetadata{Owner: "human", Cause: repeatedFailureCircuitBreakerCause, CauseFingerprint: "same-fingerprint"}
+			oldPark := workflowLaneBlockedRecoveryMetadata{Owner: "human", Cause: "repeated_failure_circuit_breaker", CauseFingerprint: "same-fingerprint"}
 			intent := workAttemptRetryIntent{Schema: 1, IssueID: issue.ID, Request: WorkAttemptRecoveryRequest{AttemptID: 1, Action: WorkAttemptRecoveryRetryFresh}, Configuration: true, Park: &oldPark, ParkedAt: now.Add(-time.Hour), RecordedAt: now}
 			data, err := json.Marshal(intent)
 			if err != nil {
@@ -331,9 +331,10 @@ func TestRecoveryIntentCannotAcknowledgeNewParkGeneration(t *testing.T) {
 			host.recordLaneTransition(t.Context(), issue, "Blocked", now.Add(time.Minute), cause, workflowLaneMetadata{BlockedRecovery: &newPark})
 			issue.State = "Todo"
 			state := newState(host.cfg)
-			host.retainUnacknowledgedRecoveryParks(t.Context(), &state, []connector.Issue{issue})
-			if blocked, held := state.Blocked[issue.ID]; !held || blocked.Reason != cause {
-				t.Fatalf("new park was acknowledged by old intent: %#v", blocked)
+
+			host.trackCandidateBlockedStatusIssues(t.Context(), &state, []connector.Issue{issue}, now)
+			if _, held := state.Blocked[issue.ID]; held {
+				t.Fatal("historical park vetoed the current Todo lane")
 			}
 		})
 	}
@@ -490,14 +491,16 @@ func TestConfigurationCompletionDoesNotRetryOrPoisonProject(t *testing.T) {
 			}
 			host.handleRunResult(t.Context(), &state, runpkg.Completion{IssueID: issue.ID, Err: failure, CompletedAt: now})
 			attempt, err := db.WorkAttempt(t.Context(), attemptID)
-			if err != nil || attempt.ErrorClass != "issue_configuration" || len(state.Retry) != 0 || state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
+			if err != nil || attempt.ErrorClass != "issue_configuration" || state.FailureBreaker.Active() || len(state.FailureBreaker.Failures) != 0 {
 				t.Fatalf("completion class=%s retry=%v breaker=%v err=%v", attempt.ErrorClass, state.Retry, state.FailureBreaker, err)
 			}
-			if form == "observed lane" && len(state.Blocked) != 0 {
-				t.Fatalf("configuration failure replaced the observed lane: %v", state.Blocked)
+			if len(state.Blocked) != 0 {
+				t.Fatal("configuration failure created a human hold")
 			}
-			if form != "observed lane" && state.Blocked[issue.ID].Reason != "issue_configuration" {
-				t.Fatalf("missing actionable configuration hold: %v", state.Blocked)
+			if form != "observed lane" {
+				if _, ok := state.Retry[issue.ID]; !ok {
+					t.Fatal("configuration failure lost retry")
+				}
 			}
 		})
 	}
@@ -516,7 +519,7 @@ func TestInvalidConfigurationPreflightDoesNotSpendLaunchAttempts(t *testing.T) {
 	issue.Title = "Fix invalid override"
 	issue.AssignedToWorker = true
 	issue.Description = "```detent-agent\nschema: 2\n```"
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	runner := newClaimBlockingRunner()
 	host, err := New(Config{MaxConcurrentAgents: 1, Project: scheduler.ProjectCandidate{ID: "detent"}, ActiveStates: []string{"Todo", "In Progress"}}, Dependencies{Connector: tracker, Runner: runner, WorkAttempts: db, WorkflowMetrics: db})
 	if err != nil {
@@ -527,7 +530,7 @@ func TestInvalidConfigurationPreflightDoesNotSpendLaunchAttempts(t *testing.T) {
 	for range 6 {
 		host.dispatchReadyIssues(ctx, &state, []connector.Issue{issue}, now)
 	}
-	if len(state.Running) != 0 || len(state.WorkAttempts) != 0 || state.FailureBreaker.Active() || state.Blocked[issue.ID].Reason != "issue_configuration" {
+	if len(state.Running) != 0 || len(state.WorkAttempts) != 0 || state.FailureBreaker.Active() || len(state.Blocked) != 0 || len(state.Retry) != 1 {
 		t.Fatalf("invalid override consumed attempts: running=%v attempts=%v breaker=%v blocked=%v", state.Running, state.WorkAttempts, state.FailureBreaker, state.Blocked)
 	}
 	issue.Description = "```detent-agent\nschema: 1\neffort: low\n```"
@@ -537,13 +540,13 @@ func TestInvalidConfigurationPreflightDoesNotSpendLaunchAttempts(t *testing.T) {
 	host.dispatchReadyIssues(ctx, &state, []connector.Issue{issue}, now.Add(time.Second))
 	select {
 	case <-runner.started:
-	case <-time.After(5 * time.Second):
+	case <-t.Context().Done():
 		t.Fatalf("corrected override did not dispatch: %v", state.Blocked)
 	}
 	cancel()
 	select {
 	case <-runner.canceled:
-	case <-time.After(5 * time.Second):
+	case <-t.Context().Done():
 		t.Fatal("worker did not stop")
 	}
 }

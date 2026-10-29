@@ -91,41 +91,67 @@ func TestRootCommandRequiresStartupRecoveryInitialization(t *testing.T) {
 
 func TestRootCommandHandlesBootFailureWithStartupRecovery(t *testing.T) {
 	t.Parallel()
-
-	bootErr := errors.New("startup validation failed")
-	configPath := t.TempDir() + "/global.yaml"
-	global := validDoctorGlobalWithProjects(configPath)
-	recovery := &recordingStartupRecovery{}
-	cmd := NewRootCommand(context.Background(),
-		func(opts *options) {
-			configured := successfulDoctorOptionsWithConfig(configPath, global)
-			opts.resolvePath = configured.resolvePath
-			opts.read = configured.read
-			opts.startupRecovery = func(_ context.Context, cfg BootConfig) (StartupRecovery, error) {
-				if cfg.Mode != BootModeRunning || cfg.Global.Path != configPath {
-					t.Fatalf("startup recovery config = %#v, want running %s", cfg, configPath)
-				}
-				return recovery, nil
+	for _, test := range []struct {
+		name       string
+		supervisor bool
+		child      bool
+		retired    bool
+	}{
+		{name: "ordinary controller owns recovery"},
+		{name: "supervised controller owns recovery", child: true},
+		{name: "retired controller cannot rewrite current recovery", child: true, retired: true},
+		{name: "supervisor delegates recovery to its controller", supervisor: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			bootErr := errors.New("startup validation failed")
+			configPath := filepath.Join(t.TempDir(), "global.yaml")
+			global := validDoctorGlobalWithProjects(configPath)
+			recovery := &recordingStartupRecovery{}
+			restart := NewRestartRequest()
+			if test.supervisor || test.child {
+				restart = NewProcessRestartRequest(func(string) error { return nil })
 			}
-		},
-		WithVersion("0.93.0"),
-		WithBootFunc(func(_ context.Context, cfg BootConfig) error {
-			if cfg.StartupRecovery != recovery {
-				t.Fatal("BootConfig.StartupRecovery was not injected")
+			if test.child {
+				restart.control = &controllerConnection{}
+				restart.control.retired.Store(test.retired)
 			}
-			return bootErr
-		}),
-	)
-	cmd.SetArgs([]string{"--config", configPath, "--headless", "--port", "0"})
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-
-	err := cmd.Execute()
-	if !errors.Is(err, bootErr) {
-		t.Fatalf("Execute() error = %v, want %v", err, bootErr)
-	}
-	if len(recovery.failures) != 1 || !errors.Is(recovery.failures[0], bootErr) {
-		t.Fatalf("HandleFailure() errors = %v, want startup error", recovery.failures)
+			initialized := false
+			cmd := NewRootCommand(t.Context(),
+				func(opts *options) {
+					configured := successfulDoctorOptionsWithConfig(configPath, global)
+					opts.resolvePath, opts.read = configured.resolvePath, configured.read
+					opts.startupRecovery = func(_ context.Context, cfg BootConfig) (StartupRecovery, error) {
+						initialized = true
+						if cfg.Mode != BootModeRunning || cfg.Global.Path != configPath {
+							t.Fatal("startup recovery received the wrong runtime")
+						}
+						return recovery, nil
+					}
+				},
+				WithRestartRequest(restart),
+				WithVersion("0.93.0"),
+				WithBootFunc(func(_ context.Context, cfg BootConfig) error {
+					if test.supervisor && cfg.StartupRecovery != nil || !test.supervisor && cfg.StartupRecovery != recovery {
+						t.Fatal("startup recovery has the wrong process owner")
+					}
+					return bootErr
+				}),
+			)
+			cmd.SetArgs([]string{"--config", configPath, "--headless", "--port", "0"})
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			if err := cmd.Execute(); !errors.Is(err, bootErr) {
+				t.Fatalf("Execute() error = %v, want startup error", err)
+			}
+			if initialized == test.supervisor {
+				t.Fatal("the supervisor initialized controller recovery state")
+			}
+			wantFailure := !test.supervisor && !test.retired
+			if (len(recovery.failures) == 1) != wantFailure {
+				t.Fatalf("recovery failures = %v, want failure recorded=%t", recovery.failures, wantFailure)
+			}
+		})
 	}
 }
 
@@ -197,21 +223,48 @@ func TestRuntimeUpdaterReleaseDiscoveryForEnrolledRunner(t *testing.T) {
 	t.Setenv("DETENT_HUB_TOKEN", "fixture-token")
 	previousTransport := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = previousTransport })
-	for _, enrolled := range []bool{false, true} {
-		t.Run(map[bool]string{false: "Hub without enrollment", true: "enrolled release discovery"}[enrolled], func(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		enrolled bool
+		deferred bool
+	}{
+		{name: "Hub without enrollment"},
+		{name: "enrolled release discovery", enrolled: true},
+		{name: "deferred startup authenticates release discovery", enrolled: true, deferred: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			releaseReads, hubReads := 0, 0
 			http.DefaultTransport = readinessRoundTripper(func(request *http.Request) (*http.Response, error) {
 				body := `{"version":"operator-landed-a69c4b1dd060"}`
+				statusCode := http.StatusOK
 				if request.URL.Host == "api.github.com" {
 					releaseReads++
 					body = `[{"tag_name":"v0.117.47"}]`
+					if tt.deferred && request.Header.Get("Authorization") != "Bearer configured-token" {
+						statusCode = http.StatusForbidden
+						body = `{"message":"API rate limit exceeded"}`
+					}
 				} else {
 					hubReads++
 				}
-				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+				return &http.Response{StatusCode: statusCode, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 			})
 			cfg := BootConfig{Global: globalconfig.Config{Client: globalconfig.HubClient{URL: "https://hub.example.test"}}}
-			if enrolled {
+			if tt.deferred {
+				cfg.Global.GitHubToken = "gh"
+				opts := defaultOptions()
+				opts.lookupEnv = mapLookup(nil)
+				opts.ghAuthToken = func(context.Context) (string, error) { return "configured-token", nil }
+				var err error
+				cfg.Runtime, err = resolveRuntimeSettings(t.Context(), runtimeInput{
+					Config: &cfg.Global, DeferProjectValidation: true,
+					Flags: runtimeFlags{Port: runtimeIntFlag{Set: true}},
+				}, bootRuntimeDeps(opts))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.enrolled {
 				cfg.Global.Client.IdentityFile = filepath.Join(t.TempDir(), "private", "runner.json")
 				identity, err := runnerauth.Initialize(cfg.Global.Client.IdentityFile, cfg.Global.Client.URL)
 				if err != nil {

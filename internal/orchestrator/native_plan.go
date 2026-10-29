@@ -26,7 +26,7 @@ func (o *Orchestrator) nativePlanLanes(ctx context.Context, issue connector.Issu
 	cfg := gate.EffectivePlan(o.cfg.Plan)
 	stop := cfg.Stop
 	if !nativePlanStateExists(states, stop) {
-		stop = normalizeAutoPromoteConfig(o.cfg.AutoPromote).reviewTargetState()
+		stop = normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState
 	}
 	w := nativePlanWorkflow{states: states, stop: stop}
 	if _, ok := w.path(issue.State, planImplementationState); !ok || !dispatchableState(states, planImplementationState) {
@@ -95,6 +95,9 @@ func (o *Orchestrator) nativePlanTarget(ctx context.Context, issue connector.Iss
 	target := planReviewTargetState(decision.Action)
 	if target == "" || !nativePlanStateExists(w.states, target) {
 		target = w.stop
+		if !o.cfg.AutoPromote.humanReviewEnabled() {
+			target = normalizeAutoPromoteConfig(o.cfg.AutoPromote).ReworkState
+		}
 	}
 	path, ok := w.path(issue.State, target)
 	if !ok {

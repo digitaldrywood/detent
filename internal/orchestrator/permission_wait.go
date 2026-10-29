@@ -11,14 +11,18 @@ import (
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
-const permissionWaitReason = "permission_wait"
+const (
+	permissionWaitReason                = "permission_wait"
+	permissionWaitCriteriaUnsatisfiable = "acceptance_criteria_unsatisfiable"
+)
 
 type permissionWaitRecord struct {
-	Question      string `json:"question"`
-	Kind          string `json:"kind"`
-	Source        string `json:"source"`
-	WorkAttemptID int64  `json:"work_attempt_id"`
-	SessionID     string `json:"session_id,omitempty"`
+	Question      string   `json:"question"`
+	Kind          string   `json:"kind"`
+	Source        string   `json:"source"`
+	WorkAttemptID int64    `json:"work_attempt_id"`
+	SessionID     string   `json:"session_id,omitempty"`
+	Criteria      []string `json:"criteria,omitempty"`
 }
 
 func terminalPermissionWait(output string) (permissionWaitRecord, bool) {
@@ -71,7 +75,7 @@ func terminalPermissionWait(output string) (permissionWaitRecord, bool) {
 	return permissionWaitRecord{}, false
 }
 
-func (o *Orchestrator) handlePermissionWaitCompletion(ctx context.Context, state *State, event runpkg.Completion, running Running) bool {
+func permissionWaitCompletionAllowed(event runpkg.Completion) bool {
 	if event.Result.FinalState != "" && event.Result.FinalState != runpkg.FinalStateCompleted && event.Result.FinalState != runpkg.FinalStateNeedsHumanAttention {
 		return false
 	}
@@ -81,18 +85,21 @@ func (o *Orchestrator) handlePermissionWaitCompletion(ctx context.Context, state
 			return false
 		}
 	}
-	wait, ok := terminalPermissionWait(event.Result.FinalMessage)
-	if !ok && event.Result.FinalState == runpkg.FinalStateNeedsHumanAttention {
-		question := strings.TrimSpace(event.Result.FinalMessage)
-		if question == "" {
-			question = "Worker needs human attention"
-		}
-		wait = permissionWaitRecord{Question: question, Kind: "approval_or_input", Source: "terminal_final_state"}
-		ok = true
+	return true
+}
+
+func (o *Orchestrator) handlePermissionWaitCompletion(ctx context.Context, state *State, event runpkg.Completion, running Running) bool {
+	if !permissionWaitCompletionAllowed(event) {
+		return false
 	}
+	wait, ok := terminalPermissionWait(event.Result.FinalMessage)
 	if !ok {
 		return false
 	}
+	return o.parkPermissionWait(ctx, state, event, running, wait)
+}
+
+func (o *Orchestrator) parkPermissionWait(ctx context.Context, state *State, event runpkg.Completion, running Running, wait permissionWaitRecord) bool {
 	wait.Question = o.operatorText(wait.Question)
 	wait.WorkAttemptID = running.WorkAttemptID
 	wait.SessionID = running.SessionID
@@ -100,15 +107,23 @@ func (o *Orchestrator) handlePermissionWaitCompletion(ctx context.Context, state
 	report, _ := workpad.SignalFromComment(event.Result.FinalMessage, "", "")
 	detail = nativeCompletionReason(detail, report, event.Result.FinalMessage, nil)
 	remedy := "Record direction for this question, then move the issue to Rework: " + wait.Question
-	if wait.Kind == "implementation_permission" {
+	switch wait.Kind {
+	case "implementation_permission":
 		remedy = "The worker requested implementation permission. Check the assigned scope and record direction, preserving explicit approval gates, then move the issue to Rework: " + wait.Question
+	case permissionWaitCriteriaUnsatisfiable:
+		remedy = wait.Question + "\nThen move the issue to Rework."
+	}
+	cause := permissionWaitReason
+	if wait.Source == "terminal_detent_status" {
+		cause = "human_action"
+		remedy = wait.Question
 	}
 	if diffStatsPresent(event.Result.DiffStats) {
 		running.DiffStats = event.Result.DiffStats
 	}
 	parkEvent := event
 	parkEvent.Err = errors.New(detail)
-	if !o.blockHumanOwnedWorkerFailure(ctx, state, parkEvent, running, permissionWaitReason, detail, remedy, "worker_permission_wait") {
+	if !o.blockHumanOwnedWorkerFailure(ctx, state, parkEvent, running, cause, detail, remedy, "worker_permission_wait") {
 		o.deferTrackerUnavailableCompletion(ctx, state, event, running, errors.New("persist permission-wait hold failed"))
 		return true
 	}
@@ -123,7 +138,12 @@ func (o *Orchestrator) handlePermissionWaitCompletion(ctx context.Context, state
 	if diffStatsPresent(running.DiffStats) {
 		state.DiffStats[event.IssueID] = running.DiffStats
 	}
-	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalNoProgress, nil, permissionWaitReason, detail)
-	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalNoProgress, permissionWaitReason, detail, "blocked", wait.Question, map[string]any{permissionWaitReason: wait})
+	o.recordProjectAttemptOutcome(state, event.IssueID, event.CompletedAt, store.WorkAttemptTerminalNoProgress, nil, cause, detail)
+	metadata := nativeLandingMetadata(event.Result.NativeLanding)
+	if metadata == nil {
+		metadata = make(map[string]any)
+	}
+	metadata[cause] = wait
+	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalNoProgress, cause, detail, "blocked", wait.Question, metadata)
 	return true
 }

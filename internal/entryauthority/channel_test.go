@@ -1,22 +1,175 @@
 package entryauthority
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/rpc"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 )
+
+type iconChannelStore struct{ calls chan IconRequest }
+
+func (s iconChannelStore) PutIcon(ctx context.Context, organization, id string, content []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.calls <- IconRequest{Organization: organization, ID: id, Content: append([]byte{}, content...)}
+	return nil
+}
+
+func (s iconChannelStore) DeleteIcon(ctx context.Context, organization, id string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.calls <- IconRequest{Organization: organization, ID: id}
+	return nil
+}
+
+func TestIconAuthorityChannel(t *testing.T) {
+	for _, test := range []struct {
+		name, organization string
+		content            []byte
+		valid              bool
+		remove             bool
+	}{
+		{"first", "org_example", []byte("normalized PNG one"), true, false},
+		{"second", "org_example", []byte("normalized PNG two"), true, false},
+		{"foreign", "org_other", []byte("foreign PNG"), false, false},
+		{"oversized", "org_example", make([]byte, 256*1024+1), false, false},
+		{"delete first", "org_example", nil, true, true},
+		{"delete with content", "org_example", []byte("unexpected content"), false, true},
+		{"foreign delete", "org_other", nil, false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			binding := Binding{Issuer: "entry", Organization: "org_example", Generation: 2}
+			store := iconChannelStore{calls: make(chan IconRequest, 1)}
+			parent, err := Start(t.Context(), binding, time.Second, nil, Archives{Icons: store})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := parent.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			client := &Client{client: rpc.NewClient(channel{reader: parent.Files[0], writer: parent.Files[1], budget: time.Second}), budget: time.Second, organization: binding.Organization}
+			t.Cleanup(func() {
+				if err := client.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			method := "PutIcon"
+			if test.remove {
+				method = "DeleteIcon"
+			}
+			if test.remove && test.valid {
+				err = client.DeleteIcon(t.Context(), test.organization, "att_0123456789abcdef0123456789abcdef")
+			} else {
+				_, err = callAuthority[bool](t.Context(), client, method, IconRequest{Organization: test.organization, ID: "att_0123456789abcdef0123456789abcdef", Content: test.content, Deadline: time.Now().Add(time.Second)})
+			}
+			if (err == nil) != test.valid {
+				t.Fatalf("%s = %v, valid=%v", method, err, test.valid)
+			}
+			select {
+			case got := <-store.calls:
+				if !test.valid || !bytes.Equal(got.Content, test.content) || got.Organization != test.organization {
+					t.Fatalf("unexpected icon operation %+v", got)
+				}
+			default:
+				if test.valid {
+					t.Fatal("icon operation never reached the store")
+				}
+			}
+		})
+	}
+}
+
+func TestArchiveAuthorityChannel(t *testing.T) {
+	for _, scenario := range []string{"read", "signed read", "foreign organization", "expired deadline", "oversized section"} {
+		t.Run(scenario, func(t *testing.T) {
+			binding := Binding{Issuer: "entry", Organization: "org_example", Generation: 2}
+			ref, data, err := attachment.PrepareArchive(binding.Organization, 1, strings.NewReader(`{"schema_version":1}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var reads atomic.Int32
+			parent, err := Start(t.Context(), binding, time.Second, nil, Archives{Contents: &authorityContents{content: map[string][]byte{}}, Reader: func(_ context.Context, got attachment.ArchiveReference, presign bool) (ArchiveResponse, error) {
+				reads.Add(1)
+				if got != ref {
+					t.Error("archive reference changed in transit")
+				}
+				response := ArchiveResponse{Data: data}
+				if presign {
+					response.Access = &attachment.ArchiveRead{ArchiveReference: ref, URL: "https://objects.example.test/section", ExpiresAt: time.Now().Add(attachment.ArchiveReadLifetime)}
+				}
+				return response, nil
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := parent.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			client := &Client{client: rpc.NewClient(channel{reader: parent.Files[0], writer: parent.Files[1], budget: time.Second}), budget: time.Second, organization: binding.Organization}
+			t.Cleanup(func() {
+				if err := client.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			request := ref
+			ctx := t.Context()
+			if scenario == "foreign organization" {
+				request, _, err = attachment.PrepareArchive("org_other", 1, strings.NewReader(`{"schema_version":1}`))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "oversized section" {
+				request.UncompressedSize = attachment.MaxSectionBytes + 1
+			}
+			if scenario == "expired deadline" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, time.Now().Add(-time.Second))
+				defer cancel()
+			}
+			response, err := client.ReadArchive(ctx, request, scenario == "signed read")
+			if scenario == "foreign organization" || scenario == "expired deadline" || scenario == "oversized section" {
+				if err == nil || reads.Load() != 0 {
+					t.Fatalf("rejected read reached storage: reads=%d error=%v", reads.Load(), err)
+				}
+				return
+			}
+			if err != nil || string(response.Data) != string(data) || reads.Load() != 1 || (response.Access != nil) != (scenario == "signed read") {
+				t.Fatalf("archive RPC failed: reads=%d error=%v", reads.Load(), err)
+			}
+			content := []byte("conversation content")
+			contentRef, err := client.PublishContent(ctx, binding.Organization, content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			read, err := client.ReadContent(ctx, binding.Organization, contentRef)
+			if err != nil || !bytes.Equal(read, content) {
+				t.Fatalf("combined archive channel lost conversation content: %v", err)
+			}
+		})
+	}
+}
 
 func TestCurrentAuthorityChannel(t *testing.T) {
 	t.Parallel()
 	binding := Binding{Issuer: "entry", Organization: "org_example", Generation: 2}
-	for _, scenario := range []string{"concurrent lookups", "wrong allocation", "expired deadline", "shutdown pending lookup", "stalled reader"} {
+	for _, scenario := range []string{"detail round trip", "detail owner unavailable", "concurrent lookups", "wrong allocation", "expired deadline", "shutdown pending lookup", "stalled reader", "archive content", "content read and write", "foreign content"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
 			if scenario == "stalled reader" {
@@ -77,6 +230,7 @@ func TestCurrentAuthorityChannel(t *testing.T) {
 				return
 			}
 			entered := make(chan struct{}, 1)
+			details := &channelDetailStore{fail: scenario == "detail owner unavailable"}
 			parent, err := Start(t.Context(), binding, time.Second, func(ctx context.Context, origin Origin) (cloudassert.Claims, error) {
 				if scenario == "shutdown pending lookup" {
 					entered <- struct{}{}
@@ -87,7 +241,15 @@ func TestCurrentAuthorityChannel(t *testing.T) {
 					return cloudassert.Claims{}, err
 				}
 				return cloudassert.Claims{Subject: origin.Subject, Audience: binding.Organization}, nil
-			})
+			}, Archives{Details: details, Contents: &authorityContents{content: map[string][]byte{}}, Content: func(ctx context.Context, request ContentRequest) ([]byte, error) {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				if request.Write {
+					return request.Data, nil
+				}
+				return []byte("stored object"), nil
+			}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -100,7 +262,7 @@ func TestCurrentAuthorityChannel(t *testing.T) {
 				})
 			}
 			t.Cleanup(closeParent)
-			client := &Client{client: rpc.NewClient(channel{reader: parent.Files[0], writer: parent.Files[1], budget: time.Second}), budget: time.Second}
+			client := &Client{client: rpc.NewClient(channel{reader: parent.Files[0], writer: parent.Files[1], budget: time.Second}), budget: time.Second, organization: binding.Organization}
 			t.Cleanup(func() { _ = client.Close() })
 			selected := binding
 			if scenario == "wrong allocation" {
@@ -116,7 +278,85 @@ func TestCurrentAuthorityChannel(t *testing.T) {
 			if err != nil || handshake.Binding != binding {
 				t.Fatalf("handshake: %+v %v", handshake, err)
 			}
+
+			if scenario == "archive content" {
+				content := []byte(strings.Repeat("immutable conversation detail ", 100))
+				ref, err := client.PublishContent(t.Context(), binding.Organization, content)
+				if err != nil {
+					t.Fatal(err)
+				}
+				read, err := client.ReadContent(t.Context(), binding.Organization, ref)
+				if err != nil || !bytes.Equal(read, content) {
+					t.Fatalf("archive round trip: %v", err)
+				}
+				if _, err := client.PublishContent(t.Context(), "org_other", content); err == nil {
+					t.Fatal("foreign upload accepted")
+				}
+				if _, err := client.ReadContent(t.Context(), "org_other", ref); err == nil {
+					t.Fatal("foreign read accepted")
+				}
+				foreign, _, err := attachment.PrepareArchive("org_other", 1, bytes.NewReader(content))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := client.ReadContent(t.Context(), binding.Organization, foreign); err == nil {
+					t.Fatal("foreign reference accepted")
+				}
+				return
+			}
+			if scenario == "detail round trip" || scenario == "detail owner unavailable" {
+				content := []byte("run checkpoint and validation output")
+				ref, err := client.StoreDetail(t.Context(), binding.Organization, content)
+				if scenario == "detail owner unavailable" {
+					if err == nil || strings.Contains(err.Error(), "fixture-secret") {
+						t.Fatalf("unsafe upload failure: %v", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				read, err := client.ReadDetail(t.Context(), binding.Organization, ref)
+				if err != nil || !bytes.Equal(read, content) {
+					t.Fatalf("detail round trip: %v", err)
+				}
+				if _, err := callAuthority[[]byte](t.Context(), client, "ReadDetail", DetailRequest{Organization: "org_foreign", Reference: ref, Deadline: time.Now().Add(time.Second)}); err == nil {
+					t.Fatal("parent accepted foreign organization detail")
+				}
+				if _, err := callAuthority[attachment.ArchiveReference](t.Context(), client, "StoreDetail", DetailRequest{Organization: "org_foreign", Data: content, Deadline: time.Now().Add(time.Second)}); err == nil {
+					t.Fatal("parent accepted foreign upload")
+				}
+				return
+			}
 			origin := Origin{Issuer: binding.Issuer, Generation: binding.Generation, Subject: "original"}
+			if scenario == "content read and write" || scenario == "foreign content" {
+				ref, data, err := attachment.PrepareArchive(binding.Organization, 1, strings.NewReader("durable content"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := ContentRequest{Organization: binding.Organization, Reference: ref, Write: true, Data: data}
+				if scenario == "foreign content" {
+					request.Organization = "org_other"
+				}
+				result, err := client.Content(t.Context(), request)
+				if scenario == "foreign content" {
+					if err == nil {
+						t.Fatal("foreign content accepted")
+					}
+					return
+				}
+				if err != nil || string(result) != string(data) {
+					t.Fatalf("content write: %v", err)
+				}
+				request.Write = false
+				request.Data = nil
+				result, err = client.Content(t.Context(), request)
+				if err != nil || string(result) != "stored object" {
+					t.Fatalf("content read: %v", err)
+				}
+				return
+			}
+
 			if scenario == "expired deadline" {
 				claims, err := callAuthority[cloudassert.Claims](t.Context(), client, "Resolve", Request{Origin: origin, Deadline: time.Now().Add(-time.Second)})
 				if err == nil || claims.Subject != "" {
@@ -160,4 +400,49 @@ func TestCurrentAuthorityChannel(t *testing.T) {
 			}
 		})
 	}
+}
+
+type authorityContents struct{ content map[string][]byte }
+
+func (s *authorityContents) PublishContent(ctx context.Context, org string, content []byte) (attachment.ArchiveReference, error) {
+	if err := ctx.Err(); err != nil {
+		return attachment.ArchiveReference{}, err
+	}
+	ref, _, err := attachment.PrepareArchive(org, 1, bytes.NewReader(content))
+	if err != nil {
+		return ref, err
+	}
+	s.content[ref.Key] = bytes.Clone(content)
+	return ref, nil
+}
+func (s *authorityContents) ReadContent(ctx context.Context, _ string, ref attachment.ArchiveReference) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return bytes.Clone(s.content[ref.Key]), nil
+}
+
+type channelDetailStore struct {
+	data      []byte
+	reference attachment.ArchiveReference
+	fail      bool
+}
+
+func (s *channelDetailStore) StoreDetail(_ context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
+	if s.fail {
+		return attachment.ArchiveReference{}, errors.New("fixture-secret upload failure")
+	}
+	ref, _, err := attachment.PrepareArchive(organization, 1, bytes.NewReader(data))
+	if err != nil {
+		return ref, err
+	}
+	s.data, s.reference = bytes.Clone(data), ref
+	return ref, nil
+}
+
+func (s *channelDetailStore) ReadDetail(_ context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	if ref.Validate(organization) != nil || ref != s.reference {
+		return nil, attachment.ErrInvalid
+	}
+	return bytes.Clone(s.data), nil
 }

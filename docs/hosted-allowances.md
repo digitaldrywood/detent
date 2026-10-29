@@ -1,42 +1,60 @@
 # Hosted capacity allowances
 
-Hosted identity enables organization entitlements in the owning Hub database.
-Local and self-hosted Hubs do not create assignments, query a billing service, or
-apply hosted restrictions. No Stripe account, subscription, or card is necessary
-for the permanent Free base plan. Model-provider charges remain separate from hosting.
+Organization entitlements are enabled only when a plan catalog or legacy plan
+metadata is configured. By default, local and self-hosted Hubs, including Hubs
+using `--hosted-config` for hosted identity and the web app, do not create plan
+assignments or apply plan allowances. Omitted or empty `entitlements` leaves
+plans disabled, just like a bearer-only Hub. Runner, host, policy and provider
+safety limits still apply. With the Cloud capacity catalog configured, no Stripe
+account, subscription, or card is necessary for the permanent Free base plan.
+Model-provider charges remain separate from hosting.
 
 ## Capacity catalog
 
-| Plan | USD per organization/month | Projects | Unarchived issues |
+| Plan | Version | USD per organization/month | Concurrent work |
 | --- | ---: | ---: | ---: |
-| Free | 0 | 1 | 200 |
-| Starter | 49 | 5 | 2,000 |
-| Growth | 149 | 25 | 10,000 |
-| Scale | 399 | 100 | 50,000 |
+| Free | 1 | 0 | 2 |
+| Starter | 1 | 49 | 8 |
+| Team | 2 | 99 | 20 |
+| Growth | 2 | 249 | 50 |
+| Scale | 2 | Contact us | 100, or custom by grant |
 
-Omitted or empty `entitlements` selects this catalog with immutable version-1
-IDs `free`, `starter`, `growth`, and `scale`. Enterprise is custom and has no
-self-serve price. Free signup needs no card, Stripe customer, or subscription.
-Free permits project/issue exploration and refuses AI execution, including
-ordinary Luna coordinator chat and issue-linked runner claims. Paid hosting
-contains no bundled AI-dollar allowance; customer-provider funding still applies.
-An explicitly scoped execution grant can authorize complimentary execution.
+The Cloud capacity catalog applies only when explicitly configured in
+`entitlements`; its base assignment is `free` version 1. `team` uses version 2
+because version 1 is a legacy paid mapping. Growth and Scale moved to version 2
+with the new prices; their version-1 records keep their stored prices for
+existing subscriptions and resolve with Growth and Scale concurrent work. Scale
+has no self-serve price; operators grant it, or a custom plan, as complimentary
+access. Free signup needs no card, Stripe customer, or subscription.
 
-Quotas count stored projects and unarchived native issues across the organization.
-Issue creation, imports, and restore use the existing atomic mutation transaction.
-At or above a downgraded quota, existing data, reading, export, billing, archiving,
-and safe in-flight completion remain available. Archiving frees capacity without
-deleting history. New allocations and restore must fit the current capacity.
-Membership and concurrent-work quantities are measured but never tier admission
-limits, including on legacy plans. Runner, host, policy, and provider safety limits
-continue to apply independently. Other service-protection limits are common to
-the approved tiers rather than paid concurrency or seat entitlements.
+Concurrent work counts the organization's live claims: every running attempt,
+whatever its stage. A claim at the limit is refused with `plan_capacity`; the
+runner treats it like full capacity, the item stays in its lane, and it becomes
+claimable when a slot frees. Nothing is refused at filing time. Every tier,
+Free included, has native execution; paid tiers add hosted artifacts. No tier
+limits projects, members, repositories or runners.
+
+Issues keep an abuse guard of 10,000 open issues across the organization,
+reported as `unarchived_issues`. Issues in a terminal lane (Done, Cancelled) and
+archived issues do not count. Issue creation, imports, restore and moves out of
+a terminal lane use the existing atomic mutation transaction. Luna chat and
+hosted AI are gated by AI credits and the monthly budget, not by tier. Runner,
+host, policy and provider safety limits continue to apply independently.
+
+Capacity tier records resolve their concurrent-work allowance, open-issue guard,
+execution feature and unlimited projects from this catalog when read, so
+existing assignments and grants follow it without new versions; their stored
+names and prices remain authoritative. A grant of a capacity tier carries that
+tier's concurrent work and open-issue guard whatever its recorded scope.
+Legacy `pilot_free` and `comp_team` have no concurrent-work or project limit
+once the capacity catalog is installed. In any other plan, a configured
+`concurrent_work` is enforced and an omitted one is unlimited.
 
 ## Configuration and plan versions
 
-An explicit catalog replaces the default and must retain any referenced legacy
+An explicit catalog enables plan allowances and must retain any referenced legacy
 versions. The following is the legacy pilot catalog, retained for compatibility;
-use the default capacity catalog for new deployments:
+Cloud deployments configure the capacity catalog instead:
 
 ```yaml
 entitlements:
@@ -76,19 +94,19 @@ entitlements:
         history_records: 20000
 ```
 
-Omitting the entire section, or leaving it empty (`entitlements: {}`), selects
-exactly this catalog and these pilot settings. Any key inside the section, even
-`plans: []`, makes it an explicit catalog that must validate:
-every organization starts on `pilot_free`, and `comp_team` exists only to be
+Omitting the entire section, or leaving it empty (`entitlements: {}`), applies no
+plan allowances. Any key inside the section, even `plans: []`, makes it an
+explicit catalog that must validate. With the pilot catalog above configured,
+every new organization starts on `pilot_free`, and `comp_team` exists only to be
 granted as complimentary access. `comp_team` doubles the `pilot_free` allowances
 and adds `hosted_artifacts`; its artifact allowances stay zero until an operator
-configures them (see below). Both sets of numbers are provisional.
-Within an explicit plan, omitted allowances are zero and omitted features are
-disabled. Negative values, unknown names and unsupported configuration bounds
+configures them (see below).
+Within an explicit plan, omitted allowances other than `concurrent_work` are
+zero and omitted features are disabled. Negative values, unknown names and unsupported configuration bounds
 are rejected. Windows are whole multiples of 60 seconds, at most one day;
 telemetry retains at most 720 windows and 30 days. Invitation reservations last
-between one minute and seven days. These are validation bounds, not recommended
-public retention periods. Operators choose the values before hosting customers.
+between one minute and seven days. These are validation bounds, not public
+retention periods.
 
 Plan records are immutable by `(id, version)`. To change a plan, add another
 version and explicitly assign it. Configured `base` initializes a new assignment;
@@ -108,7 +126,7 @@ entitlement_admin_token_env: DETENT_ENTITLEMENT_ADMIN_TOKEN
 ```
 
 The environment variable must contain at least 32 bytes of independently
-generated secret material. Do not reuse the metadata reporter token. Ordinary
+generated secret material, separate from the metadata reporter token. Ordinary
 staff, support impersonation, organization owners/admins and runners cannot
 grant complimentary access. This credential changes allowances only; it gives
 no customer project access or runner execution permission. Keeping it unconfigured
@@ -171,7 +189,7 @@ RFC3339 timestamp after the start. A `revoke` command names `grant_id` and a
 reason. `base` assigns a plan version. `subscription` assigns a plan version
 with a required future validity deadline; `end_subscription` clears that
 derived access when Stripe billing is disabled. With
-[hosted subscription billing](hosted-billing.md) configured, authoritative
+[hosted subscription billing](#subscriptions-and-ai-credits) configured, authoritative
 Stripe reconciliation owns subscription-derived access and these two commands
 are rejected. Complimentary grants remain independent of payment records.
 
@@ -212,7 +230,8 @@ administrator authority. Customer API keys do not acquire this authority.
 
 On Unix, SIGHUP reloads the existing `cloud.yaml` file. The full document,
 including restart-only fields, must parse and validate. The reloadable fields
-are `allocation.entitlements` and `allocation.billing.prices`. Existing plan
+are `allocation.entitlements`, `allocation.billing.prices`,
+`allocation.allowed_emails`, and `allocation.allowed_domains`. Existing plan
 versions and Stripe price mappings remain immutable; use a new version or price
 rather than changing one already stored. The entitlement policy, including
 usage-window settings, and the active billing price list publish as one
@@ -230,8 +249,14 @@ cannot be read or assigned through the entitlement API. Preparation and reload
 logs retain actor and reason. This replaces tenant-by-tenant application and
 compensating restoration. Startup never replaces persisted assignments or grants.
 
+After a successful reload, the entry applies the new sign-up allowlist to the
+next organization-creation permission check and the platform Sign-up allowlist
+read at `/api/cloud/platform/allowlist`. Empty email and domain lists allow anyone
+to create an organization. A failed reload retains the previous allowlist;
+existing organizations and sessions are unaffected.
+
 Listeners, origins, database/state paths, signing and provider credentials,
-platform membership seeds, attachments, allocation paths, capacity and allowlists,
+platform membership seeds, attachments, allocation paths and capacity,
 entitlement credentials, and billing settings other than prices require a
 restart. Reload logs list these fields and retain the running values, including
 for future tenant launches. SIGHUP does not restart the entry or tenant Hubs.
@@ -255,7 +280,7 @@ Resolution at the allocation transaction's clock sample is:
 | Members | Locally active memberships plus unexpired invitations, measured for operation only. No seat-based plan limit applies. |
 | Projects/repositories | Stored allocations in the dedicated tenant Hub. Their creation/binding transaction must fit the allowance. |
 | Registered/connected runners | Non-revoked runner registrations, including legacy machine identities without a runner registration; connection means a heartbeat strictly newer than the configured cutoff. New enrollments and reconnecting idle runners cannot grow the count beyond the limit. |
-| Concurrent work | Unreleased leases whose expiry is strictly after the transaction clock. No plan concurrency limit applies. Operational runner and host capacity still apply. |
+| Concurrent work | Unreleased leases whose expiry is strictly after the transaction clock. A claim beyond the plan's `concurrent_work` is refused with `plan_capacity` and the item stays in its lane. Operational runner and host capacity still apply. |
 | API mutations | Accepted allocation-changing transactions per configured UTC window. Matching native command retries do not consume another unit. Reads, billing, renew/release and completion/checkpoint events remain available. |
 | Ingested events | Newly stored collaboration events per window. Native retries and ordered duplicate event sequences do not add an event. |
 | Collaboration bytes | UTF-8 bytes of issue text/labels/assignees, comments, versions, event payload/actor records other than run telemetry (`run.*`) and scheduler decisions, artifact references, change source bundles, import snapshots and stored attachments. Idempotency receipts, attempt records, run telemetry and scheduler decisions are internal bookkeeping and do not count. This is logical retained payload, not disk billing. Database/WAL bytes are separately reported. |
@@ -324,22 +349,19 @@ traffic/operations before setting prices. The metrics are inputs for that review
 not customer model spend or a dollar estimate.
 
 Allocation/grant records, audit records and customer collaboration history are
-durable records, distinct from bounded operational telemetry. This change does
-not silently purge customer history, alter public retention promises, configure
-WorkOS, enable a production artifact service or launch paid billing.
+durable records, distinct from bounded operational telemetry.
 
 ## Compatibility and cost drivers
 
 Starting with the capacity catalog retains existing base assignments, grants,
 subscription deadlines, stored plan JSON, and Stripe price-to-plan bindings.
 Legacy `pilot_free` and `comp_team` versions remain available. Once the capacity
-catalog is installed, their resolved capacity includes at least Starter's 2,000
-unarchived issues and retains any larger legacy project quota. Their stored
-records and paid-price bindings stay immutable; plan runner/repository count
-ceilings are removed in this compatibility view. Existing pilot organizations
-keep complimentary execution access and are labeled as legacy access.
-Changing catalogs does not purchase, cancel, or change a subscription. Never
-repoint the existing $49 test price: retain its exact versioned-plan mapping.
+catalog is installed, they resolve with the open-issue guard and without
+project, concurrent-work, runner or repository limits. Their stored records and
+paid-price bindings stay immutable. Existing pilot organizations keep
+complimentary execution access and are labeled as legacy access.
+Changing catalogs does not purchase, cancel, or change a subscription. Existing
+Stripe price-to-plan mappings are immutable.
 Existing custom catalogs must include their historical referenced versions when
 adopting new versions. Base changes and scoped grants use the audited entitlement
 administrator; Stripe reconciliation continues to own subscription access.
@@ -353,4 +375,57 @@ Unmeasured storage/relay inputs, absent request samples, and incompletely priced
 AI cost are JSON `null`, meaning unknown. A missing WAL file is measured as zero.
 Request bytes are known only when every sampled request declared its body length.
 Metrics contain counts and estimates, never customer content or credentials.
-These inputs support operator review; #2308 owns operating-cost measurements.
+These inputs support operator review.
+
+## Subscriptions and AI credits
+
+Hosted billing applies only to the operator's hosted service at `https://cloud.detent.build`; it pays for Detent's hosting, while model-provider accounts, keys and charges stay customer owned. Self-hosted Hubs need no subscription, card or Stripe connection, and choosing an authentication provider never enables billing. Free organizations need neither a card nor a Stripe customer.
+
+The organization billing page shows the effective plan, subscription status, complimentary access, last reconciliation and recent subscription audit entries. Only an organization owner, outside support impersonation, can start Checkout for a plan or open the Stripe customer portal for payment details, invoices, plan changes and cancellation; admins, members, viewers, staff and API or runner tokens cannot. Submitted customer or organization IDs never select the billing account. Returning from Checkout does not change access: the Hub grants a paid plan only after it reconciles the subscription and a paid current invoice with Stripe. Owner-only `GET /api/cloud/billing/subscription` exports the subscription state, entitlement, reconciliation time and recent audit; card numbers, payment methods and webhook payloads are not stored.
+
+Dispatch reads only local entitlements and makes no Stripe request:
+
+| Subscription state | Access |
+| --- | --- |
+| No subscription | Base plan; no payment record required. |
+| Initial incomplete payment | No paid access until Stripe confirms a paid invoice and active subscription. |
+| Active with a paid current invoice | The plan through its period end, plus the configured renewal-verification grace. |
+| Renewal payment failure or unpaid current invoice | The previously paid plan through its original paid-through deadline plus grace; retries do not restart grace. |
+| Grace expired, unpaid, paused or unsupported | Base plan; new allocations must fit the remaining allowances. |
+| Verified Stripe trial | The trial plan through the trial end, with no payment grace. |
+| Scheduled cancellation | Access ends at Stripe's cancellation time or period end, without grace. |
+| Immediate cancellation or downgrade | The new plan at the next authoritative reconciliation. |
+| Full refund of the current invoice, or an unresolved or lost dispute | Subscription-derived access is suspended; partial refunds keep it. |
+
+Complimentary grants keep their own scope, reason, expiry and revocation and continue to apply after cancellation, refund, dispute or payment failure. Access reductions block new excess allocations only: running leases still renew and release, work can checkpoint and complete, and reading, export and billing administration stay available. No customer data is deleted.
+
+AI credits are optional prepaid USD balances for Luna chat and other hosted AI usage; no sponsored allowance is included. Owners buy credit packs in billing settings, and verified Stripe events, not the Checkout return, add the credits. Each priced hosted AI turn debits raw provider cost multiplied by the configured `credit_cost_multiplier` (default `1.5`), rounded up to the next microdollar; a $0.10 turn debits $0.15. Usage reports keep the raw provider cost. Purchased credits do not expire. When credits run out, new chat turns stop; in-flight usage is still recorded, including any overrun. Owners can enable auto-fund with a pack and a USD threshold smaller than that pack; it charges the saved payment method only below the threshold, and a decline or authentication failure disables it. Free organizations can use a positive purchased balance.
+
+## Monthly budgets
+
+Monthly budgets cap detected USD spend per organization and per project. Both apply independently: organization exhaustion cannot be overridden by project headroom, and disabling a project policy leaves an enabled organization policy in force. Budgets filter eligibility before capacity acquisition and never change runner grants or issue lanes; `Backlog` work is never promoted by a budget.
+
+`GET` and `PUT` `/api/v2/organizations/{organization}/monthly-budget` and `/api/v2/organizations/{organization}/projects/{project}/monthly-budget` read and update the policies. Organization settings require organization administration; project writes require operator or administrator authority on that project, and project workers can read but not change them. `PUT` takes `idempotency_key`, the current `expected_revision` as a decimal string, and `policy`:
+
+```json
+{
+  "idempotency_key": "set-monthly-caps-1",
+  "expected_revision": "0",
+  "policy": {
+    "enabled": true,
+    "mode": "drain_issue",
+    "luna_api_micros": 20000000,
+    "runner_api_micros": 100000000,
+    "sprite_infrastructure_micros": 50000000,
+    "total_micros": 150000000
+  }
+}
+```
+
+Amounts are integer USD millionths; this example sets $20 Luna, $100 runner API and $50 Sprite caps with a $150 total. An omitted cap is unconstrained; an explicit zero closes that bucket. `enabled: false` disables every cap in the policy. `mode` is `drain_issue` (default) or `hard_stop`. Each saved policy version keeps its actor and timestamp.
+
+Spend uses the shared monthly ledger in UTC calendar months, including recorded estimates and late corrections applied to the month of their source interval. The total cap sums the Luna, runner API and Sprite subtotals once. Runner API exposure follows the project's billing mode; local subscription-agent activity has no runner API exposure, and Sprite execution adds infrastructure exposure in either mode. The monthly usage API and the `monthly_usage_costs` MCP tool report unknown costs, unreported and active attempts, estimates and coverage gaps; a known subtotal below a cap is not proof of remaining billing headroom.
+
+With `drain_issue`, exhaustion closes new affected admissions, while already admitted issues continue through validation, review, rework and `Merging`. Sprite exhaustion closes new provisioning and wake work. With `hard_stop`, affected claims and run starts are refused and current leases fail renewal, so the worker cancels its attempt and keeps its issue, evidence and checkpoints; affected Luna turns are cancelled with their messages saved for retry. Recovery is automatic when the month rolls over, a cap is raised or disabled, or a correction lowers the detected subtotal.
+
+These are detected-spend admission controls, not exact provider dollar ceilings. Runner costs usually arrive when attempts finish, infrastructure measurements may be delayed, and both modes have detection and cancellation lag, so parallel work and retries can overrun a cap by an unbounded amount.

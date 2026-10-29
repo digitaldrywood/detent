@@ -3,6 +3,7 @@ package hubclient
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
 	"slices"
 	"strconv"
@@ -12,7 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// Per-attempt usage (decisions section 17.5). The runner reports what one
+// Per-attempt usage. The runner reports what one
 // turn spent; the execution keeps the attempt's running total on its run
 // data, so the next run.checkpointed or run.finished carries it without a
 // second request. Reporting the total rather than a delta is what makes a
@@ -20,15 +21,28 @@ import (
 
 // RecordUsage adds one turn's usage to the attempt's running total. A report
 // that names no provider or model, or that spent nothing, changes nothing.
-func (e *nativeExecution) RecordUsage(_ context.Context, entry tracker.NativeUsage) error {
+func (e *nativeExecution) RecordUsage(ctx context.Context, entry tracker.NativeUsage) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.scheduler != nil {
+		if err := e.flush(ctx); err != nil {
+			return err
+		}
+	}
 	for _, existing := range e.data.Usage {
 		if existing.Provider == strings.TrimSpace(entry.Provider) && existing.Model == strings.TrimSpace(entry.Model) && existing.Currency != "" && entry.Currency != "" && existing.Currency != entry.Currency {
 			return errors.New("attempt usage cannot combine currencies for the same provider and model")
 		}
 	}
 	e.data.Usage = mergeNativeUsage(e.data.Usage, entry)
+	if e.data.Identity != nil && e.data.Outcome == "" {
+		if err := e.append(ctx, "run.observed", "", nil, true); err != nil {
+			if e.pending == nil {
+				return err
+			}
+			slog.Default().Warn("native usage publication deferred", "attempt", e.data.AttemptID, "error", err)
+		}
+	}
 	return nil
 }
 

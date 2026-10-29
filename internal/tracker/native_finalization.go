@@ -54,6 +54,31 @@ func PublicGateResult(result gate.CommandResult) gate.CommandResult {
 	text, truncated := publicGateOutput(result.Output)
 	result.Output = text
 	result.OutputTruncated = result.OutputTruncated || truncated
+	if result.BaseReproduction != nil {
+		reproduction := *result.BaseReproduction
+		reproduction.Command, _ = publicGateOutput(reproduction.Command)
+		if nativeGatePrivateCommand.MatchString(reproduction.Command) {
+			reproduction.Command = "[redacted]"
+		}
+		var truncated bool
+		reproduction.Output, truncated = publicGateOutput(reproduction.Output)
+		reproduction.Complete = reproduction.Complete && !truncated
+		result.BaseReproduction = &reproduction
+	}
+	result.Findings = append([]gate.Finding(nil), result.Findings...)
+	for i := range result.Findings {
+		finding := &result.Findings[i]
+		finding.CheckCommand, _ = publicGateOutput(finding.CheckCommand)
+		if nativeGatePrivateCommand.MatchString(finding.CheckCommand) {
+			finding.CheckCommand = "[redacted]"
+		}
+		finding.CheckDiagnostic, _ = publicGateOutput(finding.CheckDiagnostic)
+		if finding.AttributionEvidence != nil {
+			evidence := *finding.AttributionEvidence
+			evidence.Command, evidence.Diagnostic = finding.CheckCommand, finding.CheckDiagnostic
+			finding.AttributionEvidence = &evidence
+		}
+	}
 	if result.Evidence != nil {
 		evidence := *result.Evidence
 		evidence.Checks = nil
@@ -71,6 +96,10 @@ func PublicGateResult(result gate.CommandResult) gate.CommandResult {
 }
 
 func publicGateOutput(value string) (string, bool) {
+	return runtimeoutput.Diagnostic(RedactGateOutput(value), NativeFinalizationTextLimit)
+}
+
+func RedactGateOutput(value string) string {
 	value = ansi.Strip(strings.ToValidUTF8(value, "�"))
 	value = strings.Map(func(r rune) rune {
 		if r < ' ' && r != '\n' && r != '\r' && r != '\t' {
@@ -82,7 +111,7 @@ func publicGateOutput(value string) (string, bool) {
 	value = nativeGateBearer.ReplaceAllString(value, "Bearer [redacted]")
 	value = nativeGateToken.ReplaceAllString(value, "[redacted]")
 	value = nativeGatePrivateText.ReplaceAllString(value, `${1}[redacted]`)
-	return runtimeoutput.Diagnostic(value, NativeFinalizationTextLimit)
+	return value
 }
 
 func (f NativeFinalization) Public() NativeFinalization {

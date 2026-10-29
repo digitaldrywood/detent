@@ -12,7 +12,7 @@ import (
 )
 
 // The runner posts the stored attempt diff before the run event that
-// references it (decisions section 18.5).
+// references it.
 
 const testAttemptID = "attempt_00000000000000000000000000000001"
 

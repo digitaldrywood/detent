@@ -13,9 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/apikey"
 	"github.com/digitaldrywood/detent/internal/explain"
-	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/operatortool"
-	"github.com/digitaldrywood/detent/internal/store"
 )
 
 const issueExplanationTimeout = 5 * time.Second
@@ -35,74 +33,6 @@ func (s *Server) apiIssueExplanation(c echo.Context) error {
 		return err
 	}
 	return c.JSON(http.StatusOK, explanation)
-}
-
-func (s *Server) apiIssueParkAcknowledgement(c echo.Context) error {
-	explanation, ok, err := s.issueExplanation(c)
-	if !ok {
-		return err
-	}
-	explanation, err = s.acknowledgeIssueParks(c.Request().Context(), explanation)
-	if err != nil {
-		return c.JSON(http.StatusServiceUnavailable, errorResponse("runtime_unavailable", "Issue park acknowledgement store is unavailable"))
-	}
-	return c.JSON(http.StatusOK, explanation)
-}
-
-func (s *Server) acknowledgeIssueParks(ctx context.Context, explanation explain.IssueExplanation) (explain.IssueExplanation, error) {
-	acknowledger, ok := s.store.(store.ParkSummaryStore)
-	if !ok {
-		return explain.IssueExplanation{}, errOperatorCommandUnavailable
-	}
-	identity := store.IssueIdentity{
-		ProjectID:  explanation.Identity.ProjectID,
-		IssueID:    explanation.Identity.IssueID,
-		Identifier: explanation.Identity.Identifier,
-		IssueURL:   explanation.Identity.IssueURL,
-	}
-	acknowledgedAt := time.Now().UTC()
-	if err := acknowledger.AcknowledgeIssueParks(ctx, identity, explanation.ParkSummary.ParkCount, acknowledgedAt); err != nil {
-		s.logger.Error("issue park acknowledgement failed", slog.Any("error", err))
-		return explain.IssueExplanation{}, errOperatorCommandUnavailable
-	}
-	acknowledged, err := acknowledger.IssueParkSummary(ctx, identity)
-	if err != nil {
-		return explain.IssueExplanation{}, errOperatorCommandUnavailable
-	}
-	explanation.ParkSummary.AcknowledgedParkSequence = acknowledged.AcknowledgedParkSequence
-	explanation.ParkSummary.AcknowledgedAt = acknowledged.AcknowledgedAt
-	return explanation, nil
-}
-
-func (s *Server) apiIssueProgressCredit(c echo.Context) error {
-	explanation, ok, err := s.issueExplanation(c)
-	if !ok {
-		return err
-	}
-	credit, err := s.creditOperatorProgress(c.Request().Context(), explanation.Identity)
-	if err != nil {
-		return writeControlProblem(c, err)
-	}
-	return c.JSON(http.StatusOK, credit)
-}
-
-func (s *Server) creditOperatorProgress(ctx context.Context, identitySource explain.Identity) (store.IssueProgressCredit, error) {
-	credits, ok := s.store.(store.ProgressCreditStore)
-	if !ok {
-		return store.IssueProgressCredit{}, &controlProblem{http.StatusServiceUnavailable, "runtime_unavailable", "Issue progress credit store is unavailable"}
-	}
-	identity := store.IssueIdentity{
-		ProjectID:  identitySource.ProjectID,
-		IssueID:    identitySource.IssueID,
-		Identifier: identitySource.Identifier,
-		IssueURL:   identitySource.IssueURL,
-	}
-	credit, err := credits.CreditIssueProgress(ctx, identity, s.now().UTC())
-	if err != nil {
-		s.logger.Error("issue progress credit failed", slog.Any("error", mutation.ErrorText(ctx, err)))
-		return store.IssueProgressCredit{}, &controlProblem{http.StatusServiceUnavailable, "runtime_unavailable", "Issue progress credit store is unavailable"}
-	}
-	return credit, nil
 }
 
 func (s *Server) issueExplanation(c echo.Context) (explain.IssueExplanation, bool, error) {

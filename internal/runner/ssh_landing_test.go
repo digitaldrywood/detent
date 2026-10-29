@@ -28,6 +28,9 @@ func TestSSHNativeLandingBatch(t *testing.T) {
 		calls.Add(1)
 		outcomes := make([]workspace.LandOutcome, len(requests))
 		for i, request := range requests {
+			if request.Options.ChangeID != "change" {
+				t.Errorf("SSH landing lost authoritative Change identity: %q", request.Options.ChangeID)
+			}
 			if err := request.Validate(ctx); err != nil {
 				outcomes[i].Err = err
 				continue

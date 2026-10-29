@@ -21,7 +21,180 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/runner"
 )
+
+func TestLocalTransportReapedCloseTimeout(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(t.Context(), transportTestDeadlockTimeout)
+	defer cancel()
+	cmd := helperCommand(ctx, "exit-one")
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("helper error = %v, want exit code 1", err)
+	}
+	waitFailure := errors.New("wait failed")
+	for _, test := range []struct {
+		name    string
+		waitErr error
+		want    error
+	}{
+		{name: "nonzero exit after successful termination", waitErr: exitErr},
+		{name: "unexpected wait failure", waitErr: waitFailure, want: waitFailure},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transport := &localTransport{
+				cmd:                  cmd,
+				waitErr:              test.waitErr,
+				exitedAt:             time.Now().UTC(),
+				exitStatus:           cmd.ProcessState.String(),
+				terminationRequested: true,
+				cleanupComplete:      true,
+			}
+			err := transport.closeAfterTermination(context.DeadlineExceeded, nil, nil)
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("close error = %v, want deadline evidence", err)
+			}
+			var reaped *reapedTransportTimeoutError
+			if test.want != nil {
+				if !errors.Is(err, test.want) || errors.As(err, &reaped) {
+					t.Fatalf("close error = %v, want unrecovered %v", err, test.want)
+				}
+				return
+			}
+			if !errors.As(err, &reaped) || !reaped.Process.ExitObserved || !reaped.Process.CleanupComplete || !reaped.Process.TerminationRequested || reaped.Process.ExitStatus != "exit status 1" {
+				t.Fatalf("close error = %#v, want verified cleanup with exit status 1", err)
+			}
+		})
+	}
+}
+
+func TestModelCatalogCloseTimeoutAfterReaping(t *testing.T) {
+	if testing.Short() {
+		t.Skip("process lifecycle integration")
+	}
+	t.Parallel()
+	cleanupFailure := errors.New("output cleanup failed")
+	for _, test := range []struct {
+		name, result                                                string
+		rpcError, unverified, cancel, cleanupFailure, joinedFailure bool
+		want                                                        error
+	}{
+		{name: "verified forced cleanup", result: `{"data":[{"id":"example-model","model":"example-model"}]}`},
+		{name: "live unreaped helper", result: `{"data":[{"id":"example-model","model":"example-model"}]}`, unverified: true, want: ErrTransportClose},
+		{name: "authentication error", rpcError: true, want: ErrResponseError},
+		{name: "invalid response", result: `{"data":"invalid"}`, want: ErrInvalidResponse},
+		{name: "invalid identity", result: `{"data":[{}]}`, want: ErrInvalidResponse},
+		{name: "empty catalog", result: `{"data":[]}`, want: ErrInvalidResponse},
+		{name: "canceled read", result: `{"data":[{"id":"example-model","model":"example-model"}]}`, cancel: true, want: context.Canceled},
+		{name: "additional close failure", result: `{"data":[{"id":"example-model","model":"example-model"}]}`, joinedFailure: true, want: cleanupFailure},
+		{name: "cleanup failure", result: `{"data":[{"id":"example-model","model":"example-model"}]}`, cleanupFailure: true, want: cleanupFailure},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+				cmd := helperCommand(ctx, "catalog-stall")
+				cmd.Env = append(cmd.Env, "DETENT_CODEX_CATALOG_RESULT="+test.result, "DETENT_CODEX_CATALOG_ERROR="+strconv.FormatBool(test.rpcError))
+				return cmd
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			transport, err := factory.NewTransport(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			local := transport.(*localTransport)
+			t.Cleanup(func() {
+				if err := recoverLocalTransportTest(local); err != nil {
+					t.Error(err)
+				}
+			})
+			if test.cleanupFailure {
+				local.waitMu.Lock()
+				local.stdout = catalogCloseFailure{ReadCloser: local.stdout, err: cleanupFailure}
+				local.waitMu.Unlock()
+			}
+			controlled := &catalogCleanupTransport{controlledStartupTransport: &controlledStartupTransport{localTransport: local, test: t}, unverified: test.unverified}
+			if test.cancel {
+				controlled.cancel = cancel
+			}
+			if test.joinedFailure {
+				controlled.closeErr = cleanupFailure
+			}
+			var logs bytes.Buffer
+			server, err := NewAppServer(staticTransportFactory{transport: controlled}, WithReadTimeout(60*time.Second), WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend, err := NewAgentBackend(server, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			models, catalogErr := backend.ListModels(ctx, runner.AgentProcessRequest{})
+			evidence := local.StartupProcessEvidence()
+			if test.unverified {
+				if evidence.ExitObserved || evidence.CleanupComplete || local.cmd.ProcessState != nil {
+					t.Fatalf("helper unexpectedly exited: %+v", evidence)
+				}
+			} else {
+				assertLocalTransportClosed(t, local, "catalog cleanup timeout")
+				if !evidence.ExitObserved || !evidence.CleanupComplete || !evidence.TerminationRequested {
+					t.Fatalf("cleanup evidence = %+v", evidence)
+				}
+			}
+			if test.want != nil {
+				if !errors.Is(catalogErr, test.want) || len(models) != 0 {
+					t.Fatalf("models=%+v error=%v, want %v", models, catalogErr, test.want)
+				}
+				if logs.Len() != 0 {
+					t.Fatalf("failed catalog logged as recovered: %s", &logs)
+				}
+				return
+			}
+			if catalogErr != nil || len(models) != 1 || models[0].ID != "example-model" {
+				t.Fatalf("reaped catalog models=%+v error=%v", models, catalogErr)
+			}
+			if !strings.Contains(logs.String(), `"cleanup_complete":true`) || !strings.Contains(logs.String(), `"termination_requested":true`) {
+				t.Fatalf("missing lifecycle evidence: %s", &logs)
+			}
+		})
+	}
+}
+
+type catalogCleanupTransport struct {
+	*controlledStartupTransport
+	unverified bool
+	cancel     context.CancelFunc
+	closeErr   error
+}
+
+func (t *catalogCleanupTransport) Close(ctx context.Context) error {
+	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) < 59*time.Second {
+		t.test.Error("catalog cleanup lost configured 60s timeout")
+	}
+	if t.cancel != nil {
+		t.cancel()
+	}
+	if t.unverified {
+		return context.DeadlineExceeded
+	}
+	err := t.controlledStartupTransport.Close(ctx)
+	if t.closeErr != nil {
+		return errors.Join(err, t.closeErr)
+	}
+	return err
+}
+
+type catalogCloseFailure struct {
+	io.ReadCloser
+	err error
+}
+
+func (c catalogCloseFailure) Close() error { return errors.Join(c.ReadCloser.Close(), c.err) }
 
 const (
 	oversizedJSONRPCPayloadSize         = 4 * 1024 * 1024
@@ -988,8 +1161,24 @@ func TestLocalTransportHelperProcess(t *testing.T) {
 		helperBackpressureExpect(codec, threadStartRequestID, "thread/start")
 		helperBackpressureSignal("private startup marker")
 		time.Sleep(time.Hour)
+	case "catalog-stall":
+		codec := NewCodec(os.Stdin, os.Stdout)
+		helperBackpressureRespond(codec, initializeRequestID, "initialize", json.RawMessage(`{"userAgent":"fixture"}`))
+		helperBackpressureExpect(codec, 0, "initialized")
+		helperBackpressureExpect(codec, modelListRequestID, "model/list")
+		response := Message{ID: json.RawMessage(strconv.Itoa(modelListRequestID)), Result: json.RawMessage(os.Getenv("DETENT_CODEX_CATALOG_RESULT"))}
+		if os.Getenv("DETENT_CODEX_CATALOG_ERROR") == "true" {
+			response.Result = nil
+			response.Error = &RPCError{Code: -32000, Message: "authentication required"}
+		}
+		if err := codec.WriteMessage(response); err != nil {
+			helperBackpressureExit("write catalog", err)
+		}
+		time.Sleep(time.Hour)
 	case "exit":
 		return
+	case "exit-one":
+		os.Exit(1)
 	case "exit-stderr":
 		fmt.Fprint(os.Stderr, "broken launch environment")
 		os.Exit(23)
@@ -1402,5 +1591,27 @@ func assertChannelClosed(t *testing.T, ch <-chan struct{}, scenario string, name
 	case <-ch:
 	default:
 		t.Fatalf("%s: %s still running after RunTurn returned", scenario, name)
+	}
+}
+
+func TestLocalTransportPreparationFailureIsStartupFailure(t *testing.T) {
+	t.Parallel()
+	prepareErr := errors.New("parse Codex config: invalid value")
+	started := false
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		started = true
+		return exec.CommandContext(ctx, "true")
+	}, WithLaunchPreparation(func(context.Context) error { return prepareErr }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = factory.NewTransport(t.Context())
+	if !errors.Is(err, prepareErr) || started {
+		t.Fatalf("NewTransport() error = %v, command built = %t; want preparation failure before launch", err, started)
+	}
+	now := time.Now()
+	details, ok := ClassifyCapacityError(startupStageError(fmt.Errorf("start codex app-server transport: %w", err), "process/start", now, now, 0), nil, now)
+	if !ok || details.Kind != backendcapacity.StartupFailureKind {
+		t.Fatalf("classification = %+v, %t; want instance startup failure", details, ok)
 	}
 }

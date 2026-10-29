@@ -14,25 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/digitaldrywood/detent/internal/citrigger"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/reviewseverity"
 )
-
-type issuePullRequestCandidate struct {
-	Index             int
-	Identifier        string
-	BranchPrefix      string
-	PullRequestNumber int
-	PullRequestRepo   pullRequestRepo
-}
-
-type pullRequestKey struct {
-	Repo   pullRequestRepo
-	Number int
-}
 
 type pullRequestDiffFingerprintCacheKey struct {
 	Repository string
@@ -47,13 +32,11 @@ type pullRequestRepo struct {
 }
 
 const (
-	linkedPullRequestHydrationConcurrency     = 8
-	linkedPullRequestHydrationRequestEstimate = 6
-	codexReviewSummaryMarker                  = "<!-- codex-pull-request-review-summary -->"
-	codexReviewSummaryHeading                 = "## Codex Review Summary"
-	codexReviewSummaryTableHeader             = "| Review | Status | Commit | Review trigger |"
-	codexReviewSummaryTableSeparator          = "| --- | --- | --- | --- |"
-	minimumCodexReviewCommitPrefixLength      = 7
+	codexReviewSummaryMarker             = "<!-- codex-pull-request-review-summary -->"
+	codexReviewSummaryHeading            = "## Codex Review Summary"
+	codexReviewSummaryTableHeader        = "| Review | Status | Commit | Review trigger |"
+	codexReviewSummaryTableSeparator     = "| --- | --- | --- | --- |"
+	minimumCodexReviewCommitPrefixLength = 7
 )
 
 const pullRequestReviewThreadsQuery = `
@@ -74,268 +57,6 @@ var (
 	codexReviewSummaryStatusPattern = regexp.MustCompile(`^✅\s+\*\*Completed\*\*\s+<relative-time datetime="([^"]+)">([^<]+)</relative-time>$`)
 	codexReviewSummaryCommitPattern = regexp.MustCompile("^`([0-9a-fA-F]{7,40})`$")
 )
-
-type linkedPullRequestHydration struct {
-	repo        pullRequestRepo
-	number      int
-	pullRequest pullRequestNode
-	state       pullRequestHydrationState
-}
-
-func (c *Connector) attachPullRequests(ctx context.Context, issues []connector.Issue) error {
-	return c.attachPullRequestsWithCache(ctx, issues, true)
-}
-
-func (c *Connector) attachFreshPullRequests(ctx context.Context, issues []connector.Issue) error {
-	return c.attachPullRequestsWithCache(ctx, issues, false)
-}
-
-func (c *Connector) attachPullRequestsWithCache(ctx context.Context, issues []connector.Issue, useStatusCache bool) error {
-	if c.usesLabelStatus() {
-		if err := c.attachLabelIssuePullRequestReferences(ctx, issues); err != nil {
-			return err
-		}
-	}
-	byRepo := make(map[pullRequestRepo][]issuePullRequestCandidate)
-	for index, issue := range issues {
-		repo, ok := pullRequestRepoFromIdentifier(issue.Identifier)
-		if !ok {
-			continue
-		}
-		branchPrefix := detentIssueBranchPrefix(issue.Identifier)
-		pullRequestNumber := 0
-		linkedPullRequestRepo := repo
-		if issue.PRNumber != nil {
-			pullRequestNumber = *issue.PRNumber
-		}
-		if owner, name, ok := splitRepositoryName(issue.PRRepository); ok {
-			linkedPullRequestRepo = pullRequestRepo{Owner: owner, Name: name}
-		}
-		if normalizeStateName(issue.State) == normalizeStateName("Blocked") && pullRequestNumber <= 0 && !statusLabelConflictIssue(issue) {
-			branchPrefix = ""
-		}
-		if branchPrefix == "" && pullRequestNumber <= 0 {
-			continue
-		}
-		identifier := strings.TrimSpace(issue.Identifier)
-		if identifier == "" {
-			identifier = strings.TrimSpace(issue.ID)
-		}
-		byRepo[repo] = append(byRepo[repo], issuePullRequestCandidate{
-			Index:             index,
-			Identifier:        identifier,
-			BranchPrefix:      branchPrefix,
-			PullRequestNumber: pullRequestNumber,
-			PullRequestRepo:   linkedPullRequestRepo,
-		})
-	}
-	if len(byRepo) == 0 {
-		return nil
-	}
-
-	repos := make([]pullRequestRepo, 0, len(byRepo))
-	for repo := range byRepo {
-		repos = append(repos, repo)
-	}
-	sort.Slice(repos, func(i, j int) bool {
-		left := repos[i].Owner + "/" + repos[i].Name
-		right := repos[j].Owner + "/" + repos[j].Name
-		return left < right
-	})
-
-	for _, repo := range repos {
-		candidates := c.rotatePullRequestHydrationCandidates(repo, byRepo[repo])
-		nextCursor := ""
-		branchFirst := firstPullRequestCandidateNeedsBranchHydration(issues, candidates)
-		if branchFirst {
-			var err error
-			nextCursor, err = c.attachBranchPullRequests(ctx, repo, issues, candidates, useStatusCache)
-			if err != nil {
-				return err
-			}
-		}
-
-		linkedCursor, err := c.attachLinkedPullRequests(ctx, repo, issues, candidates, useStatusCache)
-		if err != nil {
-			return err
-		}
-		if nextCursor == "" {
-			nextCursor = linkedCursor
-		}
-		if !branchFirst {
-			branchCursor, err := c.attachBranchPullRequests(ctx, repo, issues, candidates, useStatusCache)
-			if err != nil {
-				return err
-			}
-			if nextCursor == "" {
-				nextCursor = branchCursor
-			}
-		}
-		c.setPullRequestHydrationCursor(repo, nextCursor)
-	}
-	for i := range issues {
-		if err := c.attachRequiredBranchChecks(ctx, &issues[i]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (c *Connector) attachBranchPullRequests(
-	ctx context.Context,
-	repo pullRequestRepo,
-	issues []connector.Issue,
-	candidates []issuePullRequestCandidate,
-	useStatusCache bool,
-) (string, error) {
-	if !hasUnattachedBranchPullRequestCandidates(issues, candidates) {
-		return "", nil
-	}
-	if state, ok := c.currentPullRequestHydrationState(repo); ok {
-		c.logPullRequestHydrationSkip(ctx, repo, state, "shared_backoff")
-		markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
-		return firstUnattachedBranchPullRequestCandidate(issues, candidates), nil
-	}
-	pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
-	if err != nil {
-		if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
-			cursor := ""
-			if restFanoutOrReserveDeferred(err) {
-				cursor = firstUnattachedBranchPullRequestCandidate(issues, candidates)
-			}
-			markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
-			return cursor, nil
-		}
-		return "", err
-	}
-	return c.attachMatchingPullRequests(ctx, repo, issues, candidates, pullRequests, useStatusCache, true)
-}
-
-func firstPullRequestCandidateNeedsBranchHydration(issues []connector.Issue, candidates []issuePullRequestCandidate) bool {
-	if len(candidates) == 0 {
-		return false
-	}
-	candidate := candidates[0]
-	return issues[candidate.Index].PullRequest == nil &&
-		candidate.PullRequestNumber <= 0 &&
-		strings.TrimSpace(candidate.BranchPrefix) != ""
-}
-
-func firstUnattachedBranchPullRequestCandidate(issues []connector.Issue, candidates []issuePullRequestCandidate) string {
-	for _, candidate := range candidates {
-		if issues[candidate.Index].PullRequest == nil &&
-			candidate.PullRequestNumber <= 0 &&
-			strings.TrimSpace(candidate.BranchPrefix) != "" {
-			return candidate.Identifier
-		}
-	}
-	for _, candidate := range candidates {
-		if issues[candidate.Index].PullRequest == nil && strings.TrimSpace(candidate.BranchPrefix) != "" {
-			return candidate.Identifier
-		}
-	}
-	return ""
-}
-
-func (c *Connector) attachPullRequestMergeStates(ctx context.Context, issues []connector.Issue) error {
-	byRepo := make(map[pullRequestRepo][]issuePullRequestCandidate)
-	for index, issue := range issues {
-		if issue.PullRequest != nil {
-			continue
-		}
-		repo, ok := pullRequestRepoFromIdentifier(issue.Identifier)
-		if !ok {
-			continue
-		}
-		branchPrefix := detentIssueBranchPrefix(issue.Identifier)
-		if branchPrefix == "" {
-			continue
-		}
-		byRepo[repo] = append(byRepo[repo], issuePullRequestCandidate{
-			Index:        index,
-			Identifier:   strings.TrimSpace(issue.Identifier),
-			BranchPrefix: branchPrefix,
-		})
-	}
-	if len(byRepo) == 0 {
-		return nil
-	}
-
-	repos := make([]pullRequestRepo, 0, len(byRepo))
-	for repo := range byRepo {
-		repos = append(repos, repo)
-	}
-	sort.Slice(repos, func(i, j int) bool {
-		left := repos[i].Owner + "/" + repos[i].Name
-		right := repos[j].Owner + "/" + repos[j].Name
-		return left < right
-	})
-
-	for _, repo := range repos {
-		pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
-		if err != nil {
-			return err
-		}
-		attachMatchingPullRequestMergeStates(repo, issues, byRepo[repo], pullRequests)
-	}
-	return nil
-}
-
-func attachMatchingPullRequestMergeStates(
-	repo pullRequestRepo,
-	issues []connector.Issue,
-	candidates []issuePullRequestCandidate,
-	pullRequests []pullRequestNode,
-) {
-	for _, pullRequest := range pullRequests {
-		if normalizeStateName(pullRequest.State) != "merged" {
-			continue
-		}
-		branchName := strings.TrimSpace(pullRequest.HeadRefName)
-		if branchName == "" {
-			continue
-		}
-		for _, candidate := range candidates {
-			if issues[candidate.Index].PullRequest != nil {
-				continue
-			}
-			if !branchMatchesIssuePrefix(branchName, candidate.BranchPrefix) {
-				continue
-			}
-			issues[candidate.Index].PRSource = "detent_branch"
-			issues[candidate.Index].PullRequest = &connector.PullRequest{
-				Number:     pullRequest.Number,
-				URL:        strings.TrimSpace(pullRequest.URL),
-				BranchName: branchName,
-				State:      strings.ToUpper(strings.TrimSpace(pullRequest.State)),
-				ActivityAt: cloneGitHubTime(pullRequest.ActivityAt),
-				MergedAt:   cloneGitHubTime(pullRequest.MergedAt),
-			}
-			if issues[candidate.Index].PRNumber == nil && pullRequest.Number > 0 {
-				number := pullRequest.Number
-				issues[candidate.Index].PRNumber = &number
-			}
-			if issues[candidate.Index].PRRepository == "" {
-				issues[candidate.Index].PRRepository = pullRequestRepoName(repo)
-			}
-		}
-	}
-}
-
-func (c *Connector) fetchRepositoryPullRequests(ctx context.Context, repo pullRequestRepo) ([]pullRequestNode, error) {
-	pullRequests := []pullRequestNode{}
-	for page := 1; page <= pullRequestsPageLimit; page++ {
-		pagePullRequests, err := c.fetchRepositoryPullRequestsPage(ctx, repo, page)
-		if err != nil {
-			return nil, err
-		}
-		pullRequests = append(pullRequests, pagePullRequests...)
-		if len(pagePullRequests) < pullRequestsPageSize {
-			break
-		}
-	}
-	return pullRequests, nil
-}
 
 func (c *Connector) fetchRepositoryPullRequest(ctx context.Context, repo pullRequestRepo, number int) (pullRequestNode, error) {
 	var response restPullRequest
@@ -859,11 +580,14 @@ func (c *Connector) ReapplyPullRequestLabel(ctx context.Context, repository stri
 		Stagger:         stagger,
 	}, citrigger.Dependencies{}, func(ctx context.Context) error {
 		ref := issueRef{Owner: repo.Owner, Name: repo.Name, Number: number}
-		issue, err := c.fetchRESTIssue(ctx, ref)
+		var issue struct {
+			Labels []label `json:"labels"`
+		}
+		err := c.client.REST(ctx, http.MethodGet, restIssuePath(ref), nil, &issue)
 		if err != nil {
 			return fmt.Errorf("fetch github pull request labels: %w", err)
 		}
-		if stringSliceContainsFold(labelNames(issue.Labels), labelName) {
+		if stringSliceContainsFold(labelNames(nodeConnection[label]{Nodes: issue.Labels}), labelName) {
 			if err := c.client.REST(ctx, http.MethodDelete, restIssueLabelPath(ref, labelName), nil, nil); err != nil {
 				return fmt.Errorf("remove github pull request label: %w", err)
 			}
@@ -897,267 +621,6 @@ func hydratedPullRequestRef(issue connector.Issue) (pullRequestRepo, int, bool) 
 		return repo, number, true
 	}
 	return pullRequestRepo{}, 0, false
-}
-
-func (c *Connector) fetchRepositoryPullRequestsPage(
-	ctx context.Context,
-	repo pullRequestRepo,
-	page int,
-) ([]pullRequestNode, error) {
-	var response []restPullRequest
-	if err := c.client.REST(ctx, http.MethodGet, restPullRequestsPath(repo, page), nil, &response); err != nil {
-		return nil, fmt.Errorf("fetch github pull requests: %w", err)
-	}
-	pullRequests := make([]pullRequestNode, 0, len(response))
-	for _, pullRequest := range response {
-		pullRequests = append(pullRequests, pullRequestNodeFromREST(pullRequest))
-	}
-	return pullRequests, nil
-}
-
-func (c *Connector) attachLinkedPullRequests(
-	ctx context.Context,
-	repo pullRequestRepo,
-	issues []connector.Issue,
-	candidates []issuePullRequestCandidate,
-	useStatusCache bool,
-) (string, error) {
-	hydrations := make([]linkedPullRequestHydration, 0, len(candidates))
-	hydrationByKey := make(map[pullRequestKey]int, len(candidates))
-	hydrationByCandidate := make(map[int]int, len(candidates))
-	for _, candidate := range candidates {
-		if issues[candidate.Index].PullRequest != nil || candidate.PullRequestNumber <= 0 {
-			continue
-		}
-		pullRequestRepo := candidate.PullRequestRepo
-		if strings.TrimSpace(pullRequestRepo.Owner) == "" || strings.TrimSpace(pullRequestRepo.Name) == "" {
-			pullRequestRepo = repo
-		}
-		if state, ok := c.currentPullRequestHydrationState(pullRequestRepo); ok {
-			c.logPullRequestHydrationSkip(ctx, pullRequestRepo, state, "linked_pull_request")
-			attachPullRequestHydrationUnavailableToIssue(&issues[candidate.Index], pullRequestRepo, candidate.PullRequestNumber, state)
-			continue
-		}
-		key := pullRequestKey{Repo: pullRequestRepo, Number: candidate.PullRequestNumber}
-		hydrationIndex, ok := hydrationByKey[key]
-		if !ok {
-			hydrationIndex = len(hydrations)
-			hydrationByKey[key] = hydrationIndex
-			hydrations = append(hydrations, linkedPullRequestHydration{
-				repo:   pullRequestRepo,
-				number: candidate.PullRequestNumber,
-			})
-		}
-		hydrationByCandidate[candidate.Index] = hydrationIndex
-	}
-
-	concurrentStart := 0
-	if c.linkedPullRequestHydrationUsesFiniteFanoutCap() && len(hydrations) > 0 {
-		if err := c.hydrateLinkedPullRequest(ctx, &hydrations[0], useStatusCache); err != nil {
-			return "", err
-		}
-		concurrentStart = 1
-	}
-
-	group, groupCtx := errgroup.WithContext(ctx)
-	group.SetLimit(c.linkedPullRequestHydrationLimit())
-	for index := concurrentStart; index < len(hydrations); index++ {
-		group.Go(func() error {
-			return c.hydrateLinkedPullRequest(groupCtx, &hydrations[index], useStatusCache)
-		})
-	}
-	if err := group.Wait(); err != nil {
-		return "", err
-	}
-
-	nextCursor := ""
-	for _, candidate := range candidates {
-		hydrationIndex, ok := hydrationByCandidate[candidate.Index]
-		if !ok {
-			continue
-		}
-		hydration := hydrations[hydrationIndex]
-		if hydration.state.Reason != "" {
-			if pullRequestHydrationBudgetDeferred(hydration.state.Reason) && nextCursor == "" {
-				nextCursor = candidate.Identifier
-			}
-			if hydration.pullRequest.Number <= 0 {
-				attachPullRequestHydrationUnavailableToIssue(&issues[candidate.Index], hydration.repo, candidate.PullRequestNumber, hydration.state)
-				continue
-			}
-		}
-		attachPullRequestToIssue(&issues[candidate.Index], hydration.repo, hydration.pullRequest)
-	}
-	return nextCursor, nil
-}
-
-func (c *Connector) hydrateLinkedPullRequest(ctx context.Context, hydration *linkedPullRequestHydration, useStatusCache bool) error {
-	pullRequest, err := c.fetchRepositoryPullRequest(ctx, hydration.repo, hydration.number)
-	if err != nil {
-		state := c.pullRequestHydrationStateForError(hydration.repo, err)
-		if state.Reason == "" {
-			return err
-		}
-		hydration.state = state
-		return nil
-	}
-	if err := c.populatePullRequestStatus(ctx, hydration.repo, &pullRequest, useStatusCache); err != nil {
-		state := c.pullRequestHydrationStateForError(hydration.repo, err)
-		if state.Reason == "" {
-			return err
-		}
-		hydration.state = state
-		applyPullRequestHydrationUnavailableState(&pullRequest, state)
-	}
-	hydration.pullRequest = pullRequest
-	return nil
-}
-
-func (c *Connector) linkedPullRequestHydrationUsesFiniteFanoutCap() bool {
-	return c != nil && c.client != nil && c.client.restPolicy.FanoutMaxRequests > 0
-}
-
-func (c *Connector) linkedPullRequestHydrationLimit() int {
-	limit := linkedPullRequestHydrationConcurrency
-	if c == nil || c.client == nil {
-		return limit
-	}
-	if fanoutLimit := c.client.restPolicy.FanoutMaxRequests; fanoutLimit > 0 {
-		limit = int(fanoutLimit) / linkedPullRequestHydrationRequestEstimate
-		if limit < 1 {
-			return 1
-		}
-		if limit > linkedPullRequestHydrationConcurrency {
-			return linkedPullRequestHydrationConcurrency
-		}
-	}
-	return limit
-}
-
-func (c *Connector) attachMatchingPullRequests(
-	ctx context.Context,
-	repo pullRequestRepo,
-	issues []connector.Issue,
-	candidates []issuePullRequestCandidate,
-	pullRequests []pullRequestNode,
-	useStatusCache bool,
-	includeStatus bool,
-) (string, error) {
-	hydrated := map[int]pullRequestNode{}
-	for _, candidate := range candidates {
-		for _, pullRequest := range pullRequests {
-			if issues[candidate.Index].PullRequest != nil {
-				break
-			}
-			branchName := strings.TrimSpace(pullRequest.HeadRefName)
-			if branchName == "" {
-				continue
-			}
-			if !branchMatchesIssuePrefix(branchName, candidate.BranchPrefix) {
-				continue
-			}
-			issues[candidate.Index].PRSource = "detent_branch"
-
-			hydratedPullRequest, ok := hydrated[pullRequest.Number]
-			if !ok {
-				var err error
-				if includeStatus {
-					hydratedPullRequest, err = c.fetchBranchPullRequest(ctx, repo, pullRequest.Number)
-				} else {
-					hydratedPullRequest, err = c.fetchRepositoryPullRequest(ctx, repo, pullRequest.Number)
-				}
-				if err != nil {
-					if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
-						applyPullRequestHydrationUnavailableState(&pullRequest, state)
-						hydrated[pullRequest.Number] = pullRequest
-						attachPullRequestToIssue(&issues[candidate.Index], repo, pullRequest)
-						markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
-						if restFanoutOrReserveDeferred(err) {
-							return candidate.Identifier, nil
-						}
-						return "", nil
-					}
-					return "", err
-				}
-				if includeStatus {
-					statusTarget := &hydratedPullRequest
-					if err := c.populatePullRequestStatus(ctx, repo, statusTarget, useStatusCache); err != nil {
-						if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
-							applyPullRequestHydrationUnavailableState(&hydratedPullRequest, state)
-							hydrated[pullRequest.Number] = hydratedPullRequest
-							attachPullRequestToIssue(&issues[candidate.Index], repo, hydratedPullRequest)
-							markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
-							if restFanoutOrReserveDeferred(err) {
-								return candidate.Identifier, nil
-							}
-							return "", nil
-						} else {
-							return "", err
-						}
-					}
-				}
-				hydrated[pullRequest.Number] = hydratedPullRequest
-			}
-			if !includeStatus && (hydratedPullRequest.Number != pullRequest.Number || !branchMatchesIssuePrefix(hydratedPullRequest.HeadRefName, candidate.BranchPrefix)) {
-				return "", fmt.Errorf("revalidate github pull request association: %w: branch pull request mismatch", ErrInvalidResponse)
-			}
-			attachPullRequestToIssue(&issues[candidate.Index], repo, hydratedPullRequest)
-			break
-		}
-	}
-	return "", nil
-}
-
-func (c *Connector) rotatePullRequestHydrationCandidates(repo pullRequestRepo, candidates []issuePullRequestCandidate) []issuePullRequestCandidate {
-	if c == nil || len(candidates) < 2 {
-		return candidates
-	}
-	key := pullRequestRepoName(repo)
-	c.mu.RLock()
-	cursor := c.prHydrationCursor[key]
-	c.mu.RUnlock()
-	if cursor == "" {
-		return candidates
-	}
-	for index, candidate := range candidates {
-		if candidate.Identifier != cursor || index == 0 {
-			continue
-		}
-		rotated := make([]issuePullRequestCandidate, 0, len(candidates))
-		rotated = append(rotated, candidates[index:]...)
-		rotated = append(rotated, candidates[:index]...)
-		return rotated
-	}
-	return candidates
-}
-
-func (c *Connector) setPullRequestHydrationCursor(repo pullRequestRepo, identifier string) {
-	if c == nil {
-		return
-	}
-	key := pullRequestRepoName(repo)
-	if key == "" {
-		return
-	}
-	c.mu.Lock()
-	if identifier == "" {
-		delete(c.prHydrationCursor, key)
-	} else {
-		if c.prHydrationCursor == nil {
-			c.prHydrationCursor = make(map[string]string)
-		}
-		c.prHydrationCursor[key] = identifier
-	}
-	c.mu.Unlock()
-}
-
-func hasUnattachedBranchPullRequestCandidates(issues []connector.Issue, candidates []issuePullRequestCandidate) bool {
-	for _, candidate := range candidates {
-		if issues[candidate.Index].PullRequest == nil && strings.TrimSpace(candidate.BranchPrefix) != "" {
-			return true
-		}
-	}
-	return false
 }
 
 func pullRequestNodeFromREST(pullRequest restPullRequest) pullRequestNode {
@@ -1237,24 +700,6 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 	}
 }
 
-func markPullRequestHydrationUnavailableForCandidates(
-	issues []connector.Issue,
-	candidates []issuePullRequestCandidate,
-	defaultRepo pullRequestRepo,
-	state pullRequestHydrationState,
-) {
-	for _, candidate := range candidates {
-		if issues[candidate.Index].PullRequest != nil {
-			continue
-		}
-		repo := candidate.PullRequestRepo
-		if strings.TrimSpace(repo.Owner) == "" || strings.TrimSpace(repo.Name) == "" {
-			repo = defaultRepo
-		}
-		attachPullRequestHydrationUnavailableToIssue(&issues[candidate.Index], repo, candidate.PullRequestNumber, state)
-	}
-}
-
 func attachPullRequestHydrationUnavailableToIssue(issue *connector.Issue, repo pullRequestRepo, number int, state pullRequestHydrationState) {
 	if strings.TrimSpace(state.Reason) == "" {
 		return
@@ -1281,13 +726,6 @@ func applyPullRequestHydrationUnavailableState(pullRequest *pullRequestNode, sta
 	}
 	pullRequest.HydrationUnavailableReason = strings.TrimSpace(state.Reason)
 	pullRequest.HydrationNextRetryAt = cloneGitHubTime(state.NextRetryAt)
-}
-
-func (c *Connector) currentPullRequestHydrationState(repo pullRequestRepo) (pullRequestHydrationState, bool) {
-	if c == nil || c.prHydration == nil {
-		return pullRequestHydrationState{}, false
-	}
-	return c.prHydration.Current(repo)
 }
 
 func (c *Connector) pullRequestHydrationStateForError(repo pullRequestRepo, err error) pullRequestHydrationState {
@@ -1317,10 +755,6 @@ func (c *Connector) pullRequestHydrationStateForError(repo pullRequestRepo, err 
 
 func restFanoutOrReserveDeferred(err error) bool {
 	return errors.Is(err, ErrRESTFanoutDeferred) || errors.Is(err, ErrRESTBudgetReserved)
-}
-
-func pullRequestHydrationBudgetDeferred(reason string) bool {
-	return reason == connector.PullRequestHydrationReasonRESTFanoutDeferred || reason == connector.PullRequestHydrationReasonRESTBudgetReserved
 }
 
 func (c *Connector) tripPullRequestHydrationCircuit(repo pullRequestRepo, retryAfter time.Duration) pullRequestHydrationState {
@@ -1359,10 +793,6 @@ func pullRequestRepoName(repo pullRequestRepo) string {
 		return ""
 	}
 	return owner + "/" + name
-}
-
-func samePullRequestRepo(left pullRequestRepo, right pullRequestRepo) bool {
-	return strings.EqualFold(left.Owner, right.Owner) && strings.EqualFold(left.Name, right.Name)
 }
 
 func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequestRepo, pullRequest *pullRequestNode, useStatusCache bool) error {
@@ -1489,22 +919,6 @@ func (c *Connector) applyCachedPullRequestStatusAfterThrottle(ctx context.Contex
 	pullRequest.HydrationDegradedReason = connector.PullRequestHydrationReasonStaleCachedPullData
 	pullRequest.HydrationNextRetryAt = cloneGitHubTime(state.NextRetryAt)
 	return true
-}
-
-func (c *Connector) logPullRequestHydrationSkip(ctx context.Context, repo pullRequestRepo, state pullRequestHydrationState, purpose string) {
-	if c == nil || c.logger == nil {
-		return
-	}
-	c.logger.DebugContext(ctx, "github pull request hydration skipped",
-		"endpoint_family", "pull requests",
-		"request_purpose", "hydrate_pull_request",
-		"repository", pullRequestRepoName(repo),
-		"cache_hit", true,
-		"avoidable_request", true,
-		"backoff_reason", strings.TrimSpace(state.Reason),
-		"purpose", strings.TrimSpace(purpose),
-		"retry_at", state.NextRetryAt,
-	)
 }
 
 func (c *Connector) logPullRequestCache(ctx context.Context, repo pullRequestRepo, pullRequest *pullRequestNode, hit bool, staleFallback bool, reason string) {
@@ -1723,100 +1137,6 @@ func codexRequestedReviewOutcome(comments []restComment) (pullRequestReview, boo
 		review.Body, review.URL, review.Author, review.SubmittedAt = comment.Body, comment.HTMLURL, comment.User, comment.CreatedAt
 	}
 	return review, review.State != ""
-}
-
-type pullRequestReference struct {
-	HeadSHA         string
-	HeadCommittedAt *time.Time
-	Number          int
-	Repository      string
-	State           string
-	UpdatedAt       *time.Time
-}
-
-func firstPullRequestReference(pullRequests nodeConnection[pullRequest]) (pullRequestReference, bool) {
-	var fallback pullRequestReference
-	fallbackOK := false
-	var open pullRequestReference
-	openOK := false
-	var merged pullRequestReference
-	mergedOK := false
-	for _, pullRequest := range pullRequests.Nodes {
-		if pullRequest.Number <= 0 {
-			continue
-		}
-		ref := pullRequestReferenceFromNode(pullRequest)
-		if !fallbackOK {
-			fallback = ref
-			fallbackOK = true
-		}
-		switch normalizeStateName(pullRequest.State) {
-		case "open":
-			if !openOK || pullRequestReferenceAfter(ref, open) {
-				open = ref
-				openOK = true
-			}
-		case "merged":
-			if !mergedOK || pullRequestReferenceAfter(ref, merged) {
-				merged = ref
-				mergedOK = true
-			}
-		}
-	}
-	if openOK {
-		return open, true
-	}
-	if mergedOK {
-		return merged, true
-	}
-	return fallback, fallbackOK
-}
-
-func mergedPullRequestReference(pullRequests nodeConnection[pullRequest]) (pullRequestReference, bool) {
-	var merged pullRequestReference
-	mergedOK := false
-	for _, pullRequest := range pullRequests.Nodes {
-		if pullRequest.Number <= 0 || normalizeStateName(pullRequest.State) != "merged" {
-			continue
-		}
-		ref := pullRequestReferenceFromNode(pullRequest)
-		if !mergedOK || pullRequestReferenceAfter(ref, merged) {
-			merged = ref
-			mergedOK = true
-		}
-	}
-	return merged, mergedOK
-}
-
-func pullRequestReferenceFromNode(pullRequest pullRequest) pullRequestReference {
-	var committedAt *time.Time
-	if len(pullRequest.Commits.Nodes) == 1 {
-		commit := pullRequest.Commits.Nodes[0].Commit
-		if commit.OID != "" && commit.OID == pullRequest.HeadSHA {
-			committedAt = cloneGitHubTime(commit.CommittedDate)
-		}
-	}
-	return pullRequestReference{
-		Number:          pullRequest.Number,
-		Repository:      strings.TrimSpace(pullRequest.Repository.NameWithOwner),
-		State:           strings.ToUpper(strings.TrimSpace(pullRequest.State)),
-		UpdatedAt:       parseGitHubTime(pullRequest.UpdatedAt),
-		HeadSHA:         pullRequest.HeadSHA,
-		HeadCommittedAt: committedAt,
-	}
-}
-
-func pullRequestReferenceAfter(left, right pullRequestReference) bool {
-	if left.UpdatedAt != nil && right.UpdatedAt != nil && !left.UpdatedAt.Equal(*right.UpdatedAt) {
-		return left.UpdatedAt.After(*right.UpdatedAt)
-	}
-	if left.UpdatedAt != nil && right.UpdatedAt == nil {
-		return true
-	}
-	if left.UpdatedAt == nil && right.UpdatedAt != nil {
-		return false
-	}
-	return left.Number > right.Number
 }
 
 func pullRequestCIState(pullRequest pullRequestNode) string {
@@ -2192,44 +1512,4 @@ func pullRequestCheckNames(checks []connector.PullRequestCheck) []string {
 		names = append(names, check.Name)
 	}
 	return uniqueNonBlank(names)
-}
-
-// fetchBranchPullRequest replaces the branch association's REST detail request.
-// GraphQL returns the same PR details plus the head commit date in one round-trip.
-func (c *Connector) fetchBranchPullRequest(ctx context.Context, repo pullRequestRepo, number int) (pullRequestNode, error) {
-	const query = `query DetentGitHubBranchPullRequest($owner: String!, $name: String!, $number: Int!) {
- repository(owner: $owner, name: $name) { pullRequest(number: $number) {
-  id number url state mergedAt draft: isDraft activityAt: updatedAt
-  mergeableState: mergeStateStatus headRefName baseRefName headSHA: headRefOid baseRefOid
-  labels(first: 100) { nodes { name } }
-  commits(last: 1) { nodes { commit { oid committedDate } } }
- } }
- rateLimit { limit used remaining cost resetAt }
-}`
-	var response struct {
-		Repository *struct {
-			PullRequest *struct {
-				pullRequestNode
-				LabelNodes nodeConnection[struct {
-					Name string `json:"name"`
-				}] `json:"labels"`
-			} `json:"pullRequest"`
-		} `json:"repository"`
-	}
-	if err := c.client.GraphQL(ctx, query, map[string]any{"owner": repo.Owner, "name": repo.Name, "number": number}, &response); err != nil {
-		return pullRequestNode{}, fmt.Errorf("fetch github branch pull request: %w", err)
-	}
-	if response.Repository == nil || response.Repository.PullRequest == nil {
-		return pullRequestNode{}, ErrNotFound
-	}
-	node := response.Repository.PullRequest
-	pr := node.pullRequestNode
-	pr.MergeableState = strings.ToLower(pr.MergeableState)
-	for _, label := range node.LabelNodes.Nodes {
-		pr.Labels = append(pr.Labels, label.Name)
-	}
-	if len(pr.Commits.Nodes) == 1 && pr.Commits.Nodes[0].Commit.OID == pr.HeadSHA {
-		pr.HeadCommittedAt = cloneGitHubTime(pr.Commits.Nodes[0].Commit.CommittedDate)
-	}
-	return pr, nil
 }

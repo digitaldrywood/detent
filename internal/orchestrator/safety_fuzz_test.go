@@ -44,7 +44,7 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 	f.Add(2, 0, 0, "new-output", "new-deliverable", int64(1), "same-receipt", "recut", int64(2), "same-receipt", "pending_review", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, false, uint8(1))
 	f.Add(1, 0, 0, "tracked-output", "changed", int64(1), "same-head", "recut", int64(1), "same-head", "pending_review", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, true, uint8(1))
 	f.Add(0, 0, 0, "", "clean", int64(1), "enhancement", "", int64(2), "bug", "", int64(0), int64(0), false, int64(10), int64(0), int64(0), false, false, uint8(0))
-	for _, scenario := range []uint8{4, 5, 6, 7} {
+	for _, scenario := range []uint8{4, 5, 6, 7, 31, 255} {
 		f.Add(0, 0, 0, "", "clean", int64(0), "", "", int64(0), "", "", int64(0), int64(0), false, int64(0), int64(0), int64(0), false, false, scenario)
 	}
 
@@ -84,6 +84,12 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 		if got := implementProgressDiffStatsClean(diffStats); got != wantClean {
 			t.Fatalf("implementProgressDiffStatsClean(%#v) = %t, want %t", diffStats, got, wantClean)
 		}
+		source := Running{CompletionSourceStart: completionSourceStartRecord{LaneAvailable: true, Fingerprint: completionSourceFingerprint{PRNumber: 1, PRHeadSHA: leftHead}}, DiffStats: diffStats}
+		kinds := implementProgressSourceKinds(source, connector.Issue{PullRequest: &connector.PullRequest{Number: 1, HeadSHA: rightHead}})
+		wantProgress := strings.TrimSpace(leftHead) != "" && strings.TrimSpace(rightHead) != "" && strings.TrimSpace(leftHead) != strings.TrimSpace(rightHead)
+		if (len(kinds) > 0) != wantProgress {
+			t.Fatalf("source progress = %v, want changed observed head = %t", kinds, wantProgress)
+		}
 		unpushed := diffStats
 		unpushed.UnpushedCommits = 1
 		unpushed.HeadSHA = leftHead
@@ -115,67 +121,6 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 			slicesEqual(autoPromoteCanonicalChecks(leftSignature.FailedChecks), autoPromoteCanonicalChecks(rightSignature.FailedChecks))
 		if gotEqual != wantEqual || gotEqual != implementProgressSignatureEqual(rightSignature, leftSignature) {
 			t.Fatalf("implementProgressSignatureEqual(%#v, %#v) = %t, want %t", leftSignature, rightSignature, gotEqual, wantEqual)
-		}
-
-		leftFingerprint := &spendProgressPRFingerprint{
-			Number:         leftNumber,
-			HeadSHA:        strings.TrimSpace(leftHead),
-			MergeableState: strings.ToLower(strings.TrimSpace(status)),
-			CIStatus:       strings.ToLower(strings.TrimSpace(leftChecks)),
-		}
-		rightFingerprint := &spendProgressPRFingerprint{
-			Number:         rightNumber,
-			HeadSHA:        strings.TrimSpace(rightHead),
-			MergeableState: strings.ToLower(strings.TrimSpace(fingerprint)),
-			CIStatus:       strings.ToLower(strings.TrimSpace(rightChecks)),
-		}
-		wantAdvance := ""
-		switch {
-		case leftNumber != rightNumber:
-			wantAdvance = "pull_request_created"
-		case leftFingerprint.HeadSHA != "" && rightFingerprint.HeadSHA != "" && leftFingerprint.HeadSHA != rightFingerprint.HeadSHA:
-			wantAdvance = "pull_request_head_changed"
-		case connector.PullRequestConflictCleared(leftFingerprint.MergeableState, rightFingerprint.MergeableState):
-			wantAdvance = "pull_request_mergeable"
-		case spendProgressCIFailing(leftFingerprint.CIStatus) && spendProgressCIPassing(rightFingerprint.CIStatus):
-			wantAdvance = "pull_request_ci_passing"
-		}
-		if got := spendProgressPRAdvance(leftFingerprint, rightFingerprint); got != wantAdvance {
-			t.Fatalf("spendProgressPRAdvance(%#v, %#v) = %q, want %q", leftFingerprint, rightFingerprint, got, wantAdvance)
-		}
-		leftArtifact := &spendProgressArtifactFingerprint{
-			ReceiptHash:            strings.TrimSpace(leftHead),
-			Status:                 strings.TrimSpace(leftChecks),
-			DeliverableFingerprint: strings.TrimSpace(status),
-			OutputFiles:            1,
-			OutputFingerprint:      strings.TrimSpace(fingerprint),
-		}
-		rightArtifact := &spendProgressArtifactFingerprint{
-			ReceiptHash:            strings.TrimSpace(rightHead),
-			Status:                 strings.TrimSpace(rightChecks),
-			DeliverableFingerprint: strings.TrimSpace(fingerprint),
-			OutputFingerprint:      strings.TrimSpace(status),
-		}
-		if rightNumber > 0 {
-			rightArtifact.OutputFiles = 1
-		}
-		wantArtifactAdvance := ""
-		switch {
-		case rightArtifact.ReceiptHash != "" && rightArtifact.ReceiptHash != leftArtifact.ReceiptHash:
-			wantArtifactAdvance = "artifact_receipt_changed"
-		case rightArtifact.Status != "" && !strings.EqualFold(strings.TrimSpace(rightArtifact.Status), strings.TrimSpace(leftArtifact.Status)):
-			wantArtifactAdvance = "artifact_status_changed"
-		case rightArtifact.DeliverableFingerprint != "" && rightArtifact.DeliverableFingerprint != leftArtifact.DeliverableFingerprint:
-			wantArtifactAdvance = "artifact_deliverable_changed"
-		case rightArtifact.OutputFiles > 0 && rightArtifact.OutputFingerprint != "" && rightArtifact.OutputFingerprint != leftArtifact.OutputFingerprint:
-			wantArtifactAdvance = "artifact_output_changed"
-		}
-		if got := spendProgressArtifactAdvance(leftArtifact, rightArtifact); got != wantArtifactAdvance {
-			t.Fatalf("spendProgressArtifactAdvance(%#v, %#v) = %q, want %q", leftArtifact, rightArtifact, got, wantArtifactAdvance)
-		}
-		wantTokenLimitReached := rightNumber > 0 && leftNumber >= rightNumber
-		if got := spendProgressTokenLimitReached(leftNumber, rightNumber); got != wantTokenLimitReached {
-			t.Fatalf("spendProgressTokenLimitReached(%d, %d) = %t, want %t", leftNumber, rightNumber, got, wantTokenLimitReached)
 		}
 
 		resetSeconds %= 1_000_000_000
@@ -230,23 +175,17 @@ func FuzzSafetyCriticalOrchestratorBoundaries(f *testing.F) {
 
 		createdSeconds %= 1_000_000_000
 		stageSeconds %= 1_000_000_000
-		acceptedSeconds %= 1_000_000_000
 		createdAt := time.Unix(createdSeconds, 0).UTC()
 		stageUpdatedAt := time.Unix(stageSeconds, 0).UTC()
-		acceptedAt := time.Unix(acceptedSeconds, 0).UTC()
-		issue := connector.Issue{CreatedAt: &createdAt, StageUpdatedAt: &stageUpdatedAt}
-		attempt := store.WorkAttempt{CompletedAt: acceptedAt}
-		if accepted {
-			attempt.WorkerMetadataJSON = marshalWorkAttemptJSON(map[string]any{
-				spendProgressMetadataKey: spendProgressRecord{AcceptedStateChange: true},
-			})
+		retryOwner := &Orchestrator{cfg: normalizeConfig(Config{FailureRetryBaseDelay: time.Second, MaxRetryBackoff: time.Minute})}
+		delay := retryOwner.machineRetryDelay(int(gateScenario))
+		ceiling := time.Second
+		for i := 1; i < int(gateScenario) && ceiling < time.Minute; i++ {
+			ceiling *= 2
 		}
-		wantBaseline := createdAt
-		if accepted && acceptedAt.After(wantBaseline) {
-			wantBaseline = acceptedAt
-		}
-		if got := spendProgressBaseline(issue, []store.WorkAttempt{attempt}); !got.Equal(wantBaseline) {
-			t.Fatalf("spendProgressBaseline() = %s, want %s", got, wantBaseline)
+		ceiling = min(ceiling, time.Minute)
+		if delay < ceiling-ceiling/8 || delay > ceiling {
+			t.Fatalf("machine retry delay %s outside [%s, %s]", delay, ceiling-ceiling/8, ceiling)
 		}
 
 		leftPriority := int(leftNumber % 10)

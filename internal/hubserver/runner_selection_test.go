@@ -1,6 +1,8 @@
 package hubserver
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -8,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -15,22 +19,31 @@ import (
 func TestRunnerAllowedProviderEligibility(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []struct {
-		name        string
-		unavailable int
-		ready       bool
-		contract    string
-		landing     string
+		name         string
+		unavailable  int
+		ready        bool
+		contract     string
+		landing      string
+		providerPage bool
 	}{
-		{"unavailable project yields to ready project", 1, false, "", ""},
-		{"ready work beyond first candidate page wins", 100, true, "", ""},
-		{"invalid contract yields to ready project", 1, false, "missing", ""},
-		{"invalid contract yields to next candidate", 1, true, "missing", ""},
-		{"dispatch marker yields to next candidate", 1, true, "marker", ""},
-		{"unknown legacy landing ceiling cannot strand another project", 0, false, "", "legacy owner"},
-		{"positive owner pin cannot prove a foreign incoming ceiling", 0, false, "", "pinned owner"},
-		{"native-only request preserves unknown foreign capacity", 0, false, "", "native-only request"},
-		{"all legacy cross-project claims preserve unbounded behavior", 0, false, "", "legacy request"},
-		{"unoccupied foreign landing retains project ranking", 0, false, "", "unoccupied"},
+		{"unavailable project yields to ready project", 1, false, "", "", false},
+		{"ready work beyond first candidate page wins", 100, true, "", "", false},
+		{"invalid contract yields to ready project", 1, false, "missing", "", false},
+		{"invalid contract yields to next candidate", 1, true, "missing", "", false},
+		{"provider page beyond project quota", 50, true, "missing", "", true},
+		{"equal rank quota waits for better priority", claimPreparationLimit/2 + 1, true, "priority quota", "", false},
+		{"provider page hydration exhaustion", 99, true, "hydration", "", true},
+		{"rejected prefix beyond budget in one project", 125, true, "missing", "", false},
+		{"rejected prefix beyond budget across projects", 125, false, "missing", "", false},
+		{"hydration exhaustion advances to next candidate", 125, true, "hydration", "", false},
+		{"policy changes revisit rejected candidates", 125, true, "policy", "", false},
+		{"legacy checkpoint hydration cannot exhaust a candidate", 125, true, "checkpoints", "", false},
+		{"dispatch marker yields to next candidate", 1, true, "marker", "", false},
+		{"unknown legacy landing ceiling cannot strand another project", 0, false, "", "legacy owner", false},
+		{"positive owner pin cannot prove a foreign incoming ceiling", 0, false, "", "pinned owner", false},
+		{"native-only request preserves unknown foreign capacity", 0, false, "", "native-only request", false},
+		{"all legacy cross-project claims preserve unbounded behavior", 0, false, "", "legacy request", false},
+		{"unoccupied foreign landing retains project ranking", 0, false, "", "unoccupied", false},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
@@ -41,6 +54,10 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 				preferred = landing.nativeFixture
 			}
 			general := newNativeFixture(t, preferred.service, preferred.project.OrganizationID, "general-provider")
+			if scenario.unavailable > claimPreparationLimit && preferred.project.ID > general.project.ID {
+				preferred, general = general, preferred
+			}
+
 			r := prepareRunner(t, preferred, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
 			routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Provider runner", State: "active", CapacityLimit: 2, ProjectIDs: []tracker.ProjectID{preferred.project.ID, general.project.ID}}}
@@ -62,7 +79,7 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 					t.Fatal(err)
 				}
 				issue := general.create(t, "ready source work")
-				claim := tracker.NativeClaim{LandingCapacity: 1, PolicyID: hubTestPolicy().ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "general-source", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+				claim := tracker.NativeClaim{LandingCapacity: 1, PolicyID: hubTestPolicy().ID, MachineID: r.binding.MachineID, SessionID: "general-source", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 				switch scenario.landing {
 				case "native-only request":
 					claim.LandingCapacity = 0
@@ -95,11 +112,48 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 				}
 				return
 			}
+			if _, err := preferred.service.database.db.ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=CASE WHEN id=? THEN 1 ELSE 2 END WHERE organization_id=?", preferred.project.ID, preferred.project.OrganizationID); err != nil {
+				t.Fatal(err)
+			}
+			if scenario.contract == "priority quota" {
+				if _, err := preferred.service.database.db.ExecContext(t.Context(), "UPDATE projects SET scheduling_rank=1 WHERE organization_id=?", preferred.project.OrganizationID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			for _, f := range []nativeFixture{preferred, general} {
 				approveHubTestPolicy(t, preferred.service, f.base+"/policy", hubTestPolicy())
 			}
+			var providerCandidates []tracker.NativeCapacityCandidate
+			var rejected tracker.NativeIssue
+			rejectedIDs := make(map[tracker.NativeWorkItemID]bool)
 			for i := range scenario.unavailable {
 				issue := preferred.create(t, fmt.Sprintf("unavailable candidate %d", i))
+				if scenario.contract == "" {
+					body := issue.Body + "\n```detent-agent\nschema: 1\nmodel: unavailable-model\n```\n"
+					if _, err := preferred.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=? WHERE native_id=?", body, issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				rejectedIDs[issue.WorkItemID] = true
+				if scenario.providerPage {
+					providerCandidates = append(providerCandidates, providerClaim(r, issue, "").ProviderCandidates[0])
+				}
+				if i == 0 {
+					rejected = issue
+				}
+				if scenario.contract == "hydration" {
+					tx, err := preferred.service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					attempt := seedHealthRateAttempt(t, tx, nativeScope{organization: preferred.project.OrganizationID, project: preferred.project.ID}, issue, string(r.binding.MachineID), "succeeded", tracker.NativeRunData{AttemptID: string(issue.WorkItemID)}, now, -1)
+					if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET work_item_revision=?,dispatch_generation=(SELECT dispatch_generation FROM issues WHERE native_id=?) WHERE id=?`, issue.Revision, issue.WorkItemID, attempt); err != nil {
+						t.Fatal(err)
+					}
+					if err := tx.Commit(); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if scenario.contract != "" {
 					body := ""
 					if scenario.contract == "marker" {
@@ -113,21 +167,115 @@ func TestRunnerAllowedProviderEligibility(t *testing.T) {
 			var preferredIssue tracker.NativeIssue
 			if scenario.ready {
 				preferredIssue = preferred.create(t, "ready after unavailable candidates")
+				if scenario.contract == "checkpoints" {
+					tx, err := preferred.service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for index := range 99 {
+						attempt := seedHealthRateAttempt(t, tx, nativeScope{organization: preferred.project.OrganizationID, project: preferred.project.ID}, preferredIssue, string(r.binding.MachineID), "failed", tracker.NativeRunData{}, now.Add(time.Duration(index)*time.Second), -1)
+						if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET checkpoint_json='{"resume":"fresh_checkout","worktree_state":"clean"}',checkpoint_preserves_source=NULL WHERE id=?`, attempt); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if err := tx.Commit(); err != nil {
+						t.Fatal(err)
+					}
+				}
+
 				if _, err := preferred.service.database.db.ExecContext(t.Context(), "UPDATE issues SET native_created_at = ? WHERE native_id = ?", formatHubTime(now.Add(time.Second)), preferredIssue.WorkItemID); err != nil {
 					t.Fatal(err)
 				}
 			}
-			generalIssue := general.create(t, "available model")
-			if scenario.contract == "" {
-				publishCapacity(t, preferred, r, capacityReport(now))
+			var generalIssue tracker.NativeIssue
+			if !scenario.providerPage {
+				generalIssue = general.create(t, "available model")
+			}
+			if scenario.contract == "priority quota" {
+				if _, err := preferred.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override=CASE WHEN issue_id IN (SELECT id FROM issues WHERE project_id=?) THEN 0 ELSE 3 END", preferred.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario.contract == "" || scenario.providerPage {
+				report := capacityReport(now)
+				report.Models = append(report.Models, "gpt-6.1-sol")
+				publishCapacity(t, preferred, r, report)
 			}
 			claim := providerClaim(r, generalIssue, "general-provider")
 			if scenario.ready {
+				claim.WorkItemID = ""
 				claim.ProviderCandidates = append(claim.ProviderCandidates, providerClaim(r, preferredIssue, "").ProviderCandidates[0])
 			}
 			if scenario.contract != "" {
 				claim.ProviderCandidates = nil
 				claim.WorkItemID = ""
+			}
+			if scenario.providerPage {
+				claim.ProviderCandidates = append(providerCandidates, providerClaim(r, preferredIssue, "").ProviderCandidates[0])
+			}
+			if scenario.unavailable > claimPreparationLimit || scenario.providerPage {
+				target, want := general, generalIssue
+				if scenario.ready {
+					target, want = preferred, preferredIssue
+					if !scenario.providerPage || scenario.contract == "hydration" {
+						routing.ExpectedRevision = 2
+						routing.ProjectIDs = []tracker.ProjectID{preferred.project.ID}
+						requireNativeStatus(t, performHubAPIRequest(t, preferred.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
+					}
+				}
+				claimed := false
+				for attempt := range 5 {
+					claim.SessionID = fmt.Sprintf("bounded-%d", attempt)
+					response := performHubAPIRequest(t, preferred.service, http.MethodPost, target.base+"/claims", r.redemption.Credential, claim)
+					if response.Code == http.StatusConflict {
+						continue
+					}
+					requireNativeStatus(t, response, http.StatusOK)
+					var lease tracker.NativeLease
+					decodeHubResponse(t, response, &lease)
+					if lease.WorkItemID != want.WorkItemID {
+						t.Fatalf("claimed %s, want %s", lease.WorkItemID, want.WorkItemID)
+					}
+					if scenario.ready && attempt == 0 {
+						t.Fatal("claim exceeded the request budget")
+					}
+					claimed = true
+					break
+				}
+				if !claimed {
+					t.Fatal("eligible candidate starved beyond the budget")
+				}
+				if scenario.providerPage {
+					return
+				}
+				if scenario.contract == "policy" {
+					workflow := config.Workflow{Config: config.Default()}
+					workflow.Config.Tracker.Kind = config.TrackerHubNative
+					workflow.Config.BacklogAdmission.TargetState = "In Progress"
+					descriptor, err := config.ResolvePolicy(workflow)
+					if err != nil {
+						t.Fatal(err)
+					}
+					approveHubTestPolicy(t, preferred.service, preferred.base+"/policy", descriptor)
+					claim.PolicyID = descriptor.ID
+				} else if _, err := preferred.service.database.db.ExecContext(t.Context(), "UPDATE issues SET body=?,revision=revision+1 WHERE native_id=?", rejected.Body, rejected.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+				for attempt := range 6 {
+					claim.SessionID = fmt.Sprintf("revised-%d", attempt)
+					response := performHubAPIRequest(t, preferred.service, http.MethodPost, preferred.base+"/claims", r.redemption.Credential, claim)
+					if response.Code == http.StatusConflict {
+						continue
+					}
+					requireNativeStatus(t, response, http.StatusOK)
+					var lease tracker.NativeLease
+					decodeHubResponse(t, response, &lease)
+					if scenario.contract == "policy" && !rejectedIDs[lease.WorkItemID] || scenario.contract != "policy" && lease.WorkItemID != rejected.WorkItemID {
+						t.Fatalf("revised claim=%s, want %s", lease.WorkItemID, rejected.WorkItemID)
+					}
+					return
+				}
+				t.Fatal("historical refusal vetoed revised work")
 			}
 			response := performHubAPIRequest(t, preferred.service, http.MethodPost, general.base+"/claims", r.redemption.Credential, claim)
 			if scenario.ready {
@@ -184,19 +332,45 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 		firstAge, secondAge           time.Duration
 		allowed                       string
 		wantFirst                     bool
+		firstLanding, secondLanding   string
+		localWork                     bool
+		firstRework, secondRework     bool
 	}{
-		{"allowlist filters higher priority", 1, 4, 0, 1, -time.Hour, time.Hour, "second", false},
-		{"empty allowlist runs nothing", 1, 4, 0, 1, -time.Hour, time.Hour, "empty", false},
-		{"project rank beats issue priority", 2, 1, 0, 1, -time.Hour, time.Hour, "both", true},
-		{"project rank breaks priority ties", 2, 2, 0, 1, time.Hour, -time.Hour, "both", true},
-		{"organization runner follows organization rank", 2, 1, 0, 1, -time.Hour, time.Hour, "organization", true},
-		{"runner rank override wins", 1, 2, 0, 1, -time.Hour, time.Hour, "override", false},
-		{"issue priority breaks equal ranks", 2, 1, 0, 0, -time.Hour, time.Hour, "both", false},
-		{"age breaks remaining ties", 2, 2, 0, 0, time.Hour, -time.Hour, "both", false},
+		{"allowlist filters higher priority", 1, 4, 0, 1, -time.Hour, time.Hour, "second", false, "", "", false, false, false},
+		{"empty allowlist runs nothing", 1, 4, 0, 1, -time.Hour, time.Hour, "empty", false, "", "", false, false, false},
+		{"project capacity yields to another project", 1, 4, 0, 1, -time.Hour, time.Hour, "project-full", false, "", "", false, false, false},
+		{"project rank beats issue priority", 2, 1, 0, 1, -time.Hour, time.Hour, "both", true, "", "", false, false, false},
+		{"targeted work item bypasses unrequested project head", 2, 1, 0, 1, -time.Hour, time.Hour, "targeted", true, "", "", false, false, false},
+		{"foreign provider candidate competes", 2, 1, 1, 2, -time.Hour, time.Hour, "provider", true, "", "", false, false, false},
+		{"provider claim honors runner rank override", 1, 2, 1, 2, -time.Hour, time.Hour, "provider-override", false, "", "", false, false, false},
+		{"project rank breaks priority ties", 2, 2, 0, 1, time.Hour, -time.Hour, "both", true, "", "", false, false, false},
+		{"organization runner follows organization rank", 2, 1, 0, 1, -time.Hour, time.Hour, "organization", true, "", "", false, false, false},
+		{"runner rank override wins", 1, 2, 0, 1, -time.Hour, time.Hour, "override", false, "", "", false, false, false},
+		{"issue priority breaks equal ranks", 2, 1, 0, 0, -time.Hour, time.Hour, "both", false, "", "", false, false, false},
+		{"age breaks remaining ties", 2, 2, 0, 0, time.Hour, -time.Hour, "both", false, "", "", false, false, false},
+		{"reviewed landing then P2 rework then P0 todo", 3, 1, 0, 0, time.Hour, -time.Hour, "both", true, "reviewed", "", true, false, false},
+		{"lower project landing beats higher project todo", 3, 1, 1, 0, -time.Hour, time.Hour, "both", true, "reviewed", "", false, false, false},
+		{"landings follow project rank", 1, 3, 1, 0, -time.Hour, time.Hour, "both", false, "reviewed", "reviewed", false, false, false},
+		{"landing priority precedes creation", 3, 2, 0, 0, -time.Hour, time.Hour, "both", false, "reviewed", "reviewed", false, false, false},
+		{"landing creation breaks priority ties", 3, 3, 0, 0, -time.Hour, time.Hour, "both", true, "reviewed", "reviewed", false, false, false},
+		{"missing landing version yields to implementation", 1, 3, 0, 0, -time.Hour, time.Hour, "both", false, "missing version", "", false, false, false},
+		{"unreviewed landing yields to implementation", 1, 3, 0, 0, -time.Hour, time.Hour, "both", false, "missing review", "", false, false, false},
+		{"failed landing check yields to implementation", 1, 3, 0, 0, -time.Hour, time.Hour, "both", false, "failed check", "", false, false, false},
+		{"P2 rework beats P0 todo at equal project ranks", 3, 1, 0, 0, time.Hour, -time.Hour, "both", true, "", "", false, true, false},
+		{"lower project rework beats higher project todo", 3, 1, 1, 0, -time.Hour, time.Hour, "both", true, "", "", false, true, false},
+		{"rework follows project rank", 1, 3, 1, 0, -time.Hour, time.Hour, "both", false, "", "", false, true, true},
+		{"rework priority precedes creation", 3, 2, 0, 0, -time.Hour, time.Hour, "both", false, "", "", false, true, true},
+		{"rework creation breaks priority ties", 3, 3, 0, 0, -time.Hour, time.Hour, "both", true, "", "", false, true, true},
+		{"lower project in progress beats higher project todo", 3, 1, 1, 0, time.Hour, -time.Hour, "in-progress", true, "", "", false, false, false},
+		{"rework beats higher ranked in progress", 1, 3, 0, 1, -time.Hour, time.Hour, "in-progress", false, "", "", false, false, true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			first := newDefaultNativeFixture(t, Config{})
 			second := newNativeFixture(t, first.service, first.project.OrganizationID, "second")
+			if scenario.firstLanding != "" || scenario.secondLanding != "" {
+				first = newLandingCapacityFixture(t, first.service, "first-landings", false).nativeFixture
+				second = newLandingCapacityFixture(t, first.service, "second-landings", false).nativeFixture
+			}
 			r := prepareRunner(t, first, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 			r.enroll(t)
 			allowed := []tracker.ProjectID{first.project.ID, second.project.ID}
@@ -207,26 +381,91 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 				allowed = []tracker.ProjectID{}
 			}
 			routing := runnerauth.RoutingChange{ExpectedRevision: 1, Routing: runnerauth.Routing{DisplayName: "Runner", State: "active", CapacityLimit: 2, ProjectIDs: allowed}}
-			if scenario.allowed == "organization" || scenario.allowed == "override" {
+			if scenario.allowed == "project-full" {
+				routing.ProjectCapacityLimits = map[tracker.ProjectID]int{first.project.ID: 0, second.project.ID: 1}
+			}
+			if scenario.allowed == "organization" || scenario.allowed == "override" || scenario.allowed == "provider-override" {
 				routing.Scope = "organization"
 				routing.ProjectIDs = nil
 			}
-			if scenario.allowed == "override" {
+			if scenario.allowed == "override" || scenario.allowed == "provider-override" {
 				routing.ProjectRanks = map[tracker.ProjectID]int{first.project.ID: 2, second.project.ID: 0}
 			}
-			requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, routing), http.StatusOK)
+			requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, runnerRoutingRequest{RoutingChange: routing, IdempotencyKey: "ordering"}), http.StatusOK)
 			descriptor := hubTestPolicy()
 			now := first.service.config.now()
+			issues := make(map[tracker.ProjectID]tracker.NativeIssue)
 			for _, project := range []struct {
 				fixture        nativeFixture
 				priority, rank int
 				age            time.Duration
+				landing        string
+				rework         bool
 			}{
-				{first, scenario.firstPriority, scenario.firstRank, scenario.firstAge},
-				{second, scenario.secondPriority, scenario.secondRank, scenario.secondAge},
+				{first, scenario.firstPriority, scenario.firstRank, scenario.firstAge, scenario.firstLanding, scenario.firstRework},
+				{second, scenario.secondPriority, scenario.secondRank, scenario.secondAge, scenario.secondLanding, scenario.secondRework},
 			} {
 				approveHubTestPolicy(t, first.service, project.fixture.base+"/policy", descriptor)
+				if project.rework || (scenario.localWork && project.fixture.project.ID == first.project.ID) {
+					states := append(HostedProjectStates(), tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress"}})
+					raw, err := marshalNative(states)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE projects SET states_json=? WHERE id=?", raw, project.fixture.project.ID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := first.service.database.db.ExecContext(t.Context(), "INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at) VALUES(?,'Rework','Rework',0,1,?,?)", project.fixture.project.ID, formatHubTime(now), formatHubTime(now)); err != nil {
+						t.Fatal(err)
+					}
+				}
 				issue := project.fixture.create(t, "ready")
+				if scenario.allowed == "in-progress" && project.fixture.project.ID == first.project.ID {
+					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE workflow_states SET source_name='Active' WHERE project_id=? AND detent_state='In Progress'", first.project.ID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='In Progress') WHERE native_id=?", first.project.ID, issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if project.rework {
+					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Rework') WHERE native_id=?", project.fixture.project.ID, issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if project.landing != "" && project.landing != "missing version" {
+					f := project.fixture
+					var principal string
+					if err := first.service.database.db.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE name=?", "operator-"+f.project.Name).Scan(&principal); err != nil {
+						t.Fatal(err)
+					}
+					rules := tracker.ChangeReviewPolicy{PolicyID: descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{{Name: "test", PrincipalID: principal, WorkflowID: "ci.yml", WorkflowSHA256: policy.Digest([]byte("trusted CI")), Source: "independent", MaxAgeSeconds: 3600}}}
+					requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPut, f.base+"/change-review-policy", testHubAdminToken, tracker.ApproveChangeReviewPolicy{Mutation: tracker.Mutation{IdempotencyKey: "rules"}, Policy: rules}), http.StatusOK)
+					path := f.base + "/work-items/" + string(issue.WorkItemID) + "/changes"
+					response := performHubAPIRequest(t, first.service, http.MethodPost, path, f.token, tracker.CreateChange{Mutation: tracker.Mutation{IdempotencyKey: "change"}, Title: "Ready change"})
+					requireNativeStatus(t, response, http.StatusOK)
+					var change tracker.ChangeRequest
+					decodeHubResponse(t, response, &change)
+					cf := changeFixture{nativeFixture: f, issue: issue, change: change, path: path + "/" + change.ID}
+					version := cf.publish(t, "publish", "", true)
+					if project.landing != "missing review" {
+						requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPost, cf.path+"/versions/"+version.ID+"/reviews", f.token, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: "approve"}, Decision: "approved"}), http.StatusOK)
+					}
+					check := changeTestResult(version)
+					if project.landing == "failed check" {
+						check.Conclusion = "failure"
+					}
+					requireNativeStatus(t, performHubAPIRequest(t, first.service, http.MethodPost, cf.path+"/versions/"+version.ID+"/checks", f.token, check), http.StatusOK)
+					if status := cf.detail(t).Summary.Status; (status == "reviewed") != (project.landing == "reviewed") {
+						t.Fatalf("landing summary = %s for %s", status, project.landing)
+					}
+				}
+				if project.landing != "" {
+					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Merging') WHERE native_id=?", project.fixture.project.ID, issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				issues[project.fixture.project.ID] = issue
 				for _, statement := range []struct {
 					sql  string
 					args []any
@@ -240,14 +479,77 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 					}
 				}
 			}
+			if scenario.localWork {
+				for _, work := range []struct {
+					state    string
+					priority int
+				}{{"Rework", 2}, {"Todo", 0}} {
+					issue := first.create(t, work.state)
+					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state=?) WHERE native_id=?", first.project.ID, work.state, issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := first.service.database.db.ExecContext(t.Context(), "UPDATE queue_entries SET priority_override=? WHERE issue_id=(SELECT id FROM issues WHERE native_id=?)", work.priority, issue.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for _, selection := range []struct {
+					credential apiCredential
+					want       []string
+				}{
+					{apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin, Runner: runnerauth.Identity{Binding: r.binding}}, []string{"ready", "Rework", "Todo"}},
+					{apiCredential{ID: bootstrapTokenID, Scope: apiScopeAdmin}, []string{"Todo", "ready", "Rework"}},
+				} {
+					scope := nativeScope{organization: first.project.OrganizationID, project: first.project.ID, credential: selection.credential}
+					cursor := runnerSelectionCursor{}
+					query := claimCandidateQuery{NativeScope: &scope, Scope: string(first.project.ID), AvailableAt: now, Limit: 1, SelectionCursor: &cursor}
+					for _, want := range selection.want {
+						ids, err := nativeCandidateIDs(t.Context(), first.service.database.reader, query, nil, nil, nil, nil, nil, nil, nil)
+						if err != nil || len(ids) != 1 {
+							t.Fatalf("candidate page = %v, error = %v", ids, err)
+						}
+						var title string
+						if err := first.service.database.reader.QueryRowContext(t.Context(), "SELECT title FROM issues WHERE id=?", ids[0]).Scan(&title); err != nil {
+							t.Fatal(err)
+						}
+						if title != want {
+							t.Fatalf("candidate = %s, want %s", title, want)
+						}
+					}
+				}
+			}
 			claim := tracker.NativeClaim{PolicyID: descriptor.ID, MachineID: r.binding.MachineID, SessionID: "ordering", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 			loser, winner := first, second
 			if scenario.wantFirst {
 				loser, winner = second, first
 			}
+			if scenario.allowed == "provider" || scenario.allowed == "provider-override" {
+				report := capacityReport(now)
+				report.Models = append(report.Models, "gpt-6.1-sol")
+				publishCapacity(t, first, r, report)
+				claim = providerClaim(r, issues[loser.project.ID], "lower-provider")
+				claim.WorkItemID = ""
+				claim.ProviderCandidates = append(claim.ProviderCandidates, providerClaim(r, issues[winner.project.ID], "").ProviderCandidates[0])
+			}
+			if scenario.allowed == "targeted" {
+				claim.WorkItemID = issues[loser.project.ID].WorkItemID
+			}
+			assertRunnerAdmissionFacts(t, first, r)
+			assertRunnerAdmissionFacts(t, second, r)
 			response := performHubAPIRequest(t, first.service, http.MethodPost, loser.base+"/claims", r.redemption.Credential, claim)
+			if scenario.allowed == "targeted" {
+				requireNativeStatus(t, response, http.StatusOK)
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				if lease.WorkItemID != issues[loser.project.ID].WorkItemID {
+					t.Fatalf("claimed %s, want requested %s", lease.WorkItemID, issues[loser.project.ID].WorkItemID)
+				}
+				return
+			}
 			if response.Code == http.StatusOK {
 				t.Fatalf("lower-ranked or unauthorized project acquired work: %s", response.Body.String())
+			}
+			if scenario.allowed == "provider" || scenario.allowed == "provider-override" {
+				claim.SessionID = "higher-provider"
 			}
 			response = performHubAPIRequest(t, first.service, http.MethodPost, winner.base+"/claims", r.redemption.Credential, claim)
 			if scenario.allowed == "empty" {
@@ -256,6 +558,11 @@ func TestRunnerAllowedOrdering(t *testing.T) {
 				}
 			} else {
 				requireNativeStatus(t, response, http.StatusOK)
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				if lease.WorkItemID != issues[winner.project.ID].WorkItemID {
+					t.Fatalf("claimed %s, want %s", lease.WorkItemID, issues[winner.project.ID].WorkItemID)
+				}
 			}
 		})
 	}
@@ -311,6 +618,65 @@ func TestRunnerFutureProjectAdmission(t *testing.T) {
 				if lease.WorkItemID != item.WorkItemID {
 					t.Fatalf("claimed %s, want %s", lease.WorkItemID, item.WorkItemID)
 				}
+			}
+		})
+	}
+}
+
+func TestRunnerAllowedCursorCASStaleRetry(t *testing.T) {
+	for _, initialRevision := range []int64{0, 1} {
+		t.Run(fmt.Sprintf("revision-%d", initialRevision), func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			r := placementFixtureRunner(t, f, "cursor-worker", "local", false, 1, "gpt-6.1-sol", "test-model")
+			credential, _, err := f.service.authenticateAPIToken(t.Context(), r.redemption.Credential, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
+			db := f.service.database
+			if initialRevision != 0 {
+				if _, err := db.db.ExecContext(t.Context(), `INSERT INTO runner_selection_cursors(runner_id,project_id,issue_id,priority,aging,landing,created,identifier,revision) VALUES(?,?,10,0,0,0,'','',1)`, r.binding.RunnerID, f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			query := claimCandidateQuery{NativeScope: &scope, Scope: string(scope.project)}
+			prepare := func() (context.Context, *runnerSelectionProgress) {
+				t.Helper()
+				ctx := context.WithValue(t.Context(), claimPreparationKey{}, &claimPreparation{})
+				progress, err := readRunnerSelectionProgress(ctx, db.reader, scope, query)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return ctx, progress
+			}
+			winnerCtx, winner := prepare()
+			loserCtx, loser := prepare()
+			write := func(ctx context.Context, progress *runnerSelectionProgress, id tracker.WorkItemID, session string) {
+				t.Helper()
+				progress.cursor.ID, progress.dirty = id, true
+				request := tracker.ClaimRequest{MachineID: r.binding.MachineID, SessionID: session, TTL: time.Minute}
+				_, err := db.claimNextOn(ctx, db.db, nil, claimMode{hint: &claimSelected{id: 999999, revision: 1}}, request, query, time.Hour)
+				if !errors.Is(err, errClaimHintStale) {
+					t.Fatalf("stale candidate pass: %v", err)
+				}
+			}
+			write(winnerCtx, winner, 40, "winner")
+			write(loserCtx, loser, 20, "loser")
+			write(loserCtx, loser, 25, "loser")
+			var id tracker.WorkItemID
+			var revision int64
+			if err := db.reader.QueryRowContext(t.Context(), `SELECT issue_id,revision FROM runner_selection_cursors WHERE runner_id=? AND project_id=?`, r.binding.RunnerID, f.project.ID).Scan(&id, &revision); err != nil {
+				t.Fatal(err)
+			}
+			if id != 40 || revision != initialRevision+1 {
+				t.Fatalf("CAS loser replaced winner progress: cursor=%d revision=%d", id, revision)
+			}
+			write(winnerCtx, winner, 50, "winner")
+			if err := db.reader.QueryRowContext(t.Context(), `SELECT issue_id,revision FROM runner_selection_cursors WHERE runner_id=? AND project_id=?`, r.binding.RunnerID, f.project.ID).Scan(&id, &revision); err != nil {
+				t.Fatal(err)
+			}
+			if id != 50 || revision != initialRevision+2 {
+				t.Fatalf("winner could not continue: cursor=%d revision=%d", id, revision)
 			}
 		})
 	}

@@ -16,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// The project's label catalogue (decisions section 19.1).
+// The project's label catalogue.
 //
 // A tracker that lets a reader pick a label has to be able to say which
 // labels exist. The hub models labels as a JSON array on each work item and
@@ -98,6 +98,13 @@ func (s *Service) listNativeLabels(c echo.Context) error {
 }
 
 func readNativeLabels(ctx context.Context, query nativeQueryer, scope nativeScope) ([]nativeLabel, error) {
+	if scope.credential.HostedRole == "reporter" {
+		pageQuery, pageErr := prepareNativePageQuery(ctx, query, scope, "", "native_issue_actors")
+		if pageErr != nil {
+			return nil, pageErr
+		}
+		query = pageQuery
+	}
 	visibility, args := scope.issueVisibilitySQL("i")
 	args = append([]any{scope.organization, scope.project}, args...)
 	rows, err := query.QueryContext(ctx, `SELECT labels_json FROM issues i WHERE organization_id = ? AND project_id = ? AND (`+visibility+`)`, args...)

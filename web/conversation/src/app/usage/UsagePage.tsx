@@ -21,7 +21,10 @@ import {
 import { WorkspacePageContainer } from "../../components/WorkspacePageContainer.tsx";
 import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
 import { cn } from "../../lib/utils.ts";
-import { useAccountBootstrap } from "../account/context.ts";
+import type { FleetResponse } from "../../contracts/account.ts";
+import { ProviderSummary } from "./ProviderSummary.tsx";
+import { useResource } from "../account/useResource.ts";
+import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
 import { useClient } from "../client.ts";
 import { usePageTitle } from "../pageTitle.ts";
 import {
@@ -92,6 +95,8 @@ export function UsageRoute(): React.ReactElement {
   const client = useClient();
   usePageTitle("Usage");
   const bootstrap = useAccountBootstrap();
+  const api = useAccountApi();
+  const fleet = useResource(() => api.fleet(), [api]);
   const [preferences, setPreferences] = useState(readUsagePagePreferences);
   const range = rangeForDays(preferences.windowDays);
   const options = useMemo(
@@ -102,6 +107,8 @@ export function UsageRoute(): React.ReactElement {
 
   return (
     <UsageView
+      fleet={fleet.value}
+      fleetError={fleet.error ? "Provider accounts could not be loaded." : null}
       merged={merged}
       isPending={isPending}
       errorMessage={error?.message ?? null}
@@ -111,7 +118,7 @@ export function UsageRoute(): React.ReactElement {
         setPreferences(next);
         saveUsagePagePreferences(next);
       }}
-      onRefresh={refresh}
+      onRefresh={async () => { await Promise.all([refresh(), fleet.refresh()]); }}
     />
   );
 }
@@ -119,6 +126,7 @@ export function UsageRoute(): React.ReactElement {
 // --- View -------------------------------------------------------------------
 
 export function UsageView({
+  fleet, fleetError,
   merged,
   isPending,
   errorMessage,
@@ -127,6 +135,8 @@ export function UsageView({
   onPreferencesChange,
   onRefresh,
 }: {
+  readonly fleet?: FleetResponse;
+  readonly fleetError?: string | null;
   readonly merged: MergedUsage;
   readonly isPending: boolean;
   readonly errorMessage: string | null;
@@ -329,7 +339,16 @@ export function UsageView({
               {errorMessage}
             </p>
           ) : showingLimits ? (
-            <UsageLimitsSection limits={merged.limits} />
+            <>
+              <UsageLimitsSection limits={merged.limits} />
+              <section className="min-w-0 space-y-3">
+                <h2 className="text-sm font-medium">Provider accounts</h2>
+                {fleetError ? <p role="status" className="text-sm text-muted-foreground">{fleetError}</p>
+                  : fleet === undefined ? <p role="status" className="text-sm text-muted-foreground">Loading provider accounts</p>
+                  : fleet.runners.some((runner) => runner.provider_capacity.length > 0) ? <ProviderSummary runners={fleet.runners} />
+                  : <p className="text-sm text-muted-foreground">No provider accounts reported.</p>}
+              </section>
+            </>
           ) : isPending ? (
             <UsageSkeleton />
           ) : showingRunners ? (
@@ -595,7 +614,7 @@ function Metric({ label, value }: { readonly label: string; readonly value: stri
 }
 
 /**
- * The Runners tab. §17.5 sends one row per runner for the window; this is the
+ * The Runners tab. The usage report sends one row per runner for the window; this is the
  * Breakdown table with the fleet's own columns, so the two read as the same
  * table rather than two takes on one.
  */

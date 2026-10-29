@@ -8,7 +8,7 @@
 import { RegistryProvider } from "@effect/atom-react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { RouterProvider, createMemoryHistory } from "@tanstack/react-router";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { startMockHub, type CoordinatorMode, type MockHub } from "../../dev/mock-hub.ts";
 import { ClientContext, LAST_PROJECT_STORAGE_KEY } from "../../src/app/client.ts";
@@ -18,6 +18,15 @@ import { setComposerText } from "./composerInput.ts";
 import { loadBootstrap, makeClient, type ConversationClient } from "../../src/runtime/bootstrap.ts";
 import { fetchEventStreamTransport } from "../../src/runtime/rpc/sse.ts";
 import * as sharedEntry from "../../src/app/entry/shared.ts";
+import { useUiStateStore } from "../../src/uiStateStore.ts";
+import * as humanActions from "../../src/app/adapters/sidebarHumanActions.ts";
+import { sidebarProjectScopeKey } from "../../src/app/adapters/shell.ts";
+import { DEFAULT_VIEW_STATE } from "../../src/app/work/lib/viewState.ts";
+import { getBoardRead } from "../../src/app/work/lib/boardStore.ts";
+import { workHttpFor } from "../../src/app/work/lib/useWork.ts";
+import "../../src/app/reports/ReportsPage.tsx";
+import "../../src/app/ChatRoutes.tsx";
+import "../../src/app/work/WorkRoutes.tsx";
 
 // The router restores scroll on navigation; jsdom has no scrolling.
 Object.defineProperty(globalThis, "scrollTo", { value: () => {}, writable: true });
@@ -28,6 +37,7 @@ const nativeFetch = globalThis.fetch;
 
 beforeEach(() => {
   globalThis.localStorage.clear();
+  useUiStateStore.setState({ sidebarProjectScopeKey: null, sidebarProjectWorkingSetKeys: [], sidebarProjectScopeAccountKey: null, sidebarProjectScopesByAccount: {} });
   vi.stubGlobal("fetch", sameRealmFetch);
 });
 
@@ -54,11 +64,29 @@ const sameRealmFetch: typeof globalThis.fetch = (input, init) => {
   return nativeFetch(input as string, rest);
 };
 
+function holdResponse(method: string, pathname: string) {
+  let receive = () => {};
+  let release = () => {};
+  const received = new Promise<void>((resolve) => { receive = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  const fetch = globalThis.fetch;
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await fetch(input, init);
+    if (new URL(String(input)).pathname === pathname && (init?.method ?? "GET") === method) {
+      await response.clone().arrayBuffer();
+      receive();
+      await released;
+    }
+    return response;
+  });
+  return { received, release };
+}
+
 interface MountOptions {
   readonly bootstrap?: (bootstrap: Bootstrap) => Bootstrap;
   readonly storedProject?: string;
   readonly coordinator?: CoordinatorMode;
-  /** Flipped on the hub after any setup, before the client boots (§10.11). */
+  /** Flipped on the hub after any setup, before the client boots. */
   readonly readOnly?: boolean;
   /** Resolved after `seed`, so a test can open a chat the seed created. */
   readonly path?: string | (() => string);
@@ -120,6 +148,197 @@ async function control(path: string, body?: unknown): Promise<void> {
 }
 
 describe("the conversation shell", () => {
+  it.each(["/work", "/work/p/proj_alpha", "/alpha"])("filters the working set locally from %s and after returning from Chat", async (path) => {
+    const actions = ["alpha", "beta"].map((name) => ({ id: `wi_${name}`, projectId: `proj_${name}`, label: `${name} question`, to: `/work/i/wi_${name}`, opened_at: "2026-10-20T10:00:00Z" }));
+    vi.spyOn(humanActions, "useSidebarHumanActions").mockReturnValue(actions);
+    const requests: URL[] = [];
+    let pendingBoardRequests = 0;
+    let releaseInitialBoard = () => {};
+    const initialBoardReleased = new Promise<void>((resolve) => { releaseInitialBoard = resolve; });
+    let receiveInitialBoard = () => {};
+    const initialBoardReceived = new Promise<void>((resolve) => { receiveInitialBoard = resolve; });
+    onTestFinished(releaseInitialBoard);
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "http://fixture.test");
+      requests.push(url);
+      if (url.pathname === "/api/v2/organizations/org_mock/readable/alpha") {
+        return Promise.resolve(Response.json({ project_id: "proj_alpha", work_item_id: "" }));
+      }
+      const board = url.pathname.endsWith("/work-items") && url.searchParams.get("include") === "board";
+      if (board) pendingBoardRequests++;
+      try {
+        const response = await sameRealmFetch(input, init);
+        if (board) {
+          await response.clone().arrayBuffer();
+          receiveInitialBoard();
+          await initialBoardReleased;
+        }
+        return response;
+      } finally {
+        if (board) pendingBoardRequests--;
+      }
+    });
+    const { router, client } = await mountApp({ path, bootstrap: (bootstrap) => {
+      const keys = bootstrap.projects.filter((project) => ["proj_alpha", "proj_beta"].includes(project.id)).map(sidebarProjectScopeKey);
+      useUiStateStore.setState({ sidebarProjectWorkingSetKeys: keys });
+      return bootstrap;
+    } });
+    const rows = () => within(screen.getByRole("list", { name: "Project working set" }));
+    const initialBoard = getBoardRead(client, workHttpFor(client), null, DEFAULT_VIEW_STATE, ["proj_alpha", "proj_beta"]);
+    let stop = () => {};
+    const initialBoardReady = new Promise<void>((resolve) => {
+      const check = () => {
+        const state = initialBoard.snapshot();
+        if (state.resolved || state.error !== null) resolve();
+      };
+      stop = initialBoard.subscribe(check);
+      check();
+    });
+    onTestFinished(() => stop());
+    await act(async () => {
+      await initialBoardReceived;
+      expect(screen.queryAllByTestId("issue-card")).toHaveLength(0);
+      expect(screen.getByText("Loading work…")).toBeTruthy();
+      releaseInitialBoard();
+      await initialBoardReady;
+    });
+    stop();
+    expect(initialBoard.snapshot().error).toBeNull();
+    expect(screen.getAllByTestId("issue-card").length).toBeGreaterThan(0);
+    const heading = () => screen.getByRole("heading", { level: 1 });
+    expect(heading().textContent).toBe(path === "/work" ? "2 projects" : "alpha");
+    const boardRequests = () => requests.filter((url) => url.pathname.endsWith("/work-items") && url.searchParams.get("include") === "board").length;
+    const initial = boardRequests();
+    const boardControl = screen.getByTestId("board-new-issue");
+    expect(initial).toBeGreaterThan(0);
+    fireEvent.click(rows().getByRole("button", { name: "All" }));
+    await waitFor(() => expect(heading().textContent).toBe("2 projects"));
+    expect(router.state.location.pathname).toBe(path);
+    expect(screen.getByTestId("board-new-issue")).toBe(boardControl);
+    expect(boardRequests()).toBe(initial);
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+      within(heading()).getByText("2 projects").focus();
+    });
+    expect((await screen.findByRole("tooltip")).textContent).toBe("alpha, beta");
+    const allCards = screen.getAllByTestId("issue-card").map((card) => card.getAttribute("data-work-item"));
+    expect(screen.getByTestId("attention-issue-wi_alpha")).toBeTruthy();
+    expect(screen.getByTestId("attention-issue-wi_beta")).toBeTruthy();
+    for (const name of ["alpha", "beta"]) {
+      fireEvent.click(rows().getByRole("button", { name }));
+      await waitFor(() => expect(heading().textContent).toBe(name));
+      expect(screen.getByTestId(`attention-issue-wi_${name}`)).toBeTruthy();
+      expect(screen.queryByTestId(`attention-issue-wi_${name === "alpha" ? "beta" : "alpha"}`)).toBeNull();
+      expect(screen.getAllByTestId("issue-card").length).toBeLessThan(allCards.length);
+      expect(screen.queryByTestId("project-dot")).toBeNull();
+      expect(boardRequests()).toBe(initial);
+    }
+    fireEvent.click(rows().getByRole("button", { name: "All" }));
+    await waitFor(() => expect(heading().textContent).toBe("2 projects"));
+    expect(screen.getAllByTestId("issue-card").map((card) => card.getAttribute("data-work-item"))).toEqual(allCards);
+    expect(boardRequests()).toBe(initial);
+    fireEvent.click(screen.getByRole("radio", { name: "List" }));
+    await waitFor(() => expect(screen.getByRole("table")).toBeTruthy());
+    const listRequests = boardRequests();
+    const allList = within(screen.getByRole("table")).getAllByRole("row").length;
+    for (const name of ["alpha", "beta"]) {
+      fireEvent.click(rows().getByRole("button", { name }));
+      await waitFor(() => expect(heading().textContent).toBe(name));
+      expect(within(screen.getByRole("table")).getAllByRole("row").length).toBeLessThan(allList);
+      expect(boardRequests()).toBe(listRequests);
+    }
+    fireEvent.click(screen.getByTestId("nav-chat"));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/chat"));
+    expect(rows().getByRole("button", { name: "beta" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByLabelText("Filter threads by project").textContent).toContain("2 of");
+    await screen.findByLabelText("Message");
+    fireEvent.click(screen.getByTestId("nav-work"));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/work/p/proj_beta"));
+    fireEvent.click(await screen.findByRole("radio", { name: "Board" }));
+    await waitFor(() => expect(screen.getAllByTestId("issue-card").length).toBeGreaterThan(0));
+    await waitFor(() => expect(heading().textContent).toBe("beta"));
+    await waitFor(() => expect(boardRequests()).toBeGreaterThan(listRequests));
+    await waitFor(() => expect(pendingBoardRequests).toBe(0));
+    const returnedRequests = boardRequests();
+    const returnedControl = screen.getByTestId("board-new-issue");
+    for (const name of ["All", "alpha", "beta"]) {
+      fireEvent.click(rows().getByRole("button", { name }));
+      await waitFor(() => expect(heading().textContent).toBe(name === "All" ? "2 projects" : name));
+      expect(screen.getByTestId("board-new-issue")).toBe(returnedControl);
+      expect(boardRequests()).toBe(returnedRequests);
+      for (const project of ["alpha", "beta"]) {
+        expect(screen.queryByTestId(`attention-issue-wi_${project}`) !== null).toBe(name === "All" || name === project);
+      }
+    }
+  });
+
+  it.each([false, true])("restores saved-view project scope throughout the shell (direct entry: %s)", async (direct) => {
+    const savedViews = holdResponse("GET", "/api/v2/organizations/org_mock/work-views");
+    const { router } = await mountApp({
+      storedProject: "proj_alpha",
+      path: direct ? "/work/views/view_1" : "/work/p/proj_alpha",
+      seed: async (origin) => {
+        const base = `${origin}/api/v2/organizations/org_mock`;
+        for (const [project, title] of [["proj_alpha", "Alpha scope thread"], ["proj_beta", "Beta scope thread"]]) {
+          await fetch(`${base}/projects/${project}/conversations`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: project, title }),
+          });
+        }
+        for (const [name, project_id] of [["Beta saved view", "proj_beta"], ["All saved view", null]]) {
+          await fetch(`${base}/work-views`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, project_id, scope: "personal", favorite: true, state: DEFAULT_VIEW_STATE }),
+          });
+        }
+      },
+    });
+    await act(async () => {
+      await savedViews.received;
+      expect(screen.queryByRole("button", { name: "Beta saved view" })).toBeNull();
+      savedViews.release();
+    });
+    if (!direct) {
+      await waitFor(() => expect(screen.getByRole("button", { name: "alpha" }).getAttribute("aria-pressed")).toBe("true"));
+      fireEvent.click(await screen.findByRole("button", { name: "Beta saved view" }));
+    }
+    await waitFor(() => expect(screen.getByRole("button", { name: "beta" }).getAttribute("aria-pressed")).toBe("true"));
+    expect(router.state.location.pathname).toBe("/work/views/view_1");
+    expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("proj_beta");
+    expect(await screen.findByText("Beta scope thread")).toBeTruthy();
+    expect(screen.queryByText("Alpha scope thread")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/work/p/proj_beta"));
+    await act(async () => { router.history.back(); });
+    await waitFor(() => expect(router.state.location.pathname).toBe("/work/views/view_1"));
+    fireEvent.click(screen.getByRole("button", { name: "All saved view" }));
+    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All Mock organization projects"));
+    expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("");
+    expect(await screen.findByText("Alpha scope thread")).toBeTruthy();
+    expect(screen.getByText("Beta scope thread")).toBeTruthy();
+    await act(async () => { router.history.back(); });
+    await waitFor(() => expect(screen.getByRole("button", { name: "beta" }).getAttribute("aria-pressed")).toBe("true"));
+    await act(async () => { router.history.forward(); });
+    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All Mock organization projects"));
+    fireEvent.click(screen.getByRole("button", { name: "Work" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/work"));
+  });
+
+  it("keeps a shared Reports view in sync with sidebar project changes", async () => {
+    const { router } = await mountApp({ path: "/reports/flow?project=proj_alpha&range=30d&compare=off", storedProject: "proj_alpha" });
+    await screen.findByRole("heading", { name: "Reports" });
+    fireEvent.click(await screen.findByLabelText("Filter threads by project"));
+    fireEvent.click(await screen.findByRole("option", { name: "beta" }));
+    fireEvent.keyDown(screen.getByLabelText("Search projects"), { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "beta" }));
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ project: "proj_beta", range: "30d", compare: "off" }));
+    expect(router.state.location.pathname).toBe("/reports/flow");
+    fireEvent.click(screen.getByLabelText("Filter threads by project"));
+    fireEvent.click(await screen.findByRole("button", { name: "Clear" }));
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ project: "all", range: "30d", compare: "off" }));
+    expect(await screen.findByText("Choose a project in the sidebar to view its reports.")).toBeTruthy();
+  });
+
   it("copies an exact read-only conversation handoff without posting or dispatching", async () => {
     let conversationId = "";
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -210,6 +429,7 @@ describe("the conversation shell", () => {
     ["proj_readonly", "proj_alpha", "alpha"],
     ["proj_beta", "proj_beta", "beta"],
   ])("starts a writable chat with stored project %j", async (stored, expectedId, expectedName) => {
+    const created = holdResponse("POST", `/api/v2/organizations/org_mock/projects/${expectedId}/conversations`);
     const { router, hub } = await mountApp({
       storedProject: stored,
       bootstrap: (bootstrap) => ({
@@ -223,7 +443,12 @@ describe("the conversation shell", () => {
     expect(screen.queryByText("Choose a project first")).toBeNull();
     await setComposerText(composer, "Start a writable chat");
     expect(screen.getByLabelText<HTMLButtonElement>("Send message").disabled).toBe(false);
-    fireEvent.keyDown(composer, { key: "Enter" });
+    await act(async () => {
+      fireEvent.keyDown(composer, { key: "Enter" });
+      await created.received;
+      expect(router.state.location.pathname).toBe("/chat");
+      created.release();
+    });
     await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/chat\/c\/conv_/));
     const conversationId = router.state.location.pathname.replace("/chat/c/", "");
     const response = await fetch(`${hub.url}/api/v2/organizations/org_mock/projects/${expectedId}/conversations/${conversationId}`);
@@ -236,15 +461,15 @@ describe("the conversation shell", () => {
     await screen.findByLabelText("Message");
     await waitFor(() => expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("proj_beta"));
     await router.navigate({ to: "/work" });
-    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All Mock organization projects"));
-    expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("");
+    await waitFor(() => expect(screen.getByRole("button", { name: "beta" }).getAttribute("aria-pressed")).toBe("true"));
+    expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("proj_beta");
     await router.navigate({ to: "/chat" });
     await screen.findByLabelText("Message");
     expect(screen.getByTestId("hero-headline").textContent).toContain("beta");
     await router.navigate({ to: "/chat/p/$projectId", params: { projectId: "proj_beta" } });
-    await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("beta"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "beta" }).getAttribute("aria-pressed")).toBe("true"));
     fireEvent.click(screen.getByLabelText("Filter threads by project"));
-    fireEvent.click(await screen.findByRole("option", { name: "All Mock organization projects" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Clear" }));
     await waitFor(() => expect(screen.getByLabelText("Filter threads by project").textContent).toContain("All Mock organization projects"));
     expect(globalThis.localStorage.getItem(LAST_PROJECT_STORAGE_KEY)).toBe("");
     const composer = screen.getByLabelText<HTMLElement>("Message");
@@ -373,7 +598,7 @@ describe("the conversation shell", () => {
     fireEvent.click(within(form).getByRole("button", { name: "Create linked issue" }));
 
     // Linking moves the reader to the issue: the issue is the page now and the
-    // conversation is a surface on it (decisions.md §19.4), so `/chat/c/:id`
+    // conversation is a surface on it, so `/chat/c/:id`
     // for a linked chat redirects to `/work/i/:workItem?panel=conversation`
     // and the transcript comes with it, in the right panel.
     await waitFor(
@@ -423,7 +648,7 @@ describe("the conversation shell", () => {
     fireEvent.submit(option.closest("form") as HTMLFormElement);
 
     // The answer lands, the options go, and the transcript keeps the record so
-    // a second reader finds the resolution rather than a second form (§5).
+    // a second reader finds the resolution rather than a second form.
     await waitFor(
       () => expect(screen.getByTestId("stored-answer").textContent).toContain("Half the lease"),
       { timeout: 5_000 },
@@ -483,7 +708,7 @@ describe("the conversation shell", () => {
     const note = await screen.findByTestId("coordinator-note");
     expect(note.textContent).toContain("No runner can answer chats in this project yet.");
     // The one create action is still there, and so is the send: the message
-    // queues and waits rather than being refused (decisions.md §9.1).
+    // queues and waits rather than being refused.
     expect(screen.getAllByRole("button", { name: "New thread" })).toHaveLength(1);
     expect(screen.getByLabelText<HTMLButtonElement>("Send message").disabled).toBe(true);
 
@@ -499,7 +724,7 @@ describe("the conversation shell", () => {
 
   // The shortcuts are wired in the shell, so this is the only place that can
   // see that `/` reaches the real search box and that `Mod+Shift+N` calls the
-  // one new-chat action rather than a second one of its own (B.13, B.14).
+  // one new-chat action rather than a second one of its own.
   it("answers the two keyboard shortcuts from anywhere in the shell", async () => {
     const { router } = await mountApp();
     const composer = await screen.findByLabelText<HTMLElement>("Message", undefined, {
@@ -538,7 +763,7 @@ describe("the conversation shell", () => {
     expect(await screen.findByTestId("hero-headline")).toBeDefined();
   }, 30_000);
 
-  // §10.11: a viewer reads the chat and is offered nothing that would write.
+  // A viewer reads the chat and is offered nothing that would write.
   it("gives a read-only viewer the transcript and none of the controls", async () => {
     let conversationId = "";
     await mountApp({
@@ -579,7 +804,7 @@ describe("the conversation shell", () => {
     expect(screen.queryByTestId("conversation-menu-button")).toBeNull();
   }, 30_000);
 
-  // §13.9: Settled replaced Archive, and the client offers no archive action,
+  // Settled replaced Archive, and the client offers no archive action,
   // no banner and no closed composer — a settled chat is one you can still
   // write in, and writing in it is what unsettles it.
   it("offers no archive action, and a settled chat stays writable", async () => {

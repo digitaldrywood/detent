@@ -347,8 +347,8 @@ func TestHandleRunResultRejectsDirtyCompletionAndEscalates(t *testing.T) {
 		wantBlocked  bool
 		intentional  bool
 	}{
-		{name: "first rejection returns to agent", wantTerminal: store.WorkAttemptTerminalSuccess, wantRetry: true},
-		{name: "second rejection parks", history: []store.WorkAttempt{previousRejected}, wantTerminal: store.WorkAttemptTerminalNoProgress, wantBlocked: true},
+		{name: "first rejection returns to agent", wantTerminal: store.WorkAttemptTerminalNoProgress, wantRetry: true},
+		{name: "second rejection grows retry", history: []store.WorkAttempt{previousRejected}, wantTerminal: store.WorkAttemptTerminalNoProgress, wantRetry: true},
 		{name: "intentional remainder parks", history: []store.WorkAttempt{previousRejected}, wantTerminal: store.WorkAttemptTerminalNoProgress, wantBlocked: true, intentional: true},
 	}
 
@@ -366,7 +366,11 @@ func TestHandleRunResultRejectsDirtyCompletionAndEscalates(t *testing.T) {
 				}}
 			}
 			tracker := &implementProgressConnector{refreshed: issue}
-			attempts := &implementProgressAttemptStore{history: tt.history}
+			history := tt.history
+			if len(history) == 0 {
+				history = []store.WorkAttempt{implementProgressLegacyNoPRHistoryAttempt(1)}
+			}
+			attempts := &implementProgressAttemptStore{history: history}
 			cfg := normalizeConfig(Config{
 				Project:                scheduler.ProjectCandidate{ID: "detent"},
 				ActiveStates:           []string{"Todo", "In Progress", "Rework", "Merging"},
@@ -383,7 +387,7 @@ func TestHandleRunResultRejectsDirtyCompletionAndEscalates(t *testing.T) {
 			state := newState(cfg)
 			state.Running[issue.ID] = Running{
 				Issue:          issue,
-				Attempt:        1,
+				Attempt:        3 + len(tt.history),
 				WorkAttemptID:  2147,
 				Generation:     7,
 				Mode:           runpkg.RunModeImplement,
@@ -423,9 +427,21 @@ func TestHandleRunResultRejectsDirtyCompletionAndEscalates(t *testing.T) {
 				t.Fatalf("completion cleanliness metadata = %#v", metadata.CompletionCleanliness)
 			}
 			_, retrying := state.Retry[issue.ID]
+			if tt.wantRetry && state.Retry[issue.ID].Attempt != 4+len(tt.history) {
+				t.Fatalf("rejection retry attempt = %d, want %d", state.Retry[issue.ID].Attempt, 4+len(tt.history))
+			}
 			_, blocked := state.Blocked[issue.ID]
 			if retrying != tt.wantRetry || blocked != tt.wantBlocked {
 				t.Fatalf("state = retry %t blocked %t, want retry %t blocked %t", retrying, blocked, tt.wantRetry, tt.wantBlocked)
+			}
+			if tt.wantTerminal == store.WorkAttemptTerminalNoProgress && !tt.intentional {
+				retry := state.Retry[issue.ID]
+				for _, want := range []string{"2 files, +9/-3", "internal/worker.go", "debug.log"} {
+					if !strings.Contains(retry.Error, want) {
+						t.Fatalf("retry lost workspace evidence: %s", retry.Error)
+					}
+				}
+				return
 			}
 			if len(tracker.comments) == 0 {
 				t.Fatal("expected a completion rejection or escalation comment")
@@ -467,7 +483,7 @@ func TestHandleRunResultCleanRetryUsesPRGate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			issue := completionTransitionIssue("In Progress", "OPEN")
-			issue.PullRequest = &connector.PullRequest{Number: 2493, State: "OPEN", CIStatus: "pass", UnresolvedReviewThreads: []connector.PullRequestReviewThread{{Path: "worker.go", Line: 1}}}
+			issue.PullRequest = &connector.PullRequest{Number: 2493, HeadSHA: "head", State: "OPEN", CIStatus: "pass", UnresolvedReviewThreads: []connector.PullRequestReviewThread{{Path: "worker.go", Line: 1}}}
 			issue.Comments = []connector.IssueComment{{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: complete\nfields:\n  completion_work_attempt_id: \"2493\"\n  completion_generation: \"7\"\nblockers: []\nhuman_action: null\n```"}}
 			if tt.blocked {
 				issue.PullRequest.HeadSHA = "head"

@@ -74,8 +74,8 @@ const COPY: Record<string, Copy> = {
 
 /**
  * `queued` on an unlinked chat is the ordinary path, not a degraded one: the
- * hub holds the message until a runner claims the coordinator work item
- * (decisions.md §9.1). Saying "waiting for a bound runner" in warning tone
+ * hub holds the message until a runner claims the coordinator work item.
+ * Saying "waiting for a bound runner" in warning tone
  * there would read as a fault, so the chat surface states the fact plainly.
  */
 const CHAT_COPY: Record<string, Copy> = {
@@ -89,7 +89,7 @@ const CHAT_COPY: Record<string, Copy> = {
 /**
  * Error codes that say more than the ladder step they arrived on. The
  * transitional hub-side coordinator reports `coordinator_unavailable` when the
- * project has no coordinator at all (decisions.md §1); the fix is enrolling a
+ * project has no coordinator at all; the fix is enrolling a
  * runner, so the chip says so rather than reporting a bare rejection.
  */
 const ERROR_COPY: Record<string, Copy> = {

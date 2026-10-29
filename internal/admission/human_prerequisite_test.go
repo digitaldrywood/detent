@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestAutomaticAdmissionExcludesHumanTasksAndEpics(t *testing.T) {
@@ -28,7 +28,7 @@ func TestAutomaticAdmissionExcludesHumanTasksAndEpics(t *testing.T) {
 			issue := admissionIssueFixture("human", "owner/repo#10", 1, now)
 			issue.Description = tt.body
 			issue.Labels = tt.labels
-			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 			settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate})
 			settings.Config.AutoAdmit = true
 			manager := newAdmissionTestManager(t, settings, openManagerTestStore(t), func() time.Time { return now })
@@ -51,7 +51,7 @@ func TestHumanAdmissionDependencyRequiresEvidence(t *testing.T) {
 	t.Parallel()
 	for _, evidence := range []string{"", "Administrator verified authentication"} {
 		body := fmt.Sprintf("```detent-human\nschema: 1\nkey: account\naction: Enable test account\nowner: Administrator\ncompletion_criteria: Authentication works\napproval_constraint: Publishing remains separately approved\ncompletion_evidence: %q\n```", evidence)
-		tracker := memory.New(memory.Config{Issues: []connector.Issue{{ID: "human", Identifier: "owner/repo#10", Description: body, Closed: true, State: "Done"}}, Stateful: true})
+		tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{{ID: "human", Identifier: "owner/repo#10", Description: body, Closed: true, State: "Done"}}, Stateful: true})
 		settings := Settings{Issues: tracker, TerminalStates: []string{"Done"}}
 		got := resolveAdmissionDependencies(t.Context(), settings, connector.Issue{Identifier: "owner/repo#20", Description: "Depends on: owner/repo#10"}, time.Now())
 		if got == nil || got.Ready != (evidence != "") {

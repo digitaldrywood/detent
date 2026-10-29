@@ -65,7 +65,7 @@ describe("the keybinding table", () => {
     "diff.toggle",
     "thread.copyReference",
     "thread.stop",
-    // The issue page's property pickers (decisions.md §19.1). These are the
+    // The issue page's property pickers. These are the
     // only bare letters the table binds.
     "issue.status",
     "issue.priority",
@@ -165,7 +165,7 @@ describe("the keybinding table", () => {
     });
   });
 
-  // One project action's chord (decisions.md §18.12). The command is
+  // One project action's chord. The command is
   // `script.<slug>.run`, which is not a member of the closed record, so the
   // listener parses the slug out and routes it to `runProjectAction` — see
   // that member's own comment for why it is not an index signature.

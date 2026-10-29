@@ -20,14 +20,16 @@ func TestRunnerIsolationClaims(t *testing.T) {
 		tier         string
 		want         int
 		requiredTags []string
+		stalePolicy  bool
 	}{
-		{"missing report", nil, "sandbox", http.StatusConflict, nil},
-		{"sandbox", isolation.Report{"codex": {"sandbox", "native-trusted"}}, "sandbox", http.StatusOK, nil},
-		{"native cannot sandbox", isolation.Report{"codex": {"native-trusted"}}, "sandbox", http.StatusConflict, nil},
-		{"trusted", isolation.Report{"codex": {"native-trusted"}}, "native-trusted", http.StatusOK, nil},
-		{"sandbox project selector excludes trusted runner", isolation.Report{"codex": {"native-trusted"}}, "native-trusted", http.StatusConflict, []string{"sandbox"}},
-		{"mixed backends", isolation.Report{"codex": {"sandbox"}, "claude": {"native-trusted"}}, "sandbox", http.StatusConflict, nil},
-		{"probe failed", isolation.Report{"codex": {}}, "sandbox", http.StatusConflict, nil},
+		{"missing report", nil, "sandbox", http.StatusConflict, nil, false},
+		{"sandbox", isolation.Report{"codex": {"sandbox", "native-trusted"}}, "sandbox", http.StatusOK, nil, false},
+		{"native cannot sandbox", isolation.Report{"codex": {"native-trusted"}}, "sandbox", http.StatusConflict, nil, false},
+		{"trusted", isolation.Report{"codex": {"native-trusted"}}, "native-trusted", http.StatusOK, nil, false},
+		{"sandbox project selector excludes trusted runner", isolation.Report{"codex": {"native-trusted"}}, "native-trusted", http.StatusConflict, []string{"sandbox"}, false},
+		{"mixed backends", isolation.Report{"codex": {"sandbox"}, "claude": {"native-trusted"}}, "sandbox", http.StatusConflict, nil, false},
+		{"probe failed", isolation.Report{"codex": {}}, "sandbox", http.StatusConflict, nil, false},
+		{"stale permissive policy cannot bypass current selector", isolation.Report{"codex": {"native-trusted"}}, "native-trusted", http.StatusConflict, []string{"sandbox"}, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
@@ -37,12 +39,20 @@ func TestRunnerIsolationClaims(t *testing.T) {
 			issue := f.create(t, "queued")
 			settings := map[string]any{"expected_revision": 1, "display_name": "Runner", "state": "active", "capacity_limit": 2, "project_ids": []tracker.ProjectID{f.project.ID}, "isolation_tier": test.tier}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, settings), http.StatusOK)
+			permissive := hubTestPolicy()
+			if test.stalePolicy {
+				approveHubTestPolicy(t, f.service, f.base+"/policy", permissive)
+			}
 			descriptor := hubTestPolicy()
 			descriptor.Requirements = policy.Requirements{RequiredTags: test.requiredTags}
 			descriptor.ID = ""
 			descriptor = descriptor.WithID()
 			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
-			claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "claim", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+			claimPolicy := descriptor.ID
+			if test.stalePolicy {
+				claimPolicy = permissive.ID
+			}
+			claim := tracker.NativeClaim{PolicyID: claimPolicy, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "claim", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), test.want)
 		})
 	}
@@ -79,18 +89,63 @@ func TestRunnerEnrollmentIsolationSelection(t *testing.T) {
 }
 
 func TestRunnerIsolationHeartbeatWithdrawsTier(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{})
-	r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
-	r.redemption.BackendIsolation = isolation.Report{"codex": {"sandbox", "native-trusted"}}
-	r.enroll(t)
-	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential,
-		map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": isolation.Report{"codex": {"native-trusted"}}}), http.StatusOK)
-	var report string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT backend_isolation_json FROM runner_identities WHERE id = ?", r.binding.RunnerID).Scan(&report); err != nil {
-		t.Fatal(err)
-	}
-	if report != `{"codex":["native-trusted"]}` {
-		t.Fatalf("report = %s", report)
+	for _, test := range []struct {
+		name            string
+		previousSandbox bool
+		sandbox         bool
+	}{
+		{"previously proven sandbox", true, true},
+		{"first sandbox probe", false, true},
+		{"failed sandbox probe", true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
+			r.redemption.IsolationTier = isolation.NativeTrusted
+			r.redemption.SpriteName = r.redemption.Hostname
+			r.redemption.BackendIsolation = isolation.Report{"codex": {isolation.NativeTrusted}}
+			if test.previousSandbox {
+				r.redemption.BackendIsolation["codex"] = append(r.redemption.BackendIsolation["codex"], isolation.Sandbox)
+			}
+			r.enroll(t)
+			heartbeat := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": isolation.Report{"codex": {isolation.NativeTrusted}}}
+			postHeartbeat := func() {
+				t.Helper()
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, heartbeat), http.StatusOK)
+			}
+			postHeartbeat()
+			var before runnerauth.Runner
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", r.redemption.Credential, nil), &before)
+			if isolation.Report(before.BackendIsolation).Supports(isolation.Sandbox) || !isolation.Report(before.BackendIsolation).Supports(isolation.NativeTrusted) {
+				t.Fatalf("native heartbeat retained sandbox proof: %+v", before.BackendIsolation)
+			}
+			request := runnerRoutingRequest{RoutingChange: runnerauth.RoutingChange{ExpectedRevision: before.Revision, Routing: before.Routing}, IsolationTier: new(isolation.Sandbox)}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, r.identityPath()+"/routing", testHubAdminToken, request), http.StatusOK)
+			issue := f.create(t, "queued")
+			descriptor := hubTestPolicy()
+			approveHubTestPolicy(t, f.service, f.base+"/policy", descriptor)
+			claim := tracker.NativeClaim{PolicyID: descriptor.ID, WorkItemID: issue.WorkItemID, MachineID: r.binding.MachineID, SessionID: "sandbox-transition", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim), http.StatusConflict)
+			want := http.StatusConflict
+			if test.sandbox {
+				heartbeat["backend_isolation"] = isolation.Report{"codex": {isolation.NativeTrusted, isolation.Sandbox}}
+				want = http.StatusOK
+			} else {
+				problem := runnerauth.NewProblem("tier_unavailable")
+				problem.Subject = "codex/sandbox"
+				heartbeat["problems"] = []runnerauth.Problem{problem}
+			}
+			postHeartbeat()
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, claim)
+			requireNativeStatus(t, response, want)
+			if test.sandbox {
+				var lease tracker.NativeLease
+				decodeHubResponse(t, response, &lease)
+				if lease.IsolationPolicy == nil || lease.IsolationPolicy.Tier != isolation.Sandbox {
+					t.Fatalf("sandbox claim policy = %+v", lease.IsolationPolicy)
+				}
+			}
+		})
 	}
 }
 

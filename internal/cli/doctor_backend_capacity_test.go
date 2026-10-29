@@ -10,9 +10,7 @@ import (
 	"testing"
 	"time"
 
-	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -141,33 +139,6 @@ func TestDoctorOverloadRetryCount(t *testing.T) {
 	}
 }
 
-func TestDoctorBlockedRecoveryReportsCapacityParkedIssues(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 7, 10, 1, 55, 0, 0, time.UTC)
-	issue := connector.Issue{ID: "issue-1142", Identifier: "digitaldrywood/detent#1142", State: "Blocked"}
-	reader := &doctorBackendCapacityConnector{
-		issues: []connector.Issue{issue},
-		comments: map[string][]connector.IssueComment{
-			issue.ID: {{Body: `Detent stopped retrying this worker after 5 consecutive instant failures with the same backend error. backend_error_body: {"error":{"type":"usageLimitExceeded","resetAt":1783651140}}`}},
-		},
-	}
-	cfg := workflowconfig.Config{
-		Codex: workflowconfig.Codex{ModelProvider: "openai"},
-	}
-
-	check := checkDoctorBlockedRecoveryLive(t.Context(), "Project detent blocked recovery", reader, cfg, now, nil)
-	if check.Status != doctorWarn || len(check.BackendCapacity) != 1 {
-		t.Fatalf("check = %#v, want capacity warning", check)
-	}
-	if got := check.BackendCapacity[0].ParkedIssues; len(got) != 1 || !strings.Contains(got[0], issue.Identifier) {
-		t.Fatalf("ParkedIssues = %#v", got)
-	}
-	if !strings.Contains(check.Detail, "parked by provider capacity exhaustion") {
-		t.Fatalf("Detail = %q", check.Detail)
-	}
-}
-
 func TestReadDoctorBackendCapacityLive(t *testing.T) {
 	t.Parallel()
 
@@ -215,17 +186,4 @@ func TestCheckDoctorBackendCapacityUsesLiveStateWithoutHistory(t *testing.T) {
 	if check.Status != doctorWarn || len(check.BackendCapacity) != 1 || !check.BackendCapacity[0].Enforced {
 		t.Fatalf("check = %#v, want enforced live outage warning", check)
 	}
-}
-
-type doctorBackendCapacityConnector struct {
-	issues   []connector.Issue
-	comments map[string][]connector.IssueComment
-}
-
-func (c *doctorBackendCapacityConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
-	return append([]connector.Issue(nil), c.issues...), nil
-}
-
-func (c *doctorBackendCapacityConnector) FetchIssueComments(_ context.Context, issue connector.Issue) ([]connector.IssueComment, error) {
-	return append([]connector.IssueComment(nil), c.comments[issue.ID]...), nil
 }

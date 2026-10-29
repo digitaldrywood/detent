@@ -84,6 +84,7 @@ check-migrations:
 
 check-generated: generate-docs
 	$(SQLC) diff -f "$(SQLC_CONFIG)"
+	python3 scripts/check-runner-enrollment-docs.py
 
 css:
 	@if [ -f "$(TAILWIND_INPUT)" ]; then \
@@ -157,19 +158,46 @@ test: generate-docs
 test-fast: generate-docs
 	$(GO_TEST) -short -timeout=60s ./...
 
+# Hub server tests split into slices balanced by measured time; slice 4 catches every other name.
+HUB_SLICE_1 := -run '^Test([BDEFILQTUV]|Normalize|Native[A-H])'
+HUB_SLICE_2 := -run '^Test[HMP]'
+HUB_SLICE_3 := -run '^Test[CGS]'
+HUB_SLICE_4 := -skip '^Test[ABCDEFGHILMNPQSTUV]'
+HUB_SLICE_5 := -run '^Test(A|Native[I-Z])'
+
+# RACE_SHARD=i/n races one balanced slice of the packages outside the hub server; RACE_SHARD=hub-N races hub server slice N.
+RACE_SHARD ?=
+RACE_HUB_SLICE := $(patsubst hub-%,%,$(filter hub-%,$(RACE_SHARD)))
+
 test-race: generate-docs
-	$(GO_TEST) -short -race -timeout=30m ./... -count=1
+	@if [ -z "$(RACE_SHARD)" ]; then \
+		$(GO_TEST) -short -race -timeout=30m ./... -count=1; \
+	elif [ -n "$(RACE_HUB_SLICE)" ]; then \
+		$(GO_TEST) -short -race -timeout=30m ./internal/hubserver -count=1 $(HUB_SLICE_$(RACE_HUB_SLICE)); \
+	else \
+		packages="$$(bash scripts/race-packages.sh $(RACE_SHARD))"; \
+		$(GO_TEST) -short -race -timeout=30m $$packages -count=1; \
+	fi
 
 # COVER_SHARD=i/n runs one balanced slice; shard 1 also owns workspace and web.
+# COVER_SHARD=hub-N covers hub server slice N; COVER_SKIP_HUB=1 leaves the hub server to those shards.
 COVER_SHARD ?= 1/1
+COVER_SKIP_HUB ?=
+COVER_HUB_SLICE := $(patsubst hub-%,%,$(filter hub-%,$(COVER_SHARD)))
 
+ifneq ($(COVER_HUB_SLICE),)
 test-cover:
 	@mkdir -p tmp
-	@rm -f tmp/workspace-cover.raw.out tmp/rest-cover.raw.out tmp/web-cover.raw.out tmp/hub-{a,b,c}-cover.raw.out tmp/hub-cover.raw.out tmp/packages-cover.raw.out
+	$(GO_TEST) -coverprofile=$(COVERPROFILE_RAW) ./internal/hubserver -count=1 $(HUB_SLICE_$(COVER_HUB_SLICE))
+	@$(MAKE) coverage-check
+else
+test-cover:
+	@mkdir -p tmp
+	@rm -f tmp/workspace-cover.raw.out tmp/rest-cover.raw.out tmp/web-cover.raw.out tmp/hub-{1,2,3,4,5}-cover.raw.out tmp/hub-cover.raw.out tmp/packages-cover.raw.out
 	@if [ "$(firstword $(subst /, ,$(COVER_SHARD)))" = 1 ]; then \
 		bash scripts/test-workspace.sh -coverprofile tmp/workspace-cover.raw.out -output tmp/workspace-cover-evidence; \
 	fi
-	@set -e; packages="$$(bash scripts/cover-packages.sh $(COVER_SHARD))"; \
+	@set -e; packages="$$(COVER_SKIP_HUB=$(COVER_SKIP_HUB) bash scripts/cover-packages.sh $(COVER_SHARD))"; \
 	hub=; remaining=; profiles=; \
 	for package in $$packages; do \
 		case "$$package" in \
@@ -178,10 +206,12 @@ test-cover:
 		esac; \
 	done; \
 	if [ -n "$$hub" ]; then \
-		$(GO_TEST) -coverprofile=tmp/hub-a-cover.raw.out ./internal/hubserver -count=1 -run '^Test[A-GI-O]'; \
-		$(GO_TEST) -coverprofile=tmp/hub-b-cover.raw.out ./internal/hubserver -count=1 -run '^Test[HW]'; \
-		$(GO_TEST) -coverprofile=tmp/hub-c-cover.raw.out ./internal/hubserver -count=1 -skip '^Test[A-GI-O]|^Test[HW]'; \
-		go run ./tools/covermerge -union tmp/hub-a-cover.raw.out tmp/hub-b-cover.raw.out tmp/hub-c-cover.raw.out > tmp/hub-cover.raw.out; \
+		$(GO_TEST) -coverprofile=tmp/hub-1-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_1); \
+		$(GO_TEST) -coverprofile=tmp/hub-2-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_2); \
+		$(GO_TEST) -coverprofile=tmp/hub-3-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_3); \
+		$(GO_TEST) -coverprofile=tmp/hub-4-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_4); \
+		$(GO_TEST) -coverprofile=tmp/hub-5-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_5); \
+		go run ./tools/covermerge -union tmp/hub-1-cover.raw.out tmp/hub-2-cover.raw.out tmp/hub-3-cover.raw.out tmp/hub-4-cover.raw.out tmp/hub-5-cover.raw.out > tmp/hub-cover.raw.out; \
 		profiles=tmp/hub-cover.raw.out; \
 	fi; \
 	if [ -n "$$remaining" ]; then \
@@ -199,6 +229,7 @@ test-cover:
 		cp tmp/rest-cover.raw.out $(COVERPROFILE_RAW); \
 	fi
 	@$(MAKE) coverage-check
+endif
 
 coverage-check:
 	@awk 'NR == 1 || ($$1 !~ /_templ\.go:/ && $$1 !~ /\/internal\/store\/sqlc\// && $$1 !~ /\/internal\/database\/sqlc\//)' "$(COVERPROFILE_RAW)" > "$(COVERPROFILE)"

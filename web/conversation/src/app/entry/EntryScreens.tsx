@@ -1,3 +1,4 @@
+import { OrganizationImage } from "../components/OrganizationImage.tsx";
 // The shared entry's screens at `https://cloud.detent.build`: sign-in, the
 // organization chooser and creation with its provisioning progress. They sit
 // outside every organization's base path,
@@ -192,7 +193,7 @@ export function OrganizationChooser({ onNavigate }: { readonly onNavigate: Navig
                         href={organization.url}
                         name={organization.name}
                         description={ROLE_LABELS[organization.role ?? ""] ?? organization.role}
-                        leading={<NavigationMonogram name={organization.name} identity={organization.id} />}
+                        leading={<OrganizationImage url={organization.logo_url} name={organization.name} className="size-9" fallback={<NavigationMonogram name={organization.name} identity={organization.id} />} />}
                       />
                     </li>
                   ))}

@@ -39,11 +39,11 @@ func (d *database) runtimeState() *hostedRuntimeConfig {
 	d.runtimeReadMu.Lock()
 	defer d.runtimeReadMu.Unlock()
 	current := d.hostedRuntime.Load()
-	if current == nil || d.runtimeFile == "" {
+	if d.runtimeFile == "" {
 		return current
 	}
 	file, err := os.Stat(d.runtimeFile)
-	if err != nil || current.File != nil && os.SameFile(file, current.File) && file.ModTime().Equal(current.File.ModTime()) && file.Size() == current.File.Size() {
+	if err != nil || current != nil && current.File != nil && os.SameFile(file, current.File) && file.ModTime().Equal(current.File.ModTime()) && file.Size() == current.File.Size() {
 		return current
 	}
 	raw, err := os.ReadFile(d.runtimeFile)
@@ -58,8 +58,12 @@ func (d *database) runtimeState() *hostedRuntimeConfig {
 	if !ok || !slices.Contains(publication.Published, update.StageID) {
 		return current
 	}
-	next := *current
+	next := hostedRuntimeConfig{}
+	if current != nil {
+		next = *current
+	}
 	next.File, next.Published = file, publication.Published
+	next.Plans = HostedPlansConfig{}
 	if !update.Plans.IsZero() {
 		next.Plans = *update.Plans
 	}
@@ -79,7 +83,7 @@ func (d *database) runtimeVisible(id string) bool {
 
 func (d *database) plans() *HostedPlansConfig {
 	state := d.runtimeState()
-	if state == nil {
+	if state == nil || state.Plans.IsZero() {
 		return nil
 	}
 	return &state.Plans
@@ -97,11 +101,11 @@ func (s *Service) hostedBillingConfig() *HostedBillingConfig {
 
 func (s *Service) reloadHostedRuntime(c echo.Context) error {
 	if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
-		return c.NoContent(http.StatusForbidden)
+		return s.hostedJSONError(c, http.StatusForbidden, "Entitlement administrator access is required")
 	}
 	var update HostedRuntimeUpdate
 	if err := decodeAPIJSON(c, &update); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := s.applyHostedRuntime(c.Request().Context(), &update); err != nil {
 		return s.nativeAPIError(c, err)
@@ -114,7 +118,7 @@ func (s *Service) reloadHostedRuntime(c echo.Context) error {
 
 func (s *Service) readHostedRuntime(c echo.Context) error {
 	if !s.entitlementAdministrator(c) || c.Param("organization") != s.config.Hosted.OrganizationID {
-		return c.NoContent(http.StatusForbidden)
+		return s.hostedJSONError(c, http.StatusForbidden, "Entitlement administrator access is required")
 	}
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
@@ -129,7 +133,7 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 	s.runtimeMu.Lock()
 	defer s.runtimeMu.Unlock()
 	if update.Reason == "" || len(update.Reason) > 500 {
-		return nativeInvalid("A bounded reload reason is required")
+		return nativePublicInvalid("A bounded reload reason is required")
 	}
 	plans := defaultHostedPlans(s.config.Hosted)
 	if !update.Plans.IsZero() {
@@ -141,8 +145,10 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 			return err
 		}
 	}
-	if err := plans.validate(); err != nil {
-		return nativeInvalid("Reloaded entitlement configuration is invalid")
+	if !plans.IsZero() {
+		if err := plans.validate(); err != nil {
+			return nativePublicInvalid("Reloaded entitlement configuration is invalid")
+		}
 	}
 	var config *HostedBillingConfig
 	if current := s.hostedBillingConfig(); current != nil {
@@ -150,10 +156,10 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 		next.Prices = slices.Clone(update.Prices)
 		config = &next
 		if err := config.validate(&plans); err != nil {
-			return nativeInvalid("Reloaded billing prices are invalid")
+			return nativePublicInvalid("Reloaded billing prices are invalid")
 		}
 	} else if len(update.Prices) != 0 {
-		return nativeInvalid("Enabling billing requires a restart")
+		return nativePublicInvalid("Enabling billing requires a restart")
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -163,7 +169,7 @@ func (s *Service) applyHostedRuntime(ctx context.Context, update *HostedRuntimeU
 	actor := s.config.Hosted.EntitlementAdministrator
 	if update.StageID != "" {
 		if _, err := uuid.Parse(update.StageID); err != nil || !s.hostedShared() {
-			return nativeInvalid("Runtime preparation requires a shared entry and a publication identity")
+			return nativePublicInvalid("Runtime preparation requires a shared entry and a publication identity")
 		}
 	}
 	if err := s.database.seedHostedPlans(ctx, tx, plans, actor, update.Reason, update.StageID); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -301,14 +303,12 @@ func (h *conversationHub) events() []runner.ConversationTurnEvent {
 
 func (h *conversationHub) waitFor(t *testing.T, what string, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	testenv.WaitUntil(t, t.Context(), func() error {
 		if condition() {
-			return
+			return nil
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
+		return fmt.Errorf("timed out waiting for %s", what)
+	})
 }
 
 func (h *conversationHub) lastAfter() int64 {
@@ -371,7 +371,7 @@ func awaitPollStopped(t *testing.T, session *conversationSession) {
 	t.Helper()
 	select {
 	case <-session.pollDone:
-	case <-time.After(5 * time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("the control poll did not stop")
 	}
 }
@@ -448,7 +448,7 @@ func TestNativeConversationSessionDeliversControlsInOrder(t *testing.T) {
 		select {
 		case command := <-control.Commands:
 			received = append(received, command)
-		case <-time.After(5 * time.Second):
+		case <-testenv.WaitContext(t, t.Context()).Done():
 			t.Fatalf("received %d controls before timing out", len(received))
 		}
 	}
@@ -1114,7 +1114,7 @@ func TestNativeConversationDeclinesQuestionsTheHubDropped(t *testing.T) {
 				if err := command.Check(t.Context()); !errors.Is(err, runner.ErrStaleConversationControl) {
 					t.Fatalf("decline check after lease loss = %v, want stale", err)
 				}
-			case <-time.After(10 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("the dropped question was never declined to the provider")
 			}
 		})
@@ -1289,7 +1289,7 @@ func TestNativeConversationReportsControlResultsBeforeTheTurnEnds(t *testing.T) 
 			var command runner.AgentControl
 			select {
 			case command = <-control.Commands:
-			case <-time.After(5 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("the control never reached the turn")
 			}
 			completed := runner.ConversationTurnEvent{Type: runner.ConversationEventTurnCompleted, ThreadID: "thread-1", TurnID: "turn-1", Status: "interrupted"}

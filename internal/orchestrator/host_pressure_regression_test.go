@@ -530,3 +530,58 @@ func observedIOPressure(state State) (bool, bool, float64, string) {
 func observedCPUPressure(state State) (bool, bool, float64, string) {
 	return state.CPUPressure.Supported, state.CPUPressure.DispatchHeld, state.CPUPressure.Some.Avg10, state.CPUPressure.LastError
 }
+
+func TestSharedHostPressureHysteresis(t *testing.T) {
+	for _, resource := range []string{"memory", "IO", "CPU"} {
+		t.Run(resource, func(t *testing.T) {
+			registry, err := scheduler.NewPoolRegistry([]scheduler.PoolConfig{{Name: scheduler.DefaultPoolName, Scheduler: scheduler.Config{Kind: "strict", Capacity: 1}}}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := time.Unix(100000, 0)
+			value := 11.0
+			reads := 0
+			reader := func(context.Context) (hostpressure.Sample, error) {
+				reads++
+				return hostpressure.Sample{Some: hostpressure.Pressure{Avg10: value, Avg60: value}, Full: hostpressure.Pressure{Avg10: value}}, nil
+			}
+			projects := []*Orchestrator{{globalDispatchGate: registry.GateFor("a")}, {globalDispatchGate: registry.GateFor("b")}}
+			for _, o := range projects {
+				switch resource {
+				case "memory":
+					o.cfg.MemoryPressureSomeAvg60Max = 10
+					o.cfg.MemoryPressurePollInterval = time.Second
+					o.readMemoryPressure = reader
+				case "IO":
+					o.cfg.IOPressureFullAvg10Max = 10
+					o.cfg.IOPressurePollInterval = time.Second
+					o.readIOPressure = reader
+				case "CPU":
+					o.cfg.CPUPressureSomeAvg10Max = 10
+					o.cfg.CPUPressurePollInterval = time.Second
+					o.readCPUPressure = reader
+				}
+			}
+			states := []State{{}, {}}
+			for _, step := range []struct {
+				value   float64
+				advance time.Duration
+				held    bool
+			}{{11, 0, true}, {9, 0, true}, {9, time.Second, resource != "memory"}, {8, time.Second, false}} {
+				value = step.value
+				now = now.Add(step.advance)
+				before := reads
+				for i, o := range projects {
+					o.observeHostPressure(t.Context(), &states[i], now)
+					held := states[i].MemoryPressure.DispatchHeld || states[i].IOPressure.DispatchHeld || states[i].CPUPressure.DispatchHeld
+					if held != step.held {
+						t.Fatalf("project %d pressure held = %t, want %t", i, held, step.held)
+					}
+				}
+				if reads-before > 1 {
+					t.Fatalf("shared sample read %d times", reads-before)
+				}
+			}
+		})
+	}
+}

@@ -8,9 +8,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"gopkg.in/yaml.v3"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -18,6 +20,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	servicepkg "github.com/digitaldrywood/detent/internal/service"
+	"github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -44,11 +48,11 @@ func newHubRunnerRegisterCommand(version string, lookupEnv func(string) string, 
 }
 
 func newHubRunnerRegisterCommandWithPrivateLocation(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error) *cobra.Command {
-	return newHubRunnerRegisterCommandWithReporter(version, lookupEnv, startService, privateLocation, reportRunnerSetup)
+	return newHubRunnerRegisterCommandWithReporter(version, runtime.GOOS, lookupEnv, startService, privateLocation, reportRunnerSetup)
 }
 
-func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error) *cobra.Command {
-	return newHubRunnerRegisterCommandWithGitHubAuth(version, lookupEnv, startService, privateLocation, report, func(ctx context.Context) error {
+func newHubRunnerRegisterCommandWithReporter(version, goos string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error) *cobra.Command {
+	return newHubRunnerRegisterCommandWithGitHubAuth(version, goos, lookupEnv, startService, privateLocation, report, func(ctx context.Context) error {
 		commandCtx, cancel := context.WithTimeout(ctx, runtimeCommandTimeout)
 		defer cancel()
 		_, err := defaultCommandRunner(commandCtx, "gh", "auth", "status")
@@ -56,10 +60,23 @@ func newHubRunnerRegisterCommandWithReporter(version string, lookupEnv func(stri
 	})
 }
 
-func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error) *cobra.Command {
+func newHubRunnerRegisterCommandWithGitHubAuth(version, goos string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error) *cobra.Command {
+	return newHubRunnerRegisterCommandWithServiceName(version, goos, lookupEnv, startService, privateLocation, report, ghAuthStatus, registeredRunnerServiceName)
+}
+
+func newHubRunnerRegisterCommandWithServiceName(version, goos string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error, serviceName func(string) (string, error)) *cobra.Command {
+	return newHubRunnerRegisterCommandWithCommitReport(version, goos, lookupEnv, startService, privateLocation, report, ghAuthStatus, serviceName, workspace.ProbeCommitReport)
+}
+
+func newHubRunnerRegisterCommandWithCommitReport(version, goos string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error, serviceName func(string) (string, error), commitReport func(context.Context, string, workspace.CommitIdentity) (workspace.CommitReport, error)) *cobra.Command {
+	return newHubRunnerRegisterCommandWithUser(version, goos, lookupEnv, startService, privateLocation, report, ghAuthStatus, serviceName, commitReport, registerRunnerAsUser)
+}
+
+func newHubRunnerRegisterCommandWithUser(version, goos string, lookupEnv func(string) string, startService runnerServiceStarter, privateLocation func(string) error, report func(context.Context, globalconfig.Config, string) error, ghAuthStatus func(context.Context) error, serviceName func(string) (string, error), commitReport func(context.Context, string, workspace.CommitIdentity) (workspace.CommitReport, error), registerAsUser func(*cobra.Command, string, string, []string) error) *cobra.Command {
 	var hubURL, token, organization, name, configPath, workspaceRoot, isolationTier string
+	var serviceUser string
 	var capacity int
-	var service bool
+	var service, tokenStdin bool
 	cmd := &cobra.Command{
 		Use:   "register",
 		Short: "Register this host as a runner with one command from the Enroll dialog",
@@ -69,9 +86,37 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 		Args:         NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			token = strings.TrimSpace(firstNonBlankString(token, lookupEnv("DETENT_RUNNER_ENROLLMENT_TOKEN")))
+			if serviceUser != "" && !service {
+				return errors.New("--service-user requires --service")
+			}
+			if tokenStdin {
+				if token != "" {
+					return errors.New("--token cannot be combined with --enrollment-token-stdin")
+				}
+				raw, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), 4097))
+				if err != nil || len(raw) > 4096 {
+					return errors.New("read enrollment token from stdin")
+				}
+				token = strings.TrimSpace(string(raw))
+			} else {
+				token = strings.TrimSpace(firstNonBlankString(token, lookupEnv("DETENT_RUNNER_ENROLLMENT_TOKEN")))
+			}
 			if token == "" {
 				return errors.New("an enrollment token is required: pass --token or set DETENT_RUNNER_ENROLLMENT_TOKEN")
+			}
+			if serviceUser != "" {
+				args := []string{"hub", "runner", "register", "--enrollment-token-stdin"}
+				cmd.Flags().Visit(func(flag *pflag.Flag) {
+					switch flag.Name {
+					case "service-user", "token", "enrollment-token-stdin":
+					default:
+						args = append(args, "--"+flag.Name+"="+flag.Value.String())
+					}
+				})
+				return registerAsUser(cmd, serviceUser, token, args)
+			}
+			if service && startService == nil {
+				return servicepkg.ErrUnsupported
 			}
 			base, org, err := runnerHubTarget(hubURL, organization)
 			if err != nil {
@@ -80,8 +125,11 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 			if capacity < 1 {
 				return errors.New("--capacity must be at least 1")
 			}
-			if isolationTier != isolation.Sandbox && isolationTier != isolation.NativeTrusted {
-				return errors.New("--isolation-tier must be sandbox or native-trusted")
+			if err := isolation.ValidateTier(isolationTier, goos); err != nil {
+				if errors.Is(err, isolation.ErrSandboxUnavailable) {
+					return fmt.Errorf("%w; pass --isolation-tier native-trusted", err)
+				}
+				return fmt.Errorf("--isolation-tier must be sandbox or native-trusted: %w", err)
 			}
 			paths, err := resolveRunnerPaths(configPath, workspaceRoot, privateLocation)
 			if err != nil {
@@ -133,7 +181,7 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 				return fmt.Errorf("runner enrolled; save routing configuration: %w", err)
 			}
 			result := runnerRegistration{RunnerID: identity.RunnerID, MachineID: identity.MachineID, Config: paths.config, Identity: paths.identity}
-			result.Commit, err = workspace.ProbeCommitReport(cmd.Context(), "", workspace.CommitIdentity{Name: "Detent runner", Email: string(identity.MachineID) + "@runners.detent.invalid"})
+			result.Commit, err = commitReport(cmd.Context(), "", workspace.CommitIdentity{Name: "Detent runner", Email: string(identity.MachineID) + "@runners.detent.invalid"})
 			if err != nil {
 				return err
 			}
@@ -145,6 +193,12 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 				result.NextSteps = append(result.NextSteps, fmt.Sprintf("This Hub requires Detent %s or newer; this binary is %s. Update with detent update --yes --from-release (or brew upgrade digitaldrywood/tap/detent for Homebrew), then retry this register command", minimumVersion, version))
 			}
 			config := runnerConfig(base, org, name, capacity, paths)
+			if _, err := os.Lstat(paths.config); errors.Is(err, os.ErrNotExist) {
+				config.ServiceName, err = serviceName(paths.config)
+				if err != nil {
+					return err
+				}
+			}
 			result.Created, err = writeRunnerConfig(paths.config, config)
 			if err != nil {
 				return err
@@ -156,7 +210,7 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 			}
 			loaded, err := readRunnerSetupConfig(paths.config)
 			if err == nil {
-				loaded, err = runnerProjectsForIdentity(cmd.Context(), loaded, client, identity, false)
+				loaded, err = runnerProjectsForIdentity(cmd.Context(), loaded, client, identity, false, false)
 			}
 			if err == nil {
 				err = report(cmd.Context(), loaded, version)
@@ -171,19 +225,19 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 				}
 				result.NextSteps = append(result.NextSteps, steps...)
 			}
-			start := fmt.Sprintf("detent start --config %s --yes", shellQuote(paths.config))
+			start := runnerStartCommand(paths.config, runtime.GOOS)
 			switch {
 			case service:
+				result.Service = serviceNameForConfig(loaded)
+				if result.Service == servicepkg.DefaultName {
+					return errors.New("runner service name must differ from the board service name")
+				}
 				if err := startService(cmd, paths.config); err != nil {
-					return NewClassifiedError(err, classifyError(err).Slug, "Runner enrollment succeeded; install and start service: "+ErrorDetail(err), "Finish runner setup: "+start, nil)
+					return NewClassifiedError(err, classifyError(err).Slug, "Runner enrollment succeeded; install and start service: "+ErrorDetail(err), "Check the runner service and logs; for foreground diagnostics after stopping the service: "+start, nil)
 				}
 				result.ServiceRun = true
-				result.Service = serviceNameForConfig(configuration)
-				if result.Created {
-					result.Service = runnerServiceName
-				}
 			default:
-				result.NextSteps = append(result.NextSteps, "Start the runner: "+start+" (or run it in the foreground: detent --config "+shellQuote(paths.config)+" --headless)")
+				result.NextSteps = append(result.NextSteps, "Start the runner: "+start)
 			}
 			return writeRunnerRegistration(cmd, result)
 		},
@@ -196,7 +250,12 @@ func newHubRunnerRegisterCommandWithGitHubAuth(version string, lookupEnv func(st
 	cmd.Flags().StringVar(&isolationTier, "isolation-tier", isolation.Sandbox, "agent access: sandbox (shared machines) or native-trusted (full access on a dedicated machine)")
 	cmd.Flags().StringVar(&configPath, "config", "", "runner configuration path (default: ~/.config/detent-runner/global.yaml)")
 	cmd.Flags().StringVar(&workspaceRoot, "workspace-root", "", "where project checkouts live (default: ~/detent-runner)")
-	cmd.Flags().BoolVar(&service, "service", false, "install and start the runner as a background service ("+runnerServiceName+")")
+	cmd.Flags().BoolVar(&service, "service", false, "install and start the runner as a background service")
+	cmd.Flags().StringVar(&serviceUser, "service-user", "", "enroll and install as an existing dedicated macOS/Linux account (requires --service and noninteractive sudo)")
+	cmd.Flags().BoolVar(&tokenStdin, "enrollment-token-stdin", false, "read the enrollment token from standard input")
+	if err := cmd.Flags().MarkHidden("enrollment-token-stdin"); err != nil {
+		panic(err)
+	}
 	return cmd
 }
 
@@ -466,4 +525,12 @@ func shellQuote(value string) string {
 		return value
 	}
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+func runnerStartCommand(configPath, goos string) string {
+	quoted := shellQuote(configPath)
+	if goos == "windows" {
+		quoted = shell.QuotePowerShellArg(configPath)
+	}
+	return fmt.Sprintf("detent --config %s --headless", quoted)
 }

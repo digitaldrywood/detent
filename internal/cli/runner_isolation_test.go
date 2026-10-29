@@ -12,36 +12,104 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
 
 func TestProbeBackendTiers(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		native  bool
-		sandbox bool
-		want    []string
+		name, tier                    string
+		sprite, native, sandbox, hang bool
+		want                          []string
+		wantReasons                   map[string]string
 	}{
-		{"both", true, true, []string{"native-trusted", "sandbox"}},
-		{"native only", true, false, []string{"native-trusted"}},
-		{"unavailable", false, false, []string{}},
+		{name: "machine both", tier: isolation.NativeTrusted, native: true, sandbox: true, want: []string{isolation.NativeTrusted, isolation.Sandbox}},
+		{name: "machine native only", native: true, want: []string{isolation.NativeTrusted}, wantReasons: map[string]string{isolation.Sandbox: "backend sandbox tooling is unavailable"}},
+		{name: "machine unavailable", want: []string{}, wantReasons: map[string]string{isolation.NativeTrusted: "native version or login failed", isolation.Sandbox: "backend sandbox tooling is unavailable"}},
+		{name: "full access Sprite skips hanging optional sandbox", tier: isolation.NativeTrusted, sprite: true, native: true, hang: true, want: []string{isolation.NativeTrusted}},
+		{name: "full access Sprite native failure", tier: isolation.NativeTrusted, sprite: true, hang: true, want: []string{}, wantReasons: map[string]string{isolation.NativeTrusted: "native version or login failed"}},
+		{name: "sandbox Sprite still probes", tier: isolation.Sandbox, sprite: true, native: true, sandbox: true, want: []string{isolation.NativeTrusted, isolation.Sandbox}},
+		{name: "sandbox Sprite failure", tier: isolation.Sandbox, sprite: true, native: true, want: []string{isolation.NativeTrusted}, wantReasons: map[string]string{isolation.Sandbox: "backend sandbox tooling is unavailable"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got, reasons := probeBackendTiers(t.Context(), workflowconfig.AgentBackend{}, isolation.Policy{}, func(_ context.Context, _ workflowconfig.AgentBackend, policy isolation.Policy) error {
-				if policy.Tier == isolation.NativeTrusted && test.native || policy.Tier == isolation.Sandbox && test.sandbox {
-					return nil
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				got, reasons := probeBackendTiers(ctx, workflowconfig.AgentBackend{}, isolation.Policy{Tier: test.tier}, test.sprite, func(ctx context.Context, _ workflowconfig.AgentBackend, policy isolation.Policy) error {
+					if policy.Tier == isolation.NativeTrusted {
+						if test.native {
+							return nil
+						}
+						return errors.New("native version or login failed")
+					}
+					if test.hang {
+						<-ctx.Done()
+						return ctx.Err()
+					}
+					if test.sandbox {
+						return nil
+					}
+					return errors.New("backend sandbox tooling is unavailable")
+				})
+				if ctx.Err() != nil {
+					t.Fatalf("optional probe invalidated completed native checks: %v", ctx.Err())
 				}
-				return errors.New("backend sandbox tooling is unavailable")
+				if len(reasons) != len(test.wantReasons) {
+					t.Fatalf("reasons = %#v, want %#v", reasons, test.wantReasons)
+				}
+				for tier, reason := range test.wantReasons {
+					if reasons[tier] != reason {
+						t.Fatalf("%s reason = %q, want %q", tier, reasons[tier], reason)
+					}
+				}
+				if !reflect.DeepEqual(got, test.want) {
+					t.Fatalf("tiers = %v, want %v", got, test.want)
+				}
 			})
-			if !test.sandbox && reasons[isolation.Sandbox] != "backend sandbox tooling is unavailable" {
-				t.Fatalf("sandbox reason lost: %#v", reasons)
+		})
+	}
+}
+
+func TestProbeRunnerIsolationNativeFailures(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	for _, test := range []struct {
+		name, failingCommand, output string
+	}{
+		{"version", "--version", "version probe failed"},
+		{"login", "login status", "Not logged in"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("HOME", root)
+			t.Setenv("CODEX_HOME", root)
+			t.Setenv("DETENT_SERVICE_MANAGER", "test")
+			script := filepath.Join(root, "codex-probe")
+			content := "#!/bin/sh\nif [ \"$*\" = " + strconv.Quote(test.failingCommand) + " ]; then\necho " + strconv.Quote(test.output) + " >&2\nexit 1\nfi\nif [ \"$1\" = --version ]; then echo 'codex-cli 0.160.0'; exit 0; fi\necho 'unexpected sandbox probe' >&2\nexit 1\n"
+			if err := os.WriteFile(script, []byte(content), 0o700); err != nil {
+				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(got, test.want) {
-				t.Fatalf("tiers = %v, want %v", got, test.want)
+			workflow := filepath.Join(root, "WORKFLOW.md")
+			content = "---\ntracker:\n  kind: hub_native\ncodex:\n  command: " + strconv.Quote(strconv.Quote(script)+" app-server") + "\nworkspace:\n  root: " + filepath.Join(root, "workspaces") + "\n---\nTest prompt\n"
+			if err := os.WriteFile(workflow, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			report, problems := probeRunnerIsolation(t.Context(), globalconfig.Config{Projects: []globalconfig.Project{{ID: "example-project", Workdir: root, Workflow: workflow}}})
+			if len(report) != 1 || report.Supports(isolation.NativeTrusted) || report.Supports(isolation.Sandbox) {
+				t.Fatalf("failed native checks advertised capability: %#v", report)
+			}
+			if len(problems) != 1 {
+				t.Fatalf("problems = %+v", problems)
+			}
+			problem := problems[0]
+			if problem.ProjectID != "example-project" || !strings.HasSuffix(problem.Check, test.failingCommand) || !strings.Contains(problem.ErrorOutput, test.output) {
+				t.Fatalf("native failure lost actionable diagnostic: %+v", problem)
 			}
 		})
 	}
@@ -143,6 +211,7 @@ func TestBackendReadinessProblem(t *testing.T) {
 		{"codex missing default shell", workflowconfig.AgentBackendCodex, isolation.NativeTrusted, "linux", "codex --version", "sh: 1: codex: not found", "npm install -g @openai/codex", false},
 		{"claude missing default shell", workflowconfig.AgentBackendClaudeCode, isolation.NativeTrusted, "linux", "claude --version", "sh: 1: claude: not found", "npm install -g @anthropic-ai/claude-code", false},
 		{"sandbox", workflowconfig.AgentBackendCodex, isolation.Sandbox, "linux", "codex sandbox", "operation not permitted", "", false},
+		{"app-server tooling missing", workflowconfig.AgentBackendCodex, isolation.NativeTrusted, "linux", "codex app-server", "Codex could not find bubblewrap on PATH", "sudo apt-get install bubblewrap socat", false},
 		{"sandbox tooling missing", workflowconfig.AgentBackendCodex, isolation.Sandbox, "linux", "codex sandbox", "bwrap: command not found", "sudo apt-get install bubblewrap socat", false},
 		{"sandbox tooling missing default shell", workflowconfig.AgentBackendCodex, isolation.Sandbox, "linux", "codex sandbox", "sh: 1: bwrap: not found", "sudo apt-get install bubblewrap socat", false},
 		{"sandbox socket tooling missing", workflowconfig.AgentBackendClaudeCode, isolation.Sandbox, "linux", "claude --print", "socat: no such file or directory", "sudo apt-get install bubblewrap socat", false},
@@ -155,6 +224,11 @@ func TestBackendReadinessProblem(t *testing.T) {
 			}
 			if test.output == "signal: killed" && p.Code != "backend_probe_failed" {
 				t.Fatalf("killed probe reported missing backend: %+v", p)
+			}
+			if test.goos == "linux" && (strings.Contains(test.output, "bwrap") || strings.Contains(test.output, "bubblewrap") || strings.Contains(test.output, "socat")) {
+				if p.Code != "backend_missing" || !strings.Contains(p.Message, "missing from PATH") {
+					t.Fatalf("missing prerequisite was not identified: %+v", p)
+				}
 			}
 			if test.signedOut && p.Message != "not signed in" {
 				t.Fatalf("message=%q", p.Message)
@@ -213,12 +287,11 @@ func TestRunnerCodexSignInRefresh(t *testing.T) {
 		t.Fatalf("sign-in did not clear: %v", err)
 	}
 	for _, test := range []struct {
-		name     string
-		deadline bool
-		want     error
+		name string
+		want error
 	}{
-		{"parent cancelled", false, context.Canceled},
-		{"parent deadline", true, context.DeadlineExceeded},
+		{"parent cancelled", context.Canceled},
+		{"parent deadline", context.DeadlineExceeded},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -227,12 +300,12 @@ func TestRunnerCodexSignInRefresh(t *testing.T) {
 			}
 			defer listener.Close()
 			t.Setenv("DETENT_TEST_LOGIN_PROBE_ADDRESS", listener.Addr().String())
-			ctx, cancel := context.WithCancel(t.Context())
-			if test.deadline {
-				cancel()
-				ctx, cancel = context.WithTimeout(t.Context(), 3*time.Second)
+			ctx := &controlledRuntimeCommandContext{
+				deadline: time.Now().Add(3 * time.Second),
+				done:     make(chan struct{}),
+				value:    t.Context().Value,
 			}
-			defer cancel()
+			defer ctx.cancel(context.Canceled)
 			done := make(chan error, 1)
 			go func() {
 				defer listener.Close()
@@ -243,9 +316,7 @@ func TestRunnerCodexSignInRefresh(t *testing.T) {
 				t.Fatalf("probe exited before login readiness: accept=%v probe=%v", err, <-done)
 			}
 			defer connection.Close()
-			if !test.deadline {
-				cancel()
-			}
+			ctx.cancel(test.want)
 			err = <-done
 			if !errors.Is(err, test.want) {
 				t.Fatalf("probe lost parent error: %v", err)
@@ -253,6 +324,48 @@ func TestRunnerCodexSignInRefresh(t *testing.T) {
 			problem := backendReadinessProblem("example-project/codex", backend.Kind, isolation.NativeTrusted, runtime.GOOS, err)
 			if problem.Code != "backend_probe_failed" || problem.FixCommand != "" || strings.Contains(problem.FixHint, "Sign in") || !strings.Contains(problem.Check, "login status") {
 				t.Fatalf("cancelled probe recommended backend repair: %+v", problem)
+			}
+		})
+	}
+}
+
+func TestProbeRunnerIsolationWorkflowFailures(t *testing.T) {
+	for _, test := range []struct {
+		name, content, ref            string
+		cancel, deadline, wantProblem bool
+	}{
+		{name: "canceled git load", ref: "origin/HEAD", cancel: true},
+		{name: "expired git load", ref: "origin/HEAD", deadline: true},
+		{name: "missing workflow", wantProblem: true},
+		{name: "parse error", content: "---\ntracker: [\n---\n", wantProblem: true},
+		{name: "parse error despite cancellation", content: "---\ntracker: [\n---\n", cancel: true, wantProblem: true},
+		{name: "missing workflow despite deadline", deadline: true, wantProblem: true},
+		{name: "git failure", ref: "HEAD^{invalid}", wantProblem: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			workflow := filepath.Join(root, "WORKFLOW.md")
+			if test.content != "" {
+				if err := os.WriteFile(workflow, []byte(test.content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if test.cancel {
+				cancel()
+			}
+			if test.deadline {
+				var stop context.CancelFunc
+				ctx, stop = context.WithDeadline(ctx, time.Now().Add(-time.Second))
+				defer stop()
+			}
+			report, problems := probeRunnerIsolation(ctx, globalconfig.Config{Projects: []globalconfig.Project{{ID: "example-project", Workdir: root, Workflow: workflow, WorkflowRef: test.ref}}})
+			if len(report) != 0 || (len(problems) != 0) != test.wantProblem {
+				t.Fatalf("report=%v problems=%+v", report, problems)
+			}
+			if test.wantProblem && (len(problems) != 1 || problems[0].Code != "settings_invalid" || problems[0].Check != "load workflow") {
+				t.Fatalf("workflow failure was lost: %+v", problems)
 			}
 		})
 	}

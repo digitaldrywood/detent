@@ -23,79 +23,89 @@ const authModes = [
 
 for (const mode of authModes) {
   test(`dashboard card actions work on wildcard bind with ${mode.name}`, async ({ page }) => {
-    const runtime = await startDetentRuntime(`dashboard-auth-${mode.name}`, [
-      "--demo",
-      "kanban",
-      "--demo-project",
-      "demo-project",
-    ], {
-      host: "0.0.0.0",
-      env: mode.env,
-    });
-    const unexpectedAPIResponses = collectUnexpectedAPIResponses(page);
-
-    try {
-      const dashboardURL = nonLoopbackDashboardURL(runtime.url);
-
-      await page.goto(`${dashboardURL}/`, { waitUntil: "domcontentloaded" });
-      await expect(page.getByRole("button", { name: /Kanban demo backlog intake/ })).toBeVisible();
-
-      await page.goto(`${dashboardURL}/projects/demo-project/kanban`, { waitUntil: "domcontentloaded" });
-      await expect(page.getByRole("button", { name: /Kanban demo backlog intake/ })).toBeVisible();
-
-      await page.getByRole("button", { name: /Kanban demo backlog intake/ }).click();
-      const sheet = page.locator("[data-detail-sheet]");
-      await expect(sheet).toBeVisible();
-      await expect(sheet.getByText("Kanban demo backlog intake")).toBeVisible();
-      await expect(sheet.getByText("example-org/example-project#9511")).toBeVisible();
-      await expect(sheet.getByRole("link", { name: /Open on GitHub/ })).toHaveAttribute("href", /9511/);
-
-      await sheet.getByRole("button", { name: /^Move$/ }).click();
-      const moveDialog = actionDialog(page, "Move card");
-      await expect(moveDialog.getByRole("heading", { name: "Move card" })).toBeVisible();
-      await moveDialog.getByLabel("Target state").selectOption("Todo");
-      await moveDialog.getByRole("button", { name: /^Move$/ }).click();
-      await expect(page.locator('[data-board-lane="todo"]').getByRole("button", { name: /Kanban demo backlog intake/ })).toBeVisible();
-
-      await page.getByRole("button", { name: /Kanban demo backlog intake/ }).click();
-      const commentSheet = page.locator("[data-detail-sheet]");
-      await expect(commentSheet).toBeVisible();
-      await commentSheet.getByRole("button", { name: /Comment on issue/ }).click();
-      const commentDialog = actionDialog(page, "Comment on issue");
-      await expect(commentDialog.getByRole("heading", { name: "Comment on issue" })).toBeVisible();
-      await commentDialog.getByLabel("Comment").fill("Playwright dashboard auth comment");
-      await commentDialog.getByRole("button", { name: /^Comment$/ }).click();
-      await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
-
-      await page.getByRole("button", { name: /Kanban demo backlog intake/ }).click();
-      const removeSheet = page.locator("[data-detail-sheet]");
-      await expect(removeSheet).toBeVisible();
-      page.once("dialog", async (dialog) => {
-        expect(dialog.message()).toContain("Remove this item from the project?");
-        await dialog.accept();
+    for (const action of ["move", "comment", "remove"]) {
+      const runtime = await startDetentRuntime(`dashboard-auth-${mode.name}-${action}`, [
+        "--demo",
+        "kanban",
+        "--demo-project",
+        "demo-project",
+      ], {
+        host: "0.0.0.0",
+        env: mode.env,
       });
-      await removeSheet.getByRole("button", { name: /^Remove$/ }).click();
-      await expect(page.getByRole("button", { name: /Kanban demo backlog intake/ })).toHaveCount(0);
+      const unexpectedAPIResponses = collectUnexpectedAPIResponses(page);
 
-      const refresh = await page.evaluate(async () => {
-        const response = await fetch("/api/v1/refresh", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "HX-Request": "true",
-            "HX-Current-URL": window.location.href,
-            "HX-Target": "manual-refresh-status",
-          },
-          body: "",
+      try {
+        await expect.poll(async () => {
+          const health = await (await page.request.get(`${runtime.url}/health`)).json();
+          return health.ready && Boolean(health.snapshot_generated_at) && !health.snapshot_generated_at.startsWith("0001-");
+        }).toBe(true);
+        const dashboardURL = nonLoopbackDashboardURL(runtime.url);
+
+        await page.goto(`${dashboardURL}/`, { waitUntil: "domcontentloaded" });
+        await expect(page.getByRole("button", { name: /Kanban demo backlog intake/ })).toBeVisible();
+
+        await page.goto(`${dashboardURL}/projects/demo-project/kanban`, { waitUntil: "domcontentloaded" });
+        await expect(page.getByRole("button", { name: /Kanban demo backlog intake/ })).toBeVisible();
+
+        await page.getByRole("button", { name: /Kanban demo backlog intake/ }).click();
+        const sheet = page.locator("[data-detail-sheet]");
+        await expect(sheet).toBeVisible();
+        await expect(sheet.getByText("Kanban demo backlog intake")).toBeVisible();
+        await expect(sheet.getByText("example-org/example-project#9511")).toBeVisible();
+        await expect(sheet.getByRole("link", { name: "Open issue", exact: true })).toHaveAttribute("href", /\/projects\/demo-project\/issues\//);
+
+        if (action === "move") {
+          await sheet.getByRole("button", { name: /^Move$/ }).click();
+          const moveDialog = actionDialog(page, "Move card");
+          await expect(moveDialog.getByRole("heading", { name: "Move card" })).toBeVisible();
+          await moveDialog.getByLabel("Target state").selectOption("Todo");
+          await moveDialog.getByRole("button", { name: /^Move$/ }).click();
+          await expect(page.locator('[data-board-lane="todo"]').getByRole("button", { name: /Kanban demo backlog intake/ })).toBeVisible();
+        }
+
+        if (action === "comment") {
+          const commentSheet = page.locator("[data-detail-sheet]");
+          await expect(commentSheet).toBeVisible();
+          await commentSheet.getByRole("button", { name: /Comment on issue/ }).click();
+          const commentDialog = actionDialog(page, "Comment on issue");
+          await expect(commentDialog.getByRole("heading", { name: "Comment on issue" })).toBeVisible();
+          await commentDialog.getByLabel("Comment").fill("Playwright dashboard auth comment");
+          await commentDialog.getByRole("button", { name: /^Comment$/ }).click();
+          await expect(page.locator("[data-detail-sheet]")).toHaveCount(0);
+        }
+
+        if (action === "remove") {
+          const removeSheet = page.locator("[data-detail-sheet]");
+          await expect(removeSheet).toBeVisible();
+          page.once("dialog", async (dialog) => {
+            expect(dialog.message()).toContain("Remove this item from the project?");
+            await dialog.accept();
+          });
+          await removeSheet.getByRole("button", { name: /^Remove$/ }).click();
+          await expect(page.getByRole("button", { name: /Kanban demo backlog intake/ })).toHaveCount(0);
+        }
+
+        const refresh = await page.evaluate(async () => {
+          const response = await fetch("/api/v1/refresh", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+              "HX-Request": "true",
+              "HX-Current-URL": window.location.href,
+              "HX-Target": "manual-refresh-status",
+            },
+            body: "",
+          });
+          return { status: response.status, body: await response.text() };
         });
-        return { status: response.status, body: await response.text() };
-      });
-      expect(refresh.status).toBe(200);
-      expect(refresh.body).toContain('id="manual-refresh-status"');
+        expect(refresh.status).toBe(200);
+        expect(refresh.body).toContain('id="manual-refresh-status"');
 
-      expect(unexpectedAPIResponses).toEqual([]);
-    } finally {
-      await runtime.stop();
+        expect(unexpectedAPIResponses).toEqual([]);
+      } finally {
+        await runtime.stop();
+      }
     }
   });
 }
@@ -113,6 +123,7 @@ test("api keys page creates first key on wildcard bind without token", async ({ 
   const unexpectedAPIResponses = collectUnexpectedAPIResponses(page);
 
   try {
+    await expect.poll(() => rawHTTPStatus(runtime.url, { path: "/health" })).toBe(200);
     const dashboardURL = nonLoopbackDashboardURL(runtime.url);
 
     await page.goto(`${dashboardURL}/api-keys`, { waitUntil: "domcontentloaded" });

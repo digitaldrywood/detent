@@ -167,6 +167,9 @@ func (s *Server) applyLocalSettings(ctx context.Context, call operatortool.Call)
 			}
 			expected := current.Routing
 			expected.ProjectIDs = r.Change.ProjectIDs
+			if r.Change.ProjectCapacityLimits == nil {
+				r.Change.ProjectCapacityLimits = expected.ProjectCapacityLimits
+			}
 			left, err := json.Marshal(expected)
 			if err != nil {
 				return nil, err
@@ -193,7 +196,7 @@ func (s *Server) localRouting(ctx context.Context, change *store.AllowedProjects
 	if name == "" {
 		name = "Local instance"
 	}
-	return runnerauth.RoutingSnapshot{RunnerID: store.LocalRunner, Revision: value.Revision, Routing: runnerauth.Routing{DisplayName: name, Tags: []string{}, State: "active", ProjectIDs: value.ProjectIDs, IsolationTier: "local", HostServices: []string{}, Availability: runnerauth.Availability{Windows: []string{}}}}, nil
+	return runnerauth.RoutingSnapshot{RunnerID: store.LocalRunner, Revision: value.Revision, Routing: runnerauth.Routing{DisplayName: name, Tags: []string{}, State: "active", ProjectIDs: value.ProjectIDs, ProjectCapacityLimits: map[tracker.ProjectID]int{}, IsolationTier: "local", HostServices: []string{}, Availability: runnerauth.Availability{Windows: []string{}}}}, nil
 }
 
 func localSettingsRequirement(name, project string) operatortool.Requirement {

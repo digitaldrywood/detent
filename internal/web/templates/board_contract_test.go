@@ -45,7 +45,6 @@ func TestINV13BoardCardContent(t *testing.T) {
 			view.AgeFooter = "4h"
 			view.PriorityBadge = "High"
 			view.RuntimeComfyText = "4 attempts · 320k tokens · last turn diagnostic"
-			view.ParkSummary = "2 parked attempts"
 			view.Signals = boardCardSignals(view, tt.card)
 			rendered := renderBoardComponent(t, boardCardView2(view))
 			for _, marker := range []string{"data-board-dispatch-evidence", "data-board-tracker-observation", "data-board-card-facts", "data-board-card-age-footer", "data-board-card-details", "data-board-card-expanded"} {

@@ -140,7 +140,7 @@ func TestSessionTerminalReportsTheCapability(t *testing.T) {
 
 	f := startSession(t, withTerminal)
 	// The bind carries the build's answer and the first heartbeat narrows it to
-	// this worktree (section 18.12's note on the same seam for git). Both have
+	// this worktree (the project actions contract's note on the same seam for git). Both have
 	// to say terminal, or the hub would either never offer this runner a
 	// terminal workspace or would offer one whose resource claims a surface the
 	// worktree cannot serve.
@@ -278,7 +278,7 @@ func TestSessionTerminalRefusals(t *testing.T) {
 	}{
 		{
 			name: "a read-only workspace refuses an open",
-			// Section 18.1: a workspace on an attempt that is still running is
+			// The workspace session contract: a workspace on an attempt that is still running is
 			// read-only and refuses a terminal, so a person cannot type into a
 			// worktree the model is editing.
 			readOnly: true,
@@ -356,7 +356,7 @@ func TestSessionTerminalRefusals(t *testing.T) {
 	}
 }
 
-// TestSessionRefusesATerminalAfterLeaseLoss is section 18.2's rule applied to
+// TestSessionRefusesATerminalAfterLeaseLoss is the relay protocol's rule applied to
 // the longest-lived thing on this surface. The lease is validated immediately
 // before every frame is acted on, so an open under a lost lease never becomes a
 // shell and a keystroke under one never reaches the worktree.
@@ -395,7 +395,7 @@ func TestSessionTerminalIsAbsentOnAReadOnlyWorkspace(t *testing.T) {
 	// A read-only workspace never opens a terminal service at all, so the
 	// capability it reports is the honest one: the card is disabled with a
 	// reason rather than enabled against a surface that would refuse every
-	// open (section 18.1).
+	// open.
 	beats := f.hub.heartbeatRequests()
 	if len(beats) == 0 {
 		t.Fatal("the session never heartbeat")

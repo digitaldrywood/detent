@@ -5,15 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
@@ -21,6 +22,8 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 
 	tests := []struct {
 		name         string
+		landing      *runpkg.NativeLanding
+		productive   bool
 		resumable    bool
 		diff         DiffStats
 		activeStates []string
@@ -29,6 +32,10 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 		finalState   string
 		wantTerminal store.WorkAttemptTerminalState
 	}{
+		{name: "dirty source does not reset", resumable: true, diff: DiffStats{HeadSHA: "committed-head", TreeSHA: "after", FilesChanged: 1}, wantState: "Rework", finalState: runpkg.FinalStateSessionDurationExceeded, wantTerminal: store.WorkAttemptTerminalTimedOut},
+		{name: "missing custody does not reset", resumable: true, diff: DiffStats{HeadSHA: "committed-head", TreeSHA: "after", RecoveryStateExpected: true}, wantState: "Rework", finalState: runpkg.FinalStateSessionDurationExceeded, wantTerminal: store.WorkAttemptTerminalTimedOut},
+		{name: "rejected publication does not reset", resumable: true, landing: &runpkg.NativeLanding{Refusal: "publication refused"}, diff: DiffStats{HeadSHA: "committed-head", TreeSHA: "after"}, wantState: "Rework", finalState: runpkg.FinalStateSessionDurationExceeded, wantTerminal: store.WorkAttemptTerminalTimedOut},
+		{name: "verified committed progress", productive: true, resumable: true, diff: DiffStats{HeadSHA: "committed-head", TreeSHA: "after"}, wantState: "Rework", finalState: runpkg.FinalStateSessionDurationExceeded, wantTerminal: store.WorkAttemptTerminalTimedOut},
 		{
 			name:         "no work product returns to todo",
 			wantState:    "Todo",
@@ -87,12 +94,12 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 				State:            "In Progress",
 				AssignedToWorker: true,
 			}
-			var events []memory.Event
-			tracker := memory.New(memory.Config{
+			var events []fakehub.Event
+			tracker := fakehub.New(fakehub.Config{
 				Issues:    []connector.Issue{issue},
 				Stateful:  true,
 				Now:       func() time.Time { return completedAt },
-				EventSink: func(event memory.Event) { events = append(events, event) },
+				EventSink: func(event fakehub.Event) { events = append(events, event) },
 			})
 			brake := &runpkg.SessionBrakeError{
 				Reason:           runpkg.SessionBrakeReasonDuration,
@@ -120,7 +127,8 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 						TotalTokens:    brake.Tokens,
 						RuntimeSeconds: brake.Elapsed.Seconds(),
 					},
-					DiffStats: tt.diff,
+					DiffStats:     tt.diff,
+					NativeLanding: tt.landing,
 				},
 				err: brake,
 			}
@@ -158,38 +166,54 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 				runUpdates:         make(chan runUpdate, 1),
 				logger:             slog.New(slog.NewTextHandler(&logs, nil)),
 			}
-			state := newState(cfg)
-			if tt.finalState == runpkg.FinalStateMemoryCeilingExceeded {
-				state.InstantFailures[issue.ID] = InstantFailure{Count: instantFailureThreshold - 1}
-				state.RepeatedFailures[issue.ID] = RepeatedFailure{Count: repeatedFailureThreshold - 1}
+			db, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: filepath.Join(t.TempDir(), "retry.db")})
+			if err != nil {
+				t.Fatal(err)
 			}
+			t.Cleanup(func() { _ = db.Close() })
+			orch.workflowMetrics = db
+			state := newState(cfg)
 
-			if !orch.dispatchIssue(t.Context(), &state, issue, 1, startedAt, "") {
+			if !orch.dispatchIssue(t.Context(), &state, issue, 3, startedAt, "") {
 				t.Fatal("dispatchIssue() = false, want true")
 			}
 			var completion runpkg.Completion
 			select {
 			case completion = <-orch.runResults:
-			case <-time.After(time.Second):
+			case <-t.Context().Done():
 				t.Fatal("timed out waiting for session brake completion")
 			}
 			if completion.Retryable {
 				t.Fatal("session brake completion is retryable")
 			}
+			scheduling := &nativeCompletionScheduling{hubSchedulingSource: &hubSchedulingSource{}}
+			orch.scheduling = scheduling
+			running := state.Running[issue.ID].withProgress()
+			running.progress = nil
+			running.CompletionSourceStart.Captured = true
+			running.CompletionSourceStart.Fingerprint.WorkspaceTree = "before"
+			state.Running[issue.ID] = running
 			orch.handleRunResult(t.Context(), &state, completion)
+			wantAttempt, upper := 4, 80*time.Second
+			if tt.productive {
+				wantAttempt, upper = 1, 10*time.Second
+			}
+			assertCompletionMachineRetry(t, orch, state, issue.ID, completedAt, wantAttempt, upper)
+			if scheduling.releases != 1 {
+				t.Fatalf("lease releases = %d, want 1", scheduling.releases)
+			}
 
 			if _, ok := state.Running[issue.ID]; ok {
 				t.Fatalf("Running[%q] present after session brake", issue.ID)
 			}
-			if _, ok := state.Retry[issue.ID]; ok {
-				t.Fatalf("Retry[%q] present after session brake", issue.ID)
+			if _, ok := state.Retry[issue.ID]; !ok {
+				t.Fatalf("Retry[%q] missing after session brake", issue.ID)
 			}
 			if _, ok := state.Blocked[issue.ID]; ok {
 				t.Fatalf("Blocked[%q] present after session brake", issue.ID)
 			}
-			completed, ok := state.Completed[issue.ID]
-			if !ok || completed.Issue.State != tt.wantState {
-				t.Fatalf("Completed[%q] = %#v, want parked state %q", issue.ID, completed, tt.wantState)
+			if retry := state.Retry[issue.ID]; retry.Issue.State != tt.wantState {
+				t.Fatalf("retry state = %q, want %q", retry.Issue.State, tt.wantState)
 			}
 			if availableSlots(&state) != 1 {
 				t.Fatalf("availableSlots() = %d, want released local slot", availableSlots(&state))
@@ -221,12 +245,6 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 				if sessionBrake["rss_bytes"] != float64(brake.RSSBytes) || sessionBrake["rss_ceiling_bytes"] != float64(brake.RSSCeilingBytes) {
 					t.Fatalf("session brake metadata = %#v, want RSS evidence", sessionBrake)
 				}
-				if _, ok := state.InstantFailures[issue.ID]; ok {
-					t.Fatalf("InstantFailures[%q] present after memory ceiling", issue.ID)
-				}
-				if _, ok := state.RepeatedFailures[issue.ID]; ok {
-					t.Fatalf("RepeatedFailures[%q] present after memory ceiling", issue.ID)
-				}
 				if state.FailureBreaker.Count != 0 || len(state.FailureBreaker.Failures) != 0 {
 					t.Fatalf("FailureBreaker = %#v, want no memory ceiling strike", state.FailureBreaker)
 				}
@@ -236,9 +254,9 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 			var comment string
 			for _, event := range events {
 				switch event.Kind {
-				case memory.EventKindStateUpdate:
+				case fakehub.EventKindStateUpdate:
 					stateUpdated = event.State == tt.wantState
-				case memory.EventKindComment:
+				case fakehub.EventKindComment:
 					comment = event.Body
 				}
 			}
@@ -263,6 +281,32 @@ func TestSessionBrakeReleasesSlotRecordsCauseAndParks(t *testing.T) {
 					t.Fatalf("logs = %q, want %q", logs.String(), want)
 				}
 			}
+			attempt := wantAttempt
+			for cycle, changed := range []bool{true, true, false, false, true} {
+				running.Attempt = attempt
+				running.Issue = issue
+				running.DiffStats = tt.diff
+				repeated := completion
+				repeated.Result.DiffStats = tt.diff
+				if tt.productive && !changed {
+					repeated.Result.DiffStats.TreeSHA = "before"
+				}
+				want := attempt + 1
+				if tt.productive && changed {
+					want = 1
+				}
+				state.Claimed[issue.ID] = Claimed{Issue: issue}
+				beforeReleases := scheduling.releases
+				if !orch.handleSessionBrake(t.Context(), &state, repeated, running) {
+					t.Fatal("session brake not handled")
+				}
+				assertCompletionMachineRetry(t, orch, state, issue.ID, completedAt, want, min(10*time.Second<<(want-1), cfg.MaxRetryBackoff))
+				if scheduling.releases != beforeReleases+1 {
+					t.Fatalf("cycle %d releases = %d, want %d", cycle, scheduling.releases, beforeReleases+1)
+				}
+				attempt = want
+			}
+
 		})
 	}
 }
@@ -278,7 +322,7 @@ func TestSessionProgressProbeTracksLatestWorkpadContent(t *testing.T) {
 			{Body: "## Codex Workpad\n\ninitial"},
 		},
 	}
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	orch := &Orchestrator{connector: tracker}
 	probe := orch.sessionProgressProbe(issue)
 	if probe == nil {

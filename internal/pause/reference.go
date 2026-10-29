@@ -35,6 +35,10 @@ func ResolveReference(pausedProjectID string, reference string, trackers []Track
 	}
 
 	repository, githubReference := githubIssueReferenceRepository(reference)
+	if strings.EqualFold(strings.TrimSpace(current.Kind), "hub_native") &&
+		strings.HasPrefix(repository, "prj_") && !strings.Contains(repository, "/") {
+		return resolvedReference(current, reference), nil
+	}
 	if !githubReference {
 		if githubTracker(current.Kind) {
 			return ReferenceResolution{}, fmt.Errorf("project %s tracker kind %s cannot resolve non-GitHub pause exit issue %s", pausedProjectID, current.Kind, reference)
@@ -45,7 +49,7 @@ func ResolveReference(pausedProjectID string, reference string, trackers []Track
 	matches := matchingGitHubTrackers(trackers, repository)
 	switch len(matches) {
 	case 0:
-		if strings.TrimSpace(current.Kind) == "" || strings.EqualFold(strings.TrimSpace(current.Kind), "memory") {
+		if strings.TrimSpace(current.Kind) == "" {
 			return resolvedReference(current, reference), nil
 		}
 		return ReferenceResolution{}, fmt.Errorf("no configured project tracker can resolve GitHub pause exit issue %s", reference)
@@ -76,7 +80,7 @@ func matchingGitHubTrackers(trackers []Tracker, repository string) []Tracker {
 	matches := make([]Tracker, 0, 1)
 	for _, tracker := range trackers {
 		kind := strings.TrimSpace(tracker.Kind)
-		if kind != "" && !githubTracker(kind) && !strings.EqualFold(kind, "memory") {
+		if kind != "" && !githubTracker(kind) {
 			continue
 		}
 		trackerRepository := strings.TrimSpace(tracker.Repository)
@@ -109,7 +113,7 @@ func githubIssueReferenceRepository(reference string) (string, bool) {
 
 func githubTracker(kind string) bool {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "github", "github_local":
+	case "github":
 		return true
 	default:
 		return false
@@ -117,6 +121,12 @@ func githubTracker(kind string) bool {
 }
 
 func resolvedReference(tracker Tracker, reference string) ReferenceResolution {
+	if strings.EqualFold(strings.TrimSpace(tracker.Kind), "hub_native") {
+		return ReferenceResolution{
+			ProjectID: strings.TrimSpace(tracker.ProjectID),
+			Reference: reference,
+		}
+	}
 	return ReferenceResolution{
 		ProjectID:  strings.TrimSpace(tracker.ProjectID),
 		Reference:  trackerIssueReference(reference, tracker.Repository),

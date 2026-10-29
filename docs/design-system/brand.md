@@ -9,9 +9,9 @@ The Detent mark is a heavy "D" with a counter and a dot, drawn on a 100×100 vie
 | Asset | Fill | Use |
 | --- | --- | --- |
 | [`web/conversation/src/components/DetentWordmark.tsx`](../../web/conversation/src/components/DetentWordmark.tsx) | `currentColor` | The mark in the Cloud client. It is the only source of the mark's path in React code. |
-| [`docs/brand/detent-mark-mono.svg`](../brand/detent-mark-mono.svg) | `currentColor` | Single-colour placements outside React |
-| [`docs/brand/detent-mark.svg`](../brand/detent-mark.svg) | Fixed `#3730A3` (indigo) | Contexts without a theme: documentation, README (88px), email |
-| `static/img/detent-mark.svg`, `static/img/detent-mark-mono.svg` | Byte-identical copies of the two files above | Templ pages: favicon and the invitation page header |
+| [`static/img/detent-mark-mono.svg`](../../static/img/detent-mark-mono.svg) | `currentColor` | Single-colour placements outside React |
+| [`static/img/detent-mark.svg`](../../static/img/detent-mark.svg) | Fixed `#3730A3` (indigo) | Contexts without a theme: documentation, README (88px), email; Templ pages: favicon and the invitation page header |
+| `static/img/detent-mark.png` | Fixed `#3730A3`, transparent 96px raster of `static/img/detent-mark.svg` | Embedded CID image in the shared email layout; regenerate with `convert -background none static/img/detent-mark.svg -resize 96x96 static/img/detent-mark.png` |
 | `web/conversation/public/favicon.svg` | `#3730A3` mark on a white tile with a 20-unit corner radius | Cloud client favicon (SVG) |
 | `web/conversation/public/favicon-32.png` | 32×32 raster | Cloud client favicon fallback |
 | `web/conversation/public/apple-touch-icon.png` | 180×180 raster | iOS home-screen icon |
@@ -40,10 +40,10 @@ Two Detent surfaces do not use the Cloud workspace tokens. Each is a contract in
 
 | Surface | Owner | Fonts | Accent | Notes |
 | --- | --- | --- | --- | --- |
-| Public sign-in | `.detent-sign-in` in [`static/css/sign-in.css`](../../static/css/sign-in.css), used by `app/account/Login.tsx` and the server-rendered entry pages | Geist first (`"Geist", ui-sans-serif, system-ui, sans-serif`), Geist Mono for `.font-mono` | Teal: `#0f766e` light, `#2dd4bf` dark | Scoped palette of 14 tokens; the `--contrast-*` aliases are mapped straight to its roles. Contrast passes; see [color review](color-review.md#contrast). Its header mirrors detent.build. |
+| Public sign-in | `.detent-sign-in` in [`static/css/sign-in.css`](../../static/css/sign-in.css), used by `app/account/Login.tsx` and the server-rendered entry pages | Geist first (`"Geist", ui-sans-serif, system-ui, sans-serif`), Geist Mono for `.font-mono` | Teal: `#0f766e` light, `#2dd4bf` dark | Scoped palette of 14 tokens; the `--contrast-*` aliases are mapped straight to its roles. Contrast passes; see [contrast](foundations.md#contrast). Its header mirrors detent.build. |
 | Local Templ dashboard | `static/css/input.css` | Geist first, Geist Mono | Teal `--color-accent` (`#2dd4bf` dark, `#0f766e` light), reserved for interactivity and never used for status | 6px cards (`--radius-card`), 4px chips (`--radius-chip`); separate `--color-ok`/`warn`/`err`/`info` status palette |
 
-The Cloud workspace uses the system font stack with Geist fallbacks and the blue primary ([foundations](foundations.md#typography)). [decisions.md §8](../conversation/decisions.md) records that Templ pages keep their teal accent until the shells are unified; unifying them is a scoped visual decision for a human-authored issue.
+The Cloud workspace uses the system font stack with Geist fallbacks and the blue primary ([foundations](foundations.md#typography)). Templ pages keep their teal accent until the shells are unified; unifying them is a scoped visual decision for a human-authored issue.
 
 ## Interface voice
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -17,7 +18,19 @@ import (
 )
 
 type nativeWorkIssueContract struct {
-	RequiredSections []string `json:"required_sections"`
+	RequiredSections []string                         `json:"required_sections"`
+	ScheduledRepair  *nativeWorkScheduledRepair       `json:"scheduled_repair,omitempty"`
+	ReleaseDelivery  *nativeReleaseDeliveryDelegation `json:"release_delivery,omitempty"`
+}
+
+type nativeWorkScheduledRepair struct {
+	PolicyID       string   `json:"policy_id"`
+	Repository     string   `json:"repository"`
+	Workflow       string   `json:"workflow"`
+	Branches       []string `json:"branches"`
+	Body           string   `json:"body"`
+	EvidenceSchema int      `json:"evidence_schema"`
+	Priority       int      `json:"priority"`
 }
 
 // The scope is reconstructed by operatorCurrentAuthority on every invocation.
@@ -38,6 +51,12 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 	s := r.service
 	scope := r.scope
 	scope.project = tracker.ProjectID(request.ProjectID)
+	ctx = s.archiveContext(ctx, scope, request.ArchiveURL)
+	defer func() {
+		if resultErr == nil && len(result.Content) > 0 {
+			result.Content, resultErr = withNativeArchive(result.Content, nativeArchiveDescriptor(ctx))
+		}
+	}()
 	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: request.ProjectID})
 	if err != nil {
 		return operatortool.Result{}, err
@@ -67,7 +86,11 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		if _, err := nativeCreatedBy(scope, params); err != nil {
 			return operatortool.Result{}, &operatortool.RequestError{Code: "invalid_request", Message: "created_by=me requires a human identity"}
 		}
-		page, err := s.readIssues(ctx, scope, params)
+		compact := slices.Contains(request.Include, "summary")
+		page, err := s.readIssuesProjection(ctx, scope, params, compact)
+		if compact {
+			return hubWorkResult(r, request, operatortool.NativeSummaryPageView(page), err)
+		}
 		return hubWorkResult(r, request, operatortool.NativeWorkPageView(request.ProjectID, page), err)
 	}
 	if name == operatortool.WorkConfig {
@@ -83,6 +106,32 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 		if err != nil {
 			return operatortool.Result{}, safeWorkReadError(err)
 		}
+		issueContract := nativeWorkIssueContract{RequiredSections: contract.Sections}
+		delivery, err := readReleaseDeliveryDelegation(ctx, s.database.reader, scope)
+		if err != nil {
+			return operatortool.Result{}, safeWorkReadError(err)
+		}
+		if delivery.Body != "" {
+			issueContract.ReleaseDelivery = &delivery
+		}
+		approval, found, approvalErr := readProjectPolicy(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
+		if approvalErr == nil && found && approval.Policy.Authored != nil {
+			repairContract, err := config.ResolvePolicyIssueContract(approval.Policy)
+			if err != nil {
+				return operatortool.Result{}, safeWorkReadError(err)
+			}
+			if workflow, branch, priority, authorized := repairContract.ScheduledRepairWorkflow(); authorized {
+				repository, err := policyRepository(ctx, s.database.reader, string(scope.organization)+"/"+string(scope.project))
+				if err != nil {
+					return operatortool.Result{}, safeWorkReadError(err)
+				}
+				branches := []string{branch}
+				if branch == "" {
+					branches = []string{"develop", "release/v*"}
+				}
+				issueContract.ScheduledRepair = &nativeWorkScheduledRepair{PolicyID: approval.Policy.ID, Repository: repository, Workflow: workflow, Branches: branches, Body: repairContract.ScheduledRepairBody(), EvidenceSchema: 1, Priority: priority}
+			}
+		}
 		labels, err := readNativeLabels(ctx, s.database.reader, scope)
 		return hubWorkResult(r, request, struct {
 			Project           tracker.NativeProject    `json:"project"`
@@ -90,7 +139,7 @@ func (r operatorWorkReads) ReadWork(ctx context.Context, name string, request op
 			Labels            []nativeLabel            `json:"labels"`
 			ReporterTemplates config.ReporterContracts `json:"reporter_templates"`
 			IssueContract     nativeWorkIssueContract  `json:"issue_contract"`
-		}{project, []int{0, 1, 2, 3}, labels, templates, nativeWorkIssueContract{contract.Sections}}, err)
+		}{project, []int{0, 1, 2, 3}, labels, templates, issueContract}, err)
 	}
 	item, err := s.resolveOperatorNativeReadItem(ctx, s.database.reader, scope, request.Reference)
 	if err != nil {
@@ -217,6 +266,9 @@ func safeWorkReadError(err error) error {
 	if errors.Is(err, sql.ErrNoRows) || isNativeNotFound(err) {
 		return explain.ErrNotFound
 	}
+	if archive := nativeArchiveReadError(err); archive != nil {
+		return archive
+	}
 	var native *nativeError
 	if errors.As(err, &native) && native.status == 422 {
 		return &operatortool.RequestError{Code: native.Code, Message: native.Message}
@@ -291,6 +343,7 @@ func (operatorWorkReads) WorkReadNames(context.Context) []string {
 }
 
 func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (explain.IssueExplanation, error) {
+	ctx = context.WithValue(ctx, explanationReadKey{}, true)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	ctx, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: query.ProjectID})
@@ -307,11 +360,13 @@ func (r operatorWorkReads) Explain(ctx context.Context, query explain.Query) (ex
 	if err != nil {
 		return explain.IssueExplanation{}, safeWorkReadError(err)
 	}
-	failures, partial, err := readNativeFailures(ctx, r.service.database.reader, scope, string(issue.WorkItemID), nil)
+	failures, partial, err := readExplanationFailures(ctx, r.service.database.reader, scope, string(issue.WorkItemID))
 	if err != nil {
 		return explain.IssueExplanation{}, safeWorkReadError(err)
 	}
-	out := explain.FromNativeEvidence(evidence)
-	out.FailureSignature = latestNativeFailureSignature(failures, partial)
+	out, err := boundedNativeExplanation(evidence, latestNativeFailureSignature(failures, partial))
+	if err != nil {
+		return explain.IssueExplanation{}, safeWorkReadError(err)
+	}
 	return out, nil
 }

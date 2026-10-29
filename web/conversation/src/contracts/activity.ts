@@ -19,27 +19,94 @@ const ActivityAttempt = Schema.Struct({
   workspace_ids: Schema.Array(Schema.String),
   change_id: Schema.optional(Schema.String),
   pull_request_url: Schema.optional(Schema.String),
-  outcome: Schema.optional(Schema.Literals(["succeeded", "failed", "cancelled", "interrupted"])),
+  outcome: Schema.optional(
+    Schema.Literals(["succeeded", "failed", "cancelled", "interrupted"]),
+  ),
   finished_at: Schema.optional(Schema.String),
   stage_duration_seconds: Schema.optional(Schema.Number),
   partial: Schema.Boolean,
 });
 
+const Duration = Schema.Struct({
+  count: Schema.Number,
+  seconds: Schema.Number,
+  p50_seconds: Schema.Number,
+  p90_seconds: Schema.Number,
+});
+const ActivityIssue = Schema.Struct({
+  work_item_id: NativeWorkItemId,
+  number: Schema.Number,
+  title: Schema.String,
+  project_id: ProjectId,
+  project_name: Schema.String,
+  clock_started_at: Schema.optional(Schema.String),
+  clock_lane: Schema.String,
+  current_lane: Schema.String,
+  terminal_lane: Schema.optional(Schema.String),
+  finished_at: Schema.optional(Schema.String),
+  lanes: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      role: Schema.Literals(["active", "holding", "terminal"]),
+      seconds: Schema.Number,
+      entries: Schema.Number,
+      current: Schema.Boolean,
+    }),
+  ),
+  total_seconds: Schema.Number,
+  worked_seconds: Schema.Number,
+  worked_running: Schema.optional(Schema.Boolean),
+  worked_by_role: Schema.Array(
+    Schema.Struct({
+      role: Schema.String,
+      attempts: Schema.Number,
+      seconds: Schema.Number,
+      running: Schema.Boolean,
+    }),
+  ),
+  runner_id: Schema.String,
+  runner_ids: Schema.Array(Schema.String),
+  session_id: Schema.optional(Schema.String),
+  change_id: Schema.optional(Schema.String),
+  pull_request_url: Schema.optional(Schema.String),
+  partial: Schema.Boolean,
+});
+
 export const ActivityReport = Schema.Struct({
+  change_sequences: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
   organization_id: OrganizationId,
   observed_at: Schema.String,
-  window: Schema.Struct({ from: Schema.String, to: Schema.String, bucket_ns: Schema.Number }),
+  window: Schema.Struct({
+    from: Schema.String,
+    to: Schema.String,
+    bucket_ns: Schema.Number,
+  }),
+  issues_partial: Schema.optional(Schema.Boolean),
+  running_issues: Schema.optional(Schema.Array(ActivityIssue)),
+  finished_issues: Schema.optional(Schema.Array(ActivityIssue)),
+  issue_typical_durations: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        project_id: ProjectId,
+        total: Duration,
+        lanes: Schema.Record(Schema.String, Duration),
+        partial: Schema.Boolean,
+      }),
+    ),
+  ),
   running: Schema.Array(ActivityAttempt),
   finished: Schema.Array(ActivityAttempt),
-  typical_durations: Schema.Array(Schema.Struct({
-    project_id: ProjectId,
-    stage: Schema.String,
-    count: Schema.Number,
-    seconds: Schema.Number,
-    p50_seconds: Schema.Number,
-    p90_seconds: Schema.Number,
-    partial: Schema.Boolean,
-  })),
+  typical_durations: Schema.Array(
+    Schema.Struct({
+      project_id: ProjectId,
+      stage: Schema.String,
+      count: Schema.Number,
+      seconds: Schema.Number,
+      p50_seconds: Schema.Number,
+      p90_seconds: Schema.Number,
+      partial: Schema.Boolean,
+    }),
+  ),
   population_limit: Schema.Number,
   partial: Schema.Boolean,
 });
@@ -51,3 +118,5 @@ export type ActivityFilters = {
   from?: string;
   to?: string;
 };
+
+export type ActivityIssue = typeof ActivityIssue.Type;

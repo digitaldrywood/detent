@@ -16,7 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// The usage report (decisions section 17.5): what runners report is stored
+// The usage report: what runners report is stored
 // per attempt, day, provider and model, and the report folds it into the
 // shape the client reads.
 
@@ -237,8 +237,16 @@ func TestNativeRunEventRecordsUsage(t *testing.T) {
 	checkpoint := start
 	checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Sequence = "run.checkpointed", "checkpoint", 2
 	checkpoint.Data.Handoff = nativeTestCheckpoint()
+	checkpoint.Data.Handoff.HeadSHA = strings.Repeat("a", 40)
+	checkpoint.Data.Handoff.WorkspaceDigest = strings.Repeat("b", 64)
+	checkpoint.Data.Steps = []tracker.NativeStepReceipt{{Step: "agent_turn", PolicyID: start.Data.PolicyID, ReviewState: strings.Repeat("a", 64), Source: *checkpoint.Data.Handoff, CompletedAt: time.Now().UTC(), CompletionBody: "Completed source"}}
 	checkpoint.Data.Usage = []tracker.NativeUsage{{Provider: "codex", Model: "gpt-6-astra", Input: 1000, CachedInput: 400, Output: 100, CostEstimate: 0.25, Currency: "USD"}}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", worker, checkpoint), http.StatusOK)
+	var running tracker.NativeRuntimeEvidence
+	decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, path+"/runtime", worker, nil), &running)
+	if running.Attempt == nil || running.Attempt.Status != "running" || len(running.Attempt.Usage) != 1 || running.Attempt.Usage[0].CostEstimate <= 0 || len(running.Attempt.Steps) != 1 || running.Attempt.Steps[0].CompletionBody != "Completed source" {
+		t.Fatalf("running attempt lost usage or step receipt: %+v", running.Attempt)
+	}
 
 	type row struct {
 		provider, model, currency string
@@ -475,8 +483,7 @@ func TestHostedUsageReportAccess(t *testing.T) {
 
 // The endpoint aggregates the rows the store holds: the seeded days fold
 // into the hero total, the provider rows, the daily series and both
-// breakdowns, and the project filter narrows to what a member can read
-// (decisions section 17.5).
+// breakdowns, and the project filter narrows to what a member can read.
 func TestHostedUsageReportAggregatesStoredAttempts(t *testing.T) {
 	t.Parallel()
 	f := newUsageHostedFixture(t)
@@ -629,7 +636,7 @@ func usageFixtureValue(t *testing.T, raw []byte) usageReport {
 	return report
 }
 
-// TestUsageReportGoldenShape pins the section 17.5 shape on the Go side, so
+// TestUsageReportGoldenShape pins the usage report shape on the Go side, so
 // the hub still has a contract when the shared fixtures are absent.
 func TestUsageReportGoldenShape(t *testing.T) {
 	t.Parallel()

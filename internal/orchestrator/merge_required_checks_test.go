@@ -87,32 +87,21 @@ func TestMergeRequiredCheckStreakEscalation(t *testing.T) {
 				runMergeRequiredCheckEvaluation(t, orch, tracker, &state, step, now.Add(time.Duration(index)*time.Minute))
 			}
 
-			blocked, ok := state.Blocked[mergeRequiredCheckTestIssueID]
-			if ok != tt.wantBlocked {
-				t.Fatalf("Blocked[%q] present = %t, want %t", mergeRequiredCheckTestIssueID, ok, tt.wantBlocked)
+			if len(state.Blocked) != 0 {
+				t.Fatal("missing check entered Blocked")
 			}
-			if !tt.wantBlocked {
-				if len(tracker.updates) == 0 || tracker.updates[len(tracker.updates)-1].state != autoPromoteReworkState {
-					t.Fatalf("updates = %#v, want final Rework transition", tracker.updates)
+			if tt.wantBlocked {
+				retry, ok := state.Retry[mergeRequiredCheckTestIssueID]
+				if !ok || !strings.Contains(retry.Error, "Test") {
+					t.Fatalf("missing check retry lost detail: %+v", retry)
 				}
-				return
 			}
-			if !strings.Contains(blocked.Reason, "Test") {
-				t.Fatalf("Blocked[%q].Reason = %q, want missing check name", mergeRequiredCheckTestIssueID, blocked.Reason)
+			for _, update := range tracker.updates {
+				if update.state == blockedStatusState {
+					t.Fatal("missing check wrote Blocked")
+				}
 			}
-			if blocked.RecoveryReason != string(BlockedRecoveryReasonHumanBlocker) {
-				t.Fatalf("Blocked[%q].RecoveryReason = %q, want needs-human signal", mergeRequiredCheckTestIssueID, blocked.RecoveryReason)
-			}
-			snapshot := state.Snapshot(now.Add(time.Hour))
-			if len(snapshot.Blocked) != 1 || !strings.Contains(snapshot.Blocked[0].Error, "Test") || snapshot.Blocked[0].RecoveryReason != string(BlockedRecoveryReasonHumanBlocker) {
-				t.Fatalf("snapshot.Blocked = %#v, want board-visible named needs-human reason", snapshot.Blocked)
-			}
-			if len(tracker.updates) == 0 || tracker.updates[len(tracker.updates)-1].state != blockedStatusState {
-				t.Fatalf("updates = %#v, want final Blocked transition", tracker.updates)
-			}
-			if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[len(tracker.comments)-1].body, "Test") {
-				t.Fatalf("comments = %#v, want persistent missing-check detail", tracker.comments)
-			}
+
 		})
 	}
 }
@@ -173,23 +162,16 @@ func TestPersistentlyMissingRequiredCheckParkRecovery(t *testing.T) {
 
 			issue := mergeRequiredCheckTestIssue(tt.recovery)
 			issue.State = blockedStatusState
-			gotMerging := orch.recoverCauseBlockedIssue(t.Context(), &state, issue, now.Add(time.Hour))
-			if gotMerging != tt.wantMerging {
-				t.Fatalf("recoverCauseBlockedIssue() = %t, want %t", gotMerging, tt.wantMerging)
+			if !orch.recoverCauseBlockedIssue(t.Context(), &state, issue, now.Add(time.Hour)) {
+				t.Fatal("historical machine hold was not recovered")
 			}
-			if tt.wantMerging {
-				if len(tracker.updates) == 0 || tracker.updates[len(tracker.updates)-1].state != autoPromoteMergingState {
-					t.Fatalf("updates = %#v, want final Merging transition", tracker.updates)
-				}
-				if _, ok := state.Blocked[issue.ID]; ok {
-					t.Fatalf("Blocked[%q] still present after required check appeared", issue.ID)
-				}
-				if len(tracker.comments) == 0 || !strings.Contains(tracker.comments[len(tracker.comments)-1].body, "head-b") {
-					t.Fatalf("comments = %#v, want current-head recovery audit", tracker.comments)
-				}
-			} else if _, ok := state.Blocked[issue.ID]; !ok {
-				t.Fatalf("Blocked[%q] missing after deferred recovery", issue.ID)
+			if len(state.Blocked) != 0 {
+				t.Fatal("historical missing-check hold survived")
 			}
+			if _, ok := state.Retry[issue.ID]; !ok {
+				t.Fatal("recovery did not schedule retry")
+			}
+
 		})
 	}
 }
@@ -223,35 +205,6 @@ func TestMergeRequiredCheckStreakClearsOnTerminalCompletion(t *testing.T) {
 	}
 	if len(tracker.updates) == 0 || tracker.updates[len(tracker.updates)-1].state != autoPromoteReworkState {
 		t.Fatalf("updates = %#v, want Rework after reset", tracker.updates)
-	}
-}
-
-func TestMergeRequiredCheckStreakClearsWhenBlocked(t *testing.T) {
-	if testing.Short() {
-		t.Skip("durable SQLite integration")
-	}
-
-	t.Parallel()
-
-	orch, tracker, state, closeStore := newMergeRequiredCheckTestOrchestrator(t, true)
-	defer closeStore()
-	now := time.Date(2026, 8, 7, 16, 30, 0, 0, time.UTC)
-	step := mergeRequiredCheckEvaluationStep{missing: true, headSHA: "head-a", requiredChecks: []string{"Test"}}
-	for evaluation := range mergeWorkerMissingRequiredCheckLimit {
-		runMergeRequiredCheckEvaluation(t, orch, tracker, &state, step, now.Add(time.Duration(evaluation)*time.Minute))
-	}
-
-	if _, ok := state.Blocked[mergeRequiredCheckTestIssueID]; !ok {
-		t.Fatalf("Blocked[%q] missing after threshold", mergeRequiredCheckTestIssueID)
-	}
-	delete(state.Blocked, mergeRequiredCheckTestIssueID)
-	runMergeRequiredCheckEvaluation(t, orch, tracker, &state, step, now.Add(time.Hour))
-
-	if _, ok := state.Blocked[mergeRequiredCheckTestIssueID]; ok {
-		t.Fatalf("Blocked[%q] present on first recovery evaluation", mergeRequiredCheckTestIssueID)
-	}
-	if len(tracker.updates) == 0 || tracker.updates[len(tracker.updates)-1].state != autoPromoteReworkState {
-		t.Fatalf("updates = %#v, want fresh Rework propagation window", tracker.updates)
 	}
 }
 

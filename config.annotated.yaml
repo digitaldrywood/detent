@@ -1,11 +1,7 @@
-# Use the GitHub issue-label status source when a project does not use
-# ProjectV2 or a custom issue Status field.
 tracker:
-  kind: github
+  kind: hub_native
   api_key: replace-with-a-github-token
-  github_status_source: label
   repository: example/example
-  status_label_prefix: "detent:"
   lanes:
     - name: Backlog
       role: holding

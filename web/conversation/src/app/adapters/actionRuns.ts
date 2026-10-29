@@ -1,5 +1,4 @@
-// One run of one project action, over the relay's `exec` channel
-// (decisions.md §18.12).
+// One run of one project action, over the relay's `exec` channel.
 //
 // **Why this is beside `workspaceRelay.ts` and not inside it.** That module is
 // a request/response client, and honestly so: `Pending` is a closed union of
@@ -16,17 +15,18 @@
 // `RelayFrameAssembler` does the framing and the chunk reassembly (its
 // `inferChunkedType` grew the one exec case it needed), `RelayError` and
 // `relayErrorMessage` do the errors, `webSocketTransport` is the same
-// transport seam, and §18.2's acknowledgement cadence is the same 32 frames or
+// transport seam, and the relay protocol's acknowledgement cadence is the same 32 frames or
 // one second.
 //
 // What is genuinely different, and is why the file is short: there is no
-// stream reuse and no resume. §18.12 gives every run its own stream, as every
+// stream reuse and no resume. The project actions contract gives every run its own stream, as every
 // terminal `open` gets its own PTY, so this client opens a socket, allocates
 // one stream, sends one `run`, and is finished when the run is. A reconnect
 // would resume a stream whose process the runner has already killed — it kills
 // the process group when the socket dies — so a dropped socket is a failed
 // run, reported as one, and not something to paper over.
 import React from "react";
+import * as Schema from "effect/Schema";
 
 import {
   RelayError,
@@ -38,28 +38,28 @@ import {
 } from "./workspaceRelay.ts";
 import { newWorkKey } from "../work/lib/workHttp.ts";
 import type { WorkHttp } from "../work/lib/workHttp.ts";
-import { subscribeProjectEvents } from "../work/lib/projectEvents.ts";
+import { observeProjectQuery } from "../work/lib/projectEvents.ts";
 import { useWorkHttp } from "../work/lib/useWork.ts";
 import {
   ACTION_RUN_EVENT_TYPES,
   type ActionList,
-  type ActionRun,
+  ActionRun,
   type ActionRunList,
 } from "../../contracts/work.ts";
 
 const CHANNEL = "exec";
 
-/** §18.2's ack cadence, the same two numbers the files client uses. */
+/** The relay protocol's ack cadence, the same two numbers the files client uses. */
 const ACK_THRESHOLD = 32;
 const ACK_INTERVAL_MS = 1_000;
 
-/** §18.12: the marker the runner emits once, as its own span, at the cap. */
+/** The marker the runner emits once, as its own span, at the cap. */
 export const OUTPUT_TRUNCATED_MARKER = "[output truncated at 1 MiB]";
 
 /**
  * One span of a run's output.
  *
- * A span rather than a flat string, because §18.12's truncation marker is
+ * A span rather than a flat string, because the project actions contract's truncation marker is
  * "its own span" and a reader has to be able to see that the log was cut
  * rather than finished. `truncated` is the runner's own flag on the frame.
  */
@@ -71,13 +71,14 @@ export interface ActionRunOutputSpan {
 /**
  * What the Output surface draws.
  *
- * `status` mirrors the hub's four (§18.12) so a run watched over the stream
+ * `status` mirrors the hub's four so a run watched over the stream
  * and a run read back from `GET …/runs/:run` are the same shape:
  * `connecting` is the client's own fifth state, before the socket is open,
  * and it is deliberately not one of the hub's — the row is already `queued`
  * there, which is what a reader is told.
  */
 export interface ActionRunSnapshot {
+  readonly revision?: number | string;
   readonly runId: string;
   readonly actionId: string;
   /** The action's name, for the surface's header. */
@@ -121,7 +122,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/** Decodes an `output` payload, honouring §18.2's base64 encoding. */
+/** Decodes an `output` payload, honouring the relay protocol's base64 encoding. */
 export function decodeOutputSpan(payload: unknown): ActionRunOutputSpan | null {
   if (!isRecord(payload)) return null;
   const data = typeof payload.data === "string" ? payload.data : null;
@@ -211,7 +212,7 @@ export function createActionRunStream(options: ActionRunStreamOptions): ActionRu
   /**
    * A terminal status, written exactly once.
    *
-   * §18.12: "every teardown path writes a terminal status", because a run left
+   * "every teardown path writes a terminal status", because a run left
    * running forever is the bug that rule exists to prevent. `settled` is what
    * makes the second path a no-op rather than a second answer — the runner
    * follows `exited` with `closed`, so the ordinary happy path takes two of
@@ -226,8 +227,8 @@ export function createActionRunStream(options: ActionRunStreamOptions): ActionRu
 
   function onFrame(frame: RelayFrame): void {
     if (frame.channel !== CHANNEL) return;
-    // The first answer names the stream every later frame of this run reuses
-    // (§18.2). There is only ever one run on it (§18.12).
+    // The first answer names the stream every later frame of this run reuses.
+    // There is only ever one run on it.
     if (streamId === null && frame.stream !== undefined) streamId = frame.stream;
     noteInbound(frame.seq);
     switch (frame.type) {
@@ -245,7 +246,7 @@ export function createActionRunStream(options: ActionRunStreamOptions): ActionRu
         const payload = isRecord(frame.payload) ? frame.payload : {};
         const code = typeof payload.code === "number" ? payload.code : null;
         const signal = typeof payload.signal === "string" ? payload.signal : null;
-        // §18.12: `succeeded` is exit 0 and `failed` is everything else. A
+        // `succeeded` is exit 0 and `failed` is everything else. A
         // process killed by a signal exits with no code of its own, so it is
         // a failure that names the signal rather than an unexplained one.
         finish({
@@ -280,7 +281,7 @@ export function createActionRunStream(options: ActionRunStreamOptions): ActionRu
         return;
       }
       default:
-        // §18.2: an unknown type is dropped rather than acted on.
+        // An unknown type is dropped rather than acted on.
         return;
     }
   }
@@ -293,7 +294,7 @@ export function createActionRunStream(options: ActionRunStreamOptions): ActionRu
       JSON.stringify({
         channel: CHANNEL,
         // The very first frame carries no `stream`: the hub allocates one and
-        // names it on the answer (§18.2).
+        // names it on the answer.
         type: "run",
         seq: 1,
         payload: {
@@ -319,7 +320,7 @@ export function createActionRunStream(options: ActionRunStreamOptions): ActionRu
           clearAckTimer();
           if (disposed) return;
           // A dropped socket is a failed run, not something to resume: the
-          // runner kills the process group when the socket dies (§18.12).
+          // runner kills the process group when the socket dies.
           finish({ status: "failed", error: detail });
         },
       });
@@ -362,6 +363,7 @@ export function snapshotFromRecord(
   output: readonly ActionRunOutputSpan[] = [],
 ): ActionRunSnapshot {
   return {
+    revision: record.revision,
     runId: record.id,
     actionId: record.action_id,
     name,
@@ -375,7 +377,7 @@ export function snapshotFromRecord(
   };
 }
 
-/** The four `reason` values §18.12 names, as sentences a reader is owed. */
+/** The four `reason` values the project actions contract names, as sentences a reader is owed. */
 export function reasonSentence(reason: string): string {
   switch (reason) {
     case "lease_lost":
@@ -398,7 +400,7 @@ export interface StartRunInput {
 }
 
 /**
- * The three reads that recover a run nobody in this tab watched (§18.12).
+ * The three reads that recover a run nobody in this tab watched.
  *
  * It is a narrow interface rather than `WorkHttp` so the load can be tested on
  * its own: `WorkHttp` satisfies it structurally, and a test that had to build
@@ -417,7 +419,7 @@ export interface RecordedRunReader {
  * `output_bytes` is what decides, not the status: a command that printed
  * nothing and exited zero has no output, and asking for it would spend a
  * request to be handed an empty body. A run still `queued` or `running` has
- * nothing stored either — §18.12 accumulates the output in memory and writes
+ * nothing stored either — the project actions contract accumulates the output in memory and writes
  * it once, on completion — so only a terminal run is read.
  */
 async function recordedOutput(
@@ -442,7 +444,7 @@ async function recordedOutput(
 /**
  * Every run the hub has recorded for a project, newest first.
  *
- * This is what makes a run nobody watched visible (§18.12). Until now the
+ * This is what makes a run nobody watched visible. Until now the
  * Output surface only ever held runs this tab started over the exec channel,
  * so a run queued through the API — which is every run a headless caller
  * makes, and now every run the hub dispatches to the runner itself — was
@@ -458,12 +460,14 @@ async function recordedOutput(
 export async function loadRecordedRuns(
   reader: RecordedRunReader,
   projectId: string,
+  watermark?: (value: number) => void,
 ): Promise<readonly ActionRunSnapshot[]> {
   const actions = await reader.listActions(projectId);
   const listings = await Promise.all(
     actions.items.map(async (action) => {
       try {
         const runs = await reader.listActionRuns(projectId, action.id);
+        if (runs.change_sequence !== undefined) watermark?.(runs.change_sequence);
         return runs.items.map((record) => ({ record, name: action.name }));
       } catch {
         // One action's runs failing is not the whole surface failing.
@@ -481,7 +485,7 @@ export async function loadRecordedRuns(
 }
 
 export interface ActionRunsHandle {
-  /** Newest first, which is the order §18.12 lists an action's runs in. */
+  /** Newest first, which is the order the project actions contract lists an action's runs in. */
   readonly runs: readonly ActionRunSnapshot[];
   readonly activeRunId: string | null;
   readonly select: (runId: string) => void;
@@ -503,7 +507,7 @@ export interface UseActionRunsInput {
   readonly mintTicket: (() => Promise<string>) | null;
   /**
    * True while the Output surface is on the panel, which is when the recorded
-   * runs are worth fetching (§18.12).
+   * runs are worth fetching.
    *
    * It is a flag rather than an unconditional load because the read is a
    * listing per action: a panel that never opens Output should not spend it,
@@ -520,7 +524,7 @@ export interface UseActionRunsInput {
  * its own exec stream, because output only exists on the stream while it is
  * arriving. A run this tab did *not* start — a run-on-worktree-creation run,
  * or one another tab began — arrives as an `action_run.<status>` frame on the
- * project event stream (§18.12: "that is how a client observes a run it did
+ * project event stream (the project actions contract: "that is how a client observes a run it did
  * not start ... by the same subscription and never by polling"), and its
  * output is read back from `output_artifact` once it is terminal.
  */
@@ -542,7 +546,7 @@ export function useActionRuns(input: UseActionRunsInput): ActionRunsHandle {
   }, []);
 
   // Every stream this tab opened is closed on unmount, which writes a terminal
-  // status on each — §18.12's rule that no teardown path leaves a run running.
+  // status on each — the project actions contract's rule that no teardown path leaves a run running.
   React.useEffect(
     () => () => {
       for (const stream of streams.current.values()) stream.close();
@@ -558,12 +562,15 @@ export function useActionRuns(input: UseActionRunsInput): ActionRunsHandle {
   // yet, and the record would blank it.
   const mergeRecorded = React.useCallback((loaded: readonly ActionRunSnapshot[]) => {
     setRuns((current) => {
-      const known = new Set(current.map((entry) => entry.runId));
-      const added = loaded.filter((entry) => !known.has(entry.runId));
-      if (added.length === 0) return current;
-      // The recorded runs go after what this tab already holds, which is what
-      // it started or watched this session -- newer than anything on disk.
-      return [...current, ...added];
+      const records = new Map(loaded.map((entry) => [entry.runId, entry]));
+      const next = current.map((entry) => {
+        const record = records.get(entry.runId);
+        records.delete(entry.runId);
+        if (record === undefined || streams.current.has(entry.runId) ||
+          BigInt(entry.revision ?? 0) > BigInt(record.revision ?? 0)) return entry;
+        return record;
+      });
+      return [...next, ...records.values()];
     });
   }, []);
 
@@ -600,69 +607,55 @@ export function useActionRuns(input: UseActionRunsInput): ActionRunsHandle {
     }
   }, [http, mintTicket, projectId, queue, relayUrl, upsert, workspaceId, workspaceLive]);
 
-  // Runs this tab did not start (§18.12). The stream is the project's, so a
+  // Runs this tab did not start. The stream is the project's, so a
   // frame for another project's action is dropped; a frame for a run this tab
   // is already following is dropped too, because the stream it is following
   // carries the output and this frame does not.
   const actionNames = React.useRef(new Map<string, string>());
 
-  // The runs the hub has already recorded (§18.12). Without this the panel only
-  // ever held what this tab started, so a run requested through the API — the
-  // headless caller's run, and now every run the hub hands to the runner itself
-  // — was invisible here however completely the hub had recorded it.
-  React.useEffect(() => {
-    if (!showRecorded || projectId === null) return;
-    let live = true;
-    void (async () => {
-      let loaded: readonly ActionRunSnapshot[];
-      try {
-        loaded = await loadRecordedRuns(http, projectId);
-      } catch {
-        // The surface still draws whatever this tab is following. A listing
-        // that failed is not a reason to throw away a run in flight.
-        return;
-      }
-      if (!live) return;
-      for (const entry of loaded) actionNames.current.set(entry.actionId, entry.name);
-      mergeRecorded(loaded);
-    })();
-    return () => {
-      live = false;
-    };
-  }, [http, mergeRecorded, projectId, showRecorded]);
-
   React.useEffect(() => {
     if (projectId === null) return;
-    if (typeof globalThis.EventSource !== "function") return;
-    const onRunEvent = (event: MessageEvent<string>) => {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(event.data);
-      } catch {
-        return;
-      }
-      if (!isRecord(parsed)) return;
-      const runId = typeof parsed.id === "string" ? parsed.id : null;
-      const actionId = typeof parsed.action_id === "string" ? parsed.action_id : null;
-      if (runId === null || actionId === null) return;
-      if (streams.current.has(runId)) return;
-      const record = parsed as unknown as ActionRun;
-      const name = actionNames.current.get(actionId) ?? "Action";
-      upsert(snapshotFromRecord(record, name, []));
-      // The event carries the row and never the bytes, so a run this tab only
-      // heard about has to read its own output back once it is finished. That
-      // is the whole difference between watching a run the hub dispatched and
-      // watching an empty box say "succeeded".
-      void (async () => {
-        const output = await recordedOutput(http, projectId, record);
-        if (output.length === 0) return;
-        upsert(snapshotFromRecord(record, name, output));
-      })();
-    };
-    return subscribeProjectEvents(http, projectId, Object.fromEntries(
-      ACTION_RUN_EVENT_TYPES.map((type) => [type, onRunEvent as EventListener]),
-    ));
-  }, [http, projectId, upsert]);
+    const revisions = new Map<string, bigint>();
+    let live = true;
+    const query = observeProjectQuery(http, projectId, {
+      topics: ACTION_RUN_EVENT_TYPES,
+      load: async () => {
+        let watermark: number | undefined;
+        const value = showRecorded ? await loadRecordedRuns(http, projectId, (next) => {
+          watermark = Math.min(watermark ?? Infinity, next);
+        }) : [];
+        return { value, watermark };
+      },
+      apply: (loaded) => {
+        for (const entry of loaded) {
+          actionNames.current.set(entry.actionId, entry.name);
+          const revision = BigInt(entry.revision ?? 0);
+          if (revision > (revisions.get(entry.runId) ?? -1n)) revisions.set(entry.runId, revision);
+        }
+        mergeRecorded(loaded);
+      },
+      event: (event) => {
+        let parsed: unknown;
+        try { parsed = JSON.parse((event as MessageEvent<string>).data); } catch { return; }
+        if (!isRecord(parsed)) return;
+        const runId = typeof parsed.id === "string" ? parsed.id : null;
+        const actionId = typeof parsed.action_id === "string" ? parsed.action_id : null;
+        if (runId === null || actionId === null || streams.current.has(runId)) return;
+        let record: ActionRun;
+        try { record = Schema.decodeUnknownSync(ActionRun)(parsed); } catch { return; }
+        if (!/^\d+$/.test(String(record.revision))) return;
+        const revision = BigInt(record.revision);
+        if (revision <= (revisions.get(runId) ?? -1n)) return;
+        revisions.set(runId, revision);
+        const name = actionNames.current.get(actionId) ?? "Action";
+        upsert(snapshotFromRecord(record, name, []));
+        void recordedOutput(http, projectId, record).then((output) => {
+          if (live && output.length > 0 && revisions.get(runId) === revision) upsert(snapshotFromRecord(record, name, output));
+        });
+      },
+    });
+    return () => { live = false; query.close(); };
+  }, [http, projectId, showRecorded, mergeRecorded, upsert]);
 
   const start = React.useCallback((request: StartRunInput) => {
     actionNames.current.set(request.actionId, request.name);
@@ -706,7 +699,7 @@ async function startOne(
   } catch (cause) {
     // The run was refused, so there is no record to show — but the reader
     // pressed something, and a refusal that leaves the surface empty is the
-    // failure §5 is about. A synthetic id keyed on the action is enough for
+    // failure the conversation contract is about. A synthetic id keyed on the action is enough for
     // the surface to draw one row saying why.
     input.onSnapshot({
       runId: `refused:${input.request.actionId}`,

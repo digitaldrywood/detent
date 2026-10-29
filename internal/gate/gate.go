@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 )
 
@@ -114,30 +116,38 @@ type Summary struct {
 }
 
 type Finding struct {
-	Severity string
-	Body     string
-	URL      string
-	Path     string
-	Line     int
+	Attribution         string                       `json:"attribution"`
+	AttributionEvidence *failureattribution.Evidence `json:"attribution_evidence,omitempty"`
+	CheckCommand        string                       `json:"check_command,omitempty"`
+	CheckDiagnostic     string                       `json:"check_diagnostic,omitempty"`
+	Severity            string
+	Body                string
+	URL                 string
+	Path                string
+	Line                int
 }
 
 type CommandResult struct {
-	TimingStage     string            `json:"timing_stage,omitempty"`
-	ReceiptID       string            `json:"receipt_id,omitempty"`
-	Stage           string            `json:"stage,omitempty"`
-	Execution       string            `json:"execution,omitempty"`
-	ReusedReceiptID string            `json:"reused_receipt_id,omitempty"`
-	StartedAt       time.Time         `json:"started_at,omitzero"`
-	FinishedAt      time.Time         `json:"finished_at,omitzero"`
-	Pipeline        *PipelineEvidence `json:"pipeline,omitzero"`
-	Evidence        *CommandEvidence  `json:"evidence,omitempty"`
-	DurationNS      int64             `json:"duration_ns,omitempty"`
-	Command         string            `json:"command"`
-	HeadSHA         string            `json:"head_sha"`
-	TreeSHA         string            `json:"tree_sha"`
-	ExitCode        int               `json:"exit_code"`
-	Output          string            `json:"output"`
-	OutputTruncated bool              `json:"output_truncated,omitempty"`
+	Attribution      string                          `json:"attribution"`
+	Findings         []Finding                       `json:"findings,omitempty"`
+	BaseReproduction *failureattribution.Observation `json:"base_reproduction,omitempty"`
+	EvidenceArtifact *artifact.Reference             `json:"evidence_artifact,omitempty"`
+	TimingStage      string                          `json:"timing_stage,omitempty"`
+	ReceiptID        string                          `json:"receipt_id,omitempty"`
+	Stage            string                          `json:"stage,omitempty"`
+	Execution        string                          `json:"execution,omitempty"`
+	ReusedReceiptID  string                          `json:"reused_receipt_id,omitempty"`
+	StartedAt        time.Time                       `json:"started_at,omitzero"`
+	FinishedAt       time.Time                       `json:"finished_at,omitzero"`
+	Pipeline         *PipelineEvidence               `json:"pipeline,omitzero"`
+	Evidence         *CommandEvidence                `json:"evidence,omitempty"`
+	DurationNS       int64                           `json:"duration_ns,omitempty"`
+	Command          string                          `json:"command"`
+	HeadSHA          string                          `json:"head_sha"`
+	TreeSHA          string                          `json:"tree_sha"`
+	ExitCode         int                             `json:"exit_code"`
+	Output           string                          `json:"output"`
+	OutputTruncated  bool                            `json:"output_truncated,omitempty"`
 }
 
 const (
@@ -147,6 +157,7 @@ const (
 )
 
 type ValidatorResult struct {
+	Attribution      string              `json:"attribution"`
 	AttachmentReads  []AttachmentRead    `json:"attachment_reads,omitempty"`
 	CriteriaEvidence []CriterionEvidence `json:"criteria_evidence,omitempty"`
 	NotVerified      []string            `json:"not_verified,omitempty"`
@@ -542,7 +553,7 @@ func ciTriggerLabelInstructions(cfg Config, hostname string) string {
 	if hostname = strings.TrimSpace(hostname); hostname != "" {
 		hostnameArgument = " --hostname-base64 " + encodeCITriggerLabelArgument(hostname)
 	}
-	return "This project uses CI trigger label `" + cfg.CITriggerLabel + "`. After every push that changes a pull request head in implementation or rework, run `detent ci-trigger-label --repository <owner/repo> --pull-request <number> --label-base64 " + encodeCITriggerLabelArgument(cfg.CITriggerLabel) + hostnameArgument + " --stagger-seconds " + strconv.Itoa(staggerSeconds) + "` before waiting for current-head checks, after any other CI lane labels. Detent records successful worker pushes and reapplies the configured label at completion unless it was the final CI trigger after the latest push; merging workers also reapply it immediately after deterministic head-changing pushes and whenever required checks are missing. The command removes the label if present, adds it again through GitHub's REST issue-label endpoints, and uses a host-wide lock plus persisted timestamp to serialize reapplications at least " + strconv.Itoa(staggerSeconds) + " seconds apart so concurrent workers do not stampede self-hosted CI. "
+	return "This project uses CI trigger label `" + cfg.CITriggerLabel + "`. After every push that changes a pull request head in implementation or rework, run `detent hub ci-trigger-label --repository <owner/repo> --pull-request <number> --label-base64 " + encodeCITriggerLabelArgument(cfg.CITriggerLabel) + hostnameArgument + " --stagger-seconds " + strconv.Itoa(staggerSeconds) + "` before waiting for current-head checks, after any other CI lane labels. Detent records successful worker pushes and reapplies the configured label at completion unless it was the final CI trigger after the latest push; merging workers also reapply it immediately after deterministic head-changing pushes and whenever required checks are missing. The command removes the label if present, adds it again through GitHub's REST issue-label endpoints, and uses a host-wide lock plus persisted timestamp to serialize reapplications at least " + strconv.Itoa(staggerSeconds) + " seconds apart so concurrent workers do not stampede self-hosted CI. "
 }
 
 func encodeCITriggerLabelArgument(value string) string {
@@ -647,11 +658,18 @@ func EvaluateSecurityAudit(cfg SecurityAuditConfig, evaluation securityaudit.Eva
 		out := decision(ActionRework, ReasonSecurityAuditFindings)
 		out.Findings = make([]Finding, 0, len(evaluation.Findings))
 		for _, finding := range evaluation.Findings {
+			if finding.Attribution == "" {
+				finding.Attribution = "unknown"
+			}
 			out.Findings = append(out.Findings, Finding{
-				Severity: finding.Severity,
-				Body:     finding.Body,
-				Path:     finding.Path,
-				Line:     finding.Line,
+				Attribution:         finding.Attribution,
+				AttributionEvidence: finding.AttributionEvidence,
+				CheckCommand:        finding.CheckCommand,
+				CheckDiagnostic:     finding.CheckDiagnostic,
+				Severity:            finding.Severity,
+				Body:                finding.Body,
+				Path:                finding.Path,
+				Line:                finding.Line,
 			})
 		}
 		return out, true
@@ -778,7 +796,13 @@ func quietRemaining(summary Summary, opts EvaluationOptions, now time.Time) time
 }
 
 func cloneFindings(findings []Finding) []Finding {
-	return append([]Finding(nil), findings...)
+	result := append([]Finding(nil), findings...)
+	for i := range result {
+		if result[i].Attribution == "" {
+			result[i].Attribution = "unknown"
+		}
+	}
+	return result
 }
 
 func effectiveValidatorConfig(cfg ValidatorConfig) ValidatorConfig {
@@ -985,9 +1009,12 @@ func EvaluateValidator(cfg ValidatorConfig, result ValidatorResult) (Decision, b
 		out.Findings = findings
 		return out, true
 	}
-	if cfg.UnverifiedCriteria != UnverifiedCriteriaDisclose && len(result.NotVerified) > 0 {
+	if len(result.UnsatisfiableCriteria()) > 0 && normalizeValidatorVerdict(result.Verdict) != ValidatorVerdictRework && result.Score >= cfg.MinScore {
+		return decision(ActionWait, ReasonValidatorWait), true
+	}
+	if len(result.UnsatisfiableCriteria()) > 0 || cfg.UnverifiedCriteria != UnverifiedCriteriaDisclose && len(result.NotVerified) > 0 {
 		out := decision(ActionRework, ReasonValidatorRework)
-		out.Findings = append(findings, Finding{Severity: "p2", Body: "Acceptance criteria not verified: " + strings.Join(result.NotVerified, "; ")})
+		out.Findings = append(findings, Finding{Attribution: "unknown", Severity: "p2", Body: "Acceptance criteria not verified: " + strings.Join(result.NotVerified, "; ")})
 		return out, true
 	}
 

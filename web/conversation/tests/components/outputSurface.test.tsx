@@ -56,7 +56,7 @@ describe("the Output surface", () => {
   });
 
   // The exec capability is what this surface waits on, so the sentence says
-  // commands rather than files (decisions.md §18.12).
+  // commands rather than files.
   it("says it is waiting for a runner that can run commands, and for how long", () => {
     mount({
       state: "requested",
@@ -90,7 +90,7 @@ describe("the Output surface", () => {
     expect(screen.getByTestId("output-run-status").textContent).toBe("Exited 0");
   });
 
-  // §18.12 makes "exited 0" and "never exited" different facts, so the chip
+  // The project actions contract makes "exited 0" and "never exited" different facts, so the chip
   // carries the code rather than only the outcome.
   it("names the exit code, or says the run never produced one", () => {
     expect(runStatusLabel(run({ status: "failed", exitCode: 3 }))).toBe("Exited 3");
@@ -145,7 +145,7 @@ describe("the Output surface", () => {
     expect(screen.queryByTestId("output-unavailable")).toBeNull();
   });
 
-  // §18.12: a run the hub dispatched to the runner itself has no exec stream in
+  // A run the hub dispatched to the runner itself has no exec stream in
   // this tab at all — its whole record is the row and the bytes behind
   // `output_artifact`, read back by `loadRecordedRuns`. The surface has to draw
   // that the same way it draws a run it watched, or a headless run stays

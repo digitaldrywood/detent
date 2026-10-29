@@ -44,8 +44,6 @@ func TestApprovalDeniedDeliverableUsesInstanceForgeWait(t *testing.T) {
 	issue := dispatchTestIssue("issue-forge-wait", "In Progress")
 	issue.URL = "https://github.com/digitaldrywood/detent/issues/1871"
 	state.Running[issue.ID] = Running{Issue: issue, Attempt: 4, WorkAttemptID: 42, StartedAt: now.Add(-time.Minute)}
-	state.InstantFailures[issue.ID] = InstantFailure{Issue: issue, Count: instantFailureThreshold - 1}
-	state.RepeatedFailures[issue.ID] = RepeatedFailure{Issue: issue, Count: repeatedFailureThreshold - 1}
 	state.FailureBreaker.Failures["existing"] = []ProjectFailure{{IssueID: "other", At: now.Add(-time.Minute)}}
 	deliverableErr := &runpkg.DeliverableCommandError{
 		OperationClass: "pull_request",
@@ -71,12 +69,6 @@ func TestApprovalDeniedDeliverableUsesInstanceForgeWait(t *testing.T) {
 		RetryDelay:   time.Minute,
 	})
 
-	if got := state.InstantFailures[issue.ID].Count; got != instantFailureThreshold-1 {
-		t.Fatalf("instant failure count = %d, want unchanged", got)
-	}
-	if got := state.RepeatedFailures[issue.ID].Count; got != repeatedFailureThreshold-1 {
-		t.Fatalf("repeated failure count = %d, want unchanged", got)
-	}
 	if got := len(state.FailureBreaker.Failures["existing"]); got != 1 || state.FailureBreaker.Active() {
 		t.Fatalf("FailureBreaker = %#v, want existing evidence unchanged and inactive", state.FailureBreaker)
 	}
@@ -542,9 +534,6 @@ func TestRejectedPushRemainsWorkFailure(t *testing.T) {
 	}
 	if retry := state.Retry[issue.ID]; retry.ForgeUnavailable {
 		t.Fatalf("Retry[%q] = %#v, want ordinary work failure", issue.ID, retry)
-	}
-	if state.RepeatedFailures[issue.ID].Count != 1 || state.InstantFailures[issue.ID].Count != 1 {
-		t.Fatalf("failure counts = repeated %#v instant %#v, want one real strike", state.RepeatedFailures, state.InstantFailures)
 	}
 }
 

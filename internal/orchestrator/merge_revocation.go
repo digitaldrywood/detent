@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -172,15 +171,15 @@ func mergeRevocationForIssue(
 
 // Draft merges share the existing review and CI routing before asking a human
 // to explain a draft whose current head has no actionable failure.
-func draftMergingPullRequestDecision(issue connector.Issue, cfg Config) staleMergingPullRequestDecision {
+func draftMergingPullRequestDecision(issue connector.Issue, cfg Config) draftMergeDecision {
 	config := normalizeAutoPromoteConfig(cfg.AutoPromote)
 	if len(issue.PullRequest.UnresolvedReviewThreads) > 0 {
-		return staleMergingPullRequestDecision{targetState: config.ReworkState, reason: string(AutoPromoteReasonUnresolvedReviewThreads)}
+		return draftMergeDecision{targetState: config.ReworkState, reason: string(AutoPromoteReasonUnresolvedReviewThreads)}
 	}
 	if mergeWorkerCIFailed(issue.PullRequest) {
-		return staleMergingPullRequestDecision{targetState: config.ReworkState, reason: string(AutoPromoteReasonCINotGreen)}
+		return draftMergeDecision{targetState: config.ReworkState, reason: string(AutoPromoteReasonCINotGreen)}
 	}
-	return staleMergingPullRequestDecision{targetState: config.reviewTargetState(), reason: mergeRevocationDraftPullRequest}
+	return draftMergeDecision{targetState: config.reviewTargetState(), reason: mergeRevocationDraftPullRequest}
 }
 
 func mergeReworkComment(issue connector.Issue, reason, target string) string {
@@ -308,8 +307,7 @@ func (o *Orchestrator) finishMergeRevocation(
 	delete(state.Retry, event.IssueID)
 	delete(state.BudgetRefusals, event.IssueID)
 	delete(state.PriorAttempts, event.IssueID)
-	delete(state.InstantFailures, event.IssueID)
-	delete(state.RepeatedFailures, event.IssueID)
+
 	releaseDispatchRecoveryAdmission(state, event.IssueID)
 	releaseProjectFailureBreakerCanary(state, event.IssueID)
 	if event.Result.TurnStarted {
@@ -373,83 +371,10 @@ func (o *Orchestrator) parkRepeatedMergeRevocations(
 	now time.Time,
 ) (bool, bool) {
 	streak, err := o.consecutiveMergeRevocations(ctx, state, issue)
-	if err != nil {
-		if o.logger != nil {
-			o.logger.Warn(
-				"merge revocation backoff check failed",
-				"issue_id", strings.TrimSpace(issue.ID),
-				"identifier", issue.Identifier,
-				"error", err,
-			)
-		}
+	if err != nil || streak.count < maxIdenticalMergeRevocations {
 		return false, false
 	}
-	if streak.count < maxIdenticalMergeRevocations {
-		return false, false
-	}
-
-	decision := autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonMergeRevocationLimit)
-	metadata := o.newBlockedRecoveryMetadata(
-		ctx,
-		issue,
-		RunModeMerge,
-		string(AutoPromoteReasonMergeRevocationLimit),
-		blockedRecoveryPredicateManaged,
-		autoPromoteReworkState,
-		DiffStats{},
-	)
-	metadata.BlockedRecovery.Owner = blockedRecoveryOwnerHuman
-	if err := o.updateIssueStateByIDStrictWithMetadata(
-		ctx,
-		state,
-		issue.ID,
-		issue,
-		blockedStatusState,
-		now,
-		string(AutoPromoteReasonMergeRevocationLimit),
-		metadata,
-	); err != nil {
-		if o.logger != nil {
-			o.logger.Warn(
-				"merge revocation backoff park failed",
-				"issue_id", strings.TrimSpace(issue.ID),
-				"identifier", issue.Identifier,
-				"revocation_reason", streak.reason,
-				"consecutive_revocations", streak.count,
-				"limit", maxIdenticalMergeRevocations,
-				"error", err,
-			)
-		}
-		o.logAutoPromoteDecision(issue, decision, "")
-		return true, false
-	}
-
-	if err := o.connector.CreateComment(ctx, issue.ID, mergeRevocationLimitComment(issue, streak)); err != nil && o.logger != nil {
-		o.logger.Warn(
-			"merge revocation backoff comment failed",
-			"issue_id", strings.TrimSpace(issue.ID),
-			"identifier", issue.Identifier,
-			"error", err,
-		)
-	}
-	o.logAutoPromoteDecision(issue, decision, blockedStatusState)
-	if o.logger != nil {
-		o.logger.Warn(
-			"merge_worker_revocation_limit",
-			mergeWorkerLogAttrs(issue,
-				"revocation_reason", streak.reason,
-				"consecutive_revocations", streak.count,
-				"limit", maxIdenticalMergeRevocations,
-				"target_state", blockedStatusState,
-			)...,
-		)
-	}
-	recordStateEvent(state, telemetry.ActivityEvent{
-		At:      now,
-		Event:   "merge_worker_revocation_limit",
-		Message: fmt.Sprintf("parked %s after %d consecutive %s merge revocations", issueLabel(issue), streak.count, streak.reason),
-	})
-	return true, true
+	return true, o.retryMachineFailure(ctx, state, issue, nextAttempt(state.Retry[issue.ID].Attempt), now, streak.reason, "") == nil
 }
 
 func (o *Orchestrator) consecutiveMergeRevocations(
@@ -520,27 +445,6 @@ func mergeRevocationStreakFromSnapshots(state *State, issue connector.Issue) mer
 		streak.count++
 	}
 	return streak
-}
-
-func mergeRevocationLimitComment(issue connector.Issue, streak mergeRevocationStreak) string {
-	var body strings.Builder
-	body.WriteString("Detent parked this issue in Blocked after repeated identical merge eligibility revocations.")
-	body.WriteString("\n\n- reason: ")
-	body.WriteString(string(AutoPromoteReasonMergeRevocationLimit))
-	body.WriteString("\n- revocation_reason: ")
-	body.WriteString(streak.reason)
-	body.WriteString("\n- consecutive_revocations: ")
-	body.WriteString(strconv.Itoa(streak.count))
-	body.WriteString("\n- limit: ")
-	body.WriteString(strconv.Itoa(maxIdenticalMergeRevocations))
-	if issue.PullRequest != nil {
-		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
-			body.WriteString("\n- pull_request: ")
-			body.WriteString(url)
-		}
-	}
-	body.WriteString("\n- human_action: correct the repeated merge eligibility failure, then move the issue to Rework")
-	return body.String()
 }
 
 func (o *Orchestrator) routeMergeRevocation(ctx context.Context, state *State, revocation *mergeRevocation, at time.Time) {
@@ -839,4 +743,9 @@ func (o *Orchestrator) escalateMergeRevocationCommentLoss(
 
 func mergeRevocationError(revocation mergeRevocation) error {
 	return fmt.Errorf("%w: %s", runpkg.ErrMergeRevoked, revocation.reason)
+}
+
+type draftMergeDecision struct {
+	targetState string
+	reason      string
 }

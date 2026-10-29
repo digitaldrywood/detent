@@ -118,7 +118,7 @@ func (t PipelineTiming) Valid() bool {
 		(t.HeadSHA == "" || evidenceSHA.MatchString(t.HeadSHA)) && (t.TreeSHA == "" || evidenceSHA.MatchString(t.TreeSHA)) &&
 		(t.Execution == "" || t.Execution == "executed" || t.Execution == "reused") &&
 		(t.Execution != "reused" || pipelineReceiptID.MatchString(t.ReusedReceiptID)) &&
-		(t.Outcome == "" || slices.Contains([]string{"clean", "conflict", "agent-resolved", "rework"}, t.Outcome)) &&
+		(t.Outcome == "" || slices.Contains([]string{"clean", "conflict", "dirty", "agent-resolved", "rework"}, t.Outcome)) &&
 		(t.ExitCode == nil || *t.ExitCode >= -1 && *t.ExitCode <= 255)
 }
 

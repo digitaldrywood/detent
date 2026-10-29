@@ -30,9 +30,11 @@ type healthSubject struct {
 }
 
 type healthEvidence struct {
+	Productivity        *healthProductivityEvidence    `json:"productivity,omitempty"`
 	ScheduledValidation *healthScheduledEvidence       `json:"scheduled_validation,omitempty"`
 	EventIDs            []string                       `json:"event_ids,omitempty"`
 	AttemptIDs          []string                       `json:"attempt_ids,omitempty"`
+	WorkItemIDs         []string                       `json:"work_item_ids,omitempty"`
 	Counts              map[string]int                 `json:"counts,omitempty"`
 	Values              map[string]float64             `json:"values,omitempty"`
 	Queues              map[string]healthQueueEvidence `json:"queues,omitempty"`
@@ -65,6 +67,7 @@ type healthSlackFailure struct {
 }
 
 type healthFinding struct {
+	ConditionSince   time.Time            `json:"-"`
 	SlackUnavailable *healthSlackFailure  `json:"slack_unavailable,omitempty"`
 	ID               string               `json:"id"`
 	Fingerprint      string               `json:"fingerprint"`
@@ -128,6 +131,10 @@ type healthProject struct {
 	RefusalReasons  []string
 	RefusalEvents   []string
 	Claims          int
+	DependencyGated int
+	HeldCount       int
+	HeldBlockers    []string
+	HoldSince       time.Time
 }
 
 type healthWait struct {
@@ -140,20 +147,12 @@ type healthWait struct {
 	Active  bool
 }
 
-type healthLimit struct {
-	Item    string
-	Project string
-	Event   string
-	Active  bool
-}
-
 type healthSnapshot struct {
 	Runners             []healthRunner
 	Projects            []healthProject
 	Waits               []healthWait
 	Rates               []healthRateProject
 	BaselineUnavailable []healthBaselineUnavailable
-	Limits              []healthLimit
 }
 
 func newHealthFinding(signal, class, kind, id, summary, action string, projects []string, evidence healthEvidence) healthFinding {
@@ -161,6 +160,7 @@ func newHealthFinding(signal, class, kind, id, summary, action string, projects 
 	evidence.Signatures = slices.Clone(evidence.Signatures[:min(len(evidence.Signatures), healthEvidenceLimit)])
 	evidence.EventIDs = slices.Clone(evidence.EventIDs[:min(len(evidence.EventIDs), healthEvidenceLimit)])
 	evidence.AttemptIDs = slices.Clone(evidence.AttemptIDs[:min(len(evidence.AttemptIDs), healthEvidenceLimit)])
+	evidence.WorkItemIDs = slices.Clone(evidence.WorkItemIDs[:min(len(evidence.WorkItemIDs), healthEvidenceLimit)])
 	return healthFinding{Fingerprint: hex.EncodeToString(sum[:]), Signal: signal, Class: class, Subject: healthSubject{kind, id}, Projects: slices.Clone(projects), Severity: "attention", Summary: summary, NextAction: action, Evidence: evidence}
 }
 
@@ -218,6 +218,13 @@ func deadManFinding(now time.Time, p healthProject) (healthFinding, bool) {
 	return newHealthFinding("dead_man", "flow", "project", p.ID, "Delivery stalled. "+strings.Join(reasons, " "), action, []string{p.ID}, evidence), landing || silent || red
 }
 
+func dependencyHoldFinding(now time.Time, p healthProject) (healthFinding, bool) {
+	active := p.Candidates == 0 && p.DependencyGated > 0 && p.HeldCount > 0 && p.FreeSlots > 0 && !p.HoldSince.IsZero() && now.Sub(p.HoldSince) >= healthFlowWindow && (p.LastLanding.IsZero() || now.Sub(p.LastLanding) >= healthFlowWindow)
+	evidence := healthEvidence{Counts: map[string]int{"dependency_gated": p.DependencyGated, "held_blockers": p.HeldCount, "free_slots": p.FreeSlots}, WorkItemIDs: p.HeldBlockers}
+	summary := fmt.Sprintf("Delivery stalled. %d dispatchable items wait on dependencies held in non-dispatchable lanes while runner slots are free.", p.DependencyGated)
+	return newHealthFinding("dependency_hold", "flow", "project", p.ID, summary, "The project operator moves, finishes or removes the held blocking items listed in the evidence.", []string{p.ID}, evidence), active
+}
+
 func schedulerFinding(now time.Time, p healthProject) (healthFinding, bool) {
 	active := !p.RefreshAt.IsZero() && (now.Sub(p.RefreshAt) > healthInstanceWindow || p.RefreshDuration > healthInstanceWindow)
 	return newHealthFinding("scheduler_loop_behind", "instance", "project", p.ID, "The project scheduler refresh is more than five minutes behind.", "The runner operator checks project refresh timing and errors.", []string{p.ID}, healthEvidence{Counts: map[string]int{"refresh_seconds": int(p.RefreshDuration / time.Second)}}), active
@@ -235,9 +242,6 @@ func refusalFinding(p healthProject) (healthFinding, bool) {
 	summary := "Candidates cannot start work because runners refused every claim."
 	action := "The runner operator checks the claim refusal in the runner's logs."
 	switch reason {
-	case "policy_mismatch":
-		summary = "Candidates cannot start work because runner policy differs from its approval."
-		action = "The organization administrator reviews the project's policy in Settings → Integrations."
 	case "runner_heartbeat_stale":
 		summary = "Candidates cannot start work because their runners are offline."
 		action = "The runner operator checks the runner process and its Hub connection."
@@ -267,11 +271,9 @@ func humanWaitFinding(now time.Time, w healthWait) (healthFinding, bool) {
 		action = w.Reason
 		evidence.Reason = "issue_contract_unsatisfied"
 	}
-	return newHealthFinding("unanswered_human_wait", "human", kind, id, summary, action, []string{w.Project}, evidence), w.Active && (w.Reason != "" || !w.Since.IsZero() && now.Sub(w.Since) > healthFlowWindow)
-}
-
-func lifetimeFinding(l healthLimit) (healthFinding, bool) {
-	return newHealthFinding("lifetime_limit_hit", "instance", "work_item", l.Item, "The work item has reached its lifetime execution limit.", "The runner operator reviews the linked work item and its lifetime accounting.", []string{l.Project}, healthEvidence{EventIDs: []string{l.Event}}), l.Active
+	finding := newHealthFinding("unanswered_human_wait", "human", kind, id, summary, action, []string{w.Project}, evidence)
+	finding.ConditionSince = w.Since
+	return finding, w.Active && (w.Reason != "" || !w.Since.IsZero() && now.Sub(w.Since) > healthFlowWindow)
 }
 
 func evaluateHealth(now time.Time, snapshot healthSnapshot) []healthFinding {
@@ -286,14 +288,12 @@ func evaluateHealth(now time.Time, snapshot healthSnapshot) []healthFinding {
 	}
 	for _, p := range snapshot.Projects {
 		add(deadManFinding(now, p))
+		add(dependencyHoldFinding(now, p))
 		add(schedulerFinding(now, p))
 		add(refusalFinding(p))
 	}
 	for _, w := range snapshot.Waits {
 		add(humanWaitFinding(now, w))
-	}
-	for _, l := range snapshot.Limits {
-		add(lifetimeFinding(l))
 	}
 	findings = append(findings, evaluateHealthRates(now, snapshot.Rates)...)
 	slices.SortFunc(findings, func(a, b healthFinding) int {

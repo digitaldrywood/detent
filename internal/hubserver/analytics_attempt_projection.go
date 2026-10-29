@@ -5,14 +5,17 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/tracker"
 
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
 )
 
-const analyticsAttemptUpsert = `INSERT INTO analytics_hourly_rollups(organization_id,project_id,hour,metric,dimension,value,data_json) VALUES(?,?,?,'attempt',?,1,?) ON CONFLICT DO UPDATE SET hour=excluded.hour,value=excluded.value,data_json=excluded.data_json WHERE data_json<>excluded.data_json`
-
 func refreshAnalyticsAttempts(ctx context.Context, tx *sql.Tx, statements analyticsStatements, organization, project, item string) error {
-	query := `SELECT id,work_item_id,lease_id,status,started_at,updated_at,data_json,` + analyticsAttemptFailedAt + ` FROM native_attempts WHERE organization_id=? AND project_id=?`
+	query := `SELECT id,work_item_id,lease_id,status,started_at,updated_at,data_json FROM native_attempts WHERE organization_id=? AND project_id=?`
 	args := []any{organization, project}
 	if item != "" {
 		query += " AND work_item_id=?"
@@ -31,9 +34,14 @@ func refreshAnalyticsAttempts(ctx context.Context, tx *sql.Tx, statements analyt
 	for rows.Next() {
 		var id, workItem, lease, status, started, updated, raw string
 		var failed sql.NullString
-		if err := rows.Scan(&id, &workItem, &lease, &status, &started, &updated, &raw, &failed); err != nil {
+		var observation analyticsAttemptProjection
+		if err := rows.Scan(&id, &workItem, &lease, &status, &started, &updated, &raw); err != nil {
 			return fmt.Errorf("scan analytics attempt source: %w", err)
 		}
+		if err := json.Unmarshal([]byte(raw), &observation); err != nil {
+			return err
+		}
+		failed = analyticsFailureTime(observation.Runtime.Landing, status, updated)
 		payload, err := projectAnalyticsAttempt(raw, id, workItem, lease, status, started, updated, failed)
 		if err != nil {
 			return err
@@ -51,76 +59,119 @@ func refreshAnalyticsAttempts(ctx context.Context, tx *sql.Tx, statements analyt
 		return err
 	}
 	for _, attempt := range attempts {
-		if _, err := statements.exec(ctx, tx, analyticsAttemptUpsert, organization, project, attempt.hour, attempt.id, attempt.payload); err != nil {
+		if err := writeAnalyticsSample(ctx, tx, organization, project, attempt.hour, "attempt", attempt.id, 1, attempt.payload); err != nil {
 			return fmt.Errorf("write analytics attempt projection: %w", err)
 		}
 	}
 	return nil
 }
 
+type analyticsCommand struct {
+	TimingStage     string                 `json:"timing_stage,omitempty"`
+	ReceiptID       string                 `json:"receipt_id,omitempty"`
+	Execution       string                 `json:"execution,omitempty"`
+	ReusedReceiptID string                 `json:"reused_receipt_id,omitempty"`
+	StartedAt       time.Time              `json:"started_at,omitzero"`
+	FinishedAt      time.Time              `json:"finished_at,omitzero"`
+	Pipeline        *gate.PipelineEvidence `json:"pipeline,omitzero"`
+	DurationNS      int64                  `json:"duration_ns,omitempty"`
+	Command         string                 `json:"command"`
+	HeadSHA         string                 `json:"head_sha"`
+	TreeSHA         string                 `json:"tree_sha"`
+	ExitCode        int                    `json:"exit_code"`
+}
+
+type analyticsAttemptLanding struct {
+	Pipeline        []gate.PipelineTiming `json:"pipeline,omitempty"`
+	PipelineDropped int                   `json:"pipeline_dropped,omitempty"`
+	Gate            *analyticsCommand     `json:"gate,omitempty"`
+	FromState       string                `json:"from_state,omitempty"`
+	TargetState     string                `json:"target_state,omitempty"`
+	GateFailed      bool                  `json:"gate_failed,omitempty"`
+	Rebased         bool                  `json:"rebased,omitempty"`
+	ChangeID        string                `json:"change_id,omitempty"`
+	VersionID       string                `json:"version_id,omitempty"`
+	HeadSHA         string                `json:"head_sha,omitempty"`
+	Landed          bool                  `json:"landed"`
+	MergeSHA        string                `json:"merge_sha,omitempty"`
+	BaseRef         string                `json:"base_ref,omitempty"`
+	BaseSHA         string                `json:"base_sha,omitempty"`
+	Method          string                `json:"method,omitempty"`
+	RefusalKind     string                `json:"refusal_kind,omitempty"`
+	ObservedAt      time.Time             `json:"observed_at"`
+}
+
+type analyticsPhases struct {
+	items     []tracker.NativePhase
+	malformed bool
+}
+
+func (p *analyticsPhases) UnmarshalJSON(raw []byte) error {
+	if json.Unmarshal(raw, &p.items) != nil {
+		p.items, p.malformed = nil, true
+	}
+	return nil
+}
+
+func (p analyticsPhases) MarshalJSON() ([]byte, error) {
+	if p.malformed {
+		return []byte(`"malformed"`), nil
+	}
+	return json.Marshal(p.items)
+}
+
+type analyticsAttemptRuntime struct {
+	Phases          analyticsPhases                  `json:"phases"`
+	PhasesDropped   int                              `json:"phases_dropped"`
+	Activity        *workflowmetrics.ActivityProfile `json:"activity,omitempty"`
+	Identity        agentidentity.Identity           `json:"identity,omitzero"`
+	Landing         *analyticsAttemptLanding         `json:"landing,omitempty"`
+	Pipeline        []gate.PipelineTiming            `json:"pipeline,omitempty"`
+	PipelineDropped int                              `json:"pipeline_dropped,omitempty"`
+	Validation      *analyticsCommand                `json:"validation,omitempty"`
+}
+
+type analyticsAttemptProjection struct {
+	ID         string                  `json:"id"`
+	WorkItemID string                  `json:"work_item_id"`
+	LeaseID    string                  `json:"lease_id"`
+	RunnerID   string                  `json:"runner_id,omitempty"`
+	Status     string                  `json:"status"`
+	StartedAt  string                  `json:"started_at"`
+	UpdatedAt  string                  `json:"updated_at"`
+	FailedAt   *string                 `json:"failed_at"`
+	Identity   agentidentity.Identity  `json:"identity,omitzero"`
+	Runtime    analyticsAttemptRuntime `json:"runtime"`
+}
+
 func projectAnalyticsAttempt(raw, id, item, lease, status, started, updated string, failed sql.NullString) (string, error) {
-	var payload map[string]json.RawMessage
+	var payload analyticsAttemptProjection
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		return "", fmt.Errorf("decode analytics attempt source: %w", err)
 	}
-	if payload == nil {
-		payload = make(map[string]json.RawMessage)
+	if activity := payload.Runtime.Activity; activity != nil && validAnalyticsActivity(*activity) {
+		public := workflowmetrics.PublicActivityProfile(*activity)
+		payload.Runtime.Activity = &public
 	}
-	var runtime map[string]json.RawMessage
-	if json.Unmarshal(payload["runtime"], &runtime) == nil && runtime != nil {
-		var activity workflowmetrics.ActivityProfile
-		if json.Unmarshal(runtime["activity"], &activity) == nil && validAnalyticsActivity(activity) {
-			activity = workflowmetrics.PublicActivityProfile(activity)
-			encoded, err := json.Marshal(activity)
-			if err != nil {
-				return "", fmt.Errorf("encode analytics activity: %w", err)
-			}
-			runtime["activity"] = encoded
-		}
-		for _, key := range []string{"validation", "landing"} {
-			var receipt map[string]json.RawMessage
-			if json.Unmarshal(runtime[key], &receipt) != nil || receipt == nil {
-				continue
-			}
-			delete(receipt, "output")
-			if key == "landing" {
-				var gate map[string]json.RawMessage
-				if json.Unmarshal(receipt["gate"], &gate) == nil && gate != nil {
-					delete(gate, "output")
-					encoded, err := json.Marshal(gate)
-					if err != nil {
-						return "", err
-					}
-					receipt["gate"] = encoded
-				}
-			}
-			encoded, err := json.Marshal(receipt)
-			if err != nil {
-				return "", err
-			}
-			runtime[key] = encoded
-		}
-		encoded, err := json.Marshal(runtime)
-		if err != nil {
-			return "", err
-		}
-		payload["runtime"] = encoded
-	}
-	for key, value := range map[string]string{"id": id, "work_item_id": item, "lease_id": lease, "status": status, "started_at": started, "updated_at": updated} {
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			return "", err
-		}
-		payload[key] = encoded
-	}
-	payload["failed_at"] = json.RawMessage("null")
+	payload.ID, payload.WorkItemID, payload.LeaseID = id, item, lease
+	payload.Status, payload.StartedAt, payload.UpdatedAt = status, started, updated
+	payload.FailedAt = nil
 	if failed.Valid {
-		encoded, err := json.Marshal(failed.String)
-		if err != nil {
-			return "", err
-		}
-		payload["failed_at"] = encoded
+		payload.FailedAt = &failed.String
 	}
 	encoded, err := json.Marshal(payload)
 	return string(encoded), err
+}
+
+func analyticsFailureTime(landing *analyticsAttemptLanding, status, updated string) sql.NullString {
+	refusal := landing != nil && (landing.RefusalKind == "conflict" || landing.RefusalKind == "base_protected")
+	gate := landing != nil && landing.GateFailed
+	if status != "failed" && status != "interrupted" && !refusal && !gate {
+		return sql.NullString{}
+	}
+	at := updated
+	if landing != nil && ((refusal && !landing.Landed) || gate) && !landing.ObservedAt.IsZero() {
+		at = formatHubTime(landing.ObservedAt)
+	}
+	return sql.NullString{String: at, Valid: true}
 }

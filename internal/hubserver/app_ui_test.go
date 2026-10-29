@@ -9,12 +9,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -57,6 +59,10 @@ func (f *browserHostedFixture) appRequest(t *testing.T, account, method, path st
 func TestAppShellServing(t *testing.T) {
 	useAppClientFS(t, appClientBundle())
 	f := newBrowserHostedFixture(t, true)
+	var projectSlug string
+	if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT slug FROM projects WHERE id=?", f.project).Scan(&projectSlug); err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name     string
 		account  string
@@ -79,6 +85,11 @@ func TestAppShellServing(t *testing.T) {
 		{name: "viewer", account: "viewer", path: "/work", status: http.StatusOK, shell: true},
 		{name: "head", account: "owner", method: http.MethodHead, path: "/work", status: http.StatusOK, shell: true},
 		{name: "root", account: "owner", path: "/", status: http.StatusOK, shell: true},
+		{name: "project settings by slug", account: "owner", path: "/projects/" + projectSlug + "/settings", status: http.StatusOK, shell: true},
+		{name: "project settings by id", account: "owner", path: "/projects/" + f.project + "/settings", status: http.StatusOK, shell: true},
+		{name: "unknown project settings", account: "owner", path: "/projects/unknown-project/settings", status: http.StatusNotFound},
+		{name: "unauthorized project settings", account: "support-staff", path: "/projects/" + projectSlug + "/settings", status: http.StatusNotFound},
+		{name: "anonymous project settings", path: "/projects/" + projectSlug + "/settings", status: http.StatusSeeOther, location: "/login"},
 		{name: "project", account: "owner", path: "/projects/" + f.project, status: http.StatusOK, shell: true},
 		{name: "project issue", account: "owner", path: "/projects/" + f.project + "/issues/wi_any", status: http.StatusNotFound},
 		{name: "project issue change", account: "owner", path: "/projects/" + f.project + "/issues/wi_any/changes/chg_any", status: http.StatusNotFound},
@@ -248,6 +259,67 @@ func TestAppSharedEntry(t *testing.T) {
 			t.Fatalf("status = %d: %s", response.Code, response.Body.String())
 		}
 	})
+	for _, test := range []struct {
+		name       string
+		state      string
+		acceptedBy string
+		status     int
+	}{
+		{name: "bootstrap completes provider-accepted invitation", state: "accepted", acceptedBy: "user_joiner", status: http.StatusOK},
+		{name: "bootstrap refuses invitation accepted by another user", state: "accepted", acceptedBy: "user_other", status: http.StatusForbidden},
+		{name: "bootstrap leaves a pending invitation for the explicit join", state: "pending", status: http.StatusForbidden},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now().UTC().Truncate(time.Second)
+			subject := "user_joiner_" + test.state + "_" + strconv.Itoa(test.status)
+			acceptedBy := test.acceptedBy
+			if acceptedBy == "user_joiner" {
+				acceptedBy = subject
+			}
+			email := subject + "@example.test"
+			joiner := hostedSecurityUser{identity: auth.Identity{Subject: subject, Email: email, EmailVerified: true, Hosted: &auth.HostedIdentity{Subject: subject, OrganizationID: "org_provider", SessionID: "session_" + subject, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}}}
+			id := "invitation_" + subject
+			f.provider.mu.Lock()
+			f.provider.sessions[joiner.identity.Hosted.SessionID] = *joiner.identity.Hosted
+			f.provider.invitations[id] = auth.Invitation{ID: id, Email: email, OrganizationID: "org_provider", State: test.state, AcceptedUserID: acceptedBy, ExpiresAt: now.Add(time.Hour)}
+			f.provider.mu.Unlock()
+			if test.state == "accepted" {
+				if _, err := f.provider.CreateMembership(t.Context(), subject, "org_provider", "admin"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			grants := `[{"project_id":"` + string(f.project) + `","write":true,"runner":false}]`
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_invitations(id,email,organization_id,role,created_at,expires_at,grants_json) VALUES (?,?,'org_security','admin',?,?,?)", id, email, formatHubTime(now), now.Add(time.Hour).Format(time.RFC3339), grants); err != nil {
+				t.Fatal(err)
+			}
+			response := f.serve(t, hostedSharedRequest{user: &joiner, target: prefix + "/app/bootstrap"})
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.status, response.Body.String())
+			}
+			var members, accepted int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_members WHERE user_id = ? AND active = 1 AND role = 'admin'", subject).Scan(&members); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM hosted_invitations WHERE id = ? AND accepted_user_id = ?", id, subject).Scan(&accepted); err != nil {
+				t.Fatal(err)
+			}
+			want := 0
+			if test.status == http.StatusOK {
+				want = 1
+				var payload appBootstrap
+				decodeHubResponse(t, response, &payload)
+				if payload.Actor.Role != "admin" || len(payload.Projects) != 1 {
+					t.Fatalf("bootstrap = %#v", payload)
+				}
+			}
+			if members != want || accepted != want {
+				t.Fatalf("members = %d, accepted = %d, want %d", members, accepted, want)
+			}
+			if provider, _ := f.provider.Invitation(t.Context(), id); provider.State != test.state {
+				t.Fatalf("provider invitation state = %q, want %q", provider.State, test.state)
+			}
+		})
+	}
 	t.Run("updates", func(t *testing.T) {
 		if response := f.serve(t, hostedSharedRequest{user: &member, target: prefix + "/app/updates"}); response.Code != http.StatusNotFound {
 			t.Fatalf("ungranted status = %d: %s", response.Code, response.Body.String())
@@ -309,6 +381,13 @@ func TestAppBootstrapPayload(t *testing.T) {
 	f := newBrowserHostedFixture(t, true)
 	browserHostedStatus(t, f.appRequest(t, "", http.MethodGet, "/app/bootstrap"), http.StatusUnauthorized)
 	browserHostedStatus(t, f.appRequest(t, "staff", http.MethodGet, "/app/bootstrap"), http.StatusForbidden)
+	f.provider.mu.Lock()
+	user := f.provider.users["user_browser_owner"]
+	user.FirstName = "Example"
+	user.LastName = "Person"
+	user.ProfilePictureURL = "https://workoscdn.com/avatar.png"
+	f.provider.users["user_browser_owner"] = user
+	f.provider.mu.Unlock()
 	for _, path := range []string{"/app/bootstrap", "/chat/bootstrap"} {
 		t.Run(path, func(t *testing.T) {
 			response := f.appRequest(t, "owner", http.MethodGet, path)
@@ -341,7 +420,7 @@ func TestAppBootstrapPayload(t *testing.T) {
 			if len(payload.Organizations) != 1 || payload.Organizations[0].ID != "org_browser_preview" || !payload.Organizations[0].Current || payload.Organizations[0].Name != payload.Organization.Name || payload.Organizations[0].PublicURL == "" {
 				t.Fatalf("organizations = %#v", payload.Organizations)
 			}
-			if payload.Actor.Subject != "user_browser_owner" || payload.Actor.Role != "owner" || payload.Actor.Email != "owner@example.test" || !payload.Actor.CanManage || payload.Actor.PrincipalID == "" {
+			if payload.Actor.Subject != "user_browser_owner" || payload.Actor.Role != "owner" || payload.Actor.Email != "owner@example.test" || !payload.Actor.CanManage || payload.Actor.PrincipalID == "" || payload.Actor.FirstName != "Example" || payload.Actor.LastName != "Person" || payload.Actor.ProfilePictureURL != "https://workoscdn.com/avatar.png" {
 				t.Fatalf("actor = %#v", payload.Actor)
 			}
 			if len(payload.Projects) != 2 || !payload.Projects[0].CanWrite || payload.Projects[0].Profile != "native" {

@@ -77,7 +77,7 @@ export function resolveThreadRouteTarget(
 
   // Detent has no draft route: `/chat` is the unsent composer and it carries
   // no id, so this branch never fires. It stays because the copied callers
-  // still read its `kind` (decisions.md §16).
+  // still read its `kind`.
   if (!params.draftId) {
     return null;
   }

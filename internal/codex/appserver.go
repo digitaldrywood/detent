@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 )
@@ -35,7 +36,7 @@ const (
 	defaultClientTitle   = "Detent Orchestrator"
 	defaultClientVersion = "0.1.0"
 
-	defaultReadTimeout = 5 * time.Second
+	defaultReadTimeout = time.Minute
 	defaultTurnTimeout = time.Hour
 
 	maxToolFailureDiagnosticBytes = 2048
@@ -198,7 +199,7 @@ type RunTurnRequest struct {
 	Prompt              string
 	// Attachments are the files the user attached to the message that starts
 	// this turn. Images become image input items; text attachments already
-	// reached Prompt as a data block (decisions section 17.1).
+	// reached Prompt as a data block.
 	Attachments []runner.AgentAttachment
 	// TempDir is where a turn's image copies are written.
 	TempDir                 string
@@ -747,6 +748,14 @@ func (s *AppServer) ListModels(ctx context.Context) (models []Model, err error) 
 	}
 	defer func() {
 		closeErr := closeTransport(ctx, transport, s.readTimeout)
+		err = errors.Join(err, ctx.Err())
+		reaped, verified := errors.Unwrap(closeErr).(interface {
+			cleanupEvidence() backendcapacity.StartupProcessEvidence
+		})
+		if err == nil && len(models) > 0 && verified {
+			s.logger.WarnContext(ctx, "codex model catalog helper required forced cleanup", "error", closeErr, "process", reaped.cleanupEvidence())
+			return
+		}
 		if closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
@@ -794,6 +803,9 @@ func (s *AppServer) ListModels(ctx context.Context) (models []Model, err error) 
 				Default: entry.Default,
 				Upgrade: strings.TrimSpace(entry.Upgrade),
 			}
+			if model.ID == "" || model.Model == "" {
+				return nil, fmt.Errorf("%w: model/list entry missing identity", ErrInvalidResponse)
+			}
 			for _, option := range entry.SupportedReasoningEfforts {
 				if effort := strings.TrimSpace(option.Effort); effort != "" {
 					model.SupportedReasoningEfforts = append(model.SupportedReasoningEfforts, effort)
@@ -803,6 +815,9 @@ func (s *AppServer) ListModels(ctx context.Context) (models []Model, err error) 
 		}
 		cursor = strings.TrimSpace(response.NextCursor)
 		if cursor == "" {
+			if len(models) == 0 {
+				return nil, fmt.Errorf("%w: model/list catalog is empty", ErrInvalidResponse)
+			}
 			return models, nil
 		}
 	}

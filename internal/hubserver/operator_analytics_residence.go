@@ -125,7 +125,19 @@ func projectNativeAnalyticsResidenceHistory(ctx context.Context, q nativeQueryer
 	return nil
 }
 
+type analyticsLiveIssuesKey struct{}
+
+// withAnalyticsLiveIssues leaves archived nonterminal issues out of residence
+// history so they neither appear as current work nor consume the population cap.
+func withAnalyticsLiveIssues(ctx context.Context) context.Context {
+	return context.WithValue(ctx, analyticsLiveIssuesKey{}, true)
+}
+
 func readAnalyticsResidenceHistory(ctx context.Context, q nativeQueryer, scope nativeScope, w operatortool.AnalyticsWindow) (map[string]tracker.NativeState, []analyticsResidenceIssue, bool, error) {
+	q, prepareErr := prepareReportsQuery(ctx, q, scope, "report_events")
+	if prepareErr != nil {
+		return nil, nil, false, prepareErr
+	}
 	states := map[string]tracker.NativeState{}
 	rows, err := queryAnalyticsRows(ctx, q, `SELECT ws.detent_state,ws.terminal,ws.dispatchable FROM workflow_states ws
 JOIN projects p ON p.id=ws.project_id WHERE p.organization_id=? AND p.id=? LIMIT 50`, scope.organization, scope.project)
@@ -150,11 +162,14 @@ JOIN projects p ON p.id=ws.project_id WHERE p.organization_id=? AND p.id=? LIMIT
 		return nil, nil, false, err
 	}
 	issueFilter, issueArgs := reportsIssueClause(ctx, "i.native_id")
+	if _, live := ctx.Value(analyticsLiveIssuesKey{}).(bool); live {
+		issueFilter += " AND NOT (i.archived=1 AND coalesce(ws.terminal,0)=0)"
+	}
 	rows, err = queryAnalyticsPopulation(ctx, q, "residence_issues", `SELECT i.native_id,i.created_at,coalesce(
-(SELECT json_extract(e.data_json,'$.from_state') FROM collaboration_events e
+(SELECT e.analytics_from_state FROM report_events e
  WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned'
  ORDER BY e.sequence LIMIT 1),CASE WHEN EXISTS (
- SELECT 1 FROM collaboration_events c WHERE c.organization_id=i.organization_id AND c.project_id=i.project_id AND c.work_item_id=i.native_id AND c.type='issue.created'
+ SELECT 1 FROM report_events c WHERE c.organization_id=i.organization_id AND c.project_id=i.project_id AND c.work_item_id=i.native_id AND c.type='issue.created'
  ) THEN ws.detent_state END,'')
 FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id
 WHERE i.organization_id=? AND i.project_id=? AND julianday(i.created_at)<julianday(?)
@@ -212,10 +227,10 @@ ORDER BY i.native_id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.p
 	for i, issue := range issues {
 		byID[issue.id] = i
 	}
-	rows, err = queryAnalyticsPopulation(ctx, q, "residence_events", `SELECT work_item_id,type,recorded_at,data_json FROM collaboration_events
+	rows, err = queryAnalyticsPopulation(ctx, q, "residence_events", `SELECT work_item_id,type,recorded_at,data_json FROM report_events
 WHERE organization_id=? AND project_id=? AND julianday(recorded_at)<julianday(?)
 AND work_item_id IN (SELECT value FROM json_each(?))
-AND (type='workflow.transitioned' OR (type='scheduler.decision' AND json_extract(data_json,'$.decision.source')='native_claim' AND json_extract(data_json,'$.decision.outcome')='claimed'))
+AND (type='workflow.transitioned' OR (type='scheduler.decision' AND scheduler_source='native_claim' AND scheduler_outcome='claimed'))
 ORDER BY work_item_id,sequence LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return nil, nil, false, err

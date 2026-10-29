@@ -208,14 +208,6 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "reports-model-heavy", Route: "/reports", WaitSelector: "main", Page: "reports", Variant: "model-heavy"},
 		{ID: "reports-filtered-project", Route: "/reports", WaitSelector: "main", Page: "reports", Variant: "filtered-project", ProjectID: demoPrimaryProjectID},
 		{ID: "reports-invalid-date-range", Route: "/reports", WaitSelector: "body", Page: "reports", Variant: "invalid-date-range", Status: http.StatusBadRequest},
-		{ID: "onboarding-tracker-choice", Route: "/onboarding", WaitSelector: "#onboarding-step", Page: "onboarding", Variant: "tracker"},
-		{ID: "onboarding-github-credentials", Route: "/onboarding", WaitSelector: "#onboarding-step", Page: "onboarding", Variant: "credentials"},
-		{ID: "onboarding-project-selection", Route: "/onboarding", WaitSelector: "#onboarding-step", Page: "onboarding", Variant: "project"},
-		{ID: "onboarding-agent-config", Route: "/onboarding", WaitSelector: "#onboarding-step", Page: "onboarding", Variant: "agent"},
-		{ID: "onboarding-write-summary", Route: "/onboarding", WaitSelector: "#onboarding-step", Page: "onboarding", Variant: "write"},
-		{ID: "onboarding-validation-errors", Route: "/onboarding", WaitSelector: "#onboarding-step", Page: "onboarding", Variant: "validation-errors"},
-		{ID: "onboarding-write-exists", Route: "/onboarding", WaitSelector: "#onboarding-step", Page: "onboarding", Variant: "write-exists"},
-		{ID: "onboarding-write-success", Route: "/onboarding", WaitSelector: "#onboarding-step", Page: "onboarding", Variant: "write-success"},
 		{ID: "api-kanban-move-dialog", Route: "/api/v1/kanban/move", Method: http.MethodGet, WaitSelector: "#kanban-dialog-content", Page: "api", Variant: "kanban-move-dialog", ProjectID: demoPrimaryProjectID},
 		{ID: "api-kanban-move-preselected-target", Route: "/api/v1/kanban/move", Method: http.MethodGet, WaitSelector: "#kanban-dialog-content", Page: "api", Variant: "kanban-move-dialog", ProjectID: demoPrimaryProjectID},
 		{ID: "api-kanban-move-missing-target", Route: "/api/v1/kanban/move", Method: http.MethodGet, WaitSelector: "#kanban-dialog-content", Page: "api", Variant: "kanban-move-missing-target", ProjectID: demoPrimaryProjectID},
@@ -266,8 +258,6 @@ func demoKeySelectors(def demoScenario) []string {
 		return []string{"main", "#reports-kpis"}
 	case "settings":
 		return []string{"main", "#settings-global"}
-	case "onboarding":
-		return []string{"#onboarding-step"}
 	default:
 		return []string{def.WaitSelector}
 	}
@@ -417,10 +407,6 @@ func (s *Server) demoSettings(c echo.Context, scenario demoScenario, selectedPro
 	return render(c, templates.Settings(data))
 }
 
-func (s *Server) demoOnboarding(c echo.Context, scenario demoScenario) error {
-	return render(c, templates.OnboardingPage(s.demoOnboardingData(scenario)))
-}
-
 func (s *Server) demoDashboardData(ctx context.Context, scenario demoScenario) templates.DashboardData {
 	instanceName := s.instanceName()
 	snapshot := demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant)
@@ -430,7 +416,7 @@ func (s *Server) demoDashboardData(ctx context.Context, scenario demoScenario) t
 		InstanceName:     instanceName,
 		Version:          s.version,
 		Build:            s.build,
-		ConnectorName:    s.connector.Name(),
+		ConnectorName:    s.connectorName(),
 		DashboardURL:     s.dashboardURL,
 		Snapshot:         snapshot,
 		ConfiguredAgents: demoConfiguredAgents(snapshot),
@@ -476,7 +462,7 @@ func (s *Server) demoProjectDashboardData(ctx context.Context, scenario demoScen
 		InstanceName:              instanceName,
 		Version:                   s.version,
 		Build:                     s.build,
-		ConnectorName:             s.connector.Name(),
+		ConnectorName:             s.connectorName(),
 		DashboardURL:              s.dashboardURL,
 		Snapshot:                  scoped,
 		ConfiguredAgents:          demoConfiguredAgents(scoped),
@@ -750,10 +736,10 @@ func demoSettingsProjects(variant string) []templates.SettingsProject {
 		return nil
 	}
 	projects := []templates.SettingsProject{
-		{ID: demoPrimaryProjectID, WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", WorkflowDetailsURL: "https://github.com/orgs/example-org/projects/4/workflows", Workdir: "/tmp/detent-screenshots/source/detent-core", WorktreeRoot: "/tmp/detent-screenshots/workspaces/detent-core", Weight: 120, Priority: 100, TrackerKind: "memory", TrackerProject: "example-org/detent-core", DependencyAutoUnblock: "enabled: Blocked -> Todo when terminal_or_merged"},
-		{ID: "docs-site", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/docs-site", WorktreeRoot: "/tmp/detent-screenshots/workspaces/docs-site", Weight: 90, Priority: 80, TrackerKind: "memory", TrackerProject: "example-org/docs-site", DependencyAutoUnblock: "disabled: n/a -> n/a when terminal_or_merged"},
-		{ID: "billing-api", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/billing-api", WorktreeRoot: "/tmp/detent-screenshots/workspaces/billing-api", Weight: 80, Priority: 95, TrackerKind: "memory", TrackerProject: "example-org/billing-api", DependencyAutoUnblock: "enabled: Blocked -> Rework when terminal_or_merged"},
-		{ID: "mobile-client", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/mobile-client", WorktreeRoot: "/tmp/detent-screenshots/workspaces/mobile-client", Weight: 40, Priority: 20, Paused: true, TrackerKind: "memory", TrackerProject: "example-org/mobile-client", DependencyAutoUnblock: "disabled: n/a -> n/a when terminal_or_merged"},
+		{ID: demoPrimaryProjectID, WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", WorkflowDetailsURL: "https://github.com/orgs/example-org/projects/4/workflows", Workdir: "/tmp/detent-screenshots/source/detent-core", WorktreeRoot: "/tmp/detent-screenshots/workspaces/detent-core", Weight: 120, Priority: 100, TrackerKind: "hub_native", TrackerProject: "example-org/detent-core", DependencyAutoUnblock: "enabled: Blocked -> Todo when terminal_or_merged"},
+		{ID: "docs-site", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/docs-site", WorktreeRoot: "/tmp/detent-screenshots/workspaces/docs-site", Weight: 90, Priority: 80, TrackerKind: "hub_native", TrackerProject: "example-org/docs-site", DependencyAutoUnblock: "disabled: n/a -> n/a when terminal_or_merged"},
+		{ID: "billing-api", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/billing-api", WorktreeRoot: "/tmp/detent-screenshots/workspaces/billing-api", Weight: 80, Priority: 95, TrackerKind: "hub_native", TrackerProject: "example-org/billing-api", DependencyAutoUnblock: "enabled: Blocked -> Rework when terminal_or_merged"},
+		{ID: "mobile-client", WorkflowPath: "/tmp/detent-screenshots/WORKFLOW.md", Workdir: "/tmp/detent-screenshots/source/mobile-client", WorktreeRoot: "/tmp/detent-screenshots/workspaces/mobile-client", Weight: 40, Priority: 20, Paused: true, TrackerKind: "hub_native", TrackerProject: "example-org/mobile-client", DependencyAutoUnblock: "disabled: n/a -> n/a when terminal_or_merged"},
 	}
 	if variant == "settings-long-paths" {
 		for i := range projects {
@@ -781,7 +767,7 @@ func (s *Server) demoEmptyReportsData(ctx context.Context, scenario demoScenario
 		Title:           instancePageTitle(instanceName, "Detent reports"),
 		ApplicationName: applicationName(instanceName),
 		InstanceName:    instanceName,
-		ConnectorName:   s.connector.Name(),
+		ConnectorName:   s.connectorName(),
 		Snapshot:        demofixtures.SnapshotForScenario(scenario.ProjectID, scenario.Variant),
 		GeneratedAt:     demoBaseTime,
 		Day:             empty,
@@ -792,63 +778,6 @@ func (s *Server) demoEmptyReportsData(ctx context.Context, scenario demoScenario
 		Assets:          s.assets.templatePaths(),
 		Projects:        demofixtures.ProjectsForVariant(scenario.Variant),
 		ActiveNav:       "reports",
-	}
-}
-
-func (s *Server) demoOnboardingData(scenario demoScenario) templates.OnboardingData {
-	form := templates.OnboardingForm{
-		Step:                         onboardingStepTracker,
-		TrackerKind:                  workflowconfig.TrackerGitHub,
-		Endpoint:                     "https://api.github.test",
-		APIKey:                       "$GITHUB_TOKEN",
-		ProjectSlug:                  "example-org/detent-core",
-		Repo:                         "example-org/detent-core",
-		WorkspaceRoot:                "/tmp/detent-screenshots/workspaces",
-		MaxConcurrentAgents:          "6",
-		MaxTurns:                     "24",
-		PollingIntervalMS:            "60000",
-		MergingConcurrency:           "1",
-		DispatchPriorityState:        "Merging\nRework\nTodo",
-		DispatchPriorityLabel:        "stage:s6\nobservability",
-		DependencyAutoUnblockEnabled: "true",
-	}
-	var errors []string
-	result := templates.OnboardingResult{}
-	switch scenario.Variant {
-	case "credentials":
-		form.Step = onboardingStepCredentials
-	case "project":
-		form.Step = onboardingStepProject
-	case "agent":
-		form.Step = onboardingStepAgent
-	case "write":
-		form.Step = onboardingStepWrite
-	case "validation-errors":
-		form.Step = onboardingStepProject
-		form.Endpoint = "not a url"
-		form.Repo = "example-org"
-		errors = []string{"endpoint must be an absolute HTTP URL", "repo must look like owner/name", "max agents must be a positive integer"}
-	case "write-exists":
-		form.Step = onboardingStepWrite
-		result = templates.OnboardingResult{Kind: "exists", Message: "WORKFLOW.md already exists."}
-	case "write-success":
-		form.Step = onboardingStepWrite
-		result = templates.OnboardingResult{Kind: "success", Message: "Wrote WORKFLOW.md."}
-	default:
-		form.Step = onboardingStepTracker
-	}
-	instanceName := s.instanceName()
-	return templates.OnboardingData{
-		Title:           instancePageTitle(instanceName, "Detent onboarding"),
-		ApplicationName: applicationName(instanceName),
-		InstanceName:    instanceName,
-		WorkflowPath:    "WORKFLOW.md",
-		Step:            form.Step,
-		Form:            form,
-		Errors:          errors,
-		Result:          result,
-		Assets:          s.assets.templatePaths(),
-		Polling:         templates.PollingData{MinIntervalMS: minPollingIntervalMS},
 	}
 }
 

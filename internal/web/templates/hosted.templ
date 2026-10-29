@@ -1,7 +1,7 @@
 package templates
 
 templ HostedPage(data HostedPageData) {
-	if data.Mode == "denied" || data.Mode == "unavailable" {
+	if data.Mode == "denied" || data.Mode == "unavailable" || data.Mode == "oauth" {
 		@hostedEntryPage(data)
 	} else {
 		@hostedWorkspacePage(data)

@@ -16,14 +16,17 @@ import (
 )
 
 type aiCreditTransaction struct {
-	AmountMicros int64     `json:"amount_micros"`
-	Kind         string    `json:"kind"`
-	Actor        string    `json:"actor,omitempty"`
-	Reason       string    `json:"reason,omitempty"`
-	At           time.Time `json:"at"`
+	IncludedAmountMicros int64     `json:"included_amount_micros"`
+	AmountMicros         int64     `json:"amount_micros"`
+	Kind                 string    `json:"kind"`
+	Actor                string    `json:"actor,omitempty"`
+	Reason               string    `json:"reason,omitempty"`
+	At                   time.Time `json:"at"`
+	Turns                int64     `json:"turns"`
 }
 
 type aiCreditView struct {
+	Included       *includedAICredits    `json:"included,omitempty"`
 	BalanceMicros  int64                 `json:"balance_micros"`
 	AutoEnabled    bool                  `json:"auto_enabled"`
 	ThresholdCents int64                 `json:"threshold_cents"`
@@ -33,9 +36,11 @@ type aiCreditView struct {
 	CanAutoFund    bool                  `json:"can_auto_fund"`
 	Packs          []HostedCreditPack    `json:"packs"`
 	History        []aiCreditTransaction `json:"history"`
+	NextCursor     string                `json:"next_cursor"`
+	TotalRows      int64                 `json:"total_rows"`
 }
 
-func (s *Service) readAICredits(ctx context.Context) (*aiCreditView, error) {
+func (s *Service) readAICredits(ctx context.Context, pages ...creditPageRequest) (*aiCreditView, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	d := s.database
@@ -47,25 +52,25 @@ func (s *Service) readAICredits(ctx context.Context) (*aiCreditView, error) {
 	if err != nil {
 		return nil, err
 	}
+	included, err := d.includedAICredits(ctx, d.reader, d.hostedOrganization, s.config.now())
+	if err != nil {
+		return nil, err
+	}
+	if included.AllowanceMicros > 0 {
+		view.Included = &included
+	}
 	view.CanAutoFund = method != ""
 	if cfg := s.hostedBillingConfig(); cfg != nil {
 		view.Packs = append(view.Packs, cfg.CreditPacks...)
 	}
-	rows, err := d.reader.QueryContext(ctx, "SELECT amount_micros,kind,actor,reason,recorded_at FROM ai_credit_transactions WHERE organization_id=? AND mode=? ORDER BY id DESC LIMIT 50", d.hostedOrganization, d.aiCreditMode)
-	if err != nil {
+	page := creditPageRequest{}
+	if len(pages) > 0 {
+		page = pages[0]
+	}
+	if err := s.readCreditHistory(ctx, view, page); err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var item aiCreditTransaction
-		var at int64
-		if err := rows.Scan(&item.AmountMicros, &item.Kind, &item.Actor, &item.Reason, &at); err != nil {
-			return nil, err
-		}
-		item.At = time.UnixMicro(at).UTC()
-		view.History = append(view.History, item)
-	}
-	return view, rows.Err()
+	return view, nil
 }
 
 func (s *Service) creditPack(id string) (HostedCreditPack, bool) {
@@ -90,7 +95,7 @@ func (s *Service) hostedCreditCheckout(c echo.Context) error {
 	}
 	if api {
 		if err := decodeAPIJSON(c, &request); err != nil {
-			return invalidAPIRequest(c, err)
+			return s.invalidAPIRequest(c, err)
 		}
 		if err := request.validate(true); err != nil {
 			return s.nativeAPIError(c, err)
@@ -114,7 +119,7 @@ func (s *Service) hostedCreditAutoFund(c echo.Context) error {
 	var request creditFundingInput
 	if api {
 		if err := decodeAPIJSON(c, &request); err != nil {
-			return invalidAPIRequest(c, err)
+			return s.invalidAPIRequest(c, err)
 		}
 	} else {
 		request.Enabled = c.FormValue("enabled") == "on"
@@ -259,6 +264,13 @@ func (w *hostedBillingWorker) autoFund(ctx context.Context) error {
 			return err
 		}
 		if !enabled || balance >= threshold*10000 {
+			return nil
+		}
+		included, includedErr := d.includedAICredits(readCtx, d.reader, d.hostedOrganization, s.config.now())
+		if includedErr != nil {
+			return includedErr
+		}
+		if included.remaining() > 0 {
 			return nil
 		}
 		pack, ok := s.creditPack(price)

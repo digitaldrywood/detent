@@ -4,13 +4,15 @@ package hubserver
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
-	"time"
+
+	"github.com/digitaldrywood/detent/internal/testenv"
 )
 
 func privateSocketDirectory(t *testing.T) string {
@@ -46,25 +48,23 @@ func TestRunServesPrivateUnixSocket(t *testing.T) {
 		var dialer net.Dialer
 		return dialer.DialContext(ctx, "unix", socket)
 	}}}
-	deadline := time.Now().Add(30 * time.Second)
-	var status int
-	for time.Now().Before(deadline) {
+	testenv.WaitUntil(t, t.Context(), func() error {
 		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://hub/health", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		response, err := client.Do(request)
-		if err == nil {
-			status = response.StatusCode
-			_ = response.Body.Close()
-			break
+		if err != nil {
+			select {
+			case serveErr := <-done:
+				t.Fatalf("socket never served: %v", serveErr)
+			default:
+			}
+			return fmt.Errorf("socket never served: %w", err)
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if status == 0 {
-		cancel()
-		t.Fatalf("socket never served: %v", <-done)
-	}
+		_ = response.Body.Close()
+		return nil
+	})
 	info, err := os.Stat(socket)
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("socket mode = %v, %v", info, err)

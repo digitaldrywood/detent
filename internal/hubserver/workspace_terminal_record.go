@@ -8,11 +8,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Recording terminal streams from the frames the hub relays (decisions section
-// 18.3).
+// Recording terminal streams from the frames the hub relays.
 //
 // The hub forwards the terminal channel like any other, and it also reads it.
-// That is the same arrangement section 18.12 makes for an action run, and for
+// That is the same arrangement the project actions contract makes for an action run, and for
 // the same reason: the record cannot be the client's, because the client is a
 // tab that may be closed at any moment and because a recording assembled
 // anywhere but here would be a recording of something other than what actually
@@ -56,7 +55,7 @@ func (w *workspaceService) beginTerminalRecording(
 
 // recordPersonTerminalFrame records what a person did on a terminal stream.
 //
-// Input is recorded and marked rather than dropped. Section 18.3 says outright
+// Input is recorded and marked rather than dropped. The terminal contract says outright
 // that recording cannot remove what the person typed and that the setting page
 // says so; a recording that silently held only the shell's half would be a
 // worse answer than one that says which half is which, because a reader would
@@ -159,7 +158,7 @@ func (w *workspaceService) finishTerminalRecording(ctx context.Context, state *t
 		"stream", state.streamID, "recording_id", state.id, "bytes", record.Bytes,
 		"truncated", record.Truncated, "isolation", record.Isolation)
 	// The relay session row references the recording, which is the reference
-	// section 18.3 asks for. It is written once and left alone: a connection
+	// the terminal contract asks for. It is written once and left alone: a connection
 	// that opened several terminals gets one reference to the listing that
 	// covers all of them, because one column cannot name several recordings.
 	if state.relaySessionID == "" {

@@ -14,6 +14,7 @@ func TestIssueContract(t *testing.T) {
 	t.Parallel()
 	complete := "## Acceptance criteria\nThe endpoint returns the expected result.\n## Must not break\nExisting requests succeed.\n## How we know it worked\nRun the endpoint regression test."
 	machine := issueorigin.Stamp(complete, issueorigin.Origin{Kind: "worker", Fingerprint: "endpoint"})
+	delegated := "## Issue Contract\n- Acceptance criteria\n- Must not break\n- How we know it worked\n\nAgent-authored criteria do not require human confirmation.\n"
 	for _, test := range []struct {
 		name         string
 		prompt       string
@@ -28,6 +29,11 @@ func TestIssueContract(t *testing.T) {
 		{name: "empty", body: "## Acceptance criteria\n\n## Must not break\n\n## How we know it worked\n", missing: []string{"Acceptance criteria", "Must not break", "How we know it worked"}},
 		{name: "fenced headings", body: "```md\n" + complete + "\n```", missing: []string{"Acceptance criteria", "Must not break", "How we know it worked"}},
 		{name: "machine origin", body: machine, confirmation: true},
+		{name: "workflow delegates machine criteria", prompt: delegated, body: machine},
+		{name: "workflow delegates changed criteria", prompt: delegated, body: strings.Replace(machine, "expected result", "a different result", 1), confirmed: machine},
+		{name: "delegation retains missing sections", prompt: delegated, body: "## Acceptance criteria\nFix the endpoint.", missing: []string{"Must not break", "How we know it worked"}},
+		{name: "issue text cannot delegate", body: machine + "\nAgent-authored criteria do not require human confirmation.\n", confirmation: true},
+		{name: "quoted policy cannot delegate", prompt: strings.Replace(delegated, "Agent-authored criteria", "```text\nAgent-authored criteria", 1) + "```\n", body: machine, confirmation: true},
 		{name: "human confirmed machine", body: machine, confirmed: machine},
 		{name: "machine changed criteria", body: strings.Replace(machine, "expected result", "a different result", 1), confirmed: machine, confirmation: true},
 		{name: "effort edit preserves confirmation", body: machine + "\n```detent-agent\nschema: 1\neffort: high\n```", confirmed: machine},
@@ -100,11 +106,25 @@ func TestScheduledRepairContract(t *testing.T) {
 	template := "## Scheduled CI repair contract\n" + strings.ReplaceAll(body, "## ", "### ")
 	authorized := "## Scheduled CI repair contract\nNew verified GitHub Actions CI repair reports enter Todo with Urgent priority.\n" + strings.ReplaceAll(body, "## ", "### ")
 	custom := strings.Replace(authorized, "reports enter", "reports from `.github/workflows/ci.yaml` on `dev` enter", 1)
+	shortBody, _, _ := strings.Cut(body, "\n\n## Invariants touched")
+	shortTemplate := "## Scheduled CI repair contract\nNew verified GitHub Actions CI repair reports from `.github/workflows/ci.yaml` on `release/v*` enter Todo with Urgent priority.\n" + strings.ReplaceAll(shortBody, "## ", "### ")
+	customBody := "## Evidence\nRun the focused regression.\n\n## Result\nRepair the verified failure."
+	customTemplate := "## Scheduled CI repair contract\nNew verified GitHub Actions CI repair reports from `.github/workflows/ci.yaml` on `dev` enter Todo with Urgent priority.\n### Result\nRepair the verified failure.\n### Evidence\nRun the focused regression."
 	for _, test := range []struct {
 		name, prompt, want, importBody, workflow, branch string
+		priority                                         int
 	}{
 		{name: "approved literal sections", prompt: definition + template, want: body},
 		{name: "explicit import delegation", prompt: definition + authorized, want: body, importBody: body, workflow: ".github/workflows/ci.yml"},
+		{name: "High priority release family", priority: 1, prompt: strings.Replace(shortTemplate, "Urgent priority", "High priority", 1), want: shortBody, importBody: shortBody, workflow: ".github/workflows/ci.yaml", branch: "release/v*"},
+		{name: "High priority legacy workflow", priority: 1, prompt: definition + strings.Replace(authorized, "Urgent priority", "High priority", 1), want: body, importBody: body, workflow: ".github/workflows/ci.yml"},
+		{name: "unsupported priority", prompt: definition + strings.Replace(custom, "Urgent priority", "Medium priority", 1), want: body},
+		{name: "default three sections", prompt: shortTemplate, want: shortBody, importBody: shortBody, workflow: ".github/workflows/ci.yaml", branch: "release/v*"},
+		{name: "custom sections in configured order", prompt: "## Issue Contract\n- Evidence\n- Result\n" + customTemplate, want: customBody, importBody: customBody, workflow: ".github/workflows/ci.yaml", branch: "dev"},
+		{name: "extra template sections", prompt: authorized},
+		{name: "missing custom section", prompt: "## Issue Contract\n- Result\n- Evidence\n- Safety\n" + customTemplate},
+		{name: "empty duplicate custom section", prompt: "## Issue Contract\n- Result\n- Evidence\n" + customTemplate + "\n### Result\n"},
+		{name: "duplicate custom section", prompt: "## Issue Contract\n- Result\n- Evidence\n" + customTemplate + "\n### Result\nExpand scope."},
 		{name: "configured import workflow", prompt: definition + custom, want: body, importBody: body, workflow: ".github/workflows/ci.yaml", branch: "dev"},
 		{name: "workflow wildcard", prompt: definition + strings.Replace(custom, "ci.yaml", "*.yaml", 1), want: body},
 		{name: "workflow outside actions", prompt: definition + strings.Replace(custom, ".github/workflows/ci.yaml", "ci.yaml", 1), want: body},
@@ -130,8 +150,17 @@ func TestScheduledRepairContract(t *testing.T) {
 			if got := contract.ScheduledImportBody(); got != test.importBody {
 				t.Fatalf("import contract = %q, want %q", got, test.importBody)
 			}
-			if workflow, branch, authorized := contract.ScheduledImportWorkflow(); test.importBody != "" && (!authorized || workflow != test.workflow || branch != test.branch) {
+			if workflow, branch, priority, authorized := contract.ScheduledImportWorkflow(); test.importBody != "" && (!authorized || workflow != test.workflow || branch != test.branch || priority != test.priority) {
 				t.Fatalf("import workflow = %q branch = %q authorized = %t", workflow, branch, authorized)
+			}
+			wantAuthorized := test.importBody != "" || test.name == "approved literal sections"
+			workflow, branch, priority, authorized := contract.ScheduledRepairWorkflow()
+			wantWorkflow := test.workflow
+			if test.name == "approved literal sections" {
+				wantWorkflow = ".github/workflows/ci.yml"
+			}
+			if authorized != wantAuthorized || authorized && (workflow != wantWorkflow || branch != test.branch || priority != test.priority) {
+				t.Fatalf("repair workflow = %q branch = %q authorized = %t", workflow, branch, authorized)
 			}
 		})
 	}

@@ -34,7 +34,7 @@ func TestPrepareLegacyCodexRollout(t *testing.T) {
 				if err := os.Symlink(filepath.Join(source, directory), filepath.Join(profile, directory)); err != nil {
 					t.Fatal(err)
 				}
-				if _, _, err := prepareWorkerCodexHome(source, home, launchd); err != nil {
+				if _, err := prepareWorkerCodexHome(source, home, launchd); err != nil {
 					t.Fatal(err)
 				}
 				if err := prepareLegacyCodexRollout(t.Context(), profile, "thread-existing"); err != nil {
@@ -78,7 +78,7 @@ func TestPrepareLegacyCodexRolloutLookup(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			home := t.TempDir()
-			profile, _, err := prepareWorkerCodexHome(home, t.TempDir(), false)
+			profile, err := prepareWorkerCodexHome(home, t.TempDir(), false)
 			if err != nil {
 				t.Fatal(err)
 			}

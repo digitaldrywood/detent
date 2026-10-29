@@ -11,8 +11,8 @@ func TestStartupTimeoutWorkAttemptsScope(t *testing.T) {
 		name, filter string
 		want         int
 	}{
-		{name: "instance includes removed projects", want: 2},
-		{name: "project restart stays scoped", filter: "configured", want: 1},
+		{name: "instance includes removed projects", want: 4},
+		{name: "project restart stays scoped", filter: "configured", want: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			backend := openTestStore(t, t.Context())
@@ -33,7 +33,7 @@ func TestStartupTimeoutWorkAttemptsScope(t *testing.T) {
 				t.Fatalf("reclaimed = %d, want %d", len(reclaimed), tc.want)
 			}
 			for _, attempt := range reclaimed {
-				if attempt.IssueID != "running" || attempt.TerminalState != WorkAttemptTerminalTimedOut || attempt.ErrorClass != "lease_expired" {
+				if attempt.TerminalState != WorkAttemptTerminalTimedOut || attempt.ErrorClass != "lease_expired" {
 					t.Fatalf("unexpected reclaimed attempt: %+v", attempt)
 				}
 			}
@@ -57,6 +57,7 @@ func TestTimeoutWorkAttemptsProcessEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name, host, phase                 string
 		expired, gone, excluded, terminal bool
+		missingLease                      bool
 	}{
 		{name: "live lease", host: "local"},
 		{name: "expired lease", host: "local", expired: true, terminal: true},
@@ -65,7 +66,11 @@ func TestTimeoutWorkAttemptsProcessEvidence(t *testing.T) {
 		{name: "pool expired", host: "pool-a", expired: true, terminal: true},
 		{name: "pool confirmed gone", host: "pool-a", gone: true, terminal: true},
 		{name: "running exclusion wins", host: "local", expired: true, gone: true, excluded: true},
-		{name: "deferred completion wins", host: "local", phase: "completion_deferred", expired: true, gone: true},
+		{name: "expired deferred completion", host: "local", phase: "completion_deferred", expired: true, terminal: true},
+		{name: "live deferred completion with gone worker", host: "local", phase: "completion_deferred", gone: true},
+		{name: "expired deferred completion with gone worker", host: "local", phase: "completion_deferred", gone: true, expired: true, terminal: true},
+		{name: "live deferred completion", host: "local", phase: "completion_deferred"},
+		{name: "legacy completion without lease", host: "local", phase: "completion_deferred", missingLease: true, terminal: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			backend := openTestStore(t, t.Context())
@@ -73,6 +78,9 @@ func TestTimeoutWorkAttemptsProcessEvidence(t *testing.T) {
 			lease := now.Add(time.Hour)
 			if tc.expired {
 				lease = now.Add(-time.Hour)
+			}
+			if tc.missingLease {
+				lease = time.Time{}
 			}
 			id, err := backend.StartWorkAttempt(t.Context(), WorkAttemptStart{
 				ProjectID: "removed", WorkerType: "agent", WorkerHost: tc.host, Phase: tc.phase,

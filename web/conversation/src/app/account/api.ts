@@ -1,25 +1,32 @@
-import { AccessKeys, CreatedAccessKey, KeyContext, KeyPolicy, type CreateAccessKey, type PersonalKeyPolicy } from "../../contracts/accessKeys.ts";
-import { CloudModelSelection, type CloudSelection } from "../../contracts/account.ts";
+import type { ProjectIconChoice } from "../../contracts/projectIcon.ts";
+import { AccessKeys, CreatedAccessKey, KeyContext, KeyPolicy, OAuthGrants, type CreateAccessKey, type PersonalKeyPolicy } from "../../contracts/accessKeys.ts";
+import { CloudModelSelection, type CloudSelection, type RunnerRouting } from "../../contracts/account.ts";
 import { IssueIntake, type IntakeCommand } from "../../contracts/githubIntake.ts";
 // The hosted account API client.
 //
 // `runtime/rpc/http.ts` is the conversation client's own transport and stays
 // that way: this is the same shape for the account surface of
-// `docs/conversation/decisions.md` §12 — cookie session, `X-CSRF-Token` on
+// the Hub account API — cookie session, `X-CSRF-Token` on
 // every mutation, an `idempotency_key` in every non-GET body, and the native
 // `{code, message, details?}` error decoded into one typed failure. It returns
 // promises rather than effects because these screens are ordinary React data
 // loads with no stream behind them.
 import * as Schema from "effect/Schema";
+import type * as SchemaAST from "effect/SchemaAST";
+import type * as SchemaIssue from "effect/SchemaIssue";
 
 import {
+  DailySummaryPreference,
   ReleaseNotesPage,
+  GitHubRepositories,
   CreatedOperatorAPIKey,
   OperatorAPIKeys,
+  AICredits,
   BillingReport,
   BillingUsageReport,
   CheckoutResponse,
   CreateOrganizationResponse,
+  OrganizationLogo,
   FleetResponse,
   UpdatesReport,
   FleetNamesResponse,
@@ -36,6 +43,7 @@ import {
   ProjectSecretStatus,
   SlackIntegrationStatus,
   SpritePool,
+  ProjectSpriteAllocation,
   ProjectsResponse,
   ReporterTemplates,
   OrganizationProjectRank,
@@ -49,8 +57,56 @@ import { hubPath } from "../../runtime/basePath.ts";
 import { WorkAttachment } from "../../contracts/workAttachments.ts";
 import { DiagnosticsReport, HealthFindingsRead } from "../../contracts/diagnostics.ts";
 import { ActivityReport, type ActivityFilters } from "../../contracts/activity.ts";
-import { ReportsFacets, ReportsReport, type ReportsCustomRange, type ReportsFilters, type ReportsRange } from "../../contracts/reports.ts";
+import { OrganizationReports, ReportsFacets, ReportsReport, type ReportsCustomRange, type ReportsFilters, type ReportsRange } from "../../contracts/reports.ts";
 import { clearBoardCache } from "../work/lib/boardStore.ts";
+
+type DecodeDiagnostic = { kind: "schema decode"; path: string; expected: string };
+
+const decodeDiagnostics = new WeakMap<AccountError, DecodeDiagnostic>();
+
+function expectedType(ast: SchemaAST.AST): string {
+  switch (ast._tag) {
+    case "String": return "string";
+    case "Number": return "number";
+    case "Boolean": return "boolean";
+    case "Null": return "null";
+    case "Undefined": return "undefined";
+    case "Objects": return "object";
+    case "Arrays": return "array";
+    case "Union": return [...new Set(ast.types.map(expectedType))].join(" | ");
+    default: return "schema-defined type";
+  }
+}
+
+function decodeDiagnostic(issue: SchemaIssue.Issue, path = "", parent?: SchemaAST.AST): DecodeDiagnostic {
+  switch (issue._tag) {
+    case "Pointer": {
+      const suffix = issue.path.map((key) => {
+        if (parent?._tag === "Arrays" && typeof key === "number" && Number.isSafeInteger(key) && key >= 0) return `[${key}]`;
+        if (parent?._tag === "Objects" && parent.propertySignatures.some((property) => property.name === key)) return `[${JSON.stringify(key)}]`;
+        return "[<key>]";
+      }).join("");
+      return decodeDiagnostic(issue.issue, path + suffix);
+    }
+    case "AnyOf": {
+      const nested = issue.issues.find((child) => child._tag === "Composite" || child._tag === "Pointer");
+      return nested ? decodeDiagnostic(nested, path, issue.ast) : { kind: "schema decode", path, expected: expectedType(issue.ast) };
+    }
+    case "Composite": return decodeDiagnostic(issue.issues[0], path, issue.ast);
+    case "Encoding":
+    case "Filter": return decodeDiagnostic(issue.issue, path, parent);
+    default: return { kind: "schema decode", path, expected: "ast" in issue ? expectedType(issue.ast) : "schema-defined type" };
+  }
+}
+
+export function accountErrorDiagnostic(error: unknown): DecodeDiagnostic | { kind: "http"; status: number } | { kind: "network" } {
+  if (error instanceof AccountError) {
+    const decode = decodeDiagnostics.get(error);
+    if (decode) return decode;
+    if (Number.isInteger(error.status) && error.status >= 100 && error.status <= 599) return { kind: "http", status: error.status };
+  }
+  return { kind: "network" };
+}
 
 /** A decoded failure from the hosted API, or the network under it. */
 export class AccountError extends Error {
@@ -185,13 +241,15 @@ export function makeAccountApi(options: AccountApiOptions) {
     try {
       return Schema.decodeUnknownSync(schema)(parsed ?? {});
     } catch (cause) {
-      throw new AccountError({
+      const error = new AccountError({
         status: response.status,
         code: "invalid",
         message: `The hub returned an unexpected payload: ${
           cause instanceof Error ? cause.message : String(cause)
         }`,
       });
+      if (Schema.isSchemaError(cause)) decodeDiagnostics.set(error, decodeDiagnostic(cause.issue));
+      throw error;
     }
   }
 
@@ -200,11 +258,18 @@ export function makeAccountApi(options: AccountApiOptions) {
   const organizationId = base.split("/organizations/")[1]?.split("/")[0] ?? "";
   const cloudOrganization = `/api/cloud/organizations/${organizationId}`;
   return {
+    githubRepositories: () => send(GitHubRepositories, "GET", "/api/cloud/account/github/repositories"),
+    connectGitHub: (returnTo: string) => send(Schema.Struct({ url: Schema.String }), "POST", "/api/cloud/account/github/connect", { return_to: returnTo }),
     releaseNotes: (cursor?: string) => send(ReleaseNotesPage, "GET", `${base}/release-notes${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
     markReleaseNotesSeen: () => send(ReleaseNotesPage, "PUT", `${base}/release-notes/seen`, {}),
+    widgetToken: () => send(Schema.Struct({ token: Schema.String }), "POST", `${base}/widget-token`, {}),
+    dailySummaryPreference: () => send(DailySummaryPreference, "GET", `${base}/daily-summary-preference`),
+    saveDailySummaryPreference: (value: Pick<typeof DailySummaryPreference.Type, "enabled" | "send_time" | "time_zone" | "days">) => send(DailySummaryPreference, "PUT", `${base}/daily-summary-preference`, value),
     issueNotificationPreference: () => send(Schema.Struct({ enabled: Schema.Boolean }), "GET", `${base}/issue-notification-preference`),
     saveIssueNotificationPreference: (enabled: boolean) => send(Schema.Struct({ enabled: Schema.Boolean }), "PUT", `${base}/issue-notification-preference`, { enabled }),
-    personalKeys: () => send(AccessKeys, "GET", "/api/cloud/account/api-keys"),
+    personalKeys: (cursor?: string) => send(AccessKeys, "GET", `/api/cloud/account/api-keys${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+    oauthGrants: (cursor?: string) => send(OAuthGrants, "GET", `/api/cloud/account/oauth-grants${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+    revokeOAuthGrant: (id: string) => send(null, "DELETE", `/api/cloud/account/oauth-grants/${encodeURIComponent(id)}`),
     keyContext: () => send(KeyContext, "GET", "/api/cloud/account/key-context"),
     createPersonalKey: (input: CreateAccessKey) => send(CreatedAccessKey, "POST", "/api/cloud/account/api-keys", input),
     rotatePersonalKey: (id: string) => send(CreatedAccessKey, "POST", `/api/cloud/account/api-keys/${encodeURIComponent(id)}/rotate`, {}),
@@ -244,6 +309,8 @@ export function makeAccountApi(options: AccountApiOptions) {
     slackIntegration: () => send(SlackIntegrationStatus, "GET", `${base}/integrations/slack`),
     saveSlackIntegration: (input: { webhook?: string; channel_name: string }) => send(SlackIntegrationStatus, "PUT", `${base}/integrations/slack`, input),
     testSlackIntegration: () => send(SlackIntegrationStatus, "POST", `${base}/integrations/slack/test`, {}),
+    organizationLogo: () => send(OrganizationLogo, "GET", `${base}/logo`),
+    setOrganizationLogo: (input: { content?: string; remove: boolean; revision: string; key: string }) => send(OrganizationLogo, "PUT", `${base}/logo`, { ...(input.content ? { content_base64: input.content } : {}), remove: input.remove, expected_revision: input.revision, idempotency_key: input.key }),
     renameOrganization: (input: { name: string; key: string }) => send(Schema.Struct({ name: Schema.String }), "PUT", `${base}/name`, { name: input.name, idempotency_key: input.key }),
     members: () => send(MembersResponse, "GET", `${base}/members`),
     invite: (input: { email: string; role: string; key: string; grants?: readonly ProjectGrant[] }) =>
@@ -316,7 +383,7 @@ export function makeAccountApi(options: AccountApiOptions) {
     },
     startSupport: (input: { key: string }) =>
       send(SupportResponse, "POST", `${base}/support/start`, { idempotency_key: input.key }),
-    /** `POST /logout` answers 204 for a JSON caller (§12, "Serving"). */
+    /** `POST /logout` answers 204 for a JSON caller. */
     logout: async () => {
       await send(null, "POST", hubPath("/logout"), {});
       clearBoardCache();
@@ -336,9 +403,17 @@ export function makeAccountApi(options: AccountApiOptions) {
     // --- Project settings ---------------------------------------------------
     spritesSecret: (projectId: string) =>
       send(ProjectSecretStatus, "GET", `${projectId ? project(projectId) : base}/secrets/fly_sprites_token`),
-    spritePool: () =>
-      send(SpritePool, "GET", `${base}/sprite-pool`),
-    setSpritePool: (settings: { min_runners: number; max_runners: number; idle_seconds: number; bootstrap: string; revision: number }) =>
+    spritePool: (projectId?: string) =>
+      send(SpritePool, "GET", `${projectId ? project(projectId) : base}/sprite-pool`),
+    projectSpriteAllocation: (projectId: string) =>
+      send(ProjectSpriteAllocation, "GET", `${project(projectId)}/sprite-pool/allocation`),
+    setProjectSpriteAllocation: (input: { projectId: string; desiredCount: number; revision: string; key: string }) =>
+      send(ProjectSpriteAllocation, "PUT", `${project(input.projectId)}/sprite-pool/allocation`, {
+        desired_count: input.desiredCount,
+        expected_revision: input.revision,
+        idempotency_key: input.key,
+      }),
+    setSpritePool: (settings: { min_runners: number; max_runners: number; idle_seconds: number; bootstrap: string; share_idle_capacity: boolean; idempotency_key: string; revision: number }) =>
       send(SpritePool, "PUT", `${base}/sprite-pool`, settings),
     setSpritesSecret: (projectId: string, token: string) =>
       send(ProjectSecretStatus, "PUT", `${projectId ? project(projectId) : base}/secrets/fly_sprites_token`, { token }),
@@ -346,6 +421,10 @@ export function makeAccountApi(options: AccountApiOptions) {
       send(ProjectSecretStatus, "DELETE", `${projectId ? project(projectId) : base}/secrets/fly_sprites_token`),
     integration: (projectId: string) =>
       send(ProjectIntegration, "GET", `${project(projectId)}/integration`),
+    setProjectIcon: (input: { projectId: string; icon: ProjectIconChoice; content?: string; revision: string; key: string }) =>
+      send(ProjectIntegration, "PUT", `${project(input.projectId)}/icon`, { icon: input.icon, content_base64: input.content, expected_revision: input.revision, idempotency_key: input.key }),
+    renameProject: (input: { projectId: string; name: string; revision: string; key: string }) =>
+      send(ProjectIntegration, "PATCH", project(input.projectId), { name: input.name, expected_revision: input.revision, idempotency_key: input.key }),
     deleteProject: (input: { projectId: string; name: string; key: string }) =>
       send(null, "DELETE", project(input.projectId), { idempotency_key: input.key, confirm_name: input.name }),
     /**
@@ -362,6 +441,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       projection: string;
       repositoryEnabled: boolean;
       duplicateChallenge?: boolean;
+      agingEnabled?: boolean;
       archiveCompletedAfterDays?: number | null;
       archiveCancelledAfterDays?: number | null;
       states?: readonly WorkflowState[];
@@ -372,6 +452,7 @@ export function makeAccountApi(options: AccountApiOptions) {
         ...(input.intake !== undefined ? { intake: input.intake } : {}),
         projection: input.projection,
         repository_enabled: input.repositoryEnabled,
+        ...(input.agingEnabled !== undefined ? { aging_enabled: input.agingEnabled } : {}),
         ...(input.duplicateChallenge !== undefined ? { duplicate_challenge: input.duplicateChallenge } : {}),
         ...(input.archiveCompletedAfterDays !== undefined ? { archive_completed_after_days: input.archiveCompletedAfterDays } : {}),
         ...(input.archiveCancelledAfterDays !== undefined ? { archive_cancelled_after_days: input.archiveCancelledAfterDays } : {}),
@@ -487,6 +568,8 @@ export function makeAccountApi(options: AccountApiOptions) {
     setRunnerRouting: (input: {
       scope?: "projects" | "organization";
       projectRanks?: Readonly<Record<string, number>>;
+      projectCapacityLimits?: Readonly<Record<string, number>> | null;
+      idempotencyKey?: string;
       runner: string;
       revision: number;
       displayName: string;
@@ -496,7 +579,7 @@ export function makeAccountApi(options: AccountApiOptions) {
       projectIds: readonly string[];
       isolationTier?: string;
       hostServices?: readonly string[];
-      availability?: { timezone: string; windows: readonly string[]; hard_deadline: string };
+      availability?: RunnerRouting["availability"];
     }) =>
       send(Schema.Unknown, "PUT", `${base}/runners/${encodeURIComponent(input.runner)}/routing`, {
         expected_revision: input.revision,
@@ -507,10 +590,13 @@ export function makeAccountApi(options: AccountApiOptions) {
         project_ids: input.projectIds,
         ...(input.scope !== undefined ? { scope: input.scope } : {}),
         ...(input.projectRanks !== undefined ? { project_ranks: input.projectRanks } : {}),
+        ...(input.projectCapacityLimits != null ? { project_capacity_limits: input.projectCapacityLimits, idempotency_key: input.idempotencyKey ?? crypto.randomUUID() } : {}),
         ...(input.isolationTier !== undefined ? { isolation_tier: input.isolationTier } : {}),
         ...(input.hostServices !== undefined ? { host_services: input.hostServices } : {}),
         ...(input.availability !== undefined ? { availability: input.availability } : {}),
       }),
+    requestRunnerRepositories: (projectId: string, runner: string, key: string) =>
+      send(Schema.Struct({ request_id: Schema.String }), "POST", `${project(projectId)}/onboarding/repositories`, { runner_id: runner, idempotency_key: key }),
     bindRepository: (input: {
       projectId: string;
       repository: string;
@@ -554,6 +640,13 @@ export function makeAccountApi(options: AccountApiOptions) {
     diagnostics: (range: string) => send(DiagnosticsReport, "GET", `${base}/diagnostics?range=${encodeURIComponent(range)}`),
     reports: (project: string, range: ReportsRange | ReportsCustomRange, filters?: ReportsFilters) =>
       send(ReportsReport, "GET", `${base}/reports?${reportsQuery(project, range, filters)}`),
+    organizationReports: (range: ReportsRange | ReportsCustomRange, filters: ReportsFilters, projects: readonly string[], compare: boolean) => {
+      const query = new URLSearchParams(reportsQuery("all", range, filters));
+      query.set("scope", "organization");
+      query.set("compare", compare ? "prior" : "off");
+      for (const project of projects) query.append("projects", project);
+      return send(OrganizationReports, "GET", `${base}/reports?${query.toString()}`);
+    },
     reportOptions: (project: string, range: ReportsRange | ReportsCustomRange) =>
       send(ReportsFacets, "GET", `${base}/reports/options?${reportsQuery(project, range)}`),
     healthFindings: async (projects: readonly string[], options: { state?: "open" | "resolved"; since?: string } = {}): Promise<HealthFindingsRead> => {
@@ -586,6 +679,9 @@ export function makeAccountApi(options: AccountApiOptions) {
       send(Schema.Array(RunnerHostHour), "GET", `${base}/fleet?include=host_metrics&runner_id=${encodeURIComponent(runner)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
     plan: () => send(PlanReport, "GET", `${base}/plan`),
     billing: () => send(BillingReport, "GET", `${base}/billing`),
+    creditTransactions: (input: { cursor?: string; from: string; to: string }) =>
+      send(AICredits, "GET", `${base}/billing/credits/transactions?${new URLSearchParams({ limit: "10", ...input })}`),
+    creditExportURL: (from: string, to: string) => `${base}/billing/credits/transactions?${new URLSearchParams({ format: "csv", from, to })}`,
     billingUsage: () => send(BillingUsageReport, "GET", `${base}/billing?view=usage`),
     checkout: (input: { price: string; key: string }) =>
       send(CheckoutResponse, "POST", `${base}/billing/checkout`, {

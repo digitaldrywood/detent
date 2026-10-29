@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/emailtemplate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -45,12 +47,32 @@ func healthEmailText(value string) string {
 	}), maxFailureExampleLength)
 }
 
-func (s *Service) commitHealthEvaluation(ctx context.Context, tx *sql.Tx, organization tracker.OrganizationID, now time.Time, findings []healthFinding) error {
+func (s *Service) commitHealthEvaluation(ctx context.Context, organization tracker.OrganizationID, now time.Time, findings []healthFinding, unavailable []healthBaselineUnavailable) error {
+	cancellations, err := readHealthCancellations(ctx, s.database.reader, organization)
+	if err != nil {
+		return err
+	}
+	if unavailable == nil {
+		unavailable = []healthBaselineUnavailable{}
+	}
+	raw, err := json.Marshal(unavailable)
+	if err != nil {
+		return err
+	}
+	tx, err := s.database.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO health_detector_ticks(organization_id,last_tick_at,baseline_unavailable_json) VALUES(?,?,?)
+ ON CONFLICT(organization_id) DO UPDATE SET baseline_unavailable_json=excluded.baseline_unavailable_json`, organization, formatHubTime(now), string(raw)); err != nil {
+		return err
+	}
 	transitions, err := writeHealthEvaluation(ctx, tx, organization, now, findings)
 	if err != nil {
 		return err
 	}
-	issues, err := reportHealthFindings(ctx, tx, organization, now)
+	issues, err := reportHealthFindings(ctx, tx, organization, now, cancellations)
 	if err != nil {
 		return err
 	}
@@ -195,7 +217,7 @@ func (s *Service) renderHealthEmail(ctx context.Context, f healthFinding) (auth.
 	slices.SortFunc(counts, func(a, b count) int { return strings.Compare(a.Name, b.Name) })
 	state, resolved := "opened", ""
 	if f.ResolvedAt != nil {
-		state, resolved = "resolved", formatHubTime(*f.ResolvedAt)
+		state, resolved = "resolved", f.ResolvedAt.UTC().Format("Jan 2, 2006 15:04 UTC")
 	}
 	link := s.config.Hosted.PublicURL + s.hostedPath("/fleet")
 	if f.Subject.Kind == "work_item" {
@@ -221,7 +243,7 @@ func (s *Service) renderHealthEmail(ctx context.Context, f healthFinding) (auth.
 		Subject:    healthEmailText(f.Subject.Kind + " " + f.Subject.ID),
 		Summary:    healthEmailText(f.Summary),
 		NextAction: healthEmailText(f.NextAction),
-		OpenedAt:   formatHubTime(f.OpenedAt),
+		OpenedAt:   f.OpenedAt.UTC().Format("Jan 2, 2006 15:04 UTC"),
 		ResolvedAt: resolved,
 		URL:        link,
 		Events:     len(f.Evidence.EventIDs),
@@ -232,5 +254,34 @@ func (s *Service) renderHealthEmail(ctx context.Context, f healthFinding) (auth.
 	if err := healthEmailTemplate.Execute(&body, data); err != nil {
 		return auth.EmailMessage{}, err
 	}
-	return auth.EmailMessage{Subject: "[Detent] " + data.Signal + ": " + data.Subject, Body: body.String()}, nil
+	details := []emailtemplate.Detail{{Label: "Opened", Value: data.OpenedAt}}
+	if data.ResolvedAt != "" {
+		details = append(details, emailtemplate.Detail{Label: "Resolved", Value: data.ResolvedAt})
+	}
+	evidence := []emailtemplate.Detail{
+		{Label: "Events", Value: strconv.Itoa(data.Events)},
+		{Label: "Attempts", Value: strconv.Itoa(data.Attempts)},
+	}
+	for _, count := range data.Counts {
+		evidence = append(evidence, emailtemplate.Detail{Label: count.Name, Value: strconv.Itoa(count.Value)})
+	}
+	message, err := emailtemplate.Render(emailtemplate.Content{
+		Title:       "Health finding",
+		Status:      &emailtemplate.Status{Label: "Finding " + data.State, Resolved: f.ResolvedAt != nil},
+		Heading:     data.Signal,
+		Subtitle:    data.Subject,
+		Summary:     data.Summary,
+		NextAction:  data.NextAction,
+		Details:     details,
+		Evidence:    evidence,
+		ActionLabel: "Open " + strings.ReplaceAll(healthEmailText(f.Subject.Kind), "_", " "),
+		ActionURL:   data.URL,
+		Footer:      "You get this because you own this Detent organization.",
+	})
+	if err != nil {
+		return auth.EmailMessage{}, err
+	}
+	message.Subject = "[Detent] " + data.Signal + ": " + data.Subject
+	message.Body = body.String()
+	return message, nil
 }

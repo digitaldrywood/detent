@@ -18,8 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Wiring for the runner's workspace lane (decisions section 18.1, sequenced by
-// 18.11 step 2).
+// Wiring for the runner's workspace lane.
 //
 // A workspace is its own work item kind and is claimed in a lane of its own,
 // beside dispatch rather than through it, because it "does not end when a turn
@@ -30,7 +29,7 @@ import (
 // workspaceLaneEnabled reports whether this runner should run a workspace lane
 // at all.
 //
-// Section 18.1 lets a runner claim a workspace "only if it reports every
+// The workspace session contract lets a runner claim a workspace "only if it reports every
 // capability in requires with a fresh heartbeat", and a request that names no
 // capability still gets `files` and `diff`. A runner that cannot serve files
 // would therefore be refused every claim it made, so it starts no lane and
@@ -168,7 +167,7 @@ func newWorkspaceLane(
 		return nil, fmt.Errorf("resolve policy for %s: %w", projectID, err)
 	}
 	// LeaseTTL is left to the claimer's default on purpose: a workspace claim
-	// is held for the 90 seconds section 18.1 gives a workspace before
+	// is held for the 90 seconds the workspace session contract gives a workspace before
 	// lease_lost, which is the workspace heartbeat's clock rather than the
 	// runner's configured issue-lane TTL.
 	claimer, err := hubclient.NewWorkspaceClaimer(native, hubclient.WorkspaceLaneConfig{
@@ -181,7 +180,7 @@ func newWorkspaceLane(
 	// workspace lands under the configured workspace root beside every other
 	// worktree rather than inside the repository. GitWorktree keeps a fresh
 	// workspace off the issue's identifier, which is what stops it holding the
-	// branch an ordinary run of the same issue needs (section 18.11 step 2).
+	// branch an ordinary run of the same issue needs (sequencing step 2).
 	backend, err := buildWorkspaceBackendContext(ctx, workflow.Config, selected.Workdir, logger)
 	if err != nil {
 		return nil, err
@@ -206,8 +205,7 @@ func newWorkspaceLane(
 		// bind with can never disagree.
 		Support: workspacerunner.DefaultSupport(),
 		Shell:   workflow.Config.Hooks.Shell,
-		// The reporter turns a run nobody watched into a row somebody can read
-		// (section 18.12).
+		// The reporter turns a run nobody watched into a row somebody can read.
 		Reporter: workspaceActionRunReporter{native: claimer.Native()},
 	})
 }

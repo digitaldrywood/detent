@@ -9,64 +9,6 @@ import (
 	"testing"
 )
 
-func TestLoadProjectDefinitionTerminalAttemptRecovery(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name     string
-		shared   string
-		local    string
-		want     int
-		failures int
-		wantErr  string
-	}{
-		{name: "default", want: 3, failures: 3},
-		{name: "shared zero", shared: "0", failures: 1},
-		{name: "shared one", shared: "1", want: 1, failures: 2},
-		{name: "shared three", shared: "3", want: 3, failures: 3},
-		{name: "overlay zero", shared: "3", local: "0", failures: 1},
-		{name: "overlay one", shared: "0", local: "1", want: 1, failures: 2},
-		{name: "overlay three", shared: "0", local: "3", want: 3, failures: 3},
-		{name: "higher limit", shared: "6", want: 6, failures: 6},
-		{name: "negative shared", shared: "-1", wantErr: "recovery.terminal_attempt_retry_limit must be greater than or equal to 0"},
-		{name: "negative overlay", shared: "3", local: "-1", wantErr: "recovery.terminal_attempt_retry_limit must be greater than or equal to 0"},
-		{name: "invalid type", shared: "false", wantErr: "cannot unmarshal"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			dir := t.TempDir()
-			workflowPath := filepath.Join(dir, "WORKFLOW.md")
-			writeProjectDefinitionTestFile(t, workflowPath, "Implement the issue.\n", 0o644)
-			shared := "schema: 1\ntracker:\n  kind: memory\n"
-			if tt.shared != "" {
-				shared += "recovery:\n  terminal_attempt_retry_limit: " + tt.shared + "\n"
-			}
-			writeProjectDefinitionTestFile(t, filepath.Join(dir, "detent.yaml"), shared, 0o644)
-			if tt.local != "" {
-				writeProjectDefinitionTestFile(t, filepath.Join(dir, "detent.local.yaml"), "schema: 1\nrecovery:\n  terminal_attempt_retry_limit: "+tt.local+"\n", 0o600)
-			}
-			workflow, err := LoadProjectDefinition(workflowPath)
-			if err == nil {
-				err = workflow.Config.Validate()
-			}
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("LoadProjectDefinition() error = %v, want %q", err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := workflow.Config.Recovery.EffectiveTerminalAttemptRetryLimit(); got != tt.want {
-				t.Fatalf("effective limit = %d, want %d", got, tt.want)
-			}
-			if got := workflow.Config.Recovery.TerminalAttemptFailureLimit(); got != tt.failures {
-				t.Fatalf("failure limit = %d, want %d", got, tt.failures)
-			}
-		})
-	}
-}
-
 func TestLoadProjectDefinitionLayouts(t *testing.T) {
 	t.Parallel()
 
@@ -83,7 +25,7 @@ func TestLoadProjectDefinitionLayouts(t *testing.T) {
 	}{
 		{
 			name:       "legacy",
-			workflow:   "---\ntracker:\n  kind: memory\n---\nShared direction.\n",
+			workflow:   "---\ntracker:\n  kind: hub_native\n---\nShared direction.\n",
 			wantLayout: ProjectDefinitionLegacy,
 			wantPrompt: "Shared direction.\n",
 			wantKeys:   []string{"tracker"},
@@ -91,14 +33,14 @@ func TestLoadProjectDefinitionLayouts(t *testing.T) {
 		{
 			name:       "split",
 			workflow:   "Shared direction.\n",
-			config:     "schema: 1\ntracker:\n  kind: memory\n",
+			config:     "schema: 1\ntracker:\n  kind: hub_native\n",
 			wantLayout: ProjectDefinitionSplit,
 			wantPrompt: "Shared direction.\n",
 		},
 		{
 			name:        "split with local files",
 			workflow:    "Shared direction.\n",
-			config:      "schema: 1\ntracker:\n  kind: memory\nagent:\n  max_turns: 10\n",
+			config:      "schema: 1\ntracker:\n  kind: hub_native\nagent:\n  max_turns: 10\n",
 			local:       "Local direction.\n",
 			localConfig: "schema: 1\nagent:\n  max_turns: 12\n",
 			wantLayout:  ProjectDefinitionSplit,
@@ -106,15 +48,15 @@ func TestLoadProjectDefinitionLayouts(t *testing.T) {
 		},
 		{
 			name:       "mixed shared authority",
-			workflow:   "---\ntracker:\n  kind: memory\n---\nShared direction.\n",
-			config:     "schema: 1\ntracker:\n  kind: memory\n",
+			workflow:   "---\ntracker:\n  kind: hub_native\n---\nShared direction.\n",
+			config:     "schema: 1\ntracker:\n  kind: hub_native\n",
 			wantLayout: ProjectDefinitionMixed,
 			wantErr:    "ambiguous authority",
 		},
 		{
 			name:       "mixed local authority",
 			workflow:   "Shared direction.\n",
-			config:     "schema: 1\ntracker:\n  kind: memory\n",
+			config:     "schema: 1\ntracker:\n  kind: hub_native\n",
 			local:      "---\nagent:\n  max_turns: 12\n---\nLocal direction.\n",
 			wantLayout: ProjectDefinitionMixed,
 			wantErr:    "WORKFLOW.local.md structured frontmatter",
@@ -128,14 +70,14 @@ func TestLoadProjectDefinitionLayouts(t *testing.T) {
 		{
 			name:       "unsupported schema",
 			workflow:   "Shared direction.\n",
-			config:     "schema: 2\ntracker:\n  kind: memory\n",
+			config:     "schema: 2\ntracker:\n  kind: hub_native\n",
 			wantLayout: ProjectDefinitionSplit,
 			wantErr:    "unsupported schema version 2",
 		},
 		{
 			name:       "missing schema",
 			workflow:   "Shared direction.\n",
-			config:     "tracker:\n  kind: memory\n",
+			config:     "tracker:\n  kind: hub_native\n",
 			wantLayout: ProjectDefinitionSplit,
 			wantErr:    "schema is required",
 		},
@@ -227,7 +169,7 @@ func TestLoadProjectDefinitionUsesConfiguredExternalRoot(t *testing.T) {
 	definitionRoot := filepath.Join(root, "orchestration", "detent")
 	workflowPath := filepath.Join(definitionRoot, "WORKFLOW.md")
 	writeProjectDefinitionTestFile(t, workflowPath, "External direction.\n", 0o644)
-	writeProjectDefinitionTestFile(t, filepath.Join(definitionRoot, "detent.yaml"), "schema: 1\ntracker:\n  kind: memory\n", 0o644)
+	writeProjectDefinitionTestFile(t, filepath.Join(definitionRoot, "detent.yaml"), "schema: 1\ntracker:\n  kind: hub_native\n", 0o644)
 
 	workflow, err := LoadProjectDefinition(workflowPath)
 	if err != nil {
@@ -266,7 +208,7 @@ func TestLoadProjectDefinitionWorkspaceCleanupConfiguration(t *testing.T) {
 			dir := t.TempDir()
 			workflowPath := filepath.Join(dir, "WORKFLOW.md")
 			writeProjectDefinitionTestFile(t, workflowPath, "Project instructions.\n", 0o644)
-			writeProjectDefinitionTestFile(t, filepath.Join(dir, "detent.yaml"), "schema: 1\ntracker:\n  kind: memory\nworkspace:\n  cache_strategy: shared\n  auto_branch: true\n"+tt.cleanup, 0o644)
+			writeProjectDefinitionTestFile(t, filepath.Join(dir, "detent.yaml"), "schema: 1\ntracker:\n  kind: hub_native\nworkspace:\n  cache_strategy: shared\n  auto_branch: true\n"+tt.cleanup, 0o644)
 			writeProjectDefinitionTestFile(t, filepath.Join(dir, "detent.local.yaml"), "schema: 1\nworkspace:\n  root: "+filepath.Join(dir, "workspaces")+"\n  source_root: "+filepath.Join(dir, "source")+"\n", 0o600)
 
 			workflow, err := LoadProjectDefinition(workflowPath)

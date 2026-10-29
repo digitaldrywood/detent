@@ -211,8 +211,8 @@ func TestSuccessfulContinuationReleasesClaimLease(t *testing.T) {
 	}
 	if retry, ok := state.Retry[issue.ID]; !ok {
 		t.Fatalf("Retry[%q] missing after continuation completion", issue.ID)
-	} else if want := now.Add(time.Minute); !retry.DueAt.Equal(want) {
-		t.Fatalf("Retry[%q].DueAt = %s, want %s", issue.ID, retry.DueAt, want)
+	} else if delay := retry.DueAt.Sub(now); retry.Attempt != 1 || delay < orch.cfg.FailureRetryBaseDelay-orch.cfg.FailureRetryBaseDelay/8 || delay > orch.cfg.FailureRetryBaseDelay {
+		t.Fatalf("Retry[%q] = %+v, want initial machine retry", issue.ID, retry)
 	}
 }
 

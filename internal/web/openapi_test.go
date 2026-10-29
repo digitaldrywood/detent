@@ -126,7 +126,7 @@ func TestServerOpenAPIIssueExplanationSchemaVersion(t *testing.T) {
 	}
 }
 
-func TestServerOpenAPIIssueProgressCredit(t *testing.T) {
+func TestServerOpenAPIOmitsRetiredIssueProgressCredit(t *testing.T) {
 	if testing.Short() {
 		t.Skip("loopback network listener integration")
 	}
@@ -138,17 +138,11 @@ func TestServerOpenAPIIssueProgressCredit(t *testing.T) {
 	t.Cleanup(httpServer.Close)
 	document := parseOpenAPI(t, requestOpenAPI(t, httpServer.URL))
 
-	path := document.Paths.Find("/api/v1/projects/{project_id}/issues/progress-credit")
-	if path == nil || path.Post == nil {
-		t.Fatal("OpenAPI issue progress credit operation is missing")
+	if document.Paths.Find("/api/v1/projects/{project_id}/issues/progress-credit") != nil {
+		t.Fatal("OpenAPI includes the retired issue progress credit operation")
 	}
-	response := path.Post.Responses.Value("200")
-	if response == nil || response.Value == nil {
-		t.Fatal("OpenAPI issue progress credit response is missing")
-	}
-	schema := response.Value.Content.Get("application/json").Schema
-	if schema == nil || schema.Ref != "#/components/schemas/IssueProgressCredit" {
-		t.Fatalf("OpenAPI issue progress credit schema = %#v", schema)
+	if _, ok := document.Components.Schemas["IssueProgressCredit"]; ok {
+		t.Fatal("OpenAPI includes the retired issue progress credit schema")
 	}
 }
 

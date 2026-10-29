@@ -17,6 +17,7 @@ import (
 )
 
 type nativeOrganization struct {
+	Logo  organizationLogo       `json:"logo"`
 	ID    tracker.OrganizationID `json:"organization_id"`
 	Name  string                 `json:"name"`
 	Slug  string                 `json:"slug"`
@@ -65,7 +66,7 @@ func (s *Service) readNativeCapabilities(ctx context.Context) (nativeCapabilitie
 func (s *Service) nativeOrganizations(c echo.Context) error {
 	ctx, cancel := context.WithTimeout(c.Request().Context(), hubReadTimeout)
 	defer cancel()
-	rows, err := s.database.reader.QueryContext(ctx, "SELECT id, name, slug, local FROM organizations ORDER BY id")
+	rows, err := s.database.reader.QueryContext(ctx, "SELECT id, name, slug, local,coalesce(logo_image_key,''),coalesce(logo_image_sha256,''),logo_revision FROM organizations ORDER BY id")
 	if err != nil {
 		return s.nativeAPIError(c, err)
 	}
@@ -73,8 +74,11 @@ func (s *Service) nativeOrganizations(c echo.Context) error {
 	result := tracker.Page[nativeOrganization]{Items: []nativeOrganization{}}
 	for rows.Next() {
 		var organization nativeOrganization
-		if err := rows.Scan(&organization.ID, &organization.Name, &organization.Slug, &organization.Local); err != nil {
+		if err := rows.Scan(&organization.ID, &organization.Name, &organization.Slug, &organization.Local, &organization.Logo.ImageKey, &organization.Logo.ImageSHA256, &organization.Logo.Revision); err != nil {
 			return s.nativeAPIError(c, err)
+		}
+		if organization.Logo.ImageKey != "" {
+			organization.Logo.URL = "/organizations/" + string(organization.ID) + "/api/v2/attachments/" + organization.Logo.ImageKey
 		}
 		result.Items = append(result.Items, organization)
 	}
@@ -89,7 +93,7 @@ func (s *Service) createNativeOrganization(c echo.Context) error {
 		Name string `json:"name"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	result, err := s.createNativeOrganizationFor(c.Request().Context(), request.Name)
 	if err != nil {
@@ -106,9 +110,12 @@ type createNativeProjectRequest struct {
 }
 
 func (s *Service) createNativeProject(c echo.Context) error {
+	if _, _, basic := c.Request().BasicAuth(); basic && s.config.Hosted == nil {
+		return s.localAppCreateProject(c)
+	}
 	var request createNativeProjectRequest
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
 	if !ok {
@@ -122,7 +129,7 @@ func (s *Service) createNativeProject(c echo.Context) error {
 func (s *Service) createNativeProjectOperation(request createNativeProjectRequest) func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) {
 	return func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		if strings.TrimSpace(request.Name) == "" || len(request.Name) > 200 {
-			return nil, nativeInvalid("Project name is required and limited to 200 bytes")
+			return nil, nativePublicInvalid("Project name is required and limited to 200 bytes")
 		}
 		if err := validateNativeStates(request.States); err != nil {
 			return nil, err
@@ -151,8 +158,8 @@ func (s *Service) createNativeProjectOperation(request createNativeProjectReques
 		if _, err := tx.ExecContext(ctx, "UPDATE organizations SET scheduling_revision = scheduling_revision + 1 WHERE id = ?", project.OrganizationID); err != nil {
 			return nil, err
 		}
-		for _, state := range project.States {
-			if _, err := tx.ExecContext(ctx, "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, formatHubTime(now), formatHubTime(now)); err != nil {
+		for rank, state := range project.States {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO workflow_states (project_id, source_name, detent_state, terminal, dispatchable, created_at, updated_at, board_rank) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", project.ID, state.Name, state.Name, state.Terminal, state.Dispatchable, formatHubTime(now), formatHubTime(now), rank); err != nil {
 				return nil, err
 			}
 		}
@@ -180,7 +187,7 @@ func (s *Service) grantNativeToken(c echo.Context) error {
 		ProjectID      tracker.ProjectID      `json:"project_id"`
 	}
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	if err := s.grantNativeTokenFor(c.Request().Context(), c.Param("id"), string(request.OrganizationID), string(request.ProjectID)); err != nil {
 		return s.nativeAPIError(c, err)
@@ -206,6 +213,7 @@ func readNativeProject(ctx context.Context, query nativeQueryer, scope nativeSco
 	if err != nil {
 		return project, err
 	}
+	project.Icon = integration.Icon
 	project.Repository = integration.Repository
 	if project.Repository == "" {
 		project.Repository = integration.CheckoutRepository
@@ -259,7 +267,7 @@ func applyNativeProjectStates(ctx context.Context, tx *sql.Tx, scope nativeScope
 		return err
 	}
 	if project.Profile != "native" {
-		return nativeInvalid("Compatibility project workflow is externally owned")
+		return nativePublicInvalid("Compatibility project workflow is externally owned")
 	}
 	states = nativeTriageStates(states)
 	if err := validateNativeStates(states); err != nil {
@@ -272,25 +280,50 @@ func applyNativeProjectStates(ctx context.Context, tx *sql.Tx, scope nativeScope
 	if reflect.DeepEqual(project.States, states) {
 		return nil
 	}
-	var occupied int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM issues i JOIN workflow_states w ON w.id=i.workflow_state_id
-WHERE i.project_id=? AND NOT EXISTS (SELECT 1 FROM json_each(?) s WHERE json_extract(s.value,'$.name')=w.detent_state)`, scope.project, encoded).Scan(&occupied); err != nil {
+	removals, err := nativeWorkflowRemovals(ctx, tx, scope.project, states)
+	if err != nil {
 		return err
 	}
-	if occupied != 0 {
-		return nativeWorkflowInvalid("Workflow states used by work items cannot be removed")
-	}
-	for _, state := range states {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at)
-VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id,source_name) DO UPDATE SET terminal=excluded.terminal,dispatchable=excluded.dispatchable,updated_at=excluded.updated_at
-WHERE workflow_states.terminal IS NOT excluded.terminal OR workflow_states.dispatchable IS NOT excluded.dispatchable`, scope.project, state.Name, state.Name, state.Terminal, state.Dispatchable, formatHubTime(now), formatHubTime(now)); err != nil {
+	for rank, state := range states {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO workflow_states(project_id,source_name,detent_state,terminal,dispatchable,created_at,updated_at,board_rank)
+VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(project_id,source_name) DO UPDATE SET terminal=excluded.terminal,dispatchable=excluded.dispatchable,updated_at=excluded.updated_at,board_rank=excluded.board_rank
+WHERE workflow_states.terminal IS NOT excluded.terminal OR workflow_states.dispatchable IS NOT excluded.dispatchable OR workflow_states.board_rank IS NOT excluded.board_rank`, scope.project, state.Name, state.Name, state.Terminal, state.Dispatchable, formatHubTime(now), formatHubTime(now), rank); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM workflow_states WHERE project_id=?
-AND NOT EXISTS (SELECT 1 FROM json_each(?) s WHERE json_extract(s.value,'$.name')=workflow_states.detent_state)`, scope.project, encoded); err != nil {
-		return err
+	for _, id := range removals {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM workflow_states WHERE project_id=? AND id=?", scope.project, id); err != nil {
+			return err
+		}
 	}
 	_, err = tx.ExecContext(ctx, "UPDATE projects SET states_json=? WHERE organization_id=? AND id=?", encoded, scope.organization, scope.project)
 	return err
+}
+
+func nativeWorkflowRemovals(ctx context.Context, q nativeQueryer, project tracker.ProjectID, states []tracker.NativeState) ([]int64, error) {
+	names := make(map[string]bool, len(states))
+	for _, state := range states {
+		names[state.Name] = true
+	}
+	rows, err := q.QueryContext(ctx, `SELECT w.id,w.detent_state,EXISTS(SELECT 1 FROM issues i WHERE i.workflow_state_id=w.id) FROM workflow_states w WHERE w.project_id=?`, project)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var removals []int64
+	for rows.Next() {
+		var id int64
+		var name string
+		var occupied bool
+		if err := rows.Scan(&id, &name, &occupied); err != nil {
+			return nil, err
+		}
+		if !names[name] {
+			if occupied {
+				return nil, nativeWorkflowInvalid("Workflow states used by work items cannot be removed")
+			}
+			removals = append(removals, id)
+		}
+	}
+	return removals, rows.Err()
 }

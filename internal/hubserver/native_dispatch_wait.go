@@ -99,7 +99,7 @@ func (s *Service) waitNativeCandidates(c echo.Context) error {
 	if value := c.QueryParam("wait"); value != "" {
 		parsed, err := strconv.Atoi(value)
 		if err != nil || parsed < 1 || parsed > 30 {
-			return s.nativeAPIError(c, nativeInvalid("Wait must be between 1 and 30 seconds"))
+			return s.nativeAPIError(c, nativePublicInvalid("Wait must be between 1 and 30 seconds"))
 		}
 		wait = parsed
 	}
@@ -118,10 +118,10 @@ func (s *Service) waitNativeCandidates(c echo.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := s.requireHostedProject(ctx, tx, scope, false); err != nil {
+		if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
 			return err
 		}
-		if err := requireRunnerAuthority(ctx, tx, scope, now); err != nil {
+		if err := s.requireHostedProject(ctx, tx, scope, false); err != nil {
 			return err
 		}
 		if err := authorizeNativeProject(ctx, tx, scope); err != nil {

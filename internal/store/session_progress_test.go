@@ -10,7 +10,7 @@ import (
 func TestSessionProgressPersists(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "progress.db")
-	db := openParkTestStore(t, path)
+	db := openHistoryTestStore(t, path)
 	at := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 	id, err := db.StartSession(t.Context(), SessionStart{StartedAt: at})
 	if err != nil {
@@ -32,7 +32,7 @@ func TestSessionProgressPersists(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db = openParkTestStore(t, path)
+	db = openHistoryTestStore(t, path)
 	got, err := db.SessionProgress(t.Context(), id)
 	if err != nil || got.HeadSHA != "second" || !got.LastProgressAt.Equal(at) {
 		t.Fatalf("restarted progress = %+v, %v", got, err)
@@ -91,7 +91,7 @@ func TestSessionProgressFailures(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			db := openParkTestStore(t, filepath.Join(t.TempDir(), "progress.db"))
+			db := openHistoryTestStore(t, filepath.Join(t.TempDir(), "progress.db"))
 			id, err := db.StartSession(t.Context(), SessionStart{StartedAt: at})
 			if err != nil {
 				t.Fatal(err)

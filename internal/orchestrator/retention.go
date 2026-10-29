@@ -16,6 +16,11 @@ import (
 )
 
 func (o *Orchestrator) sweepRetention(ctx context.Context, state *State, now time.Time) {
+	if maintainer, ok := o.workAttempts.(store.TypedProjectionMaintainer); ok {
+		if _, err := maintainer.BackfillTypedProjections(ctx); err != nil {
+			o.logger.Warn("store projection backfill failed", "error", err)
+		}
+	}
 	sweeper, ok := o.reaper.(workspace.RetentionSweeper)
 	if !ok {
 		return

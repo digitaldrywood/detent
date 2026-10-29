@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
@@ -110,8 +110,8 @@ func TestDependencyDeferralRefreshFailuresStayWaiting(t *testing.T) {
 		name    string
 		tracker connector.Connector
 	}{
-		{name: "unsupported", tracker: struct{ connector.Connector }{memory.New(memory.Config{})}},
-		{name: "unavailable", tracker: dependencyFailureTracker{Connector: memory.New(memory.Config{}), resolveErr: errors.New("tracker unavailable")}},
+		{name: "unsupported", tracker: struct{ connector.Connector }{fakehub.New(fakehub.Config{})}},
+		{name: "unavailable", tracker: dependencyFailureTracker{Connector: fakehub.New(fakehub.Config{}), resolveErr: errors.New("tracker unavailable")}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			issue := implementProgressIssueWithoutPR()
@@ -156,7 +156,7 @@ func TestDependencyRetryPreservesParks(t *testing.T) {
 	if !state.Retry[issue.ID].DueAt.Equal(now) {
 		t.Fatal("negative delay not bounded")
 	}
-	state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: repeatedFailureCircuitBreakerCause}
+	state.Blocked[issue.ID] = Blocked{Issue: issue, Reason: "repeated_failure_circuit_breaker"}
 	p.parkBudgetHardHold(&state, issue.ID)
 	if _, ok := state.Blocked[issue.ID]; !ok {
 		t.Fatal("budget hold discarded independent park")
@@ -293,7 +293,7 @@ func TestDependencyCompletionDoesNotBypassDispatchRefusals(t *testing.T) {
 		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			o := &Orchestrator{cfg: normalizeConfig(Config{MaxConcurrentAgents: 2, ActiveStates: []string{"Todo", "In Progress", "Merging"}}), connector: memory.New(memory.Config{})}
+			o := &Orchestrator{cfg: normalizeConfig(Config{MaxConcurrentAgents: 2, ActiveStates: []string{"Todo", "In Progress", "Merging"}}), connector: fakehub.New(fakehub.Config{})}
 			state := newState(o.cfg)
 			tt.prepare(o, &state)
 			issue := dispatchTestIssue("released", tt.lane)
@@ -337,7 +337,7 @@ func (timer cancelUsageTimer) Stop() bool { timer.cancel(); return true }
 
 func TestWorkerUsageCancellationDuringDependencyHandoff(t *testing.T) {
 	t.Parallel()
-	for _, update := range []runner.UsageUpdate{{DispatchLoopStart: &runner.DispatchLoopStartSnapshot{}}, {WorkerGitHubActor: connector.IssueActor{Login: "worker"}}} {
+	for _, update := range []runner.UsageUpdate{{CompletionSourceStart: &runner.CompletionSourceStartSnapshot{}}, {WorkerGitHubActor: connector.IssueActor{Login: "worker"}}} {
 		ctx, cancel := context.WithCancel(t.Context())
 		o := &Orchestrator{}
 		if err := o.usageUpdateHandler(ctx, "child", cancelUsageTimer{cancel: cancel})(update); !errors.Is(err, context.Canceled) {
@@ -350,14 +350,14 @@ func TestWorkerUsageCancellationDuringDependencyHandoff(t *testing.T) {
 	o := &Orchestrator{runUpdates: make(chan runUpdate)}
 	done := make(chan error, 1)
 	go func() {
-		done <- o.usageUpdateHandler(ctx, "child", nil)(runner.UsageUpdate{DispatchLoopStart: &runner.DispatchLoopStartSnapshot{}})
+		done <- o.usageUpdateHandler(ctx, "child", nil)(runner.UsageUpdate{CompletionSourceStart: &runner.CompletionSourceStartSnapshot{}})
 	}()
 	<-o.runUpdates
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("handoff cancellation=%v", err)
 	}
-	o.dispatchClosed.Store(true)
+	o.BeginDrain()
 	state := newState(normalizeConfig(Config{}))
 	if got := o.dispatchIssueWithOutcome(t.Context(), &state, dispatchTestIssue("child", "Todo"), 0, time.Now(), ""); got.reason != dispatchIssueFailureDraining {
 		t.Fatalf("quiesced dispatch=%+v", got)
@@ -370,7 +370,7 @@ func (*dependencyResumeStartFailure) StartWorkAttempt(context.Context, store.Wor
 	return 0, errors.New("attempt store unavailable")
 }
 
-type dependencyResumeStateFailure struct{ *memory.Connector }
+type dependencyResumeStateFailure struct{ *fakehub.Connector }
 
 func (*dependencyResumeStateFailure) UpdateIssueState(context.Context, string, string) error {
 	return errors.New("tracker state update unavailable")
@@ -385,7 +385,7 @@ func TestDependencyResumeFailureReleasesReservations(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			issue := dispatchTestIssue("released-child", "Todo")
 			issue.BlockedBy = []connector.BlockedRef{{Identifier: "owner/repo#10", HumanOwned: true, HumanCompletionReady: true}}
-			tracker := memory.New(memory.Config{Stateful: true, Issues: []connector.Issue{issue}})
+			tracker := fakehub.New(fakehub.Config{Stateful: true, Issues: []connector.Issue{issue}})
 			gate := scheduler.NewGlobalDispatchGate(scheduler.NewStrictPriority(scheduler.Config{Capacity: 1}))
 			cfg := normalizeConfig(Config{Project: scheduler.ProjectCandidate{ID: "test"}, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress"}})
 			o := &Orchestrator{cfg: cfg, connector: tracker, globalDispatchGate: gate, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}

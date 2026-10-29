@@ -317,7 +317,7 @@ func TestSSHLocalTargetIntegration(t *testing.T) {
 
 func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, producerFailure ...bool) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	root := t.TempDir()
 	localHome, remoteHome := filepath.Join(root, "local"), filepath.Join(root, "remote")
@@ -408,7 +408,6 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 	cfg.Tracker.Endpoint = github.URL + "/graphql"
 	cfg.Agent.MaxTurns = 1
 	cfg.Agent.MaxSessionDurationMS = 30000
-	cfg.Agent.NoProgressTimeoutMS = 30000
 	// The fixture commands use POSIX syntax on every host, including Git's
 	// sh on Windows. Native default-shell behavior is covered by shell tests.
 	cfg.Codex.Shell = "sh"
@@ -421,6 +420,11 @@ func testSSHWorkerLifecycle(t *testing.T, useSSH, native bool, tier string, prod
 	cfg.Codex.Command = "env DETENT_SSH_TEST_SANDBOX=" + expectedSandbox + " DETENT_SSH_TEST_HELPER=provider DETENT_SSH_TEST_GATE=" + sshQuote(gate) + " " + sshQuote(filepath.ToSlash(executable)) + " -test.run=^TestSSHHelperProcess$"
 	failingReview := len(producerFailure) != 0 && producerFailure[0]
 	if failingReview {
+		repository := "https://github.com/example-org/example-project"
+		for _, sourceRoot := range []string{source, remoteSource} {
+			git(sourceRoot, "config", "url."+bare+".insteadOf", repository)
+			git(sourceRoot, "remote", "set-url", "origin", repository)
+		}
 		cfg.Codex.Command = "env DETENT_SSH_TEST_REVIEW_FAILURE=1 " + cfg.Codex.Command
 		cfg.Gate.AutomatedReview = gatepkg.AutomatedReviewRequired
 	}

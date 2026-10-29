@@ -221,7 +221,7 @@ func TestSessionReportsGitOnlyForARepository(t *testing.T) {
 	})
 }
 
-// TestSessionRefusesAGitWriteOnAReadOnlyWorkspace is section 18.1's rule that a
+// TestSessionRefusesAGitWriteOnAReadOnlyWorkspace is the workspace session contract's rule that a
 // person may look at the worktree the model is editing and may not type into
 // it. Status still answers: a reader who may only read still wants the branch
 // name the header shows.
@@ -473,7 +473,7 @@ func TestGitCapabilityIsClaimedAtBindAndNarrowedByTheHeartbeat(t *testing.T) {
 				t.Fatal("the files channel is served whether or not the worktree is a repository")
 			}
 			// The path and the host ride on the same beat, because the Open
-			// picker has nothing to open without them (section 18.12).
+			// picker has nothing to open without them.
 			if reported[0].WorktreePath != root {
 				t.Fatalf("worktree_path = %q, want %q", reported[0].WorktreePath, root)
 			}

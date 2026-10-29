@@ -7,7 +7,7 @@ This tool does not protect itself against edits or authenticate policy exception
 
 Run `go run ./tools/invariantcheck` (also `make check-invariants`). The optional
 `make check` targets and scheduled CI include this check; ordinary submission
-and merge follow [AGENTS.md validation](../AGENTS.md#validation). Doctor runs
+and merge follow [WORKFLOW.md validation](../WORKFLOW.md#validation). Doctor runs
 the same command for configured source repositories containing
 `invariants/policy.json`; an absent manifest means the
 repository has not opted in, and produces no invariant success claim.

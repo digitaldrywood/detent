@@ -81,9 +81,6 @@ func secondaryButtonClass() string {
 }
 
 func selectedTrackerChoice(form OnboardingForm) string {
-	if form.TrackerKind == "memory" {
-		return "memory"
-	}
 	switch githubStatusSource(form) {
 	case "issue_field":
 		return "github_issue_field"
@@ -102,9 +99,6 @@ func githubStatusSource(form OnboardingForm) string {
 }
 
 func projectStepTitle(form OnboardingForm) string {
-	if form.TrackerKind == "memory" {
-		return "Pick project"
-	}
 	switch githubStatusSource(form) {
 	case "issue_field":
 		return "Configure issue field"
@@ -262,7 +256,6 @@ templ trackerStep(data OnboardingData) {
 			@trackerChoice(data, "github_project_v2", "ProjectV2 board", "GitHub ProjectV2-backed issue status")
 			@trackerChoice(data, "github_issue_field", "Organization issue field", "Boardless GitHub issue Status field")
 			@trackerChoice(data, "github_label", "Repository labels", "Boardless repository labels with a status prefix")
-			@trackerChoice(data, "memory", "Memory", "Local sample issues for development")
 			<div class="pt-2">
 				<button class={ buttonClass() } type="submit">Continue</button>
 			</div>
@@ -285,9 +278,6 @@ templ credentialsStep(data OnboardingData) {
 		<h2 class="text-xl font-semibold">Credentials</h2>
 		<form class="mt-5 space-y-4" hx-post="/onboarding/credentials" hx-target="#onboarding-step" hx-swap="outerHTML">
 			@hiddenTracker(data.Form)
-			if data.Form.TrackerKind == "memory" {
-				<p class="text-sm text-sec">The memory tracker does not need external credentials.</p>
-			} else {
 				<label class="block">
 					<span class="text-sm font-medium">Endpoint</span>
 					<input class={ fieldClass() } type="url" name="endpoint" value={ data.Form.Endpoint }/>
@@ -296,7 +286,6 @@ templ credentialsStep(data OnboardingData) {
 					<span class="text-sm font-medium">API key</span>
 					<input class={ fieldClass() } type="text" name="api_key" value={ data.Form.APIKey } autocomplete="off"/>
 				</label>
-			}
 			<div class="flex flex-wrap gap-2 pt-2">
 				<button class={ buttonClass() } type="submit">Continue</button>
 				<button class={ secondaryButtonClass() } type="button" hx-get="/onboarding" hx-target="#onboarding-step" hx-select="#onboarding-step" hx-swap="outerHTML">Back</button>
@@ -311,9 +300,7 @@ templ projectStep(data OnboardingData) {
 		<form class="mt-5 space-y-4" hx-post="/onboarding/project" hx-target="#onboarding-step" hx-swap="outerHTML">
 			@hiddenCredentials(data.Form)
 			@hiddenAgentFields(data.Form)
-			if data.Form.TrackerKind == "memory" {
-				<p class="text-sm text-sec">Memory projects are created from the generated workflow.</p>
-			} else if githubStatusSource(data.Form) == "issue_field" {
+			if githubStatusSource(data.Form) == "issue_field" {
 				<label class="block">
 					<span class="text-sm font-medium">Repository</span>
 					<input class={ fieldClass() } type="text" name="repo" value={ data.Form.Repo } placeholder="owner/repo"/>

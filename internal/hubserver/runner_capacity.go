@@ -29,7 +29,7 @@ func (s *Service) readRunnerCapacity(ctx context.Context, scope nativeScope, res
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if backend != "" && (runnerauth.CapacityRequest{ExpectedConfigRevision: strings.Repeat("0", 64), Capacity: 1, Backend: backend}).Validate() != nil {
-		return nil, nativeInvalid("Backend must be a bounded provider identifier")
+		return nil, nativePublicInvalid("Backend must be a bounded provider identifier")
 	}
 	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -60,7 +60,7 @@ func (s *Service) readRunnerCapacity(ctx context.Context, scope nativeScope, res
 
 func (s *Service) updateRunnerCapacityCommand(ctx context.Context, scope nativeScope, resource string, request runnerCapacityChange) (any, error) {
 	if request.ExpectedRevision < 1 || request.Validate() != nil || strings.TrimSpace(request.IdempotencyKey) == "" || len(request.IdempotencyKey) > 128 {
-		return nil, nativeInvalid("A bounded capacity, configuration revision, runner revision and idempotency key are required")
+		return nil, nativePublicInvalid("A bounded capacity, configuration revision, runner revision and idempotency key are required")
 	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -99,7 +99,7 @@ func (s *Service) updateRunnerCapacityCommand(ctx context.Context, scope nativeS
 		return nil, nativeConflict(tracker.Revision(r.Revision))
 	}
 	if !freshCapacityConfig(r, now) || r.CapacityConfig.Revision != request.ExpectedConfigRevision {
-		return nil, &nativeError{Code: "revision_conflict", Message: "Current enrolled runner configuration evidence is required; read runner capacity again", status: http.StatusConflict}
+		return nil, &nativeError{Code: "revision_conflict", Message: "Current enrolled runner configuration evidence is required; read runner capacity again", status: http.StatusConflict, publicMessage: true}
 	}
 	before, err := s.database.hostedConsumption(ctx, tx, now)
 	if err != nil {
@@ -111,6 +111,9 @@ func (s *Service) updateRunnerCapacityCommand(ctx context.Context, scope nativeS
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE runner_identities SET capacity_limit = ?, routing_settings_json = ?, revision = revision + 1 WHERE organization_id = ? AND id = ?", request.Capacity, settings, scope.organization, resource); err != nil {
+		return nil, err
+	}
+	if err := storeRunnerRoutingFacts(ctx, tx, resource, settings); err != nil {
 		return nil, err
 	}
 	r, err = readRunner(ctx, tx, scope.organization, resource, now)
@@ -125,7 +128,7 @@ func (s *Service) updateRunnerCapacityCommand(ctx context.Context, scope nativeS
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO native_commands (organization_id, actor_id, operation, command_key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", scope.organization, scope.credential.ID, operation, request.IdempotencyKey, hash, raw, formatHubTime(now)); err != nil {
+	if _, err := insertNativeCommandReceipt(ctx, tx, scope.organization, scope.credential.ID, operation, request.IdempotencyKey, hash, raw, formatHubTime(now)); err != nil {
 		return nil, err
 	}
 	if err := s.database.checkHostedGrowth(ctx, tx, before, now, false); err != nil {
@@ -153,7 +156,7 @@ func (s *Service) getRunnerCapacity(c echo.Context) error {
 func (s *Service) updateRunnerCapacity(c echo.Context) error {
 	var request runnerCapacityChange
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	credential, ok := c.Get("hub_api_credential").(apiCredential)
 	if !ok {
@@ -169,18 +172,38 @@ func (s *Service) updateRunnerCapacity(c echo.Context) error {
 
 func (s *Service) runnerCapacityView(ctx context.Context, query nativeQueryer, r runnerauth.Runner, backend string, now time.Time) (runnerauth.CapacityView, error) {
 	view := r.CapacityView(backend, now)
-	if s.database.plans() == nil {
-		return view, nil
+	if s.database.plans() != nil {
+		entitlement, err := s.database.hostedEntitlement(ctx, query, now)
+		if err != nil {
+			return view, err
+		}
+		if !slices.Contains(entitlement.Features, "native_execution") {
+			zero := 0
+			view.Limits = append(view.Limits, runnerauth.CapacityLimit{Owner: "plan", Limit: &zero, Constraint: "The current plan does not permit native execution.", ObservedAt: now})
+			view.Effective = &zero
+			view.Status = "partially_applied"
+		}
 	}
-	entitlement, err := s.database.hostedEntitlement(ctx, query, now)
-	if err != nil {
-		return view, err
-	}
-	if !slices.Contains(entitlement.Features, "native_execution") {
-		zero := 0
-		view.Limits = append(view.Limits, runnerauth.CapacityLimit{Owner: "plan", Limit: &zero, Constraint: "The current plan does not permit native execution.", ObservedAt: now})
-		view.Effective = &zero
-		view.Status = "partially_applied"
+	view.Projects = make(map[tracker.ProjectID]runnerauth.ProjectCapacityView)
+	for project := range r.ProjectRanks {
+		if !r.AllowsProject(project) {
+			continue
+		}
+		capacity := runnerauth.ProjectCapacityView{Used: r.ProjectUsed[project]}
+		if limit, configured := r.ProjectCapacityLimits[project]; configured {
+			capacity.Desired, capacity.Applied = &limit, &limit
+			if limit == 0 {
+				capacity.Effective = &limit
+			}
+		}
+		if view.Effective != nil {
+			effective := *view.Effective
+			if capacity.Applied != nil {
+				effective = min(effective, *capacity.Applied)
+			}
+			capacity.Effective = &effective
+		}
+		view.Projects[project] = capacity
 	}
 	return view, nil
 }

@@ -141,7 +141,7 @@ func TestCheckDoctorRepositoryMergePolicyFeedsProposalPipeline(t *testing.T) {
 func TestCheckDoctorRepositoryMergePolicyTargetsRepositoryForDeclaredDrift(t *testing.T) {
 	t.Parallel()
 
-	workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: github\n  repository: digitaldrywood/detent\ndeliverable:\n  merge_method: squash\n---\n"))
+	workflow, err := workflowconfig.ParseWorkflow([]byte("---\ntracker:\n  kind: hub_native\n  repository: digitaldrywood/detent\ndeliverable:\n  merge_method: squash\n---\n"))
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
 	}
@@ -162,7 +162,7 @@ func TestCheckDoctorRepositoryMergePolicyTargetsRepositoryForDeclaredDrift(t *te
 
 func parseDoctorMergePolicyDeliverable(t *testing.T, mergeMethod string) workflowconfig.Deliverable {
 	t.Helper()
-	raw := "---\ntracker:\n  kind: github\n"
+	raw := "---\ntracker:\n  kind: hub_native\n"
 	if mergeMethod != "" {
 		raw += "deliverable:\n  merge_method: " + mergeMethod + "\n"
 	}

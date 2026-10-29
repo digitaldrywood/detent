@@ -105,7 +105,7 @@ interface RightPanelTabsProps {
   onAddDiff: () => void;
   onAddFiles: () => void;
   onAddPullRequest: () => void;
-  /** Detent's own surface (decisions.md §18.12). */
+  /** Detent's own surface. */
   onAddOutput: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
@@ -114,7 +114,7 @@ interface RightPanelTabsProps {
   pullRequestAvailable: boolean;
   outputAvailable: boolean;
   /**
-   * Detent (decisions.md §18.3): why the Terminal card and menu item are
+   * Detent: why the Terminal card and menu item are
    * disabled, when they are.
    *
    * It is a prop rather than a constant because the terminal is the one
@@ -130,7 +130,7 @@ interface RightPanelTabsProps {
   pullRequestStatusSeeds?: Readonly<Record<string, PullRequestTabStatusSeed>>;
   /**
    * Running + waiting subagents. Upstream badges the Agents card with this;
-   * Detent does not carry that surface (decisions.md §18.10), so it is only
+   * Detent does not carry that surface, so it is only
    * the panel toggle's own count now — `chat/PanelLayoutControls.tsx`, which
    * is a whole copy and keeps it.
    */
@@ -155,20 +155,20 @@ export function shouldOpenDefaultBrowserProfileFromMenuClick(
 }
 
 // Detent: the surfaces with no hosted counterpart yet carry one reason
-// (decisions.md §15, §16 — present, disabled, and honest about why). Browser
-// and Terminal are still those; Files is live from an issue (§18.4), so its
+// (present, disabled, and honest about why). Browser and Terminal are still
+// those; Files is live from an issue, so its
 // two strings say when the tab is reachable rather than that it is not. Every
 // other string in this file is upstream's.
 const SURFACE_DISABLED_REASONS = {
   browser: "Not available on Detent Cloud yet.",
-  // Detent (decisions.md §18.3): the terminal is live, and what disables it is
+  // Detent: the terminal is live, and what disables it is
   // the reader's own authority rather than the product's. The caller supplies
   // the sentence; this is the fallback for one that has none to give.
   terminal: "A terminal needs an issue, write access and the runner grant.",
   files: "Files are available from an issue with a runner.",
   diff: "Diff is only available for an issue with a change request.",
   pullRequest: "This thread's branch has no pull request yet.",
-  // Detent (decisions.md §18.12): a project action needs a worktree to run
+  // Detent: a project action needs a worktree to run
   // in, and a worktree belongs to an issue.
   output: "Action output is available from an issue with a runner.",
 } as const;
@@ -393,9 +393,9 @@ function RightPanelEmptyState(props: {
       onClick: props.onAddPullRequest,
       badgeCount: 0,
     },
-    // Detent's own card (decisions.md §18.12). `O` is free: upstream spends
+    // Detent's own card. `O` is free: upstream spends
     // B, T, F, D and P here, and `A` is free too since the Agents surface is
-    // not carried (decisions.md §18.10).
+    // not carried.
     {
       label: "Output",
       description: "Read what a project action printed.",
@@ -427,11 +427,11 @@ function RightPanelEmptyState(props: {
       const action = surfaceShortcutActionForKey(shortcutActionsRef.current, event);
       if (!action) return;
       if (document.querySelector(LAUNCHER_SHORTCUT_BLOCKING_LAYERS)) return;
-      // Detent's one addition to upstream's guard (decisions.md §19.1).
+      // Detent's one addition to upstream's guard.
       // A tracker's property pickers are Linear's and carry
       // Linear's letters — S, P, A, L, R — one of which upstream still spends
       // on Pull request. (`A` was the second until the Agents surface was
-      // dropped, §18.10; the guard is written against whatever letters a
+      // dropped, the keybinding rules; the guard is written against whatever letters a
       // column claims, so it needed no change and keeps working for `P`.) A
       // surface yields its letter while a column that claims it is on screen,
       // and takes it back everywhere else: on a chat page every launcher
@@ -651,7 +651,7 @@ function surfaceTitle(
       );
     case "pull-request":
       return `#${surface.number}`;
-    // Detent's own surfaces (decisions.md section 19.3, section 18.12); every
+    // Detent's own surfaces; every
     // other member of this union is upstream's.
     case "ask":
       return "Ask";
@@ -738,7 +738,7 @@ function SurfaceIcon({
           seed={pullRequestStatusSeeds?.[surface.id]}
         />
       );
-    // Detent's own surfaces (decisions.md section 19.3, section 18.12).
+    // Detent's own surfaces.
     case "ask":
       return <MessageSquare className="size-3 shrink-0" />;
     case "conversation":
@@ -866,7 +866,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       disabledReason: SURFACE_DISABLED_REASONS.pullRequest,
       onClick: props.onAddPullRequest,
     },
-    // Detent's own entry (decisions.md §18.12).
+    // Detent's own entry.
     {
       label: "Output",
       icon: ScrollText,

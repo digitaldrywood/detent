@@ -54,12 +54,18 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - uses: ./.github/actions/prepare-conversation
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            web/conversation/package-lock.json
+            package-lock.json
 
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26.9'
-          cache: true
+          go-version: '1.26.10'
+          cache: false
 
       - name: Verify release-branch full-suite provenance
         id: provenance
@@ -75,18 +81,15 @@ jobs:
           rulesets="$RUNNER_TEMP/detent-release-rulesets.json"
           default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.default_branch')"
           default_branch_ref="refs/heads/$default_branch"
-          if [ -z "$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON" ]; then
-            echo "DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON must be configured as a JSON array; use [] when there are no release-only checks"
-            exit 1
-          fi
-          gh api -H "Accept: application/vnd.github+json" \
-            "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=all&per_page=100" > "$check_runs"
+          gh api --paginate --slurp -H "Accept: application/vnd.github+json" \
+            "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?filter=all&per_page=100" |
+            jq '{total_count: .[0].total_count, check_runs: [.[].check_runs[]]}' > "$check_runs"
           gh api \
             "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/status?per_page=100" > "$statuses"
           scripts/collect-release-rulesets.sh "$GITHUB_REPOSITORY" "$rulesets"
           release_tag="$GITHUB_REF_NAME"
           git fetch --force origin "+refs/tags/$release_tag:refs/tags/$release_tag"
-          DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="$(jq -c 'if type == "array" then . + ["scheduled-full-ci"] | unique else error("release requirements must be a JSON array") end' <<< "$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON")"
+          DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON="$(jq -c 'if type == "array" then . + ["scheduled-full-ci", "release-security-audit"] | unique else error("release requirements must be a JSON array") end' <<< "${DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON:-[]}")"
           test "$(git cat-file -t "refs/tags/$release_tag")" = tag
           git for-each-ref --format='%(contents)' "refs/tags/$release_tag" > "$tag_message"
           go run ./tools/releaseprovenance \
@@ -101,6 +104,11 @@ jobs:
             -required-check-names-json "$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON" \
             -output tmp/detent_release_provenance.json
           echo "version=$release_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Use binaries prebuilt by the release suite
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/release-use-prebuilt.sh "${{ steps.provenance.outputs.version }}"
 
       - name: Install minisign
         run: |

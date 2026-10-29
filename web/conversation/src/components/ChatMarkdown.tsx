@@ -893,9 +893,9 @@ function MarkdownCodeBlockTitleContent({
 }
 
 // Detent: `export` added, and nothing else in this 3,173-line copy changed.
-// decisions.md §18.12 puts a project action's output in a right-panel surface
-// built from "the markdown renderer's own code-block chrome (MarkdownCodeBlock,
-// with its wrap and copy controls)", so `app/components/surfaces/
+// A project action's output is a right-panel surface built from the markdown
+// renderer's own code-block chrome (MarkdownCodeBlock, with its wrap and copy
+// controls), so `app/components/surfaces/
 // OutputSurface.tsx` mounts this component rather than reproducing 120 lines
 // of its markup. One export beats a second copy of the chrome that can drift
 // from this one.

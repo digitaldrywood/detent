@@ -18,7 +18,7 @@ func TestProjectDefinitionMigrationPreservesContentAndSemantics(t *testing.T) {
 
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
-	legacy := "---\r\n# retained config comment\r\ntracker:\r\n  kind: memory\r\n  api_key: $DETENT_TEST_TOKEN\r\nagent:\r\n  instructions_by_state:\r\n    Todo: |\r\n      Keep this multiline value.\r\n---\r\n# Agent direction\r\n\r\nPreserve this body.\r\n"
+	legacy := "---\r\n# retained config comment\r\ntracker:\r\n  kind: hub_native\r\n  api_key: $DETENT_TEST_TOKEN\r\nagent:\r\n  instructions_by_state:\r\n    Todo: |\r\n      Keep this multiline value.\r\n---\r\n# Agent direction\r\n\r\nPreserve this body.\r\n"
 	writeProjectDefinitionTestFile(t, workflowPath, legacy, 0o750)
 	localPath := filepath.Join(dir, "WORKFLOW.local.md")
 	local := "---\r\nagent:\r\n  max_turns: 12\r\n---\r\nLocal prose.\r\n"
@@ -145,7 +145,7 @@ func TestProjectDefinitionMigrationFailureLeavesOriginalsUnchanged(t *testing.T)
 			t.Parallel()
 			dir := t.TempDir()
 			workflowPath := filepath.Join(dir, "WORKFLOW.md")
-			original := "---\ntracker:\n  kind: memory\n---\nPrompt\n"
+			original := "---\ntracker:\n  kind: hub_native\n---\nPrompt\n"
 			writeProjectDefinitionTestFile(t, workflowPath, original, 0o644)
 			tt.run(t, workflowPath)
 			if got := readProjectDefinitionTestFile(t, workflowPath); got != original && tt.name != "validation failure" {
@@ -164,7 +164,7 @@ func TestProjectDefinitionMigrationRollsBackRenameFailure(t *testing.T) {
 
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
-	workflow := "---\ntracker:\n  kind: memory\n---\nPrompt\n"
+	workflow := "---\ntracker:\n  kind: hub_native\n---\nPrompt\n"
 	localPath := filepath.Join(dir, "WORKFLOW.local.md")
 	local := "---\nagent:\n  max_turns: 12\n---\nLocal\n"
 	writeProjectDefinitionTestFile(t, workflowPath, workflow, 0o644)
@@ -208,7 +208,7 @@ func TestProjectDefinitionMigrationRepairsLegacyLocalFrontmatterAfterSharedSplit
 	dir := t.TempDir()
 	workflowPath := filepath.Join(dir, "WORKFLOW.md")
 	writeProjectDefinitionTestFile(t, workflowPath, "Shared prompt.\n", 0o644)
-	writeProjectDefinitionTestFile(t, DefinitionPath(workflowPath), "schema: 1\ntracker:\n  kind: memory\nagent:\n  max_turns: 10\n", 0o644)
+	writeProjectDefinitionTestFile(t, DefinitionPath(workflowPath), "schema: 1\ntracker:\n  kind: hub_native\nagent:\n  max_turns: 10\n", 0o644)
 	localPath := LocalWorkflowPath(workflowPath)
 	writeProjectDefinitionTestFile(t, localPath, "---\nagent:\n  max_turns: 12\n---\nLocal prompt.\n", 0o600)
 

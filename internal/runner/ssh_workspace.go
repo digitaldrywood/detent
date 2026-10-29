@@ -18,7 +18,7 @@ import (
 // PrepareSSHSource uses the same private GitHub config as local agent turns.
 // The worker never writes a token to its persistent checkout or Git config.
 func PrepareSSHSource(ctx context.Context, cfg config.Config, workdir, repository, scratch string) error {
-	_, graphQL, _, err := workerGitHubEndpoints(cfg.Tracker.Endpoint)
+	_, graphQL, _, err := workerGitHubEndpoints(cfg)
 	if err != nil {
 		return err
 	}
@@ -26,14 +26,13 @@ func PrepareSSHSource(ctx context.Context, cfg config.Config, workdir, repositor
 	if err := configureWorkerGitHubEnvironment(&turn); err != nil {
 		return err
 	}
+	captureHostGitHubCLIEnvironment()
 	for name, value := range turn.Environment.Variables {
 		if err := os.Setenv(name, value); err != nil {
 			return err
 		}
 	}
-	// Git invokes gh against the private GH_CONFIG_DIR, including clone,
-	// workspace setup, hooks, gates, and pushes. Do not persist the helper.
-	for name, value := range map[string]string{"GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "", "GIT_CONFIG_KEY_1": "credential.helper", "GIT_CONFIG_VALUE_1": "!gh auth git-credential"} {
+	for name, value := range gitCredentialHelperEnvironment(cfg.Worker.GitHubToken) {
 		if err := os.Setenv(name, value); err != nil {
 			return err
 		}
@@ -68,4 +67,22 @@ func PrepareSSHSource(ctx context.Context, cfg config.Config, workdir, repositor
 		return fmt.Errorf("prepare SSH source checkout: %w", err)
 	}
 	return nil
+}
+
+func gitCredentialHelperEnvironment(token string) map[string]string {
+	helper := "!gh auth git-credential"
+	if strings.TrimSpace(token) == "" {
+		helper = "!env -u GH_CONFIG_DIR gh auth git-credential"
+		for _, entry := range hostGitHubCLIEnviron() {
+			if value, ok := strings.CutPrefix(entry, "GH_CONFIG_DIR="); ok {
+				helper = "!env GH_CONFIG_DIR='" + strings.ReplaceAll(value, "'", "'\\''") + "' gh auth git-credential"
+				break
+			}
+		}
+	}
+	return map[string]string{
+		"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "",
+		"GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "",
+		"GIT_CONFIG_KEY_1": "credential.helper", "GIT_CONFIG_VALUE_1": helper,
+	}
 }

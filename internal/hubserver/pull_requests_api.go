@@ -17,7 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// Pull requests (decisions section 18.6). The panel joins two halves the hub
+// Pull requests. The panel joins two halves the hub
 // already owns: its own change requests, which carry the native reviews and
 // checks, and the GitHub connector's projection of the pull request, which
 // carries state, draft, head, base and mergeability.
@@ -31,7 +31,7 @@ import (
 
 const (
 	// pullRequestViewTTL is how long an assembled view is served from memory
-	// before the join is run again (section 18.6, "caches the connector view
+	// before the join is run again (the pull request contract, "caches the connector view
 	// for 60 seconds").
 	pullRequestViewTTL = 60 * time.Second
 	// pullRequestRefreshInterval is the minimum spacing between forced
@@ -39,11 +39,11 @@ const (
 	pullRequestRefreshInterval = 10 * time.Second
 )
 
-// pullRequestMergeable is 18.6's three-valued mergeability: true, false, or
+// pullRequestMergeable is the pull request contract's three-valued mergeability: true, false, or
 // the string "unknown" when the connector has not said.
 type pullRequestMergeable = tracker.PullRequestMergeable
 
-// mergeableFromState maps GitHub's mergeable_state onto 18.6's three values.
+// mergeableFromState maps GitHub's mergeable_state onto the pull request contract's three values.
 // An empty or "unknown" state is unknown; "dirty" is the only state that means
 // the branch cannot merge; everything else is mergeable as far as the
 // projection can tell.
@@ -144,8 +144,9 @@ func (c *pullRequestCache) allowRefresh(organization tracker.OrganizationID, now
 func pullRequestRefreshLimited() error {
 	return &nativeError{
 		Code: "refresh_limited", Message: "Pull request refresh is limited to one per organization every ten seconds",
-		status:  http.StatusTooManyRequests,
-		Details: map[string]any{"retry_after_seconds": int(pullRequestRefreshInterval / time.Second)},
+		status:        http.StatusTooManyRequests,
+		Details:       map[string]any{"retry_after_seconds": int(pullRequestRefreshInterval / time.Second)},
+		publicMessage: true,
 	}
 }
 
@@ -153,21 +154,42 @@ func pullRequestRefreshLimited() error {
 
 // projectConnector reads the project's GitHub connector binding. It answers a
 // nil connector for a project that has no repository bound or has the
-// repository disabled, which is 18.6's "projects without a GitHub connector".
+// repository disabled, which is the pull request contract's "projects without a GitHub connector".
 func projectConnector(ctx context.Context, query nativeQueryer, scope nativeScope) (*pullRequestConnector, int64, error) {
+	connector, repositoryID, enabled, err := projectRepositoryBinding(ctx, query, scope)
+	if err != nil || !enabled || repositoryID == 0 {
+		return nil, 0, err
+	}
+	return connector, repositoryID, nil
+}
+
+// projectRepositoryBinding reads the configured source repository independently
+// of whether its GitHub tracker integration is enabled. Explicit native release
+// delivery verifies this binding without enabling that integration.
+func projectRepositoryBinding(ctx context.Context, query nativeQueryer, scope nativeScope) (*pullRequestConnector, int64, bool, error) {
 	var enabled bool
 	var repositoryID sql.NullInt64
 	var owner, name sql.NullString
-	err := query.QueryRowContext(ctx, `SELECT p.github_repository_enabled, p.repository_id, r.github_owner, r.github_name
+	var profile, checkout string
+	err := query.QueryRowContext(ctx, `SELECT p.github_repository_enabled, p.repository_id, r.github_owner, r.github_name, p.profile, p.checkout_repository
 FROM projects p LEFT JOIN repositories r ON r.id = p.repository_id
-WHERE p.organization_id = ? AND p.id = ?`, scope.organization, scope.project).Scan(&enabled, &repositoryID, &owner, &name)
+WHERE p.organization_id = ? AND p.id = ?`, scope.organization, scope.project).Scan(&enabled, &repositoryID, &owner, &name, &profile, &checkout)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, false, err
 	}
-	if !enabled || !repositoryID.Valid || !owner.Valid || !name.Valid {
-		return nil, 0, nil
+	if !repositoryID.Valid || !owner.Valid || !name.Valid {
+		if profile == "native" && validCheckoutRepository(checkout) {
+			verified, err := verifiedProjectCheckout(ctx, query, scope, checkout, time.Now().UTC())
+			if err != nil {
+				return nil, 0, false, err
+			}
+			if verified {
+				return &pullRequestConnector{Provider: "github", Repository: checkout}, 0, enabled, nil
+			}
+		}
+		return nil, 0, enabled, nil
 	}
-	return &pullRequestConnector{Provider: "github", Repository: owner.String + "/" + name.String}, repositoryID.Int64, nil
+	return &pullRequestConnector{Provider: "github", Repository: owner.String + "/" + name.String}, repositoryID.Int64, enabled, nil
 }
 
 // readConnectorPullRequest reads the projection row for one external URL. The
@@ -316,7 +338,7 @@ func externalPullRequestNumber(reference tracker.ChangeExternalReference) int {
 	return number
 }
 
-// connectorPullRequestState normalizes GitHub's state onto 18.6's vocabulary.
+// connectorPullRequestState normalizes GitHub's state onto the pull request contract's vocabulary.
 func connectorPullRequestState(state string) string {
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "merged":
@@ -337,7 +359,7 @@ func (s *Service) listWorkItemPullRequests(c echo.Context) error {
 	}
 	refresh := strings.TrimSpace(c.QueryParam("refresh"))
 	if refresh != "" && refresh != "1" {
-		return s.nativeAPIError(c, nativeInvalid("refresh accepts only 1"))
+		return s.nativeAPIError(c, nativePublicInvalid("refresh accepts only 1"))
 	}
 	views, err := s.readWorkItemPullRequests(c.Request().Context(), nativeRequestScope(c), c.Param("item"), refresh)
 	if err != nil {

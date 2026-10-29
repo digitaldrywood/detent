@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -18,7 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// The fleet and spend screen (decisions section 12). Every member reads the
+// The fleet and spend screen. Every member reads the
 // fleet; a lease is only described when the member can read the project it
 // runs for, so the runner list never leaks work from another project.
 
@@ -90,7 +91,7 @@ type hostedFleetUsage struct {
 	Allowances   map[string]hostedFleetAllowance `json:"allowances"`
 }
 
-// hostedProjectSpend and hostedSpend carry the section 12 spend shape. The
+// hostedProjectSpend and hostedSpend carry the hosted JSON API spend shape. The
 // hub records allowance consumption per window, not currency per project, so
 // nothing populates them yet and GET /fleet answers spend: null. The types
 // exist so the shape is fixed for the first metering source that does.
@@ -157,14 +158,14 @@ func (s *Service) hostedFleet(c echo.Context) error {
 	ctx := c.Request().Context()
 	readCtx, cancelRead := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancelRead()
-	credential, _, err := s.hostedCredential(ctx, c)
+	credential, _, err := s.appCredential(c)
 	if err != nil {
 		return s.hostedAPIError(c, err)
 	}
 	var result any
 	if c.QueryParam("include") == "names" {
 		var names map[string]hostedRunnerName
-		names, err = readHostedRunnerNames(readCtx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID), true)
+		names, err = readHostedRunnerNames(readCtx, s.database.reader, tracker.OrganizationID(s.appOrganizationID()), true)
 		result = hostedRunnerNamesResponse{RunnerNames: names}
 	} else if c.QueryParam("include") == "host_metrics" {
 		var from, to time.Time
@@ -175,7 +176,7 @@ func (s *Service) hostedFleet(c echo.Context) error {
 			if raw := c.QueryParam(bound.name); raw != "" {
 				*bound.value, err = time.Parse(time.RFC3339, raw)
 				if err != nil {
-					return s.nativeAPIError(c, nativeInvalid("Host history timestamps must use RFC3339"))
+					return s.nativeAPIError(c, nativePublicInvalid("Host history timestamps must use RFC3339"))
 				}
 			}
 		}
@@ -209,7 +210,7 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 		return hostedFleetResponse{}, err
 	}
 	if credential.HostedRole == "reporter" {
-		visibleIssues, err := reporterIssueIDs(ctx, s.database.reader, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential})
+		visibleIssues, err := reporterIssueIDs(ctx, s.database.reader, nativeScope{organization: tracker.OrganizationID(s.appOrganizationID()), credential: credential})
 		if err != nil {
 			return hostedFleetResponse{}, err
 		}
@@ -218,7 +219,7 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 		}
 	}
 	var projects int
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id = ?", s.config.Hosted.OrganizationID).Scan(&projects); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id = ?", s.appOrganizationID()).Scan(&projects); err != nil {
 		return hostedFleetResponse{}, err
 	}
 	if credential.HostedRole == "reporter" || len(readable) < projects {
@@ -235,7 +236,7 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 	if err != nil {
 		return hostedFleetResponse{}, err
 	}
-	names, err := readHostedRunnerNames(ctx, s.database.reader, tracker.OrganizationID(s.config.Hosted.OrganizationID), false)
+	names, err := readHostedRunnerNames(ctx, s.database.reader, tracker.OrganizationID(s.appOrganizationID()), false)
 	if err != nil {
 		return hostedFleetResponse{}, err
 	}
@@ -243,7 +244,7 @@ func (s *Service) readHostedFleet(ctx context.Context, credential apiCredential)
 }
 
 func (s *Service) hostedFleetRunners(ctx context.Context, credential apiCredential, visible map[tracker.ProjectID]bool) ([]hostedFleetRunner, error) {
-	organization := tracker.OrganizationID(s.config.Hosted.OrganizationID)
+	organization := tracker.OrganizationID(s.appOrganizationID())
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT r.id, COALESCE(m.version, ''), r.local_checks_json, r.created_at FROM runner_identities r LEFT JOIN machines m ON m.id = r.machine_id
 WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.id`, organization)
 	if err != nil {
@@ -300,6 +301,12 @@ WHERE r.organization_id = ? AND r.removed_at IS NULL ORDER BY r.display_name, r.
 			return nil, err
 		}
 		routing := runner.Routing
+		routing.ProjectCapacityLimits = maps.Clone(routing.ProjectCapacityLimits)
+		for project := range routing.ProjectCapacityLimits {
+			if !visible[project] {
+				delete(routing.ProjectCapacityLimits, project)
+			}
+		}
 		routing.UpdateRequest = nil
 		routing.CapacityRequest = nil
 		routing.ProjectConfigurationCommand = nil
@@ -351,8 +358,11 @@ func hostedFleetRunnerView(runner runnerauth.Runner, version string, visible map
 		State: runner.State, OS: runner.OS, Architecture: runner.Architecture, Version: version, HostCapacity: runner.HostCapacity,
 		HostUsed: runner.HostUsed, CapacityLimit: runner.CapacityLimit, ReportedCapacity: runner.ReportedCapacity,
 		ProviderCapacity: runner.ProviderCapacity, LastHeartbeatAt: runner.LastHeartbeatAt, Leases: []hostedFleetLease{},
-		IsolationTier: runner.IsolationTier, BackendIsolation: runner.BackendIsolation, Availability: runner.Availability,
+		IsolationTier: runner.IsolationTier, BackendIsolation: make(map[string][]string, len(runner.BackendIsolation)), Availability: runner.Availability,
 		Problems: runner.Problems, ConnectionHealth: runner.ConnectionHealth,
+	}
+	for backend, tiers := range runner.BackendIsolation {
+		view.BackendIsolation[backend] = append([]string{}, tiers...)
 	}
 	if view.ProviderCapacity == nil {
 		view.ProviderCapacity = []providercapacity.View{}
@@ -409,7 +419,7 @@ func (s *Service) hostedVisibleReservations(ctx context.Context, visible map[tra
 	rows, err := s.database.reader.QueryContext(ctx, `SELECT p.reservation_json, l.expires_at, coalesce(i.project_id, ''), coalesce(lr.runner_id, '') FROM provider_reservations p
 JOIN leases l ON l.lease_id = p.lease_id JOIN issues i ON i.id = l.issue_id
 LEFT JOIN lease_runners lr ON lr.lease_id = l.lease_id
-WHERE p.organization_id = ? AND l.released_at IS NULL`, s.config.Hosted.OrganizationID)
+WHERE p.organization_id = ? AND l.released_at IS NULL`, s.appOrganizationID())
 	if err != nil {
 		return nil, fmt.Errorf("list provider reservations: %w", err)
 	}
@@ -472,14 +482,14 @@ func (s *Service) readHostedRunnerHostHistory(ctx context.Context, credential ap
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	if runnerID == "" {
-		return nil, nativeInvalid("Runner ID is required for host history")
+		return nil, nativePublicInvalid("Runner ID is required for host history")
 	}
 	readable, err := s.hostedReadableProjects(ctx, credential)
 	if err != nil {
 		return nil, err
 	}
 	var projects int
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id = ?", s.config.Hosted.OrganizationID).Scan(&projects); err != nil {
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE deleted_at IS NULL AND organization_id = ?", s.appOrganizationID()).Scan(&projects); err != nil {
 		return nil, err
 	}
 	if len(readable) < projects {
@@ -492,5 +502,5 @@ func (s *Service) readHostedRunnerHostHistory(ctx context.Context, credential ap
 	if !slices.ContainsFunc(fleet.Runners, func(runner hostedFleetRunner) bool { return runner.ID == runnerID }) {
 		return nil, nativeNotFound()
 	}
-	return s.readRunnerHostHistory(ctx, tracker.OrganizationID(s.config.Hosted.OrganizationID), runnerID, from, to)
+	return s.readRunnerHostHistory(ctx, tracker.OrganizationID(s.appOrganizationID()), runnerID, from, to)
 }

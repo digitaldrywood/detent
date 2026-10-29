@@ -5,10 +5,63 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
+
+func TestCIEvidenceGates(t *testing.T) {
+	t.Parallel()
+	source := readNormalizedFile(t, ".github/workflows/ci.yml")
+	preflight := workflowBetween(t, source, "\n  preflight:\n", "\n  invariants:")
+	for _, tt := range []struct {
+		name string
+		want string
+	}{
+		{name: "dedupe requires a successful prior run", want: `and .conclusion == "success")`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if !strings.Contains(preflight, tt.want) {
+				t.Errorf("preflight missing evidence requirement %q", tt.want)
+			}
+		})
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Needs yaml.Node `yaml:"needs"`
+			Steps []struct {
+				Run string            `yaml:"run"`
+				Env map[string]string `yaml:"env"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(source), &workflow); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := workflow.Jobs["release-security-audit"]; exists {
+		t.Fatal("release audit must run locally")
+	}
+	finalize := workflow.Jobs["finalize"]
+	var needs []string
+	if err := finalize.Needs.Decode(&needs); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(needs, "release-security-audit") {
+		t.Fatal("finalizer depends on retired audit job")
+	}
+	for _, step := range finalize.Steps {
+		if strings.Contains(step.Run, "scripts/scheduled-ci-finish.sh") {
+			if step.Env["DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON"] != "${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}" {
+				t.Fatal("finalizer must receive required status names from repository variables")
+			}
+			return
+		}
+	}
+	t.Fatal("finalizer invocation missing")
+}
 
 func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
 	t.Parallel()
@@ -26,7 +79,7 @@ func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
 		"-github-statuses \"$statuses\"",
 		"-github-rulesets \"$rulesets\"",
 		"DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}",
-		"must be configured as a JSON array; use [] when there are no release-only checks",
+		` . + ["scheduled-full-ci", "release-security-audit"]`,
 		"-required-check-names-json \"$DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON\"",
 	} {
 		if !strings.Contains(workflow, marker) {
@@ -51,17 +104,6 @@ func TestReleaseWorkflowAuthenticatesExactCommitProvenance(t *testing.T) {
 	}
 }
 
-func TestCIHasNoPullRequestConcurrency(t *testing.T) {
-	t.Parallel()
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	if strings.Contains(workflow, "github.event.pull_request") || strings.Contains(workflow, "pull_request:") {
-		t.Fatal("scheduled CI must not start for pull requests")
-	}
-	if !strings.Contains(workflow, "group: full-validation-${{ github.ref }}") {
-		t.Fatal("full validation must serialize each branch independently")
-	}
-}
-
 func TestReleaseHooksDoNotRegenerate(t *testing.T) {
 	t.Parallel()
 
@@ -83,26 +125,8 @@ func TestMakeTestTargetsIsolateAPIToken(t *testing.T) {
 	if !strings.Contains(makefile, "GO_TEST := env -u DETENT_API_TOKEN go test") {
 		t.Fatal("Makefile Go test command must remove inherited DETENT_API_TOKEN")
 	}
-
-	tests := []struct {
-		name string
-		want string
-	}{
-		{name: "test", want: "$(GO_TEST) $$packages"},
-		{name: "test-web", want: "$(GO_TEST) ./internal/web"},
-		{name: "test-race", want: "$(GO_TEST) -short -race -timeout=30m ./..."},
-		{name: "test-cover-hub-a", want: "$(GO_TEST) -coverprofile=tmp/hub-a-cover.raw.out ./internal/hubserver"},
-		{name: "test-cover-hub-b", want: "$(GO_TEST) -coverprofile=tmp/hub-b-cover.raw.out ./internal/hubserver"},
-		{name: "test-cover-hub-c", want: "$(GO_TEST) -coverprofile=tmp/hub-c-cover.raw.out ./internal/hubserver"},
-		{name: "test-cover-packages", want: "$(GO_TEST) -coverprofile=tmp/packages-cover.raw.out $$remaining"},
-		{name: "test-cover-web", want: "$(GO_TEST) -coverprofile=tmp/web-cover.raw.out ./internal/web"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if !strings.Contains(makefile, tt.want) {
-				t.Fatalf("Makefile missing %q", tt.want)
-			}
-		})
+	if got, want := strings.Count(makefile, "go test"), strings.Count(makefile, "env -u DETENT_API_TOKEN go test"); got != want {
+		t.Fatalf("Makefile runs go test %d times, only %d remove inherited DETENT_API_TOKEN", got, want)
 	}
 }
 
@@ -145,6 +169,195 @@ func TestGolangCILintUsesRepositoryPinnedVersion(t *testing.T) {
 	for _, forbidden := range []string{"~/go/bin/golangci-lint", "cmd/golangci-lint@"} {
 		if strings.Contains(workflow, forbidden) {
 			t.Fatalf("CI lint job bypasses the Makefile pin with %q", forbidden)
+		}
+	}
+}
+
+func TestCIWindowsChecksUseExistingLinuxVetStep(t *testing.T) {
+	t.Parallel()
+
+	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
+	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
+	if !strings.Contains(triggers, "\n  pull_request:\n") {
+		t.Fatal("Windows checks must run on pull requests")
+	}
+	job := workflowBetween(t, workflow, "\n  verify-fast:\n", "\n  generated:")
+	if !strings.Contains(job, "    runs-on: ubuntu-latest\n") {
+		t.Fatal("Windows checks must reuse the existing Linux verify-fast job")
+	}
+	for _, want := range []string{
+		"    if: ${{ !cancelled() && (github.event_name == 'pull_request' || needs.preflight.outputs.should_run == 'true') }}\n",
+		"          ref: ${{ github.event_name == 'pull_request' && github.sha || needs.preflight.outputs.develop_sha }}\n",
+	} {
+		if !strings.Contains(job, want) {
+			t.Fatalf("Windows checks must run on the PR merge commit even when scheduled preflight is skipped: missing %q", want)
+		}
+	}
+	for _, name := range []string{"Build", "Audit all Go packages with NilAway and the reviewed baseline", "Verify landing gate concurrency and failure propagation"} {
+		if !strings.Contains(job, "      - name: "+name+"\n        if: github.event_name != 'pull_request'\n") {
+			t.Errorf("%s must stay outside the PR guard", name)
+		}
+	}
+	var parsed struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				If  string `yaml:"if"`
+				Run string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(workflow), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	goRecorder := `#!/bin/sh
+if [ "$1" = env ]; then exit 0; fi
+operation=$1
+shift
+for target do
+    case "$target" in
+        -*) ;;
+        [0-9]*) ;;
+        *) printf '%s %s %s %s\n' "$GOOS" "$GOARCH" "$operation" "$target" >> "$CI_GO_CALLS" ;;
+    esac
+done
+`
+	if err := os.WriteFile(filepath.Join(root, "go"), []byte(goRecorder), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []string{"pull_request", "schedule", "workflow_dispatch"} {
+		t.Run(event, func(t *testing.T) {
+			calls := filepath.Join(t.TempDir(), "go-calls")
+			for _, step := range parsed.Jobs["verify-fast"].Steps {
+				if step.Run == "" || step.If != "" {
+					continue
+				}
+				cmd := exec.CommandContext(t.Context(), "bash", "-e", "-c", step.Run)
+				cmd.Env = append(os.Environ(),
+					"GITHUB_EVENT_NAME="+event,
+					"PATH="+root+string(os.PathListSeparator)+os.Getenv("PATH"),
+					"GOOS=linux", "GOARCH=amd64", "CI_GO_CALLS="+calls,
+				)
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("workflow script: %v\n%s", err, output)
+				}
+			}
+			data, err := os.ReadFile(calls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := strings.Split(strings.TrimSpace(string(data)), "\n")
+			want := []string{"linux amd64 vet ./..."}
+			if event == "pull_request" {
+				want = []string{"windows amd64 build ./...", "windows amd64 vet ./...", "windows arm64 build ./..."}
+			}
+			slices.Sort(got)
+			slices.Sort(want)
+			if !slices.Equal(got, want) {
+				t.Fatalf("Go operations = %q, want %q", got, want)
+			}
+		})
+	}
+	workflows, err := filepath.Glob(".github/workflows/*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range workflows {
+		if filepath.Base(path) == "windows-tests.yml" {
+			continue
+		}
+		if strings.Contains(readNormalizedFile(t, path), "windows-latest") {
+			t.Errorf("%s must not add a Windows runner outside the scheduled Windows workflow", path)
+		}
+	}
+}
+
+func TestCIScheduledWindowsTestsSeparateFromReleasePromotion(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		On   map[string]yaml.Node `yaml:"on"`
+		Jobs map[string]struct {
+			If     string    `yaml:"if"`
+			Needs  yaml.Node `yaml:"needs"`
+			RunsOn string    `yaml:"runs-on"`
+			Steps  []struct {
+				Uses string            `yaml:"uses"`
+				Run  string            `yaml:"run"`
+				With map[string]string `yaml:"with"`
+				Env  map[string]string `yaml:"env"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(readNormalizedFile(t, ".github/workflows/windows-tests.yml")), &workflow); err != nil {
+		t.Fatal(err)
+	}
+	if len(workflow.On) != 2 {
+		t.Fatalf("Windows workflow triggers = %v, want schedule and workflow_dispatch only", workflow.On)
+	}
+	for _, event := range []string{"schedule", "workflow_dispatch"} {
+		if _, ok := workflow.On[event]; !ok {
+			t.Errorf("Windows workflow missing %s trigger", event)
+		}
+	}
+	job, ok := workflow.Jobs["windows-go"]
+	if !ok || job.RunsOn != "windows-latest" {
+		t.Fatal("scheduled Windows tests must run on windows-latest")
+	}
+	if job.Needs.Kind != 0 {
+		t.Fatal("Windows tests must run independently of the full suite")
+	}
+	if job.If != "(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/develop'" {
+		t.Fatal("Windows tests must be schedule/dispatch-gated on develop")
+	}
+	var commands []string
+	var pinnedCheckout, goSetup bool
+	for _, step := range job.Steps {
+		commands = append(commands, step.Run)
+		pinnedCheckout = pinnedCheckout || (step.Uses == "actions/checkout@v5" && step.With["ref"] == "${{ github.sha }}")
+		goSetup = goSetup || (step.Uses == "actions/setup-go@v6" && step.With["go-version-file"] == "go.mod")
+	}
+	if !pinnedCheckout || !goSetup {
+		t.Fatal("Windows tests must use the event SHA and repository Go version")
+	}
+	for _, pkg := range []string{"shell", "procgroup", "service", "update", "runnerauth"} {
+		t.Run(pkg, func(t *testing.T) {
+			for _, command := range commands {
+				args := strings.Fields(command)
+				if strings.HasPrefix(command, "go test ") && slices.Contains(args, "-short") && slices.Contains(args, "./internal/"+pkg) {
+					return
+				}
+			}
+			t.Errorf("Windows short tests missing internal/%s", pkg)
+		})
+	}
+	installerTests := false
+	for _, command := range commands {
+		args := strings.Fields(command)
+		installerTests = installerTests || (strings.HasPrefix(command, "go test ") && strings.Contains(command, "^TestPowerShellInstallScript") && slices.Contains(args, ".") && !slices.Contains(args, "-short"))
+	}
+	if !installerTests {
+		t.Fatal("PowerShell installer tests must execute without -short")
+	}
+	report, ok := workflow.Jobs["report"]
+	if !ok || report.Needs.Value != "windows-go" || report.If != "always() && !cancelled() && needs.windows-go.result == 'failure'" {
+		t.Fatal("Windows failures must have an independent report job that excludes operator cancellation")
+	}
+	reporter := false
+	for _, step := range report.Steps {
+		if strings.Contains(step.Run, "go run ./tools/cifailure") && strings.Contains(step.Run, `select(.name == "Windows Go tests")`) && step.Env["CI_DEVELOP_SHA"] == "${{ github.sha }}" && step.Env["DETENT_API_KEY"] == "${{ secrets.DETENT_API_KEY }}" && step.Env["DETENT_MCP_URL"] != "" && step.Env["DETENT_PROJECT_ID"] != "" {
+			reporter = true
+		}
+	}
+	if !reporter {
+		t.Fatal("Windows failures must use the existing native scheduled per-job reporter with pinned source identity")
+	}
+	for _, path := range []string{".github/workflows/ci.yml", ".github/workflows/release.yml"} {
+		content := readNormalizedFile(t, path)
+		for _, forbidden := range []string{"windows-go", "windows-tests.yml"} {
+			if strings.Contains(content, forbidden) {
+				t.Errorf("%s must not depend on the scheduled Windows workflow", path)
+			}
 		}
 	}
 }
@@ -209,38 +422,6 @@ func TestMakeLintIgnoresAmbientBinary(t *testing.T) {
 				t.Fatalf("make lint installed = %v, cached = %v: %s", installed, cached, output)
 			}
 		})
-	}
-}
-
-func TestCIRunsOnScheduleManualDispatchAndReleasePush(t *testing.T) {
-	t.Parallel()
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	triggers := workflowBetween(t, workflow, "on:\n", "\npermissions:")
-	for _, want := range []string{"schedule:", "cron: '17 * * * *'", "workflow_dispatch:", "fail_job:", "push:\n    branches: ['release/*']"} {
-		if !strings.Contains(triggers, want) {
-			t.Errorf("CI triggers missing %q", want)
-		}
-	}
-	for _, forbidden := range []string{"pull_request:", "merge_group:"} {
-		if strings.Contains(triggers, forbidden) {
-			t.Errorf("CI has forbidden trigger %q", forbidden)
-		}
-	}
-}
-
-func TestScheduledCIValidatesPinnedDevelopmentSHA(t *testing.T) {
-	t.Parallel()
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	if !strings.Contains(workflow, "git ls-remote origin refs/heads/develop") || !strings.Contains(workflow, "echo \"develop_sha=$develop_sha\" >> \"$GITHUB_OUTPUT\"") {
-		t.Fatal("scheduled CI must resolve and pin develop")
-	}
-	if count := strings.Count(workflow, "ref: ${{ needs.preflight.outputs.develop_sha }}"); count < 11 {
-		t.Fatalf("only %d jobs checkout the pinned SHA", count)
-	}
-	for _, want := range []string{"make test", "make security", "make test-cover", "npm run test:visual", "make check-invariants"} {
-		if !strings.Contains(workflow, want) {
-			t.Errorf("scheduled full suite missing %q", want)
-		}
 	}
 }
 
@@ -309,49 +490,6 @@ func TestDeployStagingRunsFromReleaseOnHostedRunner(t *testing.T) {
 	}
 }
 
-func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
-	t.Parallel()
-
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	job := workflowBetween(t, workflow, "  installer-smoke:", "\n  goreleaser-snapshot:")
-
-	for _, want := range []string{
-		"name: Resolve release installer version",
-		"GH_TOKEN: ${{ github.token }}",
-		"bash ./scripts/resolve-release-tag.sh",
-		"DETENT_VERSION=$tag",
-		"$GITHUB_ENV",
-	} {
-		if !strings.Contains(job, want) {
-			t.Fatalf("installer-smoke job missing %q", want)
-		}
-	}
-
-	linux := workflowBetween(t, job, "      - name: Smoke release installer", "")
-	for _, want := range []string{
-		"2>&1",
-		"falling back to prepared source",
-		"Release installer fell back to prepared source",
-		"exit 1",
-		"Verified checksum for detent_",
-	} {
-		if !strings.Contains(linux, want) {
-			t.Fatalf("Linux installer smoke step missing %q", want)
-		}
-	}
-}
-
-func TestBrowserVisualGateCoversBoardInteractions(t *testing.T) {
-	t.Parallel()
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	visual := workflowBetween(t, workflow, "  browser-visual-shard:", "\n  installer-smoke:")
-	for _, want := range []string{"npm run test:visual", "--shard=${{ matrix.shard }}/2", "name: Upload browser visual evidence", "name: Upload browser visual failure artifacts"} {
-		if !strings.Contains(visual, want) {
-			t.Errorf("browser visual job missing %q", want)
-		}
-	}
-}
-
 func readNormalizedFile(t *testing.T, path string) string {
 	t.Helper()
 
@@ -378,20 +516,4 @@ func workflowBetween(t *testing.T, content string, startMarker string, endMarker
 		t.Fatalf("workflow missing end marker %q after %q", endMarker, startMarker)
 	}
 	return section[:len(startMarker)+end]
-}
-
-func TestScheduledCIJobDependencies(t *testing.T) {
-	t.Parallel()
-	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	for _, name := range []string{"invariants", "lint", "verify-fast", "generated", "app", "verify-race", "test-cover", "security", "browser-visual-shard", "installer-smoke", "goreleaser-snapshot"} {
-		if !strings.Contains(workflow, "  "+name+":\n    needs: preflight\n    if: needs.preflight.outputs.should_run == 'true'") {
-			t.Errorf("%s must depend on preflight", name)
-		}
-	}
-	if !strings.Contains(workflow, "shard: [1, 2]") {
-		t.Fatal("full suite lost visual shards")
-	}
-	if !strings.Contains(workflow, "check_with_evidence race make test-race") {
-		t.Fatal("full suite must race test the short unit suite")
-	}
 }

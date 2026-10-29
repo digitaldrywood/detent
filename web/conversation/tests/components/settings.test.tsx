@@ -38,7 +38,7 @@ import {
 } from "../../src/app/settings/settingsLayout.tsx";
 import { ITEM_ROW_CLASSNAME } from "../../src/app/settings/itemRows.ts";
 import { ExpandableText } from "../../src/app/settings/ExpandableText.tsx";
-import { ProviderSummary, summarizeProviders } from "../../src/app/fleet/RunnersSection.tsx";
+import { ProviderSummary, summarizeProviders } from "../../src/app/usage/ProviderSummary.tsx";
 import fleetFixture from "../../src/contracts/fixtures/account-fleet.json";
 import type { FleetResponse } from "../../src/contracts/account.ts";
 import { AccountBootstrap } from "../../src/contracts/account.ts";
@@ -47,8 +47,29 @@ import { GeneralSettings, PlanSettings, SettingsRoute } from "../../src/app/sett
 import { organizationMCPEndpoint } from "../../src/app/settings/MCPSettings.tsx";
 import { applyHubPaths, resetHubPaths } from "../../src/runtime/basePath.ts";
 
+const widgetState = vi.hoisted(() => ({ actual: null as "profile" | "security" | null }));
+
+vi.mock("@workos-inc/widgets", async () => {
+  const actual = await vi.importActual<typeof import("@workos-inc/widgets")>("@workos-inc/widgets");
+  const React = await import("react");
+  function Widget({ authToken, label }: { authToken: string | (() => Promise<string>); label: string }) {
+    const [token, setToken] = React.useState("");
+    React.useEffect(() => {
+      void (typeof authToken === "string" ? Promise.resolve(authToken) : authToken()).then(setToken).catch(() => undefined);
+    }, [authToken]);
+    return <div data-token={token}>{label}</div>;
+  }
+  return {
+    WorkOsWidgets: ({ children, theme, queryClient }: React.ComponentProps<typeof actual.WorkOsWidgets>) => widgetState.actual ? <actual.WorkOsWidgets queryClient={queryClient} theme={theme}>{children}</actual.WorkOsWidgets> : <div data-widget-theme={theme?.appearance}>{children}</div>,
+    UserProfile: (props: { authToken: string | (() => Promise<string>) }) => widgetState.actual === "profile" ? <actual.UserProfile {...props} /> : <Widget {...props} label="Profile widget" />,
+    UserSecurity: (props: { authToken: string | (() => Promise<string>) }) => widgetState.actual === "security" ? <actual.UserSecurity {...props} /> : <Widget {...props} label="Security widget" />,
+  };
+});
+
 afterEach(() => {
   cleanup();
+  widgetState.actual = null;
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   resetHubPaths();
@@ -64,6 +85,64 @@ function labelsFor(items: readonly SettingsNavItem[]): readonly string[] {
   return items.map((item) => item.label);
 }
 
+describe("runner detail routes", () => {
+  it.each([
+    { detail: false, refreshFails: false },
+    { detail: false, refreshFails: true },
+    { detail: true, refreshFails: false },
+    { detail: true, refreshFails: true },
+  ])("preserves removal before fleet refresh settles (detail=$detail, refreshFails=$refreshFails)", async ({ detail, refreshFails }) => {
+    const runner = { ...FLEET.runners[0]!, claim_refusal_reason: "", state: "active" };
+    const sibling = FLEET.runners[1]!;
+    let removed = false;
+    let finishRefresh!: (response: Response) => void;
+    const refresh = new Promise<Response>((resolve) => { finishRefresh = resolve; });
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        removed = true;
+        return new Response(null, { status: 204 });
+      }
+      if (String(input).endsWith("/fleet")) {
+        return removed ? (await refresh).clone() : Response.json({ ...FLEET, editable: true, runners: [runner, sibling] });
+      }
+      return Response.json([]);
+    });
+    vi.stubGlobal("fetch", fetch);
+    const { router } = renderSidebarNav(detail ? `/settings/runners/${runner.id}` : "/settings/runners", {
+      ...OWNER_ACCOUNT,
+      bootstrap: { organization: OWNER_ACCOUNT.account.organization, actor: OWNER_ACCOUNT.account.actor },
+    }, null, true);
+    if (detail) fireEvent.click(await screen.findByRole("button", { name: "Remove runner" }));
+    else {
+      fireEvent.click(await screen.findByRole("button", { name: `More actions for ${runner.display_name}` }));
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Remove runner" }));
+    }
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Remove runner" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(router.state.location.pathname).toBe("/settings/runners");
+    expect(screen.queryByRole("button", { name: `Manage ${runner.display_name}` })).toBeNull();
+    expect(screen.getByRole("button", { name: `Manage ${sibling.display_name}` })).toBeTruthy();
+    await act(async () => {
+      finishRefresh(refreshFails ? new Response(null, { status: 503 }) : Response.json({ ...FLEET, editable: true, runners: [sibling] }));
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("button", { name: `Manage ${runner.display_name}` })).toBeNull();
+    expect(screen.getByRole("button", { name: `Manage ${sibling.display_name}` })).toBeTruthy();
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === "DELETE")).toHaveLength(1);
+  });
+
+  it.each([true, false])("loads a direct runner link with Settings / Runners breadcrumb (present: %s)", async (present) => {
+    const runner = { ...FLEET.runners[0]!, claim_refusal_reason: "", state: "active" };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(String(input).includes("include=host_metrics") ? [] : { ...FLEET, runners: present ? [runner] : [] }), { status: 200, headers: { "content-type": "application/json" } })));
+    renderSidebarNav(`/settings/runners/${runner.id}`, { ...OWNER_ACCOUNT, bootstrap: { organization: OWNER_ACCOUNT.account.organization, actor: OWNER_ACCOUNT.account.actor } }, null, true);
+    if (present) expect(await screen.findByRole("article", { name: runner.display_name })).toBeTruthy();
+    else expect(await screen.findByText("This runner was removed or is not accessible.")).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "Settings breadcrumb" }).textContent).toContain("Settings/Runners");
+    expect(screen.getByRole("link", { name: "Runners" }).getAttribute("href")).toContain("/settings/runners");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
+
 describe("which sections an actor gets", () => {
   beforeEach(() => applyHubPaths({ base_path: "/organizations/org_test" }));
   it("gives an owner every Detent section, in the reading order", () => {
@@ -74,7 +153,7 @@ describe("which sections an actor gets", () => {
       "Members",
       "Models",
       "Projects",
-      "Providers & runners",
+      "Runners",
       "Integrations",
       "API keys & MCP",
       "Plan & usage",
@@ -116,7 +195,7 @@ describe("which sections an actor gets", () => {
     for (const item of disabled) expect(item.reason).toBeTruthy();
   });
 
-  it.each(["admin", "support", "billing", "viewer", "", undefined])("shows the platform account link only with a platform role (%s)", async (platform_role) => {
+  it.each(["admin", "support", "billing", "viewer", "", undefined])("keeps platform navigation out of General for every platform role (%s)", async (platform_role) => {
     applyHubPaths({ base_path: "/organizations/org_test" });
     renderSidebarNav("/settings/general", {
       http: { origin: "", apiBase: "/api", csrfToken: "c" },
@@ -127,12 +206,7 @@ describe("which sections an actor gets", () => {
       },
     }, <GeneralSettings />);
     await screen.findByRole("button", { name: "Sign out" });
-    const link = screen.queryByRole("link", { name: "Platform console" });
-    if (platform_role) {
-      expect(link?.getAttribute("href")).toBe("/platform/tenants");
-    } else {
-      expect(link).toBeNull();
-    }
+    expect(screen.queryByRole("link", { name: "Platform console" })).toBeNull();
   });
 
   it.each(["", "/organizations/org_test"])("limits personal-key navigation to shared Cloud (%s)", async (mount) => {
@@ -197,6 +271,83 @@ const OWNER_ACCOUNT = {
   account: Schema.decodeUnknownSync(AccountBootstrap)(accountFixture),
 };
 
+describe("personal account settings", () => {
+  it.each([undefined, "https://workoscdn.com/avatar.png"])("renders account-only sections with avatar %s and authenticated widgets", async (picture) => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => new Response(JSON.stringify(
+      String(url).endsWith("widget-token") ? { token: "personal-widget-token" } : { enabled: true },
+    )));
+    renderSidebarNav("/settings/general", {
+      ...OWNER_ACCOUNT,
+      account: { ...OWNER_ACCOUNT.account, actor: { ...OWNER_ACCOUNT.account.actor, first_name: "Example", last_name: "Person", profile_picture_url: picture } },
+    }, <GeneralSettings />);
+    await waitFor(() => expect(screen.getByText("Profile widget").getAttribute("data-token")).toBe("personal-widget-token"));
+    expect(screen.getByText("Security widget").getAttribute("data-token")).toBe("personal-widget-token");
+    expect([...document.querySelectorAll("h2")].map((node) => node.textContent)).toEqual(["General", "Profile", "Security"]);
+    expect(screen.getByText("Example Person")).toBeTruthy();
+    expect(screen.getByText("Owner")).toBeTruthy();
+    for (const title of ["Organization", "Plan", "Project rank"]) expect(screen.queryByRole("heading", { name: title })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Platform console" })).toBeNull();
+    if (picture) expect(document.querySelector(`img[src="${picture}"]`)).toBeTruthy();
+    else expect(screen.getByText("EP")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "General" }).closest("section")?.querySelector("[title]")).toBeNull();
+    expect(document.querySelector("[data-widget-theme]")).toBeTruthy();
+    expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith("widget-token") && init?.method === "POST" && init.body === "{}" && (init.headers as Record<string, string>)["X-CSRF-Token"] === accountFixture.csrf_token)).toBe(true);
+  });
+
+  it.each(["token", "profile", "security"] as const)("shows one compact unavailable row after a %s failure without more widget requests", async (failure) => {
+    widgetState.actual = failure === "token" ? null : failure;
+    const token = `header.${btoa(JSON.stringify({ permissions: [], exp: Math.floor(Date.now() / 1000) + 3600 }))}.signature`;
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).endsWith("daily-summary-preference")) return new Response(JSON.stringify({ enabled: false, send_time: "06:00", time_zone: "UTC", days: "every_day", next_send: null, recipient: "owner@example.test" }));
+      if (String(url).startsWith("https://api.workos.com/")) throw new TypeError("private-customer-fetch-sentinel");
+      if (String(url).endsWith("widget-token")) return failure === "token"
+        ? new Response(JSON.stringify({ code: "unavailable", message: "private-customer-token-sentinel" }), { status: 503 })
+        : new Response(JSON.stringify({ token }));
+      return new Response(JSON.stringify({ enabled: true }));
+    });
+    renderSidebarNav("/settings/general", OWNER_ACCOUNT, <GeneralSettings />);
+    await screen.findByRole("alert");
+    expect(screen.getAllByRole("alert").map((row) => row.textContent)).toEqual(["Profile and security settings are unavailable right now."]);
+    expect(screen.queryByText(/private-customer/)).toBeNull();
+    expect(screen.queryByText("Error fetching data")).toBeNull();
+    expect(screen.queryByText("Profile widget")).toBeNull();
+    expect(screen.queryByText("Security widget")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Profile" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Security" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
+    const widgetRequests = () => fetch.mock.calls.filter(([url]) => String(url).endsWith("widget-token") || String(url).startsWith("https://api.workos.com/"));
+    if (failure !== "token") expect(widgetRequests().some(([url]) => String(url) === "https://api.workos.com/client/graphql")).toBe(true);
+    const requests = widgetRequests().length;
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event("online"));
+    });
+    fireEvent.click(screen.getByRole("switch", { name: "Notify me about issues I filed or commented on" }));
+    await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PUT")).toBe(true));
+    expect(widgetRequests()).toHaveLength(requests);
+  });
+});
+
+describe("self-hosted settings", () => {
+  it.each(["general", "plan", "billing", "mcp", "organization/members"] as const)("keeps %s within the local API capabilities", async (section) => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).endsWith("project-rank")) return new Response(JSON.stringify({ revision: 0, project_ids: [] }));
+      return new Response(JSON.stringify({ projects: [] }));
+    });
+    const account = { ...OWNER_ACCOUNT, account: { ...OWNER_ACCOUNT.account, self_hosted: true, plan: null } };
+    renderSidebarNav(`/settings/${section}`, { ...account, bootstrap: { organization: account.account.organization } }, <SettingsRoute section={section} />);
+    await screen.findByRole("heading", { name: "General" });
+    for (const name of ["Plan & usage", "Billing", "API & MCP", "Members"]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+    expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
+    expect(screen.queryByText("Profile widget")).toBeNull();
+    expect(screen.queryByText("Security widget")).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Notify me about issues I filed or commented on" })).toBeNull();
+    expect(fetch.mock.calls.some(([url]) => /widget-token|daily-summary-preference|issue-notification-preference|api-keys|\/plan$|\/billing$|logout/.test(String(url)))).toBe(false);
+  });
+});
+
 describe("issue notification preference", () => {
   it.each([false, true])("loads the saved preference (%s) and persists a toggle", async (enabled) => {
     const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
@@ -227,6 +378,64 @@ describe("issue notification preference", () => {
     await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("true"));
     fireEvent.click(toggle);
     await screen.findByText("Notification preference could not be saved");
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+  });
+});
+
+describe("daily summary preference", () => {
+  it("saves opt-in, schedule fields and opt-out with CSRF", async () => {
+    const user = userEvent.setup();
+    let preference = { enabled: false, configured: false, send_time: "06:00", time_zone: "UTC", days: "every_day", next_send: null as string | null, recipient: "owner@example.test" };
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url).endsWith("daily-summary-preference")) {
+        if (init?.method === "PUT") preference = { ...preference, ...JSON.parse(String(init.body)), configured: true, next_send: JSON.parse(String(init.body)).enabled ? "2026-10-28T11:00:00Z" : null };
+        return new Response(JSON.stringify(preference));
+      }
+      if (String(url).endsWith("issue-notification-preference")) return new Response(JSON.stringify({ enabled: true }));
+      return new Response(JSON.stringify({ projects: [] }));
+    });
+    renderSidebarNav("/settings/general", OWNER_ACCOUNT, <GeneralSettings />);
+    const toggle = await screen.findByRole("switch", { name: "Daily summary email" });
+    await waitFor(() => expect(toggle.hasAttribute("disabled")).toBe(false));
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(screen.queryByRole("combobox", { name: "Send at" })).toBeNull();
+    await user.click(toggle);
+    await screen.findByText(/Next summary:/);
+    expect(preference.time_zone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    for (const [label, option, field, value] of [
+      ["Send at", "7:30 AM", "send_time", "07:30"],
+      ["Time zone", "America/Chicago", "time_zone", "America/Chicago"],
+      ["Days", "Weekdays", "days", "weekdays"],
+    ] as const) {
+      await user.click(screen.getByRole("combobox", { name: label }));
+      await user.click(await screen.findByRole("option", { name: option }));
+      await waitFor(() => expect(preference[field]).toBe(value));
+      await waitFor(() => expect(toggle.hasAttribute("disabled")).toBe(false));
+    }
+    expect(screen.getByText(/Sent to owner@example.test/)).toBeTruthy();
+    await user.click(toggle);
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("false"));
+    const writes = fetch.mock.calls.filter(([url, init]) => String(url).endsWith("daily-summary-preference") && init?.method === "PUT");
+    expect(writes).toHaveLength(5);
+    for (const [, init] of writes) expect((init!.headers as Record<string, string>)["X-CSRF-Token"]).toBe(accountFixture.csrf_token);
+    expect(JSON.parse(String(writes.at(-1)![1]!.body))).toEqual({ enabled: false, send_time: "07:30", time_zone: "America/Chicago", days: "weekdays" });
+    await user.click(toggle);
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("true"));
+    expect(preference.time_zone).toBe("America/Chicago");
+  });
+
+  it("preserves the saved summary preference when saving fails", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url).endsWith("daily-summary-preference")) return init?.method === "PUT"
+        ? new Response(JSON.stringify({ code: "unavailable", message: "Summary preference could not be saved" }), { status: 503 })
+        : new Response(JSON.stringify({ enabled: true, send_time: "06:00", time_zone: "America/Chicago", days: "every_day", next_send: "2026-10-28T11:00:00Z", recipient: "owner@example.test" }));
+      return new Response(JSON.stringify({ enabled: true, projects: [] }));
+    });
+    renderSidebarNav("/settings/general", OWNER_ACCOUNT, <GeneralSettings />);
+    const toggle = await screen.findByRole("switch", { name: "Daily summary email" });
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("true"));
+    fireEvent.click(toggle);
+    await screen.findByText("Summary preference could not be saved");
     expect(toggle.getAttribute("aria-checked")).toBe("true");
   });
 });
@@ -266,7 +475,7 @@ describe("MCP setup", () => {
     ["/organizations/org_example", "https://app.example.org", "https://app.example.org/organizations/org_example/mcp"],
     ["/organizations/org_example", "https://app.example.org/organizations/org_example", "https://app.example.org/organizations/org_example/mcp"],
     ["/organizations/org_example", "https://app.example.org/organizations/org_secondary_example", null],
-  ])("routes a viewer to setup at %j and copies only a matching organization URL or placeholder examples using shared key metadata", async (mount, publicURL, expected) => {
+  ])("routes a viewer to setup at %j and copies only a matching organization URL using shared key metadata", async (mount, publicURL, expected) => {
     applyHubPaths({ base_path: mount });
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
@@ -280,8 +489,8 @@ describe("MCP setup", () => {
     };
     renderSidebarNav("/settings/mcp", { http: { origin: "", apiBase: "/api/v2/organizations/org_example", csrfToken: activeAccount.csrf_token }, account: activeAccount, bootstrap: { organization: account.organization } }, <SettingsRoute section="mcp" />);
     if (mount) {
-      await screen.findByRole("heading", { name: "Your personal keys" });
-      expect(screen.queryByRole("heading", { name: "Member keys" })).toBeNull();
+      await screen.findByRole("tab", { name: /^Personal / });
+      expect(screen.queryByRole("tab", { name: /^Member keys/ })).toBeNull();
       expect(screen.queryByRole("heading", { name: "Personal key policy" })).toBeNull();
       expect(fetch.mock.calls.some(([url]) => /external-keys|key-policy|service-keys/.test(String(url)))).toBe(false);
       return;
@@ -309,10 +518,7 @@ describe("MCP setup", () => {
       expect(screen.getByText(/The organization HTTPS URL is unavailable/)).toBeTruthy();
       expect(writeText).not.toHaveBeenCalled();
     }
-    fireEvent.click(screen.getByText("Connect to your own Detent daemon"));
-    fireEvent.click(screen.getByRole("button", { name: "Copy Local stdio configuration" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(expected ? 4 : 1));
-    expect(JSON.parse(writeText.mock.lastCall![0]).mcpServers.detent.env.DETENT_API_TOKEN).toBe("YOUR_DETENT_API_TOKEN");
+    expect(screen.queryByRole("button", { name: "Copy Local stdio configuration" })).toBeNull();
     for (const [url, options] of fetch.mock.calls) {
       expect(String(url)).not.toMatch(/tokens|credentials/);
       expect(options?.method ?? "GET").toBe("GET");
@@ -490,10 +696,46 @@ describe("personal keys and org controls", () => {
     });
     renderSidebarNav("/settings/mcp", { ...client, account: { ...account, actor: { ...account.actor, can_manage: canManage, role } } } as ConversationClient, <SettingsRoute section="mcp" />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Create key" })).toHaveProperty("disabled", false));
-    for (const title of ["API keys & MCP", "Which key do I need?", "Your personal keys", "Connect"]) expect(screen.getByRole("heading", { name: title })).toBeTruthy();
-    for (const title of ["Organization service keys", "Member keys"]) expect(Boolean(screen.queryByRole("heading", { name: title }))).toBe(canManage);
+    for (const title of ["API keys & MCP", "Connect an agent"]) expect(screen.getByRole("heading", { name: title })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Personal 1" })).toBeTruthy();
+    expect(Boolean(screen.queryByRole("tab", { name: "Service 0" }))).toBe(canManage);
+    expect(Boolean(screen.queryByRole("tab", { name: /^Member keys/ }))).toBe(canManage);
+    expect(screen.queryByRole("heading", { name: "Member keys" })).toBeNull();
     expect(screen.getAllByRole("button", { name: "Create key" })).toHaveLength(1);
     expect(screen.getAllByRole("textbox", { name: "MCP endpoint value" })).toHaveLength(1);
+    expect(screen.queryByRole("heading", { name: "Which key do I need?" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Connect" })).toBeNull();
+    expect(screen.queryByText("API and MCP access")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByRole("button", { name: "Connect My agent" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy MCP endpoint" }));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("https://cloud.example.test/mcp"));
+    for (const [transport, label] of [["mcp", "MCP"], ["rest", "REST"]]) {
+      fireEvent.click(screen.getByRole("button", { name: transport === "mcp" ? "MCP" : "REST API" }));
+      const copies = writeText.mock.calls.length;
+      fireEvent.click(screen.getByRole("button", { name: `Copy ${label} setup prompt` }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(copies + 1));
+      const copiedPrompt = writeText.mock.lastCall![0];
+      expect(copiedPrompt).toContain("Store it privately as DETENT_API_KEY");
+      if (transport === "mcp") {
+        expect(copiedPrompt).toContain('Configure one Streamable HTTP MCP server at https://cloud.example.test/mcp, with bearer_token_env_var = "DETENT_API_KEY"');
+        expect(copiedPrompt).toContain('Call connection_info and confirm key.kind is "personal" or "service" and explain who it acts as before reporting success');
+        expect(copiedPrompt).not.toContain("Use Authorization: Bearer");
+      } else {
+        expect(copiedPrompt).toContain("Use Authorization: Bearer with that private environment variable at https://cloud.example.test/api/v2.");
+        expect(copiedPrompt).toContain("Read GET /api/v2/organizations");
+        expect(copiedPrompt).not.toContain("connection_info");
+        expect(copiedPrompt).not.toContain("https://cloud.example.test/mcp");
+      }
+      const previewButton = screen.getByRole("button", { name: `Preview ${label} setup prompt` });
+      fireEvent.click(previewButton);
+      expect(screen.getByLabelText(`${label} setup prompt preview`).textContent).toBe(writeText.mock.lastCall![0]);
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(previewButton.getAttribute("aria-expanded")).toBe("true");
+      fireEvent.click(previewButton);
+      expect(screen.queryByLabelText(`${label} setup prompt preview`)).toBeNull();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "MCP" }));
     fireEvent.click(screen.getByRole("button", { name: "Create key" }));
     const dialog = within(screen.getByRole("dialog"));
     expect(dialog.getByRole("radio", { name: "You" }).getAttribute("aria-checked")).toBe("true");
@@ -528,8 +770,10 @@ describe("personal keys and org controls", () => {
     for (const [label, expected] of [["Copy key", "private-new-key"], ["Copy as export DETENT_API_KEY=… line", "export DETENT_API_KEY='private-new-key'"]]) {
       const button = dialog.getByRole("button", { name: label });
       fireEvent.click(button);
-      await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(expected));
-      expect(button.textContent).toBe("Copied");
+      await waitFor(() => {
+        expect(writeText).toHaveBeenLastCalledWith(expected);
+        expect(button.textContent).toBe("Copied");
+      });
       expect(dialog.getByLabelText("Step 1 complete")).toBeTruthy();
       expect(dialog.getByText("You can close this. The key stays in your list.")).toBeTruthy();
     }
@@ -540,8 +784,10 @@ describe("personal keys and org controls", () => {
       const button = dialog.getByRole("button", { name: `Copy ${label} setup prompt` });
       const copies = writeText.mock.calls.length;
       fireEvent.click(button);
-      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(copies + 1));
-      expect(button.textContent).toBe("Copied");
+      await waitFor(() => {
+        expect(writeText).toHaveBeenCalledTimes(copies + 1);
+        expect(button.textContent).toBe("Copied");
+      });
       const copiedPrompt = writeText.mock.lastCall![0];
       expect(copiedPrompt).toContain(transport === "mcp" ? `Call connection_info and confirm key.kind is "${kind}", matching the key just created before reporting success` : "Use Authorization: Bearer with that private environment variable at https://cloud.example.test/api/v2");
       expect(copiedPrompt).toContain("DETENT_API_KEY");
@@ -555,6 +801,136 @@ describe("personal keys and org controls", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalled());
     expect(writeText.mock.lastCall![0]).toContain("Settings → API keys & MCP");
     expect(writeText.mock.lastCall![0]).not.toContain("private-new-key");
+  });
+
+  it.each([
+    ["personal", true, "Example Member"],
+    ["personal", false, "member@example.test"],
+    ["service", true, `${account.organization.name} (service)`],
+    ["service", false, `${account.organization.name} (service)`],
+  ])("connects an existing %s key with used=%s without revealing or requesting a token", async (kind, used, actor) => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const path = String(url);
+      if (path.endsWith("key-context")) return new Response(JSON.stringify(context));
+      if (path.endsWith("key-policy")) return new Response(JSON.stringify({ personal_keys: "allowed" }));
+      if (path.endsWith("members")) return new Response(JSON.stringify({ members: [{ id: "membership1", user_id: key.owner, email: key.owner_email, name: used ? "Example Member" : "", role: "member", status: "active", grants: [] }], invitations: [] }));
+      const ownList = kind === "personal" ? path.endsWith("/account/api-keys") : path.endsWith("/service-keys");
+      return new Response(JSON.stringify({ keys: ownList ? [
+        { ...key, kind, last_used_at: used ? new Date(Date.now() - 120_000).toISOString() : null, token: "must-never-render" },
+        { ...key, id: "second", kind, name: "Other agent" },
+        { ...key, id: "expired", kind, name: "Expired agent", expires_at: "2020-01-01T00:00:00Z" },
+        { ...key, id: "revoked", kind, name: "Revoked agent", revoked_at: "2020-01-01T00:00:00Z" },
+      ] : [] }));
+    });
+    renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
+    if (kind === "service") fireEvent.click(await screen.findByRole("tab", { name: "Service 2" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect My agent" }));
+    const dialogElement = screen.getByRole("dialog");
+    const dialog = within(dialogElement);
+    expect(dialog.getByRole("heading", { name: "Connect My agent" })).toBeTruthy();
+    expect(dialog.getByText(kind === "personal" ? "Personal · acts as you" : "Service · acts as the organization")).toBeTruthy();
+    expect(dialog.getByRole("heading", { name: "Use the key you saved" })).toBeTruthy();
+    expect(dialog.getByText(/The token was shown once/).textContent).toContain("DETENT_API_KEY");
+    expect(dialog.queryByLabelText("New API key")).toBeNull();
+    expect(dialog.queryByRole("button", { name: "Reveal" })).toBeNull();
+    expect(dialog.queryByRole("button", { name: "Copy key" })).toBeNull();
+    expect(dialogElement.outerHTML).not.toContain("must-never-render");
+    if (used) {
+      await waitFor(() => expect(dialog.getByText(/Last call/).textContent).toContain(`2m ago · acting as ${actor}`));
+    } else {
+      expect(dialog.getByText("Waiting for the first call…")).toBeTruthy();
+    }
+    for (const [transport, label] of [["mcp", "MCP"], ["rest", "REST"]]) {
+      fireEvent.click(dialog.getByRole("button", { name: transport === "mcp" ? "MCP" : "REST API" }));
+      const copies = writeText.mock.calls.length;
+      fireEvent.click(dialog.getByRole("button", { name: `Copy ${label} setup prompt` }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(copies + 1));
+      const copiedPrompt = writeText.mock.lastCall![0];
+      expect(copiedPrompt).toContain("Store it privately as DETENT_API_KEY");
+      if (transport === "mcp") {
+        expect(copiedPrompt).toContain('Configure one Streamable HTTP MCP server at https://cloud.example.test/mcp, with bearer_token_env_var = "DETENT_API_KEY"');
+        expect(copiedPrompt).toContain(kind === "personal"
+          ? 'Call connection_info and confirm key.kind is "personal", matching the key just created before reporting success'
+          : 'Call connection_info and confirm key.kind is "service", matching the key just created before reporting success');
+        expect(copiedPrompt).not.toContain("Use Authorization: Bearer");
+      } else {
+        expect(copiedPrompt).toContain("Use Authorization: Bearer with that private environment variable at https://cloud.example.test/api/v2.");
+        expect(copiedPrompt).toContain("Read GET /api/v2/organizations");
+        expect(copiedPrompt).not.toContain("connection_info");
+        expect(copiedPrompt).not.toContain("https://cloud.example.test/mcp");
+      }
+      expect(dialog.getByLabelText(`${label} setup prompt preview`).textContent).toBe(writeText.mock.lastCall![0]);
+      expect(writeText.mock.lastCall![0]).not.toContain("must-never-render");
+    }
+    if (kind === "service") {
+      expect(dialog.getByText("The token was shown once, when the key was created. Your agent reads it from DETENT_API_KEY. Lost it? Create a replacement key.")).toBeTruthy();
+      expect(dialog.queryByRole("button", { name: "Rotate this key" })).toBeNull();
+    }
+    fireEvent.click(dialog.getByRole("button", { name: "Done" }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect Other agent" }));
+    expect(screen.getByRole("heading", { name: "Connect Other agent" })).toBeTruthy();
+    expect(within(screen.getByRole("dialog")).getByText("Waiting for the first call…")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show revoked and expired" }));
+    const table = within(screen.getByRole("table", { name: kind === "personal" ? "Personal keys" : "Service keys" }));
+    for (const name of ["Expired agent", "Revoked agent"]) {
+      const row = within(table.getByText(name).closest("tr")!);
+      expect(row.queryByRole("button", { name: /Connect|More actions/ })).toBeNull();
+    }
+    expect(table.getByRole("button", { name: "Connect My agent" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show revoked and expired" }));
+    expect(table.queryByText("Expired agent")).toBeNull();
+    expect(table.queryByText("Revoked agent")).toBeNull();
+    expect(fetch.mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true);
+    expect(new Set(fetch.mock.calls.filter(([url]) => /api-keys|service-keys/.test(String(url))).map(([url]) => String(url)))).toEqual(new Set(["/api/cloud/account/api-keys", `${account.api_base.replace("/api/v2", "/api/cloud")}/service-keys`]));
+  });
+
+  it("switches compact key tables with active counts and expands effective reach only on request", async () => {
+    const lastUsed = new Date(Date.now() - 120_000).toISOString();
+    const personal = [
+      { ...key, last_used_at: lastUsed, effective_reach: [reach, ...["pending", "blocked", "inactive"].map((status) => ({ ...reach, organization_id: status, name: `${status} org`, status })), { ...reach, organization_id: "empty", name: "Empty org", projects: [] }] },
+      { ...key, id: "project", name: "Project agent", access_context: "project", organizations: [{ organization_id: reach.organization_id, project_access: "project", project_ids: [reach.projects[0]!.id] }] },
+      { ...key, id: "revoked", name: "Old personal", revoked_at: "2020-01-01T00:00:00Z" },
+    ];
+    const services = [
+      { ...key, id: "service", name: "CI agent", kind: "service", access_context: "selected", organizations: [{ organization_id: reach.organization_id, project_access: "all", project_ids: [] }] },
+      { ...key, id: "expired", name: "Old service", kind: "service", expires_at: "2020-01-01T00:00:00Z" },
+    ];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const path = String(url);
+      return new Response(JSON.stringify(path.endsWith("key-context") ? context : path.endsWith("key-policy") ? { personal_keys: "allowed" } : { keys: path.endsWith("/account/api-keys") ? personal : path.endsWith("service-keys") ? services : [] }));
+    });
+    renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
+    expect(await screen.findByRole("tab", { name: "Personal 2" })).toHaveProperty("ariaSelected", "true");
+    expect(screen.getByRole("tab", { name: "Service 1" })).toBeTruthy();
+    const personalTable = within(screen.getByRole("table", { name: "Personal keys" }));
+    expect(personalTable.getByText("All my orgs · 5")).toBeTruthy();
+    expect(personalTable.getByText(`One project: ${reach.projects[0]!.name}`)).toBeTruthy();
+    expect(personalTable.getByText("2m ago").title).toBe(new Date(lastUsed).toLocaleString());
+    expect(personalTable.queryByText(/Effective reach today/)).toBeNull();
+    const expand = personalTable.getByRole("button", { name: "Expand My agent" });
+    fireEvent.click(expand);
+    expect(expand.getAttribute("aria-expanded")).toBe("true");
+    expect(personalTable.getByText("Effective reach today · All my orgs")).toBeTruthy();
+    for (const status of ["Awaiting approval", "Blocked", "Inactive", "No project access"]) expect(personalTable.getByText(status)).toBeTruthy();
+    expect(personalTable.getByText(`${reach.projects[0]!.name} (write)`)).toBeTruthy();
+    fireEvent.click(personalTable.getByRole("button", { name: "Collapse My agent" }));
+    expect(personalTable.queryByText(/Effective reach today/)).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Service 1" }));
+    await waitFor(() => expect(screen.queryByRole("table", { name: "Personal keys" })).toBeNull());
+    const serviceTable = within(await screen.findByRole("table", { name: "Service keys" }));
+    expect(serviceTable.getByText("All org projects")).toBeTruthy();
+    expect(screen.getByText(`Service keys act as ${account.organization.name} for CI, bots and team servers. Owners and admins manage them; they keep working when their creator leaves.`)).toBeTruthy();
+    expect(serviceTable.queryByText("Old service")).toBeNull();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show revoked and expired" }));
+    expect(serviceTable.getByText(/^Expired /)).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Service 1" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: "Personal 2" }));
+    expect(screen.getByRole("table", { name: "Personal keys" }).textContent).toContain("Old personal");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show revoked and expired" }));
+    expect(screen.queryByText("Old personal")).toBeNull();
   });
 
   it.each([undefined, "personal", "service"] as const)("checks connection identity for %s MCP prompts without changing REST setup", (kind) => {
@@ -595,7 +971,7 @@ describe("personal keys and org controls", () => {
     ["personal", "Done", "Example Member"],
     ["personal", "Close", "member@example.test"],
     ["service", "Escape", `${account.organization.name} (service)`],
-  ])("polls only the created %s key, preserves its first observed call and stops on %s", async (kind, close, actor) => {
+  ].flatMap(([kind, close, actor]) => ["created", "existing"].map((flow) => [flow, kind, close, actor])))("polls only the %s %s key and stops on %s", async (flow, kind, close, actor) => {
     let lastUsed: string | null = null;
     let pending: ((response: Response) => void) | undefined;
     let defer = false;
@@ -606,28 +982,36 @@ describe("personal keys and org controls", () => {
       if (init?.method === "POST") return new Response(JSON.stringify({ ...key, kind, token: "private-new-key" }));
       const ownList = kind === "personal" ? path.endsWith("/account/api-keys") : path.endsWith("/service-keys");
       if (ownList && defer) return new Promise<Response>((resolve) => { pending = resolve; });
-      return new Response(JSON.stringify({ keys: ownList ? [{ ...key, id: "other", kind, last_used_at: new Date().toISOString() }, { ...key, kind, last_used_at: lastUsed }] : [] }));
+      return new Response(JSON.stringify({ keys: ownList ? [{ ...key, id: "other", name: "Other agent", kind, last_used_at: new Date().toISOString() }, { ...key, kind, last_used_at: lastUsed }] : [] }));
     });
     renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Create key" })).toHaveProperty("disabled", false));
-    fireEvent.click(screen.getByRole("button", { name: "Create key" }));
-    if (kind === "service") {
-      fireEvent.click(screen.getByRole("radio", { name: "The organization" }));
+    if (flow === "created") {
+      fireEvent.click(screen.getByRole("button", { name: "Create key" }));
+      if (kind === "service") {
+        fireEvent.click(screen.getByRole("radio", { name: "The organization" }));
+      }
+      fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Agent key" } });
     }
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Agent key" } });
+    if (flow === "existing" && kind === "service") {
+      fireEvent.click(screen.getByRole("tab", { name: "Service 2" }));
+      await screen.findByRole("button", { name: "Connect My agent" });
+    }
     vi.useFakeTimers();
     try {
-      await act(async () => { fireEvent.click(screen.getByRole("button", { name: `Create ${kind} key` })); });
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: flow === "created" ? `Create ${kind} key` : "Connect My agent" })); });
       const dialog = within(screen.getByRole("dialog"));
       expect(dialog.getByText("Waiting for the first call…")).toBeTruthy();
       lastUsed = new Date(Date.now() - 120_000).toISOString();
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
-      const first = dialog.getByText(/First call/).textContent;
+      const callLabel = flow === "created" ? /First call/ : /Last call/;
+      const first = dialog.getByText(callLabel).textContent;
       expect(first).toContain(`acting as ${actor}`);
       expect(first).toContain("2m ago");
       lastUsed = new Date().toISOString();
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
-      expect(dialog.getByText(/First call/).textContent).toBe(first);
+      if (flow === "created") expect(dialog.getByText(callLabel).textContent).toBe(first);
+      else expect(dialog.getByText(callLabel).textContent).toContain(`just now · acting as ${actor}`);
       defer = true;
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
       expect(pending).toBeDefined();
@@ -649,7 +1033,7 @@ describe("personal keys and org controls", () => {
   it("redirects the old personal-key URL to the shared page", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => new Response(JSON.stringify(String(url).endsWith("key-context") ? context : String(url).endsWith("key-policy") ? { personal_keys: "allowed" } : { keys: [] })));
     const { router } = renderSidebarNav("/settings/api-keys", client, null, true);
-    await screen.findByRole("heading", { name: "Your personal keys" });
+    await screen.findByRole("tab", { name: /^Personal / });
     expect(router.state.location.pathname).toBe("/settings/mcp");
     expect(screen.queryByRole("button", { name: "API keys" })).toBeNull();
   });
@@ -665,44 +1049,65 @@ describe("personal keys and org controls", () => {
       return new Response(JSON.stringify({ keys: ownList ? [{ ...key, kind, ...(revoked ? { revoked_at: "2026-10-09T00:00:00Z" } : {}) }] : [] }));
     });
     renderSidebarNav("/settings/api-keys", client, <SettingsRoute section="api-keys" />);
+    if (kind === "service") fireEvent.click(await screen.findByRole("tab", { name: "Service 1" }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "More actions for My agent" }));
     if (kind === "personal") {
-      fireEvent.click(await screen.findByRole("button", { name: "Rotate My agent" }));
+      await user.click(await screen.findByRole("menuitem", { name: "Rotate token" }));
+      expect(screen.getByRole("alertdialog").textContent).toContain("Rotate My agent?");
       expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
       fireEvent.click(screen.getByRole("button", { name: "Rotate key" }));
       await screen.findByLabelText("New API key");
       fireEvent.click(screen.getByRole("button", { name: "Done" }));
+      await user.click(screen.getByRole("button", { name: "More actions for My agent" }));
     } else {
-      await screen.findByRole("button", { name: "Revoke My agent" });
-      expect(screen.queryByRole("button", { name: "Rotate My agent" })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: "Rotate token" })).toBeNull();
     }
-    fireEvent.click(await screen.findByRole("button", { name: "Revoke My agent" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Revoke" }));
+    expect(screen.getByRole("alertdialog").textContent).toContain("Revoke My agent?");
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Revoke key" }));
-    await screen.findByText(`No active ${kind} keys`);
+    await screen.findByText(`No active ${kind} keys. Create a key for your agent or integration.`);
     expect(fetch.mock.calls.some(([url, init]) => url === "/api/cloud/account/api-keys/personal1/rotate" && init?.method === "POST")).toBe(kind === "personal");
     expect(fetch.mock.calls.some(([url, init]) => url === (kind === "personal" ? "/api/cloud/account/api-keys/personal1" : `${account.api_base.replace("/api/v2", "/api/cloud")}/service-keys/personal1`) && init?.method === "DELETE")).toBe(true);
-    const section = screen.getByRole("heading", { name: kind === "personal" ? "Your personal keys" : "Organization service keys" }).closest("section")!;
-    fireEvent.click(within(section).getByRole("button", { name: "Show revoked and expired keys" }));
-    expect(within(section).getByText("Revoked")).toBeTruthy();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Show revoked and expired" }));
+    expect(screen.getByRole("table", { name: kind === "personal" ? "Personal keys" : "Service keys" }).textContent).toContain("Revoked");
   });
 
-  it("loads the next member-key page and includes its pending keys", async () => {
+  it("loads member-key pages without duplicates and flags pending keys only in this org", async () => {
+    const otherReach = { ...reach, organization_id: "org_other", name: "Other org", status: "pending", last_used_at: "2026-10-01T10:00:00Z" };
+    const firstKey = { ...key, last_used_at: "2026-10-02T10:00:00Z", effective_reach: [otherReach, reach] };
     const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       const path = String(url);
       if (path.endsWith("key-context")) return new Response(JSON.stringify(context));
       if (path.endsWith("key-policy")) return new Response(JSON.stringify({ personal_keys: "approval" }));
-      if (path.includes("external-keys?cursor=")) return new Response(JSON.stringify({ keys: [{ ...key, id: "personal2", name: "Next page agent", effective_reach: [{ ...reach, status: "pending" }] }] }));
-      return new Response(JSON.stringify(path.endsWith("service-keys") ? { keys: [] } : { keys: [key], next_cursor: "personal1" }));
+      if (path.includes("external-keys?cursor=")) return new Response(JSON.stringify({ keys: [firstKey, { ...key, id: "personal2", name: "Next page agent", effective_reach: [otherReach, { ...reach, status: "pending", last_used_at: "2026-10-03T10:00:00Z" }] }] }));
+      return new Response(JSON.stringify(path.endsWith("service-keys") ? { keys: [] } : { keys: [firstKey], next_cursor: "personal1" }));
     });
     renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
-    fireEvent.click(await screen.findByRole("button", { name: "Load more member keys" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Member keys 1" }));
+    expect(screen.queryByRole("img", { name: "Keys awaiting approval" })).toBeNull();
+    expect(screen.queryByRole("group", { name: /awaiting approval/ })).toBeNull();
+    const table = within(screen.getByRole("table", { name: "Member keys" }));
+    expect(table.getByRole("row", { name: /My agent/ }).textContent).toContain("write · all projects");
+    expect(table.getByRole("row", { name: /My agent/ }).textContent).toContain("Never");
+    expect(table.queryByTitle(new Date(otherReach.last_used_at).toLocaleString())).toBeNull();
+    expect(table.queryByTitle(new Date(firstKey.last_used_at).toLocaleString())).toBeNull();
+    fireEvent.click(table.getByRole("button", { name: "Expand My agent" }));
+    expect(table.getByText("Other org")).toBeTruthy();
+    expect(table.getByText("Awaiting approval")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Load more member keys" }));
     await screen.findByRole("button", { name: "Approve Next page agent" });
-    expect(screen.getByRole("button", { name: "Block My agent for this org" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Block Next page agent for this org" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /Member keys 2/ })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Keys awaiting approval" })).toBeTruthy();
+    expect(table.getAllByRole("button", { name: "Collapse My agent" })).toHaveLength(1);
+    expect(table.getByRole("button", { name: "More actions for Next page agent" })).toBeTruthy();
+    expect(table.getByTitle(new Date("2026-10-03T10:00:00Z").toLocaleString())).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Load more member keys" })).toBeNull();
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith("/external-keys?cursor=personal1"))).toBe(true);
   });
 
-  it("saves org policy, approves pending keys and revokes only this org", async () => {
+  it("saves org policy, approves pending keys and blocks only this org from the queue or menu", async () => {
     applyHubPaths({ base_path: `/organizations/${account.organization.id}` });
     let policy = "approval";
     let status = "pending";
@@ -712,21 +1117,40 @@ describe("personal keys and org controls", () => {
       if (path.endsWith("key-policy")) { if (init?.method === "PUT") policy = JSON.parse(String(init.body)).personal_keys; return new Response(JSON.stringify({ personal_keys: policy })); }
       if (path.endsWith("/approve")) { status = "allowed"; return new Response(null, { status: 204 }); }
       if (path.endsWith("/block")) { status = "blocked"; return new Response(null, { status: 204 }); }
-      return new Response(JSON.stringify({ keys: path.endsWith("service-keys") ? [{ ...key, id: "service1", name: "Org integration", kind: "service", access_context: "selected", organizations: [{ organization_id: account.organization.id, project_access: "all", project_ids: null }] }] : [{ ...key, effective_reach: [{ ...reach, status }] }] }));
+      return new Response(JSON.stringify({ keys: path.endsWith("service-keys") ? [] : [{ ...key, effective_reach: [{ ...reach, status }, { ...reach, organization_id: "org_other", name: "Other org", status: "pending" }] }] }));
     });
     renderSidebarNav("/settings/mcp", client, <SettingsRoute section="mcp" />);
-    await screen.findByRole("button", { name: "Revoke Org integration" });
-    expect(screen.getByRole("textbox", { name: "MCP endpoint value" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Copy MCP setup prompt" })).toBeTruthy();
-    fireEvent.click(await screen.findByRole("button", { name: "Approve My agent" }));
-    await screen.findByText("No keys awaiting approval");
-    fireEvent.change(screen.getByLabelText("Personal keys"), { target: { value: "blocked" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
-    await waitFor(() => expect(policy).toBe("blocked"));
+    fireEvent.click(await screen.findByRole("tab", { name: /^Member keys 1/ }));
+    expect(screen.getByRole("img", { name: "Keys awaiting approval" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "My agent awaiting approval" }).textContent).toContain("member@example.test · write · awaiting approval");
+    expect(screen.queryByText("Approval queue")).toBeNull();
+    expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
+    fireEvent.change(screen.getByLabelText("Personal keys in this organization"), { target: { value: "allowed" } });
+    expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", false);
+    fireEvent.change(screen.getByLabelText("Personal keys in this organization"), { target: { value: "approval" } });
+    expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
     fireEvent.click(screen.getByRole("button", { name: "Block My agent for this org" }));
+    expect(screen.getByText(/The key keeps its access to other organizations/)).toBeTruthy();
+    expect(fetch.mock.calls.some(([url]) => String(url).endsWith("/block"))).toBe(false);
+    const user = userEvent.setup();
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Keep access" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Approve My agent" }));
+    await waitFor(() => expect(screen.queryByRole("group", { name: "My agent awaiting approval" })).toBeNull());
+    expect(screen.queryByRole("img", { name: "Keys awaiting approval" })).toBeNull();
+    expect(screen.queryByText("No keys awaiting approval")).toBeNull();
+    expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith("/external-keys/personal1/approve") && init?.method === "PUT")).toBe(true);
+    fireEvent.change(screen.getByLabelText("Personal keys in this organization"), { target: { value: "blocked" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true));
+    expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith("/key-policy") && init?.method === "PUT" && JSON.parse(String(init.body)).personal_keys === "blocked")).toBe(true);
+    await user.click(screen.getByRole("button", { name: "More actions for My agent" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Block for this org" }));
     expect(screen.getByText(/The key keeps its access to other organizations/)).toBeTruthy();
     fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Block for this org" }));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    await screen.findByText("write · blocked");
+    expect(screen.queryByRole("button", { name: "More actions for My agent" })).toBeNull();
     expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith("/external-keys/personal1/block") && init?.method === "PUT")).toBe(true);
     expect(fetch.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
   });
@@ -746,7 +1170,7 @@ describe("the settings navigation in the sidebar", () => {
       "Members",
       "Models",
       "Projects",
-      "Providers & runners",
+      "Runners",
       "Integrations",
       "API keys & MCP",
       "Plan & usage",
@@ -994,6 +1418,7 @@ describe("the page container", () => {
 const usageFixture: BillingUsageReport = {
   organization_id: "org_a",
   renews_at: "2026-11-08T00:00:00Z",
+  complimentary: false, expires_at: null, cancels_at: null,
   charged_ai_micros: 31600000,
   chat_usage: {
     range: { from: "2026-10-08T00:00:00Z", to: "2026-11-08T00:00:00Z" },
@@ -1006,9 +1431,10 @@ const usageFixture: BillingUsageReport = {
     packs: [{ price_id: "credit_25", label: "$25 credit pack", usd_cents: 2500 }],
   },
   comparison_plans: [
-    { id: "starter", version: 1, name: "Starter", monthly_usd_cents: 4900, features: ["hosted_artifacts"], allowances: { projects: 5, unarchived_issues: 2000, collaboration_bytes: 1073741824 }, price_id: "price_starter" },
-    { id: "growth", version: 1, name: "Growth", monthly_usd_cents: 14900, features: ["hosted_artifacts"], allowances: { projects: 25, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "price_growth" },
-    { id: "scale", version: 1, name: "Scale", monthly_usd_cents: 39900, features: ["hosted_artifacts"], allowances: { projects: 100, unarchived_issues: 50000, collaboration_bytes: 1073741824 }, price_id: "price_scale" },
+    { id: "starter", version: 1, name: "Starter", monthly_usd_cents: 4900, included_ai_credit_micros: 4_900_000, features: ["hosted_artifacts"], allowances: { concurrent_work: 8, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "price_starter" },
+    { id: "team", version: 2, name: "Team", monthly_usd_cents: 9900, included_ai_credit_micros: 9_900_000, features: ["hosted_artifacts"], allowances: { concurrent_work: 20, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "price_team" },
+    { id: "growth", version: 2, name: "Growth", monthly_usd_cents: 24900, included_ai_credit_micros: 24_900_000, features: ["hosted_artifacts"], allowances: { concurrent_work: 50, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "price_growth" },
+    { id: "scale", version: 2, included_ai_credit_micros: null, name: "Scale", features: ["hosted_artifacts"], allowances: { concurrent_work: 100, unarchived_issues: 10000, collaboration_bytes: 1073741824 }, price_id: "" },
   ],
   can_checkout: true, can_manage: true, can_buy_credits: true, checkout_pending: false,
 };
@@ -1017,8 +1443,8 @@ const planFixture: PlanReport = {
   organization_id: "org_a", name: "Starter", monthly_usd_cents: 4900,
   base: { id: "starter", version: 1 }, effective_base: { id: "starter", version: 1 },
   source: "subscription", revision: 1, features: ["hosted_artifacts"],
-  allowances: { projects: 5, unarchived_issues: 2000, collaboration_bytes: 1073741824, history_records: 2000000, api_mutations: 20000, ingested_events: 20000 },
-  usage: { projects: 4, unarchived_issues: 1742, collaboration_bytes: 431227904, history_records: 1240000, api_mutations: 3120, ingested_events: 20000 },
+  allowances: { concurrent_work: 8, unarchived_issues: 10000, collaboration_bytes: 1073741824, history_records: 2000000, api_mutations: 20000, ingested_events: 20000 },
+  usage: { concurrent_work: 8, unarchived_issues: 1742, collaboration_bytes: 431227904, history_records: 1240000, api_mutations: 3120, ingested_events: 20000 },
   window_ends_at: "2026-10-09T14:00:00Z",
 };
 
@@ -1063,8 +1489,8 @@ describe("plan usage meters", () => {
       expect(alert.textContent).not.toContain("Events received");
     }
     const detailId = screen.getByRole("meter", { name: "API writes" }).getAttribute("aria-describedby")!;
-    expect(document.getElementById(detailId)?.textContent).toContain("Resets");
-    expect(document.getElementById(detailId)?.textContent).not.toContain("when the current window ends");
+    expect(document.getElementById(detailId)?.textContent).not.toContain("Resets");
+    expect(screen.getAllByText(/^Resets /)).toHaveLength(1);
   });
 
   it.each([
@@ -1118,11 +1544,38 @@ describe("plan usage meters", () => {
 
 
 describe("plan billing usage", () => {
+  it("compares included credits for offered plans and a current legacy plan", async () => {
+    const free = { ...usageFixture.comparison_plans[0]!, id: "free", name: "Free", monthly_usd_cents: 0, included_ai_credit_micros: 0 };
+    mockPlanUsage({ ...usageFixture, name: "Legacy pilot", effective_base: { id: "pilot_free", version: 1 }, comparison_plans: [free, ...usageFixture.comparison_plans] }, { ...planFixture, name: "Legacy pilot", effective_base: { id: "pilot_free", version: 1 } });
+    renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
+    const table = await screen.findByRole("table", { name: "Compare plans" });
+    expect(within(table).getByRole("columnheader", { name: "AI credits / month" })).toBeTruthy();
+    for (const [plan, amount] of [["Legacy pilot", "—"], ["Free", "—"], ["Starter", "$4.90"], ["Team", "$9.90"], ["Growth", "$24.90"], ["Scale", "Custom"]]) {
+      const row = within(table).getAllByRole("row").find((item) => within(item).queryByRole("heading", { name: new RegExp(plan!) }) !== null)!;
+      expect(within(row).getByRole("cell", { name: `AI credits / month: ${amount}` })).toBeTruthy();
+    }
+  });
+
+  it("reads comparison storage from the catalog and workspace storage from the entitlement", async () => {
+    const allowances = [25, 100, 250, 1];
+    mockPlanUsage({ ...usageFixture, comparison_plans: usageFixture.comparison_plans.map((plan, index) => ({
+      ...plan, allowances: { ...plan.allowances, collaboration_bytes: allowances[index]! * 2 ** 30 },
+    })) }, { ...planFixture, allowances: { ...planFixture.allowances, collaboration_bytes: 37 * 2 ** 30 } });
+    renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
+    const comparison = await screen.findByRole("table", { name: "Compare plans" });
+    expect(within(comparison).getByRole("columnheader", { name: "Storage" })).toBeTruthy();
+    for (const [plan, storage] of [["Starter", "25 GB storage"], ["Team", "100 GB storage"], ["Growth", "250 GB storage"], ["Scale", "Custom storage"]]) {
+      const row = within(comparison).getByRole("heading", { name: new RegExp(plan!) }).closest<HTMLElement>('[role="row"]')!;
+      expect(within(row).getByRole("cell", { name: storage })).toBeTruthy();
+    }
+    expect(screen.getByRole("meter", { name: "Workspace data" }).getAttribute("aria-valuetext")).toBe("411.25 MB of 37 GB");
+  });
+
   it("keeps a newer version of the current tier selectable and recommended", async () => {
     const starter = usageFixture.comparison_plans[0]!;
     const nextStarter = {
       ...starter, version: 2, monthly_usd_cents: 6900,
-      allowances: { ...starter.allowances, projects: 10, unarchived_issues: 4000 },
+      allowances: { ...starter.allowances, concurrent_work: 12 },
       price_id: "price_starter_v2",
     };
     const fetch = mockPlanUsage({
@@ -1134,7 +1587,7 @@ describe("plan billing usage", () => {
     renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
     const move = await screen.findByRole("button", { name: "Move to Starter" });
     expect(screen.getAllByText("Current")).toHaveLength(1);
-    expect(screen.getByRole("alert").textContent).toContain("Move to Starter for 10 projects and 4,000 open issues");
+    expect(nextFittingPlan(planFixture, [starter, nextStarter])?.price_id).toBe("price_starter_v2");
     expect(move.hasAttribute("disabled")).toBe(false);
     fireEvent.click(move);
     await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.stripe.com/test"));
@@ -1150,24 +1603,26 @@ describe("plan billing usage", () => {
       ...account, actor: { ...account.actor, role: role === "support" ? "owner" : role },
       support: role === "support" ? { actor: "support@example.test" } : null,
     } }, <PlanSettings />);
-    await screen.findByText("$31.60");
+    if (role === "member") {
+      await screen.findByText("Plan and usage need owner or admin access");
+      expect(screen.queryByRole("meter")).toBeNull();
+      return;
+    }
+    await screen.findByText("$31.60 spent this period");
     expect(screen.getByText("$18.40")).toBeTruthy();
-    expect(screen.getByText("4.80M")).toBeTruthy();
-    expect(screen.getByText("3.90M input · 600K cached · 300K output")).toBeTruthy();
-    expect(screen.getByText("Auto top-up: $25.00 below $5.00")).toBeTruthy();
-    expect(screen.getByText("2026-10-08 – 2026-11-08")).toBeTruthy();
-    for (const name of ["Upgrade", "Manage billing", "Buy credits", "Move to Growth", "Move to Scale"]) {
+    expect(screen.queryByRole("link", { name: "Billing" }) !== null).toBe(role === "owner");
+    for (const name of ["Upgrade", "Manage billing", "Move to Team", "Move to Growth"]) {
       expect(screen.queryByRole("button", { name }) !== null).toBe(role === "owner");
     }
+    expect(screen.queryByRole("button", { name: "Move to Scale" })).toBeNull();
+    expect(screen.getByText(/Contact us/)).toBeTruthy();
     expect(screen.getByText("Current")).toBeTruthy();
-    expect(screen.getByRole("alert").textContent).toContain("Move to Growth for 25 projects and 10,000 open issues");
-    expect(screen.getByRole("alert").textContent).toContain("Open issues");
+    expect(screen.getByRole("alert").textContent).toContain("Concurrent work");
     expect(screen.getByRole("alert").textContent).not.toContain("Events received");
   });
 
   it.each([
     ["Move to Growth", "/billing/checkout", "price_growth"],
-    ["Buy credits", "/billing/credits/checkout", "credit_25"],
     ["Manage billing", "/billing/portal", undefined],
   ])("opens the existing hosted flow for %s", async (name, endpoint, price) => {
     const fetch = mockPlanUsage();
@@ -1203,6 +1658,61 @@ describe("plan billing usage", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Compare plans" }));
     expect(document.activeElement?.id).toBe("settings-plan-comparison");
     expect(scroll).toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ complimentary: true, expires_at: "2026-12-31T00:00:00Z" }, "Expires Dec 31, 2026 · 73 days left"],
+    [{ complimentary: true, expires_at: null }, "No end date"],
+    [{ complimentary: false, renews_at: "2026-11-08T00:00:00Z" }, "Renews Nov 8, 2026"],
+    [{ complimentary: false, cancels_at: "2026-11-08T00:00:00Z" }, "Cancels Nov 8, 2026"],
+  ])("renders the plan lifecycle (%j)", async (fields, expected) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-19T00:00:00Z"));
+    mockPlanUsage({ ...usageFixture, ...fields });
+    renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
+    expect(await screen.findByText(expected)).toBeTruthy();
+    expect(screen.queryByText("Complimentary") !== null).toBe(fields.complimentary);
+  });
+
+  it.each([
+    [null, "Custom"],
+    [undefined, "Custom"],
+    [0, "$0"],
+    [4900, "$49"],
+  ] as const)("groups excluded allowances and highlights an unoffered current plan priced at %s before the offered tiers", async (price, expectedPrice) => {
+    const legacy = { ...planFixture, name: "Legacy complimentary pilot", monthly_usd_cents: price,
+      effective_base: { id: "pilot_free", version: 1 }, features: [],
+      allowances: { ...planFixture.allowances, relay_bytes: 0, artifact_retained_bytes: 0, artifact_reserved_bytes: 0, artifact_bytes: 0, artifact_upload_bytes: 0, artifact_retention_seconds: 0 },
+    };
+    mockPlanUsage({ ...usageFixture, name: legacy.name, effective_base: legacy.effective_base, complimentary: true, expires_at: null, renews_at: null }, legacy);
+    renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
+    await screen.findByText("Complimentary");
+    expect(screen.getAllByText("Not on your plan")).toHaveLength(1);
+    const excluded = screen.getByText("Not on your plan").parentElement!.parentElement!;
+    for (const label of ["Relay data", "Artifact storage", "Reserved artifact storage", "Artifact size", "Upload size", "Artifact retention"]) expect(within(excluded).getByText(label)).toBeTruthy();
+    expect(screen.getAllByText(/^Resets /)).toHaveLength(1);
+    const comparison = screen.getByLabelText("Compare plans");
+    const current = within(comparison).getByText("Current").closest("[aria-current]")!;
+    expect(current).toBe(within(comparison).getAllByRole("row")[1]);
+    expect(current.className).toContain("ring-info");
+    expect(within(current as HTMLElement).getByText(expectedPrice)).toBeTruthy();
+    expect(within(current as HTMLElement).getByText("Never expires")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("pilot_free");
+    expect(within(comparison).getByText("Contact us")).toBeTruthy();
+    expect(comparison.textContent).not.toContain("100 slots");
+  });
+
+  it("offers Starter from the Free limit banner and preserves the current Free column", async () => {
+    const free = { ...usageFixture.comparison_plans[0]!, id: "free", name: "Free", monthly_usd_cents: 0, features: [], price_id: "", allowances: { concurrent_work: 2 } };
+    mockPlanUsage({ ...usageFixture, effective_base: { id: "free", version: 1 }, name: "Free", renews_at: null, comparison_plans: [free, ...usageFixture.comparison_plans] }, { ...planFixture, name: "Free", monthly_usd_cents: 0, effective_base: { id: "free", version: 1 }, allowances: { concurrent_work: 2 }, usage: { concurrent_work: 2 } });
+    renderSidebarNav("/settings/plan", OWNER_ACCOUNT, <PlanSettings />);
+    const banner = await screen.findByRole("alert");
+    expect(within(banner).getByText("At your Free limit")).toBeTruthy();
+    expect(within(banner).getByRole("button", { name: "Move to Starter" }).hasAttribute("disabled")).toBe(false);
+    const current = screen.getByText("Current").closest("[aria-current]")!;
+    expect(current.textContent).toContain("Free");
+    expect(current.textContent).toContain("Never expires");
+    expect(screen.queryByText(/^Renews /)).toBeNull();
   });
 
   it("does not recommend a tier whose storage has the same limit", () => {
@@ -1248,6 +1758,8 @@ describe("organization settings pages", () => {
     renderSidebarNav("/settings/organization", client, null, true);
     await screen.findByRole("heading", { name: "Example team", level: 2 });
     await screen.findByText("You are the owner · 3 members · 2 projects");
+    expect(screen.getByText("Logo")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Choose organization logo" })).toBeTruthy();
     expect(screen.getByText("Organization ID")).toBeTruthy();
     await waitFor(() => expect((screen.getByRole("textbox", { name: "Organization slug" }) as HTMLInputElement).value).toBe("example-team"));
     expect(screen.getByText("Current")).toBeTruthy();
@@ -1363,6 +1875,8 @@ describe("organization settings pages", () => {
     renderSidebarNav("/settings/organization", { ...client, account: { ...account, actor: { ...account.actor, can_manage: false, role } } }, null, true);
     await screen.findByRole("heading", { name: "Example team", level: 2 });
     expect(screen.queryByRole("textbox", { name: "Organization name" })).toBeNull();
+    expect(screen.getByLabelText("Organization logo")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Choose organization logo" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Plan & usage" })).toBeNull();
     expect(screen.getByRole("button", { name: "Copy organization ID" })).toBeTruthy();

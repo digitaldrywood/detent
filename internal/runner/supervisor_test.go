@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
+	"github.com/digitaldrywood/detent/internal/testenv"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
@@ -520,7 +521,7 @@ func TestSupervisorDispatchSendsCompletion(t *testing.T) {
 		if completion.Result.FinalState != FinalStateCompleted {
 			t.Fatalf("FinalState = %q, want %q", completion.Result.FinalState, FinalStateCompleted)
 		}
-	case <-time.After(time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("timed out waiting for completion")
 	}
 }
@@ -547,7 +548,7 @@ func TestSupervisorDispatchDeliversCompletionAfterContextCancellation(t *testing
 	cancel()
 	select {
 	case <-backend.returning:
-	case <-time.After(time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("backend did not observe cancellation")
 	}
 	close(backend.release)
@@ -560,7 +561,7 @@ func TestSupervisorDispatchDeliversCompletionAfterContextCancellation(t *testing
 		if !completion.Retryable {
 			t.Fatal("Retryable = false, want true")
 		}
-	case <-time.After(time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("timed out waiting for canceled completion")
 	}
 }
@@ -595,14 +596,14 @@ func TestSupervisorDispatchStopsBlockedSendAfterCancellation(t *testing.T) {
 
 	select {
 	case <-returned:
-	case <-time.After(time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("backend did not return")
 	}
 	cancel()
 
 	select {
 	case <-logs.signal:
-	case <-time.After(time.Second):
+	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatalf("logs %q missing blocked completion timeout", logs.String())
 	}
 }

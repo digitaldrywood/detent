@@ -17,7 +17,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -197,10 +199,11 @@ type sshError struct {
 	Kind     string
 	Data     json.RawMessage
 	Children []*sshError
+	Failure  *tracker.NativeTerminalFailure `json:",omitempty"`
 }
 
 func sshErrorTypes() []error {
-	return []error{&backendcapacity.Error{}, &WorkerGitHubTokenResolutionError{}, &WorkerGitHubBudgetMonitorError{}, &DeliverableCommandError{}, &DeliverableRecoveryError{}, &SessionBrakeError{}, &WorkspaceBranchHeldError{}, &IssueConfigurationError{}, &SessionTokenCeilingError{}, &SessionBudgetProjectionError{}, &SessionMemoryCeilingError{}, &AgentTurnCleanupError{}, &NativeImplementationReviewError{}, &forgeavailability.Error{}, &connector.TrackerAvailabilityError{}, &githubconnector.StatusError{}, &githubconnector.RESTFanoutDeferralError{}, &workspace.LandRefusal{}, &workspace.ValidationError{}, &workspace.HookError{}, &workspace.CommandError{}, &os.PathError{}, &os.LinkError{}, &os.SyscallError{}}
+	return []error{&backendcapacity.Error{}, &WorkerGitHubTokenResolutionError{}, &WorkerGitHubBudgetMonitorError{}, &DeliverableCommandError{}, &DeliverableRecoveryError{}, &SessionBrakeError{}, &WorkspaceBranchHeldError{}, &IssueConfigurationError{}, &SessionTokenCeilingError{}, &SessionBudgetProjectionError{}, &SessionMemoryCeilingError{}, &AgentTurnCleanupError{}, &NativeImplementationReviewError{}, &forgeavailability.Error{}, &connector.TrackerAvailabilityError{}, &githubconnector.StatusError{}, &githubconnector.RESTFanoutDeferralError{}, &workspace.LandRefusal{}, &workspace.ValidationError{}, &workspace.HookError{}, &shell.UnavailableError{}, &workspace.CommandError{}, &os.PathError{}, &os.LinkError{}, &os.SyscallError{}}
 }
 
 func sshSentinels() []error {
@@ -213,7 +216,8 @@ func sshSentinels() []error {
 		ErrSessionDurationExceeded, ErrTurnDurationExceeded, ErrSessionTurnLimitExceeded,
 		ErrOperatorStopped, ErrMergeRevoked, ErrLaneRevoked, ErrCIUnavailable, ErrModelPermitUnavailable,
 		ErrMergeWorkerStartupTimeout, ErrMergeWorkerDurationExceeded, ErrAgentTurnCleanup, ErrWorkerProcessReap, ErrLandingNotReviewed, ErrValidatorInfrastructure,
-		ErrDeliverableRecoveryExhausted, ErrSubscriptionAuthRequired, ErrExecutionAuthorityUnavailable, ErrNativeRecoveryRequired}
+		ErrDeliverableRecoveryExhausted, ErrSubscriptionAuthRequired, ErrExecutionAuthorityUnavailable, ErrNativeRecoveryRequired,
+		ErrChangeSourceVersionSuperseded}
 }
 
 func encodeSSHError(err error) *sshError {
@@ -221,6 +225,12 @@ func encodeSSHError(err error) *sshError {
 		return nil
 	}
 	wire := &sshError{Message: err.Error()}
+	if provider, ok := err.(interface {
+		NativeTerminalFailure() tracker.NativeTerminalFailure
+	}); ok {
+		failure := provider.NativeTerminalFailure().Public()
+		wire.Failure = &failure
+	}
 	for _, sentinel := range sshSentinels() {
 		if err == sentinel { //nolint:errorlint // Only exact sentinels use this encoding; wrappers retain their message and children below.
 			wire.Kind = "sentinel"
@@ -287,7 +297,20 @@ func (wire *sshError) err() error {
 			return decoded
 		}
 	}
-	return &sshWrappedError{message: wire.Message, children: children}
+	wrapped := &sshWrappedError{message: wire.Message, children: children}
+	if wire.Failure != nil {
+		return &sshTerminalError{sshWrappedError: wrapped, failure: wire.Failure.Public()}
+	}
+	return wrapped
+}
+
+type sshTerminalError struct {
+	*sshWrappedError
+	failure tracker.NativeTerminalFailure
+}
+
+func (e *sshTerminalError) NativeTerminalFailure() tracker.NativeTerminalFailure {
+	return e.failure
 }
 
 type sshWrappedError struct {

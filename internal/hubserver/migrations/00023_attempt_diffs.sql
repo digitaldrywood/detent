@@ -1,10 +1,10 @@
 -- +goose Up
--- Stored attempt diffs (decisions section 18.5).
+-- Stored attempt diffs.
 --
 -- A diff is one generation of one attempt's worktree. The generation is
 -- {source, id, seq}: an attempt producer writes source 'attempt' with an empty
 -- id and the run event sequence the diff belongs to; a workspace producer
--- (section 18.1, not yet implemented) writes source 'workspace' with its own
+-- (the workspace session contract, not yet implemented) writes source 'workspace' with its own
 -- id and its own monotonic counter. The two live side by side and never
 -- overwrite each other, which is why the generation key carries the source.
 --
@@ -55,7 +55,7 @@ CREATE INDEX attempt_diffs_item_idx ON attempt_diffs(organization_id, project_id
 --
 -- patch is the unified diff for the file and is empty for three reasons that
 -- the row distinguishes: binary content (binary = 1), a path the files
--- denylist refuses (denied = 1, counts intact, section 18.4), or a patch that
+-- denylist refuses (denied = 1, counts intact, the Files contract), or a patch that
 -- exceeded the per-file cap and was cut (truncated = 1). The filter runs on
 -- write, so a denied patch is never stored, not merely never served: a later
 -- reader is not shown what the live reader was not.

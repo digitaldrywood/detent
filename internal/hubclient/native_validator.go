@@ -1,6 +1,7 @@
 package hubclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -45,9 +46,19 @@ func (e *nativeExecution) PrepareReview(ctx context.Context, expected tracker.Na
 		if version.ID != expected.VersionID {
 			continue
 		}
-		if version.HeadSHA != expected.HeadSHA || version.PolicyID != e.data.PolicyID || version.Policy.ID != e.data.PolicyID || version.AttemptID != e.data.AttemptID || version.RunID != e.data.RunID || e.lastDiff == nil || version.BaseSHA != e.lastDiff.BaseSHA || version.HeadSHA != e.lastDiff.HeadSHA {
+		owner := e.data
+		if e.recoveredSource != nil && *e.recoveredSource == expected {
+			for _, attempt := range e.claim.recovery.Attempts {
+				if attempt.AttemptID == version.AttemptID {
+					owner = attempt.NativeRunData
+					break
+				}
+			}
+		}
+		if version.HeadSHA != expected.HeadSHA || version.PolicyID != e.data.PolicyID || version.Policy.ID != e.data.PolicyID || owner.PolicyID != e.data.PolicyID || version.AttemptID != owner.AttemptID || version.RunID != owner.RunID || e.lastDiff == nil || version.BaseSHA != e.lastDiff.BaseSHA || version.HeadSHA != e.lastDiff.HeadSHA {
 			return fmt.Errorf("%w: published review source differs from its owner", runner.ErrNativeRecoveryRequired)
 		}
+		e.stepReviews = &detail
 		return nil
 	}
 	return fmt.Errorf("%w: published review version is unavailable", runner.ErrNativeRecoveryRequired)
@@ -80,6 +91,7 @@ func (e *nativeExecution) validationVersion(ctx context.Context, stage string) (
 				return runner.NativeValidation{}, err
 			}
 			discussion = runner.NativeReviewDiscussionForVersion(recovery.Discussion, detail.Discussion, version.ID)
+			e.stepDiscussion = recovery.Discussion
 			var latest *tracker.ChangeReview
 			for i := range detail.Reviews {
 				review := &detail.Reviews[i]
@@ -95,9 +107,10 @@ func (e *nativeExecution) validationVersion(ctx context.Context, stage string) (
 				return runner.NativeValidation{}, nil
 			}
 			for _, review := range detail.Reviews {
-				if review.VersionID == version.ID && review.SecurityAudit != nil && review.Decision == "changes_requested" {
+				if review.VersionID == version.ID && review.SecurityAudit != nil && (review.Decision == "changes_requested" || review.SecurityAudit.Verdict == "wait") {
 					e.change.SecurityAudit = review.SecurityAudit
 					e.change.Reviewed = false
+					e.applySecurityAuditHumanAction(review.SecurityAudit)
 					return runner.NativeValidation{}, nil
 				}
 			}
@@ -236,6 +249,7 @@ func (e *nativeExecution) RecordReview(ctx context.Context, result gate.Validato
 		return err
 	}
 	e.change.Reviewed = detail.Change.CurrentVersion == result.VersionID && detail.Summary.Status == "reviewed"
+	e.stepReviews = &detail
 	return nil
 }
 
@@ -246,7 +260,7 @@ func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.Valid
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.change == nil || e.change.VersionID != result.VersionID {
-		return errors.New("native validator result differs from the published version")
+		return &APIError{Status: 422, Code: "invalid_request", Rejection: &tracker.PublicationRejection{Category: "acceptance_validation", Field: "validator.version_id"}}
 	}
 	decision := "commented"
 	switch result.Verdict {
@@ -269,16 +283,64 @@ func (e *nativeExecution) RecordValidator(ctx context.Context, result gate.Valid
 		Mutation:          tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":validator:" + strconv.FormatInt(result.SessionID, 10), LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken},
 		ExpectedVersionID: result.VersionID, Decision: decision, Body: body.String(), Validator: &result,
 	})
-	if err != nil {
-		return err
+	publicationErr := err
+	if publicationErr != nil {
+		var refusal *APIError
+		if !errors.Is(publicationErr, ErrUnavailable) || ctx.Err() != nil || errors.As(publicationErr, &refusal) && refusal.Status >= 400 && refusal.Status < 500 {
+			return publicationErr
+		}
 	}
 	detail, err := client.runtimeChange(ctx, item, e.change.ChangeID)
 	if err != nil {
-		return err
+		return errors.Join(publicationErr, err)
+	}
+	if publicationErr != nil && !recordedValidatorMatches(detail, result, decision, body.String(), e.claim.lease.MachineID) {
+		return publicationErr
 	}
 	e.change.Validator = &result
 	e.change.Reviewed = detail.Change.CurrentVersion == result.VersionID && detail.Summary.Status == "reviewed"
+	e.stepReviews = &detail
 	return nil
+}
+
+func recordedValidatorMatches(detail tracker.ChangeDetail, result gate.ValidatorResult, decision, body string, machine tracker.MachineID) bool {
+	if detail.Change.CurrentVersion != result.VersionID {
+		return false
+	}
+	expected, err := json.Marshal(result)
+	if err != nil {
+		return false
+	}
+	for _, review := range detail.Reviews {
+		if review.ID == "" || review.VersionID != result.VersionID || review.Actor.Kind != "runner" || review.SessionMachineID != machine || review.Decision != decision || review.Body != body || review.Validator == nil {
+			continue
+		}
+		var normalized gate.ValidatorResult
+		if err := json.Unmarshal(expected, &normalized); err != nil {
+			return false
+		}
+		criteria := make([]string, 0, len(review.Validator.CriteriaEvidence))
+		for _, evidence := range review.Validator.CriteriaEvidence {
+			criteria = append(criteria, evidence.Criterion)
+		}
+		tree := ""
+		for _, version := range detail.Versions {
+			if version.ID == result.VersionID && version.Validation != nil {
+				tree = version.Validation.TreeSHA
+			}
+		}
+		gate.NormalizeCriterionEvidence(&normalized, criteria, tree)
+		gate.NormalizeAttribution(&normalized)
+		canonical, err := json.Marshal(normalized)
+		if err != nil {
+			return false
+		}
+		actual, err := json.Marshal(review.Validator)
+		if err == nil && bytes.Equal(canonical, actual) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *nativeExecution) SecurityAuditVersion(ctx context.Context) (runner.NativeValidation, error) {
@@ -311,8 +373,11 @@ func (e *nativeExecution) RecordSecurityAudit(ctx context.Context, result tracke
 		changeID, versionID = e.change.ChangeID, e.change.VersionID
 	}
 	decision := "approved"
-	if result.Verdict == "rework" {
+	switch result.Verdict {
+	case "rework":
 		decision = "changes_requested"
+	case "wait":
+		decision = "commented"
 	}
 
 	var body strings.Builder
@@ -323,9 +388,17 @@ func (e *nativeExecution) RecordSecurityAudit(ctx context.Context, result tracke
 	client, item := e.claim.source.client, e.claim.lease.WorkItemID
 	_, err := client.ReviewChange(ctx, item, changeID, versionID, tracker.ReviewChange{Mutation: tracker.Mutation{IdempotencyKey: e.data.AttemptID + ":security-audit:" + result.Run.InvocationID, LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken}, ExpectedVersionID: versionID, Decision: decision, Body: body.String(), SecurityAudit: &result})
 	if err != nil {
+		var refusal *APIError
+		if !result.Landing && errors.As(err, &refusal) && refusal.permanentInvalidRequest() && refusal.Rejection != nil && refusal.Rejection.Category == "security_audit" && (refusal.Rejection.Field == "run.reviewer_version" || refusal.Rejection.Field == "run.reviewer_digest") {
+			return &runner.NativeImplementationReviewError{Err: err}
+		}
 		return err
 	}
 	if result.Landing {
+		if e.change != nil {
+			e.change.SecurityAudit = &result
+		}
+		e.applySecurityAuditHumanAction(&result)
 		return nil
 	}
 	detail, err := client.runtimeChange(ctx, item, e.change.ChangeID)
@@ -333,6 +406,49 @@ func (e *nativeExecution) RecordSecurityAudit(ctx context.Context, result tracke
 		return err
 	}
 	e.change.SecurityAudit = &result
+	e.applySecurityAuditHumanAction(&result)
 	e.change.Reviewed = detail.Change.CurrentVersion == e.change.VersionID && detail.Summary.Status == "reviewed"
+	e.stepReviews = &detail
 	return nil
+}
+
+func (e *nativeExecution) PrepareSourceIteration(ctx context.Context, expected tracker.NativeChangeReference) error {
+	if err := e.PrepareReview(ctx, expected); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.settled = false
+	e.change = nil
+	e.validation = nil
+	e.data.Steps = nil
+	e.publication = nil
+	e.preparedFailure = nil
+	e.preparedOutcome, e.preparedMessage = "", ""
+	e.preparedDisposition = nil
+	e.data.Finalization = nil
+	return nil
+}
+
+func (e *nativeExecution) SourceReview(ctx context.Context) (runner.NativeChange, error) {
+	if err := e.Validate(ctx); err != nil {
+		return runner.NativeChange{}, err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.change == nil {
+		return runner.NativeChange{}, nil
+	}
+	if e.change.Error != "" && e.data.Handoff.UncertainForgeEffect() {
+		return *e.change, fmt.Errorf("%w: %s", ErrUnavailable, e.change.Error)
+	}
+	return *e.change, nil
+}
+
+func (e *nativeExecution) applySecurityAuditHumanAction(audit *tracker.SecurityAuditReview) {
+	if audit == nil || audit.Verdict != "wait" {
+		return
+	}
+	e.preparedMessage = audit.Run.CompletionMessage(e.preparedMessage)
+	e.preparedDisposition = runner.NativeDispositionFromMessage(e.preparedMessage)
 }

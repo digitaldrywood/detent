@@ -2,8 +2,9 @@ import type { ComparisonPlan, PlanReport } from "../../contracts/account.ts";
 import { usageMeterState, type UsageUnit } from "../../components/ui/usage-meter.tsx";
 
 const ALLOWANCES: Readonly<Record<string, { label: string; group: string; unit?: UsageUnit; description?: string; limitOnly?: boolean }>> = {
-  projects: { label: "Projects", group: "Capacity" },
-  unarchived_issues: { label: "Open issues", group: "Capacity", description: "Archived issues do not count." },
+  concurrent_work: { label: "Concurrent work", group: "Organization", description: "Running attempts across the organization. More work waits for a free slot." },
+  unarchived_issues: { label: "Open issues", group: "Organization", description: "Done, cancelled and archived issues do not count." },
+  projects: { label: "Projects", group: "Organization" },
   collaboration_bytes: { label: "Workspace data", group: "Storage", unit: "bytes", description: "Issues, comments, conversations and attachment metadata." },
   history_records: { label: "History", group: "Storage", unit: "records", description: "Run and activity history after compaction." },
   artifact_retained_bytes: { label: "Artifact storage", group: "Storage", unit: "bytes", description: "Retained build outputs and uploads." },
@@ -14,11 +15,10 @@ const ALLOWANCES: Readonly<Record<string, { label: string; group: string; unit?:
   relay_bytes: { label: "Relay data", group: "This hour", unit: "bytes" },
   api_mutations: { label: "API writes", group: "This hour" },
   ingested_events: { label: "Events received", group: "This hour" },
-  members: { label: "Members", group: "Capacity" },
-  repositories: { label: "Repositories", group: "Capacity" },
-  registered_runners: { label: "Registered runners", group: "Capacity" },
-  connected_runners: { label: "Connected runners", group: "Capacity" },
-  concurrent_work: { label: "Concurrent work", group: "Capacity" },
+  members: { label: "Members", group: "Organization" },
+  repositories: { label: "Repositories", group: "Organization" },
+  registered_runners: { label: "Registered runners", group: "Organization" },
+  connected_runners: { label: "Connected runners", group: "Organization" },
 };
 
 export function planUsageRows(plan: Pick<PlanReport, "allowances" | "usage">) {
@@ -26,7 +26,7 @@ export function planUsageRows(plan: Pick<PlanReport, "allowances" | "usage">) {
     name,
     limit,
     used: plan.usage[name] ?? 0,
-    ...(ALLOWANCES[name] ?? { label: name.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase()), group: "Capacity" }),
+    ...(ALLOWANCES[name] ?? { label: name.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase()), group: "Organization" }),
   })).sort((a, b) => Object.keys(ALLOWANCES).indexOf(a.name) - Object.keys(ALLOWANCES).indexOf(b.name));
 }
 
@@ -47,4 +47,16 @@ export function nextFittingPlan(plan: PlanReport, comparisons: readonly Comparis
       return limit === undefined || (limit > 0 && row.used / limit < 0.8);
     }),
   );
+}
+
+export function planStatus(usage: { readonly complimentary?: boolean; readonly expires_at?: string | null; readonly renews_at: string | null; readonly cancels_at?: string | null }, now = new Date()): string | null {
+  if (usage.complimentary) {
+    if (!usage.expires_at) return "No end date";
+    const expiry = new Date(usage.expires_at);
+    const days = Math.max(0, Math.ceil((expiry.getTime() - now.getTime()) / 86400000));
+    return `Expires ${expiry.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })} · ${days} ${days === 1 ? "day" : "days"} left`;
+  }
+  const date = usage.cancels_at || usage.renews_at;
+  if (!date || date.startsWith("0001-")) return null;
+  return `${usage.cancels_at ? "Cancels" : "Renews"} ${new Date(date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })}`;
 }

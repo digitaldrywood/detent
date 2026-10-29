@@ -26,7 +26,7 @@ func TestModelSelectionSessionLimits(t *testing.T) {
 		{name: "ineligible backend", duration: new(500), wantDuration: 100, wantTokens: 200},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			agent := Agent{MaxSessionDurationMS: 100, MaxSessionTokens: 200, MaxTurnDurationMS: 30, NoProgressTimeoutMS: 40, MaxTurns: 7}
+			agent := Agent{MaxSessionDurationMS: 100, MaxSessionTokens: 200, MaxTurnDurationMS: 30, MaxTurns: 7}
 			policy := ModelSelection{Enabled: new(!tt.disabled), Levels: map[string]ModelSelectionDefaults{"normal": {MaxSessionDurationMS: tt.duration, MaxSessionTokens: tt.tokens}}}
 			got := policy.SessionAgent(agent, tt.level)
 			want := agent

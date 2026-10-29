@@ -84,19 +84,19 @@ func TestUsageUpdateHandlerDeliversWorkerGitHubActor(t *testing.T) {
 	}
 }
 
-func TestUsageUpdateHandlerWaitsForDispatchLoopStartApplication(t *testing.T) {
+func TestUsageUpdateHandlerWaitsForCompletionSourceStartApplication(t *testing.T) {
 	t.Parallel()
 
 	orch := &Orchestrator{runUpdates: make(chan runUpdate, 1)}
 	done := make(chan error, 1)
 	go func() {
 		done <- orch.usageUpdateHandler(t.Context(), "issue-2084", nil)(runpkg.UsageUpdate{
-			DispatchLoopStart: &runpkg.DispatchLoopStartSnapshot{WorkspaceDiffAvailable: true},
+			CompletionSourceStart: &runpkg.CompletionSourceStartSnapshot{WorkspaceDiffAvailable: true},
 		})
 	}()
 
 	update := <-orch.runUpdates
-	if update.applied == nil || update.usage.DispatchLoopStart == nil {
+	if update.applied == nil || update.usage.CompletionSourceStart == nil {
 		t.Fatalf("run update = %#v, want acknowledged dispatch loop start", update)
 	}
 	select {

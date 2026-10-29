@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -14,7 +15,7 @@ import (
 
 func resolveRunnerProjectGitHubToken(ctx context.Context, cfg globalconfig.Config, selected globalconfig.Project, workflow workflowconfig.Config, deps runtimeDeps) (string, error) {
 	deps = deps.withDefaults()
-	if !trackerUsesGitHubToken(workflow.Tracker.Kind) {
+	if !workflowUsesGitHubToken(workflow) {
 		return "", nil
 	}
 	if trackerHasGitHubAppCredentials(workflow.Tracker, deps.lookupEnv) {
@@ -55,9 +56,18 @@ func runnerStartupProblems(registry *project.Registry) []runnerauth.Problem {
 		if health.LastError == "" {
 			continue
 		}
-		problem := runnerauth.NewProblem("settings_invalid")
+		code := "settings_invalid"
+		if project.IsProviderStartupFailure(health.LastError) {
+			code = "backend_probe_failed"
+		}
+		problem := runnerauth.NewProblem(code)
+		if prerequisite, ok := backendPrerequisiteProblem(runtime.GOOS, health.LastError); ok && project.IsProviderStartupFailure(health.LastError) {
+			problem = prerequisite
+		}
 		problem.ProjectID = health.Project.ID
-		problem.Message = health.LastError
+		if problem.ErrorOutput == "" {
+			problem.Message = health.LastError
+		}
 		if len(problem.Message) > 1000 {
 			problem.Message = strings.ToValidUTF8(problem.Message[:1000], "")
 		}

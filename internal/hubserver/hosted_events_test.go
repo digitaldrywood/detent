@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,11 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-func TestHostedWorkspaceEvents(t *testing.T) {
+func TestHostedEventsWorkspace(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t, func(cfg *Config) {
 		cfg.Workspace = &WorkspaceConfig{Enabled: true}
@@ -53,7 +55,10 @@ func TestHostedWorkspaceEvents(t *testing.T) {
 			}
 			for {
 				typeName, data := readHostedEvent(t, scanner)
-				if typeName == "activity" {
+				if !strings.HasPrefix(typeName, "workspace.") {
+					continue
+				}
+				if state == workspacesession.StateClosed && typeName == "workspace.closing" {
 					continue
 				}
 				if typeName != workspacesession.EventType(state) {
@@ -77,8 +82,10 @@ func TestHostedWorkspaceEvents(t *testing.T) {
 		}
 	}
 	reconnect := openHostedTestStream(t, f, user, "?workspace="+session.ID)
-	readHostedEvent(t, reconnect)
-	kind, data := readHostedEvent(t, reconnect)
+	var kind, data string
+	for kind != "workspace.closed" {
+		kind, data = readHostedEvent(t, reconnect)
+	}
 	var resumed workspacesession.Session
 	if err := json.Unmarshal([]byte(data), &resumed); err != nil || kind != "workspace.closed" || resumed.State != "closed" {
 		t.Fatalf("reconnected resource = %q %#v: %v", kind, resumed, err)
@@ -114,7 +121,7 @@ VALUES (?, 'org_security', 'Other project', 'native', '[]', ?, 0)`, other.projec
 	}
 }
 
-func TestHostedActivityIncludesChangesBelowIssueMaximum(t *testing.T) {
+func TestHostedEventsActivityIncludesChangesBelowIssueMaximum(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t)
 	user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
@@ -131,33 +138,33 @@ func TestHostedActivityIncludesChangesBelowIssueMaximum(t *testing.T) {
 	for range 10 {
 		appendEvent(high, "issue.edited", tracker.CollaborationData{})
 	}
-	scanner := openHostedTestStream(t, f, user, "")
-	kind, data := readHostedEvent(t, scanner)
-	previous, err := strconv.ParseInt(data, 10, 64)
-	if kind != "activity" || err != nil {
-		t.Fatalf("initial activity = %q %q: %v", kind, data, err)
+	previous, _, err := readDashboardWatermark(t.Context(), f.service.database.reader, scope)
+	if err != nil {
+		t.Fatal(err)
 	}
+	scanner := openHostedTestStream(t, f, user, "?since="+strconv.FormatInt(previous, 10))
 	appendEvent(low, "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{Outcome: "interrupted"}})
-	for {
-		kind, data = readHostedEvent(t, scanner)
-		next, err := strconv.ParseInt(data, 10, 64)
-		if kind != "activity" || err != nil {
-			t.Fatalf("activity = %q %q: %v", kind, data, err)
-		}
-		if next > previous {
-			break
-		}
+	kind, data := readHostedActivity(t, scanner)
+	next, err := strconv.ParseInt(data, 10, 64)
+	if kind != "activity" || err != nil || next <= previous {
+		t.Fatalf("lower issue activity=%q %q, previous=%d: %v", kind, data, previous, err)
 	}
+
 }
 
-func TestHostedHealthFindingEvents(t *testing.T) {
+func TestHostedEventsHealthFinding(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t)
 	user := f.user(t, "member", "member", "member@example.test", "read", "")
 	now := time.Date(2026, 10, 6, 18, 0, 0, 0, time.UTC)
 	finding := newHealthFinding("dead_man", "flow", "project", string(f.project), "No landings", "Check admission", []string{string(f.project)}, healthEvidence{})
-	write := func(at time.Time, findings []healthFinding) {
+	scope := nativeScope{organization: "org_security", project: f.project}
+	write := func(at time.Time, findings []healthFinding) int64 {
 		t.Helper()
+		previous, _, err := readDashboardWatermark(t.Context(), f.service.database.reader, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
 		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
@@ -169,25 +176,37 @@ func TestHostedHealthFindingEvents(t *testing.T) {
 		if err := tx.Commit(); err != nil {
 			t.Fatal(err)
 		}
+		return previous
 	}
-	write(now, []healthFinding{finding})
+	previous := write(now, []healthFinding{finding})
 	scanner := openHostedTestStream(t, f, user, "")
-	kind, _ := readHostedEvent(t, scanner)
-	if kind != "activity" {
-		t.Fatalf("initial frame = %q", kind)
-	}
-	for _, at := range []time.Time{now, now.Add(time.Minute)} {
-		if at != now {
-			write(at, nil)
+	var findingID string
+	for _, state := range []struct {
+		at     time.Time
+		status string
+	}{
+		{now, "attention"},
+		{now.Add(time.Minute), "resolved"},
+	} {
+		if state.at != now {
+			previous = write(state.at, nil)
 		}
 		for {
 			kind, data := readHostedEvent(t, scanner)
-			if kind == "activity" {
+			if kind != "health.findings" {
 				continue
 			}
-			if kind != "health.findings" || data != formatHubTime(at) {
-				t.Fatalf("finding frame = %q %q, want %s", kind, data, formatHubTime(at))
+			var change dashboardChange
+			if err := json.Unmarshal([]byte(data), &change); err != nil || change.Topic != "health" {
+				t.Fatalf("finding frame = %q %q: %v", kind, data, err)
 			}
+			if change.Sequence <= previous {
+				continue
+			}
+			if change.Status != state.status || change.EntityID == "" || (findingID != "" && change.EntityID != findingID) {
+				t.Fatalf("finding change = %+v, want %s for %q", change, state.status, findingID)
+			}
+			findingID = change.EntityID
 			break
 		}
 	}
@@ -197,18 +216,18 @@ func TestHostedHealthFindingEvents(t *testing.T) {
 	}
 }
 
-func TestHostedIssueEvents(t *testing.T) {
+func TestHostedEventsIssue(t *testing.T) {
 	t.Parallel()
 	f := newHostedSecurityFixture(t)
 	user := f.user(t, "viewer", "viewer", "viewer@example.test", "read", "")
 	item, unrelated := f.seedIssue(t, 1), f.seedIssue(t, 2)
 	scope := nativeScope{organization: "org_security", project: f.project, credential: apiCredential{ID: "fixture", Scope: apiScopeAdmin}}
-	scanner := openHostedTestStream(t, f, user, "?work_item="+string(item))
-	kind, data := readHostedEvent(t, scanner)
-	previous, err := strconv.ParseInt(data, 10, 64)
-	if kind != "activity" || err != nil {
-		t.Fatalf("initial activity = %q %q: %v", kind, data, err)
+	previous, _, err := readDashboardWatermark(t.Context(), f.service.database.reader, scope)
+	if err != nil {
+		t.Fatal(err)
 	}
+	scanner := openHostedTestStream(t, f, user, "?work_item="+string(item)+"&since="+strconv.FormatInt(previous, 10))
+
 	for _, test := range []struct {
 		name    string
 		item    tracker.NativeWorkItemID
@@ -225,11 +244,15 @@ func TestHostedIssueEvents(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			// Stream reads use the WAL reader pool, so one frame may predate
-			// the commit; the change must appear within the next frames.
 			next := previous
-			for range 3 {
+			for {
 				kind, data := readHostedEvent(t, scanner)
+				if kind == "checkpoint" && !test.changed {
+					break
+				}
+				if kind != "activity" {
+					continue
+				}
 				value, err := strconv.ParseInt(data, 10, 64)
 				if kind != "activity" || err != nil {
 					t.Fatalf("activity=%q %q err=%v", kind, data, err)
@@ -292,8 +315,16 @@ func (w hostedStreamWriter) Write(data []byte) (int, error) {
 
 func openHostedTestStream(t *testing.T, f hostedSecurityFixture, user hostedSecurityUser, query string) *bufio.Reader {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	return openHostedTestCursorStream(t, f, user, query, "")
+}
+
+func openHostedTestCursorStream(t *testing.T, f hostedSecurityFixture, user hostedSecurityUser, query, last string) *bufio.Reader {
+	t.Helper()
+	ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 	request := httptest.NewRequest(http.MethodGet, "/projects/"+string(f.project)+"/events"+query, nil).WithContext(ctx)
+	if last != "" {
+		request.Header.Set("Last-Event-ID", last)
+	}
 	request.AddCookie(&http.Cookie{Name: hostedCookie, Value: user.token})
 	input, output := io.Pipe()
 	done := make(chan struct{})
@@ -333,4 +364,28 @@ func readHostedEvent(t *testing.T, reader *bufio.Reader) (string, string) {
 		t.Fatalf("read hosted frame: %v", err)
 	}
 	return frame.Event, frame.Data
+}
+
+func readHostedActivity(t *testing.T, reader *bufio.Reader) (string, string) {
+	t.Helper()
+	for {
+		kind, data := readHostedEvent(t, reader)
+		if kind == "activity" {
+			return kind, data
+		}
+	}
+}
+
+func TestHostedEventsCursorWindow(t *testing.T) {
+	t.Parallel()
+	f := newHostedSecurityFixture(t)
+	user := f.user(t, "cursor-viewer", "viewer", "cursor@example.test", "read", "")
+	stream := openHostedTestStream(t, f, user, "?since=9223372036854775807")
+	frame, err := readSSEFrame(stream)
+	if err != nil || frame.Event != "reset" || frame.ID == "" || frame.Data != "{}" {
+		t.Fatalf("out-of-window cursor: frame=%+v err=%v", frame, err)
+	}
+	if _, err = readSSEFrame(stream); !errors.Is(err, io.EOF) {
+		t.Fatalf("reset must close: %v", err)
+	}
 }

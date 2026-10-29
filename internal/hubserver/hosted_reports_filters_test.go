@@ -42,7 +42,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 		if err := appendNativeHistory(t.Context(), tx, scope, ids[seed.name], "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: seed.state}, to.Add(-time.Duration(10+i)*time.Hour)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET actor_json=json_set(actor_json,'$.principal_id',?) WHERE native_id=?", seed.filer, ids[seed.name]); err != nil {
+		if _, err := tx.ExecContext(t.Context(), "UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json=json_set(actor_json,'$.principal_id',?) WHERE native_id=?", seed.filer, ids[seed.name]); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -55,6 +55,8 @@ func TestReportsFilterDimensions(t *testing.T) {
 	if err := f.service.database.commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
+	drainTestNativeClosedTimes(t, f.service)
+	drainTestNativeBoard(t, f.service)
 	rebuildTestAnalyticsRollups(t, f.service, scope)
 	read := func(t *testing.T, query url.Values) hostedReportsReport {
 		t.Helper()
@@ -149,12 +151,18 @@ func TestReportsFilterDimensions(t *testing.T) {
 		}
 	})
 	t.Run("all projects", func(t *testing.T) {
-		organization := read(t, url.Values{"project": {reportsAllProjects}, "range": {"24h"}, "labels": {"rpt-cloud"}})
-		project := read(t, url.Values{"project": {f.project}, "range": {"24h"}, "labels": {"rpt-cloud"}})
-		if organization.Analytics.ProjectID != reportsAllProjects || organization.Completion.Done != project.Completion.Done || organization.Cost != project.Cost || organization.Completion.Cancelled != project.Completion.Cancelled {
-			t.Fatalf("organization=%+v project=%+v", organization.Completion, project.Completion)
+		legacy := read(t, url.Values{"project": {reportsAllProjects}, "range": {"24h"}, "labels": {"rpt-cloud"}})
+		projectReport := read(t, url.Values{"project": {f.project}, "range": {"24h"}, "labels": {"rpt-cloud"}})
+		if legacy.Analytics.ProjectID != reportsAllProjects || legacy.Completion.Done != projectReport.Completion.Done || legacy.Completion.Cost != projectReport.Completion.Cost || legacy.Rework == nil || legacy.Failures == nil || legacy.Stages == nil || legacy.Spend == nil {
+			t.Fatalf("legacy organization report=%+v", legacy)
 		}
-		f.usage(t, "staff", browserHostedOrganizationBase+"/reports?project=all&range=24h", http.StatusForbidden)
+		var organization organizationProductivity
+		usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/reports?scope=organization&project=all&range=24h&labels=rpt-cloud", http.StatusOK), &organization)
+		project := read(t, url.Values{"project": {f.project}, "range": {"24h"}, "labels": {"rpt-cloud"}})
+		if organization.Current.Completed != project.Completion.Done || organization.Current.CompletionCost != project.Completion.Cost || organization.Current.Cancelled != project.Completion.Cancelled {
+			t.Fatalf("organization=%+v project=%+v", organization.Current, project.Completion)
+		}
+		f.usage(t, "staff", browserHostedOrganizationBase+"/reports?scope=organization&project=all&range=24h", http.StatusForbidden)
 	})
 	t.Run("custom range", func(t *testing.T) {
 		day := to.Add(-time.Hour).Format(time.DateOnly)
@@ -197,7 +205,7 @@ func TestReportsFilterDimensions(t *testing.T) {
 			query string
 			args  []any
 		}{
-			{"UPDATE issues SET actor_json=json_set(actor_json,'$.principal_id','principal_rpt_secret') WHERE native_id=?", []any{issue.WorkItemID}},
+			{"UPDATE issues SET actor_kind=NULL,actor_principal_id=NULL,actor_json=json_set(actor_json,'$.principal_id','principal_rpt_secret') WHERE native_id=?", []any{issue.WorkItemID}},
 			{`INSERT INTO leases (lease_id, issue_id, machine_id, session_id, expires_at, acquired_at, renewed_at, released_at, created_at, updated_at)
  SELECT 'lease_rpt_secret',(SELECT id FROM issues WHERE native_id=?),machine_id,'session_rpt_secret',expires_at,acquired_at,renewed_at,released_at,created_at,updated_at FROM leases WHERE lease_id='lease_browser_usage_0_1'`, []any{issue.WorkItemID}},
 			{"INSERT INTO lease_runners (lease_id, runner_id) VALUES ('lease_rpt_secret','runner_browser_preview_shared')", nil},
@@ -230,9 +238,10 @@ func TestReportsFilterDimensions(t *testing.T) {
 		}
 		f.usage(t, "owner", browserHostedOrganizationBase+"/reports/options?project="+string(secret.project)+"&range=24h", http.StatusNotFound)
 		f.usage(t, "owner", browserHostedOrganizationBase+"/reports?project="+string(secret.project)+"&range=24h", http.StatusNotFound)
-		organization := read(t, url.Values{"project": {reportsAllProjects}, "range": {"24h"}})
-		if organization.Completion.Done != unfiltered.Completion.Done {
-			t.Fatalf("all projects counted an unreadable project: %d, want %d", organization.Completion.Done, unfiltered.Completion.Done)
+		var organization organizationProductivity
+		usageDecode(t, f.usage(t, "owner", browserHostedOrganizationBase+"/reports?scope=organization&project=all&range=24h", http.StatusOK), &organization)
+		if organization.Current.Completed != unfiltered.Completion.Done {
+			t.Fatalf("all projects counted an unreadable project: %d, want %d", organization.Current.Completed, unfiltered.Completion.Done)
 		}
 	})
 }
@@ -332,6 +341,16 @@ func TestMergeHostedReports(t *testing.T) {
 		priorCost   *float64
 		unavailable []string
 	}{
+		{"hourly histogram and exact samples", []hostedReportsReport{
+			func() hostedReportsReport {
+				r := report(2, nil, reportsRatio{1, 2}, failed(1), cost(2), nil)
+				d := operatortool.AnalyticsDuration{Count: 2, Seconds: 30, Histogram: []operatortool.AnalyticsDurationBucket{{Count: 1, Minimum: 10, Maximum: 10}, {Count: 1, Minimum: 20, Maximum: 20}}}
+				r.Completion.System = d
+				r.Runners[0].Duration = d
+				return r
+			}(),
+			report(2, []float64{30, 100}, reportsRatio{1, 2}, failed(1), cost(2), nil),
+		}, 4, 25, new(50.0), failed(2), cost(4), []string{"activity_complete_window", "recorded_usage"}},
 		{"combined samples and counts", []hostedReportsReport{
 			report(2, []float64{10, 20}, reportsRatio{1, 2}, failed(1), cost(2), []float64{1, 3}),
 			report(3, []float64{30, 40, 50}, reportsRatio{3, 3}, failed(2), nil, []float64{5}),

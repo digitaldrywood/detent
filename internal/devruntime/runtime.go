@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	TrackerMemory   = "memory"
-	DemoKanban      = "kanban"
-	DemoScreenshots = "screenshots"
+	TrackerHubNative = "hub_native"
+	DemoKanban       = "kanban"
+	DemoScreenshots  = "screenshots"
 
 	defaultProjectID    = "dogfood"
 	defaultInstanceName = "detent-dev-runtime"
@@ -79,9 +79,9 @@ func Build(cfg Config) (Runtime, error) {
 
 	trackerMode := strings.ToLower(strings.TrimSpace(cfg.TrackerMode))
 	if trackerMode == "" {
-		trackerMode = TrackerMemory
+		trackerMode = TrackerHubNative
 	}
-	if trackerMode != TrackerMemory {
+	if trackerMode != TrackerHubNative {
 		return Runtime{}, fmt.Errorf("%w: %s", ErrUnsupportedTracker, trackerMode)
 	}
 	demo, err := runtimeDemo(cfg.Demo)
@@ -359,10 +359,19 @@ func kanbanDemoIssues() []connector.Issue {
 	}
 	return []connector.Issue{
 		{
-			ID:             "kanban-demo-backlog",
-			Identifier:     "example-org/example-project#9511",
-			Title:          "Kanban demo backlog intake",
-			Description:    "Issue-only card for evaluating Backlog to Todo moves.",
+			ID:         "kanban-demo-backlog",
+			Identifier: "example-org/example-project#9511",
+			Title:      "Kanban demo backlog intake",
+			Description: `Issue-only card for evaluating Backlog to Todo moves.
+
+## Acceptance criteria
+The card can move from Backlog to Todo, receive a comment, and be removed from the project.
+
+## Must not break
+Preserve the other demo cards and dashboard authentication.
+
+## How we know it worked
+The dashboard-auth browser journey completes each card action.`,
 			State:          "Backlog",
 			URL:            "https://github.test/example-org/example-project/issues/9511",
 			Labels:         []string{"enhancement", "operator-demo"},
@@ -756,8 +765,6 @@ type workflowGate struct {
 }
 
 type workflowServer struct {
-	Host   string          `yaml:"host"`
-	Port   *int            `yaml:"port"`
 	Kanban *workflowKanban `yaml:"kanban,omitempty"`
 }
 
@@ -767,7 +774,6 @@ type workflowKanban struct {
 }
 
 func writeWorkflow(path string, input workflowInput) error {
-	port := input.Port
 	activeStates := []string{"Todo", "In Progress", "Rework"}
 	observedStates := []string{"Backlog", "Human Review", "Blocked", "Merging", "Done"}
 	terminalStates := []string{"Done", "Cancelled", "Canceled"}
@@ -820,8 +826,6 @@ func writeWorkflow(path string, input workflowInput) error {
 			CIFailureAction:        "skip",
 		},
 		Server: workflowServer{
-			Host:   defaultHost,
-			Port:   &port,
 			Kanban: kanban,
 		},
 	}

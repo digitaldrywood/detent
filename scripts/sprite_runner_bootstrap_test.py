@@ -5,59 +5,38 @@ import hashlib
 import json
 import os
 import pathlib
+import select
+import signal
 import shlex
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 
-STUB = r'''#!/usr/bin/env python3
-import hashlib, json, os, pathlib, shutil, subprocess, sys
+PYTHON_STUB = r'''import json, os, pathlib, sys
+sys.argv = sys.argv[1:]
+__file__ = sys.argv[0]
 root = pathlib.Path(os.environ["FIXTURE_ROOT"])
 name, args = pathlib.Path(sys.argv[0]).name, sys.argv[1:]
 with (root / "calls.jsonl").open("a") as log:
     log.write(json.dumps([name, args]) + "\n")
-if name == "uname":
-    print("Linux" if args == ["-s"] else os.environ.get("FIXTURE_ARCH", "x86_64"))
-elif name == "id":
-    print("1000" if args == ["-u"] else "sprite")
-elif name == "sudo":
-    if args == ["test", "-w", "/sys/fs/cgroup"]:
-        sys.exit(0 if os.environ.get("DOCKER_SUPPORTED") else 1)
-    sys.exit(subprocess.run(args).returncode)
-elif name == "unshare":
-    sys.exit(0 if os.environ.get("DOCKER_SUPPORTED") else 1)
-elif name == "curl":
-    url = args[args.index("--location") + 1]
-    dest = pathlib.Path(args[args.index("--output") + 1])
-    if url.endswith("/go.mod"):
-        dest.write_text("module fixture\ngo 1.26\ntoolchain go1.26.6\n")
-    elif "/go1." in url and url.endswith(".sha256"):
-        dest.write_text(hashlib.sha256((root / "go.tar.gz").read_bytes()).hexdigest())
-    elif url.endswith("checksums.txt") or url.endswith(".sha256"):
-        prefix = "gh_" if "/cli/cli/" in url else "ripgrep-" if "/ripgrep/" in url else "detent_"
-        dest.write_text("".join(
-            ("0" * 64 if os.environ.get("BAD_CHECKSUM") == prefix else hashlib.sha256(p.read_bytes()).hexdigest())
-            + "  " + p.name + "\n" for p in root.glob(prefix + "*.tar.gz")))
-    else:
-        shutil.copyfile(root / ("go.tar.gz" if "/go1." in url else url.rsplit("/", 1)[1]), dest)
-        if "/sharkdp/fd/" in url and os.environ.get("FD_CORRUPT"):
-            dest.write_bytes(b"corrupt archive")
-elif name == "sha256sum" and args[:1] != ["--check"]:
+if name == "sha256sum" and args[:1] != ["--check"]:
+    import hashlib
     print(hashlib.sha256(pathlib.Path(args[0]).read_bytes()).hexdigest() + "  " + args[0])
 elif name == "sha256sum":
+    import hashlib
     checksum, filename = sys.stdin.read().split()
     sys.exit(0 if hashlib.sha256(pathlib.Path(filename).read_bytes()).hexdigest() == checksum else 1)
-elif name == "go":
-    if args == ["version"]:
-        print("go version go1.26.6 linux/amd64")
-    elif os.environ.get("GO_INSTALL_FAIL"):
-        sys.exit(1)
-    else:
-        shutil.copy(__file__, pathlib.Path(os.environ["GOBIN"]) / "detent")
 elif name == "npm":
+    import shutil
+    if os.environ.get("FIXTURE_NPM_POPULATES"):
+        npm_cache = pathlib.Path(os.path.join(os.environ["HOME"], ".npm"))
+        for entry in ("_cacache", "_logs"):
+            (npm_cache / entry).mkdir(parents=True, exist_ok=True)
     prefix = pathlib.Path(args[args.index("--prefix") + 1]) / "bin"
     prefix.mkdir(parents=True, exist_ok=True)
     packages = {"@openai/codex@0.160.0": "codex", "@anthropic-ai/claude-code@2.1.289": "claude", "playwright@1.63.0": "playwright"}
@@ -82,6 +61,10 @@ elif name == "apt-cache":
     print("  Candidate: " + candidates.get(args[-1], "(none)"))
     print("        500 http://archive.ubuntu.com/ubuntu resolute/main amd64 Packages\n" * 4096)
 elif name == "apt-get":
+    import shutil
+    for package, binary in (("bubblewrap", "bwrap"), ("socat", "socat")):
+        if package in args:
+            shutil.copy(__file__, root / "bin" / binary)
     for arg in args:
         if arg.startswith(("postgresql-client-", "docker.io=")):
             package, version = arg.split("=", 1)
@@ -89,7 +72,11 @@ elif name == "apt-get":
                 sys.exit(100)
             if package.startswith("postgresql-client-"):
                 candidates = json.loads(os.environ.get("PSQL_CANDIDATES", '{"postgresql-client-17": "17.10-0ubuntu0.25.10.1"}'))
-                if candidates.get(package) != version or os.environ.get("PSQL_INSTALL_FAIL"):
+                if candidates.get(package) != version:
+                    print(f"E: Version '{version}' for '{package}' was not found", file=sys.stderr)
+                    sys.exit(100)
+                if os.environ.get("PSQL_INSTALL_FAIL"):
+                    print("E: Failed to fetch https://example.invalid/package", file=sys.stderr)
                     sys.exit(100)
                 binary = root / package / "bin/psql"
                 if not os.environ.get("PSQL_BINARY_MISSING"):
@@ -97,28 +84,8 @@ elif name == "apt-get":
                     binary.write_text('#!/bin/sh\nprintf "psql (PostgreSQL) ' + package.rsplit("-", 1)[1] + '.10\\n"\n')
                     binary.chmod(0o755)
             (root / (package + ".version")).write_text(version)
-elif name == "node":
-    script = sys.stdin.read()
-    if args[:1] == ["-p"] or (len(args) > 1 and args[1].endswith("/yaml")):
-        sys.exit(subprocess.run([os.environ["FIXTURE_NODE"], *args], input=script, text=True).returncode)
-    if not (root / "chromium-ready").exists() or os.environ.get("BROWSER_FAIL"):
-        sys.exit(1)
-    pathlib.Path(args[-1]).write_bytes(b"PNG fixture")
-    print("Chromium fixture: headless screenshot verified")
-elif name == "playwright":
-    if args[:1] == ["install"]:
-        (root / "chromium-ready").touch()
-    else:
-        print("Version 1.63.0")
-elif name == "docker":
-    if args == ["info"]:
-        sys.exit(0 if (root / "service-detent-docker.json").exists() else 1)
-    print("Docker version 29.1.3, build fixture")
-elif name == "rg":
-    print("ripgrep 0.0.0" if pathlib.Path(__file__).parent == root / "bin" else "ripgrep 15.2.0")
-elif name == "fd":
-    print("fd 0.0.0" if pathlib.Path(__file__).parent == root / "bin" else "fd 10.3.0")
 elif name == "detent":
+    import hashlib
     if args[:3] == ["hub", "runner", "register"]:
         tier = "sandbox"
         for index, arg in enumerate(args):
@@ -148,6 +115,8 @@ elif name == "detent":
             if identity != registered:
                 sys.exit("runner credential does not match enrollment")
         (root / "detent-cwd").write_text(os.getcwd())
+        keys = ("MAKEFLAGS", "TMPDIR", "XDG_CACHE_HOME", "GOMODCACHE", "npm_config_cache", "PLAYWRIGHT_BROWSERS_PATH")
+        (root / "detent-env.json").write_text(json.dumps({key: os.environ.get(key) for key in keys}))
         print("v0.117.41")
 elif name == "sprite-env":
     if args[:2] == ["services", "get"]:
@@ -158,18 +127,160 @@ elif name == "sprite-env":
         if os.environ.get("CHECKPOINT_FAIL"):
             sys.exit(1)
         print('{"id":"v1"}')
-elif name in ("codex", "claude", "gh"):
-    if args[-1:] == ["status"]:
-        auth_path = {"codex": ".codex/auth.json", "claude": ".claude/.credentials.json", "gh": ".config/gh/hosts.yml"}[name]
-        sys.exit(0 if (pathlib.Path.home() / auth_path).is_file() else 1)
-    if name == "gh" and pathlib.Path(__file__).parent == root / "bin":
-        print("gh version 2.0.0 (fixture)")
-    else:
-        print({"codex": "codex-cli 0.160.0", "claude": "2.1.289 (Claude Code)", "gh": "gh version 2.101.0 (fixture)"}[name])
+
 '''
+
+STUB = r'''#!/bin/bash
+set -e
+name=${0##*/}
+status=0
+execute=false
+case $name in
+    curl)
+        output=
+        previous=
+        for arg in "$@"; do
+            [[ $previous != --location ]] || url=$arg
+            [[ $previous != --output ]] || destination=$arg
+            previous=$arg
+        done
+        if [[ $url == */go.mod ]]; then
+            printf 'module fixture\ngo 1.26\ntoolchain go1.26.6\n' > "$destination"
+        elif [[ $url == */go1.*.sha256 ]]; then
+            cp -- "$FIXTURE_ROOT/go.sha256" "$destination"
+        elif [[ $url == *checksums.txt || $url == *.sha256 ]]; then
+            case $url in
+                */cli/cli/*) prefix=gh_ ;;
+                */ripgrep/*) prefix=ripgrep- ;;
+                *) prefix=detent_ ;;
+            esac
+            manifest="$FIXTURE_ROOT/${prefix}checksums.txt"
+            [[ ${BAD_CHECKSUM:-} != "$prefix" ]] || manifest="$FIXTURE_ROOT/${prefix}bad-checksums.txt"
+            cp -- "$manifest" "$destination"
+        else
+            archive=${url##*/}
+            [[ $url != */go1.* ]] || archive=go.tar.gz
+            cp -- "$FIXTURE_ROOT/$archive" "$destination"
+            if [[ $url == */sharkdp/fd/* && -n ${FD_CORRUPT:-} ]]; then
+                printf 'corrupt archive' > "$destination"
+            fi
+        fi ;;
+    uname) if [[ $1 == -s ]]; then output=Linux; else output=${FIXTURE_ARCH:-x86_64}; fi ;;
+    nproc) output=${FIXTURE_NPROC:-8} ;;
+    id) if [[ $1 == -u ]]; then output=1000; else output=sprite; fi ;;
+    findmnt) output="ext4 ${FIXTURE_LOCAL_DISK:-}"; [[ -n ${FIXTURE_LOCAL_DISK:-} ]] || status=1 ;;
+    unshare) output=; [[ -n ${DOCKER_SUPPORTED:-} ]] || status=1 ;;
+    sudo)
+        output=
+        if [[ $1 == test && $2 == -w && $3 == /sys/fs/cgroup ]]; then
+            [[ -n ${DOCKER_SUPPORTED:-} ]] || status=1
+        else execute=true; fi ;;
+    go)
+        output=
+        case $1 in
+            version) output='go version go1.26.6 linux/amd64' ;;
+            env) if [[ $2 == GOCACHE ]]; then output=${GOCACHE:-$HOME/.cache/go-build}; else output=${GOMODCACHE:-$HOME/go/pkg/mod}; fi ;;
+            clean) if [[ $2 == -cache ]]; then rm -rf -- "${GOCACHE:-$HOME/.cache/go-build}"; else rm -rf -- "${GOMODCACHE:-$HOME/go/pkg/mod}"; fi ;;
+            *) if [[ -n ${GO_INSTALL_FAIL:-} ]]; then status=1; else cp -- "$0" "$GOBIN/detent"; fi ;;
+        esac ;;
+    npm)
+        output=
+        if [[ $1 == --version ]]; then output=${FIXTURE_NPM_VERSION:-11.6.2}
+        elif [[ $1 == config && $2 == get && $3 == cache ]]; then
+            output=${npm_config_cache:-${NPM_CONFIG_CACHE:-${FIXTURE_NPMRC_CACHE:-$HOME/.npm}}}
+            [[ $output == /* ]] || output="$PWD/$output"
+        elif [[ $1 == cache && $2 == verify ]]; then mkdir -p -- "${npm_config_cache:-$HOME/.npm}/_cacache"
+        else ''' + "exec " + shlex.quote(sys.executable) + " -S -c " + shlex.quote(PYTHON_STUB) + r''' "$0" "$@"; fi ;;
+    bwrap|socat) output="$name fixture"; [[ ${SANDBOX_TOOL_BROKEN:-} != "$name" ]] || status=1 ;;
+    rg|fd)
+        if [[ ${0%/*} == "$FIXTURE_ROOT/bin" ]]; then
+            output="$name 0.0.0"
+            [[ $name != rg ]] || output='ripgrep 0.0.0'
+        elif [[ $name == rg ]]; then output='ripgrep 15.2.0'; else output='fd 10.3.0'; fi ;;
+    codex|claude|gh)
+        if [[ ${!#} == status ]]; then
+            output=
+            case $name in
+                codex) auth=.codex/auth.json ;;
+                claude) auth=.claude/.credentials.json ;;
+                gh) auth=.config/gh/hosts.yml ;;
+            esac
+            [[ -f $HOME/$auth ]] || status=1
+        else
+            case $name in
+                codex) output='codex-cli 0.160.0' ;;
+                claude) output='2.1.289 (Claude Code)' ;;
+                gh) if [[ ${0%/*} == "$FIXTURE_ROOT/bin" ]]; then output='gh version 2.0.0 (fixture)'; else output='gh version 2.101.0 (fixture)'; fi ;;
+            esac
+        fi ;;
+    node)
+        output=
+        if [[ $1 == --version ]]; then output=${FIXTURE_NODE_VERSION:-v24.11.1}
+        elif [[ $1 == -p || ${2:-} == */yaml || ${2:-} == setup-manifest ]]; then execute=true
+        elif [[ ! -f $FIXTURE_ROOT/chromium-ready || -n ${BROWSER_FAIL:-} ]]; then status=1
+        else printf 'PNG fixture' > "${!#}"; output='Chromium fixture: headless screenshot verified'; fi ;;
+    docker) output='Docker version 29.1.3, build fixture'; if [[ $1 == info && ! -f $FIXTURE_ROOT/service-detent-docker.json ]]; then status=1; fi ;;
+    playwright) if [[ $1 == install ]]; then : > "$FIXTURE_ROOT/chromium-ready"; output=; else output='Version 1.63.0'; fi ;;
+    *) ''' + "exec " + shlex.quote(sys.executable) + " -S -c " + shlex.quote(PYTHON_STUB) + r''' "$0" "$@" ;;
+esac
+{
+    printf '["%s",[' "$name"
+    separator=
+    for arg in "$@"; do
+        arg=${arg//\/\\}
+        arg=${arg//\"/\\\"}
+        arg=${arg//$'\n'/\\n}
+        arg=${arg//$'\r'/\\r}
+        arg=${arg//$'\t'/\\t}
+        printf '%s"%s"' "$separator" "$arg"
+        separator=,
+    done
+    printf ']]\n'
+} >> "$FIXTURE_ROOT/calls.jsonl"
+if [[ $execute == true ]]; then
+    if [[ $name == node ]]; then exec "$FIXTURE_NODE" "$@"; else exec "$@"; fi
+fi
+[[ -z $output ]] || printf '%s\n' "$output"
+exit "$status"
+'''
+
 
 TOKEN = "det_enroll_fixture_secret"
 ENROLLMENT = f"detent hub runner register --url https://hub.example/organizations/org_example --token {TOKEN} --name 'Build host' --capacity 2 --isolation-tier native-trusted --service\n"
+
+
+def run_fixture_command(command, *, input, env):
+    with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, env=env, text=True,
+                          start_new_session=True) as process:
+        try:
+            stdout, stderr = process.communicate(input, timeout=20)
+        except BaseException:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            raise
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+class BootstrapProcessTests(unittest.TestCase):
+    def test_timeout_joins_descendants_before_returning(self):
+        communicate = subprocess.Popen.communicate
+
+        def expire(process, *args, **kwargs):
+            if kwargs.get("timeout") == 20:
+                self.assertTrue(select.select([process.stdout], [], [], 5)[0])
+                self.assertEqual(process.stdout.readline(), "ready\n")
+                raise subprocess.TimeoutExpired(process.args, 20)
+            return communicate(process, *args, timeout=5, **kwargs)
+
+        script = "import os; r,w=os.pipe(); child=os.fork(); print('ready',flush=True) if child==0 else None; os.read(r,1) if child==0 else os.waitpid(child,0)"
+        with mock.patch.object(subprocess.Popen, "communicate", expire):
+            with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                run_fixture_command([sys.executable, "-c", script], input="", env=os.environ)
+            self.assertEqual(caught.exception.timeout, 20)
 
 
 class SpriteBootstrapTests(unittest.TestCase):
@@ -185,7 +296,7 @@ class SpriteBootstrapTests(unittest.TestCase):
         self.home.mkdir()
         self.fake_bin = self.root / "bin"
         self.fake_bin.mkdir()
-        for name in ("uname", "curl", "npm", "gh", "rg", "fd", "codex", "claude", "sprite-env", "sha256sum", "id", "sudo", "unshare", "dpkg-query", "apt-cache", "apt-get", "node", "docker", "dockerd"):
+        for name in ("uname", "nproc", "findmnt", "curl", "npm", "gh", "rg", "fd", "codex", "claude", "sprite-env", "sha256sum", "id", "sudo", "unshare", "dpkg-query", "apt-cache", "apt-get", "node", "docker", "dockerd", "bwrap", "socat"):
             path = self.fake_bin / name
             path.write_text(STUB)
             path.chmod(0o755)
@@ -203,6 +314,13 @@ class SpriteBootstrapTests(unittest.TestCase):
                 info = tarfile.TarInfo(binary)
                 info.size, info.mode = len(data), 0o755
                 bundle.addfile(info, io.BytesIO(data))
+        (self.root / "go.sha256").write_text(hashlib.sha256((self.root / "go.tar.gz").read_bytes()).hexdigest())
+        for prefix in ("gh_", "ripgrep-", "detent_"):
+            bundles = list(self.root.glob(prefix + "*.tar.gz"))
+            for bad in (False, True):
+                manifest = "".join(("0" * 64 if bad else hashlib.sha256(bundle.read_bytes()).hexdigest())
+                                   + "  " + bundle.name + "\n" for bundle in bundles)
+                (self.root / (prefix + ("bad-" if bad else "") + "checksums.txt")).write_text(manifest)
         self.script = self.root / "sprite-runner-bootstrap.sh"
         shutil.copyfile(pathlib.Path(__file__).with_name(self.script.name), self.script)
         script = self.script.read_text()
@@ -221,6 +339,9 @@ class SpriteBootstrapTests(unittest.TestCase):
                         FIXTURE_NODE=node, FIXTURE_YAML_MODULE=str(pathlib.Path(module.stdout.strip()).parent),
                         PATH=str(self.fake_bin) + os.pathsep + os.environ["PATH"],
                         TMPDIR=str(self.root))
+        for key in ("GOPATH", "GOCACHE", "GOMODCACHE", "XDG_CACHE_HOME", "npm_config_cache", "NPM_CONFIG_CACHE",
+                    "GH_CONFIG_DIR", "CODEX_HOME", "DOCKER_CONFIG", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME"):
+            self.env.pop(key, None)
         # The image's existing local Codex link cannot be npm's install prefix.
         bundled = self.home / ".local/bin"
         bundled.mkdir(parents=True)
@@ -229,8 +350,8 @@ class SpriteBootstrapTests(unittest.TestCase):
     def run_bootstrap(self, extra=(), enrollment=None):
         if enrollment is None:
             enrollment = ENROLLMENT
-        return subprocess.run(["bash", str(self.script), *extra], input=enrollment,
-                              env=self.env, text=True, capture_output=True, timeout=20)
+        return run_fixture_command(["bash", str(self.script), *extra], input=enrollment,
+                                   env=self.env)
 
     def calls(self):
         log = self.root / "calls.jsonl"
@@ -240,6 +361,24 @@ class SpriteBootstrapTests(unittest.TestCase):
 
     def registrations(self):
         return [args for command, args in self.calls() if command == "detent" and args[:3] == ["hub", "runner", "register"]]
+
+    def test_sandbox_prerequisites_checked_before_enrollment(self):
+        for tool in ("bwrap", "socat"):
+            with self.subTest(tool=tool):
+                self.env["SANDBOX_TOOL_BROKEN"] = tool
+                result = self.run_bootstrap()
+                del self.env["SANDBOX_TOOL_BROKEN"]
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Codex sandbox prerequisite " + tool, result.stderr)
+                self.assertEqual(self.registrations(), [])
+        result = self.run_bootstrap()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        for package in ("bubblewrap", "socat"):
+            self.assertTrue(any(name == "apt-get" and package in args for name, args in calls))
+        registered = next(i for i, (name, args) in enumerate(calls) if name == "detent" and args[:3] == ["hub", "runner", "register"])
+        for tool, flag in (("bwrap", "--version"), ("socat", "-V")):
+            self.assertTrue(any(name == tool and args == [flag] for name, args in calls[:registered]))
 
     def test_rerun_preserves_identity_and_keeps_token_out_of_arguments(self):
         # Catches shell evaluation of the pasted command, the token in an
@@ -281,6 +420,10 @@ class SpriteBootstrapTests(unittest.TestCase):
         service = subprocess.run(["bash", str(launcher)], env=self.env, text=True, capture_output=True, timeout=20)
         self.assertEqual(service.returncode, 0, service.stderr)
         self.assertEqual((self.root / "detent-cwd").read_text(), str(work.resolve()))
+        launched = json.loads((self.root / "detent-env.json").read_text())
+        self.assertEqual(launched["MAKEFLAGS"], "-l2")
+        self.assertIsNone(launched["XDG_CACHE_HOME"])
+        self.assertIn("Sprite resource profile: 8 CPUs; runner Make load limit -l2", first.stdout)
         self.assertIn(["detent", ["--config", str(config), "--headless"]], self.calls())
         self.assertIn("claude auth login", first.stdout)
         self.assertIn("codex login", first.stdout)
@@ -353,7 +496,9 @@ class SpriteBootstrapTests(unittest.TestCase):
                 result = self.run_bootstrap(extra=("--config", str(config)), enrollment="" if original is not None else None)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 service = json.loads((self.root / "service-detent-runner.json").read_text())
-                self.assertEqual(service[service.index("--dir") + 1], preserved.get("workspace_root", str(self.home / "detent-runner")))
+                self.assertEqual(service[service.index("--dir") + 1], str(self.home))
+                launch = preserved.get("workspace_root", str(self.home / "detent-runner"))
+                self.assertIn(["cd", "--", launch], [shlex.split(line) for line in (self.home / ".local/lib/detent-sprite-runner/start").read_text().splitlines()])
                 self.assertNotIn("operator_fixture_credential", result.stdout + result.stderr)
                 parsed = subprocess.run([self.env["FIXTURE_NODE"], "-e",
                                          "const fs = require('node:fs'); const YAML = require(process.argv[1]); console.log(JSON.stringify(YAML.parse(fs.readFileSync(process.argv[2], 'utf8'))));",
@@ -397,11 +542,100 @@ class SpriteBootstrapTests(unittest.TestCase):
                 self.assertIn(f"Managed checkout root: {root}\n", result.stdout)
                 self.assertIn(f"New managed checkout for prj_example: {root / 'prj_example'}", result.stderr)
                 service = json.loads((self.root / "service-detent-runner.json").read_text())
-                self.assertEqual(service[service.index("--dir") + 1], str(launch_dir))
+                self.assertEqual(service[service.index("--dir") + 1], str(self.home))
                 launcher = (self.home / ".local/lib/detent-sprite-runner/start").read_text()
                 self.assertIn(["cd", "--", str(launch_dir)], [shlex.split(line) for line in launcher.splitlines()])
                 self.assertTrue((root / ".tmp").is_dir())
                 self.assertNotIn("operator_fixture_credential", result.stdout + result.stderr)
+
+    def test_local_disk_hosts_checkouts_and_caches(self):
+        # Catches checkouts or caches left on the persistent network disk, and
+        # migrations that override an operator-chosen workspace root.
+        disk = self.root / "local disk"
+        disk.mkdir()
+        self.env["FIXTURE_LOCAL_DISK"] = str(disk)
+        self.env["FIXTURE_NPM_POPULATES"] = "1"
+        (self.home / ".npm/_logs").mkdir(parents=True)
+        local = disk / "detent-runner"
+        first = self.run_bootstrap()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        args = self.registrations()[0]
+        self.assertEqual(args[args.index("--workspace-root") + 1], str(local / "work"))
+        launcher = self.home / ".local/lib/detent-sprite-runner/start"
+        service = subprocess.run(["bash", str(launcher)], env=self.env, text=True, capture_output=True, timeout=20)
+        self.assertEqual(service.returncode, 0, service.stderr)
+        self.assertEqual((self.root / "detent-cwd").read_text(), str((local / "work").resolve()))
+        self.assertEqual(json.loads((self.root / "detent-env.json").read_text()), {
+            "MAKEFLAGS": "-l2",
+            "TMPDIR": str(local / "work/.tmp"),
+            "XDG_CACHE_HOME": None,
+            "GOMODCACHE": None,
+            "npm_config_cache": None,
+            "PLAYWRIGHT_BROWSERS_PATH": None,
+        })
+        native = {
+            self.home / ".cache/go-build": local / "cache/go-build",
+            self.home / ".cache/detent": local / "cache/detent",
+            self.home / ".cache/golangci-lint": local / "cache/golangci-lint",
+            self.home / "go/pkg/mod": local / "cache/go-mod",
+            self.home / ".npm": local / "cache/npm",
+        }
+        for link, target in native.items():
+            self.assertTrue(link.is_symlink(), link)
+            self.assertEqual(pathlib.Path(os.readlink(link)), target)
+        self.assertTrue((local / "cache/npm/_cacache").is_dir())
+        self.assertFalse((self.home / ".cache/ms-playwright").is_symlink())
+        self.assertIn(f"Local disk: checkouts in {local / 'work'}; native caches linked into {local / 'cache'}", first.stdout)
+        shutil.rmtree(local)
+        (self.root / "detent-cwd").unlink()
+        lost = subprocess.run(["bash", str(launcher)], env=self.env, text=True, capture_output=True, timeout=20)
+        self.assertEqual(lost.returncode, 0, lost.stderr)
+        self.assertEqual((self.root / "detent-cwd").read_text(), str((local / "work").resolve()))
+        for link in native:
+            self.assertTrue(link.resolve().is_dir(), link)
+        shutil.rmtree(local)
+        recovered = self.run_bootstrap(enrollment="")
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        for link in native:
+            self.assertTrue(link.resolve().is_dir(), link)
+        for link in (self.home / "go/pkg/mod", self.home / ".npm"):
+            link.unlink()
+        (self.home / ".npm").mkdir()
+        (self.home / ".npm/_cacache").mkdir()
+        self.env.update(GOMODCACHE=str(self.root / "operator-modules"))
+        operator = self.run_bootstrap(enrollment="")
+        del self.env["GOMODCACHE"]
+        self.assertEqual(operator.returncode, 0, operator.stderr)
+        self.assertFalse((self.home / "go/pkg/mod").exists())
+        self.assertFalse((self.home / ".npm").is_symlink())
+        self.assertIn(f"Native cache {self.home / '.npm'} already has content", operator.stderr)
+        shutil.rmtree(self.home / ".npm")
+        (self.home / ".npmrc").write_text("cache = /operator/npm\n")
+        npmrc = self.run_bootstrap(enrollment="")
+        self.assertEqual(npmrc.returncode, 0, npmrc.stderr)
+        self.assertFalse((self.home / ".npm").is_symlink())
+        (self.home / ".npmrc").unlink()
+        self.assertNotIn("GOMODCACHE", launcher.read_text())
+        (self.home / ".config/detent-runner/global.yaml").write_text("workspace_root: custom-relative\n")
+        relative = self.run_bootstrap(enrollment="")
+        self.assertEqual(relative.returncode, 0, relative.stderr)
+        self.assertIn(f"Managed checkout root: {self.home / 'detent-runner' / 'custom-relative'}\n", relative.stdout)
+        config = self.home / ".config/detent-runner/global.yaml"
+        for name, root, want in (
+            ("legacy default", self.home / "detent-runner", local / "work"),
+            ("operator root", self.home / "chosen", self.home / "chosen"),
+        ):
+            with self.subTest(name=name):
+                config.write_text(f"# operator config\nworkspace_root: {root}\n")
+                rerun = self.run_bootstrap(enrollment="")
+                self.assertEqual(rerun.returncode, 0, rerun.stderr)
+                parsed = subprocess.run([self.env["FIXTURE_NODE"], "-e",
+                                         "const fs = require('node:fs'); const YAML = require(process.argv[1]); console.log(YAML.parse(fs.readFileSync(process.argv[2], 'utf8')).workspace_root);",
+                                         self.env["FIXTURE_YAML_MODULE"], str(config)],
+                                        text=True, capture_output=True, timeout=10)
+                self.assertEqual(parsed.stdout.strip(), str(want), parsed.stderr)
+                self.assertIn("# operator config", config.read_text())
+                self.assertIn("cd -- " + str(want).replace(" ", "\\ "), launcher.read_text())
 
     def test_empty_input_reuses_an_existing_registration_only(self):
         # Catches reruns that need a fresh token, and a fresh Sprite that
@@ -415,7 +649,7 @@ class SpriteBootstrapTests(unittest.TestCase):
         for version in ("gh version 2.101.0", "ripgrep 15.2.0", "fd 10.3.0", "psql (PostgreSQL) 17.10", "Version 1.63.0"):
             self.assertIn(version, first.stdout)
         self.assertIn(["playwright", ["install", "--with-deps", "chromium"]], self.calls())
-        npm_installs = [args for command, args in self.calls() if command == "npm"]
+        npm_installs = [args for command, args in self.calls() if command == "npm" and args[:1] == ["install"]]
         self.assertEqual(len(npm_installs), 1)
         self.assertTrue(set(("@openai/codex@0.160.0", "@anthropic-ai/claude-code@2.1.289", "playwright@1.63.0")).issubset(npm_installs[0]))
         before = len(self.calls())
@@ -425,7 +659,7 @@ class SpriteBootstrapTests(unittest.TestCase):
         restarts = [args for command, args in self.calls() if command == "sprite-env" and args[:1] == ["curl"]]
         self.assertEqual(len(restarts), 1)
         rerun_calls = self.calls()[before:]
-        self.assertFalse(any(command in ("curl", "npm") or command == "apt-get" and args[:1] == ["install"] for command, args in rerun_calls))
+        self.assertFalse(any(command == "curl" or command in ("npm", "apt-get") and args[:1] == ["install"] for command, args in rerun_calls))
         self.assertFalse(any(command == "playwright" and args[:1] == ["install"] for command, args in rerun_calls))
         self.assertIn("headless screenshot verified", rerun.stdout)
         self.assertIn("Docker: skipped:", rerun.stdout)
@@ -628,6 +862,10 @@ class SpriteBootstrapTests(unittest.TestCase):
                 self.assertNotIn(TOKEN, result.stdout + result.stderr)
                 if failure:
                     self.assertNotEqual(result.returncode, 0)
+                    if failure == "PSQL_INSTALL_FAIL":
+                        self.assertEqual(result.returncode, 100)
+                        self.assertIn("E: Failed to fetch", result.stderr)
+                        self.assertIn("Last completed step: GitHub CLI, ripgrep and fd installed.", result.stderr)
                     if failure == "configured APT repositories":
                         self.assertTrue(link.is_symlink())
                     else:
@@ -650,6 +888,195 @@ class SpriteBootstrapTests(unittest.TestCase):
                 self.assertEqual(repair.returncode, 0, repair.stderr)
                 self.assertTrue(link.is_file())
                 self.assertEqual(link.resolve(), binary)
+
+    def setup_manifest(self):
+        return json.loads((self.home / ".local/lib/detent-sprite-runner/setup-manifest.json").read_text())
+
+    def fresh_sprite(self):
+        shutil.rmtree(self.home)
+        bundled = self.home / ".local/bin"
+        bundled.mkdir(parents=True)
+        (bundled / "codex").symlink_to(self.fake_bin / "codex")
+        for state in ("calls.jsonl", "tokens.txt", "chromium-ready", "postgresql-client-17.version"):
+            (self.root / state).unlink(missing_ok=True)
+        for service in self.root.glob("service-*.json"):
+            service.unlink()
+        shutil.rmtree(self.root / "postgresql-client-17", ignore_errors=True)
+
+    def test_setup_revision_is_recorded_credential_free_before_enrollment(self):
+        result = self.run_bootstrap()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = self.setup_manifest()
+        self.assertEqual(manifest.pop("revision"), setup_revision(manifest))
+        self.assertTrue(manifest["toolchain"].pop("os"))
+        self.assertEqual(manifest, {
+            "schema": 1,
+            "platform": "linux/amd64",
+            "bootstrap": "v0.117.41",
+            "toolchain": {"claude": "2.1.289", "codex": "0.160.0", "docker": "unavailable", "fd": "10.3.0", "gh": "2.101.0",
+                          "go": "1.26.6", "node": "24.11.1", "npm": "11.6.2", "playwright": "1.63.0", "psql": "17.10-0ubuntu0.25.10.1", "rg": "15.2.0", "yaml": "2.8.3"},
+            "caches": ["go-build", "go-mod", "npm"],
+        })
+        text = json.dumps(manifest)
+        self.assertNotIn(TOKEN, text)
+        self.assertNotIn("identity", text)
+        self.assertNotIn(str(self.home), text)
+        calls = self.calls()
+        written = next(i for i, (command, args) in enumerate(calls) if command == "node" and args[1:3] == ["setup-manifest", "write"])
+        registered = next(i for i, (command, args) in enumerate(calls) if command == "detent" and args[:3] == ["hub", "runner", "register"])
+        self.assertLess(written, registered)
+        self.assertIn("(recovery only)", " ".join(next(args for command, args in calls if command == "sprite-env" and args[:2] == ["checkpoints", "create"])))
+        self.assertNotIn("cannot reproduce", result.stderr)
+
+    def test_reports_manual_customizations_the_setup_cannot_reproduce(self):
+        (self.home / ".local/bin/custom-tool").write_text("#!/bin/sh\n")
+        module = self.home / ".local/share/detent-runner/npm/lib/node_modules"
+        (module / "left-pad").mkdir(parents=True)
+        (module / "@example/private-tool").mkdir(parents=True)
+        result = self.run_bootstrap()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.setup_manifest()["unreproducible"], ["bin/custom-tool", "npm/@example/private-tool", "npm/left-pad"])
+        self.assertIn("cannot reproduce", result.stderr)
+        for entry in ("bin/custom-tool", "npm/@example/private-tool", "npm/left-pad"):
+            self.assertIn(entry, result.stderr)
+
+    def test_reproduces_setup_revision_without_seed(self):
+        seed = self.run_bootstrap()
+        self.assertEqual(seed.returncode, 0, seed.stderr)
+        declared = self.root / "declared-setup.json"
+        shutil.copyfile(self.home / ".local/lib/detent-sprite-runner/setup-manifest.json", declared)
+        original = json.loads(declared.read_text())
+
+        def declare(name, change, recompute=True):
+            manifest = json.loads(json.dumps(original))
+            change(manifest)
+            if recompute:
+                manifest["revision"] = setup_revision(manifest)
+            path = self.root / (name + "-setup.json")
+            path.write_text(json.dumps(manifest))
+            return path
+
+        cases = (
+            ("seed unavailable", declared, (), {}, None),
+            ("platform mismatch", declared, (), {"FIXTURE_ARCH": "aarch64"}, "targets linux/amd64; this Sprite is linux/arm64"),
+            ("bootstrap mismatch", declared, ("--version", "v0.117.42"), {}, "rerun with --version v0.117.41"),
+            ("declared manual customization", declare("customized", lambda m: m.update(unreproducible=["bin/custom-tool"])), (), {}, "cannot reproduce: bin/custom-tool"),
+            ("toolchain drift", declare("toolchain", lambda m: m["toolchain"].update(go="1.26.5")), (), {}, "does not reproduce the setup revision (toolchain.go)"),
+            ("node runtime drift", declared, (), {"FIXTURE_NODE_VERSION": "v25.2.0", "FIXTURE_NPM_VERSION": "11.7.0"}, "does not reproduce the setup revision (toolchain.node, toolchain.npm)"),
+            ("cache allowlist drift", declare("caches", lambda m: m.update(caches=["go-mod"])), (), {}, "does not reproduce the setup revision (caches)"),
+            ("tampered pin", declare("tampered", lambda m: m["toolchain"].update(go="1.26.5"), recompute=False), (), {}, "(revision, toolchain.go)"),
+            ("reordered declaration", declare("reordered", lambda m: m.update(toolchain=dict(reversed(m["toolchain"].items())), caches=m["caches"][::-1]), recompute=False), (), {}, None),
+        )
+        for name, path, extra, env, failure in cases:
+            with self.subTest(name=name):
+                self.fresh_sprite()
+                for key, value in env.items():
+                    self.env[key] = value
+                try:
+                    result = self.run_bootstrap(extra=("--setup-manifest", str(path), *extra))
+                finally:
+                    for key in env:
+                        del self.env[key]
+                self.assertNotIn(TOKEN, result.stdout + result.stderr)
+                if failure:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(failure, result.stderr)
+                    self.assertIn("--setup-manifest " + str(path).replace(" ", "\\ "), result.stderr)
+                    self.assertEqual(self.registrations(), [])
+                    self.assertFalse((self.home / ".config/detent-runner/identity.json").exists())
+                    continue
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.setup_manifest(), original)
+                self.assertEqual(len(self.registrations()), 1)
+        self.fresh_sprite()
+        (self.home / ".local/bin/custom-tool").write_text("#!/bin/sh\n")
+        customized = self.run_bootstrap(extra=("--setup-manifest", str(declared)))
+        self.assertNotEqual(customized.returncode, 0)
+        self.assertIn("manual customizations outside the setup revision: bin/custom-tool", customized.stderr)
+        self.assertEqual(self.registrations(), [])
+
+    def test_cache_repair_respects_the_configured_workspace_root(self):
+        first = self.run_bootstrap()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        config = self.home / ".config/detent-runner/global.yaml"
+        original = config.read_text()
+        job = self.home / "go/pkg/mod/job-data"
+        job.mkdir(parents=True)
+        for root, failure in (("~/go/pkg/mod", True), ("~/go", False)):
+            with self.subTest(root=root):
+                config.write_text(original + f"workspace_root: {root}\n")
+                rerun = self.run_bootstrap(extra=("--workspace-root", str(self.home / root[2:])), enrollment="")
+                self.assertTrue(job.exists())
+                self.assertNotIn(["go", ["clean", "-modcache"]], self.calls())
+                if failure:
+                    self.assertNotEqual(rerun.returncode, 0)
+                    self.assertIn("native cache go-mod overlaps a credential, identity or job location", rerun.stderr)
+                else:
+                    self.assertEqual(rerun.returncode, 0, rerun.stderr)
+                    self.assertIn("go-mod=unmanaged", rerun.stdout)
+
+    def test_native_caches_are_optional_allowlisted_and_rebuilt(self):
+        cache = self.root / "caches"
+
+        def corrupt(path, entry):
+            path.mkdir(parents=True, exist_ok=True)
+            (path / entry).write_text("partial")
+
+        cases = (
+            ("cold", {}, None, "go-build=cold, go-mod=cold, npm=cold", []),
+            ("warm", {}, lambda: [(self.home / p).mkdir(parents=True) for p in (".cache/go-build/README", "go/pkg/mod/cache", ".npm/_cacache")],
+             "go-build=warm, go-mod=warm, npm=warm", []),
+            ("corrupt module cache", {}, lambda: corrupt(self.home / "go/pkg/mod", "partial"), "go-mod=unverified", []),
+            ("config file in home", {}, None, "go-build=cold", []),
+            ("corrupt npm cache", {}, lambda: corrupt(self.home / ".npm", "_logs"), "npm=rebuilt", [["npm", ["cache", "verify"]]]),
+            ("cache is a file", {"GOCACHE": str(cache / "go-build")}, lambda: cache.mkdir() or (cache / "go-build").write_text("x"), "native cache go-build is not a directory", []),
+            ("operator override", {"GOMODCACHE": str(cache / "mod")}, lambda: corrupt(cache / "mod", "partial"), "go-mod=unmanaged", []),
+            ("override at default path", {"GOMODCACHE": str(self.home / "go/pkg/mod")}, lambda: corrupt(self.home / "go/pkg/mod", "partial"), "go-mod=unmanaged", []),
+            ("npm cache named off", {"npm_config_cache": "off"}, None, "npm=cold", []),
+            ("uppercase npm override", {"NPM_CONFIG_CACHE": str(self.home / ".npm")}, lambda: corrupt(self.home / ".npm", "_logs"), "npm=unmanaged", []),
+            ("npm cache inside credentials", {"NPM_CONFIG_CACHE": str(self.home / ".ssh/npm")}, None, "native cache npm overlaps a credential", []),
+            ("go cache disabled", {"GOCACHE": "off"}, None, "go-build=disabled", []),
+            ("provider login", {"GOMODCACHE": str(self.home / ".config/gh/mod")}, None, "native cache go-mod overlaps a credential", []),
+            ("relocated GitHub login", {"GH_CONFIG_DIR": str(self.home / "go/pkg/mod")}, lambda: corrupt(self.home / "go/pkg/mod", "hosts.yml"), "native cache go-mod overlaps a credential", []),
+            ("parent segments", {"GOMODCACHE": str(self.home / "tmp/../.ssh")}, lambda: corrupt(self.home / ".ssh", "id_ed25519"), "native cache go-mod overlaps a credential", []),
+            ("symlinked credential", {"GOCACHE": str(cache / "link")}, lambda: cache.mkdir() or (self.home / ".codex").mkdir() or (cache / "link").symlink_to(self.home / ".codex"), "native cache go-build overlaps a credential", []),
+            ("whole home", {"GOCACHE": str(self.home)}, None, "native cache go-build overlaps a credential", []),
+            ("runner identity", {"npm_config_cache": str(self.home / ".config/detent-runner")}, None, "native cache npm overlaps a credential", []),
+            ("workspace root inside cache", {"GOMODCACHE": str(self.home / "detent-runner")}, None, "native cache go-mod overlaps a credential, identity or job location", []),
+        )
+        for name, env, prepare, expected, repairs in cases:
+            with self.subTest(name=name):
+                self.fresh_sprite()
+                shutil.rmtree(cache, ignore_errors=True)
+                if prepare:
+                    prepare()
+                self.env.update(env)
+                try:
+                    result = self.run_bootstrap(extra=("--config", str(self.home / "global.yaml")) if name == "config file in home" else ())
+                finally:
+                    for key in env:
+                        del self.env[key]
+                for repair in repairs:
+                    self.assertIn(repair, self.calls())
+                if name == "relocated GitHub login":
+                    self.assertTrue((self.home / "go/pkg/mod/hosts.yml").exists())
+                if name == "parent segments":
+                    self.assertTrue((self.home / ".ssh/id_ed25519").exists())
+                if "overlaps" in expected or "not a directory" in expected:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(expected, result.stderr)
+                    self.assertIn("nothing was enrolled" if "overlaps" in expected else "move it aside", result.stderr)
+                    self.assertEqual(self.registrations(), [])
+                    continue
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(expected, result.stdout)
+                self.assertFalse(any(command in ("go", "npm") and args[:1] in (["clean"], ["cache"]) for command, args in self.calls() if [command, args] not in repairs))
+
+
+def setup_revision(manifest):
+    canonical = {"schema": manifest["schema"], "platform": manifest["platform"], "bootstrap": manifest["bootstrap"],
+                 "toolchain": dict(sorted(manifest["toolchain"].items())), "caches": sorted(set(manifest["caches"]))}
+    return hashlib.sha256(json.dumps(canonical, separators=(",", ":")).encode()).hexdigest()
 
 
 if __name__ == "__main__":

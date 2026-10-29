@@ -22,12 +22,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/pathsafe"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/publication"
-	"github.com/digitaldrywood/detent/internal/retro"
 	"github.com/digitaldrywood/detent/internal/scheduleowner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -36,12 +34,8 @@ import (
 )
 
 const (
-	TrackerGitHub      = "github"
-	TrackerLinear      = "linear"
-	TrackerMemory      = "memory"
-	TrackerLocalSQLite = "local_sqlite"
-	TrackerGitHubLocal = "github_local"
-	TrackerHubNative   = "hub_native"
+	TrackerGitHub    = "github"
+	TrackerHubNative = "hub_native"
 
 	GitHubStatusSourceProjectV2  = "project_v2"
 	GitHubStatusSourceIssueField = "issue_field"
@@ -63,21 +57,14 @@ const (
 	DependencySourceMerged              = "merged"
 	DependencySourceNativeOnly          = "native_only"
 
-	defaultLinearEndpoint      = "https://api.linear.app/graphql"
 	defaultGitHubEndpoint      = "https://api.github.com/graphql"
 	defaultGitHubStatusPageURL = "https://www.githubstatus.com"
-	defaultLinearStatusPageURL = "https://linearstatus.com"
 
 	DefaultAgentBackendID    = "codex"
 	AgentBackendCodex        = "codex"
 	AgentBackendClaudeCode   = "claude_code"
 	DefaultKnowledgeMaxBytes = 64 * 1024
 
-	DefaultNoProgressTokenLimit              = 25_000_000
-	DefaultNoProgressSpendLimitUSD           = 3.0
-	DefaultLifetimeSessionLimit              = 120
-	DefaultLifetimeTokenLimit                = 750_000_000
-	DefaultLifetimeLimitOverrideLabel        = "allow-lifetime-limit"
 	DefaultFailureBreakerSameClassLimit      = 5
 	DefaultFailureBreakerWindowSeconds       = 3600
 	DefaultFailureBreakerCooldownSeconds     = 3600
@@ -87,7 +74,6 @@ const (
 	DefaultMergeWorkerMaxDurationMS          = 6 * 60 * 60 * 1000
 	DefaultMergeFairnessAgeSeconds           = 2 * 60 * 60
 	DefaultMaxSessionDurationMS              = 2 * 60 * 60 * 1000
-	DefaultNoProgressTimeoutMS               = 90 * 60 * 1000 // Retained only to preserve existing policy IDs.
 
 	DefaultPollingIntervalMS               = 120000
 	DefaultRefreshFailureThreshold         = 3
@@ -103,7 +89,6 @@ const (
 	DefaultStalenessWebhookTimeoutMS       = 5000
 	DefaultStrandedActiveThresholdSeconds  = 10 * 60
 	DefaultDispatchStallThresholdSeconds   = 2 * 60 * 60
-	DefaultParkReviewThreshold             = 3
 	DefaultGitHubUnstartedSeconds          = 15 * 60
 	MaxStalenessRepeatedCount              = 500
 
@@ -137,6 +122,7 @@ const (
 
 type Workflow struct {
 	machinePrompt     string
+	executionPolicy   *policy.Descriptor
 	Authored          *policy.Authored
 	DefinitionSources *ProjectDefinitionSources
 	Config            Config
@@ -165,7 +151,6 @@ type Config struct {
 	Workpad           Workpad              `yaml:"workpad,omitempty"`
 	Deliverable       Deliverable          `yaml:"deliverable,omitempty"`
 	Dependencies      Dependencies         `yaml:"dependencies,omitempty"`
-	Recovery          Recovery             `yaml:"recovery,omitempty"`
 	Worker            Worker               `yaml:"worker"`
 	Agent             Agent                `yaml:"agent"`
 	Agents            Agents               `yaml:"agents"`
@@ -178,37 +163,17 @@ type Config struct {
 	Release           Release              `yaml:"release,omitempty"`
 	Hooks             Hooks                `yaml:"hooks"`
 	ScheduleOwnership scheduleowner.Config `yaml:"schedule_ownership,omitempty"`
-	Intake            intake.Config        `yaml:"intake,omitempty"`
-	Retro             retro.Config         `yaml:"retro,omitempty"`
-	Routines          []Routine            `yaml:"routines,omitempty"`
 	Operator          Operator             `yaml:"operator,omitempty"`
-	BacklogAdmission  BacklogAdmission     `yaml:"backlog_admission,omitempty"`
+	BacklogAdmission  BacklogAdmission     `yaml:"-"`
 
+	executionIssueContract              *IssueContract
+	historicalRetro                     []byte
 	configuredFields                    map[string]struct{}
 	scheduleOwnershipRepositoryExplicit bool
 }
 
 type Review struct {
 	Human bool `yaml:"human"`
-}
-
-type Recovery struct {
-	TerminalAttemptRetryLimit *int `yaml:"terminal_attempt_retry_limit,omitempty"`
-}
-
-func (r Recovery) EffectiveTerminalAttemptRetryLimit() int {
-	if r.TerminalAttemptRetryLimit == nil {
-		return 3
-	}
-	return *r.TerminalAttemptRetryLimit
-}
-
-func (r Recovery) TerminalAttemptFailureLimit() int {
-	limit := r.EffectiveTerminalAttemptRetryLimit()
-	if limit == 0 {
-		return 1
-	}
-	return max(2, limit)
 }
 
 type Tracker struct {
@@ -230,13 +195,13 @@ type Tracker struct {
 	GitHubAppPrivateKeyPath     string                `yaml:"github_app_private_key_path"`
 	GitHubAppInstallationID     string                `yaml:"github_app_installation_id"`
 	GitHubWebhookSecret         string                `yaml:"github_webhook_secret,omitempty"`
-	GitHubStatusSource          string                `yaml:"github_status_source"`
+	GitHubStatusSource          string                `yaml:"-"`
 	StatusPageURL               string                `yaml:"status_page_url,omitempty"`
-	ProjectSlug                 string                `yaml:"project_slug"`
+	ProjectSlug                 string                `yaml:"-"`
 	Repository                  string                `yaml:"repository"`
-	StatusField                 string                `yaml:"status_field"`
-	StatusLabelPrefix           string                `yaml:"status_label_prefix,omitempty"`
-	WriteProbeIssue             string                `yaml:"write_probe_issue,omitempty"`
+	StatusField                 string                `yaml:"-"`
+	StatusLabelPrefix           string                `yaml:"-"`
+	WriteProbeIssue             string                `yaml:"-"`
 	Assignee                    string                `yaml:"assignee"`
 	Lanes                       []Lane                `yaml:"lanes"`
 	ActiveStates                []string              `yaml:"-"`
@@ -270,11 +235,10 @@ type DependencyAutoUnblock struct {
 }
 
 type BlockedRecovery struct {
-	Enabled                bool     `yaml:"enabled"`
-	SourceStates           []string `yaml:"source_states"`
-	TargetState            string   `yaml:"target_state"`
-	ReasonCodes            []string `yaml:"reason_codes"`
-	BreakerCooldownSeconds int      `yaml:"breaker_cooldown_seconds"`
+	Enabled      bool     `yaml:"enabled"`
+	SourceStates []string `yaml:"source_states"`
+	TargetState  string   `yaml:"target_state"`
+	ReasonCodes  []string `yaml:"reason_codes"`
 }
 
 type Dependencies struct {
@@ -365,17 +329,11 @@ type Agent struct {
 	MaxTurns                     int                          `yaml:"max_turns"`
 	MaxTurnDurationMS            int                          `yaml:"max_turn_duration_ms"`
 	MaxSessionDurationMS         int                          `yaml:"max_session_duration_ms"`
-	NoProgressTimeoutMS          int                          `yaml:"no_progress_timeout_ms"` // Legacy input; ignored since the session no-progress timer was removed.
 	CheckpointIntervalMS         int                          `yaml:"checkpoint_interval_ms"`
 	MergeWorkerStartupTimeoutMS  int                          `yaml:"merge_worker_startup_timeout_ms"`
 	MergeWorkerMaxDurationMS     int                          `yaml:"merge_worker_max_duration_ms"`
 	MaxRetryBackoffMS            int                          `yaml:"max_retry_backoff_ms"`
 	OverloadRetryDelayMS         int                          `yaml:"overload_retry_delay_ms"`
-	NoProgressTokenLimit         int64                        `yaml:"no_progress_token_limit"`
-	NoProgressSpendLimitUSD      float64                      `yaml:"no_progress_spend_limit_usd"`
-	LifetimeSessionLimit         int64                        `yaml:"lifetime_session_limit"`
-	LifetimeTokenLimit           int64                        `yaml:"lifetime_token_limit"`
-	LifetimeLimitOverrideLabel   string                       `yaml:"lifetime_limit_override_label"`
 	FailureBreaker               FailureBreaker               `yaml:"failure_breaker"`
 	MaxSessionTokens             int64                        `yaml:"max_session_tokens"`
 	MaxSessionContextMultiplier  float64                      `yaml:"max_session_context_multiplier"`
@@ -547,15 +505,9 @@ type KnowledgeSource struct {
 }
 
 type Skills struct {
-	Enabled           bool          `yaml:"enabled"`
-	Path              string        `yaml:"path"`
-	MaxSkillsInPrompt int           `yaml:"max_skills_in_prompt"`
-	Creation          SkillCreation `yaml:"creation"`
-}
-
-type SkillCreation struct {
-	Enabled         bool `yaml:"enabled"`
-	MaxDraftsPerRun int  `yaml:"max_drafts_per_run"`
+	Enabled           bool   `yaml:"enabled"`
+	Path              string `yaml:"path"`
+	MaxSkillsInPrompt int    `yaml:"max_skills_in_prompt"`
 }
 
 type Followups struct {
@@ -576,11 +528,6 @@ type Budget struct {
 	perIssueMaxUSDConfigured bool
 }
 
-type USDBrakes struct {
-	BudgetCaps bool
-	NoProgress bool
-}
-
 func (b Budget) EffectiveBillingMode() string {
 	if strings.EqualFold(strings.TrimSpace(b.BillingMode), BillingModeMetered) {
 		return BillingModeMetered
@@ -596,22 +543,16 @@ func (b Budget) USDEnforcementEnabled() bool {
 	return b.Enabled && b.EffectiveBillingMode() == BillingModeMetered
 }
 
-func (c Config) USDBrakes() USDBrakes {
-	metered := c.Budget.EffectiveBillingMode() == BillingModeMetered
-	return USDBrakes{
-		BudgetCaps: metered && c.Budget.Enabled,
-		NoProgress: metered && c.Agent.NoProgressSpendLimitUSD > 0,
-	}
-}
+const nativeReleaseWarning = "release.enabled: release automation is unavailable for tracker.kind hub_native, including deliverable.github_pull_request: true; requires tracker.kind github"
 
 func (c Config) ValidationWarnings() []string {
 	var warnings []string
 	warnings = append(warnings, c.Agents.ModelSelectionWarnings()...)
+	if c.Release.Enabled && c.Tracker.Kind == TrackerHubNative {
+		warnings = append(warnings, nativeReleaseWarning)
+	}
 	if c.Workspace.legacyCacheStrategy {
 		warnings = append(warnings, "workspace.cache_strategy is unknown and ignored; remove it before the next release, which will reject it")
-	}
-	if c.USDBrakes().NoProgress {
-		warnings = append(warnings, "budget.billing_mode: metered with agent.no_progress_spend_limit_usd > 0 arms a notional USD progress brake; budget.enabled: false does not disarm it; use budget.billing_mode: subscription to make USD enforcement inert")
 	}
 	if token := strings.TrimSpace(c.Worker.GitHubToken); token != "" {
 		if IsGitHubTokenSentinel(token) {
@@ -850,9 +791,9 @@ func (b *AgentBackend) decodeOptions() {
 }
 
 type Server struct {
-	Port                           *int   `yaml:"port"`
-	Host                           string `yaml:"host"`
-	BoardSnapshotStaleAfterSeconds int    `yaml:"board_snapshot_stale_after_seconds"`
+	Port                           *int   `yaml:"-"`
+	Host                           string `yaml:"-"`
+	BoardSnapshotStaleAfterSeconds int    `yaml:"-"`
 	Kanban                         Kanban `yaml:"kanban,omitempty"`
 }
 
@@ -869,7 +810,6 @@ type Observability struct {
 	RenderIntervalMS               int                     `yaml:"render_interval_ms"`
 	StrandedActiveThresholdSeconds int                     `yaml:"stranded_active_threshold_seconds"`
 	DispatchStallThresholdSeconds  int                     `yaml:"dispatch_stall_threshold_seconds"`
-	ParkReviewThreshold            int                     `yaml:"park_review_threshold"`
 	Efficiency                     EfficiencyObservability `yaml:"efficiency,omitempty"`
 	OTLP                           OTLPObservability       `yaml:"otlp,omitempty"`
 	Staleness                      StalenessObservability  `yaml:"staleness,omitempty"`
@@ -1068,7 +1008,6 @@ func (c Claims) Validate(prefix string) []string {
 }
 
 const (
-	OperatorActionReturnRetiredParks      = "return_retired_parks"
 	OperatorActionClearClosedDependencies = "clear_closed_dependencies"
 	OperatorActionRestoreStuckMerging     = "restore_stuck_merging"
 	OperatorActionMergeWhenWedged         = "merge_when_wedged"
@@ -1083,11 +1022,11 @@ type Operator struct {
 }
 
 func DefaultOperatorActions() []string {
-	return []string{OperatorActionReturnRetiredParks, OperatorActionClearClosedDependencies, OperatorActionRestoreStuckMerging}
+	return []string{OperatorActionClearClosedDependencies, OperatorActionRestoreStuckMerging}
 }
 
 func OperatorActionKinds() []string {
-	return []string{OperatorActionReturnRetiredParks, OperatorActionClearClosedDependencies, OperatorActionRestoreStuckMerging, OperatorActionMergeWhenWedged}
+	return []string{OperatorActionClearClosedDependencies, OperatorActionRestoreStuckMerging, OperatorActionMergeWhenWedged}
 }
 
 func (o *Operator) Normalize() {
@@ -1195,23 +1134,16 @@ func (b *BlockedRecovery) Normalize() {
 	}
 	b.SourceStates = normalizeStateList(b.SourceStates)
 	b.TargetState = strings.TrimSpace(b.TargetState)
-	if b.BreakerCooldownSeconds == 0 {
-		b.BreakerCooldownSeconds = 24 * 60 * 60
-	}
 	for index := range b.ReasonCodes {
 		b.ReasonCodes[index] = normalizeBlockedRecoveryReasonCode(b.ReasonCodes[index])
 	}
 }
 
 func (b BlockedRecovery) Validate(prefix string) []string {
-	breakerCooldownSeconds := b.BreakerCooldownSeconds
 	b.ReasonCodes = slices.Clone(b.ReasonCodes)
 	b.Normalize()
 
 	var problems []string
-	if breakerCooldownSeconds < 0 {
-		problems = append(problems, prefix+".breaker_cooldown_seconds must be greater than or equal to 0")
-	}
 	validateStateList(prefix+".source_states", b.SourceStates, &problems)
 	if b.Enabled {
 		if len(b.SourceStates) == 0 {
@@ -1409,7 +1341,6 @@ func decodeWorkflowConfig(root *yaml.Node) (Config, error) {
 	cfg := Default()
 	if root != nil {
 		normalizeTrackerIDFields(root)
-		gitHubStatusSourceSet := trackerFieldSet(root, "github_status_source")
 		knowledgeConfigured := nestedFieldSet(root, "agent", "knowledge")
 		mergeMethodConfigured := nestedFieldSet(root, "deliverable", "merge_method")
 		perDayMaxUSDConfigured := nestedFieldSet(root, "budget", "per_day_max_usd")
@@ -1417,7 +1348,6 @@ func decodeWorkflowConfig(root *yaml.Node) (Config, error) {
 		if err := root.Decode(&cfg); err != nil {
 			return Config{}, fmt.Errorf("decode YAML frontmatter: %w", err)
 		}
-		cfg.Tracker.gitHubStatusSourceSet = gitHubStatusSourceSet
 		cfg.Agent.Knowledge.Configured = knowledgeConfigured
 		cfg.Deliverable.mergeMethodConfigured = mergeMethodConfigured
 		cfg.Budget.perDayMaxUSDConfigured = perDayMaxUSDConfigured
@@ -1509,9 +1439,7 @@ func Default() Config {
 	budget := defaultBudget()
 
 	return Config{
-		Recovery: Recovery{TerminalAttemptRetryLimit: new(3)},
 		Tracker: Tracker{
-			Endpoint:                    defaultLinearEndpoint,
 			HTTPMaxIdleConns:            100,
 			HTTPMaxIdleConnsPerHost:     32,
 			HTTPIdleConnTimeoutMS:       90000,
@@ -1534,10 +1462,9 @@ func Default() Config {
 				Readiness:    DependencyReadinessTerminalOrMerged,
 			},
 			BlockedRecovery: BlockedRecovery{
-				SourceStates:           []string{"Blocked"},
-				TargetState:            "Rework",
-				ReasonCodes:            []string{"merge_conflict", "stale_base", "missing_current_head_ci"},
-				BreakerCooldownSeconds: 24 * 60 * 60,
+				SourceStates: []string{"Blocked"},
+				TargetState:  "Rework",
+				ReasonCodes:  []string{"merge_conflict", "stale_base", "missing_current_head_ci"},
 			},
 			BlockerAutoPromote: BlockerAutoPromote{
 				BlockerStates: []string{"Backlog", "Blocked", "Human Review"},
@@ -1576,16 +1503,10 @@ func Default() Config {
 			RateWindowPacing:            DefaultRateWindowPacing(),
 			MaxTurns:                    20,
 			MaxSessionDurationMS:        DefaultMaxSessionDurationMS,
-			NoProgressTimeoutMS:         DefaultNoProgressTimeoutMS,
 			MergeWorkerStartupTimeoutMS: DefaultMergeWorkerStartupTimeoutMS,
 			MergeWorkerMaxDurationMS:    DefaultMergeWorkerMaxDurationMS,
 			MaxRetryBackoffMS:           300000,
 			OverloadRetryDelayMS:        DefaultOverloadRetryDelayMS,
-			NoProgressTokenLimit:        DefaultNoProgressTokenLimit,
-			NoProgressSpendLimitUSD:     DefaultNoProgressSpendLimitUSD,
-			LifetimeSessionLimit:        DefaultLifetimeSessionLimit,
-			LifetimeTokenLimit:          DefaultLifetimeTokenLimit,
-			LifetimeLimitOverrideLabel:  DefaultLifetimeLimitOverrideLabel,
 			StopRun:                     StopRun{TargetState: "Blocked"},
 			MergeFastPath: MergeFastPath{
 				Enabled:            true,
@@ -1631,7 +1552,7 @@ func Default() Config {
 			}),
 			ThreadSandbox:  "workspace-write",
 			TurnTimeoutMS:  3600000,
-			ReadTimeoutMS:  5000,
+			ReadTimeoutMS:  60000,
 			StallTimeoutMS: 300000,
 		},
 		Gate: gate.DefaultConfig(),
@@ -1647,7 +1568,6 @@ func Default() Config {
 			RenderIntervalMS:               16,
 			StrandedActiveThresholdSeconds: DefaultStrandedActiveThresholdSeconds,
 			DispatchStallThresholdSeconds:  DefaultDispatchStallThresholdSeconds,
-			ParkReviewThreshold:            DefaultParkReviewThreshold,
 			Efficiency: EfficiencyObservability{
 				AnomalyTokensMultiple:   3,
 				AnomalySessionsMultiple: 3,
@@ -1696,7 +1616,6 @@ func Default() Config {
 			AutoAdmitMinConfidence: DefaultBacklogAdmissionAutoAdmitMinConfidence,
 		},
 		Hooks: Hooks{
-			Shell:     commandshell.Default(),
 			TimeoutMS: 60000,
 		},
 	}
@@ -1728,7 +1647,6 @@ func (c *Config) Validate() error {
 	c.validateTracker(&problems)
 	problems = append(problems, c.Dependencies.Validate("dependencies")...)
 	problems = append(problems, c.Operator.Validate("operator")...)
-	validateNonNegative("recovery.terminal_attempt_retry_limit", c.Recovery.EffectiveTerminalAttemptRetryLimit(), &problems)
 	validatePollingInterval(c.Polling.IntervalMS, &problems)
 	validatePositive("polling.refresh_failure_threshold", c.Polling.RefreshFailureThreshold, &problems)
 	c.Workspace.validate(&problems)
@@ -1775,8 +1693,12 @@ func (c *Config) Validate() error {
 	c.Server.validate(&problems)
 	c.Observability.validate(&problems)
 	c.Release.validate("release", &problems)
-	if c.Release.Enabled && c.Tracker.Kind != TrackerGitHub && c.Tracker.Kind != TrackerGitHubLocal {
-		problems = append(problems, "release.enabled requires tracker.kind github or github_local")
+	if c.Release.Enabled && c.Tracker.Kind != TrackerGitHub {
+		if c.Tracker.Kind == TrackerHubNative {
+			problems = append(problems, "warning: "+nativeReleaseWarning)
+		} else {
+			problems = append(problems, "release.enabled requires tracker.kind github")
+		}
 	}
 	if c.Release.Enabled && !validRepositoryName(c.Tracker.Repository) {
 		problems = append(problems, "tracker.repository must be owner/name when release.enabled is true")
@@ -1788,38 +1710,6 @@ func (c *Config) Validate() error {
 	}
 	c.ScheduleOwnership = c.NormalizedScheduleOwnership()
 	problems = append(problems, c.ScheduleOwnership.Validate("schedule_ownership")...)
-	states := make([]string, 0, len(c.configuredWorkflowStates()))
-	for _, state := range c.configuredWorkflowStates() {
-		states = append(states, state)
-	}
-	problems = append(problems, c.Intake.Validate("intake", states)...)
-	if c.Intake.Enabled() && c.Tracker.Kind != TrackerGitHub {
-		problems = append(problems, "intake.sources requires tracker.kind github")
-	}
-	if c.Intake.Enabled() && !validRepositoryName(c.Tracker.Repository) {
-		problems = append(problems, "tracker.repository is required for intake sources")
-	}
-	c.Retro.Normalize()
-	problems = append(problems, c.Retro.Validate("retro", states)...)
-	if c.Retro.Enabled && c.Tracker.Kind != TrackerGitHub && c.Tracker.Kind != TrackerMemory {
-		problems = append(problems, "retro.enabled requires tracker.kind github or memory")
-	}
-	if c.Retro.Enabled && c.Tracker.Kind == TrackerGitHub && !validRepositoryName(c.Tracker.Repository) {
-		problems = append(problems, "tracker.repository is required for retro")
-	}
-	problems = append(problems, ValidateRoutines("routines", c.Routines, states)...)
-	if len(c.Routines) > 0 && c.Tracker.Kind != TrackerGitHub && c.Tracker.Kind != TrackerMemory {
-		problems = append(problems, "routines requires tracker.kind github or memory")
-	}
-	if len(c.Routines) > 0 && c.Tracker.Kind == TrackerGitHub && !validRepositoryName(c.Tracker.Repository) {
-		problems = append(problems, "tracker.repository is required for routines")
-	}
-	c.BacklogAdmission.Normalize()
-	problems = append(problems, c.BacklogAdmission.Validate("backlog_admission", states, c.Tracker)...)
-	if c.SchedulersEnabled() && !c.ScheduleOwnership.Enabled {
-		problems = append(problems, "schedule_ownership.enabled must be true when scheduled work is configured; add a schedule_ownership block with enabled: true and a shared key")
-	}
-
 	if len(problems) > 0 {
 		return ValidationError{Problems: problems}
 	}
@@ -1921,10 +1811,9 @@ func (c *Config) normalize() {
 	c.Identity.Normalize()
 	c.ActiveHours = c.ActiveHours.Normalize()
 	c.Tracker.Kind = strings.ToLower(strings.TrimSpace(c.Tracker.Kind))
-	if (c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal) && c.Tracker.Endpoint == defaultLinearEndpoint {
+	if c.Tracker.Kind == TrackerGitHub && c.Tracker.Endpoint == "" {
 		c.Tracker.Endpoint = defaultGitHubEndpoint
 	}
-	c.Tracker.GitHubStatusSource = normalizeGitHubStatusSource(c.Tracker.GitHubStatusSource)
 	c.Tracker.StatusPageURL = normalizeStatusPageURL(c.Tracker.Kind, c.Tracker.StatusPageURL)
 	c.Tracker.GitHubWebhookSecret = strings.TrimSpace(c.Tracker.GitHubWebhookSecret)
 	c.Tracker.Repository = strings.TrimSpace(c.Tracker.Repository)
@@ -1977,7 +1866,6 @@ func (c *Config) normalize() {
 	}
 	c.Agent.DispatchPriorityByState = normalizeStateList(c.Agent.DispatchPriorityByState)
 	c.Agent.DispatchPriorityByLabel = normalizeLabels(c.Agent.DispatchPriorityByLabel)
-	c.Agent.LifetimeLimitOverrideLabel = normalizeLabel(c.Agent.LifetimeLimitOverrideLabel)
 	c.Agent.MaxSessionTokenOverrideLabel = normalizeLabel(c.Agent.MaxSessionTokenOverrideLabel)
 	c.Agent.MaxSessionTokenOverrideField = strings.TrimSpace(c.Agent.MaxSessionTokenOverrideField)
 	c.Agent.AutoPromote.OptoutLabel = normalizeLabel(c.Agent.AutoPromote.OptoutLabel)
@@ -2026,17 +1914,14 @@ func (c *Config) normalize() {
 	}
 	c.Server.Normalize()
 	c.Observability.Normalize()
-	c.Hooks.Shell = commandshell.Normalize(c.Hooks.Shell)
+	c.Hooks.Shell = strings.TrimSpace(c.Hooks.Shell)
 	c.ScheduleOwnership = c.NormalizedScheduleOwnership()
-	c.Intake.Normalize()
-	c.Retro.Normalize()
-	c.Routines = NormalizeRoutines(c.Routines)
 	c.BacklogAdmission.Normalize()
 }
 
 func (c Config) NormalizedScheduleOwnership() scheduleowner.Config {
 	endpoint := ""
-	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal {
+	if c.Tracker.Kind == TrackerGitHub {
 		endpoint = c.Tracker.Endpoint
 	}
 	repository := c.Tracker.Repository
@@ -2044,18 +1929,6 @@ func (c Config) NormalizedScheduleOwnership() scheduleowner.Config {
 		repository = ""
 	}
 	return c.ScheduleOwnership.Normalized(repository, endpoint)
-}
-
-func (c Config) SchedulersEnabled() bool {
-	if len(c.Routines) > 0 || c.BacklogAdmission.Enabled {
-		return true
-	}
-	for _, source := range c.Intake.Sources {
-		if source.Kind == intake.KindSchedule {
-			return true
-		}
-	}
-	return false
 }
 
 // ForNativeTracker applies a Hub mapping without carrying an implicit GitHub
@@ -2072,20 +1945,9 @@ func (c *Config) validateTracker(problems *[]string) {
 	switch c.Tracker.Kind {
 	case "":
 		*problems = append(*problems, "tracker.kind is required")
-	case TrackerLinear:
-		validateRequired("tracker.api_key", c.Tracker.APIKey, " for linear", problems)
-		validateRequired("tracker.project_slug", c.Tracker.ProjectSlug, " for linear", problems)
-	case TrackerGitHub:
-		c.Tracker.validateGitHubAuth(problems)
-		c.Tracker.validateGitHubStatusSource(problems)
-	case TrackerGitHubLocal:
-		c.Tracker.validateGitHubLocal(problems)
-	case TrackerMemory:
 	case TrackerHubNative:
-	case TrackerLocalSQLite:
-		*problems = append(*problems, c.Tracker.LocalSQLite.Validate("tracker.local_sqlite")...)
 	default:
-		*problems = append(*problems, "tracker.kind must be one of github, github_local, hub_native, linear, memory, local_sqlite")
+		*problems = append(*problems, "tracker.kind must be hub_native; migrate retired trackers to hub_native")
 	}
 
 	if c.Tracker.Lanes != nil {
@@ -2126,10 +1988,8 @@ func normalizeStatusPageURL(kind string, value string) string {
 		return value
 	}
 	switch kind {
-	case TrackerGitHub, TrackerGitHubLocal:
+	case TrackerGitHub:
 		return defaultGitHubStatusPageURL
-	case TrackerLinear:
-		return defaultLinearStatusPageURL
 	default:
 		return ""
 	}
@@ -2201,86 +2061,6 @@ func (l LocalSQLite) Validate(prefix string) []string {
 		return []string{prefix + ".path is required for local_sqlite"}
 	}
 	return nil
-}
-
-func (t *Tracker) validateGitHubStatusSource(problems *[]string) {
-	switch t.GitHubStatusSource {
-	case GitHubStatusSourceProjectV2:
-		validateRequired("tracker.project_slug", t.ProjectSlug, " for github project_v2", problems)
-	case GitHubStatusSourceIssueField:
-		validateRequired("tracker.repository", t.Repository, " for github issue_field", problems)
-		if strings.TrimSpace(t.StatusField) == "" {
-			*problems = append(*problems, "tracker.status_field is required for github issue_field")
-		}
-		if strings.TrimSpace(t.Repository) != "" && !validRepositoryName(t.Repository) {
-			*problems = append(*problems, "tracker.repository must be owner/name")
-		}
-	case GitHubStatusSourceLabel:
-		validateRequired("tracker.repository", t.Repository, " for github label", problems)
-		if strings.TrimSpace(t.Repository) != "" && !validRepositoryName(t.Repository) {
-			*problems = append(*problems, "tracker.repository must be owner/name")
-		}
-		if strings.TrimSpace(t.StatusLabelPrefix) == "" {
-			*problems = append(*problems, "tracker.status_label_prefix is required for github label")
-		}
-	default:
-		*problems = append(*problems, "tracker.github_status_source must be one of project_v2, issue_field, label")
-	}
-}
-
-func (t *Tracker) validateGitHubAuth(problems *[]string) {
-	t.validateGitHubAuthFor("github", problems)
-}
-
-func (t *Tracker) validateGitHubAuthFor(kind string, problems *[]string) {
-	if strings.TrimSpace(t.APIKey) != "" || t.hasGitHubAppCredentials() {
-		return
-	}
-
-	if strings.TrimSpace(t.GitHubAppID) == "" &&
-		strings.TrimSpace(t.GitHubAppInstallationID) == "" &&
-		strings.TrimSpace(t.GitHubAppPrivateKey) == "" &&
-		strings.TrimSpace(t.GitHubAppPrivateKeyPath) == "" {
-		*problems = append(*problems, "tracker.api_key or GitHub App credentials are required for "+kind)
-		return
-	}
-
-	validateRequired("tracker.github_app_id", t.GitHubAppID, " for github app", problems)
-	validateRequired("tracker.github_app_installation_id", t.GitHubAppInstallationID, " for github app", problems)
-	if strings.TrimSpace(t.GitHubAppPrivateKey) == "" && strings.TrimSpace(t.GitHubAppPrivateKeyPath) == "" {
-		*problems = append(*problems, "tracker.github_app_private_key or tracker.github_app_private_key_path is required for github app")
-	}
-}
-
-func (t *Tracker) validateGitHubLocal(problems *[]string) {
-	t.validateGitHubAuthFor(TrackerGitHubLocal, problems)
-	validateRequired("tracker.repository", t.Repository, " for github_local", problems)
-	if strings.TrimSpace(t.Repository) != "" && !validRepositoryName(t.Repository) {
-		*problems = append(*problems, "tracker.repository must be owner/name")
-	}
-	*problems = append(*problems, t.LocalSQLite.Validate("tracker.local_sqlite")...)
-	if t.gitHubStatusSourceSet {
-		*problems = append(*problems, "tracker.github_status_source must be omitted when tracker.kind is github_local; Detent stores workflow status in tracker.local_sqlite")
-	}
-}
-
-func (t *Tracker) hasGitHubAppCredentials() bool {
-	return strings.TrimSpace(t.GitHubAppID) != "" &&
-		strings.TrimSpace(t.GitHubAppInstallationID) != "" &&
-		(strings.TrimSpace(t.GitHubAppPrivateKey) != "" || strings.TrimSpace(t.GitHubAppPrivateKeyPath) != "")
-}
-
-func normalizeGitHubStatusSource(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", GitHubStatusSourceProjectV2, "projectv2", "project":
-		return GitHubStatusSourceProjectV2
-	case GitHubStatusSourceIssueField, "issuefield", "issues":
-		return GitHubStatusSourceIssueField
-	case GitHubStatusSourceLabel, "labels", "issue_label", "issue_labels":
-		return GitHubStatusSourceLabel
-	default:
-		return strings.ToLower(strings.TrimSpace(value))
-	}
 }
 
 func validRepositoryName(value string) bool {
@@ -2415,9 +2195,6 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	if a.MaxSessionDurationMS < 0 {
 		*problems = append(*problems, prefix+".max_session_duration_ms must be greater than or equal to 0")
 	}
-	if a.NoProgressTimeoutMS < 0 {
-		*problems = append(*problems, prefix+".no_progress_timeout_ms must be greater than or equal to 0")
-	}
 	if a.CheckpointIntervalMS < 0 {
 		*problems = append(*problems, prefix+".checkpoint_interval_ms must be greater than or equal to 0")
 	}
@@ -2430,18 +2207,6 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	}
 	if a.MaxSessionContextMultiplier < 0 {
 		*problems = append(*problems, prefix+".max_session_context_multiplier must be greater than or equal to 0")
-	}
-	if a.NoProgressTokenLimit < 0 {
-		*problems = append(*problems, prefix+".no_progress_token_limit must be greater than or equal to 0")
-	}
-	if a.NoProgressSpendLimitUSD < 0 {
-		*problems = append(*problems, prefix+".no_progress_spend_limit_usd must be greater than or equal to 0")
-	}
-	if a.LifetimeSessionLimit < 0 {
-		*problems = append(*problems, prefix+".lifetime_session_limit must be greater than or equal to 0")
-	}
-	if a.LifetimeTokenLimit < 0 {
-		*problems = append(*problems, prefix+".lifetime_token_limit must be greater than or equal to 0")
 	}
 	validatePositive(prefix+".failure_breaker.same_class_limit", a.FailureBreaker.SameClassLimit, problems)
 	validatePositive(prefix+".failure_breaker.window_seconds", a.FailureBreaker.WindowSeconds, problems)
@@ -2502,6 +2267,14 @@ func (a *Agents) normalize() {
 		if backend.Command == "" && backend.Kind == AgentBackendClaudeCode {
 			backend.Command = defaultClaudeCodeCommand
 		}
+		if backend.Kind == AgentBackendOpenCode {
+			if backend.Protocol == "" {
+				backend.Protocol = "acp"
+			}
+			if backend.Command == "" {
+				backend.Command = "opencode"
+			}
+		}
 		if backend.Kind == AgentBackendPiAgent {
 			if backend.Protocol == "" {
 				backend.Protocol = "rpc"
@@ -2557,14 +2330,18 @@ func (a *Agents) validate(problems *[]string) {
 		switch backend.Kind {
 		case "":
 			*problems = append(*problems, "agents.backends.kind is required")
-		case AgentBackendCodex, AgentBackendClaudeCode, AgentBackendPiAgent:
+		case AgentBackendCodex, AgentBackendClaudeCode, AgentBackendPiAgent, AgentBackendOpenCode:
 		default:
-			*problems = append(*problems, "agents.backends.kind must be one of codex, claude_code, pi_agent")
+			*problems = append(*problems, "agents.backends.kind must be one of codex, claude_code, pi_agent, opencode")
 		}
 		switch backend.Kind {
 		case AgentBackendCodex:
 			if backend.Protocol != defaultCodexProtocol {
 				*problems = append(*problems, "agents.backends.protocol must be app-server for codex")
+			}
+		case AgentBackendOpenCode:
+			if backend.Protocol != "acp" {
+				*problems = append(*problems, "agents.backends.protocol must be acp for opencode")
 			}
 		case AgentBackendPiAgent:
 			if backend.Protocol != "rpc" {
@@ -2615,6 +2392,13 @@ func normalizeAgentRouteRole(role string) string {
 
 func (b AgentBackend) validateOptions(prefix string, problems *[]string) {
 	switch b.Kind {
+	case AgentBackendOpenCode:
+		options, err := b.decodedOpenCodeOptions()
+		if err != nil {
+			*problems = append(*problems, prefix+" must decode for opencode: "+err.Error())
+			return
+		}
+		options.validate(prefix, problems)
 	case AgentBackendPiAgent:
 		options, err := b.decodedPiAgentOptions()
 		if err != nil {
@@ -2976,11 +2760,6 @@ func KnowledgeWithSources(scopes ...Knowledge) Knowledge {
 func (s *Skills) validate(prefix string, problems *[]string) {
 	validateWorkspaceRelativePath(prefix+".path", s.Path, problems)
 	validatePositive(prefix+".max_skills_in_prompt", s.MaxSkillsInPrompt, problems)
-	s.Creation.validate(prefix+".creation", problems)
-}
-
-func (s *SkillCreation) validate(prefix string, problems *[]string) {
-	validatePositive(prefix+".max_drafts_per_run", s.MaxDraftsPerRun, problems)
 }
 
 func (b *Budget) validate(prefix string, problems *[]string) {
@@ -3138,7 +2917,6 @@ func (o *Observability) validate(problems *[]string) {
 	validatePositive("observability.render_interval_ms", o.RenderIntervalMS, problems)
 	validatePositive("observability.stranded_active_threshold_seconds", o.StrandedActiveThresholdSeconds, problems)
 	validatePositive("observability.dispatch_stall_threshold_seconds", o.DispatchStallThresholdSeconds, problems)
-	validatePositive("observability.park_review_threshold", o.ParkReviewThreshold, problems)
 	validatePositiveFloat("observability.efficiency.anomaly_tokens_multiple", o.Efficiency.AnomalyTokensMultiple, problems)
 	validatePositiveFloat("observability.efficiency.anomaly_sessions_multiple", o.Efficiency.AnomalySessionsMultiple, problems)
 	validatePositiveFloat("observability.efficiency.anomaly_dwell_multiple", o.Efficiency.AnomalyDwellMultiple, problems)
@@ -3161,9 +2939,6 @@ func (o *Observability) validate(problems *[]string) {
 func (o *Observability) Normalize() {
 	if o == nil {
 		return
-	}
-	if o.ParkReviewThreshold == 0 {
-		o.ParkReviewThreshold = DefaultParkReviewThreshold
 	}
 	o.OTLP.Endpoint = strings.TrimSpace(o.OTLP.Endpoint)
 	o.OTLP.ServiceName = strings.TrimSpace(o.OTLP.ServiceName)
@@ -3323,14 +3098,6 @@ func normalizeTrackerIDFields(root *yaml.Node) {
 
 	normalizeScalarField(tracker, "github_app_id")
 	normalizeScalarField(tracker, "github_app_installation_id")
-}
-
-func trackerFieldSet(root *yaml.Node, key string) bool {
-	tracker := mappingValue(root, "tracker")
-	if tracker == nil || tracker.Kind != yaml.MappingNode {
-		return false
-	}
-	return mappingValue(tracker, key) != nil
 }
 
 func nestedFieldSet(root *yaml.Node, keys ...string) bool {
@@ -3532,10 +3299,6 @@ func defaultSkills() Skills {
 		Enabled:           true,
 		Path:              ".detent/skills",
 		MaxSkillsInPrompt: skills.DefaultMaxSkillsInPrompt,
-		Creation: SkillCreation{
-			Enabled:         true,
-			MaxDraftsPerRun: 1,
-		},
 	}
 }
 
@@ -4041,7 +3804,7 @@ func (c Config) WithRuntimeGitHubToken(token string) Config {
 	if token == "" {
 		return c
 	}
-	if c.Tracker.Kind == TrackerGitHub || c.Tracker.Kind == TrackerGitHubLocal || c.ScheduleOwnership.Enabled {
+	if c.Tracker.Kind == TrackerGitHub || c.ScheduleOwnership.Enabled || c.Release.Enabled {
 		c.Tracker.APIKey = token
 	}
 	if strings.TrimSpace(c.Worker.GitHubToken) == "" && c.Tracker.Kind != TrackerHubNative {

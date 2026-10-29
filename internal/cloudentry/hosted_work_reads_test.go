@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -111,10 +112,21 @@ func TestHostedHubWorkReads(t *testing.T) {
 		{"repeated filter dimensions", "state=Todo&state=Blocked&label=bug&label=feature&assignee=nobody&assignee=other&priority=1&priority=2&open=true&limit=200&completed_window=48h", nil, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			response := f.request(t, http.MethodGet, f.base+"/work-items?"+test.query, nil)
-			var page tracker.NativeIssuePage
-			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &page) != nil {
-				t.Fatalf("read status = %d: %s", response.Code, response.Body)
+			read := func() (*httptest.ResponseRecorder, tracker.NativeIssuePage) {
+				t.Helper()
+				response := f.request(t, http.MethodGet, f.base+"/work-items?"+test.query, nil)
+				var page tracker.NativeIssuePage
+				if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &page) != nil {
+					t.Fatalf("read status = %d: %s", response.Code, response.Body)
+				}
+				return response, page
+			}
+			response, page := read()
+			if test.work {
+				deadline := time.Now().Add(5 * time.Second)
+				for (page.Work == nil || page.Work.Completed != 1) && time.Now().Before(deadline) {
+					response, page = read()
+				}
 			}
 			if page.Total != len(test.states) {
 				t.Fatalf("total = %d, want %d: %s", page.Total, len(test.states), response.Body)

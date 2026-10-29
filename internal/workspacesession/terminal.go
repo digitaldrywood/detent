@@ -6,10 +6,10 @@ import (
 	"strings"
 )
 
-// The terminal channel (decisions section 18.3). One PTY on the runner, held
+// The terminal channel. One PTY on the runner, held
 // open for as long as a person is looking at it.
 //
-// It is the opposite of the exec channel (18.12) in every dimension that
+// It is the opposite of the exec channel in every dimension that
 // matters to a gate: it is interactive, it is a shell rather than a command the
 // project wrote down, it is recorded as an asciicast whose audience is narrower
 // than the issue's, its lifetime is a person's attention span, and it hands the
@@ -17,9 +17,9 @@ import (
 // grant's runners flag, workspaces.terminal.enabled and an isolation choice the
 // organization makes, and why every open allocates a stream of its own: a
 // terminal stream is never shared between connections, so a second tab that
-// wants the same shell opens its own and gets its own PTY (18.2).
+// wants the same shell opens its own and gets its own PTY.
 //
-// What a terminal is worth as a boundary is written down in section 18.3 in so
+// What a terminal is worth as a boundary is written down in the terminal contract in so
 // many words, and it is repeated here rather than softened: stripping
 // environment variables does not confine a shell. At `user` isolation the
 // process can read the runner's provider login files, its credential store,
@@ -89,7 +89,7 @@ const (
 // TerminalOpen is the body of an open frame.
 //
 // Cwd is relative to the worktree and optional; the shell is the runner's
-// choice, which is section 18.3's own wording, so a client does not name one.
+// choice, which is the terminal contract's own wording, so a client does not name one.
 // A client that could choose the shell could choose an interpreter the project
 // never configured, and the project's configured shell is the one its actions
 // and its hooks already run through.
@@ -207,5 +207,5 @@ func ValidateTerminalInput(request TerminalInput) error {
 	return nil
 }
 
-// EncodingBase64 is the one encoding a relay payload may name (section 18.2).
+// EncodingBase64 is the one encoding a relay payload may name.
 const EncodingBase64 = "base64"

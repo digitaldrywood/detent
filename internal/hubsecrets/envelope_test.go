@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -118,14 +119,31 @@ func TestEnvelope(t *testing.T) {
 	}
 }
 
-func TestEnvironmentKeys(t *testing.T) {
+func TestEnvironmentKeyring(t *testing.T) {
 	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("s"), 32))
+	other := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("t"), 32))
 	for _, test := range []struct {
 		name, raw, version string
 		valid              bool
 	}{
 		{name: "disabled", valid: true},
 		{name: "valid", raw: `{"1":"` + key + `"}`, version: "1", valid: true},
+		{name: "multiple distinct keys", raw: `{"2":"` + other + `","1":"` + key + `"}`, version: "2", valid: true},
+		{name: "duplicate version", raw: `{"1":"` + key + `","1":"` + other + `"}`, version: "1"},
+		{name: "escaped duplicate version", raw: `{"1":"` + key + `","\u0031":"` + other + `"}`, version: "1"},
+		{name: "duplicate material", raw: `{"1":"` + key + `","2":"` + key + `"}`, version: "2"},
+		{name: "duplicate decoded material", raw: `{"1":"` + key + `","2":"` + key + `\n"}`, version: "2"},
+		{name: "noncanonical alias", raw: `{"1":"` + key + `","01":"` + other + `"}`, version: "1"},
+		{name: "trailing object", raw: `{"1":"` + key + `"}{}`, version: "1"},
+		{name: "trailing garbage", raw: `{"1":"` + key + `"}SECRET-SENTINEL`, version: "1"},
+		{name: "trailing whitespace", raw: `{"1":"` + key + `"} `, version: "1", valid: true},
+		{name: "array", raw: `["` + key + `"]`, version: "1"},
+		{name: "null", raw: `null`, version: "1"},
+		{name: "string", raw: `"` + key + `"`, version: "1"},
+		{name: "number", raw: `1`, version: "1"},
+		{name: "object value", raw: `{"1":{"key":"` + key + `"}}`, version: "1"},
+		{name: "unclosed object", raw: `{"1":"` + key + `"`, version: "1"},
+
 		{name: "short key", raw: `{"1":"c2VjcmV0"}`, version: "1"},
 		{name: "bad base64", raw: `{"1":"SECRET-SENTINEL"}`, version: "1"},
 		{name: "invalid json", raw: "SECRET-SENTINEL", version: "1"},
@@ -144,8 +162,17 @@ func TestEnvironmentKeys(t *testing.T) {
 			if (err == nil) != test.valid {
 				t.Fatalf("valid=%t error=%v", test.valid, err)
 			}
-			if err != nil && (strings.Contains(err.Error(), "SECRET-SENTINEL") || strings.Contains(err.Error(), key)) {
+			if err != nil && (strings.Contains(err.Error(), "SECRET-SENTINEL") || strings.Contains(err.Error(), key) || strings.Contains(err.Error(), other)) {
 				t.Fatal("error leaked keys")
+			}
+			if keys != nil && keys.Version() != 0 {
+				want := []int{1}
+				if test.name == "multiple distinct keys" {
+					want = []int{1, 2}
+				}
+				if !slices.Equal(keys.Versions(), want) {
+					t.Fatalf("versions=%v want=%v", keys.Versions(), want)
+				}
 			}
 			if keys != nil && strings.Contains(fmt.Sprint(keys), key) {
 				t.Fatal("keyring exposed keys")

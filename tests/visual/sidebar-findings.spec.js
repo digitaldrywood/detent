@@ -1,6 +1,7 @@
 const { test, expect } = require("@playwright/test");
 const path = require("node:path");
 const { startHostedHub, STARTUP_TIMEOUT_MS } = require("./hosted-hub");
+const { dispatchHumanActionAnswered } = require("./project-stream");
 
 let hub;
 test.beforeAll(async () => {
@@ -18,6 +19,21 @@ async function installFindings(page) {
     { id: "hf_project", class: "flow", summary: "Flow attention", next_action: "Check flow", subject: { kind: "project", id: hub.fixture.project_id }, opened_at: at("09"), resolved_at: null, severity: "attention" },
     { id: "hf_watch", class: "flow", summary: "Flow attention", next_action: "Check flow", subject: { kind: "project", id: hub.fixture.project_id }, opened_at: at("08"), resolved_at: null, severity: "watch" },
   ];
+  let pending = true;
+  const actionIssue = { ...require("../../web/conversation/src/contracts/fixtures/work-item.json"), project_id: hub.fixture.project_id, work_item_id: hub.fixture.work_item, number: 2, title: "Choose the product behavior", state: "Blocked" };
+  await page.route(/\/projects\/[^/?]+$/, async (route) => {
+    const response = await route.fetch();
+    const project = await response.json();
+    await route.fulfill({ json: { ...project, states: [...project.states.filter((lane) => lane.name !== "Blocked"), { name: "Blocked", terminal: false, dispatchable: false, transitions: ["Todo"] }] } });
+  });
+  await page.route(/\/work-items(?:\?.*)?$/, (route) => route.fulfill({ json: { items: route.request().url().includes(`/projects/${hub.fixture.project_id}/`) ? [{ ...actionIssue, last_activity_at: pending ? at("08") : at("12") }] : [] } }));
+  await page.route("**/work-items/*/explanation", (route) => route.fulfill({ json: {
+    observed_at: at("12"), current_lane: { name: "Blocked", freshness: "available" },
+    eligibility: { state: "refused", source_state: "available" },
+    required_gate: { state: "unavailable", source_state: "unavailable" },
+    latest_transition: { at: at("08") }, reasons: [], sources: [],
+    native_runtime: { capacity: [], unavailable: [], attempt: { updated_at: at("08"), disposition: { status: "blocked", human_action: pending } } },
+  } }));
   const errors = [];
   page.on("pageerror", (error) => errors.push(String(error)));
   await page.route(/\/conversations(?:\?.*)?$/, async (route) => {
@@ -46,10 +62,14 @@ async function installFindings(page) {
   await page.goto(hub.fixture.accounts.owner);
   await page.goto(hub.fixture.chat);
   if (page.viewportSize().width < 768) await page.getByRole("button", { name: "Toggle main sidebar", exact: true }).click();
-  const sidebar = page.locator("aside.dc-side");
+  const sidebar = page.getByRole("complementary", { name: "Conversations" });
   await expect(sidebar.getByTestId("diagnostics-findings-count")).toHaveText("3");
   return {
     sidebar, errors,
+    answer: async () => {
+      pending = false;
+      await page.evaluate(dispatchHumanActionAnswered, hub.fixture.work_item);
+    },
     resolve: async (ids) => {
       findings = findings.filter((finding) => !ids.includes(finding.id));
       await page.evaluate((tick) => {
@@ -64,25 +84,21 @@ for (const theme of ["light", "dark"]) {
     test(`attention findings ${theme} ${width}`, async ({ page }) => {
       await page.setViewportSize({ width, height: 1100 });
       await page.emulateMedia({ colorScheme: theme });
-      const { sidebar, resolve, errors } = await installFindings(page);
+      const { sidebar, resolve, answer, errors } = await installFindings(page);
       await page.evaluate((value) => {
         document.documentElement.classList.toggle("dark", value === "dark");
         document.documentElement.dataset.theme = value;
       }, theme);
       const group = sidebar.getByTestId("sidebar-needs-you");
-      await expect(group.locator('[data-testid^="finding-"]')).toHaveCount(3);
-      await expect(group.locator('[data-testid^="attention-issue-"]')).toHaveCount(1);
-      expect(await group.locator('[data-testid^="attention-issue-"], [data-testid^="finding-"]').evaluateAll((rows) => rows[0].dataset.testid.startsWith("attention-issue-"))).toBe(true);
-      const colors = await group.locator('[data-testid^="finding-"] svg').evaluateAll((icons) => icons.map((icon) => getComputedStyle(icon).color));
-      expect(colors[0]).toBe(colors[2]);
-      expect(colors[0]).not.toBe(colors[1]);
-      expect(await group.locator('[data-testid^="finding-"]').evaluateAll((rows) => rows.map((row) => row.dataset.testid))).toEqual(["finding-hf_project", "finding-hf_runner", "finding-hf_item"]);
-      await expect(sidebar.getByTestId("finding-hf_runner")).toContainText("Mac Studio");
-      await expect(sidebar.getByTestId("finding-hf_item")).toContainText(/#\d+ /);
-      await expect(group.locator("time")).toHaveText(["3h", "2h", "1h"]);
-      await expect(sidebar.getByTestId("finding-hf_watch")).toHaveCount(0);
+      const action = group.getByRole("button", { name: /#2 Choose the product behavior/ });
+      await expect(action).toBeVisible();
+      await expect(group.getByRole("button", { name: /Studio|Flow attention|Human attention/ })).toHaveCount(0);
+      await expect(group.getByText("4h", { exact: true })).toBeVisible();
       expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
       await sidebar.screenshot({ path: path.join(process.env.TMPDIR || process.env.TMP || process.env.TEMP, `sidebar-findings-${theme}-${width}.png`) });
+      await answer();
+      await expect(group).toHaveCount(0);
+      await expect(sidebar.getByTestId("diagnostics-findings-count")).toHaveText("3");
       await resolve(["hf_runner"]);
       await expect(sidebar.getByTestId("finding-hf_runner")).toHaveCount(0);
       await expect(sidebar.getByTestId("diagnostics-findings-count")).toHaveText("2");
@@ -94,14 +110,11 @@ for (const theme of ["light", "dark"]) {
   }
 }
 
-test("findings open issue Diagnostics, Fleet, and the Diagnostics page", async ({ page }) => {
+test("human actions open their issue and diagnostics remain accessible", async ({ page }) => {
   const { sidebar } = await installFindings(page);
-  await sidebar.getByTestId("finding-hf_item").click();
-  await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/2\?tab=diagnostics$/);
-  await expect(page.getByRole("tab", { name: "Diagnostics", exact: true })).toHaveAttribute("aria-selected", "true");
-  await sidebar.getByTestId("finding-hf_project").click();
+  await sidebar.getByRole("button", { name: /#2 Choose the product behavior/ }).click();
+  await expect(page).toHaveURL(/\/local-organization\/browser-collaboration\/issues\/2$/);
+  await sidebar.getByRole("button", { name: /Diagnostics/ }).click();
   await expect(page).toHaveURL(/\/diagnostics$/);
   await expect(page.getByRole("heading", { level: 1, name: "Diagnostics", exact: true })).toBeVisible();
-  await sidebar.getByTestId("finding-hf_runner").click();
-  await expect(page).toHaveURL(/\/settings\/runners$/);
 });

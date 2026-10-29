@@ -6,18 +6,25 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/policy"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -25,6 +32,375 @@ type executionTransport struct {
 	next http.RoundTripper
 	drop atomic.Bool
 	down atomic.Bool
+}
+
+func TestControllerRetirementWaitsForOldMachineReport(t *testing.T) {
+	t.Parallel()
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	var workers sync.WaitGroup
+	defer func() { releaseOnce.Do(func() { close(release) }); workers.Wait() }()
+	var reports atomic.Int64
+	client, err := New(Config{URL: "https://hub.example.test", TokenSource: func() string { return "fixture-token" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		if reports.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"id":"fixture-machine","hostname":"fixture-host","capacity":1,"version":"1.0.0"}`)), Request: request}, nil
+	})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := NewScheduler(client, SchedulerConfig{Machine: Machine{ID: "fixture-machine", Hostname: "fixture-host", Capacity: 1, Version: "1.0.0"}, HeartbeatInterval: time.Second, LeaseTTL: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reported := make(chan error, 1)
+	workers.Go(func() { reported <- source.ensureMachine(t.Context()) })
+	<-entered
+	paused := make(chan func(), 1)
+	workers.Go(func() { paused <- source.PauseController() })
+	testenv.WaitUntil(t, t.Context(), func() error {
+		select {
+		case <-paused:
+			t.Fatal("controller retired before its old machine report completed")
+		default:
+		}
+		if source.controlMu.TryRLock() {
+			source.controlMu.RUnlock()
+			return errors.New("controller retirement has not reached the in-flight report")
+		}
+		return nil
+	})
+	releaseOnce.Do(func() { close(release) })
+	if err := <-reported; err != nil {
+		t.Fatal(err)
+	}
+	resume := <-paused
+	source.lastHeartbeat = time.Time{}
+	if err := source.ensureMachine(t.Context()); err != nil || reports.Load() != 1 {
+		t.Fatalf("retired controller published an old build: reports=%d err=%v", reports.Load(), err)
+	}
+	resume()
+	if err := source.ensureMachine(t.Context()); err != nil || reports.Load() != 2 {
+		t.Fatalf("failed adoption did not restore machine reporting: reports=%d err=%v", reports.Load(), err)
+	}
+}
+
+func TestRetiredControllerRenewsClaimsWithoutReportingOldBuild(t *testing.T) {
+	t.Parallel()
+	h := newNativeChangeHub(t, true)
+	issue := h.createInProgress(t, "Finish the active attempt")
+	h.claim(t, issue.ID)
+	source := h.scheduler.nativeProject("local")
+	if source == nil || source.client == nil {
+		t.Fatal("missing native project source")
+	}
+	transport := h.native.client.httpClient.Transport
+	var reports atomic.Int64
+	h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPost && (strings.Contains(request.URL.Path, "/machines/") || strings.HasSuffix(request.URL.Path, "/machines")) {
+			reports.Add(1)
+		}
+		return transport.RoundTrip(request)
+	})
+	t.Cleanup(func() { h.native.client.httpClient.Transport = transport })
+	resume := h.scheduler.PauseController()
+	for _, resumed := range []bool{false, true} {
+		if resumed {
+			resume()
+		}
+		h.scheduler.mu.Lock()
+		h.scheduler.nativeHeartbeats[source.client.project] = time.Time{}
+		h.scheduler.mu.Unlock()
+		before := reports.Load()
+		if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); err != nil {
+			t.Fatalf("renew active lease while resumed=%t: %v", resumed, err)
+		}
+		if sent := reports.Load() > before; sent != resumed {
+			t.Fatalf("controller machine reports after renewal: sent=%t resumed=%t", sent, resumed)
+		}
+	}
+	resume = h.scheduler.PauseController()
+	defer resume()
+	claim := h.scheduler.nativeClaims[issue.ID]
+	if err := source.client.Release(t.Context(), claim.lease, "cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now()); !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+		t.Fatalf("retirement bypassed authoritative lease loss: %v", err)
+	}
+}
+
+func TestNativeClaimLossReleasesStoppedWorker(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		cleanupFailure bool
+		controller     bool
+		prepared       bool
+		retained       bool
+		terminal       bool
+		expired        bool
+		unavailable    bool
+		superseded     bool
+		releaseOutage  bool
+		conflict       bool
+		unreleased     bool
+		preProvider    bool
+	}{
+		{name: "worker stopped"},
+		{name: "cleanup failure", cleanupFailure: true},
+		{name: "release outage retains cleanup ownership", releaseOutage: true},
+		{name: "controller outlives worker", controller: true},
+		{name: "superseded lease preserves its successor", controller: true, superseded: true},
+		{name: "prepared completion without publisher", controller: true, prepared: true},
+		{name: "prepared completion settles after claim loss", controller: true, prepared: true, retained: true},
+		{name: "released completion reconciles a conflicting pending event", controller: true, prepared: true, retained: true, conflict: true},
+		{name: "released setup reconciles a conflicting pending event", controller: true, prepared: true, retained: true, conflict: true, preProvider: true},
+		{name: "conflicting pending event preserves an unreleased lease", controller: true, prepared: true, retained: true, conflict: true, unreleased: true},
+		{name: "terminal item with unavailable settlement", controller: true, prepared: true, retained: true, terminal: true, unavailable: true},
+		{name: "expired lease with unavailable settlement", controller: true, prepared: true, retained: true, expired: true, unavailable: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Claim cleanup")
+			h.claim(t, issue.ID)
+			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			if test.preProvider {
+				at := time.Now().UTC()
+				if err := e.ObserveRuntime(t.Context(), tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 2, Phase: "completed", HeartbeatAt: at}); err != nil {
+					t.Fatal(err)
+				}
+				if err := e.PrepareFinish(t.Context(), "failed", "", &tracker.NativeTerminalFailure{Error: "setup failure", ErrorClass: "workspace_hook", ObservedAt: at}); err != nil {
+					t.Fatal(err)
+				}
+				transport := &executionTransport{next: h.native.client.httpClient.Transport}
+				h.native.client.httpClient.Transport = transport
+				t.Cleanup(func() { h.native.client.httpClient.Transport = transport.next })
+				transport.drop.Store(true)
+				if err := e.Finish(t.Context(), "failed"); err == nil || e.pending == nil {
+					t.Fatal("setup failure did not retain its lost acknowledgment")
+				}
+				e.pending.Data.Runtime.Pipeline = []gate.PipelineTiming{(gate.CommandResult{Command: "go test ./internal/example", StartedAt: at, FinishedAt: at.Add(time.Second)}).PipelineTiming("finalization")}
+			} else if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			closed := false
+			var stop func()
+			if test.controller {
+				_, release, err := e.Guard(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				stop = release
+				defer func() {
+					if stop != nil {
+						stop()
+					}
+				}()
+			}
+			if test.prepared {
+				e.preparedOutcome = "failed"
+				if test.retained {
+					e.RetainCompletion()
+				}
+				if !test.unreleased {
+					if err := h.native.Release(t.Context(), e.claim.lease, "cancelled"); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			var successor tracker.NativeLease
+			if test.superseded {
+				if err := h.native.release(t.Context(), e.claim.lease, "cancelled", true); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				successor, err = h.native.Claim(t.Context(), tracker.NativeClaim{PolicyID: h.descriptor.ID, WorkItemID: tracker.NativeWorkItemID(issue.ID), MachineID: h.scheduler.machine.ID, SessionID: "successor-session", TTLSeconds: 90, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration", tracker.NativeExecutionCapability}})
+				if err != nil || successor.FencingToken <= e.claim.lease.FencingToken {
+					t.Fatalf("claiming successor: lease=%+v error=%v", successor, err)
+				}
+			}
+			fail := test.cleanupFailure
+			if err := e.KeepWorker(func(context.Context) error {
+				if fail {
+					return errors.New("worker still alive")
+				}
+				closed = true
+				return nil
+			}, nil); err != nil {
+				t.Fatal(err)
+			}
+			if test.terminal {
+				item, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				item, err = h.admin.Transition(t.Context(), item.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: item.Revision, State: "Done", Reason: "user_requested"})
+				if err != nil || !item.Terminal {
+					t.Fatalf("terminal transition = %+v, %v", item, err)
+				}
+			}
+			if !test.expired {
+				var err error
+				if test.terminal {
+					_, err = h.scheduler.RenewClaim(t.Context(), issue.ID, time.Now())
+				} else {
+					err = h.scheduler.nativeClaimError(t.Context(), issue.ID, e.claim.lease.FencingToken, orchestrator.ErrSchedulingClaimLost)
+				}
+				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) || !e.hasWorkers() || len(h.scheduler.nativeClaims) != 1 {
+					t.Fatalf("live worker lost ownership: %v", err)
+				}
+			}
+			if test.cleanupFailure {
+				if err := e.CloseWorkers(t.Context()); err == nil || !e.hasWorkers() || len(h.scheduler.nativeClaims) != 1 {
+					t.Fatalf("unconfirmed cleanup dropped ownership: %v", err)
+				}
+				fail = false
+			}
+			transport := h.native.client.httpClient.Transport
+			if test.releaseOutage {
+				h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if strings.HasSuffix(request.URL.Path, "/release") {
+						return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"unavailable"}`)), Request: request}, nil
+					}
+					return transport.RoundTrip(request)
+				})
+				t.Cleanup(func() { h.native.client.httpClient.Transport = transport })
+			}
+			if err := e.CloseWorkers(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if test.releaseOutage {
+				if claim, ok := h.scheduler.nativeClaims[issue.ID]; !ok || !claim.lost || claim.lease.ID != e.claim.lease.ID || e.hasWorkers() {
+					t.Fatal("unconfirmed Hub release discarded cleanup ownership")
+				}
+				h.native.client.httpClient.Transport = transport
+				h.scheduler.ForgetClaim(issue.ID)
+			}
+			if stop != nil {
+				if len(h.scheduler.nativeClaims) != 1 {
+					t.Fatal("live controller lost ownership before it stopped")
+				}
+				stop()
+				stop = nil
+			}
+			if test.retained {
+				if len(h.scheduler.nativeClaims) != 1 {
+					t.Fatal("claim loss discarded the prepared completion publisher")
+				}
+				if test.conflict && !test.preProvider {
+					data := e.data
+					data.Sequence++
+					e.pending = &tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: "run.observed", SchemaVersion: 1, Data: data}
+					original := h.native.client.httpClient.Transport
+					h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+						if strings.HasSuffix(request.URL.Path, "/events") {
+							raw, err := io.ReadAll(request.Body)
+							if err != nil {
+								return nil, err
+							}
+							request.Body = io.NopCloser(strings.NewReader(string(raw)))
+							var event tracker.NativeRunEvent
+							if err := json.Unmarshal(raw, &event); err != nil {
+								return nil, err
+							}
+							if event.Type == "run.observed" {
+								return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"idempotency_conflict","message":"different content"}`)), Request: request}, nil
+							}
+						}
+						return original.RoundTrip(request)
+					})
+					t.Cleanup(func() { h.native.client.httpClient.Transport = original })
+					if test.unreleased {
+						closed = false
+						if err := e.KeepWorker(func(context.Context) error { closed = true; return nil }, nil); err != nil {
+							t.Fatal(err)
+						}
+						t.Cleanup(func() {
+							ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), time.Second)
+							defer cancel()
+							if err := e.CloseWorkers(ctx); err != nil {
+								t.Error(err)
+							}
+						})
+						if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); hubErrorCode(err) != "idempotency_conflict" {
+							t.Fatalf("unresolved publication = %v", err)
+						}
+						if _, err := h.native.ValidateLease(t.Context(), e.claim.lease); err != nil || len(h.scheduler.nativeClaims) != 1 || e.pending == nil {
+							t.Fatalf("conflict discarded current authority: %v", err)
+						}
+						if closed || !e.hasWorkers() {
+							t.Fatal("unreleased completion closed its source publisher")
+						}
+						return
+					}
+				}
+				if test.unavailable {
+					transport := &executionTransport{next: h.native.client.httpClient.Transport}
+					h.native.client.httpClient.Transport = transport
+					t.Cleanup(func() { h.native.client.httpClient.Transport = transport.next })
+					transport.down.Store(true)
+					if test.expired {
+						claim := h.scheduler.nativeClaims[issue.ID]
+						before := claim.deadline.Add(h.scheduler.leaseTTL - time.Nanosecond)
+						h.scheduler.now = func() time.Time { return before }
+						if len(h.scheduler.projectDiagnosticClaims(e.claim.source)) != 1 {
+							t.Fatal("claim diagnostics expired before the TTL boundary")
+						}
+						after := claim.deadline.Add(h.scheduler.leaseTTL + time.Nanosecond)
+						h.scheduler.now = func() time.Time { return after }
+						if h.scheduler.nativeClaims[issue.ID].lost {
+							t.Fatal("expiry fixture already reported claim loss")
+						}
+					}
+					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); !nativeTransportUnavailable(err) {
+						t.Fatalf("unavailable settlement = %v", err)
+					}
+					if claim, ok := h.scheduler.nativeClaims[issue.ID]; !ok || claim.execution != e || !e.completionOwner.Load() || e.hasWorkers() {
+						t.Fatal("unavailable settlement lost its stopped completion publisher")
+					}
+					if records := h.scheduler.projectDiagnosticClaims(e.claim.source); len(records) != 0 {
+						t.Fatalf("stopped terminal or expired attempt reported as a native claim: %+v", records)
+					}
+					transport.down.Store(false)
+				}
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !closed || e.hasWorkers() || len(h.scheduler.nativeClaims) != 0 || len(h.scheduler.projectDiagnosticClaims(e.claim.source)) != 0 {
+				t.Fatal("stopped worker retained its lost claim")
+			}
+			evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+			if err != nil || evidence.Attempt == nil {
+				t.Fatalf("reading stopped attempt: %v", err)
+			}
+			wantStatus := "cancelled"
+			if test.prepared && !test.retained {
+				wantStatus = "interrupted"
+			}
+			if test.preProvider {
+				wantStatus = "failed"
+				if evidence.Attempt.Identity != nil || evidence.Attempt.TerminalFailure == nil || evidence.Attempt.TerminalFailure.ErrorClass != "workspace_hook" {
+					t.Fatal("released setup lost its original pre-provider failure")
+				}
+			}
+			if evidence.Attempt.ClaimReleasedAt == nil || evidence.Attempt.Status != wantStatus {
+				t.Fatalf("stopped worker retained its Hub lease: lease=%+v attempt=%+v", evidence.CurrentLease, evidence.Attempt)
+			}
+			if test.superseded {
+				if evidence.CurrentLease == nil || evidence.CurrentLease.ID != successor.ID {
+					t.Fatalf("cleanup released the successor: %+v", evidence.CurrentLease)
+				}
+				if _, err := h.native.ValidateLease(t.Context(), successor); err != nil {
+					t.Fatalf("successor lost execution authority: %v", err)
+				}
+			} else if evidence.CurrentLease != nil {
+				t.Fatalf("stopped worker retained its Hub lease: %+v", evidence.CurrentLease)
+			}
+		})
+	}
 }
 
 func (t *executionTransport) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -59,8 +435,8 @@ func exerciseNativeExecution(t *testing.T, scheduler *Scheduler, native *NativeC
 		t.Fatal("native recovery replayed historical worker discussion")
 	}
 	identity := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}
-	// The stored attempt diff rides every checkpoint and the finish
-	// (decisions section 18.5). The source is installed the way the runner
+	// The stored attempt diff rides every checkpoint and the finish.
+	// The source is installed the way the runner
 	// installs it, once the worktree exists.
 	diffs, ok := execution.(runner.DiffExecution)
 	if !ok {
@@ -91,6 +467,8 @@ func exerciseNativeExecution(t *testing.T, scheduler *Scheduler, native *NativeC
 				if err != nil || execution.(*nativeExecution).pending == nil {
 					t.Fatalf("checkpoint lost pending acknowledgment: %v", err)
 				}
+				at := scheduler.now()
+				execution.(*nativeExecution).RecordPipelineTiming((gate.CommandResult{Command: "go test ./internal/example", StartedAt: at, FinishedAt: at.Add(time.Second)}).PipelineTiming("finalization"))
 			} else if err == nil {
 				t.Fatal("acknowledgment loss was not injected")
 			}
@@ -119,6 +497,9 @@ func exerciseNativeExecution(t *testing.T, scheduler *Scheduler, native *NativeC
 	}
 	if len(recovery.Attempts) != 1 || recovery.Attempts[0].Sequence != 3 || recovery.Attempts[0].Status != "succeeded" || recovery.Attempts[0].Checkpoint.WorktreeState != "dirty" {
 		t.Fatalf("retries duplicated/lost progress: %#v", recovery.Attempts)
+	}
+	if runtime := recovery.Attempts[0].Runtime; runtime == nil || len(runtime.Pipeline) != 1 || runtime.Pipeline[0].Stage != "finalization" {
+		t.Fatal("completion lost timing recorded after the checkpoint acknowledgment was lost")
 	}
 	// One diff per event that references it -- the checkpoint at sequence 2
 	// and the finish at sequence 3 -- and none for run.started. A retried
@@ -170,25 +551,48 @@ func (f executionRoundTrip) RoundTrip(request *http.Request) (*http.Response, er
 }
 
 func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
-	for _, name := range []string{"expire", "renew", "renewal outage", "renew during native finish", "guard during native finish"} {
+	for _, name := range []string{"expire", "renew", "renewal outage", "renew during native finish", "guard during native finish", "budget wait", "budget wait loses lease"} {
 		renew := name == "renew"
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				descriptor := clientTestPolicy()
 				var offline atomic.Bool
+				var budgetWait atomic.Bool
+				var budgetReads, budgetRenewals atomic.Int32
+				var finished tracker.NativeRunEvent
 				transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 					if offline.Load() {
 						return nil, errors.New("renewal disconnected")
 					}
 					body := []byte(`{}`)
 					if strings.HasSuffix(request.URL.Path, "/renew") {
+						if budgetWait.Load() {
+							budgetRenewals.Add(1)
+							if name == "budget wait" {
+								lease := tracker.NativeLease{ID: "lease", FencingToken: 1, PolicyID: descriptor.ID, ServerTime: time.Now(), RenewedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}
+								body, err := json.Marshal(lease)
+								return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: request}, err
+							}
+						}
 						return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"stale_fencing_token"}`)), Request: request}, nil
 					}
 					if strings.HasSuffix(request.URL.Path, "/policy") {
+						if budgetWait.Load() && budgetReads.Add(1) == 1 {
+							return &http.Response{StatusCode: http.StatusTooManyRequests, Header: http.Header{"Retry-After": {"60"}}, Body: io.NopCloser(strings.NewReader(`{"code":"runner_request_budget","message":"Runner request budget exceeded; retry after the current minute"}`)), Request: request}, nil
+						}
 						var err error
 						body, err = json.Marshal(policy.Approval{Policy: descriptor})
 						if err != nil {
 							return nil, err
+						}
+					}
+					if strings.HasPrefix(name, "budget wait") && strings.HasSuffix(request.URL.Path, "/events") {
+						var event tracker.NativeRunEvent
+						if err := json.NewDecoder(request.Body).Decode(&event); err != nil {
+							return nil, err
+						}
+						if event.Type == "run.finished" {
+							finished = event
 						}
 					}
 					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: request}, nil
@@ -219,6 +623,37 @@ func TestNativeGuardDeadlineAndRenewal(t *testing.T) {
 						t.Fatal(err)
 					}
 					defer stop()
+				}
+				if strings.HasPrefix(name, "budget wait") {
+					scheduler.heartbeatInterval = 2 * time.Minute
+					scheduler.nativeHeartbeats[native.project] = time.Now()
+					if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+						t.Fatal(err)
+					}
+					budgetWait.Store(true)
+					start := time.Now()
+					execution.(*nativeExecution).HostOperation("policy.read", start, nil, true)
+					_, err := native.ProjectPolicy(guarded)
+					execution.(*nativeExecution).HostOperation("policy.read", time.Now(), err, false)
+					if budgetRenewals.Load() != 1 {
+						t.Fatalf("budget wait blocked lease renewal: renewals=%d reads=%d elapsed=%s error=%v cause=%v", budgetRenewals.Load(), budgetReads.Load(), time.Since(start), err, context.Cause(guarded))
+					}
+					if name == "budget wait loses lease" {
+						if !errors.Is(err, context.Canceled) || !errors.Is(context.Cause(guarded), runner.ErrExecutionAuthorityUnavailable) || budgetReads.Load() != 1 || time.Since(start) != 55*time.Second {
+							t.Fatalf("wait outlived lease: error=%v cause=%v reads=%d elapsed=%s", err, context.Cause(guarded), budgetReads.Load(), time.Since(start))
+						}
+						return
+					}
+					if err != nil || guarded.Err() != nil || budgetReads.Load() != 2 || time.Since(start) != time.Minute {
+						t.Fatalf("budget retry: error=%v cause=%v reads=%d elapsed=%s", err, context.Cause(guarded), budgetReads.Load(), time.Since(start))
+					}
+					if err := execution.Finish(guarded, "succeeded"); err != nil {
+						t.Fatal(err)
+					}
+					if finished.Data.Outcome != "succeeded" || finished.Data.Sequence != 2 {
+						t.Fatalf("attempt did not complete: %+v", finished)
+					}
+					return
 				}
 				if name == "renew during native finish" || name == "guard during native finish" {
 					claim := scheduler.nativeClaims[id]
@@ -390,6 +825,215 @@ func TestNativeLeaseReceiptDoesNotExtendReplayedClaim(t *testing.T) {
 	}
 }
 
+func TestNativeLeaseRenewalRequiresActiveWork(t *testing.T) {
+	identity, err := procgroup.Inspect(&exec.Cmd{Process: &os.Process{Pid: os.Getpid()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name         string
+		phase        string
+		age          time.Duration
+		terminal     bool
+		landed       bool
+		lane         string
+		dependency   bool
+		pending      bool
+		controller   bool
+		stopped      bool
+		prepared     bool
+		localWorker  bool
+		staleProcess bool
+		recovered    bool
+		wantFailure  bool
+		wantRetained bool
+		wantRenewed  bool
+		wantFinished bool
+	}{
+		{name: "live worker", phase: "implementation", localWorker: true, wantRenewed: true},
+		{name: "fresh reported worker", phase: "implementation", wantRenewed: true},
+		{name: "quiet long running merge worker", phase: "merging", age: 6 * time.Hour, localWorker: true, wantRenewed: true},
+		{name: "local process identity no longer matches", phase: "implementation", localWorker: true, staleProcess: true, wantRetained: true},
+		{name: "controller receives completion handoff", phase: "completed", age: 89 * time.Second, controller: true, wantRenewed: true},
+		{name: "live controller finishes after the runtime heartbeat expires", phase: "completed", age: 20 * time.Minute, controller: true, wantRenewed: true, wantFinished: true},
+		{name: "controller stopped without prepared outcome", phase: "completed", controller: true, stopped: true},
+		{name: "prepared outcome awaiting publication", phase: "completed", age: 2 * time.Minute, controller: true, stopped: true, prepared: true, pending: true, wantRenewed: true},
+		{name: "completed worker retains fresh cleanup", phase: "completed", localWorker: true, staleProcess: true, wantRenewed: true},
+		{name: "completed worker retains long finalization cleanup", phase: "completed", age: 20 * time.Minute, localWorker: true, staleProcess: true, wantRenewed: true, wantFinished: true},
+		{name: "dead completed worker expires", phase: "completed", age: 20 * time.Minute, wantRetained: true, wantFailure: true},
+		{name: "prepared outcome never published", phase: "completed", age: 2 * time.Minute, controller: true, stopped: true, prepared: true, wantRetained: true, wantFailure: true},
+		{name: "worker exited after completion", phase: "completed"},
+		{name: "worker heartbeat stale", phase: "implementation", age: 90 * time.Second},
+		{name: "terminal work item", phase: "implementation", terminal: true},
+		{name: "terminal work item retains running worker cleanup", phase: "implementation", terminal: true, localWorker: true, wantRetained: true},
+		{name: "landing attempt finishes terminal item", phase: "merging", terminal: true, landed: true, wantRenewed: true},
+		{name: "landing receipt does not renew dead worker", phase: "merging", terminal: true, landed: true, age: 90 * time.Second},
+		{name: "landing receipt does not renew mismatched process", phase: "merging", terminal: true, landed: true, localWorker: true, staleProcess: true, wantRetained: true},
+		{name: "recovered landing attempt finishes terminal item", phase: "merging", terminal: true, landed: true, recovered: true, wantRenewed: true},
+		{name: "recovered landing receipt does not renew stale worker", phase: "merging", terminal: true, landed: true, recovered: true, age: 90 * time.Second},
+		{name: "landing receipt preserves operator hold", phase: "merging", lane: "Blocked", landed: true},
+		{name: "recovered completed worker", phase: "completed", recovered: true},
+		{name: "recovered stale worker", phase: "implementation", age: 90 * time.Second, recovered: true},
+		{name: "recovered operator hold", phase: "implementation", lane: "Blocked", recovered: true},
+		{name: "recovered custom hold", phase: "implementation", lane: "Waiting", recovered: true},
+		{name: "recovered unmet dependency", phase: "implementation", dependency: true, recovered: true},
+		{name: "recovered rework", phase: "implementation", lane: "Rework", recovered: true, wantRenewed: true},
+		{name: "live operator hold retains cleanup", phase: "implementation", lane: "Blocked", localWorker: true, wantRetained: true},
+		{name: "host finalization retains ownership", phase: "completed", age: 2 * time.Minute, pending: true, wantRenewed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newNativeChangeHubDependencies(t, "In Review", []tracker.NativeState{
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done", "Blocked", "Waiting", "Rework"}},
+				{Name: "Blocked", Transitions: []string{"In Progress"}},
+				{Name: "Waiting", Transitions: []string{"In Progress"}},
+				{Name: "Rework", Dispatchable: true, Transitions: []string{"In Progress"}},
+				{Name: "Done", Terminal: true},
+			}, true, true)
+			issue := h.createInProgress(t, test.name)
+			h.claim(t, issue.ID)
+			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			now := time.Now().UTC()
+			h.scheduler.now = func() time.Time { return now }
+			if test.wantFailure || test.wantFinished {
+				h.scheduler.now = func() time.Time { return now.Add(-test.age) }
+				if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.scheduler.now = func() time.Time { return now }
+			observation := tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: test.phase, HeartbeatAt: now.Add(-test.age), WorkerLaunch: &tracker.NativeWorkerLaunch{PID: identity.PID, GroupID: identity.GroupID, ProcessStart: identity.StartedAt, PolicyID: h.descriptor.ID, ExecutionVersion: "test", ControlVersion: "test", ExecutionCommit: strings.Repeat("a", 40), ExecutionSHA256: strings.Repeat("b", 64), Protocol: 1, SelectedAt: now}}
+			if test.landed {
+				observation.Landing = &tracker.NativeLandingReceipt{Landed: true, ChangeID: "change_landed", VersionID: "version_landed", HeadSHA: strings.Repeat("a", 40), MergeSHA: strings.Repeat("b", 40)}
+			}
+			if test.staleProcess {
+				observation.WorkerLaunch.ProcessStart = identity.StartedAt.Add(time.Second)
+			}
+			if err := execution.ObserveRuntime(t.Context(), observation); err != nil {
+				t.Fatal(err)
+			}
+			if test.localWorker {
+				if err := execution.KeepWorker(func(context.Context) error { return nil }, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.controller {
+				_, stop, err := execution.Guard(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if test.prepared {
+					if err := execution.PrepareFinish(t.Context(), "failed", "", nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.stopped {
+					stop()
+				} else {
+					t.Cleanup(stop)
+				}
+			}
+			if test.recovered {
+				claim := h.scheduler.nativeClaims[issue.ID]
+				claim.execution = nil
+				claim.recovery.Attempts = []tracker.NativeAttempt{{NativeRunData: tracker.NativeRunData{LeaseID: claim.lease.ID, FencingToken: claim.lease.FencingToken, Runtime: &observation}, Status: "running"}}
+				h.scheduler.nativeClaims[issue.ID] = claim
+			}
+			if test.pending {
+				execution.HostOperation("workspace.finalize_native_work", now, nil, true)
+			}
+			if test.terminal {
+				if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Done"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.lane != "" {
+				current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: test.lane, Reason: "user_requested"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.dependency {
+				blocker, err := h.admin.CreateIssue(t.Context(), tracker.CreateIssue{Mutation: nativeMutationKey(), Title: "Prerequisite", State: "In Progress"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.admin.Dependency(t.Context(), current.WorkItemID, tracker.DependencyMutation{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, RelatedWorkItemID: blocker.WorkItemID, Operation: "add"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := h.scheduler.nativeClaims[issue.ID].lease
+			transport := h.native.client.httpClient.Transport
+			var renewals, releases int
+			h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(request.URL.Path, "/renew") {
+					renewals++
+				}
+				if strings.HasSuffix(request.URL.Path, "/release") {
+					releases++
+				}
+				return transport.RoundTrip(request)
+			})
+			renewed, err := h.scheduler.RenewClaim(t.Context(), issue.ID, now)
+			if test.wantRenewed {
+				if err != nil || !renewed.LeaseRenewedAt.After(before.RenewedAt) {
+					t.Fatalf("lease was not renewed: %+v, %v", renewed, err)
+				}
+				if h.scheduler.nativeClaims[issue.ID].lease.FencingToken != before.FencingToken {
+					t.Fatal("renewal changed the fencing token")
+				}
+				if test.wantFinished {
+					if err := execution.Finish(t.Context(), "succeeded"); err != nil {
+						t.Fatal(err)
+					}
+					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+						t.Fatal(err)
+					}
+					page, err := h.admin.AttemptsPage(t.Context(), tracker.NativeWorkItemID(issue.ID), "", 10)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(page.Items) != 1 || page.Items[0].Status != "succeeded" || page.Items[0].TerminalFailure != nil || page.Items[0].ClaimReleasedAt == nil {
+						t.Fatalf("live finalization lost its completion: %+v", page.Items)
+					}
+				}
+			} else {
+				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+					t.Fatalf("inactive renewal = %v, want claim lost", err)
+				}
+				if _, held := h.scheduler.nativeClaims[issue.ID]; held != test.wantRetained {
+					t.Fatalf("inactive lease retained = %v, want %v", held, test.wantRetained)
+				}
+				wantReleases := 0
+				if !test.wantRetained {
+					wantReleases = 1
+				}
+				if renewals != 0 || releases != wantReleases {
+					t.Fatalf("inactive lease received %d renewals and %d releases, want 0 and %d", renewals, releases, wantReleases)
+				}
+				if test.wantFailure {
+					if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "failed"); err != nil {
+						t.Fatal(err)
+					}
+					page, err := h.admin.AttemptsPage(t.Context(), tracker.NativeWorkItemID(issue.ID), "", 10)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(page.Items) != 1 || page.Items[0].Status != "failed" || page.Items[0].TerminalFailure == nil || page.Items[0].TerminalFailure.Stage != "finalization" || page.Items[0].TerminalFailure.Error != "completed worker runtime expired before finalization" || page.Items[0].ClaimReleasedAt == nil {
+						t.Fatalf("stalled completion did not settle with its cause: %+v", page.Items)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestNativeMissingClaimNeverRunsUnguarded(t *testing.T) {
 	t.Parallel()
 	scheduler := &Scheduler{nativeClaims: make(map[string]nativeClaim)}
@@ -445,7 +1089,7 @@ func TestNativeExecutionContextKeepsItsOriginalFence(t *testing.T) {
 
 func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 	t.Parallel()
-	for _, operation := range []string{"renew", "renew_availability", "release", "release_finish_lost", "release_finish_ack_retry", "lost"} {
+	for _, operation := range []string{"renew", "renew_landed", "renew_availability", "release", "release_finish_lost", "release_finish_ack_retry", "lost", "lost_release"} {
 		t.Run(operation, func(t *testing.T) {
 			descriptor := clientTestPolicy()
 			id := "wi_" + strings.Repeat("a", 32)
@@ -460,6 +1104,12 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 			var releaseCalls, finishedEvents int
 			transport := executionRoundTrip(func(request *http.Request) (*http.Response, error) {
 				var payload any = policy.Approval{Policy: descriptor}
+				if request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/work-items/") {
+					payload = tracker.NativeIssue{SchedulingEligible: new(true), DependencyReady: true}
+					if operation == "renew_landed" {
+						payload = tracker.NativeIssue{Terminal: true, SchedulingEligible: new(false), DependencyReady: true}
+					}
+				}
 				if strings.HasSuffix(request.URL.Path, "/events") {
 					var event tracker.NativeRunEvent
 					if err := json.NewDecoder(request.Body).Decode(&event); err != nil {
@@ -475,17 +1125,28 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 						return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"tenant_unavailable"}`)), Request: request}, nil
 					}
 				}
-				if strings.HasSuffix(request.URL.Path, "/"+strings.Split(operation, "_")[0]) {
+				endpoint := strings.Split(operation, "_")[0]
+				if operation == "lost_release" {
+					endpoint = "release"
+				}
+				attemptRead := operation == "release_finish_lost" && request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/attempts/")
+				if strings.HasSuffix(request.URL.Path, "/"+endpoint) || attemptRead {
 					scheduler.mu.Lock()
 					claim := scheduler.nativeClaims[id]
+					payload = lease
+					if attemptRead {
+						payload = tracker.NativeAttempt{NativeRunData: claim.execution.data}
+					}
 					claim.lease = next
+					if operation == "lost_release" {
+						claim.lost = false
+					}
 					if operation == "renew_availability" {
 						claim.availabilityDeadline = availabilityDeadline
 					}
 					scheduler.nativeClaims[id] = claim
 					scheduler.claims[id] = nativeTrackerLease(next)
 					scheduler.mu.Unlock()
-					payload = lease
 				}
 				body, err := json.Marshal(payload)
 				if err != nil {
@@ -511,13 +1172,17 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 			scheduler.nativeClaims[id] = nativeClaim{source: source, lease: lease}
 			scheduler.claims[id] = nativeTrackerLease(lease)
 			scheduler.claimPolicies[id] = claimPolicy{project: "project", descriptor: descriptor}
+			if operation == "renew_landed" {
+				execution := scheduler.RunExecution(id).(*nativeExecution)
+				execution.landed = true
+			}
 			switch operation {
 			case "renew_availability":
 				_, err = scheduler.renewNativeClaim(t.Context(), id, scheduler.nativeClaims[id], 0)
 				if err != nil || !scheduler.nativeClaims[id].availabilityDeadline.Equal(availabilityDeadline) {
 					t.Fatalf("delayed renewal replaced refreshed availability: %v, %v", scheduler.nativeClaims[id].availabilityDeadline, err)
 				}
-			case "renew":
+			case "renew", "renew_landed":
 				_, err = scheduler.renewNativeClaim(t.Context(), id, scheduler.nativeClaims[id], 0)
 				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
 					t.Fatalf("old renewal = %v", err)
@@ -577,9 +1242,16 @@ func TestNativeDelayedResponsesPreserveSuccessor(t *testing.T) {
 				claim := scheduler.nativeClaims[id]
 				claim.lease = next
 				scheduler.nativeClaims[id], scheduler.claims[id] = claim, nativeTrackerLease(next)
-				err = scheduler.nativeClaimError(id, lease.FencingToken, &APIError{Status: http.StatusConflict, Code: "stale_fencing_token"})
+				err = scheduler.nativeClaimError(t.Context(), id, lease.FencingToken, &APIError{Status: http.StatusConflict, Code: "stale_fencing_token"})
 				if !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
 					t.Fatalf("old claim loss = %v", err)
+				}
+			case "lost_release":
+				if err := scheduler.nativeClaimError(t.Context(), id, lease.FencingToken, orchestrator.ErrSchedulingClaimLost); !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+					t.Fatalf("claim cleanup = %v", err)
+				}
+				if scheduler.nativeClaims[id].lost {
+					t.Fatal("delayed cleanup invalidated the successor")
 				}
 			}
 			if scheduler.nativeClaims[id].lease.FencingToken != next.FencingToken || scheduler.claims[id].FencingToken != next.FencingToken {
@@ -936,6 +1608,368 @@ func TestNativeCacheWaitRuntimeRecovery(t *testing.T) {
 			var apiErr *APIError
 			if err := execution.ObserveRuntime(ctx, observation); !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnprocessableEntity {
 				t.Fatalf("unknown runtime phase was not rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestNativePublicationFailureReleasesMovedItem(t *testing.T) {
+	for _, test := range []struct {
+		name, state string
+		revoked     bool
+	}{
+		{name: "moved to Todo", state: "Todo"},
+		{name: "moved to Done", state: "Done"},
+		{name: "revoked in place", state: "In Progress", revoked: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "publication recovery")
+			h.claim(t, issue.ID)
+			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			guarded, stop, err := execution.Guard(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stop()
+			if err := execution.Start(guarded, tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			closed := false
+			if err := execution.KeepWorker(func(context.Context) error { closed = true; return nil }, nil); err != nil {
+				t.Fatal(err)
+			}
+			h.failChanges.fail.Store(true)
+			execution.mu.Lock()
+			execution.preparedOutcome = "succeeded"
+			execution.worktreeState = "unpushed"
+			execution.storedSeq = execution.data.Sequence + 1
+			diff, _ := nativeChangeDiff(nativeChangeFixtureHead("c"), "README.md")(t.Context())
+			execution.lastDiff = &diff
+			execution.change = &runner.NativeChange{Error: "required GitHub PR has an ambiguous publication response"}
+			execution.mu.Unlock()
+			current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current.State != test.state {
+				if _, err := h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: test.state, Reason: "user_requested"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.revoked {
+				if err := h.native.Release(t.Context(), execution.claim.lease, "cancelled"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.scheduler.mu.Lock()
+			claim := h.scheduler.nativeClaims[issue.ID]
+			claim.deadline = time.Now().Add(time.Hour)
+			h.scheduler.nativeClaims[issue.ID] = claim
+			h.scheduler.mu.Unlock()
+			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil && !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
+				t.Fatalf("moved item retained transient publication failure: %v", err)
+			}
+			if !closed || execution.hasWorkers() {
+				t.Fatal("moved item retained its worker process")
+			}
+			recovery, err := h.admin.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+			if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].ClaimReleasedAt == nil {
+				t.Fatalf("moved item retained its execution slot: %+v, %v", recovery.Attempts, err)
+			}
+			if _, retained := h.scheduler.claims[issue.ID]; retained {
+				t.Fatal("moved item retained its scheduling claim")
+			}
+		})
+	}
+}
+
+func TestNativeRejectedCompletionReleasesClaim(t *testing.T) {
+	for _, test := range []struct{ name, category, fault string }{
+		{"event", "event_validation", ""}, {"runtime", "runtime_validation", ""},
+		{"execution", "execution_validation", ""}, {"owner", "owner_validation", ""},
+		{"usage", "usage_validation", ""}, {"decode", "body_decode", ""},
+		{"replacement unavailable", "event_validation", "replacement"},
+		{"replacement rate limited", "event_validation", "rate_limit"},
+		{"replacement transport", "event_validation", "transport"},
+		{"release unavailable", "event_validation", "release"},
+		{"accepted runtime unavailable", "event_validation", "lookup"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			category := test.category
+			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
+				{Name: "Done", Terminal: true},
+			}, true)
+			issue := h.createInProgress(t, "completion")
+			h.claim(t, issue.ID)
+			execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			if err := execution.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := execution.PrepareFinish(t.Context(), "succeeded", "private completion text", nil); err != nil {
+				t.Fatal(err)
+			}
+			field := map[string]string{"event_validation": "data.outcome", "runtime_validation": "data.runtime.activity", "execution_validation": "data.finalization", "owner_validation": "data.finalization", "usage_validation": "data.usage"}[category]
+			want := tracker.PublicationRejection{Category: category, Field: field}
+			client := execution.claim.source.client.client
+			next := client.httpClient.Transport
+			var events []tracker.NativeRunEvent
+			faulted := false
+			client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(request.URL.Path, "/events") {
+					body, err := io.ReadAll(request.Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					request.Body = io.NopCloser(strings.NewReader(string(body)))
+					var event tracker.NativeRunEvent
+					if err := json.Unmarshal(body, &event); err != nil {
+						t.Fatal(err)
+					}
+					events = append(events, event)
+					if len(events) == 1 {
+						payload, err := json.Marshal(map[string]any{"code": "invalid_request", "message": "private refusal text", "details": map[string]any{"rejection": want}})
+						if err != nil {
+							t.Fatal(err)
+						}
+						return &http.Response{StatusCode: http.StatusUnprocessableEntity, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(payload))), Request: request}, nil
+					}
+				}
+				if !faulted && (test.fault == "lookup" && strings.Contains(request.URL.Path, "/attempts/") || test.fault == "release" && strings.HasSuffix(request.URL.Path, "/release") || (test.fault == "replacement" || test.fault == "transport" || test.fault == "rate_limit") && len(events) == 2 && strings.HasSuffix(request.URL.Path, "/events")) {
+					faulted = true
+					if test.fault == "transport" {
+						return nil, errors.New("connection reset by peer")
+					}
+					status := http.StatusServiceUnavailable
+					if test.fault == "rate_limit" {
+						status = http.StatusTooManyRequests
+					}
+					return &http.Response{StatusCode: status, Header: http.Header{"Retry-After": []string{"60"}}, Body: io.NopCloser(strings.NewReader(`{"code":"unavailable"}`)), Request: request}, nil
+				}
+				return next.RoundTrip(request)
+			})
+			err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed")
+			if test.fault != "" {
+				if !faulted || err == nil || h.scheduler.claims[issue.ID].ID == "" {
+					t.Fatalf("outage did not preserve claim: %v", err)
+				}
+				err = h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed")
+			}
+			var rejection *nativeCompletionRejection
+			if !errors.As(err, &rejection) || rejection.failure.Rejection == nil || *rejection.failure.Rejection != want {
+				t.Fatalf("completion rejection = %v", err)
+			}
+			wantEvents := 2
+			if test.fault == "replacement" || test.fault == "transport" || test.fault == "rate_limit" {
+				wantEvents = 3
+			}
+			if len(events) != wantEvents || events[0].IdempotencyKey == events[1].IdempotencyKey || events[1].Data.Sequence != events[0].Data.Sequence || events[1].Data.Outcome != "failed" || events[1].Data.CompletionBody != "" {
+				t.Fatalf("refused completion was not replaced: %+v", events)
+			}
+			if wantEvents == 3 && events[1].IdempotencyKey != events[2].IdempotencyKey {
+				t.Fatal("replacement retry changed idempotency key")
+			}
+			evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), "")
+			if err != nil || evidence.Attempt == nil {
+				t.Fatalf("attempt = %+v, %v", evidence, err)
+			}
+			attempt := evidence.Attempt
+			if attempt.Status != "failed" || attempt.ClaimReleasedAt == nil || attempt.TerminalFailure == nil || attempt.TerminalFailure.Rejection == nil || *attempt.TerminalFailure.Rejection != want {
+				t.Fatalf("terminal failure not recorded: %+v", attempt)
+			}
+			if _, retained := h.scheduler.claims[issue.ID]; retained {
+				t.Fatal("terminal completion retained claim")
+			}
+			if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); !errors.Is(err, runner.ErrExecutionAuthorityUnavailable) || len(events) != wantEvents {
+				t.Fatalf("refused event retried: %v, %d", err, len(events))
+			}
+		})
+	}
+}
+
+func TestNativeRejectedReviewCheckpointReleasesClaim(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		field     string
+		outage    bool
+		batched   bool
+		done      bool
+		transient bool
+	}{
+		{name: "validator payload refusal", field: "data.steps.validator"},
+		{name: "review refusal without field"},
+		{name: "terminal publication outage", field: "data.steps.validator", outage: true},
+		{name: "batched observations", field: "data.steps.validator", batched: true},
+		{name: "external merge", field: "data.steps.validator", outage: true, done: true},
+		{name: "transient checkpoint publication", transient: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
+				{Name: "In Progress", Dispatchable: true, Transitions: []string{"Done"}},
+				{Name: "Done", Terminal: true},
+			}, true)
+			issue := h.createInProgress(t, "Review checkpoint")
+			item := tracker.NativeWorkItemID(issue.ID)
+			change, err := h.admin.CreateChange(t.Context(), item, tracker.CreateChange{Mutation: nativeMutationKey(), Title: issue.Title})
+			if err != nil {
+				t.Fatal(err)
+			}
+			version := h.publish(t, item, change.ID, nativeChangeFixtureHead("b"))
+			if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, version.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "changes_requested", Body: "Required repair"}); err != nil {
+				t.Fatal(err)
+			}
+			h.claim(t, issue.ID)
+			e := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+			if err := e.Start(t.Context(), tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "test"}); err != nil {
+				t.Fatal(err)
+			}
+			source := tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "clean", HeadSHA: version.HeadSHA, WorkspaceDigest: strings.Repeat("b", 64), ExternalEffect: "none", EffectState: "none"}
+			if err := e.Checkpoint(t.Context(), source); err != nil {
+				t.Fatal(err)
+			}
+			for _, step := range []tracker.NativeStepReceipt{
+				{Step: "validation", Validation: &gate.CommandResult{Command: "make check-fast", HeadSHA: version.HeadSHA, ExitCode: 0}},
+				{Step: "security_audit", SecurityAudit: &tracker.SecurityAuditReview{Verdict: "pass", VersionID: version.ID}},
+			} {
+				step.CompletedAt, step.Source = time.Now().UTC(), source
+				step.Change = tracker.NativeChangeReference{ChangeID: change.ID, VersionID: version.ID, HeadSHA: version.HeadSHA}
+				if err := e.RecordStep(t.Context(), step); err != nil {
+					t.Fatal(err)
+				}
+			}
+			accepted, err := h.admin.Recovery(t.Context(), item)
+			if err != nil {
+				t.Fatal(err)
+			}
+			closed := false
+			if err := e.KeepWorker(func(context.Context) error { closed = true; return nil }, nil); err != nil {
+				t.Fatal(err)
+			}
+			if test.batched {
+				e.claim.lease.RunDetailBatching = true
+				e.data.Runtime = &tracker.NativeRuntimeObservation{Phase: "validation", HeartbeatAt: e.scheduler.now().UTC()}
+				e.runtimePublishedAt = e.data.Runtime.HeartbeatAt
+				if err := e.append(t.Context(), "run.observed", "", e.data.Handoff); err != nil || len(e.observations) != 1 {
+					t.Fatalf("batch observation: %v", err)
+				}
+			}
+			client := e.claim.source.client.client
+			next := client.httpClient.Transport
+			want := tracker.PublicationRejection{Category: "event_validation", Field: test.field}
+			var events []tracker.NativeRunEvent
+			outage := test.outage
+			client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(request.URL.Path, "/events") {
+					body, err := io.ReadAll(request.Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					request.Body = io.NopCloser(strings.NewReader(string(body)))
+					var event tracker.NativeRunEvent
+					if err := json.Unmarshal(body, &event); err != nil {
+						t.Fatal(err)
+					}
+					events = append(events, event)
+					if event.Type != "run.finished" && test.transient {
+						if len(events) == 1 {
+							return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"unavailable"}`)), Request: request}, nil
+						}
+					} else if event.Type != "run.finished" {
+						payload, err := json.Marshal(map[string]any{"code": "invalid_request", "message": "private refusal text", "details": map[string]any{"rejection": want}})
+						if err != nil {
+							t.Fatal(err)
+						}
+						return &http.Response{StatusCode: http.StatusUnprocessableEntity, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(payload))), Request: request}, nil
+					}
+					if outage {
+						outage = false
+						return &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"unavailable"}`)), Request: request}, nil
+					}
+				}
+				return next.RoundTrip(request)
+			})
+			receipt := tracker.NativeStepReceipt{Step: "validator", CompletedAt: time.Now().UTC(), Source: source, Validator: &gate.ValidatorResult{Submitted: true, Verdict: "pass", Summary: "Review output"}}
+			err = e.RecordStep(t.Context(), receipt)
+			if err == nil {
+				t.Fatal("checkpoint refusal was ignored")
+			}
+			if test.transient {
+				if err := e.flush(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				recovery, err := h.admin.Recovery(t.Context(), item)
+				if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Status != "running" || recovery.Attempts[0].TerminalFailure != nil || len(recovery.Attempts[0].Steps) != 3 {
+					t.Fatalf("transient publication did not resume: %+v, %v", recovery, err)
+				}
+				if len(events) != 2 || events[0].IdempotencyKey != events[1].IdempotencyKey {
+					t.Fatal("transient retry changed event identity")
+				}
+				restored, err := e.Step(t.Context(), receipt)
+				if err != nil || !reflect.DeepEqual(restored.Validator, receipt.Validator) {
+					t.Fatalf("resumed review output changed: %+v, %v", restored.Validator, err)
+				}
+				if err := e.PrepareFinish(t.Context(), "failed", "", nil); err != nil {
+					t.Fatal(err)
+				}
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed"); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if test.done {
+				current, err := h.admin.Issue(t.Context(), item)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := h.admin.Transition(t.Context(), item, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: "Done", Reason: "user_requested"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := e.PrepareFinish(t.Context(), "failed", "", nil); err != nil {
+				t.Fatal(err)
+			}
+			err = h.scheduler.ReleaseClaim(t.Context(), issue.ID, "completed")
+			var rejected *nativeCompletionRejection
+			if !errors.As(err, &rejected) || rejected.failure.Rejection == nil || *rejected.failure.Rejection != want {
+				t.Fatalf("terminal publication: %v", err)
+			}
+			if !closed || e.hasWorkers() {
+				t.Fatal("terminal attempt retained its worker")
+			}
+			if _, exists := h.scheduler.claims[issue.ID]; exists {
+				t.Fatal("terminal attempt retained its claim")
+			}
+			recovery, err := h.admin.Recovery(t.Context(), item)
+			if err != nil || len(recovery.Attempts) != 1 {
+				t.Fatalf("recovery: %+v, %v", recovery, err)
+			}
+			attempt := recovery.Attempts[0]
+			if attempt.Status != "failed" || attempt.ClaimReleasedAt == nil || attempt.TerminalFailure == nil || attempt.TerminalFailure.Rejection == nil || *attempt.TerminalFailure.Rejection != want {
+				t.Fatalf("unsettled attempt: %+v", attempt)
+			}
+			if attempt.TerminalFailure.Stage != "event_publication" || attempt.TerminalFailure.Attribution != "instance" || attempt.TerminalFailure.Error != want.DiagnosticError() || e.data.Outcome != "failed" || e.pending != nil {
+				t.Fatalf("local and Hub failure evidence differ: %+v", attempt.TerminalFailure)
+			}
+			if !reflect.DeepEqual(attempt.Steps, accepted.Attempts[0].Steps) || !reflect.DeepEqual(attempt.Checkpoint, accepted.Attempts[0].Checkpoint) {
+				t.Fatal("terminal refusal lost accepted source or receipts")
+			}
+			detail, err := h.admin.Change(t.Context(), item, change.ID)
+			if err != nil || detail.Change.CurrentVersion != version.ID || len(detail.Reviews) != 1 || detail.Reviews[0].Decision != "changes_requested" {
+				t.Fatalf("retained Change was altered: %+v, %v", detail, err)
+			}
+			if test.done && h.state(t, issue.ID) != "Done" {
+				t.Fatal("terminal settlement reopened merged item")
+			}
+			wantEvents := 2
+			if test.outage {
+				wantEvents++
+			}
+			if len(events) != wantEvents || events[0].Type != "run.checkpointed" || events[len(events)-1].Type != "run.finished" || events[len(events)-1].Data.Sequence != accepted.Attempts[0].Sequence+1 {
+				t.Fatalf("refusal sequence: %+v", events)
+			}
+			if events[0].IdempotencyKey == events[1].IdempotencyKey || test.outage && events[1].IdempotencyKey != events[2].IdempotencyKey {
+				t.Fatal("terminal replacement or retry changed event identity")
 			}
 		})
 	}

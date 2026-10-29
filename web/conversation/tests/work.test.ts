@@ -4,7 +4,7 @@
 // late: the revision is a string, filters preserve every selected value, a cursor is opaque,
 // and a refused move is a `409` whose body — in hosted mode — cannot tell the
 // client what the current revision is.
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Schema from "effect/Schema";
 
 import { startMockHub, type MockHub } from "../dev/mock-hub.ts";
@@ -595,5 +595,25 @@ describe("attempt reasoning effort", () => {
     });
     expect(toAttemptView([attempt])?.effort).toBe(expected);
     expect(toBoardCardView(card, "Example").attempt?.effort).toBe(expected);
+  });
+});
+
+
+describe("saved view pagination", () => {
+  it("loads every page with the abort signal and keeps name ordering", async () => {
+    const state = { view: "board", tab: "active", q: "", sort: "default", completedWindow: "24h", state: [], type: [], label: [], assignee: [], priority: [], lanes: null, collapsed: [] };
+    const view = { id: "view_a", name: "Zulu", owner_id: "member", can_edit: true, scope: "personal", project_id: null, favorite: true, state };
+    const second = { ...view, id: "view_b", name: "Alpha" };
+    const fetchPage = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ views: [view], next_cursor: "view_a" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ views: [second] })));
+    const client = makeWorkHttp({ origin: "https://example.test", apiBase: "/api/v2/organizations/example-org", csrfToken: "csrf", fetch: fetchPage });
+    const controller = new AbortController();
+    expect((await client.listSavedViews(controller.signal)).views).toEqual([second, view]);
+    expect(fetchPage.mock.calls.map(([target]) => target)).toEqual([
+      "https://example.test/api/v2/organizations/example-org/work-views",
+      "https://example.test/api/v2/organizations/example-org/work-views?cursor=view_a",
+    ]);
+    for (const [, init] of fetchPage.mock.calls) expect(init.signal).toBe(controller.signal);
   });
 });

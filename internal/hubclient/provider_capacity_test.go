@@ -51,8 +51,15 @@ func TestProviderSchedulerEndToEnd(t *testing.T) {
 
 func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 	t.Parallel()
-	for _, issueID := range []string{"", "wi_test"} {
-		t.Run("preview_"+issueID, func(t *testing.T) {
+	for _, mode := range []string{"empty", "candidate", "paused during admission", "empty paused during admission", "stale draining receipt", "operator drain", "drain pending preview", "drain pending readiness", "drain pending second page", "drain during claim"} {
+		t.Run(mode, func(t *testing.T) {
+			issueID := "wi_test"
+			if mode == "empty" || mode == "empty paused during admission" {
+				issueID = ""
+			}
+			discoveryCtx, cancelDiscovery := context.WithCancel(t.Context())
+			defer cancelDiscovery()
+			previews := 0
 			claims := 0
 			observations := 0
 			requirement := providercapacity.Requirement{Role: runner.RoleCode, Backend: "codex", Model: "sol"}
@@ -62,6 +69,16 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 				case "/api/v2/capabilities":
 					_ = json.NewEncoder(w).Encode(map[string]any{"protocol_majors": []int{2}, "event_schema_versions": []int{1}, "features": []string{"native_issues", "scoped_collaboration", "repository_policy", tracker.NativeDispatchWaitCapability}})
 				case "/api/v2/organizations/org_test/projects/prj_test/claims/preview":
+					previews++
+					if mode == "drain pending preview" || mode == "drain pending second page" && previews == 2 {
+						cancelDiscovery()
+						<-r.Context().Done()
+						return
+					}
+					if mode == "drain pending second page" {
+						_, _ = w.Write([]byte(`{"items":[{"work_item_id":"wi_test","state":"Todo","title":"test"}],"next":1}`))
+						return
+					}
 					if issueID == "" {
 						_, _ = w.Write([]byte(`{"items":[]}`))
 					} else {
@@ -69,6 +86,16 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 					}
 				case "/api/v2/organizations/org_test/projects/prj_test/claims":
 					claims++
+					if mode == "drain pending second page" || mode == "drain during claim" {
+						if mode == "drain during claim" {
+							cancelDiscovery()
+						}
+						if r.Context().Err() != nil {
+							t.Error("discovery cancellation reached the claim context")
+						}
+						_ = json.NewEncoder(w).Encode(tracker.NativeLease{ID: "lease-test", WorkItemID: "wi_test", FencingToken: 7})
+						return
+					}
 					w.WriteHeader(http.StatusConflict)
 					if issueID == "" {
 						_, _ = w.Write([]byte(`{"code":"no_claimable_work","message":"No work"}`))
@@ -88,19 +115,93 @@ func TestProviderEmptyPreviewReachesClaim(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			scheduler := &Scheduler{providerReports: func() ([]providercapacity.Report, error) { return nil, nil }}
-			request := orchestrator.SchedulingRequest{ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
+			now := time.Now()
+			scheduler := &Scheduler{
+				client: client, now: func() time.Time { return now }, sessionID: func() (string, error) { return "test-session", nil },
+				heartbeatInterval: time.Minute, nativeHeartbeats: map[tracker.ProjectID]time.Time{"prj_test": now},
+				providerReports: func() ([]providercapacity.Report, error) { return nil, nil },
+			}
+			if mode == "stale draining receipt" || mode == "operator drain" {
+				scheduler.machine.Update = &runnerauth.UpdateObservation{Receipt: &runnerauth.UpdateReceipt{Status: "draining", DrainReason: "execution worker protocol is incompatible with the controller"}}
+				if mode == "operator drain" {
+					scheduler.client = &Client{runner: &runnerCredentialSource{routing: &runnerauth.RoutingSnapshot{Routing: runnerauth.Routing{State: "draining"}}}}
+					scheduler.SetClaimAdmission(func() (func(), bool) { return func() {}, true })
+				}
+			}
+			if mode == "drain pending second page" || mode == "drain during claim" {
+				scheduler.providerReports = nil
+			}
+			request := orchestrator.SchedulingRequest{BeginDiscovery: func(context.Context) (context.Context, context.CancelFunc) { return discoveryCtx, func() {} }, CandidateReady: func(ctx context.Context, _ connector.Issue) bool {
+				if mode == "drain pending readiness" {
+					cancelDiscovery()
+					<-ctx.Done()
+					return false
+				}
+				return true
+			}, ProviderRequirement: func(context.Context, connector.Issue, []providercapacity.Report) (providercapacity.Requirement, error) {
 				if issueID == "" {
 					t.Error("empty preview should not resolve a model")
 				}
 				return requirement, nil
 			}, CandidateClaimObserved: func(_ context.Context, candidate connector.Issue, allowed bool, predicate string, required *providercapacity.Requirement) {
 				observations++
+				if mode == "drain pending second page" || mode == "drain during claim" {
+					return
+				}
 				if candidate.ID != issueID || allowed || predicate != "hub_claim.provider_capacity" || required == nil || *required != requirement {
 					t.Fatalf("claim observation: issue=%s allowed=%t predicate=%s requirement=%+v", candidate.ID, allowed, predicate, required)
 				}
 			}}
-			_, err = scheduler.claimPreviewCandidates(t.Context(), request, &NativeConnector{client: native}, tracker.NativeClaim{}, 1)
+			if mode == "paused during admission" || mode == "empty paused during admission" {
+				request.CandidateAdmission = func(connector.Issue) (func(), bool) {
+					scheduler.SetClaimAdmission(func() (func(), bool) { return nil, false })
+					return func() {}, true
+				}
+				native.heartbeatProject().changes = &runnerauth.HeartbeatChanges{Claimable: true}
+				source := &NativeConnector{client: native}
+				issues, err := scheduler.fetchNativeCandidate(t.Context(), request, source)
+				if err != nil || len(issues) != 0 || claims != 0 || observations != 0 {
+					t.Fatalf("paused candidate claimed: claims=%d observations=%d issues=%+v err=%v", claims, observations, issues, err)
+				}
+				if !native.claimHint() {
+					t.Fatal("local drain cleared the Hub claim hint")
+				}
+				scheduler.SetClaimAdmission(nil)
+				request.CandidateAdmission = nil
+				issues, err = scheduler.fetchNativeCandidate(t.Context(), request, source)
+				if err != nil || len(issues) != 0 || claims != 1 {
+					t.Fatalf("released drain did not resume claims: claims=%d issues=%+v err=%v", claims, issues, err)
+				}
+				if got, want := native.claimHint(), issueID != ""; got != want {
+					t.Fatalf("Hub exhaustion hint=%t want=%t", got, want)
+				}
+				return
+			}
+			limit := 1
+			if mode == "drain pending second page" {
+				limit = 2
+			}
+			leases, err := scheduler.claimPreviewCandidates(t.Context(), request, &NativeConnector{client: native}, tracker.NativeClaim{}, limit)
+			if strings.HasPrefix(mode, "drain pending") || mode == "drain during claim" {
+				wantClaims := 0
+				if mode == "drain pending second page" || mode == "drain during claim" {
+					wantClaims = 1
+				}
+				if err != nil || claims != wantClaims || len(leases) != wantClaims {
+					t.Fatalf("draining preview: claims=%d leases=%+v error=%v", claims, leases, err)
+				}
+				if wantClaims == 1 && (leases[0].ID != "lease-test" || leases[0].WorkItemID != "wi_test" || leases[0].FencingToken != 7) {
+					t.Fatalf("drain lost claim identity: %+v", leases)
+				}
+				return
+			}
+			if mode == "operator drain" {
+				if claims != 0 || observations != 0 || err != nil {
+					t.Fatalf("paused candidate claimed: claims=%d observations=%d err=%v", claims, observations, err)
+				}
+				return
+			}
+
 			if claims != 1 || issueID == "" && (!errors.Is(err, ErrNoClaimableWork) || observations != 0) || issueID != "" && (hubErrorCode(err) != "provider_capacity" || observations != 1) {
 				t.Fatalf("preview: claims=%d observations=%d error=%v", claims, observations, err)
 			}
@@ -321,21 +422,70 @@ func testProviderSchedulerEndToEnd(t *testing.T, unavailable string) {
 		}
 		transport := client.httpClient.Transport
 		if unavailable == "provider hydration" {
-			reads := 0
+			var acquired []tracker.NativeLease
+			var recoveryIDs []string
+			released := make(map[tracker.LeaseID]int)
 			client.httpClient.Transport = executionRoundTrip(func(r *http.Request) (*http.Response, error) {
 				if r.Method == http.MethodGet && r.URL.Query().Get("view") == "recovery" {
-					reads++
-					if reads == 2 {
+					parts := strings.Split(r.URL.Path, "/")
+					recoveryIDs = append(recoveryIDs, parts[len(parts)-1])
+					if len(recoveryIDs) == 2 {
 						return nil, errors.New("injected hydration failure")
 					}
 				}
-				return transport.RoundTrip(r)
+				response, err := transport.RoundTrip(r)
+				if err == nil && response.StatusCode == http.StatusOK && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claims") {
+					payload, readErr := io.ReadAll(response.Body)
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					if err := response.Body.Close(); err != nil {
+						t.Fatal(err)
+					}
+					response.Body = io.NopCloser(strings.NewReader(string(payload)))
+					var lease tracker.NativeLease
+					if err := json.Unmarshal(payload, &lease); err != nil {
+						t.Fatal(err)
+					}
+					acquired = append(acquired, lease)
+				}
+				if err == nil && response.StatusCode < 300 && strings.HasSuffix(r.URL.Path, "/release") {
+					parts := strings.Split(r.URL.Path, "/")
+					released[tracker.LeaseID(parts[len(parts)-2])]++
+				}
+				return response, err
 			})
 			issues, err := scheduler.FetchCandidateIssues(t.Context(), request)
-			if err == nil || len(issues) != 0 {
-				t.Fatalf("provider hydration failure = %d, %v", len(issues), err)
+			if err != nil || len(issues) != 1 || len(acquired) != 6 || len(recoveryIDs) != 2 {
+				t.Fatalf("provider hydration = %d issues, %d leases, %d recoveries, %v", len(issues), len(acquired), len(recoveryIDs), err)
+			}
+			if issues[0].ID != string(acquired[0].WorkItemID) || issues[0].ID != recoveryIDs[0] || recoveryIDs[1] != string(acquired[1].WorkItemID) || recoveryIDs[0] == recoveryIDs[1] {
+				t.Fatal("partial batch did not retain only the successfully hydrated lease")
+			}
+			if len(scheduler.nativeClaims) != 1 || len(scheduler.claims) != 1 || len(scheduler.claimPolicies) != 1 || len(released) != 5 {
+				t.Fatal("partial batch retained claims outside the hydrated prefix")
+			}
+			for i, lease := range acquired {
+				wantReleased := 1
+				if i == 0 {
+					wantReleased = 0
+				}
+				if lease.ProviderReservation == nil || released[lease.ID] != wantReleased {
+					t.Fatalf("lease %s: reservation=%v releases=%d, want %d", lease.ID, lease.ProviderReservation, released[lease.ID], wantReleased)
+				}
+				_, cached := client.nativeLeases.Load(native.base() + "/" + string(lease.WorkItemID))
+				if cached != (i == 0) {
+					t.Fatalf("lease %s cache retained=%t", lease.ID, cached)
+				}
+			}
+			retained := scheduler.nativeClaims[issues[0].ID]
+			if !reflect.DeepEqual(retained.lease.ProviderReservation, acquired[0].ProviderReservation) || retained.lease.PolicyID != descriptor.ID {
+				t.Fatal("retained lease lost its provider reservation or immutable policy")
 			}
 			client.httpClient.Transport = transport
+			if err := scheduler.ReleaseClaim(t.Context(), issues[0].ID, "dispatch_deferred"); err != nil {
+				t.Fatal(err)
+			}
 			evaluations = 0
 		}
 		issues, err := scheduler.FetchCandidateIssues(t.Context(), request)

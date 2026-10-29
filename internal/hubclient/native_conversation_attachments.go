@@ -7,7 +7,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runner"
 )
 
-// Attachment download (decisions section 17.1). The hub names an
+// Attachment download. The hub names an
 // attachment on the control with the path that streams it; the worker
 // fetches it with its own token, so the same read rule that governs the
 // conversation governs the file. Nothing else about the path is trusted:

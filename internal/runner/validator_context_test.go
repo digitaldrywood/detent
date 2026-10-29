@@ -16,6 +16,7 @@ func TestValidationContext(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
 		change    func(*connector.Issue, *gate.Config)
+		workflow  string
 		different bool
 	}{
 		{name: "stable"},
@@ -37,13 +38,15 @@ func TestValidationContext(t *testing.T) {
 		{name: "criterion policy", different: true, change: func(_ *connector.Issue, c *gate.Config) {
 			c.Validator.UnverifiedCriteria = gate.UnverifiedCriteriaDisclose
 		}},
+		{name: "workflow text", different: true, workflow: "Review rules: every change needs a regression test."},
+		{name: "workflow whitespace", workflow: "  \r\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			issue, policy := original, gate.Config{}
 			if tt.change != nil {
 				tt.change(&issue, &policy)
 			}
-			different := ValidationContextDigest(issue, policy) != ValidationContextDigest(original, gate.Config{})
+			different := ValidationContextDigest(issue, policy, tt.workflow) != ValidationContextDigest(original, gate.Config{}, "")
 			if different != tt.different {
 				t.Fatalf("digest changed=%v, want %v", different, tt.different)
 			}
@@ -52,5 +55,19 @@ func TestValidationContext(t *testing.T) {
 	prompt := BuildValidatorPrompt(config.Workflow{}, original, ValidatorPromptOptions{})
 	if !strings.Contains(prompt, evidence) {
 		t.Fatal("qualification identity absent from actual prompt")
+	}
+	if strings.Contains(prompt, "Project WORKFLOW.md") {
+		t.Fatal("empty workflow rendered a workflow section")
+	}
+	const rules = "## Review rules\n\nEvery behavior change needs a regression test."
+	workflow := config.Workflow{SharedPrompt: rules, Prompt: "local overlay only"}
+	for _, review := range []bool{false, true} {
+		prompt := BuildValidatorPrompt(workflow, original, ValidatorPromptOptions{implementationReview: review})
+		if !strings.Contains(prompt, "Project WORKFLOW.md (governs this review") || !strings.Contains(prompt, rules) || strings.Contains(prompt, "local overlay only") {
+			t.Fatalf("implementationReview=%t prompt does not carry the shared workflow:\n%s", review, prompt)
+		}
+		if !strings.Contains(prompt, "Task context SHA-256: "+ValidationContextDigest(original, gate.Config{}, rules)) {
+			t.Fatalf("implementationReview=%t prompt digest omits the workflow", review)
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/labstack/echo/v4"
@@ -44,14 +45,40 @@ func (s *Service) readableOrganizationRoot(c echo.Context, id string) error {
 		return readableNotFound(c)
 	}
 	claims := cloudassert.Claims{}
-	if _, _, err := s.browserClaims(c, organization, &claims); err != nil {
-		return readableNotFound(c)
+	if status, _, err := s.browserClaims(c, organization, &claims); err != nil {
+		return s.readableSignIn(c, organization, status)
 	}
-	target := s.organizationHome(organization)
+	target := s.organizationRoleHome(organization, claims.Role)
 	if query := c.Request().URL.RawQuery; query != "" {
 		target += "?" + query
 	}
 	return c.Redirect(http.StatusSeeOther, target)
+}
+
+func (s *Service) readableSignIn(c echo.Context, organization Organization, status int) error {
+	if status != http.StatusUnauthorized || !wantsHTMLNavigation(c) {
+		return readableNotFound(c)
+	}
+	session, err := s.session(c)
+	if err != nil {
+		return readableNotFound(c)
+	}
+	choices, err := s.organizationChoices(c.Request().Context(), session)
+	if err != nil {
+		return readableNotFound(c)
+	}
+	for _, choice := range choices {
+		if choice.ID != organization.ID {
+			continue
+		}
+		returnPath := s.legacyOrganizationHome(organization.ID)
+		if _, rest, ok := strings.Cut(strings.Trim(c.Request().URL.Path, "/"), "/"); ok && rest != "" && validReturnPath("/organizations/"+organization.ID+"/"+rest, organization.ID) {
+			returnPath = "/organizations/" + organization.ID + "/" + rest
+		}
+		query := url.Values{"organization": {organization.ID}, "return": {returnPath}}
+		return c.Redirect(http.StatusSeeOther, "/auth/oidc/start?"+query.Encode())
+	}
+	return readableNotFound(c)
 }
 
 func readableNotFound(c echo.Context) error {

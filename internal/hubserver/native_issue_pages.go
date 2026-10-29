@@ -80,15 +80,15 @@ type nativeIssuePageItem struct {
 // readIssuePageItems returns up to limit+1 items after the cursor and the
 // list total. A first page also returns the whole frozen order, which the
 // caller keeps only when it hands out a continuation cursor.
-func (s *Service) readIssuePageItems(ctx context.Context, query string, args []any, limit int, cursor *nativeCursor, sort, search string) ([]nativeIssuePageItem, []nativeIssuePageItem, int, error) {
+func (s *Service) readIssuePageItems(ctx context.Context, q nativeQueryer, query string, args []any, limit int, cursor *nativeCursor, sort, search string, scopes ...nativeScope) ([]nativeIssuePageItem, []nativeIssuePageItem, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	position := cursor.Issues
 	if position == nil {
 		if cursor.After != "" {
-			return nil, nil, 0, nativeInvalid("Work list order changed; restart the query")
+			return nil, nil, 0, nativePublicInvalid("Work list order changed; restart the query")
 		}
-		projected, err := s.projectIssuePage(ctx, query, args, sort, search)
+		projected, err := s.projectIssuePage(ctx, q, query, args, sort, search, scopes...)
 		if err != nil {
 			return nil, nil, 0, err
 		}
@@ -113,9 +113,9 @@ func (s *Service) readIssuePageItems(ctx context.Context, query string, args []a
 		return items[start:min(len(items), start+limit+1)], nil, len(items), nil
 	}
 	var exists int
-	err := s.database.reader.QueryRowContext(ctx, "SELECT 1 FROM native_issue_pages WHERE id = ? AND scope = ? AND expires = ?", position.Snapshot, cursor.Scope, cursor.Expires).Scan(&exists)
+	err := q.QueryRowContext(ctx, "SELECT 1 FROM native_issue_pages WHERE id = ? AND scope = ? AND expires = ?", position.Snapshot, cursor.Scope, cursor.Expires).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil, 0, nativeInvalid("Work list cursor expired; restart the query")
+		return nil, nil, 0, nativePublicInvalid("Work list cursor expired; restart the query")
 	}
 	if err != nil {
 		return nil, nil, 0, err
@@ -134,7 +134,7 @@ FROM native_issue_page_items WHERE page_id = ?`
 	}
 	statement += " ORDER BY lane_rank, state_name, priority_rank, activity_missing, activity_at DESC, identifier LIMIT ?"
 	pageArgs = append(pageArgs, limit+1)
-	rows, err := s.database.reader.QueryContext(ctx, statement, pageArgs...)
+	rows, err := q.QueryContext(ctx, statement, pageArgs...)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -152,7 +152,7 @@ FROM native_issue_page_items WHERE page_id = ?`
 		return nil, nil, 0, err
 	}
 	var total int
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM native_issue_page_items WHERE page_id = ?", position.Snapshot).Scan(&total); err != nil {
+	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM native_issue_page_items WHERE page_id = ?", position.Snapshot).Scan(&total); err != nil {
 		return nil, nil, 0, err
 	}
 	return items, nil, total, nil
@@ -222,8 +222,7 @@ func pageString(value any) string {
 }
 
 const nativeIssuePageProjection = `SELECT i.native_id,
-COALESCE((SELECT CAST(lane.key AS INTEGER) FROM projects p, json_each(p.states_json) lane
- WHERE p.id = i.project_id AND json_extract(lane.value, '$.name') = ws.detent_state), 2147483647),
+COALESCE((SELECT board_rank FROM native_workflow_ranks WHERE id=ws.id), 2147483647),
 COALESCE(ws.detent_state, ''),
 CASE WHEN ws.terminal = 1 THEN 0 ELSE COALESCE((SELECT CASE WHEN q.priority_override BETWEEN 0 AND 3 THEN q.priority_override ELSE 4 END
  FROM queue_entries q WHERE q.issue_id = i.id ORDER BY q.id LIMIT 1), 4) END,
@@ -232,13 +231,13 @@ CASE WHEN i.last_activity_at = '0001-01-01T00:00:00Z' THEN '' ELSE rtrim(i.last_
 i.project_id || '#' || i.number`
 
 const nativeClosedIssuePageProjection = `SELECT i.native_id,
-0, '', 0, CASE WHEN ws.terminal = 1 AND ` + nativeTerminalEnteredAt + ` IS NOT NULL THEN 0 ELSE 1 END,
-CASE WHEN ws.terminal = 1 THEN COALESCE(strftime('%Y-%m-%dT%H:%M:%f', ` + nativeTerminalEnteredAt + `), '') ELSE '' END,
+0, '', 0, CASE WHEN ws.terminal = 1 AND i.terminal_entered_at IS NOT NULL THEN 0 ELSE 1 END,
+CASE WHEN ws.terminal = 1 THEN COALESCE(strftime('%Y-%m-%dT%H:%M:%f', i.terminal_entered_at), '') ELSE '' END,
 i.project_id || '#' || i.number`
 
 const nativeIssuePageItemColumns = 9
 
-func (s *Service) projectIssuePage(ctx context.Context, query string, args []any, sort, search string) (_ [][]any, resultErr error) {
+func (s *Service) projectIssuePage(ctx context.Context, q nativeQueryer, query string, args []any, sort, search string, scopes ...nativeScope) (_ [][]any, resultErr error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	selected := nativeIssuePageProjection
@@ -251,7 +250,16 @@ func (s *Service) projectIssuePage(ctx context.Context, query string, args []any
 	} else {
 		selected += ", 0, ''"
 	}
-	rows, err := s.database.reader.QueryContext(ctx, strings.Replace(query, "SELECT i.native_id", selected, 1), args...)
+	scope := nativeScope{}
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
+	statement := strings.Replace(query, "SELECT i.native_id", selected, 1)
+	pageQuery, err := prepareNativePageStatement(ctx, q, scope, "", statement)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := pageQuery.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, err
 	}

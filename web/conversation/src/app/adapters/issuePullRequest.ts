@@ -87,7 +87,7 @@ export function useIssuePullRequest(
   return pullRequest;
 }
 
-/** The GitHub host a §18.6 connector's rows point at. */
+/** The GitHub host a pull request contract connector's rows point at. */
 function connectorBaseUrl(row: WorkItemPullRequest): string {
   try {
     return new URL(row.url).origin;
@@ -112,7 +112,7 @@ export interface IssuePullRequestView {
 
 const NO_VIEW: IssuePullRequestView = { pullRequest: null, connector: null };
 
-/** Both projections of the §18.6 rows, from the selection rule above. */
+/** Both projections of the pull request contract rows, from the selection rule above. */
 export function selectIssuePullRequestView(
   rows: readonly WorkItemPullRequest[],
 ): IssuePullRequestView {
@@ -142,7 +142,7 @@ export function selectIssuePullRequestView(
 }
 
 /**
- * The §18.6 rows for the header's git group.
+ * The pull request contract rows for the header's git group.
  *
  * A failure is `NO_VIEW` rather than an error surface, for the same reason the
  * hook above returns null: this feeds a disabled reason on a menu row, and the

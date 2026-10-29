@@ -12,12 +12,12 @@ import (
 	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -59,7 +59,7 @@ func TestStopRecordedRunBeforeProjectStartup(t *testing.T) {
 					cfg.Workflow = filepath.Join(t.TempDir(), "WORKFLOW.md")
 					if err := os.WriteFile(cfg.Workflow, []byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
   lanes:
     - name: Blocked
       role: holding
@@ -104,7 +104,7 @@ Work`), 0600); err != nil {
 			if tc.stale {
 				sessionID++
 			}
-			server, err := web.NewServer(web.Config{GlobalConfig: globalconfig.Config{APIToken: "test-token"}, StaticDir: t.TempDir()}, web.Dependencies{Hub: hub.New[telemetry.Snapshot](), Registry: registry, Store: backend, Connector: memory.New(memory.Config{}), RunStopper: stopper})
+			server, err := web.NewServer(web.Config{GlobalConfig: globalconfig.Config{APIToken: "test-token"}, StaticDir: t.TempDir()}, web.Dependencies{Hub: hub.New[telemetry.Snapshot](), Registry: registry, Store: backend, Connector: fakehub.New(fakehub.Config{}), RunStopper: stopper})
 			if err != nil {
 				t.Fatal(err)
 			}

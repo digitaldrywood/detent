@@ -169,7 +169,11 @@ func TestBindNativeRepositoryToolReceipts(t *testing.T) {
 
 func TestBoundedProjectPolicyHistory(t *testing.T) {
 	descriptor := hubTestPolicy()
-	full := policy.Approval{Policy: descriptor, ApprovedBy: "administrator", ApprovedAt: "2026-10-06T21:12:49Z", HistoryNext: "10"}
+	full := projectPolicyRead{
+		Approval:         policy.Approval{Policy: descriptor, ApprovedBy: "administrator", ApprovedAt: "2026-10-06T21:12:49Z", HistoryNext: "10"},
+		Policy:           &descriptor,
+		ObservedPolicies: []policy.ObservedPolicy{{Policy: descriptor, RunnerID: "runner_example", ObservedAt: "2026-10-06T21:12:49Z"}},
+	}
 	for _, id := range []int64{30, 20, 10} {
 		full.History = append(full.History, policy.WorkflowApply{ID: id, AppliedBy: strings.Repeat("承認者", 100), PreviousDefinition: &descriptor, Definition: &descriptor})
 	}
@@ -204,7 +208,7 @@ func TestBoundedProjectPolicyHistory(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || len(page.History) != test.count || page.HistoryNext != test.next || !reflect.DeepEqual(page.Policy, full.Policy) || page.ApprovedBy != full.ApprovedBy || page.ApprovedAt != full.ApprovedAt {
+			if err != nil || len(page.History) != test.count || page.HistoryNext != test.next || !reflect.DeepEqual(page.Policy, full.Policy) || !reflect.DeepEqual(page.ObservedPolicies, full.ObservedPolicies) || page.ApprovedBy != full.ApprovedBy || page.ApprovedAt != full.ApprovedAt {
 				t.Fatalf("bounded policy lost descriptor, provenance or cursor: %v", err)
 			}
 			encoded, err := json.Marshal(page)
@@ -265,7 +269,6 @@ func TestHostedProjectTools(t *testing.T) {
 					for _, missing := range []struct{ name, code, message string }{
 						{"get_cutover_receipt", "not_found", "No cutover receipt exists for this project"},
 						{operatortool.GetChangeReviewPolicy, "not_found", "No approved Change review policy exists for this project"},
-						{"get_project_policy", "policy_mismatch", "No approved repository policy exists for this project"},
 					} {
 						reply := call("tools/call", missing.name, map[string]any{"project_id": id})
 						var result struct {
@@ -286,7 +289,7 @@ func TestHostedProjectTools(t *testing.T) {
 				})
 			}
 			operatorSQL(t, f, "INSERT INTO github_cutovers(project_id,checkpoint,receipt_json,actor_id,created_at) VALUES (?,?,?,?,?)", id, "stored-cutover", `{"checkpoint":"stored-cutover","applied":true}`, owner.identity.Subject, formatHubTime(f.service.config.now()))
-			for _, name := range []string{operatortool.LocalProjectConfiguration, "list_projects", "get_native_project", "get_onboarding", "get_project_integration", "project_secret_metadata", "project_setup", "get_cutover_receipt"} {
+			for _, name := range []string{"get_project_policy", operatortool.LocalProjectConfiguration, "list_projects", "get_native_project", "get_onboarding", "get_project_integration", "project_secret_metadata", "project_setup", "get_cutover_receipt"} {
 				result, err := e.Execute(ctx, read(name))
 				if err != nil || !strings.Contains(string(result.Content), `"observed_at"`) {
 					t.Fatalf("%s=%s %v", name, result.Content, err)
@@ -350,7 +353,7 @@ func TestHostedProjectTools(t *testing.T) {
 				t.Fatal(err)
 			}
 			setup := onboardingRead.Data
-			if setup.Policy == nil || setup.Policy.Policy.ID != previous.Policy.ID || len(setup.ObservedPolicies) != 1 || !reflect.DeepEqual(setup.ObservedPolicies[0].Policy, candidate) {
+			if !reflect.DeepEqual([]string{setup.Steps[0].Name, setup.Steps[1].Name, setup.Steps[2].Name, setup.Steps[3].Name}, []string{"Runner", "Repository", "Checkout", "Run files"}) || setup.Policy == nil || setup.Policy.Policy.ID != previous.Policy.ID || len(setup.ObservedPolicies) != 1 || !reflect.DeepEqual(setup.ObservedPolicies[0].Policy, candidate) {
 				t.Fatalf("observed candidate = %+v", setup)
 			}
 			approve := projectCall(t, "approve_project_policy", id, "approve", operatortool.PolicyApprovalInput{ExpectedID: setup.Policy.Policy.ID, ObservedPolicyID: setup.ObservedPolicies[0].Policy.ID})
@@ -448,7 +451,7 @@ func TestHostedProjectTools(t *testing.T) {
 				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_commands WHERE command_key IN ('quota-comment','quota-approve-stdio','quota-approve-http')").Scan(&receipts); err != nil || receipts != 0 {
 					t.Fatalf("refused writes persisted receipts=%d err=%v", receipts, err)
 				}
-				unchanged, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+				unchanged, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
 				if err != nil || !reflect.DeepEqual(unchanged.Policy, previous.Policy) {
 					t.Fatalf("refused approval changed policy=%+v err=%v", unchanged, err)
 				}
@@ -502,7 +505,7 @@ func TestHostedProjectTools(t *testing.T) {
 			if _, err := e.Execute(ctx, stalePolicy); !errors.Is(err, mutation.ErrConflict) {
 				t.Fatalf("stale expected policy = %v", err)
 			}
-			unchanged, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+			unchanged, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
 			if err != nil || !reflect.DeepEqual(unchanged.Policy, candidate) {
 				t.Fatalf("stale approval changed policy = %+v, %v", unchanged, err)
 			}
@@ -673,5 +676,74 @@ func TestProjectImportToolReceipts(t *testing.T) {
 	read.Arguments = json.RawMessage(`{"project_id":"` + string(other.project.ID) + `","import_id":"` + job.ID + `"}`)
 	if _, err := e.Execute(ctx, read); err == nil {
 		t.Fatal("foreign project import disclosed")
+	}
+}
+
+func TestBoundedProjectPolicyObservations(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name        string
+		count       int
+		promptBytes int
+		withHistory bool
+	}{
+		{name: "single oversized descriptor", count: 1, promptBytes: operatortool.MaxResultBytes},
+		{name: "several descriptors", count: 4, promptBytes: operatortool.MaxResultBytes / 3},
+		{name: "too many summaries", count: 1000, promptBytes: 1},
+		{name: "history with oversized descriptor", count: 1, promptBytes: operatortool.MaxResultBytes, withHistory: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			full := projectPolicyRead{}
+			if test.withHistory {
+				descriptor := hubTestPolicy()
+				full.Policy = &descriptor
+				full.ApprovedBy = "administrator"
+				full.History = []policy.WorkflowApply{{ID: 42, Definition: &descriptor}}
+			}
+			for i := range test.count {
+				descriptor := hubTestPolicy()
+				descriptor.Configuration = &policy.Configuration{Prompt: strings.Repeat("x", test.promptBytes), Behavior: json.RawMessage(`{}`)}
+				descriptor.SourceDigest = policy.Digest([]byte(strconv.Itoa(i)))
+				descriptor = descriptor.WithID()
+				full.ObservedPolicies = append(full.ObservedPolicies, policy.ObservedPolicy{Policy: descriptor, RunnerID: "runner_example"})
+			}
+			before, err := json.Marshal(full)
+			if err != nil {
+				t.Fatal(err)
+			}
+			page, err := boundedProjectPolicyHistory(full, operatortool.MaxResultBytes-1024)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(page)
+			if err != nil || len(raw) > operatortool.MaxResultBytes-1024 {
+				t.Fatalf("observations exceed response budget: bytes=%d, %v", len(raw), err)
+			}
+			var view struct {
+				DetailsOmitted bool `json:"observed_policy_details_omitted"`
+				Omitted        int  `json:"observed_policies_omitted"`
+			}
+			if err := json.Unmarshal(raw, &view); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(page.Policy, full.Policy) || len(page.History) != len(full.History) || len(page.ObservedPolicies) == 0 || !view.DetailsOmitted || len(page.ObservedPolicies)+view.Omitted != test.count {
+				t.Fatalf("missing observation identity or omission metadata: %s", raw)
+			}
+			if test.count == 1000 && view.Omitted == 0 {
+				t.Fatal("oversized summary list was not bounded")
+			}
+			if test.withHistory && (page.History[0].ID != 42 || page.History[0].Definition != nil || page.ApprovedBy != "administrator") {
+				t.Fatal("observation compaction changed approval or history")
+			}
+			for i, observation := range page.ObservedPolicies {
+				if observation.Policy.ID != full.ObservedPolicies[i].Policy.ID || observation.RunnerID != "runner_example" {
+					t.Fatal("candidate identity or provenance changed")
+				}
+			}
+			after, err := json.Marshal(full)
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Fatal("MCP projection mutated REST observations")
+			}
+		})
 	}
 }

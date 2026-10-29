@@ -88,7 +88,7 @@ func TestTrackerLanes(t *testing.T) {
 
 func TestMigrateTrackerLanes(t *testing.T) {
 	t.Parallel()
-	legacy := "tracker:\n  kind: memory\n  observed_states: [Backlog, Blocked]\n  active_states: [Todo]\n  terminal_states: [Done]\n"
+	legacy := "tracker:\n  kind: hub_native\n  observed_states: [Backlog, Blocked]\n  active_states: [Todo]\n  terminal_states: [Done]\n"
 	for _, test := range []struct {
 		name, raw string
 		changed   bool
@@ -97,7 +97,7 @@ func TestMigrateTrackerLanes(t *testing.T) {
 		{"frontmatter", "---\n" + legacy + "---\nKeep this prompt exactly.\n", true},
 		{"crlf", strings.ReplaceAll("---\n"+legacy+"---\nPrompt.\r\n", "\n", "\r\n"), true},
 		{"tracker alias", "schema: 1\nbase: &base {observed_states: [Backlog, Blocked], active_states: [Todo], terminal_states: [Done]}\ntracker: *base\n", true},
-		{"tracker merge", "schema: 1\nbase: &base {observed_states: [Backlog, Blocked], active_states: [Todo], terminal_states: [Done]}\ntracker: {<<: *base, kind: memory}\n", true},
+		{"tracker merge", "schema: 1\nbase: &base {observed_states: [Backlog, Blocked], active_states: [Todo], terminal_states: [Done]}\ntracker: {<<: *base, kind: hub_native}\n", true},
 		{"partial defaults", "schema: 1\ntracker:\n  active_states: [Todo]\n", true},
 		{"plan stop", "schema: 1\n" + legacy + "plan:\n  enabled: true\n", true},
 		{"already migrated", "schema: 1\ntracker:\n  lanes: [{name: Todo, role: active}]\n", false},
@@ -159,7 +159,7 @@ func TestMigrateTrackerLanes(t *testing.T) {
 
 func TestMigrateTrackerLaneSamples(t *testing.T) {
 	t.Parallel()
-	for _, directory := range []string{"templates", "examples"} {
+	for _, directory := range []string{"examples"} {
 		err := filepath.WalkDir(filepath.Join("..", "..", "docs", directory), func(path string, entry os.DirEntry, err error) error {
 			if err != nil {
 				return err
@@ -200,7 +200,7 @@ func TestRejectLegacyTrackerStates(t *testing.T) {
 	for _, key := range []string{"observed_states", "active_states", "terminal_states"} {
 		for _, value := range []string{"[Todo]", "[]", "null"} {
 			for _, form := range []string{"direct", "alias", "merge", "root merge", "mixed"} {
-				definition := "tracker:\n  kind: memory\n  " + key + ": " + value + "\n"
+				definition := "tracker:\n  kind: hub_native\n  " + key + ": " + value + "\n"
 				switch form {
 				case "alias":
 					definition = "base: &base {" + key + ": " + value + "}\ntracker: *base\n"
@@ -220,7 +220,7 @@ func TestRejectLegacyTrackerStates(t *testing.T) {
 						case "split":
 							_, err = ParseProjectDefinition(ProjectDefinitionSources{Workflow: []byte("Work.\n"), Config: []byte("schema: 1\n" + definition), HasConfig: true})
 						case "overlay":
-							_, err = ParseWorkflowOverlay([]byte("---\ntracker:\n  kind: memory\n---\nWork.\n"), []byte("---\n"+definition+"---\n"), "WORKFLOW.local.md")
+							_, err = ParseWorkflowOverlay([]byte("---\ntracker:\n  kind: hub_native\n---\nWork.\n"), []byte("---\n"+definition+"---\n"), "WORKFLOW.local.md")
 						}
 						if err == nil || !strings.Contains(err.Error(), "tracker."+key+" is no longer supported") {
 							t.Fatalf("error = %v, want rejection of tracker.%s", err, key)

@@ -2,8 +2,7 @@
 -- The hub's claim predicate was a function of the item's lane alone, so an
 -- item whose attempt had already succeeded and whose lane had not moved was
 -- offered again on every poll, and every offer was a real claim and a real
--- model turn (operations.md section 7, "An item in an active state is
--- re-dispatched forever").
+-- model turn: an item in an active state was re-dispatched forever.
 --
 -- Two facts are needed to stop that without stranding legitimate re-runs.
 --
@@ -15,7 +14,7 @@
 --
 -- dispatch_generation is the explicit "run this item again" request. The
 -- reason it exists rather than being inferred: a conversation `continue`
--- bumps no revision and changes no lane (decisions.md sections 9 and 10), so
+-- bumps no revision and changes no lane, so
 -- a revision-only guard refuses a continuation that the product promises. The
 -- generation is bumped wherever a command is accepted that only a new attempt
 -- can carry, and an attempt records the generation it was dispatched for, so

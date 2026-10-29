@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"container/list"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/activity"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/forgeavailability"
+	"github.com/digitaldrywood/detent/internal/policy"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -118,10 +120,6 @@ func (o *Orchestrator) recoverDurableWorkAttempts(ctx context.Context, state *St
 	o.recoverPendingOperatorStops(ctx, state, now)
 }
 
-// expireOrphanedWorkAttempts applies the existing lease recovery at startup and
-// on refresh. The event-loop-owned running set excludes local workers even if
-// their independent heartbeat is delayed; deferred completions remain excluded
-// by the store query.
 func (o *Orchestrator) expireOrphanedWorkAttempts(ctx context.Context, state *State, now time.Time) {
 	if o == nil || o.workAttempts == nil || state == nil {
 		return
@@ -148,6 +146,9 @@ func (o *Orchestrator) expireOrphanedWorkAttempts(ctx context.Context, state *St
 		o.logger.Warn("work attempt timeout recovery failed", "project_id", projectID, "error", err)
 	}
 	for _, attempt := range timedOut {
+		if deferred, ok := state.deferredCompletions[attempt.IssueID]; ok && deferred.Running.WorkAttemptID == attempt.ID {
+			o.clearLiveWorkAttemptState(state, telemetryWorkAttempt(attempt, now))
+		}
 		o.recordRecoveredWorkAttempt(state, attempt, now)
 	}
 }
@@ -262,49 +263,69 @@ func (o *Orchestrator) recoverOrphanedAgentSessions(ctx context.Context, state *
 		if o.logger != nil {
 			o.logger.Warn("orphaned agent session issue reconciliation failed", "project_id", o.cfg.Project.ID, "error", err)
 		}
-		return
 	}
+	readErr := err
 	issuesByID := make(map[string]connector.Issue, len(issues))
 	for _, issue := range issues {
 		issuesByID[issue.ID] = cloneIssue(issue)
 	}
 	queued := make(map[string]struct{}, len(sessions))
 	for _, session := range sessions {
-		if session.WorkAttemptID != 0 || o.cfg.Policy.ID != "" {
-			attempt, err := o.workAttempts.WorkAttempt(ctx, session.WorkAttemptID)
-			if err != nil || o.checkAttemptPolicy(attempt) != nil {
-				o.logger.Warn("policy_mismatch: orphaned session requires its approved policy", "work_attempt_id", session.WorkAttemptID)
-				continue
-			}
+		attemptRecord, err := o.workAttempts.WorkAttempt(ctx, session.WorkAttemptID)
+		if err != nil {
+			continue
+		}
+		pinnedPolicy, known := persistedAttemptPolicy(attemptRecord)
+		if !known {
+			continue
 		}
 		issue, ok := issuesByID[session.IssueID]
-		if !ok || !o.orphanResumeEligible(issue, session, now) {
+		prior := state.Retry[session.IssueID]
+		if readErr != nil {
+			issue = connector.Issue{ID: session.IssueID, Identifier: session.Identifier, URL: session.IssueURL, State: session.Lane}
+		} else if !ok || !o.orphanResumeEligible(issue, session, now) {
+			if prior.TrackerUnavailable && prior.ResumeState.Orphaned {
+				delete(state.Retry, session.IssueID)
+			}
 			continue
 		}
 		if _, exists := queued[issue.ID]; exists {
 			continue
 		}
-		if err := o.orphanSessions.MarkAgentSessionOrphaned(ctx, session.ResumeState.DetentSessionID, now); err != nil {
-			if o.logger != nil {
-				o.logger.Warn("mark orphaned agent session failed", "detent_session_id", session.ResumeState.DetentSessionID, "error", err)
+		if readErr == nil {
+			if err := o.orphanSessions.MarkAgentSessionOrphaned(ctx, session.ResumeState.DetentSessionID, now); err != nil {
+				if o.logger != nil {
+					o.logger.Warn("mark orphaned agent session failed", "detent_session_id", session.ResumeState.DetentSessionID, "error", err)
+				}
+				continue
 			}
-			continue
 		}
 		queued[issue.ID] = struct{}{}
 		attempt := session.AttemptNumber + 1
 		if attempt < 1 {
 			attempt = 1
 		}
+		dueAt := now
+		if readErr != nil {
+			attempt = max(attempt, prior.Attempt+1)
+			dueAt = now.Add(o.machineRetryDelay(attempt))
+		}
 		resumeState := session.ResumeState
 		resumeState.Orphaned = true
 		state.Retry[issue.ID] = Retry{
-			Issue:       issue,
-			Attempt:     attempt,
-			DueAt:       now,
-			Error:       "resume orphaned provider session after service restart",
-			WorkerHost:  session.WorkerHost,
-			RetryMode:   runpkg.RetryModeResume,
-			ResumeState: resumeState,
+			Policy:             pinnedPolicy,
+			RecoveryAttemptID:  session.WorkAttemptID,
+			TrackerUnavailable: readErr != nil,
+			Issue:              issue,
+			Attempt:            attempt,
+			DueAt:              dueAt,
+			Error:              "resume orphaned provider session after service restart",
+			WorkerHost:         session.WorkerHost,
+			RetryMode:          runpkg.RetryModeResume,
+			ResumeState:        resumeState,
+		}
+		if readErr != nil {
+			state.enqueueOrphanRetry(issue.ID)
 		}
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      now,
@@ -312,6 +333,64 @@ func (o *Orchestrator) recoverOrphanedAgentSessions(ctx context.Context, state *
 			Message: fmt.Sprintf("queued orphaned %s session resume for %s", strings.TrimSpace(session.WorkerType), issueLabel(issue)),
 		})
 	}
+}
+
+func (s *State) enqueueOrphanRetry(id string) {
+	if s.orphanRetryEntries == nil {
+		s.orphanRetryEntries = make(map[string]*list.Element)
+	}
+	if s.orphanRetryEntries[id] == nil {
+		s.orphanRetryEntries[id] = s.orphanRetryQueue.PushBack(id)
+	}
+}
+
+func (o *Orchestrator) reconcileOrphanedSessionRetries(ctx context.Context, state *State, issues []connector.Issue, now time.Time) []connector.Issue {
+	sessions := make([]store.OrphanedAgentSession, 0, dispatchCandidateLookahead)
+	for range min(dispatchCandidateLookahead, state.orphanRetryQueue.Len()) {
+		entry := state.orphanRetryQueue.Front()
+		id, valid := entry.Value.(string)
+		if !valid {
+			panic("invalid orphan retry queue entry")
+		}
+		retry, ok := state.Retry[id]
+		if !ok || !retry.TrackerUnavailable || !retry.ResumeState.Orphaned {
+			state.orphanRetryQueue.Remove(entry)
+			delete(state.orphanRetryEntries, id)
+			continue
+		}
+		state.orphanRetryQueue.MoveToBack(entry)
+		if now.Before(retry.DueAt) {
+			continue
+		}
+		sessions = append(sessions, store.OrphanedAgentSession{
+			ResumeState: retry.ResumeState, WorkAttemptID: retry.RecoveryAttemptID,
+			IssueID: id, Identifier: retry.Issue.Identifier, IssueURL: retry.Issue.URL,
+			Lane: retry.Issue.State, WorkerHost: retry.WorkerHost, AttemptNumber: retry.Attempt - 1,
+		})
+	}
+	o.recoverOrphanedAgentSessions(ctx, state, sessions, now)
+	for _, session := range sessions {
+		retry, ok := state.Retry[session.IssueID]
+		if ok && retry.TrackerUnavailable && retry.ResumeState.Orphaned {
+			if !retry.DueAt.After(now) {
+				retry.Attempt++
+				retry.DueAt = now.Add(o.machineRetryDelay(retry.Attempt))
+				state.Retry[session.IssueID] = retry
+			}
+			continue
+		}
+		if entry := state.orphanRetryEntries[session.IssueID]; entry != nil {
+			state.orphanRetryQueue.Remove(entry)
+			delete(state.orphanRetryEntries, session.IssueID)
+		}
+		if ok && !retry.TrackerUnavailable {
+			issues = mergeIssueSlices([]connector.Issue{retry.Issue}, issues)
+		}
+	}
+	return slices.DeleteFunc(slices.Clone(issues), func(issue connector.Issue) bool {
+		retry := state.Retry[issue.ID]
+		return retry.TrackerUnavailable && retry.ResumeState.Orphaned
+	})
 }
 
 func (o *Orchestrator) orphanResumeEligible(issue connector.Issue, session store.OrphanedAgentSession, now time.Time) bool {
@@ -345,17 +424,18 @@ func (o *Orchestrator) startDurableWorkAttempt(
 	now time.Time,
 	workerHost string,
 	runMode string,
-	dispatchLoopStart dispatchLoopStartRecord,
+	completionSourceStart completionSourceStartRecord,
+	attemptPolicy policy.Descriptor,
 ) (int64, bool) {
 	if o == nil || o.workAttempts == nil {
 		return 0, true
 	}
 	metadata := map[string]any{"run_mode": strings.TrimSpace(runMode)}
-	if o.cfg.Policy.ID != "" {
-		metadata["policy"] = o.cfg.Policy
+	if attemptPolicy.ID != "" {
+		metadata["policy"] = attemptPolicy
 	}
-	if strings.TrimSpace(runMode) == runpkg.RunModeImplement || dispatchLoopStart.PRDiffFingerprint != "" {
-		metadata[dispatchLoopStartMetadataKey] = dispatchLoopStart
+	if strings.TrimSpace(runMode) == runpkg.RunModeImplement || completionSourceStart.PRDiffFingerprint != "" {
+		metadata[completionSourceStartMetadataKey] = completionSourceStart
 	}
 	start := store.WorkAttemptStart{
 		ProjectID:              strings.TrimSpace(o.cfg.Project.ID),
@@ -1136,8 +1216,8 @@ func runningWorkAttemptMetadataJSON(running Running, metadata map[string]any) st
 	if running.Cancellation != nil {
 		out["cancellation"] = running.Cancellation
 	}
-	if strings.TrimSpace(running.Mode) == runpkg.RunModeImplement || running.DispatchLoopStart.PRDiffFingerprint != "" {
-		out[dispatchLoopStartMetadataKey] = running.DispatchLoopStart
+	if strings.TrimSpace(running.Mode) == runpkg.RunModeImplement || running.CompletionSourceStart.PRDiffFingerprint != "" {
+		out[completionSourceStartMetadataKey] = running.CompletionSourceStart
 	}
 	for key, value := range metadata {
 		key = strings.TrimSpace(key)

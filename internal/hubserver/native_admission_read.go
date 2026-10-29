@@ -25,41 +25,56 @@ func admissionObservationPath(runner string, project tracker.ProjectID) string {
 	return "$.native_admission." + runner + "." + string(project)
 }
 
-func storeRunnerAdmissionObservation(ctx context.Context, tx *sql.Tx, scope nativeScope, observation *tracker.NativeAdmissionObservation, now time.Time) error {
+func prepareRunnerAdmissionObservation(observation *tracker.NativeAdmissionObservation, now time.Time) (string, error) {
 	if observation == nil {
-		return nil
+		return "", nil
 	}
 	if observation.RunnerRevision < 1 || !observation.ReceivedAt.IsZero() {
-		return nativeInvalid("Admission observation requires the observed runner revision")
+		return "", nativePublicInvalid("Admission observation requires the observed runner revision")
 	}
 	if err := validateNativeAdmissionContext(observation.Context); err != nil {
-		return err
+		return "", err
 	}
 	current := *observation
 	current.ReceivedAt = now
 	raw, err := json.Marshal(current)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if len(raw) > 8192 {
-		return nativeInvalid("Admission observation exceeds its bound")
+		return "", nativePublicInvalid("Admission observation exceeds its bound")
 	}
-	result, err := tx.ExecContext(ctx, "UPDATE machines SET capabilities_json=json_set(capabilities_json, ?, json(?)) WHERE id=? AND organization_id=?", admissionObservationPath(scope.credential.Runner.RunnerID, scope.project), string(raw), scope.credential.Runner.MachineID, scope.organization)
-	return requireRunnerUpdate(result, err)
+	return string(raw), nil
 }
 
-func readRunnerAdmissionObservation(ctx context.Context, q nativeQueryer, scope nativeScope, runner runnerauth.Runner, policyID string, now time.Time) (*tracker.NativeAdmissionContext, error) {
-	var raw string
-	if err := q.QueryRowContext(ctx, "SELECT COALESCE(json_extract(capabilities_json, ?), '') FROM machines WHERE id=? AND organization_id=?", admissionObservationPath(runner.RunnerID, scope.project), runner.MachineID, scope.organization).Scan(&raw); err != nil {
-		return nil, err
+func storeRunnerAdmissionObservation(ctx context.Context, tx *sql.Tx, scope nativeScope, observation *tracker.NativeAdmissionObservation, now time.Time) error {
+	raw, err := prepareRunnerAdmissionObservation(observation, now)
+	if err != nil {
+		return err
 	}
-	if raw == "" || len(raw) > 8192 {
-		return nil, nil //nolint:nilnil // Missing or unusable heartbeat evidence is a valid optional result.
+	return storeEncodedRunnerAdmission(ctx, tx, scope, raw)
+}
+
+func storeEncodedRunnerAdmission(ctx context.Context, tx *sql.Tx, scope nativeScope, raw string) error {
+	if raw == "" {
+		return nil
 	}
 	var observed tracker.NativeAdmissionObservation
 	if err := json.Unmarshal([]byte(raw), &observed); err != nil {
-		return nil, nil //nolint:nilnil // Missing or unusable heartbeat evidence is a valid optional result.
+		return err
 	}
+	if err := storeAdmissionFacts(ctx, tx, scope.credential.Runner.RunnerID, scope.project, observed); err != nil {
+		return err
+	}
+	return storeLegacyAdmission(ctx, tx, scope, raw)
+}
+
+func readRunnerAdmissionObservation(ctx context.Context, q nativeQueryer, scope nativeScope, runner runnerauth.Runner, policyID string, now time.Time) (*tracker.NativeAdmissionContext, error) {
+	observed, err := readAdmissionFacts(ctx, q, runner.RunnerID, scope.project, runner.MachineID, scope.organization)
+	if err != nil {
+		return nil, err
+	}
+
 	if validateNativeAdmissionContext(observed.Context) != nil || observed.RunnerRevision != runner.Revision || observed.ReceivedAt.IsZero() || now.Before(observed.ReceivedAt) || !now.Before(observed.ReceivedAt.Add(runnerauth.HeartbeatTimeout)) || now.Before(observed.Context.ObservedAt) || !now.Before(observed.Context.ObservedAt.Add(runnerauth.HeartbeatTimeout)) {
 		return nil, nil //nolint:nilnil // Missing or unusable heartbeat evidence is a valid optional result.
 	}
@@ -95,7 +110,7 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 		evidence.Scheduling.Outcome = "skipped"
 		evidence.Scheduling.Reason = nonExecutableReason
 	}
-	landingReady, landingCapacity, err := nativeLandingClaimCapacity(ctx, q, id, nativeLandingCapacityUnknown, now)
+	landingReady, landingCapacity, err := readAdmissionLandingCapacity(ctx, q, scope, id, evidence, now)
 	if err != nil {
 		return err
 	}
@@ -114,6 +129,9 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 			selectorSource = "registered_runner_published_context"
 		}
 		a := tracker.NativeRuntimeAdmission{RunnerID: r.RunnerID, RunnerRevision: r.Revision, PolicyID: policyID, Source: "native_claim_candidate_snapshot", ObservedAt: now, Outcome: "unknown", Reason: "Current native candidate predicates match; runner request selectors are unavailable", Unavailable: []string{}}
+		if truncated {
+			a.Unavailable = append(a.Unavailable, "capacity_projection_truncated")
+		}
 		refuse := func(code, reason string) {
 			a.Outcome, a.ReasonCode, a.Reason = "skipped", code, reason
 		}
@@ -144,6 +162,9 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 			if len(a.UnresolvedDependencies) > 0 {
 				a.Reason += "; observed required dependencies remain unfinished"
 			}
+		case !ready && slices.Contains(evidence.Unavailable, "change_gate_history_truncated"):
+			a.Reason = "Current Change gate evidence is incomplete"
+			a.Unavailable = append(a.Unavailable, "change_gate_history_truncated")
 		case !ready:
 			refuse("no_claimable_work", "Current Change version is not ready for native landing")
 		case !landingReady && landingCapacity != nativeLandingCapacityUnknown:
@@ -158,19 +179,32 @@ func readNativeAdmission(ctx context.Context, q nativeQueryer, scope nativeScope
 			if err != nil {
 				return err
 			}
+			if allowed && reason == "placement_capacity_unavailable" {
+				a.Unavailable = append(a.Unavailable, "placement_capacity")
+			}
 			if !allowed {
 				refuse("no_claimable_work", reason)
 				evidence.Admission = append(evidence.Admission, a)
 				continue
 			}
-			decision, _, err := checkMonthlyClaim(ctx, q, scope, r.MachineID, id, false, now)
-			if err != nil {
-				return err
-			}
-			if !decision.Allowed {
-				refuse("provider_capacity", monthlyBudgetRefusal(decision))
-				evidence.Admission = append(evidence.Admission, a)
-				continue
+			if explanationRead(ctx) {
+				available, err := explanationBudgetAvailable(ctx, q, scope)
+				if err != nil {
+					return err
+				}
+				if !available {
+					a.Unavailable = append(a.Unavailable, "monthly_budget_admission")
+				}
+			} else {
+				decision, _, err := checkMonthlyClaim(ctx, q, scope, r.MachineID, id, false, now)
+				if err != nil {
+					return err
+				}
+				if !decision.Allowed {
+					refuse("provider_capacity", monthlyBudgetRefusal(decision))
+					evidence.Admission = append(evidence.Admission, a)
+					continue
+				}
 			}
 			exclusions := r.Exclusions(scope.project, requirements, false)
 			if len(exclusions) > 0 {

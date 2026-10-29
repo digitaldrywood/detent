@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -29,7 +30,7 @@ func TestManagedCacheWorkerAdmission(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Mkdir(filepath.Join(root, ".detent-consumers.lock"), 0700); err != nil {
+		if err := os.RemoveAll(root); err != nil {
 			t.Fatal(err)
 		}
 		backend := &fakeCodexClient{}
@@ -44,7 +45,7 @@ func TestManagedCacheWorkerAdmission(t *testing.T) {
 	})
 	for _, cancelSecondTurn := range []bool{false, true} {
 		t.Run(fmt.Sprintf("cancel_second_turn=%t", cancelSecondTurn), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			ctx, cancel := context.WithCancel(testenv.WaitContext(t, t.Context()))
 			defer cancel()
 			root := t.TempDir()
 			cache, err := toolcache.NewManaged(ctx, root, filepath.Join(root, "runtime.db"))
@@ -59,6 +60,10 @@ func TestManagedCacheWorkerAdmission(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(entry, make([]byte, 2048), 0600); err != nil {
+				t.Fatal(err)
+			}
+			pin := filepath.Join(t.TempDir(), "active-output")
+			if err := os.Link(entry, pin); err != nil {
 				t.Fatal(err)
 			}
 			buildStarted, finishBuild := make(chan struct{}), make(chan struct{})
@@ -134,6 +139,9 @@ func TestManagedCacheWorkerAdmission(t *testing.T) {
 				}
 			} else {
 				close(secondTurn.finish)
+			}
+			if err := os.Remove(pin); err != nil {
+				t.Fatal(err)
 			}
 			close(finishBuild)
 			select {
@@ -244,6 +252,10 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name      string
@@ -327,7 +339,7 @@ func TestWithGoBudgetMergesWorkerEnvironment(t *testing.T) {
 			workspace: nonGo,
 			managed:   true,
 			variables: map[string]string{"A": "1"},
-			want:      map[string]string{"A": "1", "GOCACHE": cacheRoot},
+			want:      map[string]string{"A": "1", "GOCACHE": cacheRoot, "GOCACHEPROG": `"` + executable + `" __detent_go_cache`},
 		},
 		{
 			name:      "missing workspace leaves environment",

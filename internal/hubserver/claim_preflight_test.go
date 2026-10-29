@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -17,6 +18,9 @@ func TestClaimSelectionStaysOffTheWriter(t *testing.T) {
 	open := func(t *testing.T) (*Service, int64, int64) {
 		t.Helper()
 		service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: func() time.Time { return now }})
+		if err := service.stopGitHubWebhookMaintenance(); err != nil {
+			t.Fatal(err)
+		}
 		repositoryID, first := seedProjection(t, service.database.db)
 		if _, err := service.database.db.ExecContext(t.Context(), "UPDATE repositories SET last_reconciled_at = ? WHERE id = ?", formatHubTime(now), repositoryID); err != nil {
 			t.Fatal(err)
@@ -68,7 +72,7 @@ func TestClaimSelectionStaysOffTheWriter(t *testing.T) {
 				if !errors.Is(claimErr, ErrNoClaimableWork) {
 					t.Fatalf("refused claim error = %v, want no claimable work", claimErr)
 				}
-			case <-time.After(5 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatal("refused claim waited for the held writer")
 			}
 			if err := writer.Rollback(); err != nil {

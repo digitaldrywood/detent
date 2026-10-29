@@ -117,8 +117,8 @@ func TestReworkLiveDraftPromotion(t *testing.T) {
 			if waiting != tt.wantForge || waiting && condition.ErrorClass != forgeavailability.ClassWorkerGitHubCredentialUnavailable {
 				t.Fatalf("forge condition = %#v, waiting=%v, want %v", condition, waiting, tt.wantForge)
 			}
-			if len(state.Blocked) != 0 || len(state.RepeatedFailures) != 0 || len(state.InstantFailures) != 0 {
-				t.Fatal("draft-ready failure attributed to issue")
+			if len(state.Blocked) != 0 {
+				t.Fatalf("unexpected state after completion: retry=%+v blocked=%+v breaker=%+v", state.Retry, state.Blocked, state.FailureBreaker)
 			}
 			promoted := len(tracker.updates) > 0
 			if promoted != tt.wantPromote {

@@ -65,7 +65,7 @@ func repositoryRoot(t *testing.T) string {
 // use the ledger. Keep this list file-specific, including method values.
 func laneWriterAllowed(file string) bool {
 	switch file {
-	case "internal/orchestrator/lane_ledger.go", "internal/connector/githublocal/githublocal.go", "internal/connector/github/intake.go", "internal/connector/memory/memory.go", "internal/hubclient/native_connector.go":
+	case "internal/orchestrator/lane_ledger.go", "internal/testutil/fakehub/fakehub.go", "internal/hubclient/native_connector.go":
 		return true
 	}
 	return false
@@ -74,7 +74,7 @@ func laneWriterAllowed(file string) bool {
 // The doctor names retired reasons only to prove they are absent from the
 // runtime store. Keep this list file-specific.
 func retiredDetectorAllowed(file string) bool {
-	return file == "internal/cli/doctor_invariant_evidence.go"
+	return file == "internal/cli/doctor_invariant_evidence.go" || file == "internal/config/retired.go"
 }
 
 func checkSources(pkg *packages.Package, root string, policy sourcePolicy) []string {
@@ -155,6 +155,12 @@ func checkSources(pkg *packages.Package, root string, policy sourcePolicy) []str
 				if !checked || len(call.Args) <= index {
 					return true
 				}
+				if index >= 2 {
+					target := pkg.TypesInfo.Types[call.Args[index-2]].Value
+					if target != nil && target.Kind() == constant.String && strings.EqualFold(constant.StringVal(target), "Blocked") && fn.Name.Name != "blockHumanOwnedWorkerFailure" {
+						report(call.Pos(), "INV-1 machine writer cannot target Blocked")
+					}
+				}
 				value := pkg.TypesInfo.Types[call.Args[index]].Value
 				if value == nil {
 					dynamic = true
@@ -200,7 +206,15 @@ var retiredSymbolNormalizer = strings.NewReplacer("_", "", "-", "", " ", "")
 
 func retiredSymbol(text string) bool {
 	normalized := strings.ToLower(retiredSymbolNormalizer.Replace(text))
+	if normalized == "checkpointrequiresrecovery" || normalized == "usdbrakes" {
+		return true
+	}
 	for _, forbidden := range []string{
+		"operatorreturnretiredparks", "returnretiredparks", "parksummary", "parkcausesummary", "parktokentotals", "parkedattemptcount", "consecutivenoprogress", "noprogresslimit", "acknowledgedparksequence", "terminalattemptfailurelimit", "dispatchlimit", "consecutivedispatches", "parkevidence", "acknowledgeparks", "creditissueprogress", "terminalattemptretrylimit", "parkcausestale", "parkevidence", "noprogresstimeoutms", "noprogresstokenlimit", "noprogressspendlimitusd", "lifetimesessionlimit", "lifetimetokenlimit", "lifetimelimitoverridelabel", "parkreviewthreshold", "dispatchloop", "enforcelifetimelimits", "legacyfailurebreakerbackenderror", "repeatedfailurecircuitbreaker", "instantfailurecircuitbreaker", "spendsinceprogresscircuitbreaker", "tokenceilingcircuitbreaker",
+		"tripinstantfailurecircuitbreaker", "triprepeatedfailurecircuitbreaker", "triptokenceilingcircuitbreaker", "parkinstantfailure", "parkrepeatedfailure", "evaluatespendprogress", "blockspendprogress", "spendprogressbaseline", "dispatchloopblockmessage",
+		"nativecandidaterecordeddependenciessatisfied", "nativereviewconversationrefusalstands", "retainunacknowledgedrecoveryparks", "trackerrecoveryparkhold", "publishtrackerrecoverypark", "issuestickyblockreason", "dependencyautounblockalreadyconsumed",
+		"externaleffectuncertain",
+		"reconcilepersistentlymissingrequiredcheckpark", "reconcilelifetimelimitpark", "reconcilerepeatedfailuregithubrestbudgetpark", "reconcileattempttriagepark", "reconcilelegacydeliverablecredentialpark", "reconcileobsoleteartifactspendprogresspark", "reconcileinvalidworkpadpark", "reconcileblockedreadypullrequest", "derivecurrentbreakerrecoverypark", "normalizecurrentbreakerrecoverypark",
 		"workerlanerevocation", "indeterminatelanestop", "laneindeterminatestop", "stopindeterminatelane", "laneoriginindeterminate",
 		"readlandingbarrier", "runlandingbarrier", "nextlandingbarrier", "repairlandingbarrier", "landingbarrierculprit", "revertlandingbarriercommit",
 	} {

@@ -2,10 +2,12 @@ package hubserver
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -32,7 +34,11 @@ type batchFixture struct {
 
 func newBatchFixture(t *testing.T) *batchFixture {
 	t.Helper()
-	f := linkedFixture(t)
+	return newBatchFixtureForProject(t, linkedFixture(t))
+}
+
+func newBatchFixtureForProject(t *testing.T, f nativeFixture) *batchFixture {
+	t.Helper()
 	f.service.config.ImportBackend = nil
 	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE repositories SET github_owner='example-org', github_name='example-project' WHERE github_node_id='R_repo'"); err != nil {
 		t.Fatal(err)
@@ -138,11 +144,25 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 		rateLimit      bool
 		mcp            bool
 		importDisabled bool
-	}{{name: "partial import and native edit"}, {name: "429 after first import", rateLimit: true}, {name: "explicit mixed open and closed history", closed: true}, {name: "MCP bounded intake receipts and authority", mcp: true}, {name: "manual import disabled", importDisabled: true}} {
+		projectLane    string
+		unmapped       bool
+	}{{name: "partial import and native edit"}, {name: "429 after first import", rateLimit: true}, {name: "explicit mixed open and closed history", closed: true}, {name: "MCP bounded intake receipts and authority", mcp: true}, {name: "manual import disabled", importDisabled: true}, {name: "corrected project mapping for precreated issue", projectLane: "Backlog"}, {name: "corrected dispatchable project mapping requires confirmation", projectLane: "Todo"}, {name: "corrected unmapped project status uses destination", projectLane: "Backlog", unmapped: true}} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newBatchFixture(t)
-			f.preview(t, test.closed)
+			if test.projectLane == "" {
+				f.preview(t, test.closed)
+			} else {
+				source := &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Blocked"}}
+				f.command(t, tracker.GitHubBatchCommand{Action: "discover", ProjectV2: source}, http.StatusOK)
+				page := tracker.GitHubDiscoveryPage{Total: 3}
+				for _, number := range []int{12, 13, 14} {
+					preview := previewIssue(number, false)
+					preview.ProjectStatus = "Ready"
+					page.Issues = append(page.Issues, preview)
+				}
+				f.report(t, tracker.GitHubBatchResult{Page: &page}, http.StatusOK)
+			}
 			if test.importDisabled {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET github_intake='disabled' WHERE id=?", f.project.ID); err != nil {
 					t.Fatal(err)
@@ -244,7 +264,16 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 			if test.rateLimit {
 				deadline = time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
 			}
-			f.report(t, tracker.GitHubBatchResult{Number: 13, Error: "Source context incomplete: private access or partial page", RetryAt: deadline}, http.StatusOK)
+			if test.projectLane != "" {
+				invalidSnapshot := batchSnapshot(13)
+				invalidSnapshot.Comments = append(invalidSnapshot.Comments, invalidSnapshot.Comments[0])
+				f.report(t, tracker.GitHubBatchResult{Number: 13, Snapshot: &invalidSnapshot}, http.StatusOK)
+				if f.batch.Items[1].Status != "failed" || f.batch.Items[1].WorkItemID == "" {
+					t.Fatalf("expected failed precreated import: %+v", f.batch.Items[1])
+				}
+			} else {
+				f.report(t, tracker.GitHubBatchResult{Number: 13, Error: "Source context incomplete: private access or partial page", RetryAt: deadline}, http.StatusOK)
+			}
 			if !test.rateLimit {
 				snapshot = batchSnapshot(14)
 				f.report(t, tracker.GitHubBatchResult{Number: 14, Snapshot: &snapshot}, http.StatusOK)
@@ -271,6 +300,9 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 			var native tracker.NativeIssue
 			decodeHubResponse(t, response, &native)
 			title, body := "Native task title", "Native body during retry"
+			if test.projectLane == "Todo" {
+				body += issueContractTestSections
+			}
 			edit := tracker.UpdateIssue{Mutation: tracker.Mutation{IdempotencyKey: "native-edit"}, ExpectedRevision: native.Revision, Title: &title, Body: &body}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, f.base+"/work-items/"+string(id), f.token, edit), http.StatusOK)
 			if test.rateLimit {
@@ -287,7 +319,23 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			f.command(t, tracker.GitHubBatchCommand{Action: "retry"}, http.StatusOK)
+			retry := tracker.GitHubBatchCommand{Action: "retry"}
+			if test.projectLane != "" {
+				retry.ProjectV2 = &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": test.projectLane}}
+				if test.unmapped {
+					retry.ProjectV2.StatusLanes = map[string]string{"Other": "Blocked"}
+				}
+				if test.projectLane == "Todo" {
+					f.command(t, retry, http.StatusUnprocessableEntity)
+					response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(id), f.token, nil)
+					decodeHubResponse(t, response, &native)
+					if native.State != "Blocked" || f.batch.Items[1].Status != "failed" || f.heartbeat(t) != nil {
+						t.Fatalf("unconfirmed retry changed routing: issue=%+v item=%+v", native, f.batch.Items[1])
+					}
+					retry.AllowDispatch = true
+				}
+			}
+			f.command(t, retry, http.StatusOK)
 			snapshot = batchSnapshot(13)
 			f.report(t, tracker.GitHubBatchResult{Number: 13, Snapshot: &snapshot}, http.StatusOK)
 			if test.rateLimit {
@@ -301,8 +349,22 @@ func TestGitHubBatchIntakeRetryAndNativeOwnership(t *testing.T) {
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(id), f.token, nil)
 			decodeHubResponse(t, response, &native)
-			if native.Title != title || native.Body != body || native.State != "Backlog" || native.LinkedSource.Status != "complete" {
-				t.Fatalf("native ownership = %#v", native)
+			wantLane := "Backlog"
+			if test.projectLane != "" {
+				wantLane = test.projectLane
+				for _, index := range []int{0, 2} {
+					completed, _, err := readNativeIssue(t.Context(), f.service.database.db, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, string(f.batch.Items[index].WorkItemID))
+					if err != nil || completed.State != "Blocked" || f.batch.Items[index].Status != "completed" {
+						t.Fatalf("corrected mapping changed completed issue: %+v error=%v", completed, err)
+					}
+				}
+				unmapped := f.batch.Items[1].UnmappedProjectStatus
+				if (unmapped != nil) != test.unmapped || test.unmapped && *unmapped != "Ready" {
+					t.Fatalf("corrected mapping report=%+v", f.batch.Items[1])
+				}
+			}
+			if native.WorkItemID != id || native.Title != title || native.Body != body || native.State != wantLane || native.LinkedSource.Status != "complete" {
+				t.Fatalf("native ownership = %#v item=%+v", native, f.batch.Items[1])
 			}
 			var comments, count int
 			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", id).Scan(&comments); err != nil {
@@ -348,9 +410,59 @@ func TestGitHubBatchDiscoveryFailureAndSourceValidation(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/onboarding/issue-intake/result", other.redemption.Credential, request), http.StatusNotFound)
 }
 
+func TestGitHubBatchRunnerOperations(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		known      any
+		operations string
+		heartbeat  bool
+		status     int
+	}{
+		{"typed grant overrides payload refusal", true, `[]`, true, http.StatusOK},
+		{"typed refusal overrides payload grant", true, `["heartbeat"]`, false, http.StatusUnprocessableEntity},
+		{"unknown operations evaluate legacy grant", nil, `["heartbeat"]`, false, http.StatusOK},
+		{"unknown operations evaluate legacy refusal", nil, `[]`, false, http.StatusUnprocessableEntity},
+		{"unknown operations ignore incomplete typed grant", nil, `[]`, true, http.StatusUnprocessableEntity},
+		{"unknown malformed operations refuse", nil, `[1]`, true, http.StatusInternalServerError},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newBatchFixture(t)
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			d := f.service.database
+			if _, err := d.db.ExecContext(t.Context(), `DELETE FROM runner_operations WHERE runner_id=? AND operation='heartbeat'`, f.runner.binding.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			if test.heartbeat {
+				if _, err := d.db.ExecContext(t.Context(), `INSERT INTO runner_operations(runner_id,operation) VALUES(?,'heartbeat')`, f.runner.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := d.db.ExecContext(t.Context(), `UPDATE runner_identities SET operations_known=?,operations_json=? WHERE id=?`, test.known, test.operations, f.runner.binding.RunnerID); err != nil {
+				t.Fatal(err)
+			}
+			f.command(t, tracker.GitHubBatchCommand{Action: "discover"}, test.status)
+			batch, err := readGitHubBatch(t.Context(), d.reader, nativeScope{organization: f.project.OrganizationID, project: f.project.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.status == http.StatusOK {
+				if batch == nil || batch.RunnerID != f.runner.binding.RunnerID || batch.Status != "discovering" {
+					t.Fatalf("authorized runner did not receive discovery: %+v", batch)
+				}
+			} else if batch != nil {
+				t.Fatalf("refused runner created a batch: %+v", batch)
+			}
+		})
+	}
+}
+
 func TestGitHubBatchSkipsLinkedAndLegacyImportedIdentity(t *testing.T) {
 	t.Parallel()
-	for _, mode := range []string{"linked URL", "legacy source key", "stable provenance identity"} {
+	for _, mode := range []string{"linked URL", "legacy source key", "stable provenance identity", "unknown provenance identity"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			f := newBatchFixture(t)
@@ -366,10 +478,15 @@ func TestGitHubBatchSkipsLinkedAndLegacyImportedIdentity(t *testing.T) {
 				r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items", testHubAdminToken, tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: "prior-import"}, Title: "Native edits on old import", Body: "Preserved", State: "Backlog", Provenance: &snapshot.Provenance})
 				requireNativeStatus(t, r, http.StatusOK)
 				decodeHubResponse(t, r, &existing)
-				if mode == "stable provenance identity" {
+				if mode == "stable provenance identity" || mode == "unknown provenance identity" {
 					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET native_source_key='github:old-url' WHERE native_id=?", existing.WorkItemID); err != nil {
 						t.Fatal(err)
 					}
+				}
+			}
+			if mode == "unknown provenance identity" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET provenance_provider=NULL,provenance_external_id=NULL WHERE native_id=?`, existing.WorkItemID); err != nil {
+					t.Fatal(err)
 				}
 			}
 			f.preview(t, false)
@@ -391,11 +508,17 @@ func TestGitHubBatchSkipsLinkedAndLegacyImportedIdentity(t *testing.T) {
 func TestGitHubBatchHonorsFirstRunIntakeWithoutAnotherSourceRead(t *testing.T) {
 	t.Parallel()
 	f := newBatchFixture(t)
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
 	f.preview(t, false)
 	f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Todo", AllowDispatch: true}, http.StatusOK)
 	item := f.batch.Items[0]
 	r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(item.WorkItemID)+"/source-intake", testHubAdminToken, tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "first-run-intake"}, Snapshot: batchSnapshot(12)})
 	requireNativeStatus(t, r, http.StatusOK)
+	if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	if task := f.heartbeat(t); task != nil {
 		t.Fatalf("one-time hydration already complete; task=%#v", task)
 	}
@@ -404,6 +527,59 @@ func TestGitHubBatchHonorsFirstRunIntakeWithoutAnotherSourceRead(t *testing.T) {
 	decodeHubResponse(t, r, &view)
 	if view.Batch.Status != "finished" || view.Batch.Items[0].Status != "completed" {
 		t.Fatalf("batch did not retain existing completion: %#v", view)
+	}
+}
+
+func TestHeartbeatDoesNotReconcileGitHubBatchItems(t *testing.T) {
+	t.Parallel()
+	for _, hydrated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("hydrated=%t", hydrated), func(t *testing.T) {
+			t.Parallel()
+			f := newBatchFixture(t)
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			f.preview(t, false)
+			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12}, Destination: "Todo", AllowDispatch: true}, http.StatusOK)
+			if hydrated {
+				r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.batch.Items[0].WorkItemID)+"/source-intake", testHubAdminToken, tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "first-run-intake"}, Snapshot: batchSnapshot(12)})
+				requireNativeStatus(t, r, http.StatusOK)
+			}
+			f.service.tokenUseWork.Wait()
+			var statements []string
+			timing := &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+				statements = append(statements, query)
+			}}
+			now := f.service.config.now().Add(time.Minute)
+			f.service.config.now = func() time.Time { return now }
+			f.service.database.now = f.service.config.now
+			request := newHubAPIRequest(t, http.MethodPost, f.base+"/machines/"+string(f.runner.binding.MachineID)+"/heartbeat", f.runner.redemption.Credential, map[string]any{"version": "test", "capacity": 2})
+			response := httptest.NewRecorder()
+			f.service.Handler().ServeHTTP(response, request.WithContext(withRequestTiming(t.Context(), timing)))
+			requireNativeStatus(t, response, http.StatusOK)
+			for _, query := range statements {
+				if strings.Contains(query, "linked_issue_sources") || strings.Contains(query, "INSERT INTO onboarding_issue_intake") || strings.Contains(query, "UPDATE onboarding_issue_intake") {
+					t.Errorf("heartbeat performed batch item work: %s", query)
+				}
+			}
+			var capacity int
+			var heartbeat string
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT reported_capacity,last_heartbeat_at FROM runner_identities WHERE id=?", f.runner.binding.RunnerID).Scan(&capacity, &heartbeat); err != nil {
+				t.Fatal(err)
+			}
+			if capacity != 2 || heartbeat != formatHubTime(now) {
+				t.Fatalf("capacity=%d heartbeat=%s want capacity=2 heartbeat=%s", capacity, heartbeat, formatHubTime(now))
+			}
+			batch, err := readGitHubBatch(t.Context(), f.service.database.reader, nativeScope{project: f.project.ID})
+			if err != nil || batch == nil || batch.Revision != f.batch.Revision || batch.Items[0].Status != "pending" {
+				t.Fatalf("heartbeat changed batch: %+v error=%v", batch, err)
+			}
+			var snapshot runnerauth.RoutingSnapshot
+			decodeHubResponse(t, response, &snapshot)
+			if snapshot.GitHubIntake == nil || snapshot.GitHubIntake.Item.Number != 12 {
+				t.Fatalf("pending runner task lost: %+v", snapshot.GitHubIntake)
+			}
+		})
 	}
 }
 
@@ -593,13 +769,30 @@ func TestGitHubBatchAppPagesAndPartialRetry(t *testing.T) {
 func TestGitHubBatchLabelLaneConfirmation(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name    string
-		labels  []string
-		mapping map[string]string
-		allow   bool
-		ignore  bool
-		lane    string
+		name          string
+		project       *tracker.GitHubProjectV2Source
+		projectStatus string
+		fallback      bool
+		selective     bool
+		rejected      bool
+		unmapped      bool
+		labels        []string
+		mapping       map[string]string
+		allow         bool
+		ignore        bool
+		lane          string
 	}{
+		{name: "mapped project status", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Blocked"}}, projectStatus: "Ready", lane: "Blocked"},
+		{name: "unmapped project status", labels: []string{"bug", "detent:blocked"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Blocked"}}, projectStatus: "Unknown", unmapped: true, lane: "Backlog"},
+		{name: "missing project status", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Blocked"}}, unmapped: true, lane: "Backlog"},
+		{name: "project status overrides lane label", labels: []string{"bug", "detent:blocked"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Todo"}}, projectStatus: "Ready", allow: true, lane: "Todo"},
+		{name: "dispatchable project mapping requires authorization", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Todo"}}, projectStatus: "Ready", rejected: true},
+		{name: "runner fallback project mapping", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Blocked"}}, projectStatus: "Ready", fallback: true, lane: "Blocked"},
+		{name: "selected project mapping", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Blocked"}}, projectStatus: "Ready", fallback: true, selective: true, lane: "Blocked"},
+		{name: "selected unmapped project status", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Blocked"}}, projectStatus: "Unknown", unmapped: true, fallback: true, selective: true, lane: "Backlog"},
+		{name: "unknown project lane refused", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source", StatusLanes: map[string]string{"Ready": "Unknown"}}, rejected: true},
+		{name: "missing project identifier refused", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{StatusLanes: map[string]string{"Ready": "Blocked"}}, rejected: true},
+		{name: "missing project mappings refused", labels: []string{"bug"}, project: &tracker.GitHubProjectV2Source{ID: "PVT_source"}, rejected: true},
 		{name: "default destination", labels: []string{"bug"}, lane: "Backlog"},
 		{name: "lane label", labels: []string{"bug", "detent:todo"}, allow: true, lane: "Todo"},
 		{name: "hyphenated lane label", labels: []string{"bug", "detent:in-progress"}, allow: true, lane: "In Progress"},
@@ -612,14 +805,48 @@ func TestGitHubBatchLabelLaneConfirmation(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newBatchFixture(t)
-			f.service.config.ImportBackend = scheduledContractImporter(func(context.Context, GitHubImportRequest) (GitHubImportPage, error) {
-				preview := previewIssue(12, false)
-				snapshot := batchSnapshot(12)
-				preview.Labels, preview.Snapshot = test.labels, &snapshot
-				return GitHubImportPage{BatchPage: &tracker.GitHubDiscoveryPage{Total: 1, Issues: []tracker.GitHubIssuePreview{preview}}}, nil
-			})
-			f.command(t, tracker.GitHubBatchCommand{Action: "start", Destination: "Backlog", AllowDispatch: test.allow, LabelLanes: test.mapping, IgnoreLanes: test.ignore}, http.StatusOK)
-			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+			preview := previewIssue(12, false)
+			snapshot := batchSnapshot(12)
+			preview.Labels, preview.Snapshot, preview.ProjectStatus = test.labels, &snapshot, test.projectStatus
+			page := tracker.GitHubDiscoveryPage{Total: 1, Issues: []tracker.GitHubIssuePreview{preview}}
+			if !test.fallback {
+				f.service.config.ImportBackend = scheduledContractImporter(func(_ context.Context, request GitHubImportRequest) (GitHubImportPage, error) {
+					if request.Discovery == nil || (request.Discovery.ProjectV2 == nil) != (test.project == nil) {
+						t.Fatalf("discovery lost project source: %+v", request.Discovery)
+					}
+					return GitHubImportPage{BatchPage: &page}, nil
+				})
+			}
+			command := tracker.GitHubBatchCommand{Action: "start", Destination: "Backlog", AllowDispatch: test.allow, LabelLanes: test.mapping, IgnoreLanes: test.ignore, ProjectV2: test.project}
+			status := http.StatusOK
+			if test.rejected {
+				status = http.StatusUnprocessableEntity
+			}
+			if test.selective {
+				command.Action = "discover"
+			}
+			f.command(t, command, status)
+			if test.rejected {
+				var imported int
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM issues WHERE project_id=? AND github_number=12", f.project.ID).Scan(&imported); err != nil {
+					t.Fatal(err)
+				}
+				if imported != 0 || f.heartbeat(t) != nil {
+					t.Fatalf("refused mapping imported %d issues or scheduled work", imported)
+				}
+				return
+			}
+			if test.fallback {
+				task := f.heartbeat(t)
+				if task == nil || task.Discovery == nil || task.Discovery.ProjectV2 == nil || task.Discovery.ProjectV2.ID != "PVT_source" || task.Discovery.ProjectV2.StatusLanes["Ready"] != "Blocked" {
+					t.Fatalf("runner discovery lost mapping: %+v", task)
+				}
+				f.report(t, tracker.GitHubBatchResult{Page: &page}, http.StatusOK)
+				if test.selective {
+					f.command(t, tracker.GitHubBatchCommand{Action: "apply", Destination: "Backlog", Numbers: []int{12}}, http.StatusOK)
+				}
+				f.report(t, tracker.GitHubBatchResult{Results: []tracker.GitHubBatchItemResult{{Number: 12, Snapshot: &snapshot}}}, http.StatusOK)
+			} else if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
@@ -628,6 +855,9 @@ func TestGitHubBatchLabelLaneConfirmation(t *testing.T) {
 				t.Fatal(err)
 			}
 			item := batch.Items[0]
+			if (item.UnmappedProjectStatus != nil) != test.unmapped || test.unmapped && *item.UnmappedProjectStatus != test.projectStatus {
+				t.Fatalf("unmapped Status report: %+v", item)
+			}
 			issue, _, err := readNativeIssue(t.Context(), f.service.database.db, scope, string(item.WorkItemID))
 			if err != nil {
 				t.Fatalf("item=%+v: %v", item, err)
@@ -646,16 +876,39 @@ func TestGitHubBatchLabelLaneConfirmation(t *testing.T) {
 func TestGitHubBatchAppFallbackAndThrottle(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name      string
-		sourceErr error
-		fallback  bool
+		name           string
+		sourceErr      error
+		fallback       bool
+		projection     bool
+		owned          any
+		status         any
+		payloadUnowned bool
+		payloadStatus  string
+		skipped        bool
+		malformed      bool
 	}{
 		{name: "App lacks repository access", sourceErr: githubconnector.ErrNotFound, fallback: true},
 		{name: "App throttle retains deadline", sourceErr: &githubconnector.StatusError{StatusCode: 429, RetryAfter: time.Hour, Err: githubconnector.ErrRateLimited}},
+		{name: "typed ownership refusal overrides active payload", projection: true, owned: false, status: "discovering", skipped: true},
+		{name: "typed status refusal overrides active payload", projection: true, owned: true, status: "finished", skipped: true},
+		{name: "unknown status preserves typed ownership refusal", projection: true, owned: false, skipped: true},
+		{name: "unknown ownership preserves typed status refusal", projection: true, status: "finished", skipped: true},
+		{name: "unknown projections evaluate active payload", projection: true, sourceErr: githubconnector.ErrNotFound, fallback: true},
+		{name: "unknown ownership evaluates active payload", projection: true, status: "discovering", sourceErr: githubconnector.ErrNotFound, fallback: true},
+		{name: "unknown status evaluates active payload", projection: true, owned: true, sourceErr: githubconnector.ErrNotFound, fallback: true},
+		{name: "unknown ownership evaluates payload refusal", projection: true, status: "discovering", payloadUnowned: true, skipped: true},
+		{name: "unknown status evaluates payload refusal", projection: true, owned: true, payloadStatus: "finished", skipped: true},
+		{name: "typed importing status selects batch", projection: true, owned: true, status: "importing", sourceErr: githubconnector.ErrNotFound, fallback: true},
+		{name: "unknown projections evaluate ownership refusal", projection: true, payloadUnowned: true, skipped: true},
+		{name: "unknown projections evaluate status refusal", projection: true, payloadStatus: "finished", skipped: true},
+		{name: "unknown malformed projections refuse evaluation", projection: true, malformed: true, skipped: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			f := newBatchFixture(t)
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
 			reads := 0
 			f.service.config.ImportBackend = scheduledContractImporter(func(context.Context, GitHubImportRequest) (GitHubImportPage, error) {
 				reads++
@@ -668,15 +921,39 @@ func TestGitHubBatchAppFallbackAndThrottle(t *testing.T) {
 				t.Fatal(err)
 			}
 			batch.RunnerID = ""
+			if test.payloadUnowned {
+				batch.HubOwned = false
+			}
+			if test.payloadStatus != "" {
+				batch.Status = test.payloadStatus
+			}
 			raw, err := json.Marshal(batch)
 			if err != nil {
 				t.Fatal(err)
 			}
+			if test.malformed {
+				raw = []byte(`{"hub_owned":"unknown","status":"discovering"}`)
+			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE onboarding_issue_intake SET request_json=? WHERE project_id=?", raw, f.project.ID); err != nil {
 				t.Fatal(err)
 			}
-			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
-				t.Fatal(err)
+			if test.projection {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE onboarding_issue_intake SET hub_owned=?,batch_status=? WHERE project_id=?", test.owned, test.status, f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := f.service.maintainGitHubBatches(t.Context()); (err != nil) != test.malformed {
+				t.Fatalf("maintenance error=%v, want malformed refusal=%t", err, test.malformed)
+			}
+			if test.skipped {
+				var stored string
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT request_json FROM onboarding_issue_intake WHERE project_id=?", f.project.ID).Scan(&stored); err != nil {
+					t.Fatal(err)
+				}
+				if reads != 0 || stored != string(raw) {
+					t.Fatalf("ineligible batch advanced: reads=%d batch=%s", reads, stored)
+				}
+				return
 			}
 			batch, err = readGitHubBatch(t.Context(), f.service.database.db, scope)
 			if err != nil {
@@ -704,19 +981,264 @@ func TestGitHubBatchAppFallbackAndThrottle(t *testing.T) {
 	}
 }
 
+func TestGitHubBatchMaintenanceTraversal(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, intake, payload             string
+		legacy, malformed, invalidProject bool
+	}{
+		{name: "disabled intake", intake: "disabled"},
+		{name: "legacy ownership refusal", intake: "manual", payload: `{"hub_owned":false,"status":"discovering"}`, legacy: true},
+		{name: "legacy status refusal", intake: "manual", payload: `{"hub_owned":true,"status":"finished"}`, legacy: true},
+		{name: "malformed legacy batch", intake: "manual", payload: `{"hub_owned":"unknown","status":"discovering"}`, legacy: true, malformed: true},
+		{name: "invalid project integration", intake: "manual", invalidProject: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newBatchFixture(t)
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			reads := 0
+			f.service.config.ImportBackend = scheduledContractImporter(func(context.Context, GitHubImportRequest) (GitHubImportPage, error) {
+				reads++
+				return GitHubImportPage{BatchPage: &tracker.GitHubDiscoveryPage{}}, nil
+			})
+			f.command(t, tracker.GitHubBatchCommand{Action: "discover"}, http.StatusOK)
+			d := f.service.database
+			exec := func(statement string, args ...any) {
+				t.Helper()
+				if _, err := d.db.ExecContext(t.Context(), statement, args...); err != nil {
+					t.Fatal(err)
+				}
+			}
+			raw, err := json.Marshal(f.batch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload := string(raw)
+			var owned, status any = true, "discovering"
+			if test.legacy {
+				payload, owned, status = test.payload, nil, nil
+			}
+			for index := range githubBatchMaintenanceLimit {
+				project := fmt.Sprintf("batch-prefix-%03d", index)
+				exec(`INSERT INTO projects(id,organization_id,name,profile,states_json,created_at,github_intake,github_repository_enabled) SELECT ?,organization_id,?,profile,states_json,created_at,?,0 FROM projects WHERE id=?`, project, project, test.intake, f.project.ID)
+				exec(`INSERT INTO onboarding_issue_intake(project_id,request_json,hub_owned,batch_status) VALUES(?,?,?,?)`, project, payload, owned, status)
+			}
+			if test.invalidProject {
+				exec(`UPDATE projects SET states_json='{}' WHERE id LIKE 'batch-prefix-%'`)
+			}
+			wantError := test.malformed || test.invalidProject
+			if err := f.service.maintainGitHubBatches(t.Context()); (err != nil) != wantError {
+				t.Fatalf("first tick error=%v, want refusal=%t", err, wantError)
+			}
+			if reads != 0 {
+				t.Fatalf("first tick exceeded the project budget: source reads=%d", reads)
+			}
+			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			batch, err := readGitHubBatch(t.Context(), d.reader, scope)
+			if err != nil || batch == nil || batch.Status != "preview" || reads != 1 {
+				t.Fatalf("later project did not progress: batch=%+v reads=%d error=%v", batch, reads, err)
+			}
+			exec(`UPDATE projects SET github_intake='manual',states_json=(SELECT states_json FROM projects WHERE id=?) WHERE id='batch-prefix-000'`, f.project.ID)
+			exec(`UPDATE onboarding_issue_intake SET request_json=?,hub_owned=1,batch_status='discovering' WHERE project_id='batch-prefix-000'`, string(raw))
+			if err := f.service.maintainGitHubBatches(t.Context()); (err != nil) != wantError {
+				t.Fatalf("wrapped tick error=%v, want refusal=%t", err, wantError)
+			}
+			scope.project = "batch-prefix-000"
+			batch, err = readGitHubBatch(t.Context(), d.reader, scope)
+			if err != nil || batch == nil || batch.Status != "preview" || reads != 2 {
+				t.Fatalf("re-enabled project did not progress after wrap: batch=%+v reads=%d error=%v", batch, reads, err)
+			}
+		})
+	}
+}
+
+func TestGitHubBatchMaintenanceReconcilesRunnerProjects(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct{ backend, legacy bool }{{}, {backend: true}, {legacy: true}} {
+		t.Run(fmt.Sprintf("backend=%t/legacy=%t", test.backend, test.legacy), func(t *testing.T) {
+			t.Parallel()
+			first := newBatchFixture(t)
+			if err := first.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			second := newBatchFixtureForProject(t, newNativeFixture(t, first.service, first.project.OrganizationID, "second-batch"))
+			fixtures := []*batchFixture{first, second}
+			for _, f := range fixtures {
+				f.preview(t, false)
+				f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: []int{12, 13}, Destination: "Todo", AllowDispatch: true}, http.StatusOK)
+				r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.batch.Items[0].WorkItemID)+"/source-intake", testHubAdminToken, tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "first-run-intake"}, Snapshot: batchSnapshot(12)})
+				requireNativeStatus(t, r, http.StatusOK)
+				if test.legacy {
+					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE onboarding_issue_intake SET batch_status=NULL WHERE project_id=?", f.project.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if test.backend {
+				first.service.config.ImportBackend = scheduledContractImporter(func(context.Context, GitHubImportRequest) (GitHubImportPage, error) {
+					t.Error("runner-owned batch used the Hub import transport")
+					return GitHubImportPage{}, nil
+				})
+			}
+			d := first.service.database
+			for index := range githubBatchMaintenanceLimit {
+				project := fmt.Sprintf("batch-prefix-%03d", index)
+				if _, err := d.db.ExecContext(t.Context(), `INSERT INTO projects(id,organization_id,name,profile,states_json,created_at) SELECT ?,organization_id,?,profile,states_json,created_at FROM projects WHERE id=?`, project, project, first.project.ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := d.db.ExecContext(t.Context(), `INSERT INTO onboarding_issue_intake(project_id,request_json,hub_owned,batch_status) VALUES(?,'{"status":"importing"}',0,'importing')`, project); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for tick := range 2 {
+				var probes, writes int
+				ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+					if strings.Contains(query, "FROM linked_issue_sources") {
+						if d.db.Stats().InUse != 0 {
+							t.Error("completion probe held the writer")
+						}
+						probes++
+					}
+					if strings.HasPrefix(query, "UPDATE onboarding_issue_intake") {
+						writes++
+					}
+				}})
+				if err := first.service.maintainGitHubBatches(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if probes != tick*4 || writes != tick*2 {
+					t.Fatalf("tick=%d probes=%d writes=%d want probes=%d writes=%d", tick, probes, writes, tick*4, tick*2)
+				}
+				for _, f := range fixtures {
+					batch, err := readGitHubBatch(t.Context(), d.reader, nativeScope{project: f.project.ID})
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := "pending"
+					if tick == 1 {
+						want = "completed"
+					}
+					if batch.Items[0].Status != want || batch.Items[1].Status != "pending" || batch.Status != "importing" {
+						t.Fatalf("tick=%d project=%s batch=%+v", tick, f.project.ID, batch)
+					}
+				}
+			}
+			for _, f := range fixtures {
+				r := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.batch.Items[1].WorkItemID)+"/source-intake", testHubAdminToken, tracker.GitHubIntake{Mutation: tracker.Mutation{IdempotencyKey: "second-run-intake"}, Snapshot: batchSnapshot(13)})
+				requireNativeStatus(t, r, http.StatusOK)
+			}
+			if err := first.service.maintainGitHubBatches(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if err := first.service.maintainGitHubBatches(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range fixtures {
+				batch, err := readGitHubBatch(t.Context(), d.reader, nativeScope{project: f.project.ID})
+				if err != nil || batch == nil || batch.Status != "finished" || batch.Items[1].Status != "completed" {
+					t.Fatalf("project=%s did not finish: batch=%+v error=%v", f.project.ID, batch, err)
+				}
+				if task := f.heartbeat(t); task != nil {
+					t.Fatalf("completed batch delivered task: %+v", task)
+				}
+			}
+		})
+	}
+}
+
+func TestGitHubBatchMaintenanceItemBudgetAndConcurrentResult(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		items      int
+		concurrent bool
+	}{{name: "item budget", items: githubBatchMaintenanceLimit + 1}, {name: "concurrent result", items: 2, concurrent: true}} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newBatchFixture(t)
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			f.command(t, tracker.GitHubBatchCommand{Action: "discover"}, http.StatusOK)
+			var numbers []int
+			for start := 1; start <= test.items; start += 100 {
+				page := tracker.GitHubDiscoveryPage{Total: test.items}
+				for number := start; number <= min(start+99, test.items); number++ {
+					page.Issues = append(page.Issues, previewIssue(number, false))
+					numbers = append(numbers, number)
+				}
+				if start+100 <= test.items {
+					page.NextCursor = strconv.Itoa(start + 100)
+				}
+				if start > 1 {
+					f.command(t, tracker.GitHubBatchCommand{Action: "more"}, http.StatusOK)
+				}
+				f.report(t, tracker.GitHubBatchResult{Page: &page}, http.StatusOK)
+			}
+			f.command(t, tracker.GitHubBatchCommand{Action: "apply", Numbers: numbers}, http.StatusOK)
+			d := f.service.database
+			if _, err := d.db.ExecContext(t.Context(), "UPDATE linked_issue_sources SET snapshot_json='{}' WHERE work_item_id IN (SELECT native_id FROM issues WHERE project_id=?)", f.project.ID); err != nil {
+				t.Fatal(err)
+			}
+			probes, writes := 0, 0
+			ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, _ []driver.NamedValue) {
+				if strings.Contains(query, "FROM linked_issue_sources") {
+					probes++
+					if test.concurrent && probes == 1 {
+						f.report(t, tracker.GitHubBatchResult{Number: 2, Error: "Source unavailable"}, http.StatusOK)
+					}
+				}
+				if strings.HasPrefix(query, "UPDATE onboarding_issue_intake") {
+					writes++
+				}
+			}})
+			if err := f.service.maintainGitHubBatches(ctx); err != nil {
+				t.Fatal(err)
+			}
+			batch, err := readGitHubBatch(t.Context(), d.reader, nativeScope{project: f.project.ID})
+			if err != nil || batch == nil {
+				t.Fatalf("read batch: %v", err)
+			}
+			if test.concurrent {
+				if probes != 1 || batch.Revision != f.batch.Revision || batch.Items[1].Status != "failed" || batch.Items[1].Error != "Source unavailable" {
+					t.Fatalf("overwrote concurrent result: probes=%d batch=%+v", probes, batch)
+				}
+			} else {
+				if probes != githubBatchMaintenanceLimit || writes != githubBatchMaintenanceLimit || batch.Revision != f.batch.Revision+githubBatchMaintenanceLimit || batch.Items[test.items-1].Status != "pending" {
+					t.Fatalf("exceeded item budget: probes=%d writes=%d batch=%+v", probes, writes, batch)
+				}
+			}
+			if err := f.service.maintainGitHubBatches(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			batch, err = readGitHubBatch(t.Context(), d.reader, nativeScope{project: f.project.ID})
+			if err != nil || batch == nil || batch.Status != "finished" {
+				t.Fatalf("next tick did not finish: batch=%+v error=%v", batch, err)
+			}
+		})
+	}
+}
+
 func TestGitHubBatchUsesCatalogJobCap(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		plan    string
 		cap     int
 		refused bool
-	}{{plan: "free", cap: 200, refused: true}, {plan: "starter", cap: 2000}} {
+	}{{plan: "free", cap: 10000}, {plan: "starter", cap: 10000}} {
 		t.Run(test.plan, func(t *testing.T) {
 			t.Parallel()
 			f := newBatchFixture(t)
 			d := f.service.database
 			d.hostedOrganization = f.project.OrganizationID
-			if err := d.configureHostedPlans(t.Context(), &HostedConfig{}); err != nil {
+			plans := capacityHostedPlans()
+			if err := d.configureHostedPlans(t.Context(), &HostedConfig{Plans: &plans}); err != nil {
 				t.Fatal(err)
 			}
 			if test.plan != "free" {
@@ -790,8 +1312,8 @@ func TestGitHubBatchSourceCloseOptIn(t *testing.T) {
 			f.report(t, tracker.GitHubBatchResult{Number: 13, Snapshot: &snapshot}, http.StatusOK)
 			f.report(t, tracker.GitHubBatchResult{Number: 14, Error: "Source context incomplete"}, http.StatusOK)
 			var count int
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox WHERE json_extract(desired_json, '$.close_source')=1").Scan(&count); err != nil || count != 0 {
-				t.Fatalf("source closed without opt-in: count=%d error=%v", count, err)
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox").Scan(&count); err != nil || count != 0 {
+				t.Fatalf("source write without opt-in: count=%d error=%v", count, err)
 			}
 			f.command(t, tracker.GitHubBatchCommand{Action: "close_source"}, http.StatusUnprocessableEntity)
 			f.service.database.linkedSourceBase = "https://cloud.example"
@@ -802,7 +1324,7 @@ func TestGitHubBatchSourceCloseOptIn(t *testing.T) {
 			if closed {
 				expected = 0
 			}
-			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox WHERE json_extract(desired_json, '$.close_source')=1").Scan(&count); err != nil || count != expected {
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM github_outbox").Scan(&count); err != nil || count != expected {
 				t.Fatalf("close requests=%d want=%d error=%v", count, expected, err)
 			}
 			if f.batch.Items[0].SourceCloseRequested || f.batch.Items[2].SourceCloseRequested || f.batch.Items[1].SourceCloseRequested == closed {
@@ -817,7 +1339,7 @@ func TestGitHubBatchSourceCloseOptIn(t *testing.T) {
 				if err := json.Unmarshal([]byte(raw), &desired); err != nil {
 					t.Fatal(err)
 				}
-				if desired.Body != "Tracked in Detent: https://cloud.example/local-organization/linked/issues/2" || desired.StateReason != "" || desired.IssueNumber != 13 {
+				if desired.Body != "Tracked in Detent: https://cloud.example/local-organization/linked/issues/2" || !desired.CloseSource || desired.StateReason != "" || desired.IssueNumber != 13 {
 					t.Fatalf("close payload=%+v", desired)
 				}
 			}

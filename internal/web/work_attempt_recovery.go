@@ -273,9 +273,6 @@ func workAttemptReceiptHTML(response orchestrator.WorkAttemptRecoveryResponse) s
 			receiptField{label: "Configuration digest", value: metadata.Policy.ConfigDigest},
 		)
 	}
-	if response.PolicyMismatch != "" {
-		fields = append(fields, receiptField{label: "Policy mismatch", value: response.PolicyMismatch})
-	}
 	var b strings.Builder
 	b.WriteString(`<div class="rounded-md border border-line bg-surface px-3 py-2 text-xs text-sec">`)
 	b.WriteString(`<div class="font-mono text-text">attempt #`)

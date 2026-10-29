@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/activehours"
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/hostpressure"
 	"github.com/digitaldrywood/detent/internal/observability"
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -61,7 +62,6 @@ type Snapshot struct {
 	CIUnavailable           []CICondition       `json:"ci_unavailable,omitempty"`
 	BackendOutages          []BackendOutage     `json:"backend_outages,omitempty"`
 	FailureBreakers         []FailureBreaker    `json:"failure_breakers,omitempty"`
-	DispatchLoops           []DispatchLoop      `json:"dispatch_loops,omitempty"`
 	DispatchRecoveries      []DispatchRecovery  `json:"dispatch_recoveries,omitempty"`
 	LaneSignalWarnings      []LaneSignalWarning `json:"lane_signal_warnings,omitempty"`
 	StalenessWarnings       []StalenessWarning  `json:"staleness_warnings,omitempty"`
@@ -81,52 +81,13 @@ type Snapshot struct {
 	TokenTrend              []TokenTrendPoint   `json:"token_trend,omitempty"`
 }
 
-type MemoryPressure struct {
-	Supported    bool             `json:"supported"`
-	Some         PressureAverages `json:"some"`
-	Full         PressureAverages `json:"full"`
-	SomeAvg60Max float64          `json:"some_avg60_max"`
-	DispatchHeld bool             `json:"dispatch_held"`
-	ObservedAt   time.Time        `json:"observed_at,omitzero"`
-	LastError    string           `json:"last_error,omitempty"`
-}
+type MemoryPressure = hostpressure.MemoryPressure
 
-type IOPressure struct {
-	Supported                    bool             `json:"supported"`
-	Some                         PressureAverages `json:"some"`
-	Full                         PressureAverages `json:"full"`
-	FullAvg10Max                 float64          `json:"full_avg10_max"`
-	DegradedMaxConcurrentAgents  int              `json:"degraded_max_concurrent_agents"`
-	EffectiveMaxConcurrentAgents int              `json:"effective_max_concurrent_agents"`
-	CapacityConstrained          bool             `json:"capacity_constrained"`
-	DispatchHeld                 bool             `json:"dispatch_held"`
-	ConstrainedSince             time.Time        `json:"constrained_since,omitzero"`
-	ConstrainedForMS             int64            `json:"constrained_for_ms"`
-	ObservedAt                   time.Time        `json:"observed_at,omitzero"`
-	LastError                    string           `json:"last_error,omitempty"`
-}
+type IOPressure = hostpressure.IOPressure
 
-type CPUPressure struct {
-	Supported                    bool             `json:"supported"`
-	Some                         PressureAverages `json:"some"`
-	Full                         PressureAverages `json:"full"`
-	SomeAvg10Max                 float64          `json:"some_avg10_max"`
-	DegradedMaxConcurrentAgents  int              `json:"degraded_max_concurrent_agents"`
-	EffectiveMaxConcurrentAgents int              `json:"effective_max_concurrent_agents"`
-	CapacityConstrained          bool             `json:"capacity_constrained"`
-	DispatchHeld                 bool             `json:"dispatch_held"`
-	ConstrainedSince             time.Time        `json:"constrained_since,omitzero"`
-	ConstrainedForMS             int64            `json:"constrained_for_ms"`
-	ObservedAt                   time.Time        `json:"observed_at,omitzero"`
-	LastError                    string           `json:"last_error,omitempty"`
-}
+type CPUPressure = hostpressure.CPUPressure
 
-type PressureAverages struct {
-	Avg10  float64 `json:"avg10"`
-	Avg60  float64 `json:"avg60"`
-	Avg300 float64 `json:"avg300"`
-	Total  uint64  `json:"total"`
-}
+type PressureAverages = hostpressure.PressureAverages
 
 type OrphanedAgentProcesses struct {
 	Count         int                    `json:"count"`
@@ -241,7 +202,6 @@ type CICondition struct {
 	OldestQueueSeconds  int64     `json:"oldest_queue_seconds"`
 	DetectedAt          time.Time `json:"detected_at"`
 	LastObservedAt      time.Time `json:"last_observed_at"`
-	ParkedAttemptCount  int       `json:"parked_attempt_count,omitempty"`
 }
 
 type TrackerCondition struct {
@@ -344,23 +304,9 @@ type FailureBreakerItem struct {
 	Title                   string `json:"title,omitempty"`
 	CurrentState            string `json:"current_state,omitempty"`
 	AttemptCount            int    `json:"attempt_count"`
-	Parked                  bool   `json:"parked"`
 	RecoveryAction          string `json:"recovery_action,omitempty"`
 	RecoveryReason          string `json:"recovery_reason,omitempty"`
 	RecoveryIntentResumable bool   `json:"recovery_intent_resumable,omitempty"`
-}
-
-type DispatchLoop struct {
-	ProjectID             string     `json:"project_id,omitempty"`
-	IssueID               string     `json:"issue_id,omitempty"`
-	Identifier            string     `json:"identifier,omitempty"`
-	IssueURL              string     `json:"issue_url,omitempty"`
-	Title                 string     `json:"title,omitempty"`
-	Lane                  string     `json:"lane,omitempty"`
-	ConsecutiveDispatches int        `json:"consecutive_dispatches"`
-	DispatchLimit         int        `json:"dispatch_limit"`
-	Tripped               bool       `json:"tripped"`
-	LastCompletedAt       *time.Time `json:"last_completed_at,omitempty"`
 }
 
 type DispatchRecovery struct {
@@ -1161,7 +1107,6 @@ type Issue struct {
 	CurrentLaneEnteredAt  *time.Time             `json:"current_lane_entered_at,omitempty"`
 	CurrentLaneAgeSeconds int64                  `json:"current_lane_age_seconds,omitempty"`
 	RuntimeIdentity       agentidentity.Identity `json:"runtime_identity,omitzero"`
-	ParkSummary           ParkSummary            `json:"park_summary,omitzero"`
 	CompletionProgress    CompletionProgress     `json:"completion_progress,omitzero"`
 }
 
@@ -1179,45 +1124,16 @@ type RequiredGate struct {
 }
 
 type CompletionProgress struct {
-	Outcome               string   `json:"outcome,omitempty"`
-	Reason                string   `json:"reason,omitempty"`
-	Kinds                 []string `json:"kinds,omitempty"`
-	CompletionKind        string   `json:"completion_kind,omitempty"`
-	ConsecutiveNoProgress int      `json:"consecutive_no_progress,omitempty"`
-	NoProgressLimit       int      `json:"no_progress_limit,omitempty"`
+	Outcome        string   `json:"outcome,omitempty"`
+	Reason         string   `json:"reason,omitempty"`
+	Kinds          []string `json:"kinds,omitempty"`
+	CompletionKind string   `json:"completion_kind,omitempty"`
 }
 
 const CompletionProgressOutcomeNoProgress = "no_progress"
 
 func (p CompletionProgress) IsZero() bool {
-	return p.Outcome == "" && p.Reason == "" && len(p.Kinds) == 0 && p.CompletionKind == "" && p.ConsecutiveNoProgress == 0 && p.NoProgressLimit == 0
-}
-
-type ParkSummary struct {
-	AttemptCount             int64              `json:"attempt_count"`
-	ParkCount                int64              `json:"park_count"`
-	AcknowledgedParkSequence int64              `json:"acknowledged_park_sequence,omitempty"`
-	AcknowledgedAt           *time.Time         `json:"acknowledged_at,omitempty"`
-	Causes                   []ParkCauseSummary `json:"causes,omitempty"`
-	Tokens                   ParkTokenTotals    `json:"tokens"`
-}
-
-func (s ParkSummary) IsZero() bool {
-	return s.AttemptCount == 0 && s.ParkCount == 0 && s.AcknowledgedParkSequence == 0 && s.AcknowledgedAt == nil && len(s.Causes) == 0 && s.Tokens == (ParkTokenTotals{})
-}
-
-type ParkCauseSummary struct {
-	Cause   string    `json:"cause"`
-	Count   int64     `json:"count"`
-	FirstAt time.Time `json:"first_at"`
-	LastAt  time.Time `json:"last_at"`
-}
-
-type ParkTokenTotals struct {
-	InputTokens           int64 `json:"input_tokens"`
-	CachedInputTokens     int64 `json:"cached_input_tokens"`
-	OutputTokens          int64 `json:"output_tokens"`
-	ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
+	return p.Outcome == "" && p.Reason == "" && len(p.Kinds) == 0 && p.CompletionKind == ""
 }
 
 type IssueComment struct {

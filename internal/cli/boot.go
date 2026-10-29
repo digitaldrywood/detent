@@ -29,7 +29,6 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/healthnotify"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/instancelock"
@@ -42,6 +41,7 @@ import (
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/service"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/statuspage"
@@ -77,7 +77,11 @@ func resolveBootConfigWithRuntimeDeps(ctx context.Context, configPath string, ho
 
 	cfg, err := opts.read(path)
 	if err == nil {
-		cfg, err = resolveRunnerProjects(ctx, cfg)
+		if opts.resolveProjects != nil {
+			cfg, err = opts.resolveProjects(ctx, cfg)
+		} else {
+			cfg, err = resolveRunnerProjects(ctx, cfg)
+		}
 		if err != nil {
 			return BootConfig{}, err
 		}
@@ -168,6 +172,53 @@ func defaultBoot(ctx context.Context, cfg BootConfig) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if supervisesControllers(cfg) {
+		return superviseControllers(ctx, cfg)
+	}
+	if cfg.Restart != nil && cfg.Restart.control != nil {
+		cfg.Restart.control.controller.Store(cfg.Shutdown)
+		port := 0
+		cfg.Host, cfg.Port, cfg.Headless, cfg.Output = defaultWebHost, &port, true, io.Discard
+		controlCtx, cancel := context.WithCancel(ctx)
+		ctx = controlCtx
+		defer cancel()
+		defer func() {
+			if err := cfg.Restart.control.close(); err != nil {
+				slog.Warn("close controller supervisor channel", "error", err)
+			}
+		}()
+		if cfg.Restart.control.initErr != nil {
+			return fmt.Errorf("initialize controller channel: %w", cfg.Restart.control.initErr)
+		}
+		defer func() {
+			if cfg.Restart.artifactRoot != "" {
+				if err := os.RemoveAll(cfg.Restart.artifactRoot); err != nil {
+					slog.Warn("remove controller execution cache", "error", err)
+				}
+			}
+		}()
+		joined := make(chan struct{})
+		defer func() { cancel(); <-joined }()
+		go func() {
+			defer close(joined)
+			select {
+			case <-cfg.Restart.control.peer.Context().Done():
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
+	stdout, stderr := os.Stdout, os.Stderr
+	if cfg.serviceStdout != nil {
+		stdout, stderr = cfg.serviceStdout, cfg.serviceStderr
+	}
+	stopLogRetention := startServiceLogRetention(ctx, os.Getenv(service.ManagerEnvironment), cfg.Global.Path, runtimeLogRotation(cfg.Runtime), stdout, stderr)
+	defer stopLogRetention()
+	if cfg.Isolated == nil {
+		if err := validateHubStartup(ctx, cfg.Global, runtimeDeps{}); err != nil {
+			return err
+		}
+	}
 
 	switch cfg.Mode {
 	case BootModeOnboarding:
@@ -186,7 +237,7 @@ type startRunningDependencies struct {
 	readInstalledBuild    installedBuildReader
 	managerDependencies   project.ManagerDependencies
 	providerStatusManager *statuspage.Manager
-	startupMaintenance    func(context.Context, globalconfig.Config, store.Store)
+	startupMaintenance    func(context.Context, globalconfig.Config, store.Store) func()
 }
 
 func startRunning(ctx context.Context, cfg BootConfig) error {
@@ -220,7 +271,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	}
 	var instanceLock *instancelock.Lock
 	runtimeDBPath := runtimeStorePath(cfg)
-	if !runtimeStoreIsMemory(runtimeDBPath) {
+	if !runtimeStoreIsMemory(runtimeDBPath) && (cfg.Restart == nil || cfg.Restart.control == nil) {
 		acquiredLock, err := acquireRuntimeInstanceLock(runtimeStoreLockPath(runtimeDBPath))
 		if err != nil {
 			return err
@@ -254,6 +305,13 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	listener, displayURL, err := listenForBoot(runCtx, cfg)
 	if err != nil {
 		return fmt.Errorf("bind Detent web listener %s: %w", serverAddr(cfg), err)
+	}
+	if cfg.Restart != nil && cfg.Restart.control != nil && cfg.Restart.control.settings.Address != "" {
+		_, publicPort, err := net.SplitHostPort(cfg.Restart.control.settings.Address)
+		if err != nil {
+			return fmt.Errorf("read public controller address: %w", err)
+		}
+		displayURL = "http://" + net.JoinHostPort(dashboardHost, publicPort)
 	}
 	logger.Info("web listener bound", "addr", listener.Addr().String())
 	listenerOwned := true
@@ -312,6 +370,11 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	if err != nil {
 		return err
 	}
+	var releaseStartupDispatch func()
+	if cfg.Restart != nil && cfg.Restart.control != nil {
+		releaseStartupDispatch = globalDispatchGate.PauseDispatch()
+		defer releaseStartupDispatch()
+	}
 	runtimeGitHubToken := newRuntimeGitHubTokenState(runtimeGlobalGitHubToken(cfg.Runtime.GitHubToken))
 	globalConfigState := newGlobalConfigState(cfg.Global)
 	refreshGitHubToken := runtimeGitHubTokenRefresher(globalConfigState, runtimeGitHubToken)
@@ -333,7 +396,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		Jitter:             managerConfig.Startup.Jitter,
 		RampStarts:         startupDispatchRampStarts(globalDispatchGate),
 	})
-	var hubScheduling orchestrator.SchedulingSource
+	hubScheduling := cfg.Scheduling
 	var manager *project.Manager
 	serviceAddress, err := dashboardServiceAddress(listener.Addr())
 	if err != nil {
@@ -345,6 +408,10 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	}
 	serviceConnection := serviceapi.Connection{
 		Address: serviceAddress,
+	}
+	publicAddress := listener.Addr().String()
+	if cfg.Restart != nil && cfg.Restart.control != nil && cfg.Restart.control.settings.Address != "" {
+		publicAddress = cfg.Restart.control.settings.Address
 	}
 	var projectFactory project.Factory
 	managerDependencies := deps.managerDependencies
@@ -398,7 +465,10 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	if err != nil {
 		return err
 	}
+	updateCtx, stopUpdates := context.WithCancel(runCtx)
+	defer stopUpdates()
 	updateScheduler, err := newRuntimeUpdateScheduler(
+		updateCtx,
 		cfg,
 		logger,
 		func(ctx context.Context) (func(), bool) {
@@ -410,6 +480,22 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	)
 	if err != nil {
 		return err
+	}
+	if cfg.Restart != nil && cfg.Restart.control != nil {
+		cfg.Restart.retire = stopUpdates
+		cfg.Restart.reserve = func() func() {
+			releaseDispatch := globalDispatchGate.PauseDispatch()
+			var resumeControl func()
+			if source, ok := hubScheduling.(interface{ PauseController() func() }); ok {
+				resumeControl = source.PauseController()
+			}
+			return func() {
+				if resumeControl != nil {
+					resumeControl()
+				}
+				releaseDispatch()
+			}
+		}
 	}
 	if err := updateScheduler.PrepareWorkers(runCtx); err != nil {
 		return fmt.Errorf("prepare execution workers: %w", err)
@@ -440,6 +526,9 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		}
 		resourceWorkers.Wait()
 	}()
+	if cfg.Restart != nil && cfg.Restart.control != nil && cfg.Restart.control.settings.Terminal {
+		resourceWorkers.Go(func() { cfg.Restart.control.publishSnapshots(runCtx, snapshotHub) })
+	}
 	readInstalledBuild := deps.readInstalledBuild
 	if readInstalledBuild == nil {
 		readInstalledBuild = newInstalledExecutableBuildReader(os.Executable, defaultCommandRunner)
@@ -465,7 +554,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		ConfigPathRule:     cfg.ConfigPathRule,
 		RuntimeDBPath:      runtimeStorePath(cfg),
 		RuntimeLogPath:     runtimeLogPath(cfg),
-		ServerAddress:      listener.Addr().String(),
+		ServerAddress:      publicAddress,
 		Kanban:             kanbanWorkflow.Server.Kanban,
 		KanbanWorkflow:     kanbanWorkflow,
 		Demo: web.DemoConfig{
@@ -487,7 +576,6 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		Hub:                 snapshotHub,
 		Store:               runtimeStore,
 		Registry:            manager.Registry(),
-		Connector:           firstConnector(manager),
 		StartupLifecycle:    startupLifecycle,
 		Refresher:           refresherForRegistry(manager.Registry()),
 		OperatorMoves:       registryRefresher{registry: manager.Registry()},
@@ -504,6 +592,9 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	})
 	if err != nil {
 		return err
+	}
+	if cfg.Restart != nil && cfg.Restart.control != nil {
+		server.Echo().Server.Handler = cfg.Restart.control.preserveRequestOrigin(server.Handler())
 	}
 
 	process := "orchestrator"
@@ -556,7 +647,9 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 		if maintenance == nil {
 			maintenance = maintainStartupCodexArtifacts
 		}
-		maintenance(ctx, cfg.Global, runtimeStore)
+		if logs := maintenance(ctx, cfg.Global, runtimeStore); logs != nil {
+			resourceWorkers.Go(logs)
+		}
 		if cfg.Isolated != nil && cfg.Isolated.Demo == "screenshots" {
 			if err := demofixtures.SeedUsageEvents(ctx, runtimeStore); err != nil {
 				return err
@@ -584,6 +677,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 					return nil
 				},
 				setupStore:    runtimeStore,
+				processStore:  runtimeStore,
 				logger:        logger,
 				runtimeConfig: globalConfigState.get,
 				intakeToken:   newRunnerIntakeTokenSource(runtimeGitHubToken.get, refreshGitHubToken),
@@ -595,11 +689,14 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 				return err
 			}
 		}
+		if admission, ok := hubScheduling.(interface{ SetClaimAdmission(func() (func(), bool)) }); ok {
+			admission.SetClaimAdmission(globalDispatchGate.ReserveDispatch)
+		}
 		if reporter, ok := hubScheduling.(interface {
 			SetUpdateOwner(func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation)
 		}); ok {
 			running := updateScheduler.RunningBuild()
-			reporter.SetUpdateOwner(enrolledUpdateOwner(runCtx, updateScheduler, running))
+			reporter.SetUpdateOwner(enrolledUpdateOwner(updateCtx, updateScheduler, running))
 		}
 		if reporter, ok := hubScheduling.(interface {
 			SetProjectConfigurationOwner(func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration)
@@ -630,14 +727,9 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			WorkflowMetrics:    runtimeStore,
 			Efficiency:         runtimeStore,
 			WorkAttempts:       runtimeStore,
-			ProgressSpend:      runtimeStore,
 			AgentResume:        runtimeStore,
 			ValidatorMemo:      runtimeStore,
 			StalenessWarnings:  stalenessAcknowledgements,
-			RetroStore:         runtimeStore,
-			RoutineStore:       runtimeStore,
-			AdmissionStore:     runtimeStore,
-			ScheduleRuns:       runtimeStore,
 			Activity:           activityBroker,
 			GitHubToken:        runtimeGitHubToken.get(),
 			ScheduleOwner:      cfg.Global.InstanceName,
@@ -701,7 +793,7 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 			}
 			resourceWorkers.Go(func() { observer.RunHostMetrics(runCtx, root, startedAt) })
 		}
-		resourceWorkers.Go(func() { updateScheduler.Run(ctx) })
+		resourceWorkers.Go(func() { updateScheduler.Run(updateCtx) })
 		globalWatcherDone := startGlobalConfigWatcher(ctx, cfg.Global, manager, logger, runtimeGitHubToken, applyRuntimeConfig, onGlobalReload, runtimeStore)
 		credentialWatcherDone := startBackendCredentialWatchers(ctx, manager.Registry(), events, logger)
 		resourceWorkers.Go(func() {
@@ -758,6 +850,21 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	readiness := startupReadiness{}
 	if cfg.StartupRecovery != nil {
 		readiness.MarkHealthy = cfg.StartupRecovery.MarkHealthy
+	}
+	if cfg.Restart != nil && cfg.Restart.control != nil {
+		markHealthy := readiness.MarkHealthy
+		readiness.MarkHealthy = func(ctx context.Context) error {
+			if markHealthy != nil {
+				if err := markHealthy(ctx); err != nil {
+					return err
+				}
+			}
+			if err := cfg.Restart.control.ready(ctx, cfg.Shutdown, serviceAddress, cfg.Build); err != nil {
+				return err
+			}
+			releaseStartupDispatch()
+			return nil
+		}
 	}
 
 	if useDashboard {
@@ -819,9 +926,10 @@ func startRunningWithDependencies(ctx context.Context, cfg BootConfig, deps star
 	})
 }
 
-func maintainStartupCodexArtifacts(ctx context.Context, cfg globalconfig.Config, runtimeStore store.Store) {
+func maintainStartupCodexArtifacts(ctx context.Context, cfg globalconfig.Config, runtimeStore store.Store) func() {
 	logger := slog.Default()
 	retentionHomes := map[string]bool{}
+	var logHomes []string
 	for _, projectConfig := range cfg.Projects {
 		workflow, err := project.LoadWorkflowContext(ctx, projectConfig)
 		if err != nil {
@@ -840,6 +948,11 @@ func maintainStartupCodexArtifacts(ctx context.Context, cfg globalconfig.Config,
 			if err := pruneCodexTranscripts(ctx, home, time.Now(), runtimeStore); err != nil {
 				logger.Warn("Codex transcript retention failed", "home", home, "error", err)
 			}
+			logHomes = append(logHomes, home)
+		}
+	}
+	return func() {
+		for _, home := range logHomes {
 			if err := pruneCodexLogs(ctx, home, time.Now(), codexLogSizeLimit, codexAppServerAlive); err != nil {
 				logger.Warn("Codex log retention failed", "home", home, "error", err)
 			}
@@ -1590,6 +1703,16 @@ func rotateLogFiles(path string, maxBackups int) error {
 		return nil
 	}
 
+	if err := rotateLogBackups(path, maxBackups); err != nil {
+		return err
+	}
+	if err := os.Rename(path, rotatedLogPath(path, 1)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func rotateLogBackups(path string, maxBackups int) error {
 	if err := os.Remove(rotatedLogPath(path, maxBackups)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -1599,9 +1722,6 @@ func rotateLogFiles(path string, maxBackups int) error {
 		if err := os.Rename(from, to); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-	}
-	if err := os.Rename(path, rotatedLogPath(path, 1)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
 	}
 	return nil
 }
@@ -1928,15 +2048,6 @@ func parseSlogLevel(level string) slog.Level {
 	default:
 		return slog.LevelInfo
 	}
-}
-
-func firstConnector(manager *project.Manager) connector.Connector {
-	for _, project := range manager.Registry().List() {
-		if projectConnector := project.Connector(); projectConnector != nil {
-			return projectConnector
-		}
-	}
-	return memory.New(memory.Config{})
 }
 
 func refresherForRegistry(registry *project.Registry) web.Refresher {

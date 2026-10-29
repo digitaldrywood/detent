@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 )
 
 func TestMergeWorkerStartupDeadlineExpiresWithoutPollTick(t *testing.T) {
@@ -29,7 +29,7 @@ func TestMergeWorkerStartupDeadlineExpiresWithoutPollTick(t *testing.T) {
 		ActiveStates:              []string{"Merging"},
 		TerminalStates:            []string{"Done", "Cancelled"},
 	})
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	timer := &controlledMergeWorkerStartupTimer{}
 	runner := &silentStartupMergeRunner{started: make(chan struct{})}
 	supervisor, err := runpkg.NewSupervisor(runner, runpkg.SupervisorConfig{
@@ -115,7 +115,7 @@ func TestMergeWorkerWorkspaceProgressStopsStartupDeadline(t *testing.T) {
 		ActiveStates:              []string{"Merging"},
 		TerminalStates:            []string{"Done", "Cancelled"},
 	})
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	timer := &controlledMergeWorkerStartupTimer{}
 	runner := &progressingStartupMergeRunner{
 		progressed: make(chan struct{}),
@@ -192,7 +192,7 @@ func TestHandleMergeWorkerStartupTimeoutOutcomes(t *testing.T) {
 		wantBlocked bool
 	}{
 		{name: "retry available", attempt: 0, wantRetry: true},
-		{name: "retry cap exhausted", attempt: maxMergeWorkerRunnerFailures, wantBlocked: true},
+		{name: "retry cap exhausted", attempt: maxMergeWorkerRunnerFailures, wantRetry: true},
 	}
 
 	for _, tt := range tests {

@@ -8,11 +8,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 )
+
+var nativeWorkspaceKeyPattern = regexp.MustCompile(`^(.+)-(prj_[a-z0-9]+)_([1-9][0-9]*)-([a-f0-9]{12})(?:-review-(.+))?$`)
 
 const (
 	cleanupOwnershipSchema      = 1
@@ -31,7 +36,126 @@ type cleanupOwnershipRecord struct {
 	CleanupStarted  bool   `json:"cleanup_started,omitempty"`
 	// WorkspaceSession records that the worktree belongs to a workspace
 	// session, so a later pass does not have to infer it from a branch name.
-	WorkspaceSession bool `json:"workspace_session,omitempty"`
+	WorkspaceSession bool   `json:"workspace_session,omitempty"`
+	ReviewHeadSHA    string `json:"review_head_sha,omitempty"`
+}
+
+type cleanupInventory struct {
+	unowned  int
+	records  []cleanupOwnershipRecord
+	recorded map[string]bool
+}
+
+type cleanupInventoryScanner struct {
+	mu        sync.Mutex
+	directory *os.File
+	cursor    string
+	next      string
+	entries   []fs.DirEntry
+}
+
+func (s *cleanupInventoryScanner) page(root, cursor string, limit int) ([]fs.DirEntry, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 {
+		return nil, cursor, nil
+	}
+	if s.entries != nil && cursor == s.cursor {
+		return s.entries, s.next, nil
+	}
+	if s.entries != nil && cursor != s.next {
+		if err := s.directory.Close(); err != nil {
+			return nil, cursor, err
+		}
+		s.directory, s.entries = nil, nil
+	}
+	if s.directory == nil {
+		directory, err := os.Open(root)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, "", nil
+		}
+		if err != nil {
+			return nil, cursor, err
+		}
+		s.directory = directory
+	}
+	entries, err := s.directory.ReadDir(limit)
+	if err != nil && !errors.Is(err, io.EOF) {
+		closeErr := s.directory.Close()
+		s.directory, s.entries = nil, nil
+		return nil, cursor, errors.Join(err, closeErr)
+	}
+	if len(entries) == 0 {
+		err := s.directory.Close()
+		s.directory, s.entries = nil, nil
+		return nil, "", err
+	}
+	s.cursor, s.next, s.entries = cursor, entries[len(entries)-1].Name(), entries
+	return s.entries, s.next, nil
+}
+
+func (l *LocalGit) CleanupIssues(ctx context.Context, cursor string, limit int) ([]Issue, string, error) {
+	if batch, ok := ctx.Value(cleanupBatchKey{}).(*cleanupBatch); ok {
+		batch.inventories[l.cleanupInventory] = cleanupInventory{}
+	}
+	entries, next, err := l.cleanupInventory.page(l.root, cursor, limit)
+	if err != nil {
+		return nil, cursor, err
+	}
+	inventory := cleanupInventory{recorded: make(map[string]bool)}
+	var issues []Issue
+	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return nil, cursor, ctx.Err()
+		}
+		if !entry.IsDir() || entry.Name() == ".detent" {
+			continue
+		}
+		path, err := l.workspacePath(entry.Name())
+		if err != nil {
+			continue
+		}
+		relative := cleanupOwnershipRecordRelativePath(path)
+		record, err := l.readOwnershipRecord(relative)
+		if err == nil {
+			if !l.validOwnershipRecord(ctx, relative, record) {
+				inventory.unowned++
+				continue
+			}
+			inventory.recorded[path] = true
+		} else if errors.Is(err, fs.ErrNotExist) {
+			if !l.isSourceWorktree(ctx, path) {
+				continue
+			}
+			record = cleanupOwnershipRecord{Path: path, Key: entry.Name()}
+			branch, branchErr := runGitAt(ctx, path, "symbolic-ref", "--quiet", "--short", "HEAD")
+			if branchErr == nil {
+				record.Branch = strings.TrimSpace(branch)
+			} else {
+				for _, candidate := range []string{workspaceSessionBranchName(record.Key), l.branchName(Issue{ReviewVersionID: "review"}, record.Key)} {
+					exists, err := l.branchExists(ctx, candidate)
+					if err != nil {
+						return nil, cursor, err
+					}
+					if exists {
+						record.Branch = candidate
+						break
+					}
+				}
+			}
+			l.inferNativeOwnership(&record)
+		} else {
+			continue
+		}
+		inventory.records = append(inventory.records, record)
+		if record.Identifier != "" {
+			issues = append(issues, record.issue())
+		}
+	}
+	if batch, ok := ctx.Value(cleanupBatchKey{}).(*cleanupBatch); ok {
+		batch.inventories[l.cleanupInventory] = inventory
+	}
+	return issues, next, nil
 }
 
 func (l *LocalGit) recordCleanupOwnership(ctx context.Context, info Info, issue Issue, isDir bool) error {
@@ -66,9 +190,14 @@ func (l *LocalGit) recordCleanupOwnership(ctx context.Context, info Info, issue 
 	if record.Identifier != "" && !issueOwnsKey(issue, record.Key) {
 		return fmt.Errorf("cleanup ownership issue does not match workspace key %q", record.Key)
 	}
-	_, err = l.readOwnershipRecord(cleanupOwnershipRecordRelativePath(path))
+	previous, err := l.readOwnershipRecord(cleanupOwnershipRecordRelativePath(path))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("read previous cleanup ownership: %w", err)
+	}
+	if issue.ReviewVersionID != "" && issue.Source != nil && issue.Source.Version.ID == issue.ReviewVersionID && issue.Source.Version.Source != nil {
+		record.ReviewHeadSHA = issue.Source.Version.HeadSHA
+	} else if err == nil && l.validOwnershipRecord(ctx, cleanupOwnershipRecordRelativePath(path), previous) {
+		record.ReviewHeadSHA = previous.ReviewHeadSHA
 	}
 	if err := l.writeOwnershipRecord(record); err != nil {
 		return fmt.Errorf("record cleanup ownership: %w", err)
@@ -205,43 +334,38 @@ func (l *LocalGit) validOwnershipRecord(ctx context.Context, relativePath string
 	if cleanupOwnershipRecordRelativePath(path) != relativePath {
 		return false
 	}
-	if record.Identifier != "" && !issueOwnsKey(Issue{ProjectID: record.ProjectID, ID: record.IssueID, Identifier: record.Identifier}, record.Key) {
+	if record.Identifier != "" && !issueOwnsKey(record.issue(), record.Key) {
 		return false
 	}
 	sourceCommonDir, err := gitCommonDir(ctx, l.sourceRoot)
 	return err == nil && sourceCommonDir == filepath.Clean(record.SourceCommonDir)
 }
 
-func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue) (ReconcileResult, error) {
-	entries, err := os.ReadDir(filepath.Join(l.root, cleanupOwnershipRegistryDir))
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return ReconcileResult{}, fmt.Errorf("read cleanup ownership registry: %w", err)
+func (record cleanupOwnershipRecord) issue() Issue {
+	issue := Issue{ProjectID: record.ProjectID, ID: record.IssueID, Identifier: record.Identifier, WorkspaceSession: record.WorkspaceSession}
+	for _, key := range []string{issueKey(issue), legacyIssueKey(issue)} {
+		if version, ok := strings.CutPrefix(record.Key, key+"-review-"); ok && version != "" {
+			issue.ReviewVersionID = version
+			break
+		}
 	}
+	return issue
+}
+
+func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue) (ReconcileResult, error) {
 	activeKeys := make(map[string]struct{}, len(activeIssues))
 	for _, issue := range activeIssues {
 		activeKeys[issueKey(issue)] = struct{}{}
 		activeKeys[legacyIssueKey(issue)] = struct{}{}
 	}
 	result := ReconcileResult{}
-	seen := map[string]bool{}
-	var records []cleanupOwnershipRecord
-	for _, entry := range entries {
-		relativePath := filepath.Join(cleanupOwnershipRegistryDir, entry.Name())
-		record, readErr := l.readOwnershipRecord(relativePath)
-		if readErr != nil || !l.validOwnershipRecord(ctx, relativePath, record) {
-			result.UnownedSkipped++
-			continue
-		}
-		seen[record.Path] = true
-		records = append(records, record)
-	}
-	unrecorded, err := l.unrecordedWorkspaces(ctx, seen)
+	inventory, err := l.cleanupRecords(ctx)
 	if err != nil {
 		return result, err
 	}
-	records = append(records, unrecorded...)
+	result.UnownedSkipped = inventory.unowned
 	var reconcileErrors []error
-	for _, record := range records {
+	for _, record := range inventory.records {
 		if cleanupBatchExhausted(ctx) {
 			break
 		}
@@ -249,7 +373,7 @@ func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue)
 			result.ActiveSkipped++
 			continue
 		}
-		removed, reconcileErr := l.reconcileWorkspace(ctx, record, seen[record.Path], &result)
+		removed, reconcileErr := l.reconcileWorkspace(ctx, record, inventory.recorded[record.Path], &result)
 		if reconcileErr != nil {
 			result.Failures = append(result.Failures, CleanupFailure{Path: record.Path, Error: reconcileErr.Error()})
 			if errors.Is(reconcileErr, ErrWorkspacePreserved) {
@@ -268,8 +392,39 @@ func (l *LocalGit) ReconcileResiduals(ctx context.Context, activeIssues []Issue)
 	return result, errors.Join(reconcileErrors...)
 }
 
+func (l *LocalGit) cleanupRecords(ctx context.Context) (cleanupInventory, error) {
+	if batch, ok := ctx.Value(cleanupBatchKey{}).(*cleanupBatch); ok {
+		if inventory, ok := batch.inventories[l.cleanupInventory]; ok {
+			return inventory, nil
+		}
+	}
+	inventory := cleanupInventory{recorded: make(map[string]bool)}
+	entries, err := os.ReadDir(filepath.Join(l.root, cleanupOwnershipRegistryDir))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return inventory, fmt.Errorf("read cleanup ownership registry: %w", err)
+	}
+	for _, entry := range entries {
+		relative := filepath.Join(cleanupOwnershipRegistryDir, entry.Name())
+		record, err := l.readOwnershipRecord(relative)
+		if err == nil && l.validOwnershipRecord(ctx, relative, record) {
+			inventory.recorded[record.Path] = true
+			inventory.records = append(inventory.records, record)
+		} else {
+			inventory.unowned++
+		}
+	}
+	unrecorded, err := l.unrecordedWorkspaces(ctx, inventory.recorded)
+	inventory.records = append(inventory.records, unrecorded...)
+	return inventory, err
+}
+
+func (l *LocalGit) ownsUnrecordedBranch(record cleanupOwnershipRecord) bool {
+	return record.Branch == autoBranchPrefix+strings.ToLower(record.Key) || record.Branch == workspaceSessionBranchName(record.Key) ||
+		strings.Contains(record.Key, "-review-") && record.Branch == l.branchName(Issue{ReviewVersionID: "review"}, record.Key)
+}
+
 func (l *LocalGit) reconcileWorkspace(ctx context.Context, record cleanupOwnershipRecord, recorded bool, result *ReconcileResult) (bool, error) {
-	if !recorded && record.Branch != autoBranchPrefix+strings.ToLower(record.Key) && record.Branch != workspaceSessionBranchName(record.Key) {
+	if !recorded && !l.ownsUnrecordedBranch(record) {
 		result.UnownedSkipped++
 		return false, nil
 	}
@@ -292,12 +447,8 @@ func (l *LocalGit) reconcileWorkspace(ctx context.Context, record cleanupOwnersh
 		}
 	}
 	info := Info{Path: record.Path, Key: record.Key, Branch: record.Branch}
-	issue := Issue{
-		ProjectID:        record.ProjectID,
-		ID:               record.IssueID,
-		Identifier:       record.Identifier,
-		WorkspaceSession: record.WorkspaceSession || sessionOwned(info, Issue{}),
-	}
+	issue := record.issue()
+	issue.WorkspaceSession = issue.WorkspaceSession || sessionOwned(info, Issue{})
 	cleaned, err := l.cleanupWorkspace(ctx, info, issue)
 	result.Removed += cleaned.Worktrees
 	return err == nil, err
@@ -363,9 +514,23 @@ func (l *LocalGit) unrecordedWorkspaces(ctx context.Context, recorded map[string
 				branch = session
 			}
 		}
-		records = append(records, cleanupOwnershipRecord{Path: path, Key: key, Branch: branch})
+		record := cleanupOwnershipRecord{Path: path, Key: key, Branch: branch}
+		l.inferNativeOwnership(&record)
+		records = append(records, record)
 	}
 	return records, nil
+}
+
+func (l *LocalGit) inferNativeOwnership(record *cleanupOwnershipRecord) {
+	if !l.ownsUnrecordedBranch(*record) {
+		return
+	}
+	if parts := nativeWorkspaceKeyPattern.FindStringSubmatch(record.Key); len(parts) == 6 {
+		issue := Issue{ProjectID: parts[1], Identifier: parts[2] + "#" + parts[3], ReviewVersionID: parts[5]}
+		if issueOwnsKey(issue, record.Key) {
+			record.ProjectID, record.Identifier = issue.ProjectID, issue.Identifier
+		}
+	}
 }
 
 func issueOwnsKey(issue Issue, key string) bool {
@@ -373,8 +538,9 @@ func issueOwnsKey(issue Issue, key string) bool {
 }
 
 func nativeOwnershipActive(record cleanupOwnershipRecord, issues []Issue) bool {
+	review := record.issue().ReviewVersionID != ""
 	for _, issue := range issues {
-		if nativeProjectID(issue) != "" && record.IssueID == issue.ID && record.Identifier == issue.Identifier {
+		if (!review || issue.CleanupInUse) && nativeProjectID(issue) != "" && (record.IssueID == "" || record.IssueID == issue.ID) && record.Identifier == issue.Identifier {
 			return true
 		}
 	}

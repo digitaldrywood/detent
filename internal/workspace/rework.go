@@ -243,28 +243,51 @@ func (l *LocalGit) prepareRework(ctx context.Context, info Info, issue Issue, op
 		return MergePrepareResult{}, err
 	}
 	if !diff.IsEmpty() {
-		return MergePrepareResult{Status: MergePrepareStatusDirty, DiffStat: diff}, nil
+		if issue.Checkpoint == nil {
+			return MergePrepareResult{Status: MergePrepareStatusDirty, DiffStat: diff}, nil
+		}
+		checkpoint := *issue.Checkpoint
+		if err := l.fetchCheckpointRef(ctx, &checkpoint); err != nil {
+			return MergePrepareResult{}, err
+		}
+		if checkpoint.transaction != nil || !checkpointMatches(ctx, info.Path, &checkpoint) {
+			return MergePrepareResult{Status: MergePrepareStatusDirty, DiffStat: diff}, nil
+		}
+		if err := validate(ctx); err != nil {
+			return MergePrepareResult{}, err
+		}
+		if _, err := runGitAt(ctx, info.Path, "read-tree", checkpoint.TreeSHA); err != nil {
+			return MergePrepareResult{}, fmt.Errorf("stage restored rework checkpoint: %w", err)
+		}
+		if _, err := l.runCommit(ctx, info.Path, nil, "-c", "core.hooksPath="+os.DevNull, "commit", "-m", "fix: restore "+issue.Identifier+" checkpoint"); err != nil {
+			return MergePrepareResult{}, fmt.Errorf("commit restored rework checkpoint: %w", err)
+		}
 	}
-	remote := strings.TrimSpace(opts.Remote)
-	if remote == "" {
-		remote = defaultGitRemote
-	}
-	target := strings.TrimSpace(opts.TargetBranch)
-	if target == "" {
-		target, err = remoteDefaultBranch(ctx, info.Path, remote)
+	var base string
+	if issue.ReleaseDelivery != nil {
+		base = issue.ReleaseDelivery.BaseSHA
+	} else {
+		remote := strings.TrimSpace(opts.Remote)
+		if remote == "" {
+			remote = defaultGitRemote
+		}
+		target := strings.TrimSpace(opts.TargetBranch)
+		if target == "" {
+			target, err = remoteDefaultBranch(ctx, info.Path, remote)
+			if err != nil {
+				return MergePrepareResult{}, err
+			}
+		}
+		ref := "refs/remotes/" + remote + "/" + target
+		if _, err := runGitAt(ctx, info.Path, "fetch", remote, "+refs/heads/"+target+":"+ref); err != nil {
+			return MergePrepareResult{}, err
+		}
+		resolved, err := runGitAt(ctx, info.Path, "rev-parse", "--verify", ref+"^{commit}")
 		if err != nil {
 			return MergePrepareResult{}, err
 		}
+		base = strings.TrimSpace(resolved)
 	}
-	ref := "refs/remotes/" + remote + "/" + target
-	if _, err := runGitAt(ctx, info.Path, "fetch", remote, "+refs/heads/"+target+":"+ref); err != nil {
-		return MergePrepareResult{}, err
-	}
-	base, err := runGitAt(ctx, info.Path, "rev-parse", "--verify", ref+"^{commit}")
-	if err != nil {
-		return MergePrepareResult{}, err
-	}
-	base = strings.TrimSpace(base)
 	if err := validate(ctx); err != nil {
 		return MergePrepareResult{}, err
 	}

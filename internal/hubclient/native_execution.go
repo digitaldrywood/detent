@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -24,6 +26,9 @@ import (
 )
 
 type nativeExecution struct {
+	completionOwner   atomic.Bool
+	stepReviews       *tracker.ChangeDetail
+	stepDiscussion    []tracker.NativeComment
 	workerMu          sync.Mutex
 	workerCloseMu     sync.Mutex
 	cancelMu          sync.Mutex
@@ -45,9 +50,10 @@ type nativeExecution struct {
 	publicationSource func(context.Context, tracker.ChangeVersion, workspace.LandOptions) (workspace.GitHubPublication, error)
 	publication       *tracker.NativePRPublication
 	pending           *tracker.NativeRunEvent
+	observations      []tracker.NativeRunEvent
 	cancel            context.CancelCauseFunc
 	// diffSource computes the stored attempt diff the execution posts before
-	// every checkpoint and before the finish (decisions section 18.5). It is
+	// every checkpoint and before the finish. It is
 	// nil for a run with no worktree to describe.
 	diffSource runner.AttemptDiffSource
 	// lastDiff is the most recent diff the source produced. It stands in for
@@ -64,6 +70,7 @@ type nativeExecution struct {
 	role                     string
 	conversationContinuation bool
 	settled                  bool
+	landed                   bool
 	change                   *runner.NativeChange
 	finalizationSource       *tracker.NativeChangeReference
 	finalizationAttempt      string
@@ -73,6 +80,7 @@ type nativeExecution struct {
 	preparedFailure          *tracker.NativeTerminalFailure
 	runtimeDirty             bool
 	runtimeSupported         *bool
+	runtimePublishedAt       time.Time
 	// repository is the https URL of the checkout's origin, which a published
 	// version names; empty when the remote cannot be named that way.
 	repository      string
@@ -80,6 +88,12 @@ type nativeExecution struct {
 	retainedSource  *tracker.ChangeSourceCapture
 	sourceRequired  bool
 	recoveredSource *tracker.NativeChangeReference
+	mergeResolution bool
+	releaseDelivery *tracker.ReleaseDeliveryStatus
+}
+
+func (e *nativeExecution) RetainCompletion() {
+	e.completionOwner.Store(true)
 }
 
 func (e *nativeExecution) KeepWorker(closeWorker func(context.Context) error, launch func(context.Context, runner.RunRequest) (runner.RunResult, error)) error {
@@ -107,7 +121,8 @@ func (e *nativeExecution) hasWorkers() bool {
 	return len(e.workers) > 0
 }
 
-func (e *nativeExecution) closeWorkers(ctx context.Context) error {
+func (e *nativeExecution) CloseWorkers(ctx context.Context) error {
+	defer e.scheduler.cleanupNativeClaim(context.WithoutCancel(ctx), string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken)
 	e.workerCloseMu.Lock()
 	defer e.workerCloseMu.Unlock()
 	e.workerMu.Lock()
@@ -194,6 +209,9 @@ func (s *Scheduler) RunExecution(issueID string) runner.Execution {
 	for _, attempt := range claim.recovery.Attempts {
 		if attempt.Identity != nil && attempt.LeaseID == claim.lease.ID && attempt.FencingToken == claim.lease.FencingToken && (attempt.Status == "running" || attempt.Status == "interrupted") {
 			execution.data = attempt.NativeRunData
+			if attempt.Runtime != nil {
+				execution.runtimePublishedAt = attempt.Runtime.HeartbeatAt
+			}
 			execution.usageStartedAt = attempt.StartedAt
 			execution.role = attempt.Identity.Role
 			execution.reconnecting = true
@@ -295,23 +313,34 @@ func (e *nativeExecution) Guard(ctx context.Context) (context.Context, func(), e
 			}
 		}
 	}()
-	return guarded, func() { cancel(context.Canceled); <-done }, nil
+	return guarded, func() {
+		cancel(context.Canceled)
+		<-done
+		e.cancelMu.Lock()
+		e.cancel = nil
+		e.cancelMu.Unlock()
+		e.scheduler.cleanupNativeClaim(context.WithoutCancel(ctx), string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken)
+	}, nil
 }
 
 func (e *nativeExecution) unavailable(err error) error {
 	cause := errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+	e.cancelExecution(cause)
+	return cause
+}
+
+func (e *nativeExecution) cancelExecution(cause error) {
 	e.cancelMu.Lock()
 	cancel := e.cancel
 	e.cancelMu.Unlock()
 	if cancel != nil {
 		cancel(cause)
 	}
-	return cause
 }
 
-func (e *nativeExecution) executionError(err error) error {
+func (e *nativeExecution) executionError(ctx context.Context, err error) error {
 	if nativeAuthorityLost(err) {
-		err = e.scheduler.nativeClaimError(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
+		err = e.scheduler.nativeClaimError(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
 	}
 	if errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
 		return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
@@ -321,15 +350,15 @@ func (e *nativeExecution) executionError(err error) error {
 
 func (e *nativeExecution) Validate(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
-		return e.validationError(errors.Join(err, context.Cause(ctx)))
+		return e.validationError(ctx, errors.Join(err, context.Cause(ctx)))
 	}
 	if e.remaining() <= 0 {
 		if err := e.renew(ctx, 0); err != nil {
-			return e.validationError(err)
+			return e.validationError(ctx, err)
 		}
 	}
 	if err := e.scheduler.checkClaimPolicy(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.PolicyID); err != nil {
-		return e.validationError(err)
+		return e.validationError(ctx, err)
 	}
 	return nil
 }
@@ -345,12 +374,12 @@ func (e *nativeExecution) renew(ctx context.Context, landingCapacity int) error 
 	return err
 }
 
-func (e *nativeExecution) validationError(err error) error {
+func (e *nativeExecution) validationError(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
 	}
-	err = e.scheduler.nativeClaimError(string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
-	err = e.executionError(err)
+	err = e.scheduler.nativeClaimError(ctx, string(e.claim.lease.WorkItemID), e.claim.lease.FencingToken, err)
+	err = e.executionError(ctx, err)
 	if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 		return e.unavailable(err)
 	}
@@ -408,6 +437,10 @@ func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExec
 	if err := e.validateProviderStart(identity); err != nil {
 		return err
 	}
+	issue, err := e.claim.source.client.Issue(ctx, e.claim.lease.WorkItemID)
+	if err != nil {
+		return err
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.data.Identity != nil {
@@ -418,12 +451,14 @@ func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExec
 	}
 	e.data.Identity = &identity
 	e.role = identity.Role
+	e.claim.recovery.Issue.State = issue.State
 	return e.append(ctx, "run.started", "", nil)
 }
 
 func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.NativeCheckpoint) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	checkpoint.Publication = nil
 	if e.data.Identity == nil {
 		return nil
 	}
@@ -453,6 +488,9 @@ func (e *nativeExecution) Checkpoint(ctx context.Context, checkpoint tracker.Nat
 		return err
 	}
 	if string(previous) == string(current) {
+		if e.diffSource != nil {
+			return e.captureDiff(ctx)
+		}
 		return nil
 	}
 	if err := e.append(ctx, "run.checkpointed", "", &checkpoint); err != nil {
@@ -492,14 +530,22 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 	if e.ownsIssueCompletion() || planning {
 		e.preparedDisposition = runner.NativeDispositionFromMessage(finalMessage)
 	}
+	if e.role == runner.RoleMerge {
+		if disposition := runner.NativeDispositionFromMessage(finalMessage); disposition != nil && disposition.Status == "blocked" && disposition.HumanAction {
+			e.preparedDisposition = disposition
+		}
+	}
 	if outcome == "succeeded" && planning && e.preparedDisposition == nil {
 		e.preparedDisposition = &tracker.NativeDisposition{Status: "in_progress"}
 	}
 	if outcome == "succeeded" && e.data.Runtime != nil && e.data.Runtime.Landing != nil && e.data.Runtime.Landing.Waiting {
 		e.preparedDisposition = &tracker.NativeDisposition{Status: "in_progress"}
 	}
+	if e.change != nil {
+		e.applySecurityAuditHumanAction(e.change.SecurityAudit)
+	}
 	if err := e.prepareFinish(ctx, outcome); err != nil {
-		err = e.executionError(err)
+		err = e.executionError(ctx, err)
 		err = errors.Join(err, nativeEffectError(ctx))
 		if outcome == "succeeded" && e.ownsChangeCompletion() && nativeTransportUnavailable(err) && nativeEffectError(ctx) == nil {
 			if e.change == nil {
@@ -511,6 +557,9 @@ func (e *nativeExecution) PrepareFinish(ctx context.Context, outcome, finalMessa
 		e.preparedOutcome = "failed"
 		if errors.Is(err, runner.ErrOperatorStopped) {
 			e.preparedOutcome = "interrupted"
+		}
+		if e.preparedFailure == nil && e.data.Identity != nil {
+			e.preparedFailure = e.finalizationFailure(err)
 		}
 		return err
 	}
@@ -537,9 +586,15 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 		if err := nativeEffectError(ctx); err != nil {
 			return err
 		}
-		if e.storedSeq != finish {
+		if e.storedSeq == finish && e.lastDiff != nil && e.worktreeHead != "" && e.lastDiff.HeadSHA != e.worktreeHead {
+			if err := e.append(ctx, "run.observed", "", nil, true); err != nil {
+				return err
+			}
+			finish = e.data.Sequence + 1
+		}
+		if e.storedSeq != finish && e.releaseDelivery == nil {
 			if err := e.postDiff(ctx, finish); err != nil && e.ownsChangeCompletion() {
-				err = e.executionError(err)
+				err = e.executionError(ctx, err)
 				if errors.Is(err, runner.ErrExecutionAuthorityUnavailable) {
 					return errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
 				}
@@ -553,7 +608,7 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 			}
 		}
 		if err := e.settle(ctx, outcome, finish); err != nil {
-			err = e.executionError(err)
+			err = e.executionError(ctx, err)
 			if nativeEffectError(ctx) != nil {
 				return err
 			}
@@ -568,7 +623,7 @@ func (e *nativeExecution) prepareFinish(ctx context.Context, outcome string) err
 				e.change.Error = err.Error()
 			} else {
 				e.change.Error = ""
-				e.change.VersionError, e.change.VersionCode = err.Error(), hubErrorCode(err)
+				e.change.VersionError, e.change.VersionCode = err.Error(), publicationErrorCode(err)
 				e.settled = true
 			}
 		}
@@ -593,18 +648,25 @@ func (e *nativeExecution) preparedFinalization() *tracker.NativeFinalization {
 	return &finalization
 }
 
-func (e *nativeExecution) Finish(ctx context.Context, outcome string) (err error) {
+func (e *nativeExecution) Finish(ctx context.Context, outcome string) error {
 	e.mu.Lock()
-	refresh := false
-	defer func() {
-		e.mu.Unlock()
-		if refresh {
-			e.refreshReasons(ctx, true)
-		}
-	}()
+	previous := e.data.Outcome
+	err := e.finish(ctx, outcome)
+	refresh := previous == "" && e.data.Outcome != ""
+	e.mu.Unlock()
+	if refresh {
+		e.refreshReasons(ctx, true)
+	}
+	return err
+}
+
+func (e *nativeExecution) finish(ctx context.Context, outcome string) (err error) {
 	done := e.diagnosticOperation("native.finish")
 	defer func() { done(err) }()
 	preparationErr := e.prepareFinish(ctx, outcome)
+	if errors.Is(preparationErr, runner.ErrExecutionAuthorityUnavailable) {
+		return preparationErr
+	}
 	if outcome == "succeeded" && e.change != nil && e.change.Error != "" {
 		return fmt.Errorf("%w: %s", ErrUnavailable, e.change.Error)
 	}
@@ -627,30 +689,166 @@ func (e *nativeExecution) Finish(ctx context.Context, outcome string) (err error
 		e.preparedFailure = &public
 	}
 	e.data.Disposition = e.preparedDisposition
-	e.data.TerminalFailure = e.preparedFailure
+	e.data.TerminalFailure = nil
+	if outcome != "succeeded" {
+		if e.preparedFailure == nil {
+			e.preparedFailure = e.finalizationFailure(preparationErr)
+		}
+		e.data.TerminalFailure = e.preparedFailure
+	}
 	if finalization := e.preparedFinalization(); finalization != nil {
 		e.data.Finalization = finalization
 	}
 	finishErr := e.append(ctx, "run.finished", outcome, nil)
-	refresh = finishErr == nil
 	return errors.Join(preparationErr, finishErr)
+}
+
+func (e *nativeExecution) finalizationFailure(err error) *tracker.NativeTerminalFailure {
+	stage := "finalization"
+	if e.change != nil && (e.change.VersionError != "" || e.change.Error != "") {
+		stage = "publication"
+	}
+	if e.role == runner.RoleMerge {
+		stage = "landing"
+	}
+	failure := tracker.NativeTerminalFailure{ErrorClass: stage, Stage: stage, ObservedAt: e.scheduler.now().UTC()}
+	var provider interface {
+		NativeTerminalFailure() tracker.NativeTerminalFailure
+	}
+	if errors.As(err, &provider) {
+		recorded := provider.NativeTerminalFailure()
+		if recorded.Stage != "" {
+			failure = recorded
+			failure.ObservedAt = e.scheduler.now().UTC()
+		}
+	}
+	switch change := e.change; {
+	case change != nil && change.VersionError != "":
+		failure.Error = strings.TrimPrefix(change.VersionCode+": "+change.VersionError, ": ")
+	case err != nil:
+		failure.Error = err.Error()
+	case change != nil && change.Error != "":
+		failure.Error = change.Error
+	default:
+		failure.ErrorClass, failure.Stage = "", ""
+		failure.Error = "attempt ended without a recorded runner error"
+	}
+	public := failure.Public()
+	return &public
 }
 
 func (e *nativeExecution) finishPrepared(ctx context.Context) error {
 	e.mu.Lock()
 	outcome := e.preparedOutcome
 	finished := e.data.Outcome != ""
+	interrupted := e.data.Outcome == "interrupted"
+	expectedState := e.claim.recovery.Issue.State
+	publicationUnavailable := outcome == "succeeded" && !e.settled && e.change != nil && e.change.Error != ""
 	e.mu.Unlock()
-	// An acknowledged Finish stays settled when lease release is retried.
-	if outcome == "" || finished {
-		return nil
-	}
-	if e.remaining() <= 0 {
-		if err := e.renew(ctx, 0); err != nil {
-			return err
+	var finishErr error
+	var rejection *nativeCompletionRejection
+	var releasedAttempt *tracker.NativeAttempt
+	if outcome != "" && !finished {
+		if publicationUnavailable && expectedState != "" {
+			issue, err := e.claim.source.client.Issue(ctx, e.claim.lease.WorkItemID)
+			if err != nil {
+				finishErr = e.executionError(ctx, err)
+			} else if !strings.EqualFold(expectedState, issue.State) {
+				outcome = "cancelled"
+			}
+		}
+		if finishErr == nil && e.remaining() <= 0 {
+			finishErr = e.renew(ctx, 0)
+		}
+		if finishErr == nil {
+			finishErr = e.Finish(ctx, outcome)
+		}
+		if finishErr != nil {
+			if errors.As(finishErr, &rejection) {
+				finishErr = nil
+			} else {
+				if claimLost(finishErr) || errors.Is(finishErr, orchestrator.ErrSchedulingClaimLost) {
+					finishErr = errors.Join(runner.ErrExecutionAuthorityUnavailable, finishErr)
+				}
+			}
 		}
 	}
-	return e.Finish(ctx, outcome)
+	if err := func() error {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if failure := e.data.TerminalFailure; failure != nil && failure.Stage == "event_publication" {
+			rejection = &nativeCompletionRejection{failure: *failure}
+		}
+		if (finishErr != nil || interrupted) && rejection == nil {
+			path, err := nativeItemPath(e.claim.lease.WorkItemID)
+			if err != nil {
+				return errors.Join(finishErr, err)
+			}
+			var attempt tracker.NativeAttempt
+			if err := e.claim.source.client.client.request(ctx, http.MethodGet, e.claim.source.client.base()+path+"/attempts/"+e.data.AttemptID, nil, &attempt); err != nil {
+				return errors.Join(finishErr, err)
+			}
+			identityMatches := attempt.Identity == nil && e.data.Identity == nil
+			if attempt.Identity != nil && e.data.Identity != nil {
+				identityMatches = *attempt.Identity == *e.data.Identity
+			}
+			if attempt.LeaseID != e.claim.lease.ID || attempt.FencingToken != e.claim.lease.FencingToken || attempt.RunID != e.data.RunID || attempt.PolicyID != e.data.PolicyID || attempt.AttemptID != e.data.AttemptID || !identityMatches {
+				return errors.Join(finishErr, runner.ErrExecutionAuthorityUnavailable)
+			}
+			if attempt.ClaimReleasedAt != nil {
+				releasedAttempt = &attempt
+				return nil
+			}
+		}
+		return finishErr
+	}(); err != nil {
+		return err
+	}
+	if err := e.CloseWorkers(ctx); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if releasedAttempt != nil {
+		attempt := *releasedAttempt
+		if attempt.Outcome == "" || attempt.Outcome == "interrupted" {
+			if err := cancelNativeReleasedAttempt(ctx, e.claim.source.client, e.claim.lease.WorkItemID, attempt); err != nil {
+				return errors.Join(finishErr, err)
+			}
+			attempt.Sequence++
+			attempt.Outcome = "cancelled"
+		}
+		attempt.Identity = e.data.Identity
+		if attempt.Handoff == nil {
+			attempt.Handoff = attempt.Checkpoint
+		}
+		e.data, e.pending = attempt.NativeRunData, nil
+		e.preparedOutcome = attempt.Outcome
+		finishErr = nil
+	}
+	data := e.data
+	finalization := data.Finalization
+	completedSource := data.Disposition != nil && data.Disposition.Status == "complete" && finalization != nil &&
+		finalization.Settled && finalization.Changed && finalization.ChangeID != "" && finalization.VersionID != "" && finalization.HeadSHA != "" &&
+		finalization.VersionError == "" && finalization.Error == ""
+	retain := data.Identity != nil && rejection == nil && e.scheduler.client.runner != nil && (data.Outcome == "" || data.Outcome == "interrupted" && !completedSource)
+	if !retain {
+		if err := e.claim.source.client.Release(ctx, e.claim.lease, "released"); err != nil && !claimLost(err) {
+			return errors.Join(finishErr, err)
+		}
+	}
+	if finishErr == nil && rejection != nil {
+		return rejection
+	}
+	return finishErr
+}
+
+func cancelNativeReleasedAttempt(ctx context.Context, client *NativeClient, item tracker.NativeWorkItemID, attempt tracker.NativeAttempt) error {
+	data := tracker.NativeRunData{AttemptID: attempt.AttemptID, RunID: attempt.RunID, LeaseID: attempt.LeaseID,
+		FencingToken: attempt.FencingToken, PolicyID: attempt.PolicyID, Identity: attempt.Identity,
+		Sequence: attempt.Sequence + 1, Outcome: "cancelled"}
+	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: attempt.AttemptID + ":terminated:" + strconv.FormatInt(data.Sequence, 10)}, Type: "run.finished", SchemaVersion: 1, Data: data}
+	return client.AppendEvent(ctx, item, event)
 }
 
 // NativeChange reports what the finished run left for review.
@@ -665,7 +863,7 @@ func (e *nativeExecution) NativeChange() *runner.NativeChange {
 }
 
 // SetDiffSource installs the source the execution calls before every run event
-// that references a stored diff (decisions section 18.5).
+// that references a stored diff.
 func (e *nativeExecution) SetDiffSource(source runner.AttemptDiffSource) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -717,7 +915,7 @@ func (e *nativeExecution) postDiff(ctx context.Context, sequence int64) (diagnos
 	return nil
 }
 
-func (e *nativeExecution) append(ctx context.Context, kind, outcome string, checkpoint *tracker.NativeCheckpoint) error {
+func (e *nativeExecution) append(ctx context.Context, kind, outcome string, checkpoint *tracker.NativeCheckpoint, immediate ...bool) error {
 	if err := e.flush(ctx); err != nil {
 		return err
 	}
@@ -743,13 +941,31 @@ func (e *nativeExecution) append(ctx context.Context, kind, outcome string, chec
 	if kind == "run.finished" {
 		data.CompletionBody = e.preparedMessage
 	}
-	if (kind == "run.checkpointed" || kind == "run.finished") && e.storedSeq != data.Sequence {
+	if (kind == "run.checkpointed" || kind == "run.finished") && e.storedSeq != data.Sequence && e.releaseDelivery == nil {
 		if err := e.postDiff(ctx, data.Sequence); err != nil {
 			slog.Default().Warn("attempt diff not stored", "work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID, "seq", data.Sequence, "error", err)
 		}
 	}
 	data.Handoff = checkpoint
-	e.pending = &tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: kind, SchemaVersion: 1, Data: data}
+	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10)}, Type: kind, SchemaVersion: 1, Data: data}
+	if len(immediate) == 0 && e.claim.lease.RunDetailBatching && kind == "run.observed" && len(e.observations) < 7 && !e.runtimeHeartbeatDue(data.Runtime) {
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		var observation tracker.NativeRunEvent
+		if err := json.Unmarshal(encoded, &observation); err != nil {
+			return err
+		}
+		e.observations = append(e.observations, observation)
+		checkpoint := e.data.Handoff
+		e.data = data
+		e.data.Handoff = checkpoint
+		e.runtimeDirty = false
+		return nil
+	}
+	event.PriorEvents = append([]tracker.NativeRunEvent(nil), e.observations...)
+	e.pending = &event
 	return e.flush(ctx)
 }
 
@@ -761,20 +977,111 @@ func (e *nativeExecution) flush(ctx context.Context) (err error) {
 	defer func() { done(err) }()
 	if e.remaining() <= 0 {
 		if err := e.renew(ctx, 0); err != nil {
-			return e.executionError(err)
+			return e.executionError(ctx, err)
 		}
 	}
+	if failure := e.pending.Data.TerminalFailure; failure != nil && failure.Stage == "event_publication" && e.pending.Data.Runtime == nil && e.data.Sequence > 0 {
+		path, err := nativeItemPath(e.claim.lease.WorkItemID)
+		if err != nil {
+			return err
+		}
+		var attempt tracker.NativeAttempt
+		if err := e.claim.source.client.client.request(ctx, http.MethodGet, e.claim.source.client.base()+path+"/attempts/"+e.data.AttemptID, nil, &attempt); err != nil {
+			return e.executionError(ctx, err)
+		}
+		if attempt.LeaseID != e.claim.lease.ID || attempt.FencingToken != e.claim.lease.FencingToken || attempt.RunID != e.data.RunID || attempt.PolicyID != e.data.PolicyID || attempt.Sequence != e.data.Sequence {
+			return e.unavailable(runner.ErrExecutionAuthorityUnavailable)
+		}
+		e.pending.Data.Identity = attempt.Identity
+		e.pending.Data.Steps = slices.Clone(attempt.Steps)
+		e.pending.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: e.scheduler.now().UTC()}
+		if r := attempt.Runtime; r != nil {
+			e.pending.Data.Runtime.LocalAttemptID, e.pending.Data.Runtime.Generation, e.pending.Data.Runtime.WorkerLaunch = r.LocalAttemptID, r.Generation, r.WorkerLaunch
+		}
+	}
+	events := append([]tracker.NativeRunEvent{*e.pending}, e.pending.PriorEvents...)
+	for i := range events {
+		for j, receipt := range events[i].Data.Steps {
+			bounded, err := e.retainStep(ctx, receipt)
+			if err != nil {
+				return err
+			}
+			events[i].Data.Steps[j] = bounded
+		}
+	}
+	e.pending.Data.Steps = events[0].Data.Steps
+	e.pending.PriorEvents = events[1:]
 	if err := e.claim.source.client.AppendEvent(ctx, e.claim.lease.WorkItemID, *e.pending); err != nil {
-		return e.executionError(err)
+		var refusal *APIError
+		if (e.pending.Type == "run.finished" || e.pending.Type == "run.checkpointed") && errors.As(err, &refusal) && refusal.permanentInvalidRequest() {
+			if len(e.pending.PriorEvents) > 0 {
+				e.data.Sequence = e.pending.PriorEvents[0].Data.Sequence - 1
+				e.observations = nil
+			}
+			failure := refusal.NativeTerminalFailure()
+			failure.Stage, failure.ErrorClass = "event_publication", "event_publication"
+			failure.Error = "Hub rejected the completion request"
+			failure.ObservedAt = e.scheduler.now().UTC()
+			failure = failure.Public()
+			data := tracker.NativeRunData{
+				RunID: e.data.RunID, AttemptID: e.data.AttemptID, PolicyID: e.claim.lease.PolicyID,
+				LeaseID: e.claim.lease.ID, FencingToken: e.claim.lease.FencingToken,
+				Identity: e.data.Identity, Sequence: e.data.Sequence + 1, Outcome: "failed", TerminalFailure: &failure,
+			}
+			if data.Identity == nil && e.data.Runtime != nil {
+				data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", LocalAttemptID: e.data.Runtime.LocalAttemptID, Generation: e.data.Runtime.Generation}
+			}
+			key := data.AttemptID + ":" + strconv.FormatInt(data.Sequence, 10) + ":rejected"
+			if e.pending.IdempotencyKey == key {
+				failure = *e.pending.Data.TerminalFailure
+				e.data.TerminalFailure, e.pending = &failure, nil
+				e.preparedOutcome = ""
+				return &nativeCompletionRejection{failure: failure}
+			}
+			e.preparedOutcome, e.preparedFailure = "failed", &failure
+			e.pending = &tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: key}, Type: "run.finished", SchemaVersion: 1, Data: data}
+			if err := e.flush(ctx); err != nil {
+				return err
+			}
+			return &nativeCompletionRejection{failure: failure}
+		}
+		return e.executionError(ctx, err)
 	}
 	checkpoint := e.data.Handoff
+	runtime := e.data.Runtime
 	e.data = e.pending.Data
+	if e.data.Runtime != nil {
+		e.runtimePublishedAt = e.data.Runtime.HeartbeatAt
+	}
 	if e.data.Handoff == nil {
 		e.data.Handoff = checkpoint
 	}
 	e.pending = nil
+	e.observations = nil
 	e.runtimeDirty = false
+	if runtime != nil && runtime != e.data.Runtime {
+		if e.data.Runtime == nil {
+			e.data.Runtime = runtime
+		} else {
+			observation := *e.data.Runtime
+			observation.Pipeline, observation.PipelineDropped = gate.MergePipeline(observation.Pipeline, runtime.Pipeline, max(observation.PipelineDropped, runtime.PipelineDropped))
+			e.data.Runtime = &observation
+		}
+		e.runtimeDirty = true
+	}
 	return nil
+}
+
+type nativeCompletionRejection struct {
+	failure tracker.NativeTerminalFailure
+}
+
+func (e *nativeCompletionRejection) Error() string {
+	return e.failure.Error
+}
+
+func (e *nativeCompletionRejection) NativeTerminalFailure() tracker.NativeTerminalFailure {
+	return e.failure
 }
 
 func (e *nativeExecution) AvailabilityDeadline() time.Time {

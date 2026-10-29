@@ -38,7 +38,7 @@ type hostedConversationFileConfig struct {
 	Workspace       string `yaml:"workspace"`
 	QuestionTimeout string `yaml:"question_timeout"`
 	// SettleWindow is how long a finished or idle conversation may sit
-	// without activity before it settles (decisions section 14).
+	// without activity before it settles.
 	SettleWindow     string `yaml:"settle_window"`
 	ControlQueueSize int    `yaml:"control_queue_size"`
 }

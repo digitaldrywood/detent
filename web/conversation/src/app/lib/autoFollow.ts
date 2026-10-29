@@ -1,8 +1,7 @@
 // Auto-follow for the transcript.
 //
 // The threshold and the "stop following once the user scrolls away" rule come
-// from the conversation POC (`src/app/main.tsx`, `follow.current`), which the
-// design inventory names as the source for A.10. The return-to-latest button
+// from the conversation POC (`src/app/main.tsx`, `follow.current`). The return-to-latest button
 // is new: the POC tracked the state but showed no control.
 import React from "react";
 

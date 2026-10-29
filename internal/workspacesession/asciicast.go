@@ -7,8 +7,7 @@ import (
 	"time"
 )
 
-// Asciicast v2, the format a terminal recording is stored in (decisions section
-// 18.3).
+// Asciicast v2, the format a terminal recording is stored in.
 //
 // The format is one JSON object on the first line -- the header -- and then one
 // JSON array per event, each `[seconds since the start, code, data]`. It is
@@ -18,7 +17,7 @@ import (
 //
 // Three codes appear here. "o" is what the shell wrote, "i" is what the person
 // typed, and "r" is a window resize carrying "<cols>x<rows>". Input is recorded
-// and marked rather than dropped: section 18.3 says in so many words that
+// and marked rather than dropped: the terminal contract says in so many words that
 // recording cannot remove what the person typed, and a recording that quietly
 // held only half the session would be a worse answer than one that says which
 // half is which.
@@ -41,7 +40,7 @@ const AsciicastVersion = 2
 // A terminal has no output cap on the wire, and it must not have one: a shell
 // that stopped producing after a megabyte would be a terminal that stopped
 // working, which is the difference between this surface and the exec channel's
-// bounded log (section 18.12). So the cap lives on the stored copy instead, at
+// bounded log. So the cap lives on the stored copy instead, at
 // the same 1 MiB an action's output keeps, and a recording that reaches it is
 // marked truncated so a reader is told the copy is shorter than the session was
 // rather than being shown a cut recording that looks complete.

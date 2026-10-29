@@ -1,7 +1,7 @@
 import { dependencyLabel } from "./dependencies.ts";
 // The issue page's activity feed, merged client-side.
 //
-// Decisions §19.2: the feed is the work item's history, its attempts, the
+// The feed is the work item's history, its attempts, the
 // linked conversation's events and the comments, in one time-ordered list.
 // The hub serves no merged projection — history is one endpoint, attempts
 // another, comments a third, and the conversation is a different resource
@@ -48,6 +48,10 @@ export interface ActivityComment {
   readonly body: string;
   readonly actor: string;
   readonly at: string;
+  readonly revision?: string;
+  readonly own?: boolean;
+  readonly edited?: boolean;
+  readonly deleted?: boolean;
 }
 
 export interface ActivityRow {
@@ -207,7 +211,7 @@ export function historySentence(event: CollaborationEvent): HistorySentence {
 }
 
 /** The sentence an attempt's own record carries, once it has ended. */
-function attemptSentence(attempt: NativeAttempt, ordinal: number): HistorySentence | null {
+function attemptSentence(attempt: NativeAttempt, ordinal: number | string): HistorySentence | null {
   switch (attempt.status) {
     case "running":
       // A running attempt is the live row's business, not a history row's.
@@ -235,6 +239,7 @@ export interface ConversationActivity {
 }
 
 export interface ActivityInput {
+  readonly attemptsPartial?: boolean;
   readonly history: readonly CollaborationEvent[];
   readonly attempts: readonly NativeAttempt[];
   readonly comments: readonly NativeComment[];
@@ -279,6 +284,7 @@ export function mergeActivity(input: ActivityInput): readonly ActivityRow[] {
   }
 
   input.attempts.forEach((attempt, index) => {
+    const ordinal = input.attemptsPartial ? `${index + 1} in loaded page` : index + 1;
     const claimed = runnerLabel(attempt, input.runnerNames) ?? "A runner";
     rows.push({
       key: `attempt:${attempt.attempt_id}:claimed`,
@@ -286,14 +292,14 @@ export function mergeActivity(input: ActivityInput): readonly ActivityRow[] {
       icon: "runner",
       at: stamp(attempt.started_at),
       actor: claimed,
-      sentence: `claimed the issue and started attempt ${index + 1}${
+      sentence: `claimed the issue and started attempt ${ordinal}${
         attempt.identity === undefined
           ? ""
           : ` · ${attempt.identity.backend} ${attempt.identity.model}`
       }`,
       lowValue: false,
     });
-    const ended = attemptSentence(attempt, index + 1);
+    const ended = attemptSentence(attempt, ordinal);
     if (ended === null) return;
     rows.push({
       key: `attempt:${attempt.attempt_id}:ended`,
@@ -320,6 +326,10 @@ export function mergeActivity(input: ActivityInput): readonly ActivityRow[] {
         body: comment.body,
         actor: actorLabel(comment.actor, input.viewerPrincipalId, runner, input.runnerNames),
         at: comment.created_at,
+        revision: comment.revision,
+        own: comment.actor.kind === "human" && comment.actor.principal_id === input.viewerPrincipalId,
+        edited: comment.edited_by !== undefined,
+        deleted: comment.deleted === true,
       },
     });
   }

@@ -19,7 +19,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -28,6 +27,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/staleness"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 func TestRunningWorkAttemptMetadataJSONPersistsPullRequestFingerprint(t *testing.T) {
@@ -293,9 +294,6 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Deliverable.MergeMethod = workflowconfig.MergeMethodRebase
 	cfg.Deliverable.Kind = workflowconfig.DeliverableArtifact
 	cfg.Agent.OutputTruncation.MaxBytes = 4096
-	cfg.Agent.LifetimeSessionLimit = 21
-	cfg.Agent.LifetimeTokenLimit = 52_000_000
-	cfg.Agent.LifetimeLimitOverrideLabel = " Allow-Hard-Issue "
 	cfg.Identity.Name = "release-captain"
 	cfg.Identity.GitHubLogin = "detent-bot"
 	cfg.Identity.AssigneeRequired = true
@@ -307,11 +305,10 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Tracker.Claims.TTLSeconds = 300
 	cfg.Tracker.Claims.HeartbeatSeconds = 45
 	cfg.Tracker.BlockedRecovery = workflowconfig.BlockedRecovery{
-		Enabled:                true,
-		SourceStates:           []string{"Blocked", "Parked"},
-		TargetState:            "Repair",
-		ReasonCodes:            []string{"merge_conflict", "stale_base"},
-		BreakerCooldownSeconds: 12 * 60 * 60,
+		Enabled:      true,
+		SourceStates: []string{"Blocked", "Parked"},
+		TargetState:  "Repair",
+		ReasonCodes:  []string{"merge_conflict", "stale_base"},
 	}
 	cfg.Tracker.PriorityMap = workflowconfig.StringOrMap{IsMap: true, Map: map[string]any{"Critical": 1, "Normal": 3, "No priority": nil}}
 	staggerSeconds := 20
@@ -345,9 +342,6 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	if got.StrandedActiveThreshold != 42*time.Second {
 		t.Fatalf("StrandedActiveThreshold = %s, want 42s", got.StrandedActiveThreshold)
 	}
-	if got.NoProgressTokenLimit != workflowconfig.DefaultNoProgressTokenLimit {
-		t.Fatalf("NoProgressTokenLimit = %d, want %d", got.NoProgressTokenLimit, workflowconfig.DefaultNoProgressTokenLimit)
-	}
 	if len(got.WorkerHosts) != 2 || got.WorkerHosts[0] != "worker-a" || got.WorkerHosts[1] != "worker-b" {
 		t.Fatalf("WorkerHosts = %#v, want worker-a and worker-b", got.WorkerHosts)
 	}
@@ -360,8 +354,7 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	if !got.BlockedRecovery.Enabled ||
 		!slices.Equal(got.BlockedRecovery.SourceStates, []string{"blocked", "parked"}) ||
 		got.BlockedRecovery.TargetState != "Repair" ||
-		!slices.Equal(got.BlockedRecovery.ReasonCodes, []string{"merge_conflict", "stale_base"}) ||
-		got.BlockedRecovery.BreakerCooldown != 12*time.Hour {
+		!slices.Equal(got.BlockedRecovery.ReasonCodes, []string{"merge_conflict", "stale_base"}) {
 		t.Fatalf("BlockedRecovery = %#v, want configured recovery policy", got.BlockedRecovery)
 	}
 	if got.WorkspaceCleanupIdleTTL != 2*time.Hour {
@@ -401,12 +394,6 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if got.OutputTruncationMaxBytes != 4096 {
 		t.Fatalf("OutputTruncationMaxBytes = %d, want 4096", got.OutputTruncationMaxBytes)
-	}
-	if got.LifetimeSessionLimit != 21 || got.LifetimeTokenLimit != 52_000_000 {
-		t.Fatalf("lifetime limits = %d sessions/%d tokens, want 21/52000000", got.LifetimeSessionLimit, got.LifetimeTokenLimit)
-	}
-	if got.LifetimeLimitOverrideLabel != "allow-hard-issue" {
-		t.Fatalf("LifetimeLimitOverrideLabel = %q, want allow-hard-issue", got.LifetimeLimitOverrideLabel)
 	}
 	if got.SelectorContext.InstanceLogin != "detent-bot" {
 		t.Fatalf("SelectorContext.InstanceLogin = %q, want detent-bot", got.SelectorContext.InstanceLogin)
@@ -1995,7 +1982,7 @@ func TestMemoryConnectorOrchestratorsPartitionSharedIssuesByAuthorization(t *tes
 					},
 				},
 			}, Dependencies{
-				Connector: memory.New(memory.Config{Issues: sharedIssues}),
+				Connector: fakehub.New(fakehub.Config{Issues: sharedIssues}),
 				Runner:    runner,
 			})
 			if err != nil {
@@ -2231,12 +2218,25 @@ func TestDispatchableSkipsDuplicatePullRequestWork(t *testing.T) {
 		ActiveStates:        []string{"Todo", "In Progress", "Rework", "Merging"},
 		TerminalStates:      []string{"Done"},
 	})
-	orch := Orchestrator{cfg: cfg}
+	delivery := dispatchTestIssueWithPullRequest("wi_delivery", "Todo", "OPEN")
+	delivery.Identifier = "prj_example#7"
+	delivery.DependencySource = connector.BlockedRefSourceNative
+	delivery.Metadata = map[string]string{"hub_profile": "native"}
+	delivery.PRRepository = "https://github.com/example-org/example-project"
+	delivery.BranchName = "pick/fix"
+	delivery.PullRequest = &connector.PullRequest{
+		Number: 7, URL: delivery.PRRepository + "/pull/7", State: "OPEN",
+		BranchName: delivery.BranchName, HeadSHA: strings.Repeat("a", 40),
+		BaseRef: "release/v1.2", BaseSHA: strings.Repeat("b", 40),
+	}
 
 	tests := []struct {
-		name  string
-		issue connector.Issue
-		want  bool
+		name              string
+		issue             connector.Issue
+		native            bool
+		githubPullRequest bool
+		want              bool
+		wantReason        string
 	}{
 		{
 			name:  "todo without pull request dispatches",
@@ -2244,9 +2244,28 @@ func TestDispatchableSkipsDuplicatePullRequestWork(t *testing.T) {
 			want:  true,
 		},
 		{
-			name:  "todo with open pull request skips",
-			issue: dispatchTestIssueWithPullRequest("issue-todo-open-pr", "Todo", "OPEN"),
-			want:  false,
+			name:       "github todo with open pull request skips",
+			issue:      dispatchTestIssueWithPullRequest("issue-todo-open-pr", "Todo", "OPEN"),
+			wantReason: dispatchSkipDuplicatePullRequest,
+		},
+		{
+			name:   "native release delivery without version dispatches",
+			issue:  delivery,
+			native: true,
+			want:   true,
+		},
+		{
+			name:              "native release delivery with PR policy dispatches",
+			issue:             delivery,
+			native:            true,
+			githubPullRequest: true,
+			want:              true,
+		},
+		{
+			name:       "native todo with merged pull request still reconciles",
+			issue:      dispatchTestIssueWithPullRequest("issue-native-merged-pr", "Todo", "MERGED"),
+			native:     true,
+			wantReason: dispatchSkipMergedPullRequest,
 		},
 		{
 			name:  "todo with unavailable pull request hydration skips",
@@ -2322,10 +2341,40 @@ func TestDispatchableSkipsDuplicatePullRequestWork(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			cfg := cfg
+			cfg.Policy.Gates.GitHubPullRequest = tt.githubPullRequest
+			attempts := &recordingWorkAttemptStore{}
+			orch := Orchestrator{cfg: cfg, workAttempts: attempts}
+			if tt.native {
+				orch.connector = &nativeWorkflowConnector{}
+			}
 			state := newState(cfg)
-			got := orch.dispatchable(tt.issue, &state, now)
-			if got != tt.want {
-				t.Fatalf("dispatchable() = %v, want %v", got, tt.want)
+			plan := orch.dispatchPlanner().plan(&state, []connector.Issue{tt.issue}, now, dispatchPlanHooks{
+				decision: func(decision dispatchPlanDecision) {
+					orch.logDispatchPlanDecision(t.Context(), &state, now, decision)
+				},
+			})
+			if got := len(plan.Dispatches) == 1; got != tt.want {
+				t.Fatalf("dispatchable = %v, want %v; decisions = %#v", got, tt.want, attempts.decisions)
+			}
+			if len(attempts.decisions) != 1 {
+				t.Fatalf("persisted decisions = %#v, want one", attempts.decisions)
+			}
+			decision := attempts.decisions[0]
+			if decision.IssueID != tt.issue.ID || decision.Selected != tt.want {
+				t.Fatalf("persisted decision = %#v, want issue %s selected=%v", decision, tt.issue.ID, tt.want)
+			}
+			if tt.wantReason != "" && (decision.Result != store.SchedulerDecisionResultSkipped || decision.Reason != tt.wantReason) {
+				t.Fatalf("persisted decision = %#v, want skipped with reason %s", decision, tt.wantReason)
+			}
+			if decision.Result == store.SchedulerDecisionResultSkipped {
+				issue := tt.issue
+				issue.Metadata = map[string]string{"hub_revision": "7"}
+				orch.recordLocalAdmission(t.Context(), &state, issue, now, false, decision.Reason, decision.Reason, nil)
+				diagnostics := state.ProjectDiagnostics(nil, now)
+				if len(diagnostics.Admissions) != 1 || diagnostics.Admissions[0].WorkItemRevision != 7 || diagnostics.Admissions[0].Predicate != decision.Reason {
+					t.Fatalf("heartbeat lost dispatch refusal: %+v", diagnostics.Admissions)
+				}
 			}
 		})
 	}
@@ -3384,12 +3433,10 @@ func TestHandleRunResultCompletesDurableAttempt(t *testing.T) {
 		Project:             scheduler.ProjectCandidate{ID: "detent"},
 	})
 	attempts := &recordingWorkAttemptStore{}
-	retrospector := &recordingRetrospector{}
 	orch := Orchestrator{
 		cfg:          cfg,
 		runResults:   make(chan runpkg.Completion, 1),
 		workAttempts: attempts,
-		retrospector: retrospector,
 	}
 	state := newState(cfg)
 	issue := dispatchTestIssue("issue-failed-attempt", "Todo")
@@ -3424,9 +3471,6 @@ func TestHandleRunResultCompletesDurableAttempt(t *testing.T) {
 	}
 	if _, ok := state.Retry[issue.ID]; !ok {
 		t.Fatalf("Retry[%q] missing after failed durable attempt", issue.ID)
-	}
-	if !slices.Equal(retrospector.triggers, []string{"completion"}) {
-		t.Fatalf("retrospector triggers = %v, want completion", retrospector.triggers)
 	}
 }
 
@@ -3475,13 +3519,15 @@ func TestDispatchReadyIssuesRecordsPostSelectionRefusal(t *testing.T) {
 	}{
 		{
 			name: "CPU pressure",
-			configure: func(_ *Config, state *State) {
+			configure: func(cfg *Config, state *State) {
+				cfg.CPUPressureSomeAvg10Max = 80
 				state.CPUPressure = telemetry.CPUPressure{
-					Supported:        true,
-					Some:             telemetry.PressureAverages{Avg10: 84.78},
-					SomeAvg10Max:     80,
-					DispatchHeld:     true,
-					ConstrainedSince: now.Add(-time.Minute),
+					Supported:           true,
+					Some:                telemetry.PressureAverages{Avg10: 84.78},
+					SomeAvg10Max:        80,
+					DispatchHeld:        true,
+					CapacityConstrained: true,
+					ConstrainedSince:    now.Add(-time.Minute),
 				}
 			},
 			want: dispatchIssueFailureCPUPressure,
@@ -3509,6 +3555,7 @@ func TestDispatchReadyIssuesRecordsPostSelectionRefusal(t *testing.T) {
 			tt.configure(&cfg, &state)
 			attempts := &recordingWorkAttemptStore{}
 			orch := Orchestrator{cfg: cfg, workAttempts: attempts, now: func() time.Time { return now }}
+			orch.updateHostPressure(&state, func(shared *State) { shared.CPUPressure = state.CPUPressure })
 			issue := dispatchTestIssue("issue-post-selection-refusal", "Todo")
 
 			orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
@@ -3539,10 +3586,12 @@ func TestDispatchReadyIssuesPreservesConcretePressureRefusal(t *testing.T) {
 
 	now := time.Date(2026, 9, 4, 19, 1, 6, 0, time.UTC)
 	cfg := normalizeConfig(Config{
-		MaxConcurrentAgents: 2,
-		ActiveStates:        []string{"Todo"},
-		TerminalStates:      []string{"Done"},
-		Project:             scheduler.ProjectCandidate{ID: "detent"},
+		MaxConcurrentAgents:          2,
+		CPUPressureSomeAvg10Max:      80,
+		CPUPressureDegradedMaxAgents: 1,
+		ActiveStates:                 []string{"Todo"},
+		TerminalStates:               []string{"Done"},
+		Project:                      scheduler.ProjectCandidate{ID: "detent"},
 	})
 	globalGate := scheduler.NewGlobalDispatchGate(
 		scheduler.NewStrictPriority(scheduler.Config{Capacity: 2}),
@@ -3579,6 +3628,7 @@ func TestDispatchReadyIssuesPreservesConcretePressureRefusal(t *testing.T) {
 		globalDispatchGate: globalGate,
 		now:                func() time.Time { return now },
 	}
+	orch.updateHostPressure(&state, func(shared *State) { shared.CPUPressure = state.CPUPressure })
 	issue := dispatchTestIssue("issue-pressure-capacity", "Todo")
 
 	orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
@@ -4070,14 +4120,6 @@ func (c failingCapacityReleaseConnector) SetField(context.Context, string, strin
 	return c.err
 }
 
-type recordingRetrospector struct {
-	triggers []string
-}
-
-func (r *recordingRetrospector) Trigger(trigger string) {
-	r.triggers = append(r.triggers, trigger)
-}
-
 func (s *recordingWorkAttemptStore) StartWorkAttempt(_ context.Context, attrs store.WorkAttemptStart) (int64, error) {
 	s.starts = append(s.starts, attrs)
 	if s.nextID <= 0 {
@@ -4390,6 +4432,46 @@ func TestTimedOutWorkerProbeDoesNotHoldDispatch(t *testing.T) {
 				if decision.SkipReason == "worker_github_budget_monitor_unavailable" {
 					t.Fatalf("timeout revived retired dispatch skip: %#v", decision)
 				}
+			}
+		})
+	}
+}
+
+func TestNativeAuthorizationBeforeClaim(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		auth   selector.Selector
+		refuse bool
+	}{
+		{name: "composed labels", auth: selector.Selector{And: []selector.Selector{{Labels: selector.Labels{Include: []string{"ready"}}}, {Labels: selector.Labels{Include: []string{"canary"}}}}}},
+		{name: "alternatives refuse", auth: selector.Selector{Or: []selector.Selector{{Labels: selector.Labels{Include: []string{"ready"}}}, {Labels: selector.Labels{Include: []string{"canary"}}}}}, refuse: true},
+		{name: "nested alternatives refuse", auth: selector.Selector{And: []selector.Selector{{Or: []selector.Selector{{Labels: selector.Labels{Include: []string{"ready"}}}, {Labels: selector.Labels{Include: []string{"canary"}}}}}}}, refuse: true},
+		{name: "invalid labels refuse", auth: selector.Selector{Labels: selector.Labels{Include: []string{" "}}}, refuse: true},
+		{name: "unresolved identity refuses", auth: selector.Selector{AuthorIn: []string{"@me"}}, refuse: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := normalizeConfig(Config{ActiveStates: []string{"Todo"}, SchedulingRepository: "example-org/example-project", Authorization: test.auth})
+			scheduling := &hubSchedulingSource{repository: cfg.SchedulingRepository}
+			o := &Orchestrator{cfg: cfg, scheduling: scheduling, connector: &nativeWorkflowConnector{}}
+			state := newState(cfg)
+			state.nativeAdmission = &tracker.NativeAdmissionContext{PolicyID: "previous"}
+			_, err := o.fetchCandidateIssuesForTick(t.Context(), &state)
+			if test.refuse {
+				if err == nil || scheduling.fetches != 0 {
+					t.Fatalf("unsupported policy reached claim: %d, %v", scheduling.fetches, err)
+				}
+			} else {
+				if err != nil || scheduling.fetches != 1 || !slices.Equal(scheduling.request.Filter.LabelInclude, []string{"ready", "canary"}) {
+					t.Fatalf("claim filter=%#v fetches=%d err=%v", scheduling.request.Filter, scheduling.fetches, err)
+				}
+			}
+			state.Draining = true
+			o.snapshotNativeAdmission(&state)
+			if test.refuse && state.nativeAdmission != nil {
+				t.Fatal("unsupported authorization published unrestricted admission")
+			}
+			if !test.refuse && (state.nativeAdmission == nil || !slices.Equal(state.nativeAdmission.LabelInclude, []string{"ready", "canary"})) {
+				t.Fatal("admission evidence differs from claim")
 			}
 		})
 	}

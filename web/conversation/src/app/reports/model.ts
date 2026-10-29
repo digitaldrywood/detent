@@ -45,8 +45,8 @@ export interface ReportsSearch {
   /** A custom range's first and last UTC days, YYYY-MM-DD. */
   readonly from: string | null;
   readonly to: string | null;
-  /** `all` reads every project the viewer can read; otherwise the sidebar's project. */
-  readonly project: typeof ALL_PROJECTS | null;
+  readonly project: string | null;
+  readonly projects: readonly string[];
   readonly filters: ReportsFilters;
   readonly compare: boolean;
   readonly clock: "todo" | "created";
@@ -99,7 +99,8 @@ export function parseReportsSearch(search: Readonly<Record<string, unknown>>): R
     range: custom ? CUSTOM_RANGE.value : pick(search.range, REPORT_RANGES.map((range) => range.value), DEFAULT_RANGE),
     from: custom ? from : null,
     to: custom ? to : null,
-    project: search.project === ALL_PROJECTS ? ALL_PROJECTS : null,
+    project: typeof search.project === "string" && search.project.length > 0 ? search.project : null,
+    projects: readList(search.projects),
     filters: parseReportsFilters(search),
     compare: search.compare !== "off",
     clock: pick(search.clock, ["todo", "created"], "todo"),
@@ -113,6 +114,7 @@ export function parseReportsSearch(search: Readonly<Record<string, unknown>>): R
 export function reportsSearchParams(search: ReportsSearch): Record<string, string | string[]> {
   const out: Record<string, string | string[]> = {};
   if (search.project !== null) out.project = search.project;
+  if (search.projects.length > 0) out.projects = [...search.projects];
   if (search.range === CUSTOM_RANGE.value && search.from !== null && search.to !== null) {
     out.from = search.from;
     out.to = search.to;

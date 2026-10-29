@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issuefiling"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 )
 
@@ -39,11 +39,11 @@ func TestCoordinatedOccurrence(t *testing.T) {
 			if tt.failure {
 				backend.err = errors.New("comment failed")
 			}
-			draft := intake.IssueDraft{Body: "body"}
+			draft := issuefiling.IssueDraft{Body: "body"}
 			if tt.machine {
 				draft.Body = issueorigin.Stamp(draft.Body, issueorigin.Origin{Kind: "routine", Fingerprint: "problem"})
 			}
-			issue, err := commentExistingOccurrence(t.Context(), backend, intake.Issue{ID: "issue"}, draft)
+			issue, err := commentExistingOccurrence(t.Context(), backend, issuefiling.Issue{ID: "issue"}, draft)
 			if (err != nil) != tt.failure || backend.comments != tt.comments || issue.Reused != (tt.machine && !tt.failure) {
 				t.Fatalf("issue = %+v, error = %v, comments = %d", issue, err, backend.comments)
 			}
@@ -59,7 +59,7 @@ func TestCoordinatedOccurrenceDuringPublication(t *testing.T) {
 			store := newMemoryCoordinationStore(clock.Now)
 			config := testConfig()
 			marker := "machine:disk"
-			existing := intake.Issue{ID: "issue-1", Body: "original"}
+			existing := issuefiling.Issue{ID: "issue-1", Body: "original"}
 			value, err := json.Marshal(effectState{Schema: effectSchema, Status: state, Token: "creator", Issue: existing})
 			if err != nil {
 				t.Fatal(err)
@@ -70,7 +70,7 @@ func TestCoordinatedOccurrenceDuringPublication(t *testing.T) {
 			underlying := &blockingIssueBackend{marker: marker, issue: existing}
 			backend := &occurrenceBackend{IssueBackend: underlying}
 			coordinator := newTestIssueCoordinator(t, config, "second", store, clock)
-			issue, created, err := coordinator.Ensure(t.Context(), marker, intake.IssueDraft{Body: issueorigin.Stamp("again", issueorigin.Origin{Kind: "worker", Fingerprint: "disk"})}, backend)
+			issue, created, err := coordinator.Ensure(t.Context(), marker, issuefiling.IssueDraft{Body: issueorigin.Stamp("again", issueorigin.Origin{Kind: "worker", Fingerprint: "disk"})}, backend)
 			if err != nil || created || !issue.Reused || backend.comments != 1 || underlying.CreateCount() != 0 {
 				t.Fatalf("issue=%+v created=%v err=%v comments=%d", issue, created, err, backend.comments)
 			}

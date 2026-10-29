@@ -34,6 +34,28 @@ type CheckpointRefPublisher interface {
 	PushCheckpointRef(ctx context.Context, info Info, issue Issue, previous CheckpointRef, validate func(context.Context) error) (CheckpointRef, bool, error)
 }
 
+type CheckpointWorktree interface {
+	RestoreCheckpointForFinalization(context.Context, Info, Issue, CheckpointRef) (Info, Issue, error)
+}
+
+func (l *LocalGit) RestoreCheckpointForFinalization(ctx context.Context, original Info, issue Issue, checkpoint CheckpointRef) (Info, Issue, error) {
+	issue.Identifier += "-finalization-" + checkpoint.CommitSHA
+	issue.BranchName = ""
+	issue.Source = nil
+	issue.Checkpoint = &checkpoint
+	info, err := l.Create(ctx, issue)
+	if err != nil {
+		return Info{}, issue, err
+	}
+	if info.Path == original.Path || info.Branch == original.Branch {
+		return Info{}, issue, errors.New("checkpoint finalization requires a separate workspace and branch")
+	}
+	if _, err := runGitAt(ctx, info.Path, "read-tree", checkpoint.TreeSHA); err != nil {
+		return Info{}, issue, fmt.Errorf("stage captured checkpoint tree: %w", err)
+	}
+	return info, issue, nil
+}
+
 func CheckpointRefName(issue Issue) string {
 	id := strings.TrimSpace(issue.ID)
 	if id == "" {
@@ -137,7 +159,7 @@ func (l *LocalGit) PushCheckpointRef(ctx context.Context, info Info, issue Issue
 // deleteCheckpointRef retires a terminal item's checkpoint ref as part of the
 // existing terminal workspace cleanup. A failure leaves only a stale ref.
 func (l *LocalGit) deleteCheckpointRef(ctx context.Context, issue Issue) {
-	if !issue.Terminal || strings.TrimSpace(issue.ID) == "" && strings.TrimSpace(issue.Identifier) == "" {
+	if issue.ReviewVersionID != "" || !issue.Terminal || strings.TrimSpace(issue.ID) == "" && strings.TrimSpace(issue.Identifier) == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -252,8 +274,8 @@ func (l *LocalGit) fetchCheckpointRef(ctx context.Context, checkpoint *Checkpoin
 		return errors.New("checkpoint reference is incomplete")
 	}
 	if _, err := l.runGit(ctx, "cat-file", "-e", checkpoint.CommitSHA+"^{commit}"); err != nil {
-		if _, err := l.runGit(ctx, "fetch", "--no-tags", "--no-write-fetch-head", defaultGitRemote, checkpoint.CommitSHA); err != nil {
-			if _, refErr := l.runGit(ctx, "fetch", "--no-tags", "--no-write-fetch-head", defaultGitRemote, "+"+checkpoint.Ref+":"+checkpoint.Ref); refErr != nil {
+		if _, err := l.runGit(ctx, remoteGitArgs("fetch", "--no-tags", "--no-write-fetch-head", defaultGitRemote, checkpoint.CommitSHA)...); err != nil {
+			if _, refErr := l.runGit(ctx, remoteGitArgs("fetch", "--no-tags", "--no-write-fetch-head", defaultGitRemote, "+"+checkpoint.Ref+":"+checkpoint.Ref)...); refErr != nil {
 				return fmt.Errorf("fetch checkpoint %s: %w", checkpoint.Ref, errors.Join(err, refErr))
 			}
 		}

@@ -8,10 +8,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/diffbody"
 )
 
-// Stored attempt diffs (decisions section 18.5). This file is the wire
+// Stored attempt diffs. This file is the wire
 // contract the runner posts and the hub stores, together with the two
 // write-side rules both sides have to agree on: the size caps and the files
-// denylist of section 18.4. Keeping them here means the producer cannot ship
+// denylist of the Files contract. Keeping them here means the producer cannot ship
 // a patch the hub would have had to strip, and the hub does not have to trust
 // that the producer stripped it.
 
@@ -39,7 +39,7 @@ const (
 	DiffSourceWorkspace = "workspace"
 )
 
-// Diff file statuses, in the order section 18.5 lists them.
+// Diff file statuses, in the order the Diff contract lists them.
 const (
 	DiffStatusAdded    = "added"
 	DiffStatusModified = "modified"

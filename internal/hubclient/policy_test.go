@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -24,11 +25,11 @@ import (
 func TestNativeClaimsDoNotWaitForPolicyApproval(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name          string
-		pendingStatus int
+		name    string
+		pending bool
 	}{
-		{name: "approval pending", pendingStatus: http.StatusConflict},
-		{name: "previous policy approved", pendingStatus: http.StatusOK},
+		{name: "approval pending", pending: true},
+		{name: "previous policy approved", pending: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -65,9 +66,8 @@ func TestNativeClaimsDoNotWaitForPolicyApproval(t *testing.T) {
 						if err := json.NewEncoder(w).Encode(policy.Approval{Policy: selected}); err != nil {
 							t.Fatal(err)
 						}
-					} else if test.pendingStatus == http.StatusConflict {
-						w.WriteHeader(http.StatusConflict)
-						if err := json.NewEncoder(w).Encode(map[string]string{"code": "policy_mismatch", "message": "approval pending"}); err != nil {
+					} else if test.pending {
+						if _, err := w.Write([]byte(`{"policy":null}`)); err != nil {
 							t.Fatal(err)
 						}
 					} else {
@@ -145,6 +145,81 @@ func clientTestPolicy() policy.Descriptor {
 		SourceRevision: strings.Repeat("a", 40), SourceDigest: policy.Digest([]byte("source")), ConfigDigest: policy.Digest([]byte("config")),
 		Gates: policy.Gates{Kind: "command", PlanReview: "human", PlanStopDigest: policy.Digest([]byte("Plan Review")), AutomatedReview: "optional", MergeMethod: "squash"},
 	}.WithID()
+}
+
+func TestNativeProjectPolicyInvalidationDuringRead(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"observation", "heartbeat", "no invalidation"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			previous := clientTestPolicy()
+			updated := previous
+			updated.SourceDigest = policy.Digest([]byte("updated-source"))
+			updated = updated.WithID()
+			path := filepath.Join(t.TempDir(), "private", "identity.json")
+			identity, err := runnerauth.Initialize(path, "https://hub.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity.Identity.OrganizationID = "org_test"
+			identity.Identity.ProjectIDs = []tracker.ProjectID{"prj_test"}
+			identity.Identity.ExpiresAt = time.Now().Add(24 * time.Hour)
+			if err := runnerauth.Save(path, identity); err != nil {
+				t.Fatal(err)
+			}
+			var native *NativeClient
+			scheduler := &Scheduler{}
+			reads := 0
+			client, err := New(Config{URL: identity.HubURL, IdentityFile: path, HTTPClient: &http.Client{Transport: executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				w := httptest.NewRecorder()
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/policy/observed") {
+					w.WriteHeader(http.StatusNoContent)
+					return w.Result(), nil
+				}
+				if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/policy") {
+					t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+				reads++
+				approval := policy.Approval{Policy: updated}
+				if reads == 1 {
+					approval.Policy = previous
+					switch name {
+					case "observation":
+						if err := scheduler.reportObservedPolicy(r.Context(), "project", &NativeConnector{client: native}, policy.Observation{Descriptor: updated}); err != nil {
+							return nil, err
+						}
+					case "heartbeat":
+						native.applyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "updated", PolicyID: updated.ID})
+					}
+				}
+				if err := json.NewEncoder(w).Encode(approval); err != nil {
+					return nil, err
+				}
+				return w.Result(), nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native, err = client.Native("org_test", "prj_test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			native.applyHeartbeatChanges(&runnerauth.HeartbeatChanges{Cursor: "initial", PolicyID: previous.ID})
+			if approval, err := native.ProjectPolicy(t.Context()); err != nil || approval.Policy.ID != previous.ID {
+				t.Fatalf("in-flight policy: id=%s error=%v", approval.Policy.ID, err)
+			}
+			wantID, wantReads := updated.ID, 2
+			if name == "no invalidation" {
+				wantID, wantReads = previous.ID, 1
+			}
+			for range 2 {
+				if approval, err := native.ProjectPolicy(t.Context()); err != nil || approval.Policy.ID != wantID || reads != wantReads {
+					t.Fatalf("policy after %s: id=%s want=%s reads=%d want=%d error=%v", name, approval.Policy.ID, wantID, reads, wantReads, err)
+				}
+			}
+		})
+	}
 }
 
 func TestSchedulerRejectsMissingConfigurationBeforeWork(t *testing.T) {
@@ -232,9 +307,9 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 		{name: "canonical version carries feature approval", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40)}, approved: &previous, status: http.StatusOK, local: current, reports: 1},
 		{name: "canonical version without source is reported", approved: &previous, status: http.StatusOK, local: current, reports: 1},
 		{name: "older canonical runner remains approved", approved: &current, status: http.StatusOK, local: previous, reports: 1},
-		{name: "default branch applies immediately", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, status: http.StatusConflict, local: clientTestPolicy(), reports: 1},
+		{name: "default branch applies immediately", autoApply: true, provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, status: http.StatusOK, local: clientTestPolicy(), reports: 1},
 		{name: "different default branch configuration is reported", provenance: &policy.RepositorySource{Repository: "acme/orders", Commit: strings.Repeat("a", 40), DefaultBranch: "develop", DefaultBranchHead: strings.Repeat("b", 40), DefaultBranchReachable: true}, approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, reports: 1},
-		{name: "nothing approved", status: http.StatusConflict, local: clientTestPolicy(), reports: 1},
+		{name: "nothing approved", status: http.StatusOK, local: clientTestPolicy(), reports: 1},
 		{name: "runner B approval preserves runner A heartbeat", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: changed, reports: 1},
 		{name: "invalid approved descriptor", approved: ptr(policy.Descriptor{}), status: http.StatusOK, local: clientTestPolicy(), reports: 1},
 		{name: "approved policy matches", approved: ptr(clientTestPolicy()), status: http.StatusOK, local: clientTestPolicy(), reports: 1},
@@ -271,9 +346,24 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 					w.WriteHeader(status)
 					switch status {
 					case http.StatusOK:
-						_ = json.NewEncoder(w).Encode(policy.Approval{Policy: *approved})
-					case http.StatusConflict:
-						_ = json.NewEncoder(w).Encode(map[string]string{"code": "policy_mismatch", "message": "No approved repository policy"})
+						if approved == nil {
+							_, _ = w.Write([]byte(`{"policy":null}`))
+						} else {
+							approval := policy.Approval{Policy: *approved}
+							if approved.Configuration != nil || approved.Authored != nil {
+								shared, err := workflowconfig.ApplyNativePolicy(workflowconfig.Workflow{Config: workflowconfig.Default()}, *approved)
+								if err != nil {
+									t.Error(err)
+									return
+								}
+								approval.ExecutionConfiguration, err = workflowconfig.NewExecutionConfiguration(shared, *approved, workflowconfig.ResolveCloudModelSelection(workflowconfig.ModelSelection{}, workflowconfig.ModelSelection{}))
+								if err != nil {
+									t.Error(err)
+									return
+								}
+							}
+							_ = json.NewEncoder(w).Encode(approval)
+						}
 					default:
 						_ = json.NewEncoder(w).Encode(map[string]string{"code": "unavailable", "message": "down"})
 					}
@@ -289,6 +379,8 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 					}
 				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/validate"):
 					_ = json.NewEncoder(w).Encode(map[string]any{})
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/work-items/"):
+					_ = json.NewEncoder(w).Encode(tracker.NativeIssue{SchedulingEligible: new(true), DependencyReady: true})
 				default:
 					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 				}
@@ -398,3 +490,50 @@ func TestNativeSchedulerReportsConfigurationOnce(t *testing.T) {
 }
 
 func ptr[T any](value T) *T { return &value }
+
+func TestFleetProjectEligibilityRequiresApproval(t *testing.T) {
+	t.Parallel()
+	for _, approved := range []bool{false, true} {
+		t.Run(fmt.Sprintf("approved=%t", approved), func(t *testing.T) {
+			t.Parallel()
+			descriptor := clientTestPolicy()
+			fleetReads := 0
+			client, err := New(Config{URL: "https://hub.example.test", TokenSource: func() string { return "administrator" }, HTTPClient: &http.Client{Transport: executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				recorder := httptest.NewRecorder()
+				switch r.URL.Path {
+				case "/api/v2/organizations/org_example/projects/prj_example/policy":
+					var selected *policy.Descriptor
+					if approved {
+						selected = &descriptor
+					}
+					if err := json.NewEncoder(recorder).Encode(map[string]any{"policy": selected}); err != nil {
+						t.Fatal(err)
+					}
+				case "/api/v2/organizations/org_example/runners":
+					fleetReads++
+					if err := json.NewEncoder(recorder).Encode([]runnerauth.Runner{{Routing: runnerauth.Routing{ProjectIDs: []tracker.ProjectID{"prj_example"}, CapacityLimit: 1}, Operations: []string{runnerauth.Claim}, HostCapacity: 1, ReportedCapacity: 1}}); err != nil {
+						t.Fatal(err)
+					}
+				default:
+					t.Fatalf("unexpected request %s", r.URL.Path)
+				}
+				return recorder.Result(), nil
+			})}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			fleet, err := NewFleetClient(client, "org_example", map[string]tracker.ProjectID{"example": "prj_example"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := fleet.ProjectEligibility(t.Context(), "example")
+			if approved {
+				if err != nil || result.Policy.ID != descriptor.ID || fleetReads != 1 || len(result.Runners) != 1 || len(result.Runners[0].Exclusions) != 0 || len(result.Exclusions) != 0 {
+					t.Fatalf("approved eligibility: %+v, %v; fleet reads=%d", result, err, fleetReads)
+				}
+			} else if err == nil || fleetReads != 0 || len(result.Runners) != 0 {
+				t.Fatalf("missing approval evaluated runner eligibility: %+v, %v; fleet reads=%d", result, err, fleetReads)
+			}
+		})
+	}
+}

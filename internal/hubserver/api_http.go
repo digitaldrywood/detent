@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -24,7 +25,7 @@ const maxChangeVersionRequestBytes = 28 << 20
 
 // maxAttemptDiffRequestBytes bounds the one endpoint whose body is legitimately
 // larger than every other: a stored attempt diff carries the patches
-// themselves, and decisions section 18.5 bounds those at tracker.MaxDiffBytes.
+// themselves, and the attempt diff contract bounds those at tracker.MaxDiffBytes.
 // The allowance is that bound at the worst case of JSON string escaping plus
 // room for the framing, so a diff the contract accepts is never refused by the
 // transport instead. The factor is six because an encoder writes <, >, & and
@@ -52,8 +53,11 @@ func (s *Service) registerRoutes(e *echo.Echo) {
 		}
 		e.Use(s.hostedBoundary)
 		s.registerHostedRoutes(e)
+	} else {
+		s.registerLocalAppRoutes(e)
 	}
 	s.registerOperatorTools(e)
+	s.registerTeamThreadRoutes(e)
 	s.registerNativeRoutes(e)
 	s.registerProjectSecretRoutes(e)
 	s.registerSpritePoolRoutes(e)
@@ -64,6 +68,9 @@ func (s *Service) registerRoutes(e *echo.Echo) {
 	worker := s.requireAPIScope(apiScopeWorker)
 	operator := s.requireAPIScope(apiScopeOperator)
 	admin := s.requireAPIScope(apiScopeAdmin)
+	if s.config.Hosted == nil {
+		e.POST("/api/v2/admin/backup", s.backupDatabase, s.requireInstanceAdmin())
+	}
 	e.GET("/api/v1/repositories/:owner/:repo/policy", s.getProjectPolicy, read)
 	e.PUT("/api/v1/repositories/:owner/:repo/policy", s.approveProjectPolicy, s.requireInstanceAdmin())
 	e.DELETE("/api/v1/repositories/:owner/:repo/policy", s.revokeProjectPolicy, s.requireInstanceAdmin())
@@ -146,6 +153,9 @@ func SharedEntryRequestBodyLimit(method, path string) int64 {
 	if len(parts) < 6 || parts[0] != "api" || parts[1] != "v2" || parts[2] != "organizations" || parts[4] != "projects" {
 		return cloudassert.MaxBodyBytes
 	}
+	if len(parts) == 9 && parts[6] == "work-items" && parts[8] == "events" {
+		return 8 * maxAPIRequestBodyBytes
+	}
 	if len(parts) == 11 && parts[6] == "work-items" && parts[8] == "changes" && parts[10] == "versions" {
 		return maxChangeVersionRequestBytes
 	}
@@ -155,26 +165,41 @@ func SharedEntryRequestBodyLimit(method, path string) int64 {
 	return cloudassert.MaxBodyBytes
 }
 
-func invalidAPIRequest(c echo.Context, err error) error {
+func (s *Service) invalidAPIRequest(c echo.Context, err error) error {
 	var maxBytesError *http.MaxBytesError
 	if errors.As(err, &maxBytesError) {
-		return c.JSON(http.StatusRequestEntityTooLarge, apiErrorResponse{Code: "payload_too_large", Message: "Request body is too large"})
+		return s.refusedAPIError(c, http.StatusRequestEntityTooLarge, "payload_too_large", "Request body is too large", apiErrorResponse{Code: "payload_too_large", Message: "Request body is too large"})
 	}
-	message := "Request body is invalid"
+	message, reason := "Request body is invalid", "Malformed JSON request body"
 	if strings.HasPrefix(err.Error(), "json: unknown field ") {
 		message += ": " + err.Error()
+		reason = "Request body contains an unknown field"
 	} else {
 		var typeError *json.UnmarshalTypeError
 		if errors.As(err, &typeError) && typeError.Field != "" {
 			message += ": invalid type for field " + typeError.Field
+			reason = "Request body contains an invalid field type"
 		}
 	}
-	return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_request", Message: message})
+	return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_request", reason, apiErrorResponse{Code: "invalid_request", Message: message})
 }
 
 func (s *Service) internalAPIError(c echo.Context, code string, message string, err error) error {
 	s.config.Logger.Error(message, append([]any{"error", err}, s.database.readTimeoutAttributes(err)...)...)
 	return c.JSON(http.StatusInternalServerError, apiErrorResponse{Code: code, Message: message})
+}
+
+func (s *Service) refusedAPIError(c echo.Context, status int, code, reason string, response any, attributes ...any) error {
+	if status >= http.StatusBadRequest && status < http.StatusInternalServerError && status != http.StatusUnauthorized && (status != http.StatusNotFound || slices.Contains(attributes, any("not_found_step")) || slices.Contains(attributes, any("not_found_source")) && (strings.HasSuffix(c.Path(), "/events") || strings.Contains(c.Path(), "/leases/"))) {
+		scope := nativeRequestScope(c)
+		attributes = append([]any{"error", reason, "code", code, "refusal_code", code, "reason", reason,
+			"method", c.Request().Method, "route", c.Path(), "organization_id", string(scope.organization), "project_id", string(scope.project)}, attributes...)
+		s.config.Logger.Warn("API request refused", attributes...)
+	}
+	if response == nil {
+		return c.NoContent(status)
+	}
+	return c.JSON(status, response)
 }
 
 func apiWorkItemID(c echo.Context) (tracker.WorkItemID, error) {
@@ -203,11 +228,11 @@ func apiTTL(seconds int64) (time.Duration, error) {
 func (s *Service) outboxHealth(c echo.Context) error {
 	limit, err := parsePageLimit(c.QueryParam("limit"))
 	if err != nil {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_query", Message: "limit must be between 1 and 200"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_query", "limit must be between 1 and 200", apiErrorResponse{Code: "invalid_query", Message: "limit must be between 1 and 200"})
 	}
 	cursor, err := decodeTimelineCursor(c.QueryParam("cursor"))
 	if err != nil {
-		return c.JSON(http.StatusUnprocessableEntity, apiErrorResponse{Code: "invalid_cursor", Message: "Outbox cursor is invalid"})
+		return s.refusedAPIError(c, http.StatusUnprocessableEntity, "invalid_cursor", "Outbox cursor is invalid", apiErrorResponse{Code: "invalid_cursor", Message: "Outbox cursor is invalid"})
 	}
 	response, err := s.readOutboxHealthPage(c.Request().Context(), limit, cursor)
 	if err != nil {

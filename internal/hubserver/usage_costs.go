@@ -29,61 +29,61 @@ type attributedCostObservation struct {
 func normalizeCostObservation(o *costObservation, now time.Time) error {
 	for _, value := range []string{o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, o.SourceID, o.Unit} {
 		if strings.TrimSpace(value) != value || value == "" || len(value) > 256 || strings.ContainsAny(value, "\x00\r\n") {
-			return nativeInvalid("Cost observations require bounded provider, account, resource, bucket, metric, source and unit identifiers")
+			return nativePublicInvalid("Cost observations require bounded provider, account, resource, bucket, metric, source and unit identifiers")
 		}
 	}
 	for _, value := range []string{o.RateSource, o.EvidenceSource, o.ResourceName} {
 		if len(value) > 512 || strings.ContainsAny(value, "\x00\r\n") {
-			return nativeInvalid("Cost evidence uses bounded identifiers, never credentials or invoice contents")
+			return nativePublicInvalid("Cost evidence uses bounded identifiers, never credentials or invoice contents")
 		}
 	}
 	o.From, o.To = o.From.UTC(), o.To.UTC()
 	o.ObservedAt, o.FreshUntil = o.ObservedAt.UTC(), o.FreshUntil.UTC()
 	o.RateEffectiveAt = o.RateEffectiveAt.UTC()
 	if o.Revision <= 0 || o.From.IsZero() || !o.To.After(o.From) || o.To.Sub(o.From) > 366*24*time.Hour || o.To.After(o.ObservedAt) || o.ObservedAt.After(now) || o.FreshUntil.Before(o.ObservedAt) {
-		return nativeInvalid("Cost observations require a positive revision, a past interval of at most 366 days, observation time and freshness deadline")
+		return nativePublicInvalid("Cost observations require a positive revision, a past interval of at most 366 days, observation time and freshness deadline")
 	}
 	if len(o.Currency) != 3 || strings.Trim(o.Currency, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
-		return nativeInvalid("Cost currency must be a three-letter uppercase code")
+		return nativePublicInvalid("Cost currency must be a three-letter uppercase code")
 	}
 	if !slices.Contains([]string{"complete", "partial", "unknown"}, o.Coverage) || !slices.Contains([]string{"estimated", "provider_billed", "runner_reported", "unknown"}, o.Basis) || !slices.Contains([]string{"measured", "provider_reported", "estimated", "unknown"}, o.QuantityBasis) {
-		return nativeInvalid("Cost observations require explicit coverage, quantity basis and cost basis")
+		return nativePublicInvalid("Cost observations require explicit coverage, quantity basis and cost basis")
 	}
 	if o.EvidenceSource == "" || (o.Quantity == nil) != (o.QuantityBasis == "unknown") {
-		return nativeInvalid("Cost observations require evidence and an explicit unknown basis for missing quantities")
+		return nativePublicInvalid("Cost observations require evidence and an explicit unknown basis for missing quantities")
 	}
 	if o.Quantity != nil && (math.IsNaN(*o.Quantity) || math.IsInf(*o.Quantity, 0) || *o.Quantity < 0 || *o.Quantity > 1e15) {
-		return nativeInvalid("Usage quantities must be finite and nonnegative")
+		return nativePublicInvalid("Usage quantities must be finite and nonnegative")
 	}
 	if o.UnitPriceMicros != nil {
 		if *o.UnitPriceMicros < 0 || *o.UnitPriceMicros > 1e15 || o.RateSource == "" || o.RateEffectiveAt.IsZero() || o.RateEffectiveAt.After(o.From) {
-			return nativeInvalid("A unit price requires a nonnegative rate, source and effective date no later than the interval")
+			return nativePublicInvalid("A unit price requires a nonnegative rate, source and effective date no later than the interval")
 		}
 		if o.Basis == "estimated" && o.Quantity != nil {
 			amount := math.Round(*o.Quantity * float64(*o.UnitPriceMicros))
 			if math.IsInf(amount, 0) || amount > 1e15 {
-				return nativeInvalid("Estimated cost exceeds the supported amount")
+				return nativePublicInvalid("Estimated cost exceeds the supported amount")
 			}
 			calculated := int64(amount)
 			if o.AmountMicros != nil && *o.AmountMicros != calculated {
-				return nativeInvalid("Estimated cost must match quantity multiplied by the recorded unit price")
+				return nativePublicInvalid("Estimated cost must match quantity multiplied by the recorded unit price")
 			}
 			o.AmountMicros = &calculated
 		}
 	}
 	if o.AmountMicros != nil && (*o.AmountMicros > 1e15 || *o.AmountMicros < -1e15) {
-		return nativeInvalid("Cost exceeds the supported amount")
+		return nativePublicInvalid("Cost exceeds the supported amount")
 	}
 	runnerEstimate := o.Bucket == runnerCostBucket && o.AttemptID != "" && o.EstimatedAmountMicros != nil && o.EstimateSource != "" && o.AmountMicros != nil && *o.AmountMicros == *o.EstimatedAmountMicros
 	if (o.AmountMicros == nil) != (o.Basis == "unknown") || (o.Basis == "estimated" && !runnerEstimate && (o.Quantity == nil || o.UnitPriceMicros == nil)) {
-		return nativeInvalid("Estimated costs require quantity and rate; missing costs require an unknown basis")
+		return nativePublicInvalid("Estimated costs require quantity and rate; missing costs require an unknown basis")
 	}
 	if o.Basis == "provider_billed" && o.QuantityBasis != "provider_reported" && o.QuantityBasis != "unknown" {
-		return nativeInvalid("Billed costs require provider evidence rather than locally estimated quantities")
+		return nativePublicInvalid("Billed costs require provider evidence rather than locally estimated quantities")
 	}
 
 	if o.Basis == "runner_reported" && (o.Bucket != runnerCostBucket || o.AttemptID == "" || o.BillingMode != "metered" || o.ReportedAmountMicros == nil || o.AmountMicros == nil || *o.AmountMicros != *o.ReportedAmountMicros || (o.EvidenceSource != "runner_report" && o.EvidenceSource != "backend_result")) {
-		return nativeInvalid("Runner-reported costs require explicit metered attempt evidence")
+		return nativePublicInvalid("Runner-reported costs require explicit metered attempt evidence")
 	}
 	return nil
 }
@@ -119,7 +119,7 @@ WHERE organization_id=? AND provider=? AND provider_account=? AND source_id=? AN
 			}
 		}
 		if previousProject != project || old.ResourceID != o.ResourceID || old.Bucket != o.Bucket || old.Metric != o.Metric || old.Unit != o.Unit || old.Currency != o.Currency || old.AttemptID != o.AttemptID || old.WorkItemID != o.WorkItemID || old.Model != o.Model || old.UsageKind != o.UsageKind {
-			return false, nativeInvalid("Corrections preserve original attribution, metric, unit and currency")
+			return false, nativePublicInvalid("Corrections preserve original attribution, metric, unit and currency")
 		}
 		if o.Revision < revision {
 			return false, nil
@@ -131,21 +131,21 @@ WHERE organization_id=? AND provider=? AND provider_account=? AND source_id=? AN
 			return false, nil
 		}
 	}
-	var overlaps int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM usage_cost_observations u
+	var overlaps bool
+	if overlaps, err = costOverlaps(ctx, tx, `SELECT u.voided,CASE WHEN u.voided IS NULL THEN u.observation_json END FROM usage_cost_observations u
 WHERE u.organization_id=? AND u.provider=? AND u.provider_account=? AND u.resource_id=? AND u.bucket=? AND u.metric=?
-AND COALESCE(json_extract(u.observation_json,'$.voided'),0)=0
+AND (u.voided=0 OR u.voided IS NULL)
 AND u.period_start<? AND u.period_end>? AND NOT (u.source_id=? AND u.period_start=? AND u.period_end=?)
 AND NOT EXISTS (SELECT 1 FROM usage_cost_observations newer WHERE newer.organization_id=u.organization_id AND newer.provider=u.provider AND newer.provider_account=u.provider_account AND newer.source_id=u.source_id AND newer.period_start=u.period_start AND newer.period_end=u.period_end AND newer.revision>u.revision)`,
-		organization, o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, o.To.Format(costTimeLayout), o.From.Format(costTimeLayout), o.SourceID, o.From.Format(costTimeLayout), o.To.Format(costTimeLayout)).Scan(&overlaps); err != nil {
+		organization, o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, o.To.Format(costTimeLayout), o.From.Format(costTimeLayout), o.SourceID, o.From.Format(costTimeLayout), o.To.Format(costTimeLayout)); err != nil {
 		return false, fmt.Errorf("check cost source coverage: %w", err)
 	}
-	if overlaps != 0 {
-		return false, nativeInvalid("Overlapping usage must correct the original source period instead of adding another source")
+	if overlaps {
+		return false, nativePublicInvalid("Overlapping usage must correct the original source period instead of adding another source")
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO usage_cost_observations
-(organization_id,project_id,provider,provider_account,resource_id,bucket,metric,source_id,period_start,period_end,revision,observation_json,received_at)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, organization, project, o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, o.SourceID, o.From.Format(costTimeLayout), o.To.Format(costTimeLayout), o.Revision, string(encoded), now.UTC().Format(costTimeLayout))
+(organization_id,project_id,provider,provider_account,resource_id,bucket,metric,source_id,period_start,period_end,revision,observation_json,received_at,voided)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, organization, project, o.Provider, o.ProviderAccount, o.ResourceID, o.Bucket, o.Metric, o.SourceID, o.From.Format(costTimeLayout), o.To.Format(costTimeLayout), o.Revision, string(encoded), now.UTC().Format(costTimeLayout), o.Voided)
 	if err != nil {
 		return false, fmt.Errorf("record cost observation: %w", err)
 	}
@@ -158,7 +158,7 @@ func costMonth(value string, now time.Time) (usageWindow, error) {
 	}
 	from, err := time.Parse("2006-01", value)
 	if err != nil {
-		return usageWindow{}, nativeInvalid("Month must be YYYY-MM in UTC")
+		return usageWindow{}, nativePublicInvalid("Month must be YYYY-MM in UTC")
 	}
 	return usageWindow{From: from, To: from.AddDate(0, 1, 0)}, nil
 }
@@ -168,9 +168,9 @@ func readCostObservations(ctx context.Context, query nativeQueryer, organization
 	if err != nil {
 		return nil, err
 	}
-	rows, err := query.QueryContext(ctx, `SELECT u.project_id,u.observation_json,u.received_at FROM usage_cost_observations u
+	rows, err := query.QueryContext(ctx, `SELECT u.project_id,u.observation_json,u.received_at,u.voided FROM usage_cost_observations u
 WHERE u.organization_id=? AND u.period_start<? AND u.period_end>? AND (? OR u.project_id IN (SELECT value FROM json_each(?)))
-AND COALESCE(json_extract(u.observation_json,'$.voided'),0)=0
+AND (u.voided=0 OR u.voided IS NULL)
 AND NOT EXISTS (SELECT 1 FROM usage_cost_observations newer WHERE newer.organization_id=u.organization_id AND newer.provider=u.provider AND newer.provider_account=u.provider_account AND newer.source_id=u.source_id AND newer.period_start=u.period_start AND newer.period_end=u.period_end AND newer.revision>u.revision)
 ORDER BY u.project_id,u.bucket,u.provider,u.provider_account,u.resource_id,u.metric,u.period_start,u.source_id`, organization, window.To.Format(costTimeLayout), window.From.Format(costTimeLayout), projects == nil, string(encoded))
 	if err != nil {
@@ -181,11 +181,15 @@ ORDER BY u.project_id,u.bucket,u.provider,u.provider_account,u.resource_id,u.met
 	for rows.Next() {
 		var entry attributedCostObservation
 		var raw, received string
-		if err := rows.Scan(&entry.ProjectID, &raw, &received); err != nil {
+		var voided sql.NullBool
+		if err := rows.Scan(&entry.ProjectID, &raw, &received, &voided); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(raw), &entry.costObservation); err != nil {
 			return nil, fmt.Errorf("decode monthly cost observation: %w", err)
+		}
+		if !voided.Valid && entry.Voided {
+			continue
 		}
 		entry.ReceivedAt, err = time.Parse(costTimeLayout, received)
 		if err != nil {
@@ -203,4 +207,33 @@ func allocateCostMicros(amount int64, from, to, start, end time.Time) int64 {
 		return product.Quo(product, duration)
 	}
 	return new(big.Int).Sub(boundary(end), boundary(start)).Int64()
+}
+
+func costOverlaps(ctx context.Context, query nativeQueryer, statement string, args ...any) (bool, error) {
+	rows, err := query.QueryContext(ctx, statement, args...)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var voided sql.NullBool
+		var raw sql.NullString
+		if err := rows.Scan(&voided, &raw); err != nil {
+			return false, err
+		}
+		if voided.Valid {
+			if !voided.Bool {
+				return true, nil
+			}
+			continue
+		}
+		fields, err := evaluatedHostedImportFields(ctx, query, "usage_cost_observations", raw.String)
+		if err != nil {
+			return false, err
+		}
+		if !fields.voided {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }

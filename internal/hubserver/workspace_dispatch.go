@@ -16,8 +16,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Workspace dispatch (decisions section 18.1). A workspace is its own work item
-// kind, detent:workspace, distinct from the coordinator kind in section 9: it
+// Workspace dispatch. A workspace is its own work item
+// kind, detent:workspace, distinct from the runner-dispatched coordinator kind: it
 // may check out the repository, it does not end when a turn ends, and it stays
 // claimed until the workspace closes.
 //
@@ -111,7 +111,7 @@ func (w *workspaceService) ensureWorkspaceItem(ctx context.Context, tx *sql.Tx, 
 	}
 	state, found := firstDispatchableState(project)
 	if !found {
-		return "", nativeInvalid("The project has no dispatchable workflow state for a workspace session")
+		return "", nativePublicInvalid("The project has no dispatchable workflow state for a workspace session")
 	}
 	issue, err := createNativeIssueTx(allowWorkspaceLabel(ctx), tx, scope, tracker.CreateIssue{
 		Title:  workspaceItemTitle(record.ID),
@@ -140,7 +140,7 @@ func (w *workspaceService) ensureWorkspaceItem(ctx context.Context, tx *sql.Tx, 
 // the claim gate reads, and it alone already keeps the item from being claimed
 // again. Moving the issue is what a person reads: a closed workspace that left
 // its item sitting in Todo, dispatchable, is a row on the board that looks like
-// outstanding work and is not. Section 18.1 asks only that closing never delete
+// outstanding work and is not. The workspace session contract asks only that closing never delete
 // the attempt's artifacts, which this does not touch. A project with no
 // terminal state keeps the issue where it is, exactly as closeCoordinatorItem
 // does; the association closes regardless.
@@ -260,8 +260,7 @@ func gateWorkspaceClaim(ctx context.Context, tx *sql.Tx, scope *nativeScope, wor
 		gate.dispatch[id] = struct{}{}
 		if !workspaceLane {
 			// A workspace item is not project work. The issue lane never runs
-			// one, whether its workspace is still open or long closed
-			// (decisions section 18.1).
+			// one, whether its workspace is still open or long closed.
 			gate.skip[id] = struct{}{}
 		}
 	}
@@ -303,7 +302,7 @@ func gateWorkspaceClaim(ctx context.Context, tx *sql.Tx, scope *nativeScope, wor
 
 // terminalIsolationAllowed reports whether a runner reporting isolation may
 // serve a workspace with these requires under the organization's configured
-// workspaces.terminal.isolation (decisions section 18.3). Only a terminal
+// workspaces.terminal.isolation. Only a terminal
 // depends on it. container is the stricter level and is always acceptable;
 // user runs the shell as the runner's own account and is acceptable only where
 // the organization configured user explicitly. A runner that reports no level
@@ -327,7 +326,7 @@ func terminalIsolationAllowed(requires []string, configured, reported string) bo
 // workspaceIsolationRefused is the refusal a bind or heartbeat gets when the
 // runner's terminal isolation is not one the organization allows.
 func workspaceIsolationRefused() error {
-	return &nativeError{Code: "forbidden", Message: "The runner's terminal isolation is not allowed by this organization", status: http.StatusForbidden}
+	return &nativeError{Code: "forbidden", Message: "The runner's terminal isolation is not allowed by this organization", status: http.StatusForbidden, publicMessage: true}
 }
 
 // workspaceClaimGate is what the claim loop needs to know about the workspace
@@ -352,7 +351,7 @@ type workspaceClaimGate struct {
 // provider reservation.
 //
 // A workspace session serves files, a diff, a terminal or a preview over the
-// relay and runs no model: section 18.1 gives its claim one slot of the
+// relay and runs no model: the workspace session contract gives its claim one slot of the
 // runner's capacity and a workspace lease with its own fencing token, and says
 // nothing about a provider reservation. Putting it through provider
 // requirement matching asked the lane for a local model selection it has no
@@ -400,16 +399,31 @@ const notWorkspaceItemClause = `NOT EXISTS (SELECT 1 FROM workspace_items wi
 // clearing it: an older runner that does not know about workspaces would
 // otherwise revoke its own eligibility on every beat, and the freshness check
 // on last_heartbeat_at is what decides whether a stored report still counts.
-func updateRunnerWorkspaceReport(ctx context.Context, tx *sql.Tx, scope nativeScope, capabilities *workspacesession.Capabilities, isolation string) error {
+func prepareRunnerWorkspaceReport(capabilities *workspacesession.Capabilities) (string, error) {
 	if capabilities == nil {
-		return nil
+		return "", nil
 	}
 	encoded, err := json.Marshal(capabilities)
 	if err != nil {
-		return fmt.Errorf("encode runner workspace capabilities: %w", err)
+		return "", fmt.Errorf("encode runner workspace capabilities: %w", err)
+	}
+	return string(encoded), nil
+}
+
+func updateRunnerWorkspaceReport(ctx context.Context, tx *sql.Tx, scope nativeScope, capabilities *workspacesession.Capabilities, isolation string) error {
+	raw, err := prepareRunnerWorkspaceReport(capabilities)
+	if err != nil {
+		return err
+	}
+	return storeEncodedRunnerWorkspaceReport(ctx, tx, scope, raw, isolation)
+}
+
+func storeEncodedRunnerWorkspaceReport(ctx context.Context, tx *sql.Tx, scope nativeScope, raw string, isolation string) error {
+	if raw == "" {
+		return nil
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE runner_identities SET workspace_capabilities_json = ?, workspace_isolation = ?
-WHERE id = ? AND token_id = ? AND organization_id = ?`, string(encoded), isolation,
+WHERE id = ? AND token_id = ? AND organization_id = ?`, raw, isolation,
 		scope.credential.Runner.RunnerID, scope.credential.ID, scope.organization)
 	if err != nil {
 		return fmt.Errorf("store runner workspace capabilities: %w", err)
@@ -430,8 +444,8 @@ func firstTerminalState(project tracker.NativeProject) (string, bool) {
 
 // requireUnreservedLabels refuses the workspace label on issue content that did
 // not come from the hub. The label selects the runner's hold-open mode, which
-// checks out the repository and keeps the claim until the workspace closes
-// (decisions section 18.1). A tracker writer who could set it would be able to
+// checks out the repository and keeps the claim until the workspace closes.
+// A tracker writer who could set it would be able to
 // park a runner on any issue indefinitely.
 func requireUnreservedLabels(ctx context.Context, labels []string) error {
 	if workspaceLabelAllowed(ctx) {
@@ -439,7 +453,7 @@ func requireUnreservedLabels(ctx context.Context, labels []string) error {
 	}
 	for _, label := range labels {
 		if strings.EqualFold(strings.TrimSpace(label), workspaceItemLabel) {
-			return nativeInvalid("Label " + workspaceItemLabel + " is reserved")
+			return nativePublicInvalid("Label " + workspaceItemLabel + " is reserved")
 		}
 	}
 	return nil

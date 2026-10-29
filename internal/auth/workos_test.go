@@ -126,7 +126,7 @@ func TestWorkOSAuthorizationAndExchange(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Exchange() error = %v", err)
 			}
-			if identity.Subject != "user_customer" || identity.Email != "customer@example.com" || !identity.EmailVerified || identity.Hosted == nil || identity.Hosted.OrganizationID != "org_customer" || identity.Hosted.SessionID != "session_customer" {
+			if identity.Subject != "user_customer" || identity.Email != "customer@example.com" || !identity.EmailVerified || identity.Hosted == nil || identity.Hosted.OrganizationID != "org_customer" || identity.Hosted.SessionID != "session_customer" || identity.Hosted.FirstName != "Customer" || identity.Hosted.LastName != "Person" || identity.Hosted.ProfilePictureURL != "https://workoscdn.com/avatar.png" {
 				t.Fatalf("Exchange() identity = %#v", identity)
 			}
 			if strings.HasPrefix(tt.name, "support") {
@@ -462,10 +462,17 @@ func TestWorkOSOrganizationAndMembershipOperations(t *testing.T) {
 		name string
 		run  func() error
 	}{
+		{name: "widget token", run: func() error {
+			token, err := p.(auth.WidgetTokenProvider).WidgetToken(t.Context(), "user_customer")
+			if err == nil && token != "widget-token" {
+				t.Fatalf("widget token = %q", token)
+			}
+			return err
+		}},
 		{name: "organization", run: func() error { _, err := p.Organization(t.Context(), "org_customer"); return err }},
 		{name: "user identity", run: func() error {
 			user, err := auth.LookupHostedUser(t.Context(), p, "user_customer")
-			if err == nil && (user.ID != "user_customer" || user.Email != "customer@example.com" || user.Name != "Customer Person") {
+			if err == nil && (user.ID != "user_customer" || user.Email != "customer@example.com" || user.Name != "Customer Person" || user.FirstName != "Customer" || user.LastName != "Person" || user.ProfilePictureURL != "https://workoscdn.com/avatar.png") {
 				t.Fatalf("user identity = %#v", user)
 			}
 			return err
@@ -487,6 +494,7 @@ func TestWorkOSOrganizationAndMembershipOperations(t *testing.T) {
 				t.Fatal(err)
 			}
 			f.mode.Store("http-error")
+			p = f.provider(t)
 			if err := tt.run(); !errors.Is(err, auth.ErrHostedIdentity) {
 				t.Fatalf("provider failure error = %v", err)
 			}
@@ -860,6 +868,17 @@ func (f *workosFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		f.writeJSON(w, organization)
 	case "/user_management/invitations", "/user_management/invitations/by_token/invitation_token", "/user_management/invitations/invitation_customer", "/user_management/invitations/invitation_customer/accept", "/user_management/invitations/invitation_customer/revoke", "/user_management/invitations/invitation_customer/resend":
 		f.invitation(w, r, mode)
+	case "/widgets/token":
+		var request struct {
+			UserID string   `json:"user_id"`
+			Scopes []string `json:"scopes"`
+		}
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil || request.UserID != "user_customer" || request.Scopes == nil || len(request.Scopes) != 0 || r.Method != http.MethodPost {
+			f.t.Error("incorrect user-only widget token request")
+		}
+		f.writeJSON(w, map[string]string{"token": "widget-token"})
 	case "/user_management/users":
 		if r.Method != http.MethodGet || r.URL.Query().Get("email") != "customer@example.com" || r.URL.Query().Get("limit") != "1" {
 			f.t.Error("incorrect account lookup filter")
@@ -881,7 +900,7 @@ func (f *workosFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.writeJSON(w, map[string]any{"data": users})
 	case "/user_management/users/user_customer":
-		user := map[string]any{"id": "user_customer", "email": "customer@example.com", "email_verified": true, "first_name": "Customer", "last_name": "Person"}
+		user := map[string]any{"id": "user_customer", "email": "customer@example.com", "email_verified": true, "first_name": "Customer", "last_name": "Person", "profile_picture_url": "https://workoscdn.com/avatar.png"}
 		switch mode {
 		case "invitation-wrong-email":
 			user["email"] = "different@example.com"
@@ -937,7 +956,7 @@ func (f *workosFixture) exchange(w http.ResponseWriter, r *http.Request, mode st
 		"iss": f.apiURL + "/user_management/client_detent", "sub": "user_customer", "client_id": "client_detent", "sid": "session_customer",
 		"org_id": "org_customer", "iat": f.now.Unix(), "exp": f.now.Add(10 * time.Minute).Unix(),
 	}
-	user := map[string]any{"id": "user_customer", "email": "Customer@Example.com", "email_verified": true}
+	user := map[string]any{"id": "user_customer", "email": "Customer@Example.com", "email_verified": true, "first_name": "Customer", "last_name": "Person", "profile_picture_url": "https://workoscdn.com/avatar.png"}
 	response := map[string]any{"user": user, "organization_id": "org_customer"}
 	key := f.key
 	if strings.HasPrefix(mode, "support") {

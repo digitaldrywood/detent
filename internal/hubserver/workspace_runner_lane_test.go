@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 	"github.com/digitaldrywood/detent/internal/workspacerunner"
@@ -83,14 +85,15 @@ func newWorkspaceLaneFixture(t *testing.T) *workspaceLaneFixture {
 		t.Fatal(err)
 	}
 	f.source = laneSourceRepository(t)
+	logger := slog.New(slog.NewTextHandler(t.Output(), nil))
 	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{
-		Root: filepath.Join(laneShortTempDir(t), "worktrees"), SourceRoot: f.source, AutoBranch: true, Logger: discardLogger(),
+		Root: filepath.Join(laneShortTempDir(t), "worktrees"), SourceRoot: f.source, AutoBranch: true, Logger: logger,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.lane, err = workspacerunner.NewLane(workspacerunner.LaneConfig{
-		Claimer: claimer, Hub: native, Logger: discardLogger(), Poll: 50 * time.Millisecond,
+		Claimer: claimer, Hub: native, Logger: logger, Poll: 50 * time.Millisecond,
 		Worktree: &workspacerunner.GitWorktree{Backend: backend, ProjectID: string(f.project.ID), Resolve: claimer.RunIdentifier},
 		Support:  support, Shell: "/bin/sh", Hostname: "runner-host",
 		Reporter: laneActionReporter{native: native},
@@ -106,11 +109,7 @@ func newWorkspaceLaneFixture(t *testing.T) *workspaceLaneFixture {
 	}()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(30 * time.Second):
-			t.Error("the workspace lane did not drain")
-		}
+		<-done
 	})
 	return f
 }
@@ -175,8 +174,8 @@ func (f *workspaceLaneFixture) read(t *testing.T, id string) workspacesession.Se
 
 func (f *workspaceLaneFixture) awaitReady(t *testing.T, id string) workspacesession.Session {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	var ready workspacesession.Session
+	testenv.WaitUntil(t, t.Context(), func() error {
 		session := f.read(t, id)
 		if session.State == workspacesession.StateReady {
 			// Ready describes the worktree; the runner attaches its relay
@@ -187,27 +186,26 @@ func (f *workspaceLaneFixture) awaitReady(t *testing.T, id string) workspacesess
 			attached := room != nil && room.runner != nil
 			relay.mu.Unlock()
 			if attached {
-				return session
+				ready = session
+				return nil
 			}
 		}
 		if workspacesession.Terminal(session.State) {
 			t.Fatalf("workspace ended before ready: %+v", session)
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatal("the runner never made the workspace ready with an attached relay")
-	return workspacesession.Session{}
+		return errors.New("the runner never made the workspace ready with an attached relay")
+	})
+	return ready
 }
 
-func (f *workspaceLaneFixture) awaitLaneIdle(t *testing.T, within time.Duration) {
+func (f *workspaceLaneFixture) awaitLaneIdle(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for f.lane.Open() != 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("the lane still holds %d workspaces", f.lane.Open())
+	testenv.WaitUntil(t, t.Context(), func() error {
+		if open := f.lane.Open(); open != 0 {
+			return fmt.Errorf("the lane still holds %d workspaces", open)
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return nil
+	})
 }
 
 func (f *workspaceLaneFixture) dialPerson(t *testing.T, id string) *relayClient {
@@ -217,9 +215,7 @@ func (f *workspaceLaneFixture) dialPerson(t *testing.T, id string) *relayClient 
 	var minted workspaceRelayTicketResponse
 	decodeHubResponse(t, response, &minted)
 	url := "ws" + strings.TrimPrefix(f.server.URL, "http") + f.base + "/workspaces/" + id + "/relay?ticket=" + minted.Ticket
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	socket, upgrade, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + f.token}}})
+	socket, upgrade, err := websocket.Dial(testenv.WaitContext(t, t.Context()), url, &websocket.DialOptions{HTTPHeader: http.Header{"Authorization": {"Bearer " + f.token}}})
 	closeRelayDial(upgrade)
 	if err != nil {
 		t.Fatalf("dial person relay: %v", err)
@@ -259,13 +255,12 @@ func readCounter(t *testing.T, path string) int {
 
 func awaitCounter(t *testing.T, path string) {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
-	for readCounter(t, path) <= 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the shell never started writing its counter")
+	testenv.WaitUntil(t, t.Context(), func() error {
+		if readCounter(t, path) <= 0 {
+			return errors.New("the shell never started writing its counter")
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return nil
+	})
 }
 
 func requireCounterStopped(t *testing.T, path string) {
@@ -352,7 +347,7 @@ func TestWorkspaceLaneServesAHostedWorkspaceUntilItsLeaseIsLost(t *testing.T) {
 		"UPDATE leases SET expires_at = ? WHERE released_at IS NULL", formatHubTime(time.Now().Add(-time.Minute))); err != nil {
 		t.Fatal(err)
 	}
-	f.awaitLaneIdle(t, workspacesession.HeartbeatInterval+30*time.Second)
+	f.awaitLaneIdle(t)
 	if counter != "" {
 		requireCounterStopped(t, counter)
 	}
@@ -377,7 +372,7 @@ func TestWorkspaceLaneUnbindsWhenTheWorkspaceIsClosed(t *testing.T) {
 	}
 
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/workspaces/"+id, f.token, nil), http.StatusNoContent)
-	f.awaitLaneIdle(t, 30*time.Second)
+	f.awaitLaneIdle(t)
 	if counter != "" {
 		requireCounterStopped(t, counter)
 	}
@@ -451,7 +446,7 @@ func TestWorkspaceLaneClaimsWhatTheClientOpens(t *testing.T) {
 				t.Fatalf("ready workspace requires %v beyond capabilities %+v", ready.Requires, ready.Capabilities)
 			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodDelete, f.base+"/workspaces/"+id, f.token, nil), http.StatusNoContent)
-			f.awaitLaneIdle(t, 30*time.Second)
+			f.awaitLaneIdle(t)
 		})
 	}
 }
@@ -468,8 +463,8 @@ func (f *workspaceLaneFixture) action(t *testing.T, body map[string]any) workspa
 
 func (f *workspaceLaneFixture) awaitRun(t *testing.T, action workspacesession.Action, dispatch bool) workspacesession.Run {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	var finished workspacesession.Run
+	testenv.WaitUntil(t, t.Context(), func() error {
 		if dispatch {
 			f.service.workspaces.sweep(t.Context())
 		}
@@ -478,12 +473,12 @@ func (f *workspaceLaneFixture) awaitRun(t *testing.T, action workspacesession.Ac
 		var runs projectActionRunList
 		decodeHubResponse(t, response, &runs)
 		if len(runs.Items) == 1 && runs.Items[0].Status != workspacesession.RunQueued && runs.Items[0].Status != workspacesession.RunRunning {
-			return runs.Items[0]
+			finished = runs.Items[0]
+			return nil
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Fatalf("action %s never finished a run", action.Name)
-	return workspacesession.Run{}
+		return fmt.Errorf("action %s never finished a run", action.Name)
+	})
+	return finished
 }
 
 // TestWorkspaceLaneRunsProjectActions covers both ways a runner starts a
@@ -513,7 +508,6 @@ func TestWorkspaceLaneRunsProjectActions(t *testing.T) {
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/actions/"+build.ID+"/runs", f.token,
 		map[string]any{"idempotency_key": newNativeID("runkey"), "workspace_id": id})
 	requireNativeStatus(t, response, http.StatusAccepted)
-	time.Sleep(actionRunDispatchGrace + 100*time.Millisecond)
 	if run := f.awaitRun(t, build, true); run.Status != workspacesession.RunSucceeded {
 		t.Fatalf("dispatched run = %+v, want succeeded", run)
 	}

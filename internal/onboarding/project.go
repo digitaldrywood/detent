@@ -33,6 +33,7 @@ type Step struct {
 }
 
 type Project struct {
+	Repository       string                   `json:"repository,omitempty"`
 	LatestRun        string                   `json:"latest_run,omitempty"`
 	Progress         Progress                 `json:"progress"`
 	Policy           *policy.Approval         `json:"policy,omitempty"`
@@ -53,22 +54,28 @@ func (p *Project) Evaluate() {
 		p.Steps = append(p.Steps, Step{Name: name, State: state, Detail: detail})
 	}
 	enrolled := func(r runnerauth.Eligibility) bool {
-		return r.Runner.Health == "online" && r.Runner.State == "active" && !slices.ContainsFunc(r.Exclusions, func(e runnerauth.Exclusion) bool {
+		return r.Runner.State == "active" && r.Runner.Health != "revoked" && r.Runner.Health != "expired" && !slices.ContainsFunc(r.Exclusions, func(e runnerauth.Exclusion) bool {
 			return e.Code == "project_access_denied"
 		})
 	}
-	add("Execution runner", slices.ContainsFunc(p.Runners, enrolled), "Connect a computer to do this project's work. Click Enroll a runner, then paste the command it gives you into a terminal on that machine.")
+	add("Runner", slices.ContainsFunc(p.Runners, enrolled), "Use a runner you already have. It can work on this project alongside its other projects.")
+	add("Repository", p.Repository != "", "Choose the repository your runner should work on using its own Git sign-in.")
 	validated := slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool {
-		return enrolled(r) && r.LocalChecks != nil && r.LocalChecks.Passed()
+		return enrolled(r) && (r.Runner.ConnectionHealth == "online" || r.Runner.ConnectionHealth == "" && r.Runner.Health == "online") && r.LocalChecks != nil && r.LocalChecks.Passed()
 	})
-	add("Local validation", validated, "Check that your computer has the project files, can run Detent, and is signed in to your AI coding tool. Fix any failed checks on that computer, restart the runner, then click Refresh runner checks.")
-	add("Repository configuration", p.Policy != nil, "The project configuration tells Detent how to work on your code. Your runner reports these settings from the repository.")
+	checkoutDetail := "Verify the checkout, repository configuration, Detent checks and provider sign-in on your runner."
+	if !validated && slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool {
+		return enrolled(r) && r.LocalChecks != nil && r.LocalChecks.Configuration == "missing"
+	}) {
+		checkoutDetail = "Configuration missing: detent.yaml and WORKFLOW.md not found. Create starter files or add them to the repository; checks continue automatically."
+	}
+	add("Checkout", validated && (p.Policy != nil || len(p.ObservedPolicies) > 0), checkoutDetail)
 	matching := slices.ContainsFunc(p.Runners, func(r runnerauth.Eligibility) bool {
 		return !slices.ContainsFunc(r.Exclusions, func(e runnerauth.Exclusion) bool {
 			return e.Code != "host_capacity" && e.Code != "runner_capacity"
 		})
 	})
 	artifactDetail := "Choose where to keep files from agent runs, such as logs and screenshots. Keep them on your runner, or connect storage that you manage."
-	add("Artifact history", p.Progress.Artifacts == "local" || p.Progress.Artifacts == "customer" && len(p.Artifacts) > 0, artifactDetail)
+	add("Run files", p.Progress.Artifacts == "local" || p.Progress.Artifacts == "customer" && len(p.Artifacts) > 0, artifactDetail)
 	p.Ready = matching && !slices.ContainsFunc(p.Steps, func(s Step) bool { return s.State != "ready" })
 }

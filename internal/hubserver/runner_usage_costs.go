@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -18,35 +19,35 @@ const lunaCostBucket = "luna_api"
 
 func validateRunnerCostUsage(entry tracker.NativeUsage) error {
 	if !finiteUsageCost(entry.CostEstimate) {
-		return nativeInvalid("Usage cost must be finite and bounded")
+		return nativePublicInvalid("Usage cost must be finite and bounded")
 	}
 	if entry.BillingMode != "" && entry.BillingMode != "unknown" && entry.BillingMode != "metered" && entry.BillingMode != "subscription" {
-		return nativeInvalid("Usage billing mode must be metered, subscription or unknown")
+		return nativePublicInvalid("Usage billing mode must be metered, subscription or unknown")
 	}
 	if entry.UsageKind != "" && entry.UsageKind != "cumulative" && entry.UsageKind != "incremental" {
-		return nativeInvalid("Usage kind must be cumulative or incremental")
+		return nativePublicInvalid("Usage kind must be cumulative or incremental")
 	}
 	if entry.UsageKind == "incremental" && (entry.SourceID == "" || entry.Revision <= 0 || entry.From.IsZero() || entry.To.IsZero()) {
-		return nativeInvalid("Incremental usage requires a source, revision and execution interval")
+		return nativePublicInvalid("Incremental usage requires a source, revision and execution interval")
 	}
 	if entry.UsageKind != "incremental" && entry.SourceID != "" {
-		return nativeInvalid("Cumulative usage uses the attempt's canonical source")
+		return nativePublicInvalid("Cumulative usage uses the attempt's canonical source")
 	}
 	if len(entry.SourceID) > 64 || strings.ContainsAny(entry.SourceID, "\x00\r\n") || entry.Revision < 0 {
-		return nativeInvalid("Usage requires a bounded source and nonnegative revision")
+		return nativePublicInvalid("Usage requires a bounded source and nonnegative revision")
 	}
 	if entry.CostCoverage != "" && entry.CostCoverage != "complete" && entry.CostCoverage != "partial" {
-		return nativeInvalid("Reported cost coverage must be complete or partial")
+		return nativePublicInvalid("Reported cost coverage must be complete or partial")
 	}
 	if entry.ReportedCostMicros != nil {
 		if *entry.ReportedCostMicros < 0 || *entry.ReportedCostMicros > 1e15 || (entry.CostSource != "backend_result" && entry.CostSource != "runner_report") {
-			return nativeInvalid("Reported cost requires a nonnegative bounded amount and explicit runner provenance")
+			return nativePublicInvalid("Reported cost requires a nonnegative bounded amount and explicit runner provenance")
 		}
 		if len(entry.Currency) != 3 || strings.Trim(entry.Currency, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
-			return nativeInvalid("Reported cost requires a three-letter uppercase currency")
+			return nativePublicInvalid("Reported cost requires a three-letter uppercase currency")
 		}
 	} else if entry.CostSource != "" || entry.CostCoverage != "" {
-		return nativeInvalid("Cost provenance requires a reported amount")
+		return nativePublicInvalid("Cost provenance requires a reported amount")
 	}
 	return nil
 }
@@ -60,15 +61,33 @@ func recordRunnerUsageCosts(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 		return nil
 	}
 	var organization, project, item, started, ended, runnerID, machineID, placement string
-	err := tx.QueryRowContext(ctx, `SELECT a.organization_id,a.project_id,a.work_item_id,a.started_at,a.updated_at,coalesce(lr.runner_id,''),coalesce(json_extract(a.data_json,'$.machine_id'),''),CASE WHEN json_extract(m.capabilities_json,'$.sprite_name') IS NOT NULL THEN 'sprite' WHEN m.id IS NOT NULL THEN 'local' ELSE 'unknown' END FROM native_attempts a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id LEFT JOIN machines m ON m.id=json_extract(a.data_json,'$.machine_id') AND m.organization_id=a.organization_id WHERE a.id=?`, request.Data.AttemptID).Scan(&organization, &project, &item, &started, &ended, &runnerID, &machineID, &placement)
+	var legacy sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT a.organization_id,a.project_id,a.work_item_id,a.started_at,a.updated_at,coalesce(lr.runner_id,''),coalesce(a.machine_id,''),CASE WHEN a.usage_facts_ready IS NULL THEN a.data_json END FROM native_attempts a LEFT JOIN lease_runners lr ON lr.lease_id=a.lease_id WHERE a.id=?`, request.Data.AttemptID).Scan(&organization, &project, &item, &started, &ended, &runnerID, &machineID, &legacy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("read usage attribution: %w", err)
 	}
+	if legacy.Valid {
+		var data tracker.NativeRunData
+		if err := decodeRunDetail(ctx, tx, legacy.String, &data); err != nil {
+			return err
+		}
+		machineID = string(data.MachineID)
+	}
+	facts, factErr := readMachineSpriteFacts(ctx, tx, tracker.OrganizationID(organization), tracker.MachineID(machineID))
+	placement = "unknown"
+	if factErr == nil {
+		placement = "local"
+		if facts.Name != nil {
+			placement = "sprite"
+		}
+	} else if !errors.Is(factErr, sql.ErrNoRows) {
+		return factErr
+	}
 	if organization != string(scope.organization) || project != string(scope.project) {
-		return nativeInvalid("Usage preserves the attempt's original organization and project")
+		return nativePublicInvalid("Usage preserves the attempt's original organization and project")
 	}
 	from, err := parseTimeValue(started)
 	if err != nil {
@@ -135,8 +154,35 @@ func recordRunnerUsageCosts(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 				o.AmountMicros, o.Basis = o.EstimatedAmountMicros, "estimated"
 			}
 		}
-		if _, err := recordCostObservation(ctx, tx, organization, project, o, now); err != nil {
+		var previous costObservation
+		if kind == "incremental" {
+			var raw string
+			err := tx.QueryRowContext(ctx, `SELECT observation_json FROM usage_cost_observations WHERE organization_id=? AND provider=? AND provider_account=? AND source_id=? AND period_start=? AND period_end=? ORDER BY revision DESC LIMIT 1`, organization, o.Provider, o.ProviderAccount, o.SourceID, o.From.UTC().Format(costTimeLayout), o.To.UTC().Format(costTimeLayout)).Scan(&raw)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if err == nil {
+				if err := json.Unmarshal([]byte(raw), &previous); err != nil {
+					return err
+				}
+			}
+		}
+		recorded, err := recordCostObservation(ctx, tx, organization, project, o, now)
+		if err != nil {
 			return err
+		}
+		if recorded && kind == "incremental" {
+			var cost, oldCost float64
+			if o.EstimatedAmountMicros != nil {
+				cost = float64(*o.EstimatedAmountMicros) / 1e6
+			}
+			if previous.EstimatedAmountMicros != nil {
+				oldCost = float64(*previous.EstimatedAmountMicros) / 1e6
+			}
+			delta := tracker.NativeUsage{Input: o.Input - previous.Input, CachedInput: o.CachedInput - previous.CachedInput, Output: o.Output - previous.Output, CostEstimate: cost - oldCost}
+			if err := updateAttemptUsageSummary(ctx, tx, scope, request.Data.AttemptID, delta); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

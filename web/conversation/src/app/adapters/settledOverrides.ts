@@ -50,7 +50,7 @@ export interface SettledOverrides {
  *
  * An override only counts while it is newer than the conversation's own last
  * activity: a settled conversation that receives a message is active again,
- * which is §14's "unsettles on new activity", and a conversation the hub has
+ * which is the conversation contract's "unsettles on new activity", and a conversation the hub has
  * settled is settled whatever the reader last clicked.
  */
 export function resolveSettledOverride(

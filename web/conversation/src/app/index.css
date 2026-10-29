@@ -1,4 +1,7 @@
 /* Detent fonts and theme overrides for the conversation client. */
+@layer theme, base, widgets, components, utilities;
+@import "@radix-ui/themes/styles.css" layer(widgets);
+@import "@workos-inc/widgets/styles.css" layer(widgets);
 @import "./global.css";
 @import "../../../../static/css/sign-in.css";
 
@@ -129,5 +132,72 @@ body,
 
   .base-ui-disable-scrollbar::-webkit-scrollbar {
     display: none;
+  }
+}
+
+.account-widgets.radix-themes {
+  --color-background: transparent;
+  --color-panel-solid: var(--card);
+  --color-panel-translucent: var(--card);
+  --gray-1: var(--background);
+  --gray-2: var(--card);
+  --gray-3: var(--muted);
+  --gray-4: var(--muted);
+  --gray-5: var(--border);
+  --gray-6: var(--border);
+  --gray-7: var(--border);
+  --gray-8: var(--input);
+  --gray-9: var(--muted-foreground);
+  --gray-10: var(--muted-foreground);
+  --gray-11: var(--muted-foreground);
+  --gray-12: var(--foreground);
+  --gray-a2: var(--card);
+  --gray-a3: var(--muted);
+  --gray-a5: var(--border);
+  --gray-a6: var(--border);
+  --gray-a7: var(--border);
+  --gray-a8: var(--input);
+  --accent-9: var(--primary);
+  --accent-10: var(--primary);
+  --accent-11: var(--primary);
+  --accent-contrast: var(--primary-foreground);
+  --focus-8: var(--ring);
+  color: var(--foreground);
+  min-height: 0;
+  background: transparent;
+}
+
+.account-widgets [data-woswidgets-widget-id] {
+  box-shadow: none;
+  background: transparent;
+}
+
+.account-widgets [data-woswidgets-widget-id]::after {
+  box-shadow: none;
+}
+
+@media (width < 640px) {
+  .account-widgets [data-woswidgets-widget-id="user-profile"] .rt-DataListRoot,
+  .account-widgets [data-woswidgets-widget-id="user-profile"] .rt-DataListItem {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .account-widgets [data-woswidgets-widget-id="user-profile"] .rt-DataListItem {
+    gap: var(--space-2);
+  }
+
+  .account-widgets .woswidgets-card-list-item .rt-Grid {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .account-widgets .woswidgets-card-list-item .woswidgets-button {
+    grid-column: 2;
+    justify-self: start;
+    max-width: 100%;
+    height: auto;
+    min-height: var(--space-6);
+    white-space: normal;
   }
 }

@@ -1,11 +1,9 @@
 import React from "react";
 import { ConnectionValue, SetupPromptControl } from "./keySetup.tsx";
 import { APIKeysMCPSettings } from "./APIKeysMCPSettings.tsx";
-import { CheckIcon, CopyIcon, PlugIcon } from "lucide-react";
+import { PlugIcon } from "lucide-react";
 
 import type { AccountBootstrap } from "../../contracts/account.ts";
-import { Button } from "../../components/ui/button.tsx";
-import { useCopyToClipboard } from "../../hooks/useCopyToClipboard.ts";
 import { basePath } from "../../runtime/basePath.ts";
 import { useAccountBootstrap } from "../account/context.ts";
 import { APIKeysSettings, type APIKeyAccess } from "./APIKeysSettings.tsx";
@@ -35,51 +33,6 @@ export function organizationMCPEndpoint(account: AccountBootstrap | null): strin
     return null;
   }
 }
-
-function CopyExample({ label, value }: { readonly label: string; readonly value: string }) {
-  const [failed, setFailed] = React.useState(false);
-  const { copyToClipboard, isCopied } = useCopyToClipboard({
-    target: label,
-    onCopy: () => setFailed(false),
-    onError: () => setFailed(true),
-  });
-  return (
-    <div className="min-w-0 space-y-2 pb-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-xs text-muted-foreground">{label}</span>
-        <Button type="button" size="sm" variant="outline" aria-label={`Copy ${label}`} onClick={() => copyToClipboard(value)}>
-          {isCopied ? <CheckIcon aria-hidden="true" /> : <CopyIcon aria-hidden="true" />}
-          {isCopied ? "Copied" : `Copy ${label}`}
-        </Button>
-      </div>
-      <details><summary className="cursor-pointer text-xs text-muted-foreground">Show {label}</summary><pre tabIndex={0} aria-label={label} className="max-w-full rounded-md border border-border bg-muted/40 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">
-        <code>{value}</code>
-      </pre></details>
-      <span role="status" aria-label={`${label} copy status`} className={failed ? "text-xs text-muted-foreground" : "sr-only"}>
-        {failed ? "Could not copy. Select the text and copy it manually." : isCopied ? `${label} copied.` : ""}
-      </span>
-    </div>
-  );
-}
-
-const STDIO_CONFIG = JSON.stringify({
-  mcpServers: {
-    detent: {
-      command: "detent",
-      args: ["--host", "127.0.0.1", "--port", "YOUR_DAEMON_PORT", "mcp"],
-      env: { DETENT_API_TOKEN: "YOUR_DETENT_API_TOKEN" },
-    },
-  },
-}, null, 2);
-
-const CURSOR_CONFIG = JSON.stringify({
-  mcpServers: {
-    detent: {
-      url: "https://YOUR_DETENT_DAEMON/mcp",
-      headers: { Authorization: "Bearer YOUR_DETENT_API_TOKEN" },
-    },
-  },
-}, null, 2);
 
 function keySetupPrompt(endpoint: string, access: string): string {
   const settings = endpoint.replace(/\/mcp$/, "/settings/mcp");
@@ -112,11 +65,11 @@ ${endpoint}
 Organization: ${organization}
 ${keySetupPrompt(endpoint, access)}
 
-Use Streamable HTTP with application/json JSON POSTs, Accept: application/json, text/event-stream and Authorization: Bearer from the private DETENT_API_KEY environment variable. No browser cookies, session or CSRF token is needed. GET/SSE and MCP OAuth are unsupported. For example, in Codex client configuration:
+Use Streamable HTTP with application/json JSON POSTs, Accept: application/json, text/event-stream and Authorization: Bearer from the private DETENT_API_KEY environment variable. No browser cookies, session or CSRF token is needed. GET/SSE is unsupported for this self-hosted endpoint. Detent Cloud supports OAuth at https://cloud.detent.build/mcp. For example, in Codex client configuration:
 [mcp_servers.detent]
 url = "${endpoint}"
 bearer_token_env_var = "DETENT_API_KEY"
-For another client, use its documented private header/secret configuration. If it cannot send bearer headers with MCP JSON POSTs or requires SSE/OAuth, explicitly report that client as unsupported and stop.
+For another client, use its documented private header/secret configuration. If it cannot send bearer headers with MCP JSON POSTs or requires SSE, explicitly report that client as unsupported and stop.
 
 Initialize MCP, retain the returned Mcp-Session-Id and negotiated protocol version, send notifications/initialized, then discover every tools/list page. Call the discovered work_list tool with {"project_id":"${project}","limit":20}, using a granted project selected on the same page. Verify the result belongs to this organization/project and report success without the key. Authorized calls execute directly. Configure sensitive-operation confirmation in your client; connecting never expands authority.`;
 }
@@ -246,26 +199,6 @@ function LegacyMCPSettings(): React.ReactElement {
             <a className="underline underline-offset-4" href="https://github.com/digitaldrywood/detent/issues/3259" target="_blank" rel="noreferrer">MCP capability coverage (#3259)</a>
           </p>
         </SettingsRow>
-      </SettingsSection>
-
-      <SettingsSection id="settings-mcp-local" title="Local and self-hosted clients" variant="plain">
-        <details className="rounded-xl border border-border/60 px-3 py-3 sm:px-4">
-          <summary className="cursor-pointer text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">Connect to your own Detent daemon</summary>
-          <div className="mt-3 min-w-0 space-y-3 text-[13px] leading-relaxed text-muted-foreground">
-            <p>These examples connect to a separately running self-hosted daemon, not the Cloud organization above. Install the Detent binary for stdio. The existing <code>detent mcp</code> command uses the daemon's authenticated HTTP API; it does not start a daemon.</p>
-            <p>Use existing API key management on that daemon: <code>detent key add --name mcp-client --scope read --expires-in 30d</code>. Start with read scope. For intended writes, select write scope and appropriate project restrictions with <code>--project</code>; reserve admin scope for administration. Store the returned token privately. Replace the placeholders only in private client configuration, never in a committed file or shared screenshot.</p>
-            <CopyExample label="Local stdio configuration" value={STDIO_CONFIG} />
-            <p>Replace <code>YOUR_DAEMON_PORT</code> with the running daemon's port. To revoke access, use <code>detent key list</code> and <code>detent key revoke KEY_ID</code> against that daemon's configuration. Removing a client entry does not revoke its token.</p>
-            <p>For remote self-hosted access, use your daemon's trusted HTTPS URL and a bearer token. Choose Streamable HTTP with JSON POSTs. SSE, WebSockets and MCP OAuth are not supported. Local HTTP is appropriate only for isolated loopback access.</p>
-            <CopyExample label="Cursor self-hosted HTTP configuration" value={CURSOR_CONFIG} />
-            <p>Put the entry in Cursor's MCP configuration. For Claude Code, use the command below and check the connection with <code>/mcp</code>. Replace the daemon URL and token placeholders.</p>
-            <CopyExample label="Claude Code self-hosted HTTP command" value={'claude mcp add --transport http detent https://YOUR_DETENT_DAEMON/mcp --header "Authorization: Bearer YOUR_DETENT_API_TOKEN"'} />
-            <p className="flex flex-wrap gap-x-4 gap-y-2">
-              <a className="underline underline-offset-4" href="https://cursor.com/docs/mcp" target="_blank" rel="noreferrer">Cursor installation instructions</a>
-              <a className="underline underline-offset-4" href="https://code.claude.com/docs/en/mcp" target="_blank" rel="noreferrer">Claude Code installation instructions</a>
-            </p>
-          </div>
-        </details>
       </SettingsSection>
 
       <SettingsSection id="settings-mcp-troubleshooting" title="Troubleshooting">

@@ -1,10 +1,74 @@
 package hubserver
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/apikey"
+	"github.com/digitaldrywood/detent/internal/chat"
 )
+
+func TestCoordinatorSpritePoolReplay(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		idle *int
+	}{
+		{"omitted idle threshold", nil},
+		{"explicit idle threshold", new(600)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			scope := nativeScope{organization: f.project.OrganizationID, credential: apiCredential{Scope: apiScopeAdmin, Hash: apikey.HashToken(testHubAdminToken)}}
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT id FROM api_tokens WHERE token_hash=?", scope.credential.Hash).Scan(&scope.credential.ID); err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.WithValue(t.Context(), nativeOperatorScopeKey{}, func(context.Context) (nativeScope, error) { return scope, nil })
+			change := coordinatorSpriteChange{Input: coordinatorSpriteArguments{MinRunners: new(0), MaxRunners: new(0), IdleSeconds: test.idle, ShareIdleCapacity: new(true)}}
+			raw, err := json.Marshal(change)
+			if err != nil {
+				t.Fatal(err)
+			}
+			action := chat.Action{Kind: "set_sprite_pool", RequestID: "coordinator-sharing", Arguments: raw}
+			if _, err := f.service.executeCoordinatorSpriteAction(ctx, action); err != nil {
+				t.Fatal(err)
+			}
+			var initial spritePoolView
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/sprite-pool", testHubAdminToken, nil), &initial)
+			wantIdle := 300
+			if test.idle != nil {
+				wantIdle = *test.idle
+			}
+			if initial.Revision != 1 || !initial.ShareIdleCapacity || initial.IdleSeconds != wantIdle {
+				t.Fatalf("initial settings: %+v", initial)
+			}
+			input := map[string]any{"idempotency_key": "later-settings", "revision": 1, "min_runners": 0, "max_runners": 0, "idle_seconds": 900, "share_idle_capacity": false, "placement": map[string]any{"mode": "sprites_only"}}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, f.base+"/sprite-pool", testHubAdminToken, input), http.StatusOK)
+			if _, err := f.service.executeCoordinatorSpriteAction(ctx, action); err != nil {
+				t.Fatalf("replay after settings changed: %v", err)
+			}
+			var saved spritePoolView
+			decodeHubResponse(t, performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/sprite-pool", testHubAdminToken, nil), &saved)
+			if saved.Revision != 2 || saved.ShareIdleCapacity || saved.IdleSeconds != 900 || saved.Placement.Mode != "sprites_only" {
+				t.Fatalf("replay overwrote later settings: %+v", saved)
+			}
+			change.Input.ShareIdleCapacity = new(false)
+			action.Arguments, err = json.Marshal(change)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.executeCoordinatorSpriteAction(ctx, action); err == nil {
+				t.Fatal("reused key accepted changed action input")
+			}
+			action.RequestID = "stale-coordinator-sharing"
+			if _, err := f.service.executeCoordinatorSpriteAction(ctx, action); err == nil {
+				t.Fatal("new command accepted stale revision")
+			}
+		})
+	}
+}
 
 func TestCoordinatorSpriteIntakeInstructions(t *testing.T) {
 	t.Parallel()
@@ -58,6 +122,10 @@ func TestCoordinatorSpriteArguments(t *testing.T) {
 		valid                 bool
 	}{
 		{"sandbox", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"isolation_tier":"sandbox"}`, false},
+		{"idle sharing", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"share_idle_capacity":true}`, true},
+		{"private capacity", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"share_idle_capacity":false}`, true},
+		{"invalid sharing", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"share_idle_capacity":"true"}`, false},
+		{"null sharing", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"share_idle_capacity":null}`, false},
 		{"full access", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"isolation_tier":"native-trusted"}`, true},
 		{"invalid access", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"isolation_tier":"user"}`, false},
 		{"null access", "set_sprite_pool", `{"min_runners":0,"max_runners":1,"isolation_tier":null}`, false},

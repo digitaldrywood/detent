@@ -27,6 +27,9 @@ func TestProjectOnboardingBatch(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "first")
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
 			other := newNativeFixture(t, f.service, f.project.OrganizationID, "second")
 			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO organizations(id,name,local,created_at) VALUES ('org_foreign','Foreign',0,?)", formatHubTime(f.service.config.now())); err != nil {
 				t.Fatal(err)
@@ -34,6 +37,9 @@ func TestProjectOnboardingBatch(t *testing.T) {
 			foreign := newNativeFixture(t, f.service, "org_foreign", "foreign")
 			for index, fixture := range []nativeFixture{f, other} {
 				approveHubTestPolicy(t, f.service, fixture.base+"/policy", hubTestPolicy())
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET checkout_repository=? WHERE id=?", "example-org/example-project", fixture.project.ID); err != nil {
+					t.Fatal(err)
+				}
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPut, fixture.base+"/onboarding", fixture.token, map[string]any{"idempotency_key": "onboarding-batch", "progress": onboarding.Progress{Artifacts: "local"}}), http.StatusOK)
 				r := prepareRunner(t, fixture, runnerauth.Read, runnerauth.Claim, runnerauth.Heartbeat)
 				r.enroll(t)

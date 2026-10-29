@@ -1,12 +1,12 @@
-// Package workspacegit is the runner's git service for one workspace worktree
-// (decisions section 18.13): the status the header shows, the commit a person
+// Package workspacegit is the runner's git service for one workspace worktree:
+// the status the header shows, the commit a person
 // asks for and the push that follows.
 //
 // It is the only workspace surface that writes, and every rule that follows
 // from that is written down here rather than left to the caller. Three of them
 // carry the weight:
 //
-//   - The denylist of section 18.4 applies to a commit exactly as it applies
+//   - The denylist of the Files contract applies to a commit exactly as it applies
 //     to a read. A path the files channel refuses to show is a path this
 //     package refuses to stage, and it reports which ones it refused instead
 //     of dropping them quietly: a person who expected a file in the commit has
@@ -238,7 +238,7 @@ func Open(ctx context.Context, worktree string, deny workspacesession.Denylist) 
 // Ahead and Behind are only filled in when the branch has a tracking ref. With
 // no upstream they stay zero because they are unknown, not because the branch
 // is in step, and the channel carries Upstream alongside them so a reader is
-// never shown "0 ahead" for a branch nobody could compare (section 18.13).
+// never shown "0 ahead" for a branch nobody could compare.
 func (s *Service) Status(ctx context.Context) (workspacesession.GitStatus, error) {
 	branch, detached, err := s.head(ctx)
 	if err != nil {
@@ -488,7 +488,7 @@ func (s *Service) partition(dirty []change) plan {
 //
 // A denied path is never staged by this package, but it may already be staged,
 // and a plain commit records the index. Leaving one in would put exactly the
-// content section 18.4 refuses to show into a commit, and from there onto a
+// content the Files contract refuses to show into a commit, and from there onto a
 // remote, which is the one outcome this whole filter exists to prevent.
 // Restoring the entry from HEAD leaves the file in the worktree untouched and
 // still dirty, which is the state the person is then shown.
@@ -574,8 +574,8 @@ func (s *Service) divergence(ctx context.Context, upstream string) (ahead, behin
 	return right, left
 }
 
-// remote resolves what a push from this branch targets, in the order section
-// 18.13 gives: the branch's own configured remote, then origin, then the only
+// remote resolves what a push from this branch targets, in the order the git channel contract
+// gives: the branch's own configured remote, then origin, then the only
 // remote there is. The order matters -- a branch configured to push somewhere
 // must never be pushed to origin merely because origin also exists -- and so
 // does the last case ending in nothing: with two remotes and no reason to

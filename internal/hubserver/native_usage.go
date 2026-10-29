@@ -10,7 +10,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// Per-attempt usage ingestion (decisions section 17.5). A run event carries
+// Per-attempt usage ingestion. A run event carries
 // the attempt's running total; the hub records only the increment over what
 // it already holds for the attempt, filed under the hour the event arrived.
 // A redelivered event therefore adds nothing, spend after midnight lands on
@@ -39,7 +39,7 @@ func validateNativeRunUsage(request tracker.NativeRunEvent) error {
 		return nil
 	}
 	if request.Type == "run.started" {
-		return nativeInvalid("Usage requires a checkpoint or a finished run")
+		return nativePublicInvalid("Usage requires a checkpoint or a finished run")
 	}
 	if len(usage) > maxNativeUsageEntries {
 		return nativeInvalid(fmt.Sprintf("A run event carries at most %d usage entries", maxNativeUsageEntries))
@@ -49,7 +49,7 @@ func validateNativeRunUsage(request tracker.NativeRunEvent) error {
 		provider := strings.TrimSpace(entry.Provider)
 		model := strings.TrimSpace(entry.Model)
 		if provider == "" || model == "" || len(provider) > maxNativeUsageNameBytes || len(model) > maxNativeUsageNameBytes {
-			return nativeInvalid("Usage requires a provider and a model of at most 128 bytes each")
+			return nativePublicInvalid("Usage requires a provider and a model of at most 128 bytes each")
 		}
 		key := tracker.UsageProviderID(provider) + "\x00" + model
 		if entry.UsageKind == "incremental" {
@@ -59,11 +59,11 @@ func validateNativeRunUsage(request tracker.NativeRunEvent) error {
 			return err
 		}
 		if seen[key] {
-			return nativeInvalid("Usage names " + provider + " " + model + " twice")
+			return nativeInvalid("Usage entries must name distinct provider and model pairs")
 		}
 		seen[key] = true
 		if entry.Input < 0 || entry.CachedInput < 0 || entry.Output < 0 || entry.CostEstimate < 0 {
-			return nativeInvalid("Usage counts and cost cannot be negative")
+			return nativePublicInvalid("Usage counts and cost cannot be negative")
 		}
 	}
 	return nil
@@ -106,6 +106,9 @@ func recordAttemptUsage(ctx context.Context, tx *sql.Tx, scope nativeScope, requ
 			delta.Input, delta.CachedInput, delta.Output, delta.CostEstimate, currency, formatHubTime(now)); err != nil {
 			return fmt.Errorf("record attempt usage: %w", err)
 		}
+		if err := updateAttemptUsageSummary(ctx, tx, scope, attempt, delta); err != nil {
+			return err
+		}
 	}
 	return recordRunnerUsageCosts(ctx, tx, scope, request, prices, now)
 }
@@ -135,4 +138,12 @@ func usageDelta(total, recorded tracker.NativeUsage, prices UsageConfig) tracker
 // usagePeriod is the hour bucket a moment is filed under.
 func usagePeriod(at time.Time) string {
 	return at.UTC().Truncate(time.Hour).Format(usagePeriodLayout)
+}
+
+func updateAttemptUsageSummary(ctx context.Context, tx *sql.Tx, scope nativeScope, attempt string, delta tracker.NativeUsage) error {
+	_, err := tx.ExecContext(ctx, `UPDATE native_attempts SET input_tokens=input_tokens+?,cached_input_tokens=cached_input_tokens+?,output_tokens=output_tokens+?,cost_estimate=cost_estimate+? WHERE organization_id=? AND project_id=? AND id=? AND detail_attachment_id IS NOT NULL`, delta.Input, delta.CachedInput, delta.Output, delta.CostEstimate, scope.organization, scope.project, attempt)
+	if err != nil {
+		return fmt.Errorf("record attempt usage summary: %w", err)
+	}
+	return nil
 }

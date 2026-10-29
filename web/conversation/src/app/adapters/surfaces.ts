@@ -8,7 +8,7 @@ import {
   type AgentPanelModel,
   type AttemptActivity,
 } from "./subagentRuntime.ts";
-import { subscribeProjectEvents } from "../work/lib/projectEvents.ts";
+import { observeProjectQuery, eventNamesItem } from "../work/lib/projectEvents.ts";
 import { useWorkHttp } from "../work/lib/useWork.ts";
 import type { WorkHttp } from "../work/lib/workHttp.ts";
 
@@ -32,7 +32,7 @@ export interface PullRequestSurfaceData {
 }
 
 /**
- * Where the Diff surface's body comes from (decisions.md §18.5, §19).
+ * Where the Diff surface's body comes from.
  *
  * Two sources, in this order, because only one of them has files in it:
  *
@@ -86,7 +86,7 @@ export interface IssueSurfaces {
   readonly changedFiles: readonly ChangedFile[];
   /**
    * The latest stored attempt diff on this issue, or null when no attempt has
-   * posted one (decisions.md §18.5).
+   * posted one.
    */
   readonly attemptDiff: AttemptDiff | null;
   /** Which of the two sources the surface draws, decided by `diffSource`. */
@@ -102,6 +102,7 @@ const NO_ATTEMPTS: readonly NativeAttempt[] = [];
 export function toAttemptActivity(
   attempts: readonly NativeAttempt[],
   runnerNames?: RunnerNames,
+  partial = false,
 ): readonly AttemptActivity[] {
   return attempts.map((attempt, index) => ({
     id: attempt.attempt_id,
@@ -115,7 +116,7 @@ export function toAttemptActivity(
     startedAt: attempt.started_at,
     completedAt: attempt.status === "running" ? null : attempt.updated_at,
     tokens: null,
-    attemptNumber: index + 1,
+    attemptNumber: partial ? null : index + 1,
     progress: attempt.outcome ?? null,
     error: attempt.status === "failed" ? (attempt.outcome ?? null) : null,
   }));
@@ -128,10 +129,10 @@ function pullRequestState(summary: string | undefined): PullRequestState {
 }
 
 /**
- * The latest stored diff on this issue (decisions.md §18.5), or null when no
+ * The latest stored diff on this issue, or null when no
  * attempt has posted one.
  *
- * One request, issue-addressed. The attempt-addressed read of §18.5 answers a
+ * One request, issue-addressed. The attempt-addressed read of the Diff contract answers a
  * 404 for an attempt that never checkpointed, so asking it per attempt would
  * mean a walk down the attempt list and a browser console error for each miss
  * — on every issue open, not only when the Diff surface is on screen. The hub
@@ -152,9 +153,10 @@ async function read(
   projectId: string,
   workItemId: string,
   runnerNames: RunnerNames,
+  suppliedAttempts: boolean,
 ): Promise<Omit<IssueSurfaces, "loading" | "error" | "reload">> {
   const [attempts, changes] = await Promise.all([
-    http
+    suppliedAttempts ? Promise.resolve(NO_ATTEMPTS) : http
       .listAttempts(projectId, workItemId, 20)
       .then((page) => page.items)
       .catch(() => NO_ATTEMPTS),
@@ -181,7 +183,7 @@ async function read(
     // The hub serves no file list, hunk or patch for a change version, so this
     // is always empty today. The shape is the one a future
     // `GET …/changes/:change/files` would fill; the files a reader actually
-    // sees come from `attemptDiff` instead (§18.5).
+    // sees come from `attemptDiff` instead.
     changedFiles: [],
     attemptDiff,
     source: diffSource({
@@ -219,88 +221,43 @@ const EMPTY: Omit<IssueSurfaces, "loading" | "error" | "reload"> = {
   agents: agentPanelModelFromAttempts([]),
 };
 
-/**
- * How long a burst of project activity is coalesced into one re-read. The
- * board's own stream reader uses the same number for the same reason: a runner
- * that checkpoints and finishes inside one tick is one refresh, not two.
- */
-const REFRESH_COALESCE_MS = 400;
-
-/**
- * Everything the live right-panel surfaces show for one issue. Loaded once per
- * issue, re-read on demand, and re-read again when the project's event stream
- * says something happened.
- *
- * The diff has to follow the run (§18.5): the runner posts its worktree diff
- * before every `run.checkpointed` and before `run.finished`, and a reader
- * watching a running attempt should see each one land rather than having to
- * press Reload. The hub emits no typed project event for a run event, so the
- * signal available here is the project stream's `activity` frame — the issue
- * table's highest event sequence, which a run event appended to this issue's
- * history bumps. It is written on every tick whether or not it moved, so only
- * an increase is acted on, exactly as `useBoard` does with the same frame.
- */
 export function useIssueSurfaces(
   projectId: string | null,
   workItemId: string | null,
+  attempts?: readonly NativeAttempt[],
+  attemptsPartial = false,
 ): IssueSurfaces {
   const http = useWorkHttp();
   const runnerNames = useRunnerNames();
+  const suppliedAttempts = attempts !== undefined;
   const [state, setState] = React.useState(EMPTY);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [nonce, setNonce] = React.useState(0);
 
   React.useEffect(() => {
-    if (projectId === null || workItemId === null) return;
-    if (typeof globalThis.EventSource !== "function") return;
-    let previous: number | null = null;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const onActivity = (event: MessageEvent<string>) => {
-      const next = Number.parseInt(event.data, 10);
-      if (!Number.isFinite(next)) return;
-      const seen = previous;
-      previous = next;
-      if (seen === null || next <= seen) return;
-      clearTimeout(timer);
-      timer = setTimeout(() => setNonce((value) => value + 1), REFRESH_COALESCE_MS);
-    };
-    const unsubscribe = subscribeProjectEvents(http, projectId, { activity: onActivity as EventListener });
-    return () => {
-      clearTimeout(timer);
-      unsubscribe();
-    };
-  }, [http, projectId, workItemId]);
-
-  React.useEffect(() => {
     if (projectId === null || workItemId === null) {
-      setState(EMPTY);
-      setLoading(false);
-      setError(null);
+      setState(EMPTY); setLoading(false); setError(null);
       return;
     }
-    let cancelled = false;
     setLoading(true);
-    void read(http, projectId, workItemId, runnerNames)
-      .then((next) => {
-        if (cancelled) return;
-        setState(next);
-        setError(null);
-      })
-      .catch((cause: unknown) => {
-        if (cancelled) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [http, projectId, workItemId, nonce, runnerNames]);
+    const query = observeProjectQuery(http, projectId, {
+      topics: ["work_item", "human_action", "board"],
+      accepts: (event) => eventNamesItem(event, workItemId),
+      load: async () => {
+        const issue = await http.getWorkItem(projectId, workItemId);
+        const value = await read(http, projectId, workItemId, runnerNames, suppliedAttempts);
+        return { value, watermark: issue.change_sequence };
+      },
+      apply: (next) => { setState(next); setError(null); setLoading(false); },
+      error: (cause) => { setError(cause instanceof Error ? cause.message : String(cause)); setLoading(false); },
+      event: () => query.refresh(),
+    });
+    return () => query.close();
+  }, [http, projectId, workItemId, nonce, runnerNames, suppliedAttempts]);
 
   return React.useMemo(
-    () => ({ ...state, loading, error, reload: () => setNonce((value) => value + 1) }),
-    [state, loading, error],
+    () => ({ ...state, ...(attempts === undefined ? {} : { agents: agentPanelModelFromAttempts(toAttemptActivity(attempts, runnerNames, attemptsPartial)) }), loading, error, reload: () => setNonce((value) => value + 1) }),
+    [state, loading, error, attempts, attemptsPartial, runnerNames],
   );
 }

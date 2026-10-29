@@ -153,12 +153,19 @@ func (s *Service) wakeAllocator() {
 
 func (s *Service) tenantSpec(organization Organization) TenantSpec {
 	return TenantSpec{
-		Organization: organization, Directory: filepath.Join(s.config.Allocation.TenantRoot, organization.ID),
+		Icons:           tenantIconStore{service: s, allocation: organization},
+		ArchiveContents: attachment.ArchiveContents{Storage: archiveStorage(s.attachments)},
+		Organization:    organization, Directory: filepath.Join(s.config.Allocation.TenantRoot, organization.ID),
 		Socket: strings.TrimPrefix(organization.Endpoint, "unix:"), PublicURL: s.config.PublicURL, Issuer: s.config.Issuer,
 		PublicKey: cloudassert.PublicKeyOf(s.config.SigningKey),
+		Content: func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+			return s.tenantContent(ctx, organization, request)
+		},
+		RunDetails: tenantDetailStore{service: s, allocation: organization},
 		ResolveKey: func(ctx context.Context, origin entryauthority.Origin) (cloudassert.Claims, error) {
 			return s.resolveTenantKey(ctx, organization, origin)
 		},
+		ReadArchive: s.tenantArchiveReader(organization),
 		Check: func(ctx context.Context) error {
 			return s.checkTenant(ctx, organization)
 		},
@@ -373,16 +380,31 @@ func (s *Service) admit(ctx context.Context, id string) error {
 	return nil
 }
 
+type signupAllowlist struct {
+	emails  []string
+	domains []string
+}
+
+func (s *Service) currentSignupAllowlist() signupAllowlist {
+	if allowlist := s.allowlist.Load(); allowlist != nil {
+		return *allowlist
+	}
+	if allocation := s.config.Allocation; allocation != nil {
+		return signupAllowlist{emails: allocation.AllowedEmails, domains: allocation.AllowedDomains}
+	}
+	return signupAllowlist{}
+}
+
 func (s *Service) signupAllowed(email string) bool {
-	allocation := s.config.Allocation
-	if len(allocation.AllowedEmails) == 0 && len(allocation.AllowedDomains) == 0 {
+	allowlist := s.currentSignupAllowlist()
+	if len(allowlist.emails) == 0 && len(allowlist.domains) == 0 {
 		return true
 	}
-	if listed(allocation.AllowedEmails, email) {
+	if listed(allowlist.emails, email) {
 		return true
 	}
 	_, domain, ok := strings.Cut(strings.ToLower(email), "@")
-	return ok && listed(allocation.AllowedDomains, domain)
+	return ok && listed(allowlist.domains, domain)
 }
 
 func (s *Service) newOrganizationPage(c echo.Context) error {
@@ -453,6 +475,10 @@ func (s *Service) recordIntent(ctx context.Context, session accountSession, key,
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
 	bypass := s.entitlementAdministrator(ctx, session)
+	plan := ""
+	if s.notifications != nil {
+		plan = s.platformNotificationPlan(price)
+	}
 	tx, err := s.registry.store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
@@ -491,7 +517,16 @@ func (s *Service) recordIntent(ctx context.Context, session accountSession, key,
 	if _, err := tx.ExecContext(ctx, "INSERT INTO organization_intents(subject,idempotency_key,fingerprint,organization_id,created_at) VALUES (?,?,?,?,?)", session.Subject, key, fingerprint, id, now); err != nil {
 		return "", err
 	}
-	return id, tx.Commit()
+	if s.notifications != nil {
+		if err := enqueuePlatformNotification(ctx, tx, "organization", id, session.Email, name, plan, now); err != nil {
+			return "", err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	s.wakePlatformNotifications()
+	return id, nil
 }
 
 func (s *Service) canCreate(_ context.Context, session accountSession) (bool, error) {
@@ -688,25 +723,22 @@ func (s *Service) deleteOrganization(c echo.Context) error {
 }
 
 func (s *Service) finishDeletion(ctx context.Context, id string) error {
-	s.attachmentMu.Lock()
-	defer s.attachmentMu.Unlock()
-	if s.attachments != nil {
-		prefix, err := attachment.OrganizationPrefix(id)
-		if err != nil {
-			return err
-		}
-		if err := s.attachments.Walk(ctx, prefix, func(object attachment.Object) error {
-			if !strings.HasPrefix(object.Key, prefix) {
-				return attachment.ErrInvalid
-			}
-			if err := s.auth.audit(ctx, "entry", id, "attachment_deleted"); err != nil {
-				return err
-			}
-			return s.attachments.Delete(ctx, object.Key)
-		}); err != nil {
-			return err
-		}
+	unlock := s.attachmentLocks.lock(id, true)
+	organization, err := s.registry.Organization(ctx, id)
+	unlock()
+	if err != nil {
+		return err
 	}
+	if organization.State == "deleted" {
+		return nil
+	}
+	if organization.State != "deleting" {
+		return ErrOrganizationConflict
+	}
+	if err := s.eraseOrganizationStorage(ctx, id); err != nil {
+		return err
+	}
+
 	revoked, err := s.auth.revokeOrganization(ctx, id)
 	if err != nil {
 		return err

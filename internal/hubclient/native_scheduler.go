@@ -3,16 +3,19 @@ package hubclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/runnerauth"
@@ -21,6 +24,7 @@ import (
 )
 
 type nativeClaim struct {
+	lost                 bool
 	landingCapacity      int
 	execution            *nativeExecution
 	availabilityDeadline time.Time
@@ -62,6 +66,9 @@ func (s *Scheduler) ObserveNativeAdmission(project string, current tracker.Nativ
 }
 
 func (s *Scheduler) Heartbeat(ctx context.Context) error {
+	if s.controlPaused.Load() {
+		return nil
+	}
 	if s.client.runner == nil {
 		return nil
 	}
@@ -83,6 +90,9 @@ func (s *Scheduler) ensureNativeMachine(ctx context.Context, source *NativeConne
 }
 
 func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeConnector, projectOwner func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration) error {
+	if s.controlPaused.Load() {
+		return nil
+	}
 	project := source.client.project
 	s.mu.Lock()
 	if s.nativeHeartbeatMu == nil {
@@ -256,6 +266,8 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 	if err := s.sendNativeMachineHeartbeat(ctx, source, machine, s.client.runner == nil || last.IsZero()); err != nil {
 		return err
 	}
+
+	s.reconcileReleasedExecutions(ctx, source)
 	machine.HostMetrics = nil
 	s.mu.Lock()
 	s.nativeHeartbeats[project] = s.now()
@@ -277,7 +289,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 			}
 			machine.ProjectConfiguration = &view
 			heartbeat.Lock()
-			err := source.client.HeartbeatMachine(ctx, machine)
+			err := s.sendNativeMachineHeartbeat(ctx, source, machine, false)
 			heartbeat.Unlock()
 			if err != nil {
 				return err
@@ -292,7 +304,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 				s.mu.Unlock()
 				machine.Update = applied
 				heartbeat.Lock()
-				err := source.client.HeartbeatMachine(ctx, machine)
+				err := s.sendNativeMachineHeartbeat(ctx, source, machine, false)
 				heartbeat.Unlock()
 				if err != nil {
 					return err
@@ -317,7 +329,7 @@ func (s *Scheduler) heartbeatNativeMachine(ctx context.Context, source *NativeCo
 }
 
 func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []runnerauth.Problem) {
-	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	if s.leaseHold != nil {
 		release, err := s.leaseHold(probeCtx)
@@ -330,15 +342,31 @@ func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []run
 	report, problems := s.isolationReport(probeCtx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := probeCtx.Err(); err != nil {
+	probeErr := probeCtx.Err()
+	incomplete := slices.ContainsFunc(problems, func(p runnerauth.Problem) bool { return p.Code == "backend_probe_failed" })
+	if probeErr != nil || incomplete {
 		problem := runnerauth.NewProblem("backend_probe_failed")
 		problem.Subject = "backend_isolation"
 		problem.Check = "runner isolation probe"
-		problem.ErrorOutput = err.Error()
+		if probeErr != nil {
+			problem.ErrorOutput = probeErr.Error()
+		} else {
+			for _, p := range problems {
+				if p.Code == "backend_probe_failed" {
+					problem.ErrorOutput = p.ErrorOutput
+					break
+				}
+			}
+		}
 		problem.ReportedAt = s.now().UTC()
 		if s.lastIsolation != nil {
-			problem.Message += " Reported capabilities are cached from the last completed runner isolation probe at " + s.lastIsolationAt.UTC().Format(time.RFC3339Nano) + "."
-			report = s.lastIsolation
+			report = reuseIncompleteIsolation(report, s.lastIsolation, problems, probeErr != nil)
+			s.lastIsolation = report
+			problem.CachedCapabilities = true
+			problems = slices.DeleteFunc(problems, func(p runnerauth.Problem) bool {
+				return p.Code == "backend_probe_failed"
+			})
+			problem.Message += " Reported capabilities combine completed checks with cached capabilities; the last complete runner isolation probe finished at " + s.lastIsolationAt.UTC().Format(time.RFC3339Nano) + "."
 		} else {
 			problem.Message += " No completed runner isolation probe is cached; reported capabilities contain only completed backend checks."
 		}
@@ -350,7 +378,77 @@ func (s *Scheduler) probeIsolation(ctx context.Context) (isolation.Report, []run
 	return report, problems
 }
 
+func reuseIncompleteIsolation(current, cached isolation.Report, problems []runnerauth.Problem, interrupted bool) isolation.Report {
+	report := make(isolation.Report, len(current)+len(cached))
+	for backend, tiers := range current {
+		report[backend] = slices.Clone(tiers)
+	}
+	for backend, tiers := range cached {
+		_, observed := current[backend]
+		if interrupted && !observed {
+			report[backend] = []string{}
+		}
+		for _, tier := range tiers {
+			incomplete := interrupted && !observed
+			failed := false
+			for _, problem := range problems {
+				if problem.Subject != backend && (tier != isolation.Sandbox || problem.Subject != backend+"/sandbox") {
+					continue
+				}
+				switch problem.Code {
+				case "backend_probe_failed":
+					incomplete = true
+				case "backend_missing", "tier_unavailable":
+					failed = true
+				}
+			}
+			if incomplete && !failed && !slices.Contains(report[backend], tier) {
+				report[backend] = append(report[backend], tier)
+			}
+		}
+	}
+	return report
+}
+
+func (s *Scheduler) reserveNativeClaim() (func(), bool) {
+	if s.client != nil && s.client.runner != nil {
+		s.client.runner.routingMu.Lock()
+		draining := s.client.runner.routing != nil && s.client.runner.routing.Routing.State == "draining"
+		s.client.runner.routingMu.Unlock()
+		if draining {
+			return nil, false
+		}
+	}
+	s.mu.Lock()
+	admission := s.claimAdmission
+	s.mu.Unlock()
+	if admission != nil {
+		return admission()
+	}
+	return func() {}, true
+}
+
+func (s *Scheduler) claimNative(ctx context.Context, source *NativeConnector, request tracker.NativeClaim) (tracker.NativeLease, error, bool) {
+	release, allowed := s.reserveNativeClaim()
+	if !allowed {
+		return tracker.NativeLease{}, nil, false
+	}
+	defer release()
+	lease, err := source.client.Claim(ctx, request)
+	return lease, err, true
+}
+
 func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector) ([]connector.Issue, error) {
+	s.mu.Lock()
+	s.nativeFetches++
+	s.mu.Unlock()
+	s.syncLeaseHold(ctx)
+	defer func() {
+		s.mu.Lock()
+		s.nativeFetches--
+		s.mu.Unlock()
+		s.syncLeaseHold(ctx)
+	}()
 	if err := s.PrepareProject(ctx, request.ProjectID); err != nil {
 		return nil, errors.Join(orchestrator.ErrSchedulingUnavailable, err)
 	}
@@ -367,14 +465,12 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 			return nil, schedulingError(err)
 		}
 	}
-	if s.client.runner != nil {
-		s.client.runner.routingMu.Lock()
-		draining := s.client.runner.routing != nil && s.client.runner.routing.Routing.State == "draining"
-		s.client.runner.routingMu.Unlock()
-		if draining {
-			return nil, nil
-		}
+	releaseAdmission, allowed := s.reserveNativeClaim()
+	if !allowed {
+		return nil, nil
 	}
+	releaseAdmission()
+
 	session, err := s.sessionID()
 	if err != nil {
 		return nil, err
@@ -438,8 +534,9 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 				}
 			}
 			var lease tracker.NativeLease
-			lease, err = source.client.Claim(ctx, claimRequest)
-			if err != nil {
+			var admitted bool
+			lease, err, admitted = s.claimNative(ctx, source, claimRequest)
+			if err != nil || !admitted {
 				break
 			}
 			leases = append(leases, lease)
@@ -452,21 +549,26 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 	if nativeAdmissionCapacityFull(err) {
 		err = nil
 	}
-	release := func(cause error) error {
+	release := func(leases []tracker.NativeLease, cause error) error {
 		for _, lease := range leases {
 			if reconnecting {
 				continue
 			}
-			cause = errors.Join(cause, source.client.Release(context.WithoutCancel(ctx), lease, "work_item_hydration_failed"))
+			releaseErr := source.client.Release(context.WithoutCancel(ctx), lease, "work_item_hydration_failed")
+			if releaseErr == nil || claimLost(releaseErr) {
+				source.client.client.nativeLeases.CompareAndDelete(source.client.base()+"/"+string(lease.WorkItemID), lease)
+			}
+			cause = errors.Join(cause, releaseErr)
 		}
 		return schedulingError(cause)
 	}
-	if err != nil {
-		return nil, release(err)
+	if err != nil && (len(leases) == 0 || !nativeBatchIndependentFailure(ctx, err)) {
+		return nil, release(leases, err)
 	}
+	degraded := err
 	issues := make([]connector.Issue, 0, len(leases))
 	claims := make([]nativeClaim, 0, len(leases))
-	for _, lease := range leases {
+	for i, lease := range leases {
 		recovery, err := source.client.Recovery(ctx, lease.WorkItemID)
 		if err == nil && recovery.Issue.LinkedSource != nil && recovery.Issue.LinkedSource.Status != "complete" {
 			err = s.intakeNativeSource(ctx, source, lease, recovery.Issue)
@@ -475,13 +577,27 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 			}
 		}
 		if err != nil {
-			return nil, release(err)
+			if len(claims) == 0 || !nativeBatchIndependentFailure(ctx, err) {
+				return nil, release(leases, errors.Join(degraded, err))
+			}
+			if releaseErr := release(leases[i:], nil); releaseErr != nil {
+				return nil, release(leases[:i], errors.Join(degraded, err, releaseErr))
+			}
+			leases = leases[:i]
+			degraded = errors.Join(degraded, err)
+			break
 		}
 		issue := issueFromNative(recovery.Issue)
 		issue.AssignedToWorker = true
 		issue.IsolationPolicy = lease.IsolationPolicy
 		issues = append(issues, issue)
 		claims = append(claims, nativeClaim{landingCapacity: request.LandingCapacity, availabilityDeadline: availabilityDeadline, source: source, lease: lease, recovery: recovery, deadline: nativeLeaseDeadline(claimStarted, lease)})
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, release(leases, errors.Join(degraded, err))
+	}
+	if degraded != nil {
+		slog.Default().Warn("native candidate fetch degraded", "project_id", source.client.project, "retained", len(claims), "error", degraded)
 	}
 	s.mu.Lock()
 	for _, claim := range claims {
@@ -492,8 +608,85 @@ func (s *Scheduler) fetchNativeCandidate(ctx context.Context, request orchestrat
 		claim.source.client.client.nativeLeases.Store(claim.source.client.base()+"/"+issueID, claim.lease)
 	}
 	s.mu.Unlock()
-	s.syncLeaseHold(ctx)
 	return issues, nil
+}
+
+func nativeBatchIndependentFailure(ctx context.Context, err error) bool {
+	if ctx.Err() != nil || errors.Is(err, orchestrator.ErrSchedulingUnavailable) || routingDeferred(err) || claimLost(err) {
+		return false
+	}
+	var failure *APIError
+	if errors.As(err, &failure) && (failure.Status < http.StatusInternalServerError || failure.Code == "policy_mismatch") {
+		return false
+	}
+	return errors.Is(err, ErrUnavailable)
+}
+
+func (s *Scheduler) reconcileReleasedExecutions(ctx context.Context, source *NativeConnector) {
+	if s.client.runner == nil || s.releasedStopped == nil {
+		return
+	}
+	file, err := runnerauth.Load(s.client.runner.path)
+	if err != nil {
+		slog.Default().Warn("released execution reconciliation skipped", "project_id", source.client.project, "error", fmt.Errorf("load runner identity: %w", err))
+		return
+	}
+	s.client.runner.routingMu.Lock()
+	var released []runnerauth.ReleasedExecution
+	if snapshot := s.client.runner.routing; snapshot != nil && snapshot.RunnerID == file.Identity.RunnerID && snapshot.ClaimState != nil {
+		released = slices.Clone(snapshot.ClaimState.ReleasedExecutions)
+	}
+	s.client.runner.routingMu.Unlock()
+	for _, reference := range released {
+		if reference.ProjectID != source.client.project {
+			continue
+		}
+		if err := s.reconcileReleasedExecution(ctx, source, file.Identity, reference); err != nil {
+			slog.Default().Warn("released execution reconciliation failed", "project_id", source.client.project, "work_item_id", reference.WorkItemID, "attempt_id", reference.AttemptID, "error", err)
+		}
+	}
+}
+
+func (s *Scheduler) reconcileReleasedExecution(ctx context.Context, source *NativeConnector, identity runnerauth.Identity, reference runnerauth.ReleasedExecution) error {
+	path, err := nativeItemPath(reference.WorkItemID)
+	if err != nil {
+		return fmt.Errorf("item path: %w", err)
+	}
+	var attempt tracker.NativeAttempt
+	if err := source.client.client.request(ctx, http.MethodGet, source.client.base()+path+"/attempts/"+reference.AttemptID, nil, &attempt); err != nil {
+		return fmt.Errorf("read attempt: %w", err)
+	}
+	if attempt.AttemptID != reference.AttemptID || attempt.MachineID != identity.MachineID || attempt.RunnerID != identity.RunnerID || attempt.ClaimReleasedAt == nil || attempt.Identity == nil || attempt.Outcome != "" && attempt.Outcome != "interrupted" || !attempt.Checkpoint.PreservesSource() || attempt.Runtime == nil || attempt.Runtime.WorkerLaunch == nil {
+		return nil
+	}
+	launch := attempt.Runtime.WorkerLaunch
+	if launch.PID <= 0 || launch.GroupID <= 0 || launch.ProcessStart.IsZero() {
+		return nil
+	}
+	s.mu.Lock()
+	claim, known := s.nativeClaims[string(reference.WorkItemID)]
+	s.mu.Unlock()
+	if known && claim.lease.ID == attempt.LeaseID {
+		return nil
+	}
+	observations, err := procgroup.Observe([]procgroup.Identity{{PID: launch.PID, GroupID: launch.GroupID, StartedAt: launch.ProcessStart}})
+	if err != nil {
+		return fmt.Errorf("observe worker: %w", err)
+	}
+	if len(observations) != 1 || !observations[0].GroupObserved || observations[0].Alive || observations[0].Stale {
+		return nil
+	}
+	stopped, err := s.releasedStopped(ctx, reference.WorkItemID, attempt)
+	if err != nil {
+		return fmt.Errorf("check providers stopped: %w", err)
+	}
+	if !stopped {
+		return nil
+	}
+	if err := cancelNativeReleasedAttempt(ctx, source.client, reference.WorkItemID, attempt); err != nil {
+		return fmt.Errorf("acknowledge released attempt: %w", err)
+	}
+	return nil
 }
 
 func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector, limit int) ([]tracker.NativeLease, error) {
@@ -557,6 +750,23 @@ func (s *Scheduler) reconnectNativeClaims(ctx context.Context, request orchestra
 		if adopted {
 			continue
 		}
+		renewable, err := s.nativeClaimRenewable(ctx, nativeClaim{source: source, lease: tracker.NativeLease{ID: held.ID, WorkItemID: held.WorkItemID, FencingToken: held.FencingToken}, recovery: recovery})
+		if err != nil {
+			return nil, err
+		}
+		if !renewable {
+			if err := source.client.release(ctx, tracker.NativeLease{ID: held.ID, FencingToken: held.FencingToken}, "cancelled", recovery.Issue.SchedulingEligible != nil); err != nil && !nativeLeaseLost(err) {
+				return nil, err
+			}
+			for _, attempt := range recovery.Attempts {
+				if recovery.Issue.SchedulingEligible == nil && attempt.LeaseID == held.ID && attempt.FencingToken == held.FencingToken && (attempt.Status == "running" || attempt.Status == "interrupted") && attempt.Identity != nil {
+					if err := cancelNativeReleasedAttempt(ctx, source.client, held.WorkItemID, attempt); err != nil {
+						return nil, err
+					}
+				}
+			}
+			continue
+		}
 		lease, err := source.client.Renew(ctx, tracker.NativeLease{ID: held.ID, FencingToken: held.FencingToken}, int64(s.leaseTTL/time.Second))
 		if nativeLeaseLost(err) {
 			continue
@@ -578,7 +788,7 @@ func nativeAdmissionCapacityFull(err error) bool {
 		return false
 	}
 	switch failure.Code {
-	case "provider_capacity", "runner_capacity", "host_capacity":
+	case "provider_capacity", "runner_capacity", "host_capacity", "plan_capacity":
 		return true
 	default:
 		return false
@@ -586,21 +796,31 @@ func nativeAdmissionCapacityFull(err error) bool {
 }
 
 func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim nativeClaim, landingCapacity int) (orchestrator.Claimed, error) {
+	if claim.lost {
+		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, orchestrator.ErrSchedulingClaimLost)
+	}
 	if err := s.checkClaimPolicyApproval(ctx, issueID, claim.lease.PolicyID); err != nil {
-		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
+		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
 	}
 	if err := s.ensureNativeMachine(ctx, claim.source); err != nil {
-		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
+		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
+	}
+	renewable, err := s.nativeClaimRenewable(ctx, claim)
+	if err != nil {
+		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
+	}
+	if !renewable {
+		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, orchestrator.ErrSchedulingClaimLost)
 	}
 	renewStarted := s.now()
 	lease, err := claim.source.client.renew(ctx, claim.lease, int64(s.leaseTTL/time.Second), landingCapacity)
 	if err != nil {
-		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
+		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
 	}
 	claim.lease = lease
 	claim.deadline = nativeLeaseDeadline(renewStarted, lease)
 	s.mu.Lock()
-	if current, ok := s.nativeClaims[issueID]; !ok || current.lease.FencingToken != lease.FencingToken {
+	if current, ok := s.nativeClaims[issueID]; !ok || current.lost || current.lease.FencingToken != lease.FencingToken {
 		s.mu.Unlock()
 		return orchestrator.Claimed{}, orchestrator.ErrSchedulingClaimLost
 	}
@@ -610,9 +830,123 @@ func (s *Scheduler) renewNativeClaim(ctx context.Context, issueID string, claim 
 	s.claims[issueID] = nativeTrackerLease(lease)
 	s.mu.Unlock()
 	if err := s.checkClaimRunner(ctx, issueID, claim.lease.PolicyID); err != nil {
-		return orchestrator.Claimed{}, s.nativeClaimError(issueID, claim.lease.FencingToken, err)
+		return orchestrator.Claimed{}, s.nativeClaimError(ctx, issueID, claim.lease.FencingToken, err)
 	}
 	return claimedIssue(connector.Issue{ID: issueID}, nativeTrackerLease(lease)), nil
+}
+
+func (s *Scheduler) nativeClaimRenewable(ctx context.Context, claim nativeClaim) (bool, error) {
+	var observation *tracker.NativeRuntimeObservation
+	localWorker := false
+	landed := false
+	if execution := claim.execution; execution != nil {
+		localWorker = execution.hasWorkers()
+		execution.cancelMu.Lock()
+		controller := execution.cancel != nil
+		execution.cancelMu.Unlock()
+		execution.diagnosticMu.Lock()
+		pending := execution.diagnostic.OperationPending
+		execution.diagnosticMu.Unlock()
+		if pending || !execution.mu.TryLock() {
+			return true, nil
+		}
+		pending = execution.pending != nil || execution.data.Outcome != ""
+		landed = execution.landed
+		if execution.data.Runtime != nil {
+			runtime := *execution.data.Runtime
+			observation = &runtime
+		}
+		// The controller owns bounded finalization after the turn ends. Its
+		// turn-end heartbeat cannot expire a live publication or review.
+		if observation != nil && observation.Phase == "completed" && (controller || localWorker) {
+			execution.mu.Unlock()
+			return true, nil
+		}
+		if !pending && observation != nil && observation.Phase == "completed" &&
+			(observation.HeartbeatAt.IsZero() || !s.now().Before(observation.HeartbeatAt.Add(s.leaseTTL))) {
+			execution.RetainCompletion()
+			execution.preparedOutcome = "failed"
+			execution.preparedDisposition = nil
+			execution.preparedFailure = execution.finalizationFailure(errors.New("completed worker runtime expired before finalization"))
+			err := execution.finish(ctx, "failed")
+			finished := execution.data.Outcome != ""
+			execution.mu.Unlock()
+			if finished {
+				execution.refreshReasons(ctx, true)
+			}
+			return false, err
+		}
+		prepared := execution.preparedOutcome != ""
+		execution.mu.Unlock()
+		if pending || prepared {
+			return true, nil
+		}
+	}
+	if observation == nil {
+		for _, attempt := range claim.recovery.Attempts {
+			if attempt.LeaseID == claim.lease.ID && attempt.FencingToken == claim.lease.FencingToken {
+				observation = attempt.Runtime
+				break
+			}
+		}
+	}
+	issue, err := claim.source.client.Issue(ctx, claim.lease.WorkItemID)
+	if err != nil {
+		return false, err
+	}
+	landed = landed || observation != nil && observation.Landing != nil && observation.Landing.Landed
+	if issue.Terminal && !issue.Archived && !landed && claim.execution != nil {
+		if !claim.execution.mu.TryLock() {
+			return true, nil
+		}
+		landed = claim.execution.landed
+		claim.execution.mu.Unlock()
+	}
+	if !issue.Terminal || issue.Archived || !landed {
+		if issue.SchedulingEligible != nil {
+			if !*issue.SchedulingEligible {
+				return false, nil
+			}
+		} else {
+			if issue.Terminal || issue.Archived || !issue.DependencyReady {
+				return false, nil
+			}
+			project, err := claim.source.client.Project(ctx)
+			if err != nil {
+				return false, err
+			}
+			dispatchable := false
+			for _, state := range project.States {
+				if strings.EqualFold(state.Name, issue.State) {
+					dispatchable = state.Dispatchable && !state.Terminal && !state.OperatorOnly
+					break
+				}
+			}
+			if !dispatchable {
+				return false, nil
+			}
+		}
+	}
+	if observation == nil || observation.LocalAttemptID == 0 || observation.Generation == 0 {
+		return true, nil
+	}
+	if observation.Phase == "completed" {
+		return false, nil
+	}
+	if localWorker && observation.WorkerLaunch != nil {
+		launch := observation.WorkerLaunch
+		alive, err := procgroup.Alive(procgroup.Identity{PID: launch.PID, GroupID: launch.GroupID, StartedAt: launch.ProcessStart})
+		if err != nil {
+			return false, errors.Join(ErrUnavailable, err)
+		}
+		if alive {
+			if err := claim.execution.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{HeartbeatAt: s.now().UTC()}); err != nil {
+				return false, err
+			}
+		}
+		return alive, nil
+	}
+	return !observation.HeartbeatAt.IsZero() && s.now().Sub(observation.HeartbeatAt) < s.leaseTTL, nil
 }
 
 func nativeLeaseDeadline(started time.Time, lease tracker.NativeLease) time.Time {
@@ -622,26 +956,70 @@ func nativeLeaseDeadline(started time.Time, lease tracker.NativeLease) time.Time
 	return started.Add(lease.ExpiresAt.Sub(lease.ServerTime))
 }
 
-func (s *Scheduler) nativeClaimError(issueID string, token tracker.FencingToken, err error) error {
+func (s *Scheduler) nativeClaimError(ctx context.Context, issueID string, token tracker.FencingToken, err error) error {
 	var apiErr *APIError
 	lostAuthority := errors.As(err, &apiErr) && apiErr != nil &&
 		(apiErr.Code == "policy_mismatch" || apiErr.Code == "selector_no_match")
 	if nativeAuthorityLost(err) || lostAuthority {
-		s.mu.Lock()
-		if current, ok := s.nativeClaims[issueID]; ok && current.lease.FencingToken == token {
-			if current.execution != nil && current.execution.hasWorkers() {
-				s.mu.Unlock()
-				return errors.Join(orchestrator.ErrSchedulingClaimLost, current.execution.unavailable(err))
-			}
-			current.source.client.slotFreed()
-			delete(s.claims, issueID)
-			delete(s.nativeClaims, issueID)
-			delete(s.claimPolicies, issueID)
+		if s.invalidateNativeClaim(ctx, issueID, token, err) {
+			return errors.Join(orchestrator.ErrSchedulingClaimLost, runner.ErrExecutionAuthorityUnavailable, err)
 		}
-		s.mu.Unlock()
 		return errors.Join(orchestrator.ErrSchedulingClaimLost, err)
 	}
 	return err
+}
+
+func (s *Scheduler) invalidateNativeClaim(ctx context.Context, issueID string, token tracker.FencingToken, cause error) bool {
+	s.mu.Lock()
+	if current, ok := s.nativeClaims[issueID]; ok && current.lease.FencingToken == token {
+		current.lost = true
+		s.nativeClaims[issueID] = current
+		if execution := current.execution; execution != nil {
+			pending := execution.hasWorkers() || execution.completionOwner.Load()
+			execution.cancelMu.Lock()
+			pending = pending || execution.cancel != nil
+			execution.cancelMu.Unlock()
+			if pending {
+				s.mu.Unlock()
+				execution.cancelExecution(errors.Join(runner.ErrExecutionAuthorityUnavailable, cause))
+				return true
+			}
+		}
+		s.mu.Unlock()
+		if err := current.source.client.release(ctx, current.lease, "cancelled", true); err != nil && !nativeLeaseLost(err) {
+			slog.Default().Warn("native claim release unavailable", "work_item_id", issueID, "error", err)
+			return true
+		}
+		s.mu.Lock()
+		if successor, ok := s.nativeClaims[issueID]; !ok || successor.lease.ID != current.lease.ID || successor.lease.FencingToken != token {
+			s.mu.Unlock()
+			return false
+		}
+		current.source.client.slotFreed()
+		delete(s.claims, issueID)
+		delete(s.nativeClaims, issueID)
+		delete(s.claimPolicies, issueID)
+	}
+	s.mu.Unlock()
+	return false
+}
+
+func (s *Scheduler) ForgetClaim(issueID string) {
+	s.mu.Lock()
+	claim, ok := s.nativeClaims[issueID]
+	s.mu.Unlock()
+	if ok {
+		s.invalidateNativeClaim(context.Background(), issueID, claim.lease.FencingToken, orchestrator.ErrSchedulingClaimLost)
+	}
+}
+
+func (s *Scheduler) cleanupNativeClaim(ctx context.Context, issueID string, token tracker.FencingToken) {
+	s.mu.Lock()
+	claim, ok := s.nativeClaims[issueID]
+	s.mu.Unlock()
+	if ok && claim.lost && claim.lease.FencingToken == token {
+		s.invalidateNativeClaim(ctx, issueID, token, orchestrator.ErrSchedulingClaimLost)
+	}
 }
 
 func nativeTrackerLease(lease tracker.NativeLease) tracker.Lease {
@@ -665,7 +1043,7 @@ func (s *Scheduler) NativeClient(project string) (*NativeClient, bool) {
 }
 
 // MachineID is the machine identity this scheduler registers and claims under.
-// The workspace lane claims under the same one: decisions section 18.1 keys a
+// The workspace lane claims under the same one: a
 // workspace's owner tuple on the machine, and a retained worktree may only be
 // served by the machine that produced it.
 func (s *Scheduler) MachineID() tracker.MachineID {
@@ -690,7 +1068,7 @@ func nativeTransportUnavailable(err error) bool {
 
 func nativeAuthorityLost(err error) bool {
 	var apiErr *APIError
-	return nativeLeaseLost(err) || errors.As(err, &apiErr) && apiErr != nil &&
+	return errors.Is(err, orchestrator.ErrSchedulingClaimLost) || nativeLeaseLost(err) || errors.As(err, &apiErr) && apiErr != nil &&
 		(apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden || apiErr.Status == http.StatusNotFound)
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/runnerauth"
 )
@@ -30,6 +31,10 @@ func TestFleetArgumentBoundary(t *testing.T) {
 		{"capacity request", UpdateRunnerCapacity, `{"request_id":"r","runner_id":"r","change":{"expected_revision":1,"expected_config_revision":"` + strings.Repeat("a", 64) + `","capacity":6,"backend":"codex"}}`, true},
 		{"capacity overflow", UpdateRunnerCapacity, `{"request_id":"r","runner_id":"r","change":{"expected_revision":1,"expected_config_revision":"` + strings.Repeat("a", 64) + `","capacity":10001}}`, false},
 		{"capacity raw path", UpdateRunnerCapacity, `{"request_id":"r","runner_id":"r","change":{"expected_revision":1,"expected_config_revision":"` + strings.Repeat("a", 64) + `","capacity":6,"path":"/etc/config"}}`, false},
+		{"organization report", Reports, `{"scope":"organization","range":"30d","projects":["one","two"],"labels":["label"],"priorities":["1"],"types":["bug"],"filed_by":["person"],"runners":["runner"]}`, true},
+		{"organization report invalid range", Reports, `{"scope":"organization","range":"1y"}`, false},
+		{"organization report invalid priority", Reports, `{"scope":"organization","priorities":["4"]}`, false},
+		{"organization report invalid type", Reports, `{"scope":"organization","types":["unknown"]}`, false},
 		{"report population cursor", Reports, `{"population_cursor":"attempts:1000:0"}`, true},
 		{"report cursor bounded", Reports, `{"population_cursor":"` + strings.Repeat("x", 129) + `"}`, false},
 		{"bounded read", RunnerFleet, `{"limit":200,"offset":0}`, true},
@@ -47,6 +52,11 @@ func TestFleetArgumentBoundary(t *testing.T) {
 		{"unknown nested field", UpdateRunnerHost, `{"request_id":"r","machine_id":"m","change":{"expected_revision":1,"display_name":"h","capacity":1,"confirm":true}}`, false},
 		{"empty routing timezone readback", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":56,"display_name":"Mac runner","state":"draining","capacity_limit":8,"project_ids":["p1","p2"],"availability":{"timezone":"","windows":[],"hard_deadline":""}}}`, true},
 		{"configured routing timezone", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":56,"display_name":"Mac runner","state":"draining","capacity_limit":8,"project_ids":["p1","p2"],"availability":{"timezone":"America/Chicago","windows":["Mon-Fri 09:00-17:00"],"hard_deadline":"1h"}}}`, true},
+		{"project slots", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":1,"display_name":"Runner","state":"active","capacity_limit":8,"project_ids":["p1","p2"],"project_capacity_limits":{"p1":4,"p2":0}}}`, true},
+		{"unset project slots", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":1,"display_name":"Runner","state":"active","capacity_limit":8,"project_ids":["p1"],"project_capacity_limits":{}}}`, true},
+		{"negative project slots", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":1,"display_name":"Runner","state":"active","capacity_limit":8,"project_ids":["p1"],"project_capacity_limits":{"p1":-1}}}`, false},
+		{"excessive project slots", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":1,"display_name":"Runner","state":"active","capacity_limit":8,"project_ids":["p1"],"project_capacity_limits":{"p1":10001}}}`, false},
+		{"fractional project slots", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":1,"display_name":"Runner","state":"active","capacity_limit":8,"project_ids":["p1"],"project_capacity_limits":{"p1":1.5}}}`, false},
 		{"window slots", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":56,"display_name":"Mac runner","state":"active","capacity_limit":8,"scope":"projects","project_ids":["p1"],"project_ranks":{"p1":1},"availability":{"timezone":"UTC","windows":["Mon-Sun 00:00-24:00"],"window_slots":{"Mon-Sun 00:00-24:00":2}}}}`, true},
 		{"dedicated machine", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":1,"display_name":"runner","state":"active","capacity_limit":8,"project_ids":["p1"],"machine_use":"dedicated"}}`, true},
 		{"unknown machine use", UpdateRunnerRouting, `{"request_id":"r","runner_id":"runner","change":{"expected_revision":1,"display_name":"runner","state":"active","capacity_limit":8,"project_ids":["p1"],"machine_use":"idle"}}`, false},
@@ -88,6 +98,34 @@ func TestRoutingApprovalClassification(t *testing.T) {
 			tt.change(&after)
 			if got := RoutingRequiresApproval(before, after); got != tt.material {
 				t.Fatalf("material=%t want %t", got, tt.material)
+			}
+		})
+	}
+}
+
+func TestOrganizationReportWindows(t *testing.T) {
+	now := time.Date(2026, 10, 16, 12, 30, 0, 0, time.UTC)
+	for _, tt := range []struct {
+		name, raw string
+		hours     int
+		valid     bool
+	}{
+		{"default", `{"scope":"organization"}`, 168, true},
+		{"day", `{"scope":"organization","range":"24h"}`, 24, true},
+		{"week", `{"scope":"organization","range":"7d"}`, 168, true},
+		{"month", `{"scope":"organization","range":"30d"}`, 720, true},
+		{"quarter", `{"scope":"organization","range":"90d"}`, 2160, true},
+		{"custom", `{"scope":"organization","from":"2026-10-15T10:00:00Z","to":"2026-10-16T12:00:00Z"}`, 26, true},
+		{"partial hour", `{"scope":"organization","from":"2026-10-15T10:30:00Z","to":"2026-10-16T12:00:00Z"}`, 0, false},
+		{"mixed preset and custom", `{"scope":"organization","range":"7d","from":"2026-10-15T10:00:00Z"}`, 0, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, w, err := DecodeAnalytics(Reports, []byte(tt.raw), now)
+			if (err == nil) != tt.valid {
+				t.Fatalf("window=%+v err=%v", w, err)
+			}
+			if tt.valid && (w.To.Sub(w.From) != time.Duration(tt.hours)*time.Hour || !w.To.Equal(now.Truncate(time.Hour))) {
+				t.Fatalf("window=%+v", w)
 			}
 		})
 	}

@@ -244,7 +244,7 @@ func TestStartupRecoveryRestoresInstallLockAfterRollback(t *testing.T) {
 			if err := os.WriteFile(previous, []byte("previous"), 0o755); err != nil {
 				t.Fatalf("WriteFile(previous) error = %v", err)
 			}
-			if err := writeInstallLock(lockPath, executable, "0.94.0", testUpdatedCommit, time.Now(), ""); err != nil {
+			if err := writeInstallLock(lockPath, executable, "0.94.0", testUpdatedCommit, "", time.Now()); err != nil {
 				t.Fatalf("writeInstallLock() error = %v", err)
 			}
 

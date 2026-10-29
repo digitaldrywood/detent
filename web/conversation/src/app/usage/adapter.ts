@@ -48,7 +48,7 @@ export interface ModelTotals {
   readonly costShare: number;
 }
 
-/** One runner's contribution, for the Runners tab (§17.5's `runners`). */
+/** One runner's contribution, for the Runners tab (the usage report's `runners`). */
 export interface RunnerTotals {
   readonly id: string;
   readonly displayName: string;
@@ -206,7 +206,7 @@ export interface UsageApiOptions {
   readonly fetch?: FetchLike;
 }
 
-/** The query §17.5 defines, including the optional project narrowing. */
+/** The query the usage report defines, including the optional project narrowing. */
 export function usagePath(
   apiBase: string,
   range: UsageRange,

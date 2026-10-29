@@ -54,11 +54,11 @@ func QueryCrossClassPoolContention(
 
 	since := query.Since.UTC().Truncate(time.Second).Format(time.RFC3339)
 	rows, err := db.QueryContext(ctx, `
-SELECT project_id, capacity_snapshot_json
+SELECT project_id, capacity_snapshot_json, global_available, projection_ready
 FROM scheduler_decisions
 WHERE wait_reason IN (?, ?, ?, ?)
   AND decision_at >= ?
-  AND COALESCE(CAST(json_extract(capacity_snapshot_json, '$.global_available') AS INTEGER), -1) = 0`,
+  AND (global_available = 0 OR projection_ready IS NULL)`,
 		poolCapacityWaitReason,
 		poolHigherPriorityProjectWaitReason,
 		poolHigherPriorityStateWaitReason,
@@ -74,7 +74,8 @@ WHERE wait_reason IN (?, ?, ?, ?)
 	for rows.Next() {
 		var projectID string
 		var snapshotJSON string
-		if err := rows.Scan(&projectID, &snapshotJSON); err != nil {
+		var available, ready sql.NullInt64
+		if err := rows.Scan(&projectID, &snapshotJSON, &available, &ready); err != nil {
 			return nil, fmt.Errorf("scanning pool capacity wait: %w", err)
 		}
 		waitingClass := strings.TrimSpace(query.ProjectClasses[strings.TrimSpace(projectID)])
@@ -84,6 +85,12 @@ WHERE wait_reason IN (?, ?, ?, ?)
 		var snapshot poolCapacitySnapshot
 		if err := json.Unmarshal([]byte(snapshotJSON), &snapshot); err != nil {
 			return nil, fmt.Errorf("decode pool capacity snapshot for project %s: %w", projectID, err)
+		}
+		if !ready.Valid {
+			available = projectGlobalAvailable(snapshotJSON)
+		}
+		if !available.Valid || available.Int64 != 0 {
+			continue
 		}
 		pool := strings.TrimSpace(snapshot.Pool)
 		if pool == "" {

@@ -10,7 +10,6 @@ import (
 	"testing/fstest"
 
 	"github.com/digitaldrywood/detent/internal/apikey"
-	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/billing"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/policy"
@@ -32,13 +31,12 @@ func TestSharedOriginRunnerConversationBind(t *testing.T) {
 		{name: "conversations disabled", bind: http.StatusNotFound},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			p := newSharedOriginPilotWith(t, 1, 1, fstest.MapFS{}, test.billing)
 			store := newSpacesFixture(t, false)
-			storage, err := attachment.NewStorage(t.Context(), store.config(), store.transport)
-			if err != nil {
-				t.Fatal(err)
-			}
-			p.service.attachments = storage
+			p := newSharedOriginPilotWith(t, 1, 1, fstest.MapFS{}, test.billing, func(cfg *Config) {
+				attachments := store.config()
+				cfg.Attachments = &attachments
+				cfg.attachmentTransport = store.transport
+			})
 			owner := p.browser(t)
 			pilotStatus(t, "sign-in", owner.login("/auth/oidc/start", "user_member:"), http.StatusSeeOther)
 			created := owner.createOrganization("Alpha Labs")

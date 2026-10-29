@@ -6,8 +6,7 @@ import (
 	"testing"
 )
 
-// The `usage:` section of the hosted configuration is the hub's price table
-// (decisions section 17.5).
+// The `usage:` section of the hosted configuration is the hub's price table.
 
 func TestReadHostedUsageConfig(t *testing.T) {
 	t.Parallel()

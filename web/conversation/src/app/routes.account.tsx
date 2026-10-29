@@ -2,15 +2,15 @@ import { basePath } from "../runtime/basePath.ts";
 // The account, settings, usage, project-settings and wizard routes.
 //
 // `router.tsx` owns the route tree; this file owns the routes it adds for the
-// screens of decisions.md §12 and §17, so the two can be worked on
+// hosted account and settings screens, so the two can be worked on
 // independently. It exports a builder rather than a tree: TanStack routes are
 // bound to their parent at construction, and the parent is the router's own
 // root.
 //
-// Every path here is what the hub serves the application shell for (§12,
-// "Serving"): `/login`, `/settings/*`, `/usage`, `/projects/*`, and the three
+// Every path here is what the hub serves the application shell for:
+// `/login`, `/settings/*`, `/usage`, `/projects/*`, and the three
 // paths that used to be screens of their own and are now redirects into a
-// settings section (§17.3): `/organization`, `/fleet` and
+// settings section: `/organization`, `/fleet` and
 // `/projects/:project/settings`. They stay as routes rather than being dropped
 // because they are what links, bookmarks and the end-to-end specs already
 // point at.
@@ -23,8 +23,10 @@ import { DEFAULT_SECTION } from "./settings/sections.tsx";
 import { usePageTitle } from "./pageTitle.ts";
 
 const SettingsScreen = lazyRouteComponent(() => import("./routes.account.screens.tsx"), "SettingsScreen");
+const ProjectSettingsScreen = lazyRouteComponent(() => import("./routes.account.screens.tsx"), "ProjectSettingsScreen");
 const SetupScreen = lazyRouteComponent(() => import("./routes.account.screens.tsx"), "SetupScreen");
 const UsageRoute = lazyRouteComponent(() => import("./usage/UsagePage.tsx"), "UsageRoute");
+const ThreadsRoute = lazyRouteComponent(() => import("./threads/ThreadsPage.tsx"), "ThreadsRoute");
 const ActivityRoute = lazyRouteComponent(() => import("./activity/ActivityPage.tsx"), "ActivityRoute");
 const DiagnosticsRoute = lazyRouteComponent(() => import("./diagnostics/DiagnosticsPage.tsx"), "DiagnosticsRoute");
 const ReportsRoute = lazyRouteComponent(() => import("./reports/ReportsPage.tsx"), "ReportsRoute");
@@ -59,6 +61,9 @@ export const ACCOUNT_ROUTE_PATHS = [
   "/settings",
   "/settings/$section",
   "/settings/organization/$organizationPage",
+  "/settings/projects/$project",
+  "/settings/projects/$project/$tab",
+  "/settings/runners/$runner",
   "/usage",
   "/reports",
   "/reports/$tab",
@@ -103,6 +108,9 @@ export function accountRoutes(rootRoute: AnyRoute): AnyRoute[] {
       }
     } }),
     createRoute({ getParentRoute, path: "/settings/organization/$organizationPage", component: SettingsScreen }),
+    createRoute({ getParentRoute, path: "/settings/projects/$project", component: ProjectSettingsScreen }),
+    createRoute({ getParentRoute, path: "/settings/projects/$project/$tab", component: ProjectSettingsScreen }),
+    createRoute({ getParentRoute, path: "/settings/runners/$runner", component: SettingsScreen }),
     createRoute({ getParentRoute, path: "/usage", component: UsageRoute }),
     createRoute({ getParentRoute, path: "/reports", component: ReportsRoute }),
     createRoute({
@@ -115,6 +123,8 @@ export function accountRoutes(rootRoute: AnyRoute): AnyRoute[] {
       component: ReportsRoute,
     }),
     createRoute({ getParentRoute, path: "/activity", component: ActivityRoute }),
+    createRoute({ getParentRoute, path: "/threads", component: ThreadsRoute }),
+    createRoute({ getParentRoute, path: "/threads/$thread", component: ThreadsRoute }),
     createRoute({ getParentRoute, path: "/diagnostics", component: DiagnosticsRoute }),
     createRoute({
       getParentRoute,
@@ -122,9 +132,9 @@ export function accountRoutes(rootRoute: AnyRoute): AnyRoute[] {
       beforeLoad: ({ params }) => {
         const { project } = params as { project: string };
         throw redirect({
-          to: "/settings/$section",
-          params: { section: "integrations" },
-          search: { project },
+          to: "/settings/projects/$project/$tab",
+          params: { project, tab: "general" },
+          replace: true,
         });
       },
     }),

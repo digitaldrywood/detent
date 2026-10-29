@@ -11,6 +11,7 @@ import (
 )
 
 var ErrAccessDenied = errors.New("operator access is unavailable")
+var ErrProviderUnavailable = errors.New("identity provider is unavailable")
 
 // Identity binds a connection to an authenticated credential/session and one
 // organization. It contains no grants: permissions are resolved for each call.
@@ -100,6 +101,9 @@ func AuthorizeCurrent(ctx context.Context, requirement Requirement) (context.Con
 		return ctx, ErrAccessDenied
 	}
 	authority, err := connection.Resolve(ctx)
+	if errors.Is(err, ErrProviderUnavailable) {
+		return ctx, ErrProviderUnavailable
+	}
 	if err != nil || authority.Identity != connection.Identity || authority.Check == nil {
 		return ctx, ErrAccessDenied
 	}
@@ -110,6 +114,9 @@ func AuthorizeCurrent(ctx context.Context, requirement Requirement) (context.Con
 		return ctx, ErrAccessDenied
 	}
 	if err := authority.Check(ctx, requirement); err != nil {
+		if errors.Is(err, ErrProviderUnavailable) {
+			return ctx, ErrProviderUnavailable
+		}
 		if errors.Is(err, ErrAccessDenied) {
 			return ctx, err
 		}
@@ -186,10 +193,11 @@ func (e *AuthorizedExecutor) Execute(ctx context.Context, call Call) (Result, er
 	// Decode the bounded resource selector before reaching any read service. The
 	// tool's own typed decoder still validates which fields its schema permits.
 	var selector struct {
-		ProjectID string `json:"project_id"`
-		Reference string `json:"reference"`
-		State     string `json:"state"`
-		Limit     int    `json:"limit"`
+		ProjectID string   `json:"project_id"`
+		Reference string   `json:"reference"`
+		State     string   `json:"state"`
+		Limit     int      `json:"limit"`
+		Include   []string `json:"include"`
 	}
 	if err := decodeArguments(call.Arguments, &selector); err != nil {
 		return Result{}, err

@@ -56,23 +56,23 @@ func analyticsResidenceStates(ctx context.Context, q nativeQueryer, scope native
 	return states, rows.Err()
 }
 
-func writeAnalyticsResidenceSample(ctx context.Context, tx *sql.Tx, scope nativeScope, metric, dimension string, sample analyticsResidenceSample) error {
+func writeAnalyticsResidenceSample(ctx context.Context, tx nativeExecer, scope nativeScope, metric, dimension string, sample analyticsResidenceSample) error {
 	sample.AtNS = sample.At.UnixNano()
 	raw, err := json.Marshal(sample)
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO analytics_hourly_rollups VALUES(?,?,?,?,?,?,?) ON CONFLICT(organization_id,project_id,metric,hour,dimension) DO UPDATE SET value=excluded.value,data_json=excluded.data_json`, scope.organization, scope.project, sample.At.Truncate(time.Hour).Unix(), metric, dimension, sample.Events, string(raw))
+	err = writeAnalyticsSample(ctx, tx, string(scope.organization), string(scope.project), sample.At.Truncate(time.Hour).Unix(), metric, dimension, float64(sample.Events), string(raw))
 	return err
 }
 
-func refreshAnalyticsResidence(ctx context.Context, tx *sql.Tx, scope nativeScope, id string, after int64) error {
+func refreshAnalyticsResidence(ctx context.Context, tx projectionQuery, scope nativeScope, id string, after int64, before ...int64) error {
 	states, err := analyticsResidenceStates(ctx, tx, scope)
 	if err != nil {
 		return err
 	}
 	var created, initial string
-	err = tx.QueryRowContext(ctx, `SELECT i.created_at,coalesce((SELECT json_extract(data_json,'$.from_state') FROM collaboration_events WHERE organization_id=i.organization_id AND project_id=i.project_id AND work_item_id=i.native_id AND type='workflow.transitioned' ORDER BY sequence LIMIT 1),CASE WHEN EXISTS(SELECT 1 FROM collaboration_events WHERE organization_id=i.organization_id AND work_item_id=i.native_id AND type='issue.created') THEN ws.detent_state END,'') FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND i.native_id=?`, scope.organization, scope.project, id).Scan(&created, &initial)
+	err = tx.QueryRowContext(ctx, `SELECT i.created_at,coalesce((SELECT analytics_from_state FROM collaboration_events WHERE organization_id=i.organization_id AND project_id=i.project_id AND work_item_id=i.native_id AND type='workflow.transitioned' ORDER BY sequence LIMIT 1),CASE WHEN EXISTS(SELECT 1 FROM collaboration_events WHERE organization_id=i.organization_id AND work_item_id=i.native_id AND type='issue.created') THEN ws.detent_state END,'') FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND i.native_id=?`, scope.organization, scope.project, id).Scan(&created, &initial)
 	if err != nil {
 		return err
 	}
@@ -82,7 +82,28 @@ func refreshAnalyticsResidence(ctx context.Context, tx *sql.Tx, scope nativeScop
 	}
 	sample := analyticsResidenceSample{ID: id, Created: start, At: start, Initial: initial, State: initial, Entered: start, Partial: initial == "", Lanes: map[string]float64{}, LanesNS: map[string]int64{}, Causes: map[string]operatortool.AnalyticsReworkCause{}}
 	var previous string
-	err = tx.QueryRowContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour' AND dimension=? ORDER BY hour DESC LIMIT 1`, scope.organization, scope.project, id).Scan(&previous)
+	if len(before) == 0 {
+		err = tx.QueryRowContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour' AND dimension=? ORDER BY hour DESC LIMIT 1`, scope.organization, scope.project, id).Scan(&previous)
+	} else {
+		var prior int64
+		err = tx.QueryRowContext(ctx, `SELECT coalesce(max(sequence),0) FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence<=? AND (type='workflow.transitioned' OR (type='scheduler.decision' AND scheduler_source='native_claim' AND scheduler_outcome='claimed'))`, scope.organization, scope.project, id, after).Scan(&prior)
+		if err != nil {
+			return err
+		}
+		err = tx.QueryRowContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_edge' AND dimension=?`, scope.organization, scope.project, id+":"+strconv.FormatInt(prior, 10)).Scan(&previous)
+		if errors.Is(err, sql.ErrNoRows) {
+			err = tx.QueryRowContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour' AND dimension=? ORDER BY hour DESC LIMIT 1`, scope.organization, scope.project, id).Scan(&previous)
+			if err == nil {
+				var retained analyticsResidenceSample
+				if err := json.Unmarshal([]byte(previous), &retained); err != nil {
+					return err
+				}
+				if retained.Sequence > after {
+					err = sql.ErrNoRows
+				}
+			}
+		}
+	}
 	fresh := errors.Is(err, sql.ErrNoRows)
 	if err != nil && !fresh {
 		return err
@@ -92,6 +113,9 @@ func refreshAnalyticsResidence(ctx context.Context, tx *sql.Tx, scope nativeScop
 			return err
 		}
 		fresh = sample.Initial != initial
+		if fresh && len(before) > 0 {
+			return errAnalyticsResidenceReset
+		}
 	}
 	if fresh {
 		after = 0
@@ -99,7 +123,7 @@ func refreshAnalyticsResidence(ctx context.Context, tx *sql.Tx, scope nativeScop
 		if states[initial].Dispatchable && analyticsResidenceGroup(initial, states) == "system" {
 			sample.Started = &start
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric IN ('residence_hour','residence_edge','completion','residence_merge','merge_entry') AND json_extract(data_json,'$.ID')=?`, scope.organization, scope.project, id); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric IN ('residence_hour','residence_edge','completion','residence_merge','merge_entry') AND sample_id=?`, scope.organization, scope.project, id); err != nil {
 			return err
 		}
 	}
@@ -114,7 +138,7 @@ func refreshAnalyticsResidence(ctx context.Context, tx *sql.Tx, scope nativeScop
 			return err
 		}
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT sequence,type,recorded_at,data_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? AND (type='workflow.transitioned' OR (type='scheduler.decision' AND json_extract(data_json,'$.decision.source')='native_claim' AND json_extract(data_json,'$.decision.outcome')='claimed')) ORDER BY sequence`, scope.organization, scope.project, id, max(sample.Sequence, after))
+	rows, err := tx.QueryContext(ctx, `SELECT sequence,type,recorded_at,data_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? AND sequence<=? AND (type='workflow.transitioned' OR (type='scheduler.decision' AND scheduler_source='native_claim' AND scheduler_outcome='claimed')) ORDER BY sequence`, scope.organization, scope.project, id, max(sample.Sequence, after), projectionUpper(before))
 	if err != nil {
 		return err
 	}
@@ -151,7 +175,7 @@ func refreshAnalyticsResidence(ctx context.Context, tx *sql.Tx, scope nativeScop
 		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO analytics_hourly_rollups VALUES(?,?,?,'residence_merge',?,1,?) ON CONFLICT(organization_id,project_id,metric,hour,dimension) DO UPDATE SET data_json=excluded.data_json`, scope.organization, scope.project, sample.Entered.Truncate(time.Hour).Unix(), id+":"+strconv.FormatInt(sample.Entered.UnixNano(), 10), string(raw))
+		err = writeAnalyticsSample(ctx, tx, string(scope.organization), string(scope.project), sample.Entered.Truncate(time.Hour).Unix(), "residence_merge", id+":"+strconv.FormatInt(sample.Entered.UnixNano(), 10), 1, string(raw))
 		return err
 	}
 	for _, e := range events {
@@ -285,13 +309,14 @@ func residenceSampleItem(sample analyticsResidenceSample, states map[string]trac
 // the requested points. An issue's sample at a point is its last edge earlier
 // in the point's hour, or else its last hourly sample before that hour.
 type analyticsResidenceFrames struct {
-	states  map[string]tracker.NativeState
-	ids     []string
-	points  map[int64]int
-	issues  map[string]int
-	samples []*analyticsResidenceSample
-	cutoffs map[string]residenceCutoff
-	clipped bool
+	retained map[string]time.Time
+	states   map[string]tracker.NativeState
+	ids      []string
+	points   map[int64]int
+	issues   map[string]int
+	samples  []*analyticsResidenceSample
+	cutoffs  map[string]residenceCutoff
+	clipped  bool
 }
 
 // residenceRow is one residence rollup row; edges sort by hour, AtNS and
@@ -355,6 +380,27 @@ func readAnalyticsResidenceFrames(ctx context.Context, q nativeQueryer, scope na
 	if err != nil {
 		return out, err
 	}
+	out.retained = map[string]time.Time{}
+	retained, err := q.QueryContext(ctx, `SELECT work_item_id,through_hour FROM analytics_residence_retention WHERE organization_id=? AND project_id=? AND through_hour>?`, scope.organization, scope.project, w.From.Unix())
+	if err != nil {
+		return out, err
+	}
+	defer retained.Close()
+	for retained.Next() {
+		var id string
+		var hour int64
+		if err := retained.Scan(&id, &hour); err != nil {
+			return out, err
+		}
+		at := time.Unix(hour, 0).UTC()
+		out.retained[id] = at
+		if at.Before(w.To) {
+			points = append(points, at)
+		}
+	}
+	if err := errors.Join(retained.Err(), retained.Close()); err != nil {
+		return out, err
+	}
 	issues, issueArgs := reportsIssueClause(ctx, "i.native_id")
 	rows, err := queryAnalyticsPopulation(ctx, q, "residence_issues", `SELECT native_id FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id WHERE i.organization_id=? AND i.project_id=? AND julianday(i.created_at)<julianday(?) AND (coalesce(ws.terminal,0)=0 OR julianday(i.updated_at)>=julianday(?))`+issues+` ORDER BY native_id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, formatHubTime(w.To), formatHubTime(w.From)}, issueArgs...)...)
 	if err != nil {
@@ -394,6 +440,7 @@ func readAnalyticsResidenceFrames(ctx context.Context, q nativeQueryer, scope na
 		out.issues[id] = i
 	}
 	edges, hours := map[string][]residenceRow{}, map[string][]residenceRow{}
+	baselines := map[string]analyticsResidenceSample{}
 	ids, err := json.Marshal(out.ids)
 	if err != nil {
 		return out, err
@@ -409,7 +456,13 @@ func readAnalyticsResidenceFrames(ctx context.Context, q nativeQueryer, scope na
 			if err := rows.Scan(&metric, &dimension, &id, &row.hour, &row.atNS, &row.value, &row.raw); err != nil {
 				return err
 			}
-			if _, wanted := out.issues[id]; wanted && metric == "residence_edge" {
+			if metric == "residence_baseline" {
+				sample, err := row.decode()
+				if err != nil {
+					return err
+				}
+				baselines[dimension] = *sample
+			} else if _, wanted := out.issues[id]; wanted && metric == "residence_edge" {
 				edges[id] = append(edges[id], row)
 			} else if _, wanted := out.issues[dimension]; wanted && metric == "residence_hour" {
 				hours[dimension] = append(hours[dimension], row)
@@ -432,13 +485,19 @@ func readAnalyticsResidenceFrames(ctx context.Context, q nativeQueryer, scope na
 		if err != nil {
 			return out, err
 		}
-		if err := read(q.QueryContext(ctx, `SELECT r.metric,r.dimension,coalesce(json_extract(r.data_json,'$.ID'),''),r.hour,coalesce(json_extract(r.data_json,'$.AtNS'),0),r.value,r.data_json FROM json_each(?) h CROSS JOIN analytics_hourly_rollups r ON r.organization_id=? AND r.project_id=? AND r.metric='residence_edge' AND r.hour=h.value`,
+		if err := read(q.QueryContext(ctx, `SELECT r.metric,r.dimension,coalesce(r.sample_id,''),r.hour,coalesce(r.sample_ns,0),r.value,r.data_json FROM json_each(?) h CROSS JOIN analytics_hourly_rollups r ON r.organization_id=? AND r.project_id=? AND r.metric='residence_edge' AND r.hour=h.value`,
 			string(encoded), scope.organization, scope.project)); err != nil {
 			return out, err
 		}
 	}
 	if err := read(q.QueryContext(ctx, `SELECT r.metric,r.dimension,'',r.hour,0,r.value,r.data_json FROM json_each(?) i JOIN analytics_hourly_rollups r ON r.rowid=(SELECT rowid FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_hour' AND dimension=i.value AND hour<? ORDER BY hour DESC LIMIT 1)`,
 		string(ids), scope.organization, scope.project, firstHour)); err != nil {
+		return out, err
+	}
+	if err := read(q.QueryContext(ctx, `SELECT 'residence_baseline',p.work_item_id,'',r.hour,0,r.value,r.data_json
+FROM json_each(?) i JOIN analytics_residence_retention p ON p.organization_id=? AND p.project_id=? AND p.work_item_id=i.value
+JOIN analytics_hourly_rollups r ON r.rowid=(SELECT rowid FROM analytics_hourly_rollups WHERE organization_id=p.organization_id AND project_id=p.project_id AND metric='residence_hour' AND dimension=p.work_item_id AND hour<p.through_hour ORDER BY hour DESC LIMIT 1)`,
+		string(ids), scope.organization, scope.project)); err != nil {
 		return out, err
 	}
 	out.samples = make([]*analyticsResidenceSample, len(instants)*len(out.ids))
@@ -451,14 +510,21 @@ func readAnalyticsResidenceFrames(ctx context.Context, q nativeQueryer, scope na
 	var clipped []residenceClip
 	for _, id := range out.ids {
 		end := out.at(w.To, id)
-		allowed := min(remaining, end.Events)
+		baseline, archived := baselines[id]
+		events := max(0, end.Events-baseline.Events)
+		allowed := min(remaining, events)
 		remaining -= allowed
+		allowed += baseline.Events
 		if end.Events <= allowed {
 			continue
 		}
 		out.clipped = true
 		if page := analyticsPagingFromContext(ctx); page != nil {
 			page.next["residence_events"] = "residence_events:1000:" + strconv.Itoa(analyticsPopulationOffset(ctx, "residence_issues"))
+		}
+		if allowed == baseline.Events && archived {
+			out.cutoffs[id] = residenceCutoff{allowed: allowed, sample: baseline}
+			continue
 		}
 		clipped = append(clipped, residenceClip{ID: id, Allowed: allowed})
 	}
@@ -519,7 +585,7 @@ func readResidenceCutoffs(ctx context.Context, q nativeQueryer, scope nativeScop
 	if err != nil {
 		return err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT json_extract(c.value,'$.id'),r.data_json FROM json_each(?) c CROSS JOIN analytics_hourly_rollups r ON r.organization_id=? AND r.project_id=? AND r.metric='residence_edge' AND json_extract(r.data_json,'$.ID')=json_extract(c.value,'$.id') AND r.value=json_extract(c.value,'$.allowed')`, string(encoded), scope.organization, scope.project)
+	rows, err := q.QueryContext(ctx, `SELECT json_extract(c.value,'$.id'),r.data_json FROM json_each(?) c CROSS JOIN analytics_hourly_rollups r ON r.organization_id=? AND r.project_id=? AND r.metric='residence_edge' AND r.sample_id=json_extract(c.value,'$.id') AND r.value=json_extract(c.value,'$.allowed')`, string(encoded), scope.organization, scope.project)
 	if err != nil {
 		return err
 	}
@@ -559,6 +625,10 @@ func summarizeResidenceFrames(frames analyticsResidenceFrames, from, to time.Tim
 	causes := map[string]operatortool.AnalyticsReworkCause{}
 	var system, held, queue, lead []float64
 	for _, id := range frames.ids {
+		from := maxTime(from, frames.retained[id])
+		if !from.Before(to) {
+			continue
+		}
 		end := frames.at(to, id)
 		begin := frames.at(from, id)
 		item := residenceSampleItem(end, frames.states, to)
@@ -684,6 +754,9 @@ func projectAnalyticsResidenceRollups(ctx context.Context, q nativeQueryer, scop
 	} else if frames.clipped {
 		out.Unavailable = append(out.Unavailable, "lane_residence_complete_population", "queue_time_complete_population")
 	}
+	if err := addAnalyticsResidenceHours(ctx, q, scope, out); err != nil {
+		return err
+	}
 	return projectResidencePipelineRollups(ctx, q, scope, frames, out)
 }
 
@@ -692,7 +765,7 @@ func projectResidencePipelineRollups(ctx context.Context, q nativeQueryer, scope
 	if err != nil {
 		return err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_merge' AND json_extract(data_json,'$.ID') IN (SELECT value FROM json_each(?))`, scope.organization, scope.project, string(ids))
+	rows, err := q.QueryContext(ctx, `SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='residence_merge' AND sample_id IN (SELECT value FROM json_each(?))`, scope.organization, scope.project, string(ids))
 	if err != nil {
 		return err
 	}
@@ -732,31 +805,57 @@ func readDiagnosticsResidenceRollups(ctx context.Context, q nativeQueryer, scope
 	if err != nil {
 		return 0, false, err
 	}
+	hours, err := readDiagnosticsResidenceHours(ctx, q, scope, out.From, out.To)
+	if err != nil {
+		return 0, false, err
+	}
 	transitions := 0
+	partial := frames.clipped
 	for _, id := range frames.ids {
-		transitions += frames.at(out.To, id).Transitions - frames.at(out.From, id).Transitions
+		from := maxTime(out.From, frames.retained[id])
+		if from.Before(out.To) {
+			transitions += frames.at(out.To, id).Transitions - frames.at(from, id).Transitions
+		}
+	}
+	for hour, h := range hours {
+		transitions += h.transitions
+		partial = partial || h.partial || hour < out.From.Unix() || hour+3600 > out.To.Unix()
 	}
 	for i := range out.Capacity {
 		at := minTime(out.Capacity[i].Hour.Add(time.Hour), out.To)
 		count := 0
-		partial := frames.clipped
+		depthPartial := frames.clipped
 		for _, id := range frames.ids {
+			retained := frames.retained[id]
+			if !retained.IsZero() && !at.After(retained) {
+				depthPartial = depthPartial || !at.Equal(at.Truncate(time.Hour))
+				continue
+			}
 			sample, ok := frames.sample(at, id)
 			if !ok {
 				continue
 			}
-			partial = partial || sample.Partial
+			depthPartial = depthPartial || sample.Partial
 			if sample.State == "Todo" {
 				count++
 			}
 		}
-		if partial {
+		if at.Equal(at.Truncate(time.Hour)) {
+			if h, found := hours[at.Unix()-3600]; found {
+				depthPartial = depthPartial || h.partial || h.todo == nil
+				if h.todo != nil {
+					count += *h.todo
+				}
+			}
+		}
+		if depthPartial {
 			out.Capacity[i].Todo = nil
 		} else if out.Capacity[i].Todo != nil {
 			*out.Capacity[i].Todo += count
 		}
+		partial = partial || depthPartial
 	}
-	return transitions, frames.clipped, nil
+	return transitions, partial, nil
 }
 
 func readReportsCompletionRollups(ctx context.Context, q nativeQueryer, scope nativeScope, states map[string]tracker.NativeState, ids []string, to time.Time) (reportsCompletion, error) {
@@ -764,7 +863,7 @@ func readReportsCompletionRollups(ctx context.Context, q nativeQueryer, scope na
 	var system, lead, working []float64
 	lanes := map[string][]float64{}
 	err := forShippedBatches(ids, func(batch string) error {
-		rows, err := q.QueryContext(ctx, `SELECT (SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='completion' AND json_extract(data_json,'$.ID')=i.value AND json_extract(data_json,'$.AtNS')<? ORDER BY json_extract(data_json,'$.AtNS') DESC,value DESC LIMIT 1) FROM json_each(?) i`, scope.organization, scope.project, to.UnixNano(), batch)
+		rows, err := q.QueryContext(ctx, `SELECT (SELECT data_json FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='completion' AND sample_id=i.value AND sample_ns<? ORDER BY sample_ns DESC,value DESC LIMIT 1) FROM json_each(?) i`, scope.organization, scope.project, to.UnixNano(), batch)
 		if err != nil {
 			return fmt.Errorf("read completion rollups: %w", err)
 		}
@@ -803,11 +902,12 @@ func readShippedResidenceIssues(ctx context.Context, q nativeQueryer, scope nati
 	issues := []analyticsResidenceIssue{}
 	err := forShippedBatches(ids, func(batch string) error {
 		rows, err := q.QueryContext(ctx, `SELECT i.native_id,i.created_at,coalesce(
-(SELECT json_extract(e.data_json,'$.from_state') FROM collaboration_events e
+(SELECT e.analytics_from_state FROM collaboration_events e
  WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned'
  ORDER BY e.sequence LIMIT 1),CASE WHEN EXISTS (
  SELECT 1 FROM collaboration_events c WHERE c.organization_id=i.organization_id AND c.project_id=i.project_id AND c.work_item_id=i.native_id AND c.type='issue.created'
- ) THEN ws.detent_state END,'')
+ ) THEN ws.detent_state END,''),
+(SELECT CASE WHEN e.analytics_projection_version IS NULL THEN e.data_json END FROM collaboration_events e WHERE e.organization_id=i.organization_id AND e.project_id=i.project_id AND e.work_item_id=i.native_id AND e.type='workflow.transitioned' ORDER BY e.sequence LIMIT 1)
 FROM issues i LEFT JOIN workflow_states ws ON ws.id=i.workflow_state_id
 WHERE i.organization_id=? AND i.project_id=? AND i.native_id IN (SELECT value FROM json_each(?))
 ORDER BY i.native_id`, scope.organization, scope.project, batch)
@@ -820,8 +920,20 @@ ORDER BY i.native_id`, scope.organization, scope.project, batch)
 		for rows.Next() {
 			var issue analyticsResidenceIssue
 			var created string
-			if err := rows.Scan(&issue.id, &created, &issue.initial); err != nil {
+			var unknown sql.NullString
+			if err := rows.Scan(&issue.id, &created, &issue.initial, &unknown); err != nil {
 				return fmt.Errorf("read shipped issues: %w", err)
+			}
+			if unknown.Valid {
+				var data struct {
+					FromState *string `json:"from_state"`
+				}
+				if err := json.Unmarshal([]byte(unknown.String), &data); err != nil {
+					return err
+				}
+				if data.FromState != nil {
+					issue.initial = *data.FromState
+				}
 			}
 			if issue.created, err = parseTimeValue(created); err != nil {
 				return fmt.Errorf("decode shipped issue creation: %w", err)
@@ -838,7 +950,7 @@ ORDER BY i.native_id`, scope.organization, scope.project, batch)
 		events, err := q.QueryContext(ctx, `SELECT work_item_id,type,recorded_at,data_json FROM collaboration_events
 WHERE organization_id=? AND project_id=? AND julianday(recorded_at)<julianday(?)
 AND work_item_id IN (SELECT value FROM json_each(?))
-AND (type='workflow.transitioned' OR (type='scheduler.decision' AND json_extract(data_json,'$.decision.source')='native_claim' AND json_extract(data_json,'$.decision.outcome')='claimed'))
+AND (type='workflow.transitioned' OR (type='scheduler.decision' AND (scheduler_outcome IS NULL OR (scheduler_source='native_claim' AND scheduler_outcome='claimed'))))
 ORDER BY work_item_id,sequence`, scope.organization, scope.project, formatHubTime(to), batch)
 		if err != nil {
 			return fmt.Errorf("read shipped transitions: %w", err)
@@ -855,6 +967,9 @@ ORDER BY work_item_id,sequence`, scope.organization, scope.project, formatHubTim
 			}
 			if err := json.Unmarshal([]byte(raw), &event.data); err != nil {
 				return fmt.Errorf("decode shipped transition: %w", err)
+			}
+			if event.kind == "scheduler.decision" && (event.data.Decision == nil || event.data.Decision.Source != "native_claim" || event.data.Decision.Outcome != "claimed") {
+				continue
 			}
 			if i, ok := byID[id]; ok {
 				issues[i].events = append(issues[i].events, event)

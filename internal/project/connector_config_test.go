@@ -13,7 +13,6 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/coordination"
-	"github.com/digitaldrywood/detent/internal/intake"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 )
 
@@ -44,10 +43,9 @@ func TestProjectSchedulingSourceRequiresGitHubRepository(t *testing.T) {
 		{name: "GitHub", kind: workflowconfig.TrackerGitHub, repository: "acme/widgets", want: source},
 		{name: "native without repository", kind: workflowconfig.TrackerHubNative, want: source},
 		{name: "GitHub missing repository", kind: workflowconfig.TrackerGitHub},
-		{name: "GitHub local", kind: workflowconfig.TrackerGitHubLocal, repository: "acme/widgets"},
-		{name: "Linear", kind: workflowconfig.TrackerLinear},
-		{name: "memory", kind: workflowconfig.TrackerMemory},
-		{name: "local SQLite", kind: workflowconfig.TrackerLocalSQLite},
+		{name: "GitHub local", kind: "github_local", repository: "acme/widgets"},
+		{name: "Linear", kind: "linear"},
+		{name: "local SQLite", kind: "local_sqlite"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -79,15 +77,20 @@ func TestTrackerStateMapConvertsWorkflowMap(t *testing.T) {
 	}
 }
 
-func TestWorkflowConfigWithGitHubTokenSupportsScheduleOwnership(t *testing.T) {
+func TestWorkflowConfigWithGitHubTokenSupportsIntegrations(t *testing.T) {
 	t.Parallel()
-	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
-	cfg.ScheduleOwnership.Enabled = true
-
-	got := workflowConfigWithGitHubToken(cfg, "runtime-token")
-	if got.Tracker.APIKey != "runtime-token" {
-		t.Fatalf("Tracker.APIKey = %q, want runtime-token", got.Tracker.APIKey)
+	for _, integration := range []string{"schedule ownership", "release"} {
+		t.Run(integration, func(t *testing.T) {
+			t.Parallel()
+			cfg := workflowconfig.Default()
+			cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+			cfg.ScheduleOwnership.Enabled = integration == "schedule ownership"
+			cfg.Release.Enabled = integration == "release"
+			got := workflowConfigWithGitHubToken(cfg, "runtime-token")
+			if got.Tracker.APIKey != "runtime-token" {
+				t.Fatalf("Tracker.APIKey = %q, want runtime-token", got.Tracker.APIKey)
+			}
+		})
 	}
 }
 
@@ -152,8 +155,7 @@ func TestWorkflowConfigWithProjectPathsResolvesArtifactWorkflowPaths(t *testing.
 
 	workdir := t.TempDir()
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerLocalSQLite
-	cfg.Tracker.LocalSQLite.Path = ".detent/work-items.db"
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Workspace.Kind = workflowconfig.WorkspaceFilesystem
 	cfg.Workspace.Root = ".detent/workspaces"
 	cfg.Workspace.SourceRoot = "assets"
@@ -162,9 +164,6 @@ func TestWorkflowConfigWithProjectPathsResolvesArtifactWorkflowPaths(t *testing.
 	cfg.Deliverable.OutputRoot = ".detent/deliverables"
 
 	got := workflowConfigWithProjectIdentity(globalconfig.Project{Workdir: workdir}, cfg)
-	if got.Tracker.LocalSQLite.Path != filepath.Join(workdir, ".detent", "work-items.db") {
-		t.Fatalf("Tracker.LocalSQLite.Path = %q", got.Tracker.LocalSQLite.Path)
-	}
 	if got.Workspace.Root != filepath.Join(workdir, ".detent", "workspaces") {
 		t.Fatalf("Workspace.Root = %q", got.Workspace.Root)
 	}
@@ -235,7 +234,7 @@ func TestProjectOrchestratorConfigIncludesHostPressure(t *testing.T) {
 		GlobalIO:     globalconfig.IO{PressureFullAvg10Threshold: 5, DegradedMaxConcurrentAgents: 1, PollIntervalMS: 500},
 		GlobalCPU:    globalconfig.CPU{PressureSomeAvg10Threshold: 80, DegradedMaxConcurrentAgents: 2, PollIntervalMS: 750},
 	}
-	got := projectOrchestratorConfig(project, workflowconfig.Default())
+	got := projectOrchestratorConfig(project, workflowconfig.Workflow{Config: workflowconfig.Default()})
 
 	if got.MemoryPressureSomeAvg60Max != 10 || got.MemoryPressurePollInterval != time.Second {
 		t.Fatalf("memory pressure config = %.2f %s", got.MemoryPressureSomeAvg60Max, got.MemoryPressurePollInterval)
@@ -248,28 +247,12 @@ func TestProjectOrchestratorConfigIncludesHostPressure(t *testing.T) {
 	}
 }
 
-func TestWorkflowConfigWithProjectIntakeOverride(t *testing.T) {
-	t.Parallel()
-
-	workflow := workflowconfig.Default()
-	workflow.Intake = intake.Config{Sources: []intake.Source{{Name: "workflow", Kind: intake.KindWebhook, Secret: "workflow-secret"}}}
-	projectIntake := intake.Config{Sources: []intake.Source{{Name: "global", Kind: intake.KindSlack, Secret: "global-secret"}}}
-	got := workflowConfigWithProjectIdentity(globalconfig.Project{
-		Intake:           projectIntake,
-		IntakeConfigured: true,
-	}, workflow)
-
-	if len(got.Intake.Sources) != 1 || got.Intake.Sources[0].Name != "global" {
-		t.Fatalf("Intake = %#v, want global project override", got.Intake)
-	}
-}
-
 func TestWorkflowConfigWithProjectKnowledgeMergesGlobalProjectAndWorkflowSources(t *testing.T) {
 	t.Parallel()
 
 	workdir := t.TempDir()
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Agent.Knowledge = workflowconfig.Knowledge{
 		Enabled:  true,
 		MaxBytes: 4096,
@@ -316,7 +299,7 @@ func TestWorkflowConfigWithProjectKnowledgeAllowsWorkflowOptOut(t *testing.T) {
 	t.Parallel()
 
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Agent.Knowledge = workflowconfig.Knowledge{Enabled: false}
 
 	got := workflowConfigWithProjectIdentity(globalconfig.Project{
@@ -381,12 +364,10 @@ func TestWithMappedNativeTrackerUsesTheHubForMappedProjects(t *testing.T) {
 		want       string
 	}{
 		{name: "mapped github project", scheduling: mapped, project: "site", kind: workflowconfig.TrackerGitHub, want: workflowconfig.TrackerHubNative},
-		{name: "mapped github_local project", scheduling: mapped, project: "site", kind: workflowconfig.TrackerGitHubLocal, want: workflowconfig.TrackerHubNative},
 		{name: "mapped native project", scheduling: mapped, project: "site", kind: workflowconfig.TrackerHubNative, want: workflowconfig.TrackerHubNative},
-		{name: "mapped project with an explicit local tracker", scheduling: mapped, project: "site", kind: workflowconfig.TrackerLocalSQLite, want: workflowconfig.TrackerLocalSQLite},
 		{name: "unmapped project", scheduling: mapped, project: "other", kind: workflowconfig.TrackerGitHub, want: workflowconfig.TrackerGitHub},
 		{name: "no hub client", scheduling: nil, project: "site", kind: workflowconfig.TrackerGitHub, want: workflowconfig.TrackerGitHub},
-		{name: "scheduling without native projects", scheduling: &testSchedulingSource{}, project: "site", kind: workflowconfig.TrackerMemory, want: workflowconfig.TrackerMemory},
+		{name: "scheduling without native projects", scheduling: &testSchedulingSource{}, project: "site", kind: workflowconfig.TrackerHubNative, want: workflowconfig.TrackerHubNative},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

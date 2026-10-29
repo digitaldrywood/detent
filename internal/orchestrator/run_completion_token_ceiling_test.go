@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +12,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 )
 
-func TestHandleRunResultParksSlowTokenCeilingFailureWithoutRetry(t *testing.T) {
+func TestHandleRunResultRetriesSlowTokenCeilingFailure(t *testing.T) {
 	t.Parallel()
 
 	tracker := &dependencyAutoUnblockConnector{}
@@ -57,77 +56,19 @@ func TestHandleRunResultParksSlowTokenCeilingFailureWithoutRetry(t *testing.T) {
 		RetryDelay:   time.Minute,
 	})
 
-	if _, ok := state.Retry[issue.ID]; ok {
-		t.Fatalf("Retry[%q] present after token ceiling failure", issue.ID)
+	retry, ok := state.Retry[issue.ID]
+	if !ok || retry.Attempt != 2 || retry.Issue.State != "In Progress" || !retry.DueAt.After(completedAt) || retry.DueAt.After(completedAt.Add(cfg.MaxRetryBackoff)) {
+		t.Fatalf("failure did not retain bounded retry: %+v", retry)
 	}
-	if _, ok := state.Claimed[issue.ID]; ok {
-		t.Fatalf("Claimed[%q] present after token ceiling failure", issue.ID)
+	if len(state.Blocked) != 0 || len(state.Claimed) != 0 || len(tracker.updates) != 0 {
+		t.Fatal("machine failure retained a hold or changed the executable lane")
 	}
-	blocked, ok := state.Blocked[issue.ID]
-	if !ok {
-		t.Fatalf("Blocked[%q] missing after token ceiling failure", issue.ID)
-	}
-	if blocked.Issue.State != blockedStatusState {
-		t.Fatalf("Blocked[%q].Issue.State = %q, want %q", issue.ID, blocked.Issue.State, blockedStatusState)
-	}
-	if blocked.RecoveryAction != "defer" || blocked.RecoveryReason != blockedRecoveryReasonBreakerCooldownActive || blocked.RecoveryTarget != "In Progress" {
-		t.Fatalf("Blocked[%q] recovery = %q/%q to %q, want cooldown recovery to In Progress", issue.ID, blocked.RecoveryAction, blocked.RecoveryReason, blocked.RecoveryTarget)
-	}
-	if blocked.Recovery == nil ||
-		blocked.Recovery.Owner != blockedRecoveryOwnerOrchestrator ||
-		blocked.Recovery.Cause != "token_ceiling_circuit_breaker" ||
-		blocked.Recovery.Predicate != blockedRecoveryPredicateBreakerCooldown ||
-		blocked.Recovery.CauseFingerprint == "" {
-		t.Fatalf("Blocked[%q].Recovery = %#v, want durable token-ceiling predicate", issue.ID, blocked.Recovery)
-	}
-	events := metrics.snapshot()
-	if len(events) != 2 || events[1].PhaseName != blockedStatusState {
-		t.Fatalf("workflow events = %#v, want Blocked lane entry", events)
-	}
-	laneMetadata, ok := workflowLaneMetadataFromJSON(events[1].MetadataJSON)
-	if !ok || laneMetadata.BlockedRecovery == nil ||
-		laneMetadata.BlockedRecovery.Cause != "token_ceiling_circuit_breaker" ||
-		laneMetadata.BlockedRecovery.Predicate != blockedRecoveryPredicateBreakerCooldown ||
-		laneMetadata.BlockedRecovery.CauseFingerprint == "" {
-		t.Fatalf("workflow recovery metadata = %#v, want durable token-ceiling predicate", laneMetadata.BlockedRecovery)
-	}
-	for _, want := range []string{"token ceiling", "16100000", "16000000", "max_session_tokens"} {
-		if !strings.Contains(blocked.Reason, want) {
-			t.Fatalf("Blocked[%q].Reason = %q, want %q", issue.ID, blocked.Reason, want)
-		}
-	}
-	if !stickyBlockReason(blocked.Reason) {
-		t.Fatalf("stickyBlockReason(%q) = false, want current token ceiling park to suppress dependency recovery", blocked.Reason)
-	}
-	orch.setBlockedStatusIssue(t.Context(), &state, connector.Issue{
-		ID:         issue.ID,
-		Identifier: issue.Identifier,
-		Title:      issue.Title,
-		State:      blockedStatusState,
-	}, completedAt.Add(time.Minute))
-	if got := state.Blocked[issue.ID].Reason; got != blocked.Reason {
-		t.Fatalf("Blocked[%q].Reason after status refresh = %q, want preserved %q", issue.ID, got, blocked.Reason)
-	}
-	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: issue.ID, state: blockedStatusState}) {
-		t.Fatalf("state updates = %#v, want one Blocked transition", got)
-	}
-	if len(tracker.comments) != 1 {
-		t.Fatalf("comments = %#v, want one token ceiling comment", tracker.comments)
-	}
-	for _, want := range []string{
-		"16100000",
-		"16000000",
-		"max_session_token_override_label",
-		"max_session_tokens",
-		"split the issue",
-	} {
-		if !strings.Contains(tracker.comments[0].body, want) {
-			t.Fatalf("comment = %q, want %q", tracker.comments[0].body, want)
-		}
+	if retry.Error == "" {
+		t.Fatal("retry lost failure evidence")
 	}
 }
 
-func TestHandleRunResultParksBudgetProjectionFailureWithoutRetry(t *testing.T) {
+func TestHandleRunResultRetriesBudgetProjectionFailure(t *testing.T) {
 	t.Parallel()
 
 	var logs bytes.Buffer
@@ -168,22 +109,14 @@ func TestHandleRunResultParksBudgetProjectionFailureWithoutRetry(t *testing.T) {
 		RetryDelay:   time.Minute,
 	})
 
-	if _, ok := state.Retry[issue.ID]; ok {
-		t.Fatalf("Retry[%q] present after projection ceiling failure", issue.ID)
+	retry, ok := state.Retry[issue.ID]
+	if !ok || retry.Attempt != 2 || retry.Issue.State != "In Progress" || !retry.DueAt.After(completedAt) || retry.DueAt.After(completedAt.Add(cfg.MaxRetryBackoff)) {
+		t.Fatalf("failure did not retain bounded retry: %+v", retry)
 	}
-	blocked, ok := state.Blocked[issue.ID]
-	if !ok || blocked.Reason != budgetProjectionCeilingFailureCause || blocked.Recovery == nil || blocked.Recovery.Owner != blockedRecoveryOwnerHuman {
-		t.Fatalf("Blocked[%q] = %#v, want durable human-owned projection park", issue.ID, blocked)
+	if len(state.Blocked) != 0 || len(state.Claimed) != 0 || len(tracker.updates) != 0 {
+		t.Fatal("machine failure retained a hold or changed the executable lane")
 	}
-	if len(tracker.updates) != 1 || tracker.updates[0].state != blockedStatusState {
-		t.Fatalf("state updates = %#v, want one Blocked transition", tracker.updates)
-	}
-	if len(tracker.comments) != 3 || !strings.Contains(tracker.comments[2].body, "40.250000") || !strings.Contains(tracker.comments[2].body, "10.000000") || !strings.Contains(tracker.comments[2].body, "historical") {
-		t.Fatalf("comments = %#v, want observed and projected cost", tracker.comments)
-	}
-	for _, want := range []string{"worker_budget_projection_ceiling_tripped", "estimate_source=historical"} {
-		if !strings.Contains(logs.String(), want) {
-			t.Fatalf("logs = %q, want %q", logs.String(), want)
-		}
+	if retry.Error == "" {
+		t.Fatal("retry lost failure evidence")
 	}
 }

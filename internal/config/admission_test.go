@@ -1,103 +1,9 @@
 package config
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
-
-func TestParseWorkflowBacklogAdmission(t *testing.T) {
-	t.Parallel()
-
-	workflow, err := ParseWorkflow([]byte(`---
-tracker:
-  kind: github
-  api_key: token
-  github_status_source: issue_field
-  repository: digitaldrywood/detent
-schedule_ownership:
-  enabled: true
-  key: digitaldrywood/detent
-  repository: digitaldrywood/detent
-backlog_admission:
-  enabled: true
-  schedule: "15 4 * * 1"
-  sources:
-    states: [Backlog]
-    labels: [Sentry, sentry]
-    untracked: false
-  target_state: Todo
-  criteria_section: Admission criteria
-  require_effort: true
-  effort_file: WORKFLOW.md
-  effort_section: Issue effort selection
-  exclude_labels: [Skip, skip]
-  authors:
-    allow: ["@octocat"]
-    allow_association: [member, MEMBER, collaborator]
-  max_candidates_per_run: 20
-  max_proposals_per_run: 2
-  max_open_proposals: 8
-  proposal_expiry_days: 5
-  auto_admit: true
-  auto_admit_by_label:
-    Defect: true
-    Requires-Human-Review: false
-  auto_admit_min_confidence: 0.95
----
-## Admission criteria
-
-- **Risk** — requires a bounded recovery path.
-
-## Issue effort selection
-
-- **medium** — small and mechanical.
-- **high** — standard feature work.
-`))
-	if err != nil {
-		t.Fatalf("ParseWorkflow() error = %v", err)
-	}
-	if err := workflow.Config.Validate(); err != nil {
-		t.Fatalf("Config.Validate() error = %v", err)
-	}
-	if err := ValidateWorkflowAdmission(workflow); err != nil {
-		t.Fatalf("ValidateWorkflowAdmission() error = %v", err)
-	}
-	got := workflow.Config.BacklogAdmission
-	if !got.Enabled || got.Schedule != "15 4 * * 1" || got.TargetState != "Todo" ||
-		got.MaxCandidatesPerRun != 20 || got.MaxProposalsPerRun != 2 ||
-		got.MaxOpenProposals != 8 || got.ProposalExpiryDays != 5 ||
-		!got.AutoAdmit || got.AutoAdmitMinConfidence != 0.95 || got.Sources.Untracked ||
-		!got.RequireEffort || got.EffortFile != BacklogAdmissionEffortFileWorkflow || got.EffortSection != "Issue effort selection" {
-		t.Fatalf("BacklogAdmission = %#v", got)
-	}
-	if len(got.AutoAdmitByLabel) != 2 || !got.AutoAdmitByLabel["defect"] || got.AutoAdmitByLabel["requires-human-review"] {
-		t.Fatalf("AutoAdmitByLabel = %#v", got.AutoAdmitByLabel)
-	}
-	if len(got.Sources.Labels) != 1 || got.Sources.Labels[0] != "sentry" ||
-		len(got.ExcludeLabels) != 1 || got.ExcludeLabels[0] != "skip" ||
-		len(got.Authors.Allow) != 1 || got.Authors.Allow[0] != "octocat" ||
-		len(got.Authors.AllowAssociation) != 2 ||
-		got.Authors.AllowAssociation[0] != "MEMBER" ||
-		got.Authors.AllowAssociation[1] != "COLLABORATOR" {
-		t.Fatalf("normalized filters = sources %#v exclude %#v authors %#v", got.Sources, got.ExcludeLabels, got.Authors)
-	}
-}
-
-func TestBacklogAdmissionCannotUseConfigWithoutWorkflowFile(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "detent.yaml")
-	if err := os.WriteFile(configPath, []byte("schema: 1\ntracker:\n  kind: memory\nbacklog_admission:\n  enabled: true\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile(detent.yaml) error = %v", err)
-	}
-	_, err := LoadProjectDefinition(filepath.Join(dir, "WORKFLOW.md"))
-	if err == nil || !strings.Contains(err.Error(), "backlog admission criteria section is required") {
-		t.Fatalf("LoadProjectDefinition() error = %v, want missing admission criteria", err)
-	}
-}
 
 func TestBacklogAdmissionValidate(t *testing.T) {
 	t.Parallel()
@@ -124,9 +30,6 @@ func TestBacklogAdmissionValidate(t *testing.T) {
 		{name: "github project v2", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceProjectV2}},
 		{name: "github issue field", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceIssueField}},
 		{name: "github label", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceLabel}},
-		{name: "github local", tracker: Tracker{Kind: TrackerGitHubLocal}},
-		{name: "local sqlite", tracker: Tracker{Kind: TrackerLocalSQLite}},
-		{name: "memory", tracker: Tracker{Kind: TrackerMemory}},
 		{name: "bad cron", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.Schedule = "not cron" }, want: "valid five-field cron"},
 		{name: "empty sources", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.Sources.States = nil }, want: "must configure at least one selector"},
 		{name: "unknown source", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) { cfg.Sources.States = []string{"Icebox"} }, want: "sources.states[0] must name"},
@@ -163,18 +66,17 @@ func TestBacklogAdmissionValidate(t *testing.T) {
 		{name: "project v2 label policy", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceProjectV2}, mutate: func(cfg *BacklogAdmission) {
 			cfg.AutoAdmitByLabel = map[string]bool{"feature": false}
 		}, want: "auto_admit_by_label requires complete issue labels"},
-		{name: "linear", tracker: Tracker{Kind: TrackerLinear}, want: "FetchIssuesByStates is not implemented"},
 		{name: "unsupported github source", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: "milestone"}, want: "tracker.kind github with github_status_source milestone does not declare it"},
 		{name: "unsupported tracker", tracker: Tracker{Kind: "gitlab"}, want: "tracker.kind gitlab does not declare it"},
 		{name: "invalid association", tracker: Tracker{Kind: TrackerGitHub}, mutate: func(cfg *BacklogAdmission) {
 			cfg.Authors.AllowAssociation = []string{"maintainer"}
 		}, want: "must be one of OWNER"},
-		{name: "association local sqlite", tracker: Tracker{Kind: TrackerLocalSQLite}, mutate: func(cfg *BacklogAdmission) {
+		{name: "association local sqlite", tracker: Tracker{Kind: "local_sqlite"}, mutate: func(cfg *BacklogAdmission) {
 			cfg.Authors.AllowAssociation = []string{"member"}
 		}, want: "tracker.kind local_sqlite cannot supply it"},
-		{name: "association memory", tracker: Tracker{Kind: TrackerMemory}, mutate: func(cfg *BacklogAdmission) {
+		{name: "association memory", tracker: Tracker{Kind: TrackerHubNative}, mutate: func(cfg *BacklogAdmission) {
 			cfg.Authors.AllowAssociation = []string{"member"}
-		}, want: "tracker.kind memory cannot supply it"},
+		}, want: "tracker.kind hub_native cannot supply it"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -245,14 +147,10 @@ func TestBacklogAdmissionLabelSelectorValidation(t *testing.T) {
 	}{
 		{name: "github label", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceLabel}},
 		{name: "github issue field", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceIssueField}},
-		{name: "github local", tracker: Tracker{Kind: TrackerGitHubLocal}},
-		{name: "local sqlite", tracker: Tracker{Kind: TrackerLocalSQLite}},
-		{name: "memory", tracker: Tracker{Kind: TrackerMemory}},
 		{name: "github project v2", tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceProjectV2}, want: "does not declare complete label reads"},
-		{name: "linear", tracker: Tracker{Kind: TrackerLinear}, want: "does not declare complete label reads"},
 		{
 			name:    "configured status prefix",
-			tracker: Tracker{Kind: TrackerMemory, StatusLabelPrefix: "workflow/"},
+			tracker: Tracker{Kind: TrackerGitHub, GitHubStatusSource: GitHubStatusSourceLabel, StatusLabelPrefix: "workflow/"},
 			mutate: func(cfg *BacklogAdmission) {
 				cfg.Sources.Labels = []string{"Workflow/Ready"}
 			},
@@ -367,22 +265,22 @@ func TestBacklogAdmissionValidateUntrackedSelector(t *testing.T) {
 		},
 		{
 			name:    "github local",
-			tracker: Tracker{Kind: TrackerGitHubLocal},
-			want:    "github_local status drift does not populate UntrackedOpen",
+			tracker: Tracker{Kind: "github_local"},
+			want:    "does not provide github label status drift",
 		},
 		{
 			name:    "linear",
-			tracker: Tracker{Kind: TrackerLinear},
+			tracker: Tracker{Kind: "linear"},
 			want:    "does not provide github label status drift",
 		},
 		{
 			name:    "memory",
-			tracker: Tracker{Kind: TrackerMemory},
+			tracker: Tracker{Kind: TrackerHubNative},
 			want:    "does not provide github label status drift",
 		},
 		{
 			name:    "local sqlite",
-			tracker: Tracker{Kind: TrackerLocalSQLite},
+			tracker: Tracker{Kind: "local_sqlite"},
 			want:    "does not provide github label status drift",
 		},
 	}
@@ -591,138 +489,10 @@ func TestResolveAdmissionEffortRubric(t *testing.T) {
 	}
 }
 
-func TestProjectDefinitionResolvesAdmissionEffortFromConfiguredFile(t *testing.T) {
-	t.Parallel()
-
-	config := []byte(`schema: 1
-tracker:
-  kind: memory
-backlog_admission:
-  enabled: true
-  sources:
-    states: [Backlog]
-  target_state: Todo
-  criteria_section: Admission Criteria
-  require_effort: true
-  effort_file: AGENTS.md
-  effort_section: Issue Effort Selection
-`)
-	workflowPrompt := []byte("## Admission Criteria\n\n- **Alignment** — ready.\n")
-	agentsPrompt := []byte("## Issue Effort Selection\n\n- `medium` — small.\n- `high` — standard.\n")
-
-	workflow, err := ParseProjectDefinition(ProjectDefinitionSources{
-		WorkflowPath: "WORKFLOW.md",
-		Workflow:     workflowPrompt,
-		ConfigPath:   "detent.yaml",
-		Config:       config,
-		HasConfig:    true,
-		AgentsPath:   "AGENTS.md",
-		Agents:       agentsPrompt,
-		HasAgents:    true,
-	})
-	if err != nil {
-		t.Fatalf("ParseProjectDefinition() error = %v", err)
-	}
-	rubric, err := ResolveWorkflowAdmissionEffortRubric(workflow)
-	if err != nil {
-		t.Fatalf("ResolveWorkflowAdmissionEffortRubric() error = %v", err)
-	}
-	if rubric.Section != "Issue Effort Selection" || len(rubric.Efforts) != 2 || rubric.Efforts[0] != "medium" || rubric.Efforts[1] != "high" {
-		t.Fatalf("rubric = %#v, want AGENTS.md efforts", rubric)
-	}
-}
-
-func TestProjectDefinitionReportsAdmissionEffortInDifferentFile(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		effortFile string
-		workflow   string
-		agents     string
-		want       string
-	}{
-		{
-			name:       "configured agents but section is in workflow",
-			effortFile: BacklogAdmissionEffortFileAgents,
-			workflow:   "## Admission Criteria\n\n- **Alignment** — ready.\n\n## Issue Effort Selection\n\n- `high` — standard.\n",
-			agents:     "# Agent guidance\n",
-			want:       "exists in WORKFLOW.md instead; set backlog_admission.effort_file to WORKFLOW.md",
-		},
-		{
-			name:       "configured workflow but section is in agents",
-			effortFile: BacklogAdmissionEffortFileWorkflow,
-			workflow:   "## Admission Criteria\n\n- **Alignment** — ready.\n",
-			agents:     "## Issue Effort Selection\n\n- `high` — standard.\n",
-			want:       "exists in AGENTS.md instead; set backlog_admission.effort_file to AGENTS.md",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			config := []byte("schema: 1\ntracker:\n  kind: memory\nbacklog_admission:\n  enabled: true\n  sources:\n    states: [Backlog]\n  target_state: Todo\n  criteria_section: Admission Criteria\n  require_effort: true\n  effort_file: " + tt.effortFile + "\n  effort_section: Issue Effort Selection\n")
-			_, err := ParseProjectDefinition(ProjectDefinitionSources{
-				WorkflowPath: "WORKFLOW.md",
-				Workflow:     []byte(tt.workflow),
-				ConfigPath:   "detent.yaml",
-				Config:       config,
-				HasConfig:    true,
-				AgentsPath:   "AGENTS.md",
-				Agents:       []byte(tt.agents),
-				HasAgents:    true,
-			})
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("ParseProjectDefinition() error = %v, want %q", err, tt.want)
-			}
-		})
-	}
-}
-
-func TestProjectDefinitionHashesConfiguredAdmissionEffortFile(t *testing.T) {
-	t.Parallel()
-
-	parse := func(t *testing.T, effortFile string, agents string) Workflow {
-		t.Helper()
-		workflowPrompt := "## Admission Criteria\n\n- **Alignment** — ready.\n"
-		if effortFile == BacklogAdmissionEffortFileWorkflow {
-			workflowPrompt += "\n## Issue Effort Selection\n\n- `high` — standard.\n"
-		}
-		config := []byte("schema: 1\ntracker:\n  kind: memory\nbacklog_admission:\n  enabled: true\n  sources:\n    states: [Backlog]\n  target_state: Todo\n  criteria_section: Admission Criteria\n  require_effort: true\n  effort_file: " + effortFile + "\n  effort_section: Issue Effort Selection\n")
-		workflow, err := ParseProjectDefinition(ProjectDefinitionSources{
-			WorkflowPath: "WORKFLOW.md",
-			Workflow:     []byte(workflowPrompt),
-			ConfigPath:   "detent.yaml",
-			Config:       config,
-			HasConfig:    true,
-			AgentsPath:   "AGENTS.md",
-			Agents:       []byte(agents),
-			HasAgents:    true,
-		})
-		if err != nil {
-			t.Fatalf("ParseProjectDefinition() error = %v", err)
-		}
-		return workflow
-	}
-
-	agentsA := "## Issue Effort Selection\n\n- `high` — standard.\n"
-	agentsB := "## Issue Effort Selection\n\n- `high` — cross-cutting.\n"
-	fromAgentsA := parse(t, BacklogAdmissionEffortFileAgents, agentsA)
-	fromAgentsB := parse(t, BacklogAdmissionEffortFileAgents, agentsB)
-	if fromAgentsA.SourceHash == fromAgentsB.SourceHash {
-		t.Fatal("AGENTS.md-backed source hash did not change with the configured rubric")
-	}
-	fromWorkflowA := parse(t, BacklogAdmissionEffortFileWorkflow, agentsA)
-	fromWorkflowB := parse(t, BacklogAdmissionEffortFileWorkflow, agentsB)
-	if fromWorkflowA.SourceHash != fromWorkflowB.SourceHash {
-		t.Fatal("WORKFLOW.md-backed source hash changed for unrelated AGENTS.md guidance")
-	}
-}
-
 func TestAdmissionCriteriaNeverUsesLocalWorkflowOverlay(t *testing.T) {
 	t.Parallel()
 
-	shared := []byte("---\ntracker:\n  kind: memory\n---\n# Workflow\n\n## Admission criteria\n\n- **Shared** — repository-owned text.\n")
+	shared := []byte("---\ntracker:\n  kind: hub_native\n---\n# Workflow\n\n## Admission criteria\n\n- **Shared** — repository-owned text.\n")
 	local := []byte("---\n---\n## Admission criteria\n\n- **Local** — machine-only text.\n")
 	workflow, err := ParseWorkflowOverlay(shared, local, "WORKFLOW.local.md")
 	if err != nil {
@@ -748,12 +518,9 @@ func TestBacklogAdmissionWarnings(t *testing.T) {
 		ExcludeLabels: []string{"skip"},
 		Authors:       BacklogAdmissionAuthors{Allow: []string{"octocat"}},
 	}
-	localWarnings := strings.Join(BacklogAdmissionWarnings(cfg, Tracker{Kind: TrackerLocalSQLite}), "; ")
-	if !strings.Contains(localWarnings, "does not discover authors") {
-		t.Fatalf("local warnings = %q", localWarnings)
-	}
-	memoryWarnings := strings.Join(BacklogAdmissionWarnings(cfg, Tracker{Kind: TrackerMemory}), "; ")
-	if !strings.Contains(memoryWarnings, "evaluation-only across restarts") {
-		t.Fatalf("memory warnings = %q", memoryWarnings)
+	for _, kind := range []string{TrackerGitHub, TrackerHubNative} {
+		if warnings := BacklogAdmissionWarnings(cfg, Tracker{Kind: kind}); len(warnings) != 0 {
+			t.Fatalf("warnings = %q", warnings)
+		}
 	}
 }

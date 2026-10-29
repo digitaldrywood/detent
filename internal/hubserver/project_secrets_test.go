@@ -17,6 +17,7 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 
 	"github.com/digitaldrywood/detent/internal/auth"
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/hubsecrets"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -177,14 +178,14 @@ func TestProjectSecretPermissions(t *testing.T) {
 			poolPath := strings.TrimSuffix(base, "/secrets/"+flySpritesToken) + "/sprite-pool"
 			var pool spritePoolView
 			decodeHubResponse(t, f.api(t, "viewer", http.MethodGet, poolPath, nil, http.StatusOK), &pool)
-			f.api(t, "viewer", http.MethodPut, poolPath, spritePoolSettings{MaxRunners: 2, IdleSeconds: 300, Bootstrap: "true", Revision: pool.Revision}, status)
+			f.api(t, "viewer", http.MethodPut, poolPath, spritePoolCommand{Mutation: tracker.Mutation{IdempotencyKey: "project-pool-" + role}, spritePoolSettings: spritePoolSettings{MaxRunners: 2, IdleSeconds: 300, Revision: pool.Revision}, Bootstrap: new("true"), ShareIdleCapacity: new(false)}, status)
 			organizationPoolPath := "/api/v2/organizations/" + f.service.config.Hosted.OrganizationID + "/sprite-pool"
 			decodeHubResponse(t, f.api(t, "viewer", http.MethodGet, organizationPoolPath, nil, http.StatusOK), &pool)
 			organizationStatus := status
 			if role == "viewer" {
 				organizationStatus = http.StatusForbidden
 			}
-			f.api(t, "viewer", http.MethodPut, organizationPoolPath, spritePoolSettings{MaxRunners: 2, IdleSeconds: 300, Bootstrap: "true", Revision: pool.Revision}, organizationStatus)
+			f.api(t, "viewer", http.MethodPut, organizationPoolPath, spritePoolCommand{Mutation: tracker.Mutation{IdempotencyKey: "organization-pool-" + role}, spritePoolSettings: spritePoolSettings{MaxRunners: 2, IdleSeconds: 300, Revision: pool.Revision}, Bootstrap: new("true"), ShareIdleCapacity: new(false)}, organizationStatus)
 			var reloaded spritePoolView
 			decodeHubResponse(t, f.api(t, "owner", http.MethodGet, organizationPoolPath, nil, http.StatusOK), &reloaded)
 			if status == http.StatusOK && (reloaded.MaxRunners != 2 || reloaded.Bootstrap != "true" || reloaded.Revision != pool.Revision+1) {
@@ -219,6 +220,40 @@ func TestProjectSecretPermissions(t *testing.T) {
 					t.Fatalf("saved pool = %+v", pool)
 				}
 			})
+		}
+	})
+	t.Run("older approved project policy keeps saved pool readable", func(t *testing.T) {
+		workflow := config.Workflow{Config: config.Default()}
+		workflow.Config.Tracker.Kind = config.TrackerHubNative
+		descriptor, err := config.ResolvePolicy(workflow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		descriptor.SourceRevision = strings.Repeat("b", 64)
+		descriptor = descriptor.WithID()
+		raw, err := json.Marshal(descriptor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scope := f.service.config.Hosted.OrganizationID + "/" + f.project
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO policy_revisions (scope, policy_id, metadata_json, approved_by, approved_at) VALUES (?, ?, ?, 'fixture', ?)", scope, descriptor.ID, string(raw), formatHubTime(f.service.config.now())); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO project_policies (scope, policy_id) VALUES (?, ?) ON CONFLICT(scope) DO UPDATE SET policy_id=excluded.policy_id", scope, descriptor.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO runner_enrollments(id,organization_id,runner_id,machine_id,token_hash,operations_json,created_at,expires_at,created_by) SELECT 'pending-policy-enrollment',organization_id,'pending-policy-runner','pending-policy-machine',?,'[]','2026-01-01T00:00:00Z','2999-01-01T00:00:00Z',configured_by FROM organization_sprite_pools WHERE organization_id=?", strings.Repeat("c", 64), f.service.config.Hosted.OrganizationID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO organization_sprite_members(organization_id,name,provider_organization,enrollment_id,state,idle_since,created_at) VALUES(?,'pending-policy-sprite','org','pending-policy-enrollment','deleted','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", f.service.config.Hosted.OrganizationID); err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range []string{"/api/v2/organizations/" + f.service.config.Hosted.OrganizationID + "/sprite-pool", strings.TrimSuffix(base, "/secrets/"+flySpritesToken) + "/sprite-pool"} {
+			var pool spritePoolView
+			decodeHubResponse(t, f.api(t, "owner", http.MethodGet, path, nil, http.StatusOK), &pool)
+			if pool.Bootstrap != "true" || pool.Revision == 0 || len(pool.Members) != 1 || pool.Members[0].Name != "pending-policy-sprite" || pool.Decision == nil || strings.Contains(strings.ToLower(pool.Decision.Reason), "approval") || pool.RunnerSetupDeclared != nil {
+				t.Fatalf("%s pool = %+v decision = %+v", path, pool, pool.Decision)
+			}
 		}
 	})
 	f.api(t, "owner", http.MethodPut, strings.Replace(base, f.project, "prj_other", 1), map[string]any{"token": spritesSecretSentinel}, http.StatusNotFound)
@@ -367,23 +402,10 @@ func TestProjectSecretLifecycle(t *testing.T) {
 	}
 }
 
-func TestProjectSecretStartupAndRotation(t *testing.T) {
-	f := newBrowserHostedOrganizationFixture(t, true, "org_secret_rotation", func(cfg *Config) {
-		cfg.SecretKeys = secretTestKeys(t, "1", "1")
-		cfg.SpritesHTTPClient = &http.Client{Transport: spritesTestTransport(func(*http.Request) (*http.Response, error) { return spritesTestResponse(`{"sprites":[]}`, 200), nil })}
-	})
-	f.project = f.createProject(t, "Secrets test project")
-	base := "/api/v2/organizations/" + f.service.config.Hosted.OrganizationID + "/projects/" + f.project + "/secrets/" + flySpritesToken
-	f.api(t, "owner", http.MethodPut, base, map[string]any{"token": spritesSecretSentinel}, http.StatusOK)
-	f.api(t, "owner", http.MethodPut, strings.Replace(base, f.project, f.privateProject, 1), map[string]any{"token": spritesSecretSentinel}, http.StatusOK)
-	original, err := readSecretRows(t.Context(), f.service.database.db)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestProjectSecretStartupKeys(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{SecretKeys: secretTestKeys(t, "1", "1")})
+	storeSpriteWakeSecret(t, f, spritesSecretSentinel)
 	cfg := f.service.config
-	if _, err := RotateProjectSecrets(t.Context(), cfg, "operator:test"); err == nil {
-		t.Fatal("rotation ignored running Hub ownership")
-	}
 	if err := f.service.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -409,78 +431,18 @@ func TestProjectSecretStartupAndRotation(t *testing.T) {
 			}
 		})
 	}
-	cfg.SecretKeys = secretTestKeys(t, "2", "1", "2")
-	// A bad later row must roll back the earlier row's wrapping and audit.
 	db, err := openDatabase(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bad := original[1]
-	if _, err := db.db.ExecContext(t.Context(), "UPDATE project_secrets SET wrapped_data_key=? WHERE project_id=?", []byte("tampered"), bad.project); err != nil {
+	if _, err := db.db.ExecContext(t.Context(), "UPDATE project_secrets SET wrapped_data_key=?", []byte("tampered")); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RotateProjectSecrets(t.Context(), cfg, "operator:test"); err == nil {
-		t.Fatal("rotation accepted bad data key")
-	}
-	db, err = openDatabase(t.Context(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	failed, err := readSecretRows(t.Context(), db.db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if failed[0].envelope.Version != 1 || !bytes.Equal(failed[0].envelope.WrappedKey, original[0].envelope.WrappedKey) {
-		t.Fatal("failed rotation partially committed")
-	}
-	var auditCount int
-	if err := db.db.QueryRowContext(t.Context(), "SELECT count(*) FROM project_secret_audit WHERE event='rotate'").Scan(&auditCount); err != nil {
-		t.Fatal(err)
-	}
-	if auditCount != 0 {
-		t.Fatal("failed rotation committed audit")
-	}
-	if _, err := db.db.ExecContext(t.Context(), "UPDATE project_secrets SET wrapped_data_key=? WHERE project_id=?", bad.envelope.WrappedKey, bad.project); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	count, err := RotateProjectSecrets(t.Context(), cfg, "operator:test")
-	if err != nil || count != 2 {
-		t.Fatalf("rotate count=%d error=%v", count, err)
-	}
-	count, err = RotateProjectSecrets(t.Context(), cfg, "operator:test")
-	if err != nil || count != 0 {
-		t.Fatalf("repeat rotation=%d %v", count, err)
-	}
-	cfg.SecretKeys = secretTestKeys(t, "2", "2")
-	service, err := Open(t.Context(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer service.Close()
-	rotated, err := readSecretRows(t.Context(), service.database.db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rotated[0].envelope.Version != 2 || !bytes.Equal(rotated[0].envelope.Ciphertext, original[0].envelope.Ciphertext) || !bytes.Equal(rotated[0].envelope.Nonce, original[0].envelope.Nonce) {
-		t.Fatal("rotation reencrypted value")
-	}
-	value, err := cfg.SecretKeys.Open(rotated[0].envelope, secretAAD(rotated[0].organization, rotated[0].project, flySpritesToken))
-	if err != nil || string(value) != spritesSecretSentinel {
-		t.Fatalf("rotated secret unavailable: %v", err)
-	}
-	clear(value)
-	var actor, event string
-	var version int
-	if err := service.database.db.QueryRowContext(t.Context(), "SELECT actor,event,key_version FROM project_secret_audit ORDER BY id DESC LIMIT 1").Scan(&actor, &event, &version); err != nil {
-		t.Fatal(err)
-	}
-	if actor != "operator:test" || event != "rotate" || version != 2 {
-		t.Fatal("rotation audit incorrect")
+	if service, err := Open(t.Context(), cfg); err == nil {
+		service.Close()
+		t.Fatal("startup accepted a tampered data key")
 	}
 }

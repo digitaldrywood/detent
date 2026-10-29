@@ -66,14 +66,63 @@ func readPlacementPolicy(ctx context.Context, q nativeQueryer, scope nativeScope
 	return placement.Resolved(), ceiling, placement.Validate()
 }
 
-func readPlacementSpriteUsage(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) (int, error) {
-	var used int
-	err := q.QueryRowContext(ctx, `SELECT count(*) FROM leases l JOIN issues i ON i.id=l.issue_id JOIN machines m ON m.id=l.machine_id WHERE i.organization_id=? AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?) AND json_extract(m.capabilities_json,'$.sprite_name')=m.hostname`, scope.organization, formatHubTime(now)).Scan(&used)
-	return used, err
+func readPlacementSpriteUsage(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time, joining ...string) (int, error) {
+	rows, err := q.QueryContext(ctx, `SELECT l.machine_id,l.session_id,l.lease_id,COALESCE(lr.runner_id,''),`+nativeLandingCapacityProject+`,m.sprite_name,m.hostname,CASE WHEN m.machine_facts_ready IS NULL THEN m.capabilities_json END
+ FROM leases l JOIN issues i ON i.id=l.issue_id JOIN machines m ON m.id=l.machine_id
+ LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id `+nativeLandingCapacityJoins+`
+ WHERE i.organization_id=? AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?) AND (m.sprite_name=m.hostname OR m.machine_facts_ready IS NULL)`, scope.organization, formatHubTime(now))
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	groups := map[string]bool{}
+
+	type landingUsageRow struct {
+		machine                         tracker.MachineID
+		session, lease, runner, project string
+		name                            *string
+		hostname                        string
+		legacy                          sql.NullString
+	}
+	var landingRows []landingUsageRow
+	for rows.Next() {
+		var value landingUsageRow
+		if err := rows.Scan(&value.machine, &value.session, &value.lease, &value.runner, &value.project, &value.name, &value.hostname, &value.legacy); err != nil {
+			return 0, err
+		}
+		landingRows = append(landingRows, value)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	for _, value := range landingRows {
+
+		machine, session, lease, runner, project := value.machine, value.session, value.lease, value.runner, value.project
+
+		project, err = resolveLandingProject(ctx, q, project, false)
+		if err != nil {
+			return 0, err
+		}
+		facts, err := resolveMachineSpriteFacts(machineSpriteFacts{Name: value.name}, value.legacy)
+		if err != nil {
+			return 0, err
+		}
+		if facts.Name != nil && *facts.Name == value.hostname {
+			groups[landingLeaseCapacityKey(machine, project, session, runner, lease)] = true
+		}
+	}
+	if len(joining) > 0 && joining[0] != "" {
+		delete(groups, joining[0]+"/"+scope.credential.Runner.RunnerID)
+	}
+	return len(groups), rows.Err()
 }
 
 func readPlacementRunners(ctx context.Context, q nativeQueryer, scope nativeScope, now time.Time) ([]placementRunner, error) {
-	rows, err := q.QueryContext(ctx, `SELECT r.id, r.enrollment_id, COALESCE(json_extract(m.capabilities_json,'$.sprite_name'),''), COALESCE(json_extract(m.capabilities_json,'$.sprite_woken_at'),'') FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.organization_id=? AND r.removed_at IS NULL AND (?='' OR r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=? AND g.project_id=?)) ORDER BY r.id`, scope.organization, scope.project, scope.organization, scope.project)
+	rows, err := q.QueryContext(ctx, `SELECT r.id, r.enrollment_id, m.sprite_name,m.sprite_woken_at,CASE WHEN m.machine_facts_ready IS NULL THEN m.capabilities_json END FROM runner_identities r JOIN machines m ON m.id=r.machine_id WHERE r.organization_id=? AND r.removed_at IS NULL AND (?='' OR r.scope='organization' OR EXISTS(SELECT 1 FROM token_grants g WHERE g.token_id=r.token_id AND g.organization_id=? AND g.project_id=?)) ORDER BY r.id`, scope.organization, scope.project, scope.organization, scope.project)
 	if err != nil {
 		return nil, err
 	}
@@ -82,9 +131,16 @@ func readPlacementRunners(ctx context.Context, q nativeQueryer, scope nativeScop
 	var identities []identity
 	for rows.Next() {
 		var id identity
-		if err := rows.Scan(&id.id, &id.enrollment, &id.name, &id.woke); err != nil {
+		var facts machineSpriteFacts
+		var legacy sql.NullString
+		if err := rows.Scan(&id.id, &id.enrollment, &facts.Name, &facts.WokenAt, &legacy); err != nil {
 			return nil, err
 		}
+		facts, err = resolveMachineSpriteFacts(facts, legacy)
+		if err != nil {
+			return nil, err
+		}
+		id.name, id.woke = spriteFactValue(facts.Name), spriteFactValue(facts.WokenAt)
 		identities = append(identities, id)
 	}
 	if err := rows.Err(); err != nil {
@@ -206,27 +262,21 @@ func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, sco
 	if err != nil {
 		return result, err
 	}
-	approval, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
+	approval, found, err := readProjectPolicy(ctx, q, string(scope.organization)+"/"+string(scope.project))
 	if err != nil {
-		var failure *nativeError
-		if errors.As(err, &failure) && failure.Code == "policy_mismatch" {
-			result.Reason = "No approved project policy; compatible Todo demand is unavailable"
-			return result, nil
-		}
+		return result, err
+	}
+	if !found {
+		result.Reason = "No approved project policy; compatible Todo demand is unavailable"
+		return result, nil
+	}
+	workflow, err := projectPolicyWorkflow(ctx, string(scope.organization)+"/"+string(scope.project), approval.Policy)
+	if err != nil {
 		return result, err
 	}
 	result.Requirements = approval.Policy.Requirements
-	workflow, err := config.ApplyNativePolicy(config.Workflow{Config: config.Default()}, approval.Policy)
-	if err != nil {
-		return result, err
-	}
-	selection, err := readCloudModelSelection(ctx, q, scope)
-	if err != nil {
-		return result, err
-	}
-	workflow.Config.Agents.ModelSelection = selection.Effective
 	workflow.Config.Plan.Enabled = approval.Policy.Gates.PlanEnabled
-	resolver, err := runner.NewBoardIdentityResolver(workflow.Config, selector.Context{})
+	resolver, err := readProjectIdentityResolver(ctx, q, scope, workflow.Config)
 	if err != nil {
 		return result, err
 	}
@@ -466,7 +516,10 @@ func readPlacementSnapshotWithCapacity(ctx context.Context, q nativeQueryer, sco
 	return result, nil
 }
 
-func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID, now time.Time, overrides []tracker.NativeCapacityCandidate) (bool, string, error) {
+func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeScope, machine tracker.MachineID, id tracker.WorkItemID, now time.Time, overrides []tracker.NativeCapacityCandidate, joining ...string) (bool, string, error) {
+	if explanationRead(ctx) {
+		return explanationPlacementAllowed(ctx, q, scope, machine, id)
+	}
 	if allowed, reason, err := nativeSourceClaimAllowed(ctx, q, scope, machine, id); err != nil || !allowed {
 		return allowed, reason, err
 	}
@@ -481,19 +534,24 @@ func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeSco
 	if err != nil {
 		return false, "", err
 	}
-	var name, hostname string
-	if err := q.QueryRowContext(ctx, `SELECT COALESCE(json_extract(capabilities_json,'$.sprite_name'),''),hostname FROM machines WHERE id=? AND organization_id=?`, machine, scope.organization).Scan(&name, &hostname); err != nil {
+	facts, err := readMachineSpriteFacts(ctx, q, scope.organization, machine)
+	if err != nil {
+		return false, "", err
+	}
+	name := spriteFactValue(facts.Name)
+	var hostname string
+	if err := q.QueryRowContext(ctx, `SELECT hostname FROM machines WHERE id=? AND organization_id=?`, machine, scope.organization).Scan(&hostname); err != nil {
 		return false, "", err
 	}
 	sprite := name == hostname && validSpritesSlug(name)
 	if !sprite {
 		return placement.Mode != "sprites_only", "Resolved placement " + placement.Mode + " governs local eligibility", nil
 	}
+	used, err := readPlacementSpriteUsage(ctx, q, scope, now, joining...)
+	if err != nil {
+		return false, "", err
+	}
 	if limit := placement.SpriteLimit(); limit > 0 {
-		used, err := readPlacementSpriteUsage(ctx, q, scope, now)
-		if err != nil {
-			return false, "", err
-		}
 		if used >= limit {
 			return false, "Configured maximum Sprite concurrency is full", nil
 		}
@@ -505,6 +563,7 @@ func placementClaimAllowed(ctx context.Context, q nativeQueryer, scope nativeSco
 	if err != nil {
 		return false, "", err
 	}
+	snapshot.SpriteUsed = used
 	if snapshot.Local[id] > 0 {
 		return false, "Local-first placement has compatible free local capacity", nil
 	}
@@ -552,7 +611,7 @@ func readOrganizationPlacementSnapshot(ctx context.Context, q nativeQueryer, sco
 		return result, err
 	}
 	result.Policy = placement
-	rows, err := q.QueryContext(ctx, `SELECT id FROM projects WHERE organization_id=? AND profile='native' ORDER BY scheduling_rank,id`, scope.organization)
+	rows, err := q.QueryContext(ctx, `SELECT id FROM projects p WHERE organization_id=? AND profile='native' ORDER BY EXISTS(SELECT 1 FROM project_sprite_allocations a WHERE a.organization_id=p.organization_id AND a.project_id=p.id) DESC,scheduling_rank,id`, scope.organization)
 	if err != nil {
 		return result, err
 	}
@@ -609,4 +668,13 @@ func readOrganizationPlacementSnapshot(ctx context.Context, q nativeQueryer, sco
 	}
 	result.Provisionable = max(result.SpriteTarget-result.SpriteFree-result.Pending, 0)
 	return result, nil
+}
+
+func readProjectIdentityResolver(ctx context.Context, q nativeQueryer, scope nativeScope, cfg config.Config) (*runner.BoardIdentityResolver, error) {
+	selection, err := readCloudModelSelection(ctx, q, scope)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Agents.ModelSelection = selection.Effective
+	return runner.NewBoardIdentityResolver(cfg, selector.Context{})
 }

@@ -1,4 +1,4 @@
-// Per-action keybindings (decisions.md §18.12): a chord the project stored
+// Per-action keybindings: a chord the project stored
 // resolves to that action's command, labels its menu row, appears in the
 // Keybindings settings list, loses to a static binding, and stops resolving
 // when the action is deleted.

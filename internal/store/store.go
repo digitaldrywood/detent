@@ -11,9 +11,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/auth"
 	"github.com/digitaldrywood/detent/internal/compute"
 	"github.com/digitaldrywood/detent/internal/efficiency"
+	"github.com/digitaldrywood/detent/internal/failureattribution"
 	"github.com/digitaldrywood/detent/internal/operations"
-	"github.com/digitaldrywood/detent/internal/retro"
-	routinemodel "github.com/digitaldrywood/detent/internal/routine/model"
 	"github.com/digitaldrywood/detent/internal/schedulehealth"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
@@ -38,8 +37,9 @@ const (
 const defaultBusyTimeout = 5 * time.Second
 
 var (
-	ErrNotFound        = errors.New("store record not found")
-	ErrProjectRequired = errors.New("project_id is required")
+	ErrNotFound            = errors.New("store record not found")
+	ErrWorkAttemptTerminal = errors.New("work attempt is already terminal")
+	ErrProjectRequired     = errors.New("project_id is required")
 )
 
 type Config struct {
@@ -73,8 +73,6 @@ type Store interface {
 	RuntimeEvidenceStore
 	AgentResumeStore
 	OrphanSessionStore
-	RetroStore
-	RoutineStore
 	AdmissionStore
 	schedulehealth.Store
 	efficiency.Recorder
@@ -153,11 +151,6 @@ type BudgetCostStore interface {
 
 type ProgressSpendStore interface {
 	IssueSpendSince(context.Context, IssueSpendSinceQuery) (IssueSpendSince, error)
-}
-
-type ProgressCreditStore interface {
-	CreditIssueProgress(context.Context, IssueIdentity, time.Time) (IssueProgressCredit, error)
-	IssueProgressCredit(context.Context, IssueIdentity) (IssueProgressCredit, error)
 }
 
 type WorkflowHistoryRevisionReader interface {
@@ -270,13 +263,6 @@ type ActivityStore interface {
 	LatestIssueAgentSession(context.Context, IssueIdentity) (IssueAgentSession, error)
 }
 
-type ParkSummaryStore interface {
-	IssueParkSummary(context.Context, IssueIdentity) (ParkSummary, error)
-	IssueParkSummaries(context.Context, []IssueIdentity) (map[IssueIdentity]ParkSummary, error)
-	ListIssueParkSummaries(context.Context, string) ([]ParkSummary, error)
-	AcknowledgeIssueParks(context.Context, IssueIdentity, int64, time.Time) error
-}
-
 type AgentResumeStore interface {
 	LatestAgentResumeState(context.Context, AgentResumeLookup) (AgentResumeState, error)
 	LatestIssueAgentResumeState(context.Context, IssueIdentity) (AgentResumeState, error)
@@ -285,18 +271,6 @@ type AgentResumeStore interface {
 type OrphanSessionStore interface {
 	ListOrphanedAgentSessions(context.Context, string) ([]OrphanedAgentSession, error)
 	MarkAgentSessionOrphaned(context.Context, int64, time.Time) error
-}
-
-type RetroStore interface {
-	retro.TelemetryStore
-}
-
-type RoutineStore interface {
-	LatestRoutineRun(context.Context, string, string) (routinemodel.RunRecord, bool, error)
-	OpenRoutineIssueIDs(context.Context, string, string) ([]string, error)
-	RecordRoutineIssue(context.Context, string, string, routinemodel.IssueRecord) error
-	CloseRoutineIssues(context.Context, string, string, []string) error
-	RecordRoutineRun(context.Context, routinemodel.RunRecord) error
 }
 
 type AdmissionStore interface {
@@ -653,6 +627,11 @@ type ValidatorVerdictQuery struct {
 }
 
 type ValidatorFinding struct {
+	Attribution         string                       `json:"attribution"`
+	AttributionEvidence *failureattribution.Evidence `json:"attribution_evidence,omitempty"`
+	CheckCommand        string                       `json:"check_command,omitempty"`
+	CheckDiagnostic     string                       `json:"check_diagnostic,omitempty"`
+
 	Severity string `json:"severity,omitempty"`
 	Body     string `json:"body,omitempty"`
 	URL      string `json:"url,omitempty"`
@@ -1214,14 +1193,6 @@ type IssueSpendSince struct {
 	Sessions       int64
 	FirstSessionAt time.Time
 	LastSessionAt  time.Time
-}
-
-type IssueProgressCredit struct {
-	ProjectID  string    `json:"project_id"`
-	IssueID    string    `json:"issue_id,omitempty"`
-	Identifier string    `json:"identifier,omitempty"`
-	IssueURL   string    `json:"issue_url,omitempty"`
-	CreditedAt time.Time `json:"credited_at"`
 }
 
 type ModelTokenSpend struct {

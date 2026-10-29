@@ -86,10 +86,14 @@ func (d *database) recordConversationUsage(ctx context.Context, tx *sql.Tx, usag
 	}
 	if count == 1 && d.aiCreditMode != "" && usage.Provider == "openai" && cost != nil {
 		micros := int64(math.Ceil(costUSD * 1000000 * d.aiCreditCostMultiplier))
-		if _, err := tx.ExecContext(ctx, "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,kind,recorded_at) VALUES(?,?,?,?,'usage',?)", usage.OrganizationID, d.aiCreditMode, "usage:"+usage.TurnID, -micros, at.UnixMicro()); err != nil {
+		included, err := d.spendIncludedAICredits(ctx, tx, usage.OrganizationID, at, micros)
+		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE ai_credit_accounts SET balance_micros=balance_micros-? WHERE organization_id=? AND mode=?", micros, usage.OrganizationID, d.aiCreditMode); err != nil {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO ai_credit_transactions(organization_id,mode,source,amount_micros,included_amount_micros,kind,recorded_at) VALUES(?,?,?,?,?,'usage',?)", usage.OrganizationID, d.aiCreditMode, "usage:"+usage.TurnID, -micros, included, at.UnixMicro()); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE ai_credit_accounts SET balance_micros=balance_micros-? WHERE organization_id=? AND mode=?", micros-included, usage.OrganizationID, d.aiCreditMode); err != nil {
 			return err
 		}
 	}

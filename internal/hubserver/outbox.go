@@ -409,7 +409,7 @@ func (s *Service) commitOutbox(ctx context.Context, record outboxRecord, apply f
 		return OutboxItem{}, err
 	}
 	if (profile == "native" && record.kind != MutationMergePullRequest) || (!enabled && record.kind == MutationMergePullRequest) {
-		return OutboxItem{}, nativeInvalid("GitHub mutation is not permitted by the project integration profile")
+		return OutboxItem{}, nativePublicInvalid("GitHub mutation is not permitted by the project integration profile")
 	}
 
 	existing, found, err := findOutboxByKey(ctx, tx, record.idempotencyKey)
@@ -438,14 +438,18 @@ func (s *Service) commitOutbox(ctx context.Context, record outboxRecord, apply f
 			return OutboxItem{}, fmt.Errorf("coalesce github outbox mutation: %w", err)
 		}
 	}
+	desiredFields, err := decodeOutboxFields(record.desired)
+	if err != nil {
+		return OutboxItem{}, err
+	}
 	inserted, err := tx.ExecContext(ctx, `
 		INSERT INTO github_outbox (
 			idempotency_key, repository_id, issue_id, mutation_kind,
 			target_node_id, desired_json, status, coalesce_key,
-			created_at, updated_at
-		) VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, NULLIF(?, ''), ?, ?)`,
+			created_at, updated_at, desired_issue_number, desired_summary
+		) VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, NULLIF(?, ''), ?, ?, ?, ?)`,
 		record.idempotencyKey, record.repositoryID, record.issueID, record.kind,
-		record.targetNodeID, string(record.desired), outboxPending, record.coalesceKey, now, now,
+		record.targetNodeID, string(record.desired), outboxPending, record.coalesceKey, now, now, desiredFields.IssueNumber, desiredFields.Summary,
 	)
 	if err != nil {
 		return OutboxItem{}, fmt.Errorf("enqueue github outbox mutation: %w", err)
@@ -567,6 +571,10 @@ func (s *Service) claimOutbox(ctx context.Context) (result OutboxItem, found boo
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx, err := s.prepareOutboxClaimFields(ctx)
+	if err != nil {
+		return OutboxItem{}, false, err
+	}
 	tx, err := s.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		return OutboxItem{}, false, fmt.Errorf("begin github outbox claim: %w", err)
@@ -580,10 +588,11 @@ func (s *Service) claimOutbox(ctx context.Context) (result OutboxItem, found boo
 	now := s.config.now()
 	staleBefore := formatOutboxTime(now.Add(-s.config.OutboxProcessingTimeout))
 	var desired string
+	var issueNumber sql.NullInt64
 	var createdAt string
 	err = tx.QueryRowContext(ctx, `
 		SELECT o.id, o.idempotency_key, o.repository_id, r.github_owner, r.github_name,
-		       COALESCE(o.issue_id, 0), COALESCE(i.github_number, json_extract(o.desired_json, '$.issue_number'), 0), o.mutation_kind,
+		       COALESCE(o.issue_id, 0), COALESCE(i.github_number, o.desired_issue_number), o.mutation_kind,
 		       COALESCE(o.target_node_id, ''), o.desired_json, o.status, o.attempts, o.created_at, p.profile
 		FROM github_outbox o
 		JOIN repositories r ON r.id = o.repository_id
@@ -601,7 +610,7 @@ func (s *Service) claimOutbox(ctx context.Context) (result OutboxItem, found boo
 	).Scan(
 		&result.ID, &result.IdempotencyKey, &result.RepositoryID,
 		&result.RepositoryOwner, &result.RepositoryName, &result.IssueID,
-		&result.IssueNumber, &result.Kind, &result.TargetNodeID, &desired,
+		&issueNumber, &result.Kind, &result.TargetNodeID, &desired,
 		&result.Status, &result.Attempts, &createdAt, &result.Profile,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -614,6 +623,15 @@ func (s *Service) claimOutbox(ctx context.Context) (result OutboxItem, found boo
 		return OutboxItem{}, false, fmt.Errorf("select github outbox mutation: %w", err)
 	}
 
+	if issueNumber.Valid {
+		result.IssueNumber = int(issueNumber.Int64)
+	} else {
+		fields, err := evaluatedHostedImportFields(ctx, tx, "github_outbox", desired)
+		if err != nil {
+			return OutboxItem{}, false, err
+		}
+		result.IssueNumber = fields.outbox.IssueNumber
+	}
 	result.Attempts++
 	result.Status = outboxProcessing
 	result.Desired = json.RawMessage(desired)

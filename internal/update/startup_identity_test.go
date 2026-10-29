@@ -2,19 +2,28 @@ package update
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
 
 func TestStartupRecoveryUnexpectedRestartIdentity(t *testing.T) {
-	t.Parallel()
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyID := []byte("12345678")
+	previousKey := defaultChecksumMinisignPublicKey
+	defaultChecksumMinisignPublicKey = testMinisignPublicKey(publicKey, keyID)
+	t.Cleanup(func() { defaultChecksumMinisignPublicKey = previousKey })
 	for _, tt := range []struct {
 		name             string
 		currentVersion   string
@@ -55,7 +64,6 @@ func TestStartupRecoveryUnexpectedRestartIdentity(t *testing.T) {
 		{name: "completed rollback", currentVersion: "1.0.0", currentCommit: testPreviousCommit, installedVersion: "1.0.0", installedCommit: testPreviousCommit, rollback: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			dir := t.TempDir()
 			statePath := filepath.Join(dir, startupRecoveryStateName)
 			previous := filepath.Join(dir, "detent.previous")
@@ -74,18 +82,28 @@ func TestStartupRecoveryUnexpectedRestartIdentity(t *testing.T) {
 				if err := os.WriteFile(pending.ExecutablePath, payload, 0o700); err != nil {
 					t.Fatal(err)
 				}
-				digest := fmt.Sprintf("%x", sha256.Sum256(payload))
+				archive := detentUpdateArchive(t, string(payload))
+				archiveName := archiveAssetNames("v"+tt.receiptVersion, "linux", runtime.GOARCH)[0]
+				manifest := testReleaseProvenance(t, "v"+tt.receiptVersion, testUpdatedCommit)
+				checksums := fmt.Appendf(nil, "%x  %s\n%x  %s\n", sha256.Sum256(archive), archiveName, sha256.Sum256(manifest), provenanceAssetName)
+				signature := testMinisignSignature(t, privateKey, keyID, checksums, "detent checksums v"+tt.receiptVersion)
+				key, err := writeReleaseEvidence(lockPath, releaseEvidence{Schema: 1, ArchiveName: archiveName, Checksums: checksums, Signature: signature, Provenance: manifest}, archive)
+				if err != nil {
+					t.Fatal(err)
+				}
 				if tt.missingDigest {
-					digest = ""
+					key = ""
 				}
 				if tt.wrongDigest {
-					digest = strings.Repeat("0", 64)
+					if err := os.WriteFile(pending.ExecutablePath, []byte("modified executable"), 0o700); err != nil {
+						t.Fatal(err)
+					}
 				}
 				receiptBinary := pending.ExecutablePath
 				if tt.otherReceiptPath {
 					receiptBinary = filepath.Join(dir, "unrelated-installation")
 				}
-				if err := writeInstallLockContents(lockPath, fmt.Sprintf("binary=%s\nversion=%s\ncommit=%s\nsha256=%s\n", receiptBinary, tt.receiptVersion, tt.receiptCommit, digest)); err != nil {
+				if err := writeInstallLockContents(lockPath, fmt.Sprintf("binary=%s\nversion=%s\ncommit=%s\nrelease_evidence=%s\nsha256=%x\n", receiptBinary, tt.receiptVersion, tt.receiptCommit, key, sha256.Sum256(payload))); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -100,8 +118,8 @@ func TestStartupRecoveryUnexpectedRestartIdentity(t *testing.T) {
 			for range 2 {
 				recovery := newTestStartupRecovery(t, StartupRecoveryConfig{
 					StatePath: statePath, CurrentVersion: tt.currentVersion, CurrentCommit: tt.currentCommit,
-					ExecutablePath: executable,
-					Env:            map[string]string{"DETENT_INSTALL_LOCK": lockPath},
+					ExecutablePath: executable, GOOS: "linux",
+					Env: map[string]string{"DETENT_INSTALL_LOCK": lockPath},
 					BinaryVerifier: func(_ context.Context, path string) (string, error) {
 						if path != pending.ExecutablePath {
 							t.Fatalf("verified path = %q, want installation %q", path, pending.ExecutablePath)

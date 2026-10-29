@@ -1,6 +1,5 @@
 import React from "react";
-import * as Schema from "effect/Schema";
-import { NativeBoardFrame } from "../../../contracts/work.ts";
+import { subscribeProjectEvents } from "./projectEvents.ts";
 
 import { useClient } from "../../client.ts";
 import { useRunnerNames, shortRunnerId } from "./runnerNames.ts";
@@ -28,15 +27,13 @@ export function workHttpFor(client: ReturnType<typeof useClient>): WorkHttp {
   return http;
 }
 
-const EVENT_SOURCE_CLOSED = 2;
-const STREAM_RETRY_MS = 3_000;
-
 export interface BoardState extends BoardData {
+  readonly projectCounts?: Readonly<Record<string, { running: number; blocked: number }>>;
   readonly sequence: number | null;
   readonly live: boolean;
 }
 
-export function useBoard(projectId: string | null, view: WorkViewState): BoardState & {
+export function useBoard(projectId: string | null, view: WorkViewState, projectIds?: readonly string[]): BoardState & {
   readonly reload: () => void;
   readonly loadMore: () => void;
   readonly loadBacklog: () => void;
@@ -45,10 +42,13 @@ export function useBoard(projectId: string | null, view: WorkViewState): BoardSt
   const client = useClient();
   const http = useWorkHttp();
   const runnerNames = useRunnerNames();
-  const store = getBoardRead(client, http, projectId, view);
+  const readProject = projectIds === undefined ? projectId : projectIds.length === 1 ? projectIds[0]! : null;
+  const store = getBoardRead(client, http, readProject, view, projectIds);
   const streamScope = store.scope;
   const streamKey = JSON.stringify([store.owner, streamScope]);
-  const data = React.useSyncExternalStore(store.subscribe, store.snapshot, store.snapshot);
+  const snapshot = React.useSyncExternalStore(store.subscribe, store.snapshot, store.snapshot);
+  const data = React.useMemo(() => projectIds === undefined ? snapshot : store.projectSnapshot(projectId), [store, snapshot, projectId, projectIds === undefined]);
+  const projectCounts = React.useMemo(() => store.projectCounts(), [store, snapshot]);
   const [state, setState] = React.useState({ key: streamKey, live: false, sequence: null as number | null });
   const reload = store.reload;
   React.useEffect(() => { store.start(); }, [store]);
@@ -65,75 +65,24 @@ export function useBoard(projectId: string | null, view: WorkViewState): BoardSt
       return result;
     });
   }, [data.items, runnerNames]);
-  const canStream = data.resolved && !data.cached && !data.refreshing;
   React.useEffect(() => {
-    if (!canStream || streamScope.length === 0 || typeof globalThis.EventSource !== "function") {
-      setState({ key: streamKey, live: false, sequence: null });
-      return;
-    }
     setState({ key: streamKey, live: false, sequence: null });
-    let stopped = false;
     const connected = new Set<string>();
-    const sources = new Map<string, EventSource>();
-    const retries = new Map<string, ReturnType<typeof setTimeout>>();
-    const controller = new AbortController();
+    const publish = () => setState((current) => ({ ...current, key: streamKey,
+      live: connected.size === streamScope.length && streamScope.length > 0 }));
+    const subscriptions = streamScope.map((id) => subscribeProjectEvents(http, id, {
+      open: () => { connected.add(id); publish(); },
+      error: () => { connected.delete(id); publish(); },
+      reset: () => { connected.delete(id); publish(); },
+      checkpoint: (event) => {
+        const next = Number((event as MessageEvent).lastEventId);
+        if (Number.isFinite(next)) setState((current) => ({ ...current, sequence: next }));
+      },
+    }));
+    return () => subscriptions.forEach((stop) => stop());
+  }, [http, store, streamKey, streamScope]);
 
-    // Live means every project in scope is connected: on the all-projects
-    // board one project whose stream is down is activity the reader is not
-    // being told about, and a chip that said "Live" would be lying about it.
-    const publish = () =>
-      setState((current) => {
-        const live = connected.size === streamScope.length;
-        return current.live === live && current.key === streamKey ? current : { ...current, key: streamKey, live };
-      });
-
-    const onActivity = (id: string, event: MessageEvent<string>) => {
-      let frame: NativeBoardFrame;
-      try { frame = Schema.decodeUnknownSync(NativeBoardFrame)(JSON.parse(event.data)); }
-      catch { return; }
-      store.applyFrame(id, frame);
-      connected.add(id);
-      setState((current) => ({ ...current, key: streamKey, sequence: frame.sequence,
-        live: connected.size === streamScope.length }));
-    };
-
-    const connect = (id: string) => {
-      if (stopped) return;
-      const source = new globalThis.EventSource(http.eventsUrl(id, undefined, undefined, { since: store.sequence(id), filters: store.streamFilters(id) }), { withCredentials: true });
-      sources.set(id, source);
-      source.addEventListener("open", () => {
-        connected.add(id);
-        publish();
-      });
-      source.addEventListener("activity", ((event: MessageEvent<string>) =>
-        onActivity(id, event)) as EventListener);
-      source.addEventListener("error", () => {
-        connected.delete(id);
-        publish();
-        if (source.readyState !== EVENT_SOURCE_CLOSED) return;
-        source.close();
-        sources.delete(id);
-        clearTimeout(retries.get(id));
-        retries.set(id, setTimeout(() => {
-          void http.getProject(id, controller.signal).then(() => connect(id), (cause: unknown) => {
-            if (cause instanceof WorkApiError && [401, 403].includes(cause.status)) return;
-            connect(id);
-          });
-        }, STREAM_RETRY_MS));
-      });
-    };
-
-    for (const id of streamScope) connect(id);
-
-    return () => {
-      stopped = true;
-      controller.abort();
-      for (const retry of retries.values()) clearTimeout(retry);
-      for (const source of sources.values()) source.close();
-    };
-  }, [http, store, canStream, streamKey, streamScope]);
-
-  return { ...data, live: data.resolved && state.key === streamKey && state.live,
+  return { ...data, projectCounts, live: data.resolved && state.key === streamKey && state.live,
     sequence: state.key === streamKey ? state.sequence : null,
     items, reload, loadMore: store.loadMore, loadBacklog: store.loadBacklog, applyItem: store.applyItem };
 }

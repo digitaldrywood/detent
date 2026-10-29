@@ -1125,6 +1125,40 @@ func TestWorkAttemptStoreRoundTripDecisionsAndRecovery(t *testing.T) {
 	if history[0].DetentSessionID != 737 || history[0].ProviderSessionID != "thread-737-turn-1" || history[0].RuntimeIdentity.Model() != "qwen3-coder:30b" {
 		t.Fatalf("history runtime identity = %#v, want heartbeat identity preserved at completion", history[0])
 	}
+	for _, tt := range []struct {
+		name      string
+		attemptID int64
+		wantErr   error
+	}{
+		{name: "terminal", attemptID: attemptID, wantErr: ErrWorkAttemptTerminal},
+		{name: "absent", attemptID: attemptID + 1, wantErr: ErrNotFound},
+	} {
+		t.Run(tt.name+" heartbeat", func(t *testing.T) {
+			err := backend.RecordWorkAttemptHeartbeat(ctx, WorkAttemptHeartbeat{
+				AttemptID: tt.attemptID, HeartbeatAt: base.Add(4 * time.Minute),
+				LeaseExpiresAt: base.Add(9 * time.Minute), Phase: "completion_deferred",
+				WorkerMetadataJSON: `{"deferred_completion":{}}`,
+			})
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("RecordWorkAttemptHeartbeat() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+	preserved, err := backend.WorkAttempt(ctx, attemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeJSON, err := json.Marshal(history[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterJSON, err := json.Marshal(preserved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterJSON) != string(beforeJSON) {
+		t.Fatalf("rejected heartbeat changed terminal history: before=%s after=%s", beforeJSON, afterJSON)
+	}
 
 	staleID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{
 		ProjectID:      "detent",
@@ -1729,16 +1763,16 @@ func TestLatestAgentResumeStateMatchesIssueBackendAndModel(t *testing.T) {
 	ctx := context.Background()
 	backend := openTestStore(t, ctx)
 	startedAt := time.Date(2026, 7, 2, 17, 0, 0, 0, time.UTC)
-	failedAttemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{ProjectID: "detent", IssueID: "issue-859", WorkerType: "agent", StartedAt: startedAt})
+	failedAttemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{ProjectID: "example-project", IssueID: "issue-859", WorkerType: "agent", StartedAt: startedAt})
 	if err != nil {
 		t.Fatal(err)
 	}
 	failedID, err := backend.StartSession(ctx, SessionStart{
 		WorkAttemptID:    failedAttemptID,
-		ProjectID:        "detent",
+		ProjectID:        "example-project",
 		IssueID:          "issue-859",
-		Identifier:       "digitaldrywood/detent#859",
-		IssueURL:         "https://github.com/digitaldrywood/detent/issues/859",
+		Identifier:       "example-org/example-project#859",
+		IssueURL:         "https://github.com/example-org/example-project/issues/859",
 		StartedAt:        startedAt,
 		Model:            "gpt-5-codex",
 		RequestedModel:   "gpt-5-codex",
@@ -1761,7 +1795,7 @@ func TestLatestAgentResumeStateMatchesIssueBackendAndModel(t *testing.T) {
 	if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{AttemptID: failedAttemptID, CompletedAt: startedAt.Add(time.Minute), Status: WorkAttemptStatusTerminal, TerminalState: WorkAttemptTerminalFailure}); err != nil {
 		t.Fatal(err)
 	}
-	failedLookup := AgentResumeLookup{WorkAttemptID: failedAttemptID, ProjectID: "detent", IssueID: "issue-859", RequestedModel: "gpt-5-codex", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code"}
+	failedLookup := AgentResumeLookup{WorkAttemptID: failedAttemptID, ProjectID: "example-project", IssueID: "issue-859", RequestedModel: "gpt-5-codex", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code"}
 	for _, test := range []struct {
 		name  string
 		edit  func(*AgentResumeLookup)
@@ -1792,10 +1826,10 @@ func TestLatestAgentResumeStateMatchesIssueBackendAndModel(t *testing.T) {
 	}
 
 	firstID, err := backend.StartSession(ctx, SessionStart{
-		ProjectID:        "detent",
+		ProjectID:        "example-project",
 		IssueID:          "issue-859",
-		Identifier:       "digitaldrywood/detent#859",
-		IssueURL:         "https://github.com/digitaldrywood/detent/issues/859",
+		Identifier:       "example-org/example-project#859",
+		IssueURL:         "https://github.com/example-org/example-project/issues/859",
 		StartedAt:        startedAt.Add(2 * time.Minute),
 		Model:            "gpt-5-codex",
 		RequestedModel:   "gpt-5-codex",
@@ -1818,11 +1852,11 @@ func TestLatestAgentResumeStateMatchesIssueBackendAndModel(t *testing.T) {
 
 	resumeMetadata := `{"pr_number":42,"pr_head_sha":"head-current","pr_base_sha":"base-current"}`
 	resumeAttemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{
-		ProjectID:          "detent",
+		ProjectID:          "example-project",
 		IssueID:            "issue-859",
-		Identifier:         "digitaldrywood/detent#859",
-		IssueURL:           "https://github.com/digitaldrywood/detent/issues/859",
-		Repo:               "digitaldrywood/detent",
+		Identifier:         "example-org/example-project#859",
+		IssueURL:           "https://github.com/example-org/example-project/issues/859",
+		Repo:               "example-org/example-project",
 		WorkerType:         "agent",
 		Lane:               "Todo",
 		AttemptNumber:      2,
@@ -1834,10 +1868,10 @@ func TestLatestAgentResumeStateMatchesIssueBackendAndModel(t *testing.T) {
 	}
 	secondID, err := backend.StartSession(ctx, SessionStart{
 		WorkAttemptID:    resumeAttemptID,
-		ProjectID:        "detent",
+		ProjectID:        "example-project",
 		IssueID:          "issue-859",
-		Identifier:       "digitaldrywood/detent#859",
-		IssueURL:         "https://github.com/digitaldrywood/detent/issues/859",
+		Identifier:       "example-org/example-project#859",
+		IssueURL:         "https://github.com/example-org/example-project/issues/859",
 		StartedAt:        startedAt.Add(4 * time.Minute),
 		Model:            "gpt-5-codex",
 		RequestedModel:   "gpt-5-codex",
@@ -1869,10 +1903,10 @@ func TestLatestAgentResumeStateMatchesIssueBackendAndModel(t *testing.T) {
 	}
 
 	validatorID, err := backend.StartSession(ctx, SessionStart{
-		ProjectID:        "detent",
+		ProjectID:        "example-project",
 		IssueID:          "issue-859",
-		Identifier:       "digitaldrywood/detent#859",
-		IssueURL:         "https://github.com/digitaldrywood/detent/issues/859",
+		Identifier:       "example-org/example-project#859",
+		IssueURL:         "https://github.com/example-org/example-project/issues/859",
 		StartedAt:        startedAt.Add(6 * time.Minute),
 		Model:            "gpt-5-codex",
 		RequestedModel:   "gpt-5-codex",
@@ -1893,95 +1927,81 @@ func TestLatestAgentResumeStateMatchesIssueBackendAndModel(t *testing.T) {
 		t.Fatalf("FinishSession(validator) error = %v", err)
 	}
 
-	got, err := backend.LatestAgentResumeState(ctx, AgentResumeLookup{
-		ProjectID:        "detent",
-		IssueID:          "issue-859",
-		Identifier:       "digitaldrywood/detent#859",
-		IssueURL:         "https://github.com/digitaldrywood/detent/issues/859",
-		PRNumber:         42,
-		PRHeadSHA:        "head-current",
-		PRBaseSHA:        "base-current",
-		RequestedModel:   "gpt-5-codex",
-		AgentBackendID:   "codex",
-		AgentBackendKind: "codex",
-		AgentRole:        "code",
-	})
-	if err != nil {
-		t.Fatalf("LatestAgentResumeState() error = %v", err)
-	}
-	if got.DetentSessionID != secondID || got.ProviderThreadID != "thread-second" || got.ProviderSessionID != "session-second" {
-		t.Fatalf("resume state = %#v, want newest completed second session", got)
-	}
-	if got.RequestedModel != "gpt-5-codex" || got.Model != "gpt-5-codex-resolved" || got.AgentRole != "code" {
-		t.Fatalf("resume models = %#v, want requested and resolved model", got)
+	sqlite := backend.(*sqliteStore)
+	for _, projection := range []string{"typed", "legacy", "backfilled"} {
+		t.Run(projection, func(t *testing.T) {
+			switch projection {
+			case "legacy":
+				if _, err := sqlite.db.ExecContext(ctx, `UPDATE work_attempts SET worker_metadata_json=?,metadata_pr_number=NULL,metadata_pr_head_sha=NULL,metadata_pr_base_sha=NULL,projection_ready=NULL WHERE id=?`, resumeMetadata, resumeAttemptID); err != nil {
+					t.Fatal(err)
+				}
+			case "backfilled":
+				if count, err := sqlite.BackfillTypedProjections(ctx); err != nil || count != 1 {
+					t.Fatalf("BackfillTypedProjections() = %d, %v, want 1, nil", count, err)
+				}
+			}
+			if projection != "legacy" {
+				if _, err := sqlite.db.ExecContext(ctx, `UPDATE work_attempts SET worker_metadata_json='{}' WHERE id=?`, resumeAttemptID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, test := range []struct {
+				name  string
+				edit  func(*AgentResumeLookup)
+				found bool
+			}{
+				{name: "matching PR identity", found: true},
+				{name: "model mismatch", edit: func(lookup *AgentResumeLookup) { lookup.RequestedModel = "gpt-5-codex-mini" }},
+				{name: "role mismatch", edit: func(lookup *AgentResumeLookup) { lookup.AgentRole = "merge" }},
+				{name: "project mismatch", edit: func(lookup *AgentResumeLookup) { lookup.ProjectID = "other" }},
+				{name: "number mismatch", edit: func(lookup *AgentResumeLookup) { lookup.PRNumber = 43 }},
+				{name: "head mismatch", edit: func(lookup *AgentResumeLookup) { lookup.PRHeadSHA = "head-stale" }},
+				{name: "base mismatch", edit: func(lookup *AgentResumeLookup) { lookup.PRBaseSHA = "base-moved" }},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					lookup := AgentResumeLookup{
+						ProjectID:        "example-project",
+						IssueID:          "issue-859",
+						PRNumber:         42,
+						PRHeadSHA:        "head-current",
+						PRBaseSHA:        "base-current",
+						RequestedModel:   "gpt-5-codex",
+						AgentBackendID:   "codex",
+						AgentBackendKind: "codex",
+						AgentRole:        "code",
+					}
+					if test.edit != nil {
+						test.edit(&lookup)
+					}
+					got, err := backend.LatestAgentResumeState(ctx, lookup)
+					if !test.found {
+						if !errors.Is(err, ErrNotFound) {
+							t.Fatalf("lookup=%+v resume=%+v error=%v, want ErrNotFound", lookup, got, err)
+						}
+						return
+					}
+					if err != nil {
+						t.Fatalf("LatestAgentResumeState() error = %v", err)
+					}
+					if got.DetentSessionID != secondID || got.ProviderThreadID != "thread-second" || got.ProviderSessionID != "session-second" {
+						t.Fatalf("resume state = %#v, want newest completed second session", got)
+					}
+					if got.RequestedModel != "gpt-5-codex" || got.Model != "gpt-5-codex-resolved" || got.AgentRole != "code" {
+						t.Fatalf("resume models = %#v, want requested and resolved model", got)
+					}
+				})
+			}
+		})
 	}
 	latestForIssue, err := backend.LatestIssueAgentResumeState(ctx, IssueIdentity{
-		ProjectID:  "detent",
-		Identifier: "digitaldrywood/detent#859",
+		ProjectID:  "example-project",
+		Identifier: "example-org/example-project#859",
 	})
 	if err != nil {
 		t.Fatalf("LatestIssueAgentResumeState() error = %v", err)
 	}
 	if latestForIssue.DetentSessionID != validatorID || latestForIssue.AgentRole != "validator" {
 		t.Fatalf("LatestIssueAgentResumeState() = %#v, want newest completed validator session", latestForIssue)
-	}
-
-	_, err = backend.LatestAgentResumeState(ctx, AgentResumeLookup{
-		ProjectID:        "detent",
-		IssueID:          "issue-859",
-		PRNumber:         42,
-		PRHeadSHA:        "head-current",
-		PRBaseSHA:        "base-current",
-		RequestedModel:   "gpt-5-codex-mini",
-		AgentBackendID:   "codex",
-		AgentBackendKind: "codex",
-		AgentRole:        "code",
-	})
-	if !errors.Is(err, ErrNotFound) {
-		t.Fatalf("LatestAgentResumeState(model mismatch) error = %v, want ErrNotFound", err)
-	}
-
-	_, err = backend.LatestAgentResumeState(ctx, AgentResumeLookup{
-		ProjectID:        "detent",
-		IssueID:          "issue-859",
-		PRNumber:         42,
-		PRHeadSHA:        "head-current",
-		PRBaseSHA:        "base-current",
-		RequestedModel:   "gpt-5-codex",
-		AgentBackendID:   "codex",
-		AgentBackendKind: "codex",
-		AgentRole:        "merge",
-	})
-	if !errors.Is(err, ErrNotFound) {
-		t.Fatalf("LatestAgentResumeState(role mismatch) error = %v, want ErrNotFound", err)
-	}
-
-	for _, tt := range []struct {
-		name    string
-		project string
-		headSHA string
-		baseSHA string
-	}{
-		{name: "project mismatch", project: "other", headSHA: "head-current", baseSHA: "base-current"},
-		{name: "head mismatch", project: "detent", headSHA: "head-stale", baseSHA: "base-current"},
-		{name: "base mismatch", project: "detent", headSHA: "head-current", baseSHA: "base-moved"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := backend.LatestAgentResumeState(ctx, AgentResumeLookup{
-				ProjectID:        tt.project,
-				IssueID:          "issue-859",
-				PRNumber:         42,
-				PRHeadSHA:        tt.headSHA,
-				PRBaseSHA:        tt.baseSHA,
-				RequestedModel:   "gpt-5-codex",
-				AgentBackendID:   "codex",
-				AgentBackendKind: "codex",
-				AgentRole:        "code",
-			})
-			if !errors.Is(err, ErrNotFound) {
-				t.Fatalf("LatestAgentResumeState() error = %v, want ErrNotFound", err)
-			}
-		})
 	}
 }
 
@@ -4298,11 +4318,13 @@ func TestCompletionFenceRevocationMigrationAndAccounting(t *testing.T) {
 func TestPendingCredentialWaitRequiresWriteProof(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name     string
-		issue    string
-		metadata string
-		wantWait bool
+		name            string
+		issue           string
+		metadata        string
+		waitingMetadata string
+		wantWait        bool
 	}{
+		{name: "malformed host cannot prove write", issue: "other", metadata: `{"forge_write_completed_host":"1"}`, waitingMetadata: `{"forge_wait":{"host":1,"error_class":"worker_github_credential_unavailable"}}`, wantWait: true},
 		{name: "inconclusive same issue", issue: "waiting", metadata: `{}`, wantWait: true},
 		{name: "other host proof", issue: "waiting", metadata: `{"forge_write_completed_host":"other.example"}`, wantWait: true},
 		{name: "same issue proof", issue: "waiting", metadata: `{"forge_write_completed_host":"github.com"}`},
@@ -4322,17 +4344,34 @@ func TestPendingCredentialWaitRequiresWriteProof(t *testing.T) {
 					completion.TerminalState = WorkAttemptTerminalCapacity
 					completion.ErrorClass = "forge_unavailable"
 					completion.WorkerMetadataJSON = `{"forge_wait":{"host":"github.com","operation":"git push","error_class":"worker_github_credential_unavailable"}}`
+					if tt.waitingMetadata != "" {
+						completion.WorkerMetadataJSON = tt.waitingMetadata
+					}
 				}
 				if err := backend.CompleteWorkAttempt(t.Context(), completion); err != nil {
 					t.Fatal(err)
 				}
 			}
-			pending, err := backend.ListPendingForgeAvailabilityWaits(t.Context(), "detent")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if (len(pending) == 1) != tt.wantWait {
-				t.Fatalf("pending = %#v, want wait %v", pending, tt.wantWait)
+			for _, stage := range []string{"typed", "legacy", "backfilled"} {
+				sqliteBackend := backend.(*sqliteStore)
+				if stage == "legacy" {
+					if _, err := sqliteBackend.db.ExecContext(t.Context(), `UPDATE work_attempts SET projection_ready=NULL,outcome_excluded=NULL,forge_wait_present=NULL,forge_wait_host=NULL,forge_wait_error_class=NULL,forge_write_completed_host=NULL`); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if stage == "backfilled" {
+					if count, err := sqliteBackend.BackfillTypedProjections(t.Context()); err != nil || count != 2 {
+						t.Fatalf("forge backfill=%d err=%v", count, err)
+					}
+				}
+
+				pending, err := backend.ListPendingForgeAvailabilityWaits(t.Context(), "detent")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if (len(pending) == 1) != tt.wantWait {
+					t.Fatalf("pending = %#v, want wait %v", pending, tt.wantWait)
+				}
 			}
 		})
 	}
@@ -4393,19 +4432,45 @@ func TestLatestAgentResumeStateSeparatesStartupFromContinuation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			lookup := AgentResumeLookup{WorkAttemptID: attempt, ProjectID: "native", IssueID: "work", RequestedModel: model, AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code"}
-			got, err := backend.LatestAgentResumeState(ctx, lookup)
-			if test.found {
-				if err != nil || got.DetentSessionID != session || got.ProviderThreadID != test.provider || got.ProviderSessionID != "" {
-					t.Fatalf("exact persisted session=%+v error=%v", got, err)
-				}
-			} else if !errors.Is(err, ErrNotFound) {
-				t.Fatalf("ineligible session=%+v error=%v", got, err)
+
+			sqlite := backend.(*sqliteStore)
+			metrics := test.metrics
+			if metrics == "" {
+				metrics = "{}"
 			}
-			lookup.WorkAttemptID = 0
-			if got, err := backend.LatestAgentResumeState(ctx, lookup); !errors.Is(err, ErrNotFound) {
-				t.Fatalf("history selected startup/failed continuation=%+v error=%v", got, err)
+			for _, projection := range []string{"typed", "legacy", "backfilled"} {
+				t.Run(projection, func(t *testing.T) {
+					switch projection {
+					case "legacy":
+						if _, err := sqlite.db.ExecContext(ctx, `UPDATE work_attempts SET metrics_json=?,metrics_turns=NULL,projection_ready=NULL WHERE id=?`, metrics, attempt); err != nil {
+							t.Fatal(err)
+						}
+					case "backfilled":
+						if count, err := sqlite.BackfillTypedProjections(ctx); err != nil || count != 1 {
+							t.Fatalf("BackfillTypedProjections() = %d, %v, want 1, nil", count, err)
+						}
+					}
+					if projection != "legacy" {
+						if _, err := sqlite.db.ExecContext(ctx, `UPDATE work_attempts SET metrics_json='{}' WHERE id=?`, attempt); err != nil {
+							t.Fatal(err)
+						}
+					}
+					lookup := AgentResumeLookup{WorkAttemptID: attempt, ProjectID: "native", IssueID: "work", RequestedModel: model, AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code"}
+					got, err := backend.LatestAgentResumeState(ctx, lookup)
+					if test.found {
+						if err != nil || got.DetentSessionID != session || got.ProviderThreadID != test.provider || got.ProviderSessionID != "" {
+							t.Fatalf("exact persisted session=%+v error=%v", got, err)
+						}
+					} else if !errors.Is(err, ErrNotFound) {
+						t.Fatalf("ineligible session=%+v error=%v", got, err)
+					}
+					lookup.WorkAttemptID = 0
+					if got, err := backend.LatestAgentResumeState(ctx, lookup); !errors.Is(err, ErrNotFound) {
+						t.Fatalf("history selected startup/failed continuation=%+v error=%v", got, err)
+					}
+				})
 			}
+
 		})
 	}
 }

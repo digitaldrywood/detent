@@ -18,7 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-// The usage report (decisions section 17.5). Every member of the
+// The usage report. Every member of the
 // organization reads it; the rows are filtered to the projects the member
 // can read, so a member without a grant sees their own organization's shape
 // without another team's spend. Cost is an estimate the client labels "API
@@ -66,7 +66,7 @@ func (s *Service) usageCredentialError(c echo.Context, err error) error {
 		return c.JSON(http.StatusUnauthorized, apiErrorResponse{Code: "unauthorized", Message: "A hosted session is required"})
 	}
 	if errors.Is(err, auth.ErrHostedIdentity) {
-		return c.JSON(http.StatusForbidden, apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
+		return s.refusedAPIError(c, http.StatusForbidden, "forbidden", "This account has no access to this organization", apiErrorResponse{Code: "forbidden", Message: "This account has no access to this organization"})
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return s.nativeAPIError(c, nativeNotFound())
@@ -261,7 +261,7 @@ func usageRangeWindow(value string, now time.Time) (usageWindow, error) {
 	name := strings.TrimSpace(value)
 	if strings.HasPrefix(name, "month:") {
 		if name == "month:" {
-			return usageWindow{}, nativeInvalid("Month must be YYYY-MM in UTC")
+			return usageWindow{}, nativePublicInvalid("Month must be YYYY-MM in UTC")
 		}
 		return costMonth(strings.TrimPrefix(name, "month:"), now)
 	}
@@ -270,7 +270,7 @@ func usageRangeWindow(value string, now time.Time) (usageWindow, error) {
 	}
 	span, known := usageRanges[name]
 	if !known {
-		return usageWindow{}, nativeInvalid("Range must be 24h, 7d, 30d, 90d or month:YYYY-MM in UTC")
+		return usageWindow{}, nativePublicInvalid("Range must be 24h, 7d, 30d, 90d or month:YYYY-MM in UTC")
 	}
 	// Usage is stored per UTC hour, so the window starts on an hour boundary:
 	// the current partial hour plus the full hours before it, span in all.
@@ -303,6 +303,20 @@ func readUsageRows(ctx context.Context, database nativeQueryer, organization str
 	if err != nil {
 		return nil, err
 	}
+	attemptSource := "native_attempts"
+	if ownership, filtered := reportsScopeFrom(ctx); filtered {
+		scope := nativeScope{organization: tracker.OrganizationID(organization)}
+		if len(projects) == 1 {
+			scope.project = tracker.ProjectID(projects[0])
+		}
+		database, err = prepareReportsQuery(ctx, database, scope, "report_attempts")
+		if err != nil {
+			return nil, err
+		}
+		if ownership.attempts.attempts() {
+			attemptSource = "report_attempts"
+		}
+	}
 	projectClause, projectArg := "u.project_id IN (SELECT value FROM json_each(?))", any(encoded)
 	if len(projects) == 1 {
 		projectClause, projectArg = "u.project_id = ?", projects[0]
@@ -310,7 +324,7 @@ func readUsageRows(ctx context.Context, database nativeQueryer, organization str
 	query := `SELECT u.attempt_id, u.period, u.provider, u.model, u.input, u.cached_input, u.output, u.cost_estimate, u.currency,
  coalesce(r.id, ''), coalesce(r.display_name, ''), coalesce(a.started_at, ''), coalesce(a.updated_at, '')
 FROM attempt_usage u
-LEFT JOIN native_attempts a ON a.id = u.attempt_id
+LEFT JOIN ` + attemptSource + ` a ON a.id = u.attempt_id
 LEFT JOIN lease_runners lr ON lr.lease_id = a.lease_id
 LEFT JOIN runner_identities r ON r.id = lr.runner_id AND r.organization_id = u.organization_id
 WHERE u.organization_id = ? AND u.period >= ? AND u.period <= ?
@@ -439,7 +453,7 @@ type runnerCapacity struct {
 	Limit       int
 }
 
-// buildUsageReport folds the stored rows into the section 17.5 shape. It is a
+// buildUsageReport folds the stored rows into the usage report shape. It is a
 // pure function of what it is given so the aggregation is testable without a
 // database.
 func buildUsageReport(window usageWindow, rows []usageRow, limits map[string]usageLimit, capacity map[string]runnerCapacity, prices UsageConfig) usageReport {

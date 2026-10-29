@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -82,7 +83,13 @@ func TestRecoveryPreservesCollaborationAndFencesAuthority(t *testing.T) {
 	for suffix, want := range preserved {
 		response := performHubAPIRequest(t, restored, http.MethodGet, issuePath+suffix, recoveryTestToken, nil)
 		requireNativeStatus(t, response, http.StatusOK)
-		if !bytes.Equal(response.Body.Bytes(), want) {
+		var before, after map[string]any
+		if err := json.Unmarshal(want, &before); err != nil {
+			t.Fatal(err)
+		}
+		decodeHubResponse(t, response, &after)
+		normalizeTestDashboardWatermark(t, before, after)
+		if !reflect.DeepEqual(before, after) {
 			t.Fatalf("restored %s changed: %s", suffix, response.Body)
 		}
 	}

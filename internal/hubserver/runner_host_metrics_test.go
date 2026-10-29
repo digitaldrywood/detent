@@ -3,6 +3,7 @@ package hubserver
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -83,18 +84,23 @@ func TestRunnerHostSummaries(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		raw  any
+		want []hostmetrics.Acknowledgment
 	}{
-		{"malformed field", map[string]any{"hour": "bad"}},
-		{"malformed segment", []any{map[string]any{"sample_count": "bad"}}},
-		{"oversized segment", []any{map[string]any{"ignored": strings.Repeat("x", 1024)}}},
-		{"too many segments", make([]hostmetrics.Summary, 25)},
-		{"negative metric", []any{map[string]any{"cpu_busy_sum_percent": -1}}},
-		{"future hour", []hostmetrics.Summary{func() hostmetrics.Summary { s := a; s.Hour = a.Hour.Add(time.Hour); return s }()}},
-		{"counts exceed samples", []hostmetrics.Summary{func() hostmetrics.Summary { s := a; s.MemorySampleCount = 3; return s }()}},
+		{"malformed field", map[string]any{"hour": "bad"}, nil},
+		{"malformed segment", []any{map[string]any{"sample_count": "bad"}}, nil},
+		{"oversized segment", []any{map[string]any{"ignored": strings.Repeat("x", 1024)}}, nil},
+		{"too many segments", make([]hostmetrics.Summary, 25), nil},
+		{"negative metric", []any{map[string]any{"cpu_busy_sum_percent": -1}}, nil},
+		{"future hour", []hostmetrics.Summary{func() hostmetrics.Summary { s := a; s.Hour = a.Hour.Add(time.Hour); return s }()}, nil},
+		{"counts exceed samples", []hostmetrics.Summary{func() hostmetrics.Summary { s := a; s.MemorySampleCount = 3; return s }()}, nil},
+		{"future segment", []hostmetrics.Summary{func() hostmetrics.Summary { s := a; s.SegmentID = now.Add(time.Nanosecond); return s }()}, nil},
+		{"accepted at current time", []hostmetrics.Summary{b}, []hostmetrics.Acknowledgment{{Hour: b.Hour, SegmentID: b.SegmentID}}},
+		{"mixed valid and invalid", []any{a, map[string]any{"sample_count": "bad"}, b}, []hostmetrics.Acknowledgment{{Hour: a.Hour, SegmentID: a.SegmentID}, {Hour: b.Hour, SegmentID: b.SegmentID}}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if snapshot := send(test.raw); len(snapshot.HostMetricsAcknowledged) != 0 {
-				t.Fatalf("invalid summary acknowledged: %+v", snapshot)
+			snapshot := send(test.raw)
+			if len(snapshot.HostMetricsAcknowledged) != len(test.want) || len(test.want) > 0 && !reflect.DeepEqual(snapshot.HostMetricsAcknowledged, test.want) {
+				t.Fatalf("acknowledgments=%+v want=%+v", snapshot.HostMetricsAcknowledged, test.want)
 			}
 		})
 	}

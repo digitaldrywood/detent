@@ -9,14 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
 )
 
 func readNativeBlockerHistory(ctx context.Context, q nativeQueryer, scope nativeScope, issue tracker.NativeIssue) ([]tracker.CollaborationEvent, error) {
-	rows, err := q.QueryContext(ctx, `SELECT sequence, type, actor_json, data_json, recorded_at FROM collaboration_events
-WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND json_extract(data_json, '$.revision') IS NOT NULL ORDER BY sequence`, scope.organization, scope.project, issue.WorkItemID)
+	rows, err := q.QueryContext(ctx, `SELECT sequence, type, actor_json, data_json, recorded_at, page_projection_ready, event_revision FROM collaboration_events
+WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND (event_revision IS NOT NULL OR page_projection_ready IS NULL) ORDER BY sequence`, scope.organization, scope.project, issue.WorkItemID)
 	if err != nil {
 		return nil, err
 	}
@@ -25,14 +24,30 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND json_extra
 	for rows.Next() {
 		event := tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: issue.WorkItemID}
 		var actor, data, at string
-		if err := rows.Scan(&event.AggregateSequence, &event.Type, &actor, &data, &at); err != nil {
+		var ready, revision sql.NullInt64
+		if err := rows.Scan(&event.AggregateSequence, &event.Type, &actor, &data, &at, &ready, &revision); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(actor), &event.Actor); err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal([]byte(data), &event.Data); err != nil {
+		if !ready.Valid {
+			var projected tracker.CollaborationData
+			if err := decodePageEvent(data, &projected); err != nil {
+				return nil, err
+			}
+			if projected.Revision == 0 {
+				continue
+			}
+		}
+		if err := decodeRunHistory(ctx, q, data, &event.Data); err != nil {
 			return nil, err
+		}
+		if ready.Valid && ready.Int64 == 1 {
+			event.Data.Revision = tracker.Revision(revision.Int64)
+		}
+		if event.Data.Revision == 0 {
+			continue
 		}
 		if event.RecordedAt, err = parseTimeValue(at); err != nil {
 			return nil, err
@@ -154,16 +169,8 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 	if _, err := validateClaimPolicy(ctx, tx, claimCandidateQuery{NativeScope: &scope, PolicyID: request.PolicyID}, attempt.MachineID); err != nil {
 		return err
 	}
-	approval, err := readProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project))
-	if err != nil {
+	if _, err := requireProjectPolicy(ctx, tx, string(scope.organization)+"/"+string(scope.project)); err != nil {
 		return err
-	}
-	workflow, err := config.ApplyNativePolicy(config.Workflow{}, approval.Policy)
-	if err != nil {
-		return err
-	}
-	if !workflow.Config.Operator.ActionEnabled(config.OperatorActionReturnRetiredParks) {
-		return policyMismatch("Recorded blocker recovery is not enabled by the selected policy")
 	}
 	history, err := readNativeBlockerHistory(ctx, tx, scope, issue)
 	if err != nil {
@@ -173,7 +180,7 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 	disposition := attempt.Disposition
 	reason := strings.ReplaceAll(request.ReasonDetail, " ", "_")
 	if !valid || prior != request.State || disposition.HumanAction || disposition.ReasonCode != "" && (disposition.ReasonCode != "instance_limitation" || !instanceOwnedBlockers(disposition)) || !disposition.Blockers || len(disposition.BlockerEvidence) == 0 || reason != "recorded_blocker_recovery" && reason != "dependency_auto_unblock" {
-		return nativeInvalid("Recorded blockers do not authorize recovery")
+		return nativePublicInvalid("Recorded blockers do not authorize recovery")
 	}
 	project, err := readNativeProject(ctx, tx, scope)
 	if err != nil {
@@ -182,14 +189,14 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 	if !slices.ContainsFunc(project.States, func(state tracker.NativeState) bool {
 		return state.Name == prior && state.Dispatchable && !state.Terminal && !state.OperatorOnly
 	}) {
-		return nativeInvalid("Recorded blocker return lane is not dispatchable")
+		return nativePublicInvalid("Recorded blocker return lane is not dispatchable")
 	}
 	for _, blocker := range disposition.BlockerEvidence {
 		if blocker.Owner == workpad.BlockerOwnerInstance {
 			continue
 		}
 		if blocker.Unverifiable || blocker.Owner != workpad.BlockerOwnerOrchestrator || blocker.Predicate == nil || blocker.Predicate.Type != workpad.PredicateIssueState {
-			return nativeInvalid("Recorded blocker cannot be verified by native dependencies")
+			return nativePublicInvalid("Recorded blocker cannot be verified by native dependencies")
 		}
 		reference := blocker.Predicate.Identifier
 		if reference == "" {
@@ -206,7 +213,7 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 			})
 		}
 		if !ready {
-			return nativeInvalid("Recorded dependency remains unfinished")
+			return nativePublicInvalid("Recorded dependency remains unfinished")
 		}
 	}
 	var satisfied bool
@@ -214,7 +221,7 @@ func validateNativeRecordedRecovery(ctx context.Context, tx *sql.Tx, scope nativ
 		return err
 	}
 	if !satisfied {
-		return nativeInvalid("Native dependencies remain unfinished")
+		return nativePublicInvalid("Native dependencies remain unfinished")
 	}
 	return nil
 }

@@ -18,6 +18,9 @@ func (s *Service) resolveTenantKey(ctx context.Context, allocation Organization,
 		return cloudassert.Claims{}, cloudassert.ErrInvalid
 	}
 	key, err := s.auth.accessKey(ctx, "id", origin.KeyID)
+	if oauthGrantID(origin.KeyID) {
+		key, err = s.oauthKey(ctx, "id", origin.KeyID, true)
+	}
 	if err != nil || !key.active(s.config.now()) || subtle.ConstantTimeCompare([]byte(key.credentialBinding()), []byte(origin.CredentialBinding)) != 1 {
 		return cloudassert.Claims{}, cloudassert.ErrInvalid
 	}

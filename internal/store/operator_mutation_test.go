@@ -58,6 +58,17 @@ func TestOperatorMutationDurableRetry(t *testing.T) {
 	if err != nil || !found || pending.Outcome != "pending" {
 		t.Fatalf("pending=%+v %t %v", pending, found, err)
 	}
+
+	sqliteBackend := backend.(*sqliteStore)
+	if _, err := sqliteBackend.db.ExecContext(t.Context(), `UPDATE workflow_phase_events SET retry_identity=NULL,input_hash=NULL,correlation_id=NULL,projection_ready=NULL`); err != nil {
+		t.Fatal(err)
+	}
+	if receipt, found, err := records.OperatorMutation(t.Context(), m); err != nil || !found || receipt.CorrelationID != m.CorrelationID {
+		t.Fatalf("legacy receipt=%+v found=%t err=%v", receipt, found, err)
+	}
+	if reserved, err := records.ReserveOperatorMutation(t.Context(), m); err != nil || reserved {
+		t.Fatalf("legacy duplicate reservation=%t err=%v", reserved, err)
+	}
 	if claimed, err := records.ClaimOperatorMutation(t.Context(), m); err != nil || !claimed {
 		t.Fatalf("execution claim=%t %v", claimed, err)
 	}
@@ -120,4 +131,31 @@ func TestOperatorMutationDurableRetry(t *testing.T) {
 			}
 		})
 	}
+	for _, identity := range []string{"missing-hash-one", "missing-hash-two"} {
+		missing := base
+		missing.RetryIdentity = identity
+		if reserved, err := records.ReserveOperatorMutation(t.Context(), missing); err != nil || !reserved {
+			t.Fatalf("reserve missing hash=%t err=%v", reserved, err)
+		}
+		for _, stage := range []string{"typed", "legacy", "backfilled"} {
+			sqliteBackend := backend.(*sqliteStore)
+			if stage == "legacy" {
+				if _, err := sqliteBackend.db.ExecContext(t.Context(), `UPDATE workflow_phase_events SET retry_identity=NULL,input_hash=NULL,correlation_id=NULL,projection_ready=NULL WHERE retry_identity=?`, identity); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if stage == "backfilled" {
+				if count, err := sqliteBackend.BackfillTypedProjections(t.Context()); err != nil || count != 1 {
+					t.Fatalf("receipt backfill=%d err=%v", count, err)
+				}
+			}
+			if claimed, err := records.ClaimOperatorMutation(t.Context(), missing); err != nil || claimed {
+				t.Fatalf("%s NULL hash authorized claim=%t err=%v", stage, claimed, err)
+			}
+			if err := records.CompleteOperatorMutation(t.Context(), OperatorReceipt{Metadata: missing, Outcome: "succeeded"}); !errors.Is(err, mutation.ErrUncertain) {
+				t.Fatalf("%s NULL hash authorized completion: %v", stage, err)
+			}
+		}
+	}
+
 }

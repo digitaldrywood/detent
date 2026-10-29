@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"reflect"
@@ -37,80 +38,136 @@ func TestRunnerUsageCosts(t *testing.T) {
 		{name: "explicit paid zero survives", mode: "metered", placement: "local", paid: &zero, known: &zero, basis: "runner_reported"},
 		{name: "partial reported cost preserves known subtotal", mode: "metered", placement: "local", paid: &paid, estimate: 0.1, known: &paid, basis: "runner_reported", coverage: "partial", unreported: 1},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := Config{now: func() time.Time { return now }}
-			if test.hubPrices {
-				cfg.Usage = &UsageConfig{Currency: "USD", Prices: map[string]UsagePrice{"test-model": {Input: 1000, Currency: "USD"}}}
-			}
-			f := newDefaultNativeFixture(t, cfg)
-			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
-			issue := f.create(t, "usage")
-			worker := f.worker(t, "worker")
-			lease := claimNativeAttempt(t, f, worker, "machine", "session", issue.WorkItemID)
-			start := nativeStartedEvent(lease)
-			path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, start), http.StatusOK)
-			if test.placement == "sprite" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_name','worker') WHERE id=?`, lease.MachineID); err != nil {
+		for _, typed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/typed=%t", test.name, typed), func(t *testing.T) {
+				t.Parallel()
+				cfg := Config{now: func() time.Time { return now }, RunDetails: &memoryRunDetails{}}
+				if test.hubPrices {
+					cfg.Usage = &UsageConfig{Currency: "USD", Prices: map[string]UsagePrice{"test-model": {Input: 1000, Currency: "USD"}}}
+				}
+				f := newDefaultNativeFixture(t, cfg)
+				approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+				issue := f.create(t, "usage")
+				worker := f.worker(t, "worker")
+				lease := claimNativeAttempt(t, f, worker, "machine", "session", issue.WorkItemID)
+				start := nativeStartedEvent(lease)
+				path := f.base + "/work-items/" + string(issue.WorkItemID) + "/events"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, start), http.StatusOK)
+				if test.placement == "sprite" {
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE machines SET machine_facts_ready=NULL,capabilities_json=json_set(capabilities_json,'$.sprite_name','worker') WHERE id=?`, lease.MachineID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				setSpriteFactsFixtureMode(t, f, typed)
+				from, to := now.Add(-time.Hour), now
+				entry := tracker.NativeUsage{Provider: "codex", Model: "test-model", Input: 100, Output: 10, BillingMode: test.mode, ReportedCostMicros: test.paid, CostEstimate: test.estimate, Currency: "USD", Revision: 1, From: from, To: to, ReportedAt: now, CostCoverage: test.coverage}
+				if test.paid != nil {
+					entry.CostSource = "runner_report"
+				}
+				finish := start
+				finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 2, "succeeded"
+				finish.Data.Usage = []tracker.NativeUsage{entry}
+				sourceCount := 1
+				if test.incremental {
+					first, second := entry, entry
+					first.UsageKind, second.UsageKind = "incremental", "incremental"
+					first.SourceID, second.SourceID = "turn1", "turn2"
+					first.To = from.Add(30 * time.Minute)
+					second.From = first.To
+					finish.Data.Usage = []tracker.NativeUsage{first, second}
+					sourceCount = 2
+				}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, finish), http.StatusOK)
+				finish.IdempotencyKey = "finish-replay"
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, finish), http.StatusOK)
+
+				probe := finish
+				probe.Data.Usage = append([]tracker.NativeUsage(nil), finish.Data.Usage...)
+				for i := range probe.Data.Usage {
+					probe.Data.Usage[i].Model = "attribution-probe"
+				}
+				legacyData := tracker.NativeRunData{MachineID: lease.MachineID}
+				machine := tracker.MachineID("machine-contradictory")
+				var ready any
+				if typed {
+					ready = 1
+					legacyData.MachineID, machine = machine, lease.MachineID
+				}
+				raw, err := json.Marshal(legacyData)
+				if err != nil {
 					t.Fatal(err)
 				}
-			}
-			from, to := now.Add(-time.Hour), now
-			entry := tracker.NativeUsage{Provider: "codex", Model: "test-model", Input: 100, Output: 10, BillingMode: test.mode, ReportedCostMicros: test.paid, CostEstimate: test.estimate, Currency: "USD", Revision: 1, From: from, To: to, ReportedAt: now, CostCoverage: test.coverage}
-			if test.paid != nil {
-				entry.CostSource = "runner_report"
-			}
-			finish := start
-			finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 2, "succeeded"
-			finish.Data.Usage = []tracker.NativeUsage{entry}
-			sourceCount := 1
-			if test.incremental {
-				first, second := entry, entry
-				first.UsageKind, second.UsageKind = "incremental", "incremental"
-				first.SourceID, second.SourceID = "turn1", "turn2"
-				first.To = from.Add(30 * time.Minute)
-				second.From = first.To
-				finish.Data.Usage = []tracker.NativeUsage{first, second}
-				sourceCount = 2
-			}
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, finish), http.StatusOK)
-			finish.IdempotencyKey = "finish-replay"
-			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, finish), http.StatusOK)
-			var report monthlyCostReport
-			response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/usage/monthly?month=2026-03", worker, nil)
-			requireNativeStatus(t, response, http.StatusOK)
-			decodeHubResponse(t, response, &report)
-			if len(report.Sources) != sourceCount {
-				t.Fatalf("sources: %+v", report)
-			}
-			source := report.Sources[0]
-			if source.AttemptID != start.Data.AttemptID || source.WorkItemID != string(issue.WorkItemID) || source.ProjectID != string(f.project.ID) || source.Placement != test.placement || source.Basis != test.basis || source.ReportedCostSource != entry.CostSource || !source.ReceivedAt.Equal(now) {
-				t.Fatalf("attribution or provenance: %+v", source)
-			}
-			if (test.estimate > 0 || test.hubPrices) && (source.EstimatedAmountMicros == nil || *source.EstimatedAmountMicros != 100_000) {
-				t.Fatalf("estimate lost: %+v", source)
-			}
-			if test.mode == "subscription" {
-				if len(report.Totals) != 0 || source.AllocatedMicros != nil || source.Input != 100 {
-					t.Fatalf("subscription became API spend: %+v", report)
+				tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
 				}
-			} else {
-				if len(report.Totals) != 1 || report.Totals[0].Unknown != test.unknown || report.Totals[0].UnreportedCosts != test.unreported || !reflect.DeepEqual(report.Totals[0].KnownMicros, test.known) {
-					t.Fatalf("cost precedence: %+v", report.Totals)
+				defer tx.Rollback()
+				if _, err := tx.ExecContext(t.Context(), `UPDATE native_attempts SET machine_id=?,usage_facts_ready=?,data_json=? WHERE id=?`, machine, ready, string(raw), finish.Data.AttemptID); err != nil {
+					t.Fatal(err)
 				}
-			}
-			if report.RunnerReporting != "finish_time" || report.ActiveAttempts != 0 || report.UnreportedAttempts != 0 || !report.ActiveWorkComplete {
-				t.Fatalf("finish coverage: %+v", report)
-			}
-			organization, err := f.service.database.monthlyCosts(t.Context(), string(f.project.OrganizationID), "organization", nil, report.Period, now)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(organization.Totals, report.Totals) {
-				t.Fatal("project and organization totals differ")
-			}
-		})
+				if err := recordRunnerUsageCosts(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID}, probe, UsageConfig{}, now); err != nil {
+					t.Fatal(err)
+				}
+				if err := tx.QueryRowContext(t.Context(), `SELECT observation_json FROM usage_cost_observations WHERE organization_id=? AND metric='attribution-probe' LIMIT 1`, f.project.OrganizationID).Scan(&raw); err != nil {
+					t.Fatal(err)
+				}
+				var attribution costObservation
+				if err := json.Unmarshal(raw, &attribution); err != nil {
+					t.Fatal(err)
+				}
+				if attribution.MachineID != string(lease.MachineID) || attribution.Placement != test.placement {
+					t.Fatalf("attribution: %+v", attribution)
+				}
+				if err := tx.Rollback(); err != nil {
+					t.Fatal(err)
+				}
+				var input, output int64
+				var cost float64
+				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT input_tokens,output_tokens,cost_estimate FROM native_attempts WHERE id=?", start.Data.AttemptID).Scan(&input, &output, &cost); err != nil {
+					t.Fatal(err)
+				}
+				wantCost := test.estimate
+				if test.hubPrices {
+					wantCost = 0.1
+				}
+				if input != int64(100*sourceCount) || output != int64(10*sourceCount) || math.Abs(cost-wantCost*float64(sourceCount)) > 1e-9 {
+					t.Fatalf("usage summary: input=%d output=%d cost=%g", input, output, cost)
+				}
+				var report monthlyCostReport
+				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/usage/monthly?month=2026-03", worker, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				decodeHubResponse(t, response, &report)
+				if len(report.Sources) != sourceCount {
+					t.Fatalf("sources: %+v", report)
+				}
+				source := report.Sources[0]
+				if source.AttemptID != start.Data.AttemptID || source.WorkItemID != string(issue.WorkItemID) || source.ProjectID != string(f.project.ID) || source.Placement != test.placement || source.Basis != test.basis || source.ReportedCostSource != entry.CostSource || !source.ReceivedAt.Equal(now) {
+					t.Fatalf("attribution or provenance: %+v", source)
+				}
+				if (test.estimate > 0 || test.hubPrices) && (source.EstimatedAmountMicros == nil || *source.EstimatedAmountMicros != 100_000) {
+					t.Fatalf("estimate lost: %+v", source)
+				}
+				if test.mode == "subscription" {
+					if len(report.Totals) != 0 || source.AllocatedMicros != nil || source.Input != 100 {
+						t.Fatalf("subscription became API spend: %+v", report)
+					}
+				} else {
+					if len(report.Totals) != 1 || report.Totals[0].Unknown != test.unknown || report.Totals[0].UnreportedCosts != test.unreported || !reflect.DeepEqual(report.Totals[0].KnownMicros, test.known) {
+						t.Fatalf("cost precedence: %+v", report.Totals)
+					}
+				}
+				if report.RunnerReporting != "finish_time" || report.ActiveAttempts != 0 || report.UnreportedAttempts != 0 || !report.ActiveWorkComplete {
+					t.Fatalf("finish coverage: %+v", report)
+				}
+				organization, err := f.service.database.monthlyCosts(t.Context(), string(f.project.OrganizationID), "organization", nil, report.Period, now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(organization.Totals, report.Totals) {
+					t.Fatal("project and organization totals differ")
+				}
+			})
+		}
 	}
 }
 
@@ -166,7 +223,7 @@ func TestRunnerUsageCorrections(t *testing.T) {
 	finish.Type, finish.IdempotencyKey, finish.Data.Sequence, finish.Data.Outcome = "run.finished", "finish", 2, "succeeded"
 	finish.Data.Usage = []tracker.NativeUsage{entry}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path, worker, finish), http.StatusOK)
-	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_name','changed') WHERE id=?`, lease.MachineID); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE machines SET machine_facts_ready=NULL,capabilities_json=json_set(capabilities_json,'$.sprite_name','changed') WHERE id=?`, lease.MachineID); err != nil {
 		t.Fatal(err)
 	}
 	paid := int64(20_001)

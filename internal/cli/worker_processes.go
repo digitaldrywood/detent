@@ -12,12 +12,44 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type workerProcessStore interface {
 	ListActiveWorkerProcesses(context.Context) ([]store.WorkerProcess, error)
 	MarkSessionWorkerProcessReaped(context.Context, int64, store.WorkerProcessReap) error
+}
+
+type releasedExecutionProcessStore interface {
+	workerProcessStore
+	WorkAttempt(context.Context, int64) (store.WorkAttempt, error)
+}
+
+func releasedExecutionWorkersStopped(ctx context.Context, processes releasedExecutionProcessStore, item tracker.NativeWorkItemID, attempt tracker.NativeAttempt) (bool, error) {
+	if processes == nil || attempt.Runtime == nil || attempt.Runtime.LocalAttemptID <= 0 {
+		return false, nil
+	}
+	local, err := processes.WorkAttempt(ctx, attempt.Runtime.LocalAttemptID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if local.IssueID != string(item) || local.Status != store.WorkAttemptStatusTerminal || local.StartedAt.After(attempt.StartedAt) {
+		return false, nil
+	}
+	active, err := processes.ListActiveWorkerProcesses(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, process := range active {
+		if process.IssueID == string(item) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 type workerProcessReapFunc func(context.Context, procgroup.Identity, time.Duration) (procgroup.TerminationOutcome, error)
@@ -159,7 +191,9 @@ func reapWorkerProcessesWithCleanup(
 	if strings.TrimSpace(reason) == "startup" && !terminationFailed && hasAttempts {
 		gone := make([]int64, 0, len(attempts))
 		for _, attempt := range attempts {
-			gone = append(gone, attempt.ID)
+			if !strings.EqualFold(strings.TrimSpace(attempt.Phase), "completion_deferred") {
+				gone = append(gone, attempt.ID)
+			}
 		}
 		if _, err := attemptStore.TimeoutExpiredWorkAttempts(ctx, store.WorkAttemptTimeout{
 			Now: now().UTC(), ConfirmedGoneAttemptIDs: gone,

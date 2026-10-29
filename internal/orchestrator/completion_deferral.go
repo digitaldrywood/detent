@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/runtimeoutput"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -34,6 +35,7 @@ type deferredCompletion struct {
 	Result                 runpkg.RunResult               `json:"result"`
 	Error                  string                         `json:"error,omitempty"`
 	TerminalState          store.WorkAttemptTerminalState `json:"terminal_state,omitempty"`
+	WorkspacePreparation   bool                           `json:"workspace_preparation,omitempty"`
 	WorkerProcessReap      bool                           `json:"worker_process_reap,omitempty"`
 	NativeRecoveryRequired bool                           `json:"native_recovery_required,omitempty"`
 	CompletedAt            time.Time                      `json:"completed_at"`
@@ -81,6 +83,14 @@ type deferredCompletionAvailability struct {
 	Message string                             `json:"message"`
 }
 
+type deferredCompletionError struct {
+	message string
+	cause   error
+}
+
+func (e *deferredCompletionError) Error() string { return e.message }
+func (e *deferredCompletionError) Unwrap() error { return e.cause }
+
 func (r deferredCompletion) statusMessage() string {
 	if r.Availability.Class == string(gate.ReasonAutomatedReviewMissing) {
 		return errNativeReviewPending.Error()
@@ -107,6 +117,7 @@ func newDeferredCompletion(event runpkg.Completion, running Running, fenceErr er
 	record := deferredCompletion{
 		Schema:                 deferredCompletionSchema,
 		TerminalState:          terminalStateForRun(event.Err, event.Result.FinalState),
+		WorkspacePreparation:   errors.Is(event.Err, runpkg.ErrWorkspacePreparation),
 		WorkerProcessReap:      errors.Is(event.Err, runpkg.ErrWorkerProcessReap),
 		NativeRecoveryRequired: errors.Is(event.Err, runpkg.ErrNativeRecoveryRequired),
 		Running:                running,
@@ -185,6 +196,7 @@ func (r deferredCompletion) completion() runpkg.Completion {
 	event := runpkg.Completion{
 		IssueID: r.Running.Issue.ID,
 		Request: runpkg.RunRequest{
+			Policy:              r.Running.Policy,
 			ProjectID:           r.Request.ProjectID,
 			Issue:               cloneIssue(r.Request.Issue),
 			Attempt:             r.Request.Attempt,
@@ -232,6 +244,12 @@ func (r deferredCompletion) completion() runpkg.Completion {
 		}, r.ForgeAvailability.ErrorClass, event.Err)
 	}
 	if event.Err != nil {
+		if r.WorkspacePreparation {
+			event.Err = &deferredCompletionError{
+				message: event.Err.Error(),
+				cause:   errors.Join(runpkg.ErrWorkspacePreparation, event.Err),
+			}
+		}
 		if r.WorkerProcessReap {
 			event.Err = errors.Join(runpkg.ErrWorkerProcessReap, event.Err)
 		}
@@ -258,6 +276,22 @@ func (o *Orchestrator) deferTrackerUnavailableCompletion(
 	// Reuse completion rejection rather than enqueueing the same dead token.
 	if errors.Is(fenceErr, runpkg.ErrExecutionAuthorityUnavailable) {
 		o.rejectUnavailableCompletion(ctx, state, event, running, fenceErr, true)
+		return
+	}
+	var rejected interface {
+		NativeTerminalFailure() tracker.NativeTerminalFailure
+	}
+	if errors.As(fenceErr, &rejected) && rejected.NativeTerminalFailure().Public().Stage == "event_publication" {
+		failure := rejected.NativeTerminalFailure().Public()
+		err := o.abandonClaim(ctx, event.IssueID)
+		released := err == nil || errors.Is(err, runpkg.ErrExecutionAuthorityUnavailable) || errors.Is(err, ErrSchedulingClaimLost) || errors.As(err, &rejected) && rejected.NativeTerminalFailure().Public().Stage == "event_publication"
+		if !released {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+			return
+		}
+		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, failure.ErrorClass, failure.Error, "failed", failure.Summary)
+		o.clearLiveWorkAttemptState(state, telemetry.WorkAttempt{IssueID: event.IssueID, AttemptID: running.WorkAttemptID})
+		o.releaseClaim(state, event.IssueID)
 		return
 	}
 	deferredAt := o.clockNow().UTC()
@@ -372,6 +406,7 @@ func (o *Orchestrator) persistDeferredCompletion(ctx context.Context, state *Sta
 	heartbeat := store.WorkAttemptHeartbeat{
 		AttemptID:              record.Running.WorkAttemptID,
 		HeartbeatAt:            record.DeferredAt,
+		LeaseExpiresAt:         o.workAttemptLeaseExpiresAt(record.DeferredAt),
 		Phase:                  deferredCompletionPhase,
 		StatusMessage:          record.statusMessage(),
 		WaitReason:             record.waitReason(),
@@ -492,7 +527,8 @@ func (o *Orchestrator) recoverDeferredCompletions(ctx context.Context, state *St
 		if claim.Issue.ID != "" {
 			state.Claimed[issueID] = claim
 		}
-		if record.AuthorityRestored && o.captureDeferredExecution(&record) {
+		if record.AuthorityRestored {
+			o.captureDeferredExecution(&record)
 			record.DeferredAt = now
 			record.Persisted = o.persistDeferredCompletion(ctx, state, record)
 			state.deferredCompletions[issueID] = record
@@ -577,10 +613,9 @@ func (o *Orchestrator) retryDeferredCompletions(ctx context.Context, state *Stat
 			if claim.Issue.ID != "" {
 				state.Claimed[issueID] = claim
 			}
-			if o.captureDeferredExecution(&record) {
-				record.DeferredAt = now
-				record.Persisted = false
-			}
+			o.captureDeferredExecution(&record)
+			record.DeferredAt = now
+			record.Persisted = false
 		}
 		if !record.Persisted {
 			record.DeferredAt = now
@@ -651,7 +686,10 @@ func (o *Orchestrator) restoreDeferredExecution(ctx context.Context, record defe
 	if source, ok := o.scheduling.(interface {
 		RestoreCompletion(context.Context, SchedulingRequest, connector.Issue, json.RawMessage) (Claimed, error)
 	}); ok {
-		policy := record.Running.Policy
+		policy := record.Running.ClaimPolicy
+		if policy.ID == "" {
+			policy = record.Running.Policy
+		}
 		if policy.ID == "" {
 			policy = o.cfg.Policy
 		}
@@ -665,7 +703,11 @@ func (o *Orchestrator) captureDeferredExecution(record *deferredCompletion) bool
 		return false
 	}
 	if source, ok := o.scheduling.(interface{ RunExecution(string) runpkg.Execution }); ok {
-		if execution, ok := source.RunExecution(record.Running.Issue.ID).(interface{ CompletionState() json.RawMessage }); ok {
+		execution := source.RunExecution(record.Running.Issue.ID)
+		if owner, ok := execution.(interface{ RetainCompletion() }); ok {
+			owner.RetainCompletion()
+		}
+		if execution, ok := execution.(interface{ CompletionState() json.RawMessage }); ok {
 			record.Execution = execution.CompletionState()
 			return true
 		}

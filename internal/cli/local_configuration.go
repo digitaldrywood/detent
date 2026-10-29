@@ -46,17 +46,6 @@ func initializeLocalConfiguration(ctx context.Context, settings store.LocalConfi
 			}
 		}
 	}
-	if cfg.Path != "" {
-		if _, err := os.Stat(cfg.Path); err == nil {
-			full, err := globalconfig.Read(cfg.Path, globalconfig.WithMissingProjectPaths())
-			if err != nil {
-				return cfg, err
-			}
-			cfg.Projects = full.Projects
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return cfg, err
-		}
-	}
 	selection := legacy.Global.Agents.ModelSelection
 	if selection == nil && cfg.Global.Agents.ModelSelection.Configured() {
 		selection = &cfg.Global.Agents.ModelSelection
@@ -100,16 +89,24 @@ func writeRuntimeConfiguration(ctx context.Context, settings store.LocalConfigur
 	return settings.MutateLocalConfiguration(ctx, cfg, func(current *globalconfig.Config, _ string) bool { current.Projects = cfg.Projects; return true })
 }
 
-func readLocalConfigurationFile(path string, opts ...globalconfig.Option) (globalconfig.Config, error) {
-	cfg, found, err := readLocalConfigurationProjection(path, opts...)
+func readLocalConfigurationFile(ctx context.Context, path string, opts ...globalconfig.Option) (globalconfig.Config, error) {
+	cfg, err := readLocalConfigurationSource(ctx, path, opts...)
+	if err != nil {
+		return cfg, err
+	}
+	return resolveRunnerProjectsReadOnly(ctx, cfg)
+}
+
+func readLocalConfigurationSource(ctx context.Context, path string, opts ...globalconfig.Option) (globalconfig.Config, error) {
+	cfg, found, err := readLocalConfigurationProjection(ctx, path, opts...)
 	if found || err != nil {
 		return cfg, err
 	}
-	return readRunnerRuntimeConfig(context.Background(), path, opts...)
+	return readRunnerConfiguration(path, opts...)
 }
 
 func readLocalConfigurationProjectFile(path, id string, opts ...globalconfig.Option) (globalconfig.Config, []string, error) {
-	cfg, found, err := readLocalConfigurationProjection(path, opts...)
+	cfg, found, err := readLocalConfigurationProjection(context.Background(), path, opts...)
 	if err != nil {
 		return cfg, nil, err
 	}
@@ -129,13 +126,13 @@ func readLocalConfigurationProjectFile(path, id string, opts ...globalconfig.Opt
 	return cfg, skipped, nil
 }
 
-func readLocalConfigurationProjection(path string, opts ...globalconfig.Option) (result globalconfig.Config, found bool, resultErr error) {
+func readLocalConfigurationProjection(ctx context.Context, path string, opts ...globalconfig.Option) (result globalconfig.Config, found bool, resultErr error) {
 	machineOpts := append(append([]globalconfig.Option{}, opts...), globalconfig.WithoutProjectConfiguration())
 	cfg, err := globalconfig.Read(path, machineOpts...)
 	if err != nil {
 		return cfg, false, err
 	}
-	if cfg.Client.Configured() {
+	if cfg.Client.IdentityFile != "" {
 		return cfg, false, nil
 	}
 	dbPath := doctorRuntimeStorePath(cfg.Path)
@@ -144,12 +141,12 @@ func readLocalConfigurationProjection(path string, opts ...globalconfig.Option) 
 	} else if err != nil {
 		return cfg, false, err
 	}
-	settings, err := store.Open(context.Background(), store.Config{Path: dbPath})
+	settings, err := store.Open(ctx, store.Config{Path: dbPath})
 	if err != nil {
 		return cfg, false, err
 	}
 	defer func() { resultErr = errors.Join(resultErr, settings.Close()) }()
-	current, err := settings.LocalConfiguration(context.Background(), cfg)
+	current, err := settings.LocalConfiguration(ctx, cfg)
 	if errors.Is(err, sql.ErrNoRows) {
 		return cfg, false, nil
 	}

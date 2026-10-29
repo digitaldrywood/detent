@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/hostpressure"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -28,9 +29,28 @@ func (o *Orchestrator) observeHostPressure(ctx context.Context, state *State, no
 	if now.IsZero() {
 		now = o.clockNow()
 	}
-	o.observeMemoryPressure(ctx, state, now)
-	o.observeIOPressure(ctx, state, now)
-	o.observeCPUPressure(ctx, state, now)
+	o.updateHostPressure(state, func(shared *State) {
+		previous := Config{MemoryPressureSomeAvg60Max: shared.MemoryPressure.SomeAvg60Max, IOPressureFullAvg10Max: shared.IOPressure.FullAvg10Max, CPUPressureSomeAvg10Max: shared.CPUPressure.SomeAvg10Max}
+		refreshCachedHostPressure(shared, previous, o.cfg, now)
+		o.observeMemoryPressure(ctx, shared, now)
+		o.observeIOPressure(ctx, shared, now)
+		o.observeCPUPressure(ctx, shared, now)
+	})
+}
+
+func (o *Orchestrator) updateHostPressure(state *State, update func(*State)) {
+	owner := &o.standaloneHostPressure
+	if gate, ok := o.globalDispatchGate.(interface {
+		HostPressure() *scheduler.HostPressure
+	}); ok {
+		owner = gate.HostPressure()
+	}
+	snapshot := owner.Update(func(snapshot *scheduler.HostPressureSnapshot) {
+		shared := State{MemoryPressure: snapshot.Memory, IOPressure: snapshot.IO, CPUPressure: snapshot.CPU}
+		update(&shared)
+		snapshot.Memory, snapshot.IO, snapshot.CPU = shared.MemoryPressure, shared.IOPressure, shared.CPUPressure
+	})
+	state.MemoryPressure, state.IOPressure, state.CPUPressure = snapshot.Memory, snapshot.IO, snapshot.CPU
 }
 
 func (o *Orchestrator) observeMemoryPressure(ctx context.Context, state *State, now time.Time) {
@@ -394,10 +414,5 @@ func (o *Orchestrator) observePressure(
 }
 
 func pressureAverages(pressure hostpressure.Pressure) telemetry.PressureAverages {
-	return telemetry.PressureAverages{
-		Avg10:  pressure.Avg10,
-		Avg60:  pressure.Avg60,
-		Avg300: pressure.Avg300,
-		Total:  pressure.Total,
-	}
+	return telemetry.PressureAverages(pressure)
 }

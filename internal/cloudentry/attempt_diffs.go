@@ -14,7 +14,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/cloudassert"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/diffbody"
@@ -137,8 +136,8 @@ func (s *Service) uploadAttemptDiff(c echo.Context, organization Organization, c
 	if err != nil || status != http.StatusNoContent {
 		return nil, status, result, err
 	}
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(organization.ID, false)
+	defer unlock()
 	for i, file := range files {
 		if file.PatchBody == nil {
 			continue
@@ -195,8 +194,8 @@ func (s *Service) attemptDiffResponse(c echo.Context, organization Organization,
 	if err = errors.Join(err, response.Body.Close()); err != nil {
 		return err
 	}
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(organization.ID, false)
+	defer unlock()
 	if isMCP {
 		var frame map[string]json.RawMessage
 		var result struct {
@@ -295,8 +294,8 @@ func (s *Service) maintainAttemptDiffBodies(ctx context.Context, organization Or
 	if err := json.Unmarshal(raw, &batch); err != nil {
 		return false, err
 	}
-	s.attachmentMu.RLock()
-	defer s.attachmentMu.RUnlock()
+	unlock := s.attachmentLocks.lock(organization.ID, false)
+	defer unlock()
 	for _, file := range batch.Files {
 		if file.Organization != organization.ID {
 			return false, errors.New("diff body batch organization mismatch")
@@ -324,39 +323,6 @@ func (s *Service) maintainAttemptDiffBodies(ctx context.Context, organization Or
 		}
 	}
 	return len(batch.Files) > 0, nil
-}
-
-func (s *Service) sweepDiffBodyOrphans(ctx context.Context, organization Organization) error {
-	prefix, err := attachment.OrganizationPrefix(organization.ID)
-	if err != nil {
-		return err
-	}
-	prefix += "attempt-diffs/"
-	return s.attachments.Walk(ctx, prefix, func(object attachment.Object) error {
-		if object.CreatedAt.After(s.config.now().Add(-attachment.OrphanTTL)) {
-			return nil
-		}
-		status, raw, err := s.serviceCall(ctx, organization, "/internal/v1/diff-bodies/exists", map[string]string{"key": object.Key}, nil)
-		if err != nil {
-			return err
-		}
-		if status != http.StatusOK {
-			return errors.New("diff body existence unavailable")
-		}
-		var value struct {
-			Exists *bool `json:"exists"`
-		}
-		if err := json.Unmarshal(raw, &value); err != nil {
-			return err
-		}
-		if value.Exists == nil {
-			return errors.New("diff body existence missing")
-		}
-		if *value.Exists {
-			return nil
-		}
-		return s.attachments.Delete(ctx, object.Key)
-	})
 }
 
 func (s *Service) maintainOrganizationDiffBodies(ctx context.Context) {

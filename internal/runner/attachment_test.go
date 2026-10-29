@@ -7,7 +7,7 @@ import (
 	"unicode/utf8"
 )
 
-// Attachments reach the provider two ways (decisions section 17.1): an image
+// Attachments reach the provider two ways: an image
 // is image input, a text file is a delimited data block appended to the
 // prompt.
 

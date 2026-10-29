@@ -20,13 +20,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/local"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/provenance"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/store/storetest"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -129,7 +128,7 @@ func TestManagerEnforcesOrderingAndAllCapsBeforeWritingComments(t *testing.T) {
 		admissionIssueFixture("issue-1", "DD-1", priorityOne, now.Add(-time.Hour)),
 		admissionIssueFixture("issue-2", "DD-2", priorityTwo, now.Add(-2*time.Hour)),
 	}
-	tracker := memory.New(memory.Config{Issues: issues, Stateful: true, Now: func() time.Time { return now }})
+	tracker := fakehub.New(fakehub.Config{Issues: issues, Stateful: true, Now: func() time.Time { return now }})
 	backend := openManagerTestStore(t)
 	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
 	settings := admissionTestSettings(tracker, agent)
@@ -159,10 +158,10 @@ func TestManagerEnforcesOrderingAndAllCapsBeforeWritingComments(t *testing.T) {
 	events := tracker.Events()
 	commentCount := 0
 	for _, event := range events {
-		if event.Kind == memory.EventKindComment {
+		if event.Kind == fakehub.EventKindComment {
 			commentCount++
 		}
-		if event.Kind == memory.EventKindStateUpdate {
+		if event.Kind == fakehub.EventKindStateUpdate {
 			t.Fatalf("admission changed issue status: %#v", event)
 		}
 	}
@@ -202,7 +201,7 @@ func TestManagerDeclinesNonDeliverableCandidatesBeforeRunningAgent(t *testing.T)
 	issues[2].Description = "- [ ] #1701\n- [ ] #1702\n- [ ] digitaldrywood/pyroapex#1703"
 	issues[3].Description = "<!-- detent:no-dispatch -->\nOperator-owned planning record."
 
-	tracker := memory.New(memory.Config{Issues: issues, Stateful: true, Now: func() time.Time { return now }})
+	tracker := fakehub.New(fakehub.Config{Issues: issues, Stateful: true, Now: func() time.Time { return now }})
 	backend := openManagerTestStore(t)
 	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
 	settings := admissionTestSettings(tracker, agent)
@@ -254,7 +253,7 @@ func TestManagerIssueContractBeforeEvaluation(t *testing.T) {
 			now := time.Date(2026, 10, 7, 20, 0, 0, 0, time.UTC)
 			issue := admissionIssueFixture("contract", "PA-1", 1, now)
 			issue.Description = test.body
-			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 			agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
 			settings := admissionTestSettings(tracker, agent)
 			contract, err := config.ResolveIssueContract("")
@@ -299,7 +298,7 @@ func TestManagerAppliesCandidateCapBeforeDeclineSideEffects(t *testing.T) {
 		)
 		issues[index].Title += " — Tracker"
 	}
-	tracker := memory.New(memory.Config{Issues: issues, Stateful: true, Now: func() time.Time { return now }})
+	tracker := fakehub.New(fakehub.Config{Issues: issues, Stateful: true, Now: func() time.Time { return now }})
 	backend := openManagerTestStore(t)
 	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
 	settings := admissionTestSettings(tracker, agent)
@@ -379,7 +378,7 @@ func TestManagerPropagatesCandidateDeclineStoreErrors(t *testing.T) {
 
 			issue := admissionIssueFixture("tracker", "PA-10", 1, now)
 			issue.Title += " — Tracker"
-			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 			backend := &faultAdmissionStore{Store: openManagerTestStore(t)}
 			tt.configure(backend)
 			manager := &Manager{store: backend}
@@ -411,7 +410,7 @@ func TestManagerReevaluatesDeclineAfterIssueContentChanges(t *testing.T) {
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
 	issue := admissionIssueFixture("issue-1", "PA-1818", 1, now)
 	issue.Description = admissionOptOutMarker + "\nOperator-owned planning record."
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true, Now: func() time.Time { return now }})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true, Now: func() time.Time { return now }})
 	backend := openManagerTestStore(t)
 	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
 	manager := newAdmissionTestManager(t, admissionTestSettings(tracker, agent), backend, func() time.Time { return now })
@@ -444,7 +443,7 @@ func TestManagerReevaluatesCriteriaDeclineAfterCriteriaChange(t *testing.T) {
 
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	backend := openManagerTestStore(t)
 	declining := staticAdmissionRunner{output: `{"evaluations":[{"issue_id":"issue-1","disposition":"declined","findings":[{"dimension":"Alignment","criterion_quote":"serves a stated current priority","matched":false,"rationale":"The issue does not serve a stated current priority."},{"dimension":"Readiness","criterion_quote":"has an actionable problem statement","matched":false,"rationale":"The issue lacks an actionable problem statement."}],"confidence":0.24}]}`}
 	settings := admissionTestSettings(tracker, declining)
@@ -476,7 +475,7 @@ func TestManagerDoesNotDuplicateDeclineCommentAfterStoreMarkFailure(t *testing.T
 	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
 	issue := admissionIssueFixture("issue-1", "PA-1818", 1, now)
 	issue.Description = admissionOptOutMarker
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true, Now: func() time.Time { return now }})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true, Now: func() time.Time { return now }})
 	backend := &faultAdmissionStore{
 		Store:                 openManagerTestStore(t),
 		declineCommentMarkErr: errors.New("mark decline comment"),
@@ -520,7 +519,7 @@ func TestManagerDeclineSupersedesAcceptedOpenProposal(t *testing.T) {
 		AuthorAuthorized: true,
 		CreatedAt:        &decisionAt,
 	}}
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true, Now: func() time.Time { return now.Add(2 * time.Minute) }})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true, Now: func() time.Time { return now.Add(2 * time.Minute) }})
 	backend := openManagerTestStore(t)
 	if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
 		t.Fatalf("CreateAdmissionProposal() = %t, %v", created, err)
@@ -536,7 +535,7 @@ func TestManagerDeclineSupersedesAcceptedOpenProposal(t *testing.T) {
 		t.Fatalf("AdmissionProposalHistory() = %#v, %v", history, err)
 	}
 	for _, event := range tracker.Events() {
-		if event.Kind == memory.EventKindStateUpdate {
+		if event.Kind == fakehub.EventKindStateUpdate {
 			t.Fatalf("declined issue changed state: %#v", event)
 		}
 	}
@@ -580,7 +579,7 @@ func TestManagerAdmissionDeclinePersistenceBoundaries(t *testing.T) {
 		t.Fatalf("create-error createAdmissionDecline() error = %v", err)
 	}
 
-	issuesWithoutReader := &admissionIssueStoreWithoutCommentReader{IssueStore: memory.New(memory.Config{})}
+	issuesWithoutReader := &admissionIssueStoreWithoutCommentReader{IssueStore: fakehub.New(fakehub.Config{})}
 	if _, err := manager.ensureAdmissionDeclineComment(t.Context(), issuesWithoutReader, issue, first, false, true); err == nil || !strings.Contains(err.Error(), "comment reader") {
 		t.Fatalf("ensureAdmissionDeclineComment() error = %v, want missing reader", err)
 	}
@@ -607,7 +606,7 @@ func TestManagerRecordsCandidateReaderTruncation(t *testing.T) {
 		)
 		issues[index].Labels = []string{"skip"}
 	}
-	tracker := memory.New(memory.Config{Issues: issues, Stateful: true, Now: func() time.Time { return now }})
+	tracker := fakehub.New(fakehub.Config{Issues: issues, Stateful: true, Now: func() time.Time { return now }})
 	backend := openManagerTestStore(t)
 	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
 	settings := admissionTestSettings(tracker, agent)
@@ -716,7 +715,7 @@ func TestManagerExpiresProposalAndReproposesUnchangedIssue(t *testing.T) {
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	current := now
-	tracker := memory.New(memory.Config{
+	tracker := fakehub.New(fakehub.Config{
 		Issues:   []connector.Issue{admissionIssueFixture("issue-1", "DD-1", 1, now)},
 		Stateful: true,
 		Now:      func() time.Time { return current },
@@ -756,7 +755,7 @@ func TestManagerAuditCommentDoesNotDuplicateProposal(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
-	tracker := memory.New(memory.Config{
+	tracker := fakehub.New(fakehub.Config{
 		Issues:   []connector.Issue{admissionIssueFixture("issue-1", "DD-1", 1, now)},
 		Stateful: true,
 		Now:      func() time.Time { return now },
@@ -827,8 +826,8 @@ func TestManagerReconcilesAgainstStoredProposalTarget(t *testing.T) {
 			if tt.currentDecision == "" {
 				issue.Comments = nil
 			}
-			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
-			commentSource := memory.New(memory.Config{Issues: []connector.Issue{fallback}, Stateful: true})
+			tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			commentSource := fakehub.New(fakehub.Config{Issues: []connector.Issue{fallback}, Stateful: true})
 			reader := &deferringAdmissionIssueStore{IssueStore: tracker, comments: commentSource}
 			if tt.readFailure {
 				reader.deferCommentCall = 1
@@ -884,7 +883,7 @@ func TestManagerReconcilesAcceptanceAfterIssueLeavesTargetState(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	current := now
 	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-	tracker := memory.New(memory.Config{
+	tracker := fakehub.New(fakehub.Config{
 		Issues:   []connector.Issue{issue},
 		Stateful: true,
 		Now:      func() time.Time { return current },
@@ -1019,7 +1018,7 @@ func TestManagerReconcilesOpenProposalFromIssueState(t *testing.T) {
 			issue.Closed = tt.closed
 			issue.StageUpdatedAt = &transitionAt
 			tracker := &transitionAdmissionIssueStore{
-				Connector: memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true}),
+				Connector: fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true}),
 				transition: connector.IssueStateTransition{
 					EnteredAt: transitionAt,
 					Actor:     connector.IssueActor{Login: "ada", Kind: "User"},
@@ -1085,7 +1084,7 @@ func TestManagerReturnsImplicitTransitionLookupError(t *testing.T) {
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	backend := openManagerTestStore(t)
 	proposal := admissionTestProposalForIssue("proposal-1", issue, now)
 	if created, err := backend.CreateAdmissionProposal(t.Context(), proposal); err != nil || !created {
@@ -1141,7 +1140,7 @@ func TestManagerAcceptanceTransitionsOrSupersedes(t *testing.T) {
 
 			currentTime := now
 			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-			tracker := memory.New(memory.Config{
+			tracker := fakehub.New(fakehub.Config{
 				Issues:   []connector.Issue{issue},
 				Stateful: true,
 				Now:      func() time.Time { return currentTime },
@@ -1190,7 +1189,7 @@ func TestManagerAcceptanceTransitionsOrSupersedes(t *testing.T) {
 			}
 			metadata, ok := provenance.Parse(timeline.Events[0].MetadataJSON)
 			if !ok || metadata.Provenance.Actor == nil ||
-				metadata.Provenance.Actor.Login != "memory" ||
+				metadata.Provenance.Actor.Login != "fakehub" ||
 				metadata.Admission == nil ||
 				!metadata.Admission.Attributed ||
 				metadata.Admission.ProposalID != proposal.ID {
@@ -1220,7 +1219,7 @@ func TestManagerIgnoresUnauthorizedAdmissionDecision(t *testing.T) {
 		CreatedAt:        &decisionAt,
 	}}
 	tracker := &authorizingAdmissionIssueStore{
-		Connector:  memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true}),
+		Connector:  fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true}),
 		authorized: false,
 	}
 	backend := openManagerTestStore(t)
@@ -1260,7 +1259,7 @@ func TestManagerAcceptanceRevalidatesImmediatelyBeforeMutation(t *testing.T) {
 	currentTime := now
 	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
 	tracker := &stateChangingAdmissionStore{
-		Connector: memory.New(memory.Config{
+		Connector: fakehub.New(fakehub.Config{
 			Issues:   []connector.Issue{issue},
 			Stateful: true,
 			Now:      func() time.Time { return currentTime },
@@ -1368,7 +1367,7 @@ func TestManagerAutoAdmissionModes(t *testing.T) {
 
 			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
 			issue.Labels = append([]string(nil), tt.labels...)
-			tracker := memory.New(memory.Config{
+			tracker := fakehub.New(fakehub.Config{
 				Issues:   []connector.Issue{issue},
 				Stateful: true,
 				Now:      func() time.Time { return now },
@@ -1414,7 +1413,7 @@ func TestManagerAutoAdmissionRequiresEveryConfiguredDimension(t *testing.T) {
 	issue.Description = `Coordinate the website, campaign assets, launch emails, analytics, and partner outreach.
 
 Child issues decompose the implementation work. Marketing and operations staff must approve copy, contact partners, and schedule the launch.`
-	tracker := memory.New(memory.Config{
+	tracker := fakehub.New(fakehub.Config{
 		Issues:   []connector.Issue{issue},
 		Stateful: true,
 		Now:      func() time.Time { return now },
@@ -1463,7 +1462,7 @@ Child issues decompose the implementation work. Marketing and operations staff m
 	}
 	var comment string
 	for _, event := range tracker.Events() {
-		if event.Kind == memory.EventKindComment {
+		if event.Kind == fakehub.EventKindComment {
 			comment = event.Body
 		}
 	}
@@ -1489,7 +1488,7 @@ func TestManagerAutomaticAdmissionRechecksLabelPolicy(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
 	issue.Labels = []string{"feature"}
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true, Now: func() time.Time { return now }})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true, Now: func() time.Time { return now }})
 	backend := openManagerTestStore(t)
 	settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{})
 	settings.Config.AutoAdmit = true
@@ -1591,7 +1590,7 @@ func TestManagerRequiredEffortAdmissionModes(t *testing.T) {
 			t.Parallel()
 			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
 			issue.Description = tt.body
-			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 			agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
 				proposals := proposeEveryCandidateAtConfidence(1)(request)
 				proposals[0].RecommendedEffort = tt.recommendedEffort
@@ -1622,7 +1621,7 @@ func TestManagerRequiredEffortAdmissionModes(t *testing.T) {
 			}
 			bodyUpdates := 0
 			for _, event := range tracker.Events() {
-				if event.Kind == memory.EventKindBodyUpdate {
+				if event.Kind == fakehub.EventKindBodyUpdate {
 					bodyUpdates++
 				}
 			}
@@ -1650,7 +1649,7 @@ func TestManagerWritesEffortBeforeDispatchResolvesSession(t *testing.T) {
 
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	settings := admissionTestSettings(
 		tracker,
 		&scriptedAdmissionRunner{propose: proposeEveryCandidateWithEffort("high")},
@@ -1669,9 +1668,9 @@ func TestManagerWritesEffortBeforeDispatchResolvesSession(t *testing.T) {
 	bodyIndex, stateIndex := -1, -1
 	for index, event := range events {
 		switch event.Kind {
-		case memory.EventKindBodyUpdate:
+		case fakehub.EventKindBodyUpdate:
 			bodyIndex = index
-		case memory.EventKindStateUpdate:
+		case fakehub.EventKindStateUpdate:
 			stateIndex = index
 		}
 	}
@@ -1713,7 +1712,7 @@ func TestManagerRequiredEffortSupersedesOpenProposalWithoutRecommendation(t *tes
 
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	backend := openManagerTestStore(t)
 	proposal := admissionTestProposalForIssue("proposal-open", issue, now.Add(-time.Minute))
 	proposal.Confidence = 1
@@ -1752,7 +1751,7 @@ func TestManagerRecoversAutoAdmissionAfterResolutionFailure(t *testing.T) {
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-	tracker := memory.New(memory.Config{
+	tracker := fakehub.New(fakehub.Config{
 		Issues:   []connector.Issue{issue},
 		Stateful: true,
 		Now:      func() time.Time { return now },
@@ -1785,7 +1784,7 @@ func TestManagerRecoversAutoAdmissionAfterResolutionFailure(t *testing.T) {
 	}
 	stateUpdates := 0
 	for _, event := range tracker.Events() {
-		if event.Kind == memory.EventKindStateUpdate {
+		if event.Kind == fakehub.EventKindStateUpdate {
 			stateUpdates++
 		}
 	}
@@ -1811,7 +1810,7 @@ func TestManagerAutoAdmissionRespectsEligibilityAndCaps(t *testing.T) {
 	excluded.Labels = []string{"do-not-admit"}
 	otherAuthor := admissionIssueFixture("issue-4", "DD-4", 4, now)
 	otherAuthor.AuthorID = "hubot"
-	tracker := memory.New(memory.Config{
+	tracker := fakehub.New(fakehub.Config{
 		Issues:   []connector.Issue{first, second, excluded, otherAuthor},
 		Stateful: true,
 		Now:      func() time.Time { return now },
@@ -1869,7 +1868,7 @@ func TestManagerImplicitAcceptanceReleasesOpenProposalCapacity(t *testing.T) {
 	first.StageUpdatedAt = &transitionAt
 	second := admissionIssueFixture("issue-2", "DD-2", 2, now)
 	tracker := &transitionAdmissionIssueStore{
-		Connector: memory.New(memory.Config{Issues: []connector.Issue{first, second}, Stateful: true}),
+		Connector: fakehub.New(fakehub.Config{Issues: []connector.Issue{first, second}, Stateful: true}),
 		transition: connector.IssueStateTransition{
 			EnteredAt: transitionAt,
 			Actor:     connector.IssueActor{Login: "ada", Kind: "User"},
@@ -1909,7 +1908,7 @@ func TestManagerAutoAdmissionSupersedesIneligibleOpenProposal(t *testing.T) {
 	original := admissionIssueFixture("issue-1", "DD-1", 1, now)
 	current := original
 	current.Labels = []string{"do-not-admit"}
-	tracker := memory.New(memory.Config{
+	tracker := fakehub.New(fakehub.Config{
 		Issues:   []connector.Issue{current},
 		Stateful: true,
 		Now:      func() time.Time { return now },
@@ -1954,7 +1953,7 @@ func TestManagerFiltersProposalHistoryBeforeCandidateCap(t *testing.T) {
 		admissionIssueFixture("issue-2", "DD-2", 2, now),
 		admissionIssueFixture("issue-3", "DD-3", 3, now),
 	}
-	tracker := memory.New(memory.Config{Issues: issues, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: issues, Stateful: true})
 	backend := openManagerTestStore(t)
 	proposal := admissionTestProposalForIssue("proposal-accepted", issues[0], now.Add(-time.Hour))
 	if created, err := backend.CreateAdmissionProposal(context.Background(), proposal); err != nil || !created {
@@ -1996,7 +1995,7 @@ func TestManagerAcceptedDemotionIsSticky(t *testing.T) {
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	current := now
-	tracker := memory.New(memory.Config{
+	tracker := fakehub.New(fakehub.Config{
 		Issues:   []connector.Issue{admissionIssueFixture("issue-1", "DD-1", 1, now)},
 		Stateful: true,
 		Now:      func() time.Time { return current },
@@ -2046,7 +2045,7 @@ func TestManagerDefersForCapacityAndBudget(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{admissionIssueFixture("issue-1", "DD-1", 1, now)}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{admissionIssueFixture("issue-1", "DD-1", 1, now)}, Stateful: true})
 	tests := []struct {
 		name     string
 		settings func(*scriptedAdmissionRunner) Settings
@@ -2108,7 +2107,7 @@ func TestManagerScheduledFanoutDeferralResumesWithoutDuplicateAdmission(t *testi
 		admissionIssueFixture("issue-1", "DD-1", 1, now),
 		admissionIssueFixture("issue-2", "DD-2", 2, now),
 	}
-	tracker := memory.New(memory.Config{
+	tracker := fakehub.New(fakehub.Config{
 		Issues:   issues,
 		Stateful: true,
 		Now:      func() time.Time { return current },
@@ -2193,7 +2192,7 @@ func TestManagerScheduledEvaluationFanoutDeferralCheckpointsBeforeResume(t *test
 
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	current := now
-	tracker := memory.New(memory.Config{
+	tracker := fakehub.New(fakehub.Config{
 		Issues: []connector.Issue{
 			admissionIssueFixture("issue-1", "DD-1", 1, now),
 			admissionIssueFixture("issue-2", "DD-2", 2, now),
@@ -2262,7 +2261,7 @@ func TestManagerCleanupFailureOverridesScheduledFanoutDeferral(t *testing.T) {
 
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	current := now
-	tracker := memory.New(memory.Config{
+	tracker := fakehub.New(fakehub.Config{
 		Issues: []connector.Issue{
 			admissionIssueFixture("issue-1", "DD-1", 1, now),
 			admissionIssueFixture("issue-2", "DD-2", 2, now),
@@ -2610,7 +2609,7 @@ func TestManagerCoverageFloorBoundaries(t *testing.T) {
 	}
 
 	now := time.Date(2026, 7, 31, 15, 0, 0, 0, time.UTC)
-	tracker := memory.New(memory.Config{Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Stateful: true})
 	backend := openManagerTestStore(t)
 	runBackend := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
 	valid := admissionTestSettings(tracker, runBackend)
@@ -2757,7 +2756,7 @@ func TestManagerRunOnceBoundaryErrors(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 31, 16, 0, 0, 0, time.UTC)
-	baseTracker := memory.New(memory.Config{Stateful: true})
+	baseTracker := fakehub.New(fakehub.Config{Stateful: true})
 	baseBackend := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
 	errBoundary := errors.New("boundary failed")
 
@@ -2790,7 +2789,7 @@ func TestManagerRunOnceBoundaryErrors(t *testing.T) {
 			name: "capacity request",
 			prepare: func(_ *testing.T, settings Settings, backend Store) (Settings, Store) {
 				settings.Scheduler = &capacityScheduler{requestErr: errBoundary}
-				settings.Issues = memory.New(memory.Config{Stateful: true, Issues: []connector.Issue{admissionIssueFixture("issue-1", "DD-1", 1, now)}})
+				settings.Issues = fakehub.New(fakehub.Config{Stateful: true, Issues: []connector.Issue{admissionIssueFixture("issue-1", "DD-1", 1, now)}})
 				return settings, backend
 			},
 		},
@@ -2953,7 +2952,7 @@ func TestManagerOrderingAndParsingBoundaries(t *testing.T) {
 		t.Fatal("eligibleCandidate(target state) = true")
 	}
 
-	tracker := memory.New(memory.Config{Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Stateful: true})
 	plainTracker := &failingCandidateIssueStore{IssueStore: tracker}
 	if transition, found, err := admissionIssueTransition(t.Context(), plainTracker, connector.Issue{}); err != nil || found || !transition.EnteredAt.IsZero() {
 		t.Fatalf("admissionIssueTransition() = %#v, %t, %v", transition, found, err)
@@ -3001,7 +3000,7 @@ func TestManagerFiltersLocallyAndRejectsFabricatedCriteria(t *testing.T) {
 	excluded.Labels = []string{"do-not-admit"}
 	otherAuthor := admissionIssueFixture("other", "DD-3", 3, now)
 	otherAuthor.AuthorID = "hubot"
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{allowed, excluded, otherAuthor}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{allowed, excluded, otherAuthor}, Stateful: true})
 	backend := openManagerTestStore(t)
 	agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
 		return []AgentProposal{{
@@ -3057,7 +3056,7 @@ func TestManagerUnionsLabelCandidatesAndSkipsIneligibleStates(t *testing.T) {
 	terminal.Labels = []string{"sentry"}
 	excluded := admissionIssueFixture("excluded", "DD-5", 5, now.Add(4*time.Minute))
 	excluded.Labels = []string{"sentry", "skip"}
-	tracker := memory.New(memory.Config{
+	tracker := fakehub.New(fakehub.Config{
 		Issues:   []connector.Issue{stateAndLabel, labelOnly, target, blocked, terminal, excluded},
 		Stateful: true,
 	})
@@ -3130,7 +3129,7 @@ func TestManagerAuthorRejectionIsAggregateOnly(t *testing.T) {
 	outsider := admissionIssueFixture("outsider", "DD-1", 1, now)
 	outsider.AuthorID = "stranger"
 	outsider.AuthorAssociation = connector.AuthorAssociationNone
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{outsider}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{outsider}, Stateful: true})
 	backend := openManagerTestStore(t)
 	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
 	settings := admissionTestSettings(tracker, agent)
@@ -3149,7 +3148,7 @@ func TestManagerAuthorRejectionIsAggregateOnly(t *testing.T) {
 		t.Fatalf("LatestAdmissionRun() = %#v, %t, %v", record, ok, err)
 	}
 	for _, event := range tracker.Events() {
-		if event.Kind == memory.EventKindComment {
+		if event.Kind == fakehub.EventKindComment {
 			t.Fatalf("author rejection created a comment: %#v", event)
 		}
 	}
@@ -3177,7 +3176,7 @@ func TestManagerUsesAuthorPushdownOnlyWhenUnionSafe(t *testing.T) {
 			issue := admissionIssueFixture("candidate", "DD-1", 1, now)
 			issue.AuthorID = "octocat"
 			issue.AuthorAssociation = connector.AuthorAssociationMember
-			memoryStore := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			memoryStore := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 			tracker := &recordingCandidateIssueStore{
 				IssueStore:   memoryStore,
 				capabilities: connector.CandidateCapabilitiesFor(connector.BackendGitHub, "issue_field"),
@@ -3209,7 +3208,7 @@ func TestReadAdmissionCandidatesPushesAuthorsOnlyToStates(t *testing.T) {
 	issue := admissionIssueFixture("candidate", "DD-1", 1, now)
 	issue.AuthorID = "octocat"
 	issue.Labels = []string{"sentry"}
-	memoryStore := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	memoryStore := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	tracker := &recordingCandidateIssueStore{
 		IssueStore:   memoryStore,
 		capabilities: connector.CandidateCapabilitiesFor(connector.BackendGitHub, "issue_field"),
@@ -3244,7 +3243,7 @@ func TestManagerDeduplicatesPushedAuthorRejectionsAcrossSelectors(t *testing.T) 
 	rejected := admissionIssueFixture("candidate", "DD-1", 1, now)
 	rejected.AuthorID = "outsider"
 	rejected.Labels = []string{"candidate"}
-	memoryStore := memory.New(memory.Config{Issues: []connector.Issue{rejected}, Stateful: true})
+	memoryStore := fakehub.New(fakehub.Config{Issues: []connector.Issue{rejected}, Stateful: true})
 	issues := &selectorAdmissionIssueStore{
 		IssueStore:   memoryStore,
 		capabilities: connector.CandidateCapabilitiesFor(connector.BackendGitHub, "issue_field"),
@@ -3290,7 +3289,7 @@ func TestManagerUnionsUntrackedCandidatesBeforeDeduplicationAndExclusions(t *tes
 	excluded := admissionIssueFixture("excluded", "DD-3", 3, now.Add(2*time.Minute))
 	excluded.State = ""
 	excluded.Labels = []string{"do-not-admit"}
-	tracker := memory.New(memory.Config{
+	tracker := fakehub.New(fakehub.Config{
 		Issues:   []connector.Issue{tracked, untracked, excluded},
 		Stateful: true,
 		Now:      func() time.Time { return now },
@@ -3332,7 +3331,7 @@ func TestManagerUnionsUntrackedCandidatesBeforeDeduplicationAndExclusions(t *tes
 
 	comments := map[string]string{}
 	for _, event := range tracker.Events() {
-		if event.Kind == memory.EventKindComment {
+		if event.Kind == fakehub.EventKindComment {
 			comments[event.IssueID] = event.Body
 		}
 	}
@@ -3346,7 +3345,7 @@ func TestManagerUnionsUntrackedCandidatesBeforeDeduplicationAndExclusions(t *tes
 	}
 }
 
-func TestManagerLocalSQLiteStatesOnlyEndToEnd(t *testing.T) {
+func TestManagerFakeHubStatesOnlyEndToEnd(t *testing.T) {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
 	}
@@ -3354,22 +3353,7 @@ func TestManagerLocalSQLiteStatesOnlyEndToEnd(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
-	tracker, err := local.New(local.Config{
-		Path:           filepath.Join(t.TempDir(), "tracker.db"),
-		ProjectID:      "detent",
-		Issues:         []connector.Issue{admissionIssueFixture("local-1", "LOCAL-1", 1, now)},
-		ObservedStates: []string{"Backlog"},
-		ActiveStates:   []string{"Todo"},
-		TerminalStates: []string{"Done"},
-	})
-	if err != nil {
-		t.Fatalf("local.New() error = %v", err)
-	}
-	t.Cleanup(func() {
-		if err := tracker.Close(); err != nil {
-			t.Fatalf("tracker.Close() error = %v", err)
-		}
-	})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{admissionIssueFixture("hub-1", "HUB-1", 1, now)}, Stateful: true})
 	backend := openManagerTestStore(t)
 	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
 	settings := admissionTestSettings(tracker, agent)
@@ -3380,7 +3364,7 @@ func TestManagerLocalSQLiteStatesOnlyEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
-	if len(result.Proposals) != 1 || result.Proposals[0].IssueID != "local-1" {
+	if len(result.Proposals) != 1 || result.Proposals[0].IssueID != "hub-1" {
 		t.Fatalf("result = %#v", result)
 	}
 	issues, err := tracker.FetchIssuesByStates(context.Background(), []string{"Backlog"})
@@ -3399,7 +3383,7 @@ func TestManagerReservesCommentCapacityBeforeCreatingProposals(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	uncommented := admissionIssueFixture("issue-0", "DD-0", 1, now.Add(-time.Hour))
 	candidate := admissionIssueFixture("issue-1", "DD-1", 2, now)
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{uncommented, candidate}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{uncommented, candidate}, Stateful: true})
 	backend := openManagerTestStore(t)
 	created, err := backend.CreateAdmissionProposal(context.Background(), admissionmodel.Proposal{
 		ID:              "admission-uncommented",
@@ -3450,7 +3434,7 @@ func TestManagerRejectsMissingConfidence(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{admissionIssueFixture("issue-1", "DD-1", 1, now)}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{admissionIssueFixture("issue-1", "DD-1", 1, now)}, Stateful: true})
 	backend := openManagerTestStore(t)
 	agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
 		return []AgentProposal{{
@@ -3479,7 +3463,7 @@ func TestManagerPersistsDeclinedCandidateEvaluation(t *testing.T) {
 
 	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	backend := openManagerTestStore(t)
 	agent := staticAdmissionRunner{output: `{"evaluations":[{"issue_id":"issue-1","disposition":"declined","findings":[{"dimension":"Alignment","criterion_quote":"serves a stated current priority","matched":false,"rationale":"The issue does not serve a stated current priority."},{"dimension":"Readiness","criterion_quote":"has an actionable problem statement","matched":false,"rationale":"The issue lacks an actionable problem statement."}],"confidence":0.24}]}`}
 	manager := newAdmissionTestManager(t, admissionTestSettings(tracker, agent), backend, func() time.Time { return now })
@@ -3526,7 +3510,7 @@ func TestManagerBoundsMalformedAdmissionAcrossRestart(t *testing.T) {
 
 			now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 			path := filepath.Join(t.TempDir(), "runtime.db")
 			backend, err := store.Open(t.Context(), store.Config{Backend: store.BackendSQLite, Path: path})
 			if err != nil {
@@ -3618,7 +3602,7 @@ func TestManagerAcceptsCorrectedAdmissionAfterMalformedOutput(t *testing.T) {
 
 	now := time.Date(2026, 9, 4, 12, 30, 0, 0, time.UTC)
 	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	agent := &malformedAdmissionRunner{malformedCalls: 1}
 	manager := newAdmissionTestManager(
 		t,
@@ -3649,7 +3633,7 @@ func TestManagerBoundsVaryingMalformedAdmissionOutputs(t *testing.T) {
 
 	now := time.Date(2026, 9, 4, 12, 45, 0, 0, time.UTC)
 	issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	agent := &malformedAdmissionRunner{malformedOutputs: []string{
 		`{`,
 		`[`,
@@ -3689,7 +3673,7 @@ func TestManagerRecoversAfterRunnerErrors(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 9, 4, 12, 50, 0, 0, time.UTC)
 			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 			wantErr := errors.New("backend authentication failed")
 			deferred := kind == "usage_limit_exceeded" || kind == "server_overloaded"
 			if kind != "authentication" {
@@ -3764,7 +3748,7 @@ func TestManagerContinuesMixedMalformedAdmissionCandidates(t *testing.T) {
 		admissionIssueFixture("issue-1", "DD-1", 1, now),
 		admissionIssueFixture("issue-2", "DD-2", 2, now.Add(time.Minute)),
 	}
-	tracker := memory.New(memory.Config{Issues: issues, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: issues, Stateful: true})
 	agent := &malformedAdmissionRunner{malformedIssueID: issues[0].ID}
 	manager := newAdmissionTestManager(
 		t,
@@ -3850,7 +3834,7 @@ func TestManagerRequiresOneEvaluationPerCandidate(t *testing.T) {
 				admissionIssueFixture("issue-1", "DD-1", 1, now),
 				admissionIssueFixture("issue-2", "DD-2", 2, now),
 			}
-			tracker := memory.New(memory.Config{Issues: issues, Stateful: true})
+			tracker := fakehub.New(fakehub.Config{Issues: issues, Stateful: true})
 			backend := openManagerTestStore(t)
 			raw, err := json.Marshal(struct {
 				Evaluations []AgentEvaluation `json:"evaluations"`
@@ -3931,7 +3915,7 @@ func TestManagerRequiresOneEvaluationPerCandidate(t *testing.T) {
 			t.Run(mode+"/"+tt.name, func(t *testing.T) {
 				t.Parallel()
 				issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-				tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+				tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 				valid := admissionProposalEvaluation(issue.ID)
 				valid.Confidence = float64Pointer(.95)
 				valid.RecommendedEffort = "high"
@@ -4069,7 +4053,7 @@ func TestManagerKeepsValidSemanticEvaluationWhenPeerIsMalformed(t *testing.T) {
 	blocker := admissionIssueFixture("blocker", "owner/repo#10", 1, now)
 	blocker.Closed = true
 	blocker.State = "Done"
-	tracker := memory.New(memory.Config{Issues: append(issues, blocker), Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: append(issues, blocker), Stateful: true})
 	backend := openManagerTestStore(t)
 	faults := faultAdmissionStore{Store: backend}
 	agent := &scriptedAdmissionRunner{propose: func(request runner.RunRequest) []AgentProposal {
@@ -4135,7 +4119,7 @@ func TestManagerSkipsCandidateChangedDuringEvaluationAndContinues(t *testing.T) 
 	first := admissionIssueFixture("issue-1", "DD-1", 1, now)
 	second := admissionIssueFixture("issue-2", "DD-2", 2, now)
 	tracker := &stateChangingAdmissionStore{
-		Connector: memory.New(memory.Config{Issues: []connector.Issue{first, second}, Stateful: true}),
+		Connector: fakehub.New(fakehub.Config{Issues: []connector.Issue{first, second}, Stateful: true}),
 		fetches:   1,
 		issueID:   first.ID,
 		state:     "In Progress",
@@ -4705,14 +4689,14 @@ type budgetAdmissionRunner struct {
 }
 
 type stateChangingAdmissionStore struct {
-	*memory.Connector
+	*fakehub.Connector
 	fetches int
 	issueID string
 	state   string
 }
 
 type transitionAdmissionIssueStore struct {
-	*memory.Connector
+	*fakehub.Connector
 	transition connector.IssueStateTransition
 	found      bool
 }
@@ -4725,7 +4709,7 @@ func (s *transitionAdmissionIssueStore) IssueStateTransition(
 }
 
 type authorizingAdmissionIssueStore struct {
-	*memory.Connector
+	*fakehub.Connector
 	authorized bool
 }
 
@@ -4951,10 +4935,10 @@ func admissionIssueFixture(id string, identifier string, priority int, createdAt
 	return issue
 }
 
-func countAdmissionStateUpdates(events []memory.Event, state string) int {
+func countAdmissionStateUpdates(events []fakehub.Event, state string) int {
 	count := 0
 	for _, event := range events {
-		if event.Kind == memory.EventKindStateUpdate && event.State == state {
+		if event.Kind == fakehub.EventKindStateUpdate && event.State == state {
 			count++
 		}
 	}
@@ -5189,7 +5173,7 @@ func TestAdmissionRequiresLedgerWriter(t *testing.T) {
 			t.Parallel()
 			now := time.Date(2026, 9, 11, 0, 0, 0, 0, time.UTC)
 			issue := admissionIssueFixture("issue-1", "DD-1", 1, now)
-			tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+			tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 			settings := admissionTestSettings(tracker, &scriptedAdmissionRunner{propose: proposeEveryCandidate})
 			settings.LaneWriter = nil
 			calls := 0
@@ -5230,7 +5214,7 @@ func TestAdmissionWithoutEligibleCandidatesAcquiresNoCapacity(t *testing.T) {
 				issue.State = state
 				issues = append(issues, issue)
 			}
-			tracker := memory.New(memory.Config{Issues: issues, Stateful: true})
+			tracker := fakehub.New(fakehub.Config{Issues: issues, Stateful: true})
 			agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
 			settings := admissionTestSettings(tracker, agent)
 			local := &capacityScheduler{}
@@ -5301,7 +5285,7 @@ func TestManagerFullHumanQueueKeepsAutomaticAdmission(t *testing.T) {
 				candidate.Labels = []string{"human-owned"}
 			}
 			issues = append(issues, candidate)
-			tracker := memory.New(memory.Config{Issues: issues, Stateful: true, Now: func() time.Time { return now }})
+			tracker := fakehub.New(fakehub.Config{Issues: issues, Stateful: true, Now: func() time.Time { return now }})
 			backend := openManagerTestStore(t)
 			for i := range 10 {
 				proposal := admissionTestProposalForIssue(fmt.Sprintf("human-proposal-%d", i), issues[i], now)
@@ -5440,7 +5424,7 @@ func TestManagerIntakeOffPreservesBacklogAndSchedule(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 	issue := admissionIssueFixture("waiting", "DD-1", 1, now)
-	tracker := memory.New(memory.Config{Issues: []connector.Issue{issue}, Stateful: true})
+	tracker := fakehub.New(fakehub.Config{Issues: []connector.Issue{issue}, Stateful: true})
 	backend := openManagerTestStore(t)
 	agent := &scriptedAdmissionRunner{propose: proposeEveryCandidate}
 	settings := admissionTestSettings(tracker, agent)

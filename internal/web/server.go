@@ -28,6 +28,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/efficiency"
 	"github.com/digitaldrywood/detent/internal/healthnotify"
+	"github.com/digitaldrywood/detent/internal/httpratelimit"
 	"github.com/digitaldrywood/detent/internal/hub"
 	kanbanstate "github.com/digitaldrywood/detent/internal/kanban"
 	"github.com/digitaldrywood/detent/internal/mcp"
@@ -45,10 +46,9 @@ import (
 )
 
 var (
-	ErrMissingHub       = errors.New("web server requires hub")
-	ErrMissingStore     = errors.New("web server requires store")
-	ErrMissingRegistry  = errors.New("web server requires registry")
-	ErrMissingConnector = errors.New("web server requires connector")
+	ErrMissingHub      = errors.New("web server requires hub")
+	ErrMissingStore    = errors.New("web server requires store")
+	ErrMissingRegistry = errors.New("web server requires registry")
 )
 
 type Dependencies struct {
@@ -223,8 +223,8 @@ type Server struct {
 	refreshes           *manualRefreshTracker
 	demo                *demoScenarioSet
 	apiKeys             *apikey.Service
-	ipLimiter           *apiRateLimiter
-	keyLimiter          *apiRateLimiter
+	ipLimiter           *httpratelimit.Limiter
+	keyLimiter          *httpratelimit.Limiter
 	asyncWrites         *asyncStoreWriter
 	dashboardAuthSecret [32]byte
 	afterFunc           func(time.Duration, func()) *time.Timer
@@ -257,9 +257,6 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		}
 		if deps.Registry == nil {
 			return nil, ErrMissingRegistry
-		}
-		if deps.Connector == nil {
-			return nil, ErrMissingConnector
 		}
 	}
 
@@ -358,8 +355,8 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		refreshes:           newManualRefreshTracker(),
 		demo:                newDemoScenarioSet(cfg.Demo),
 		apiKeys:             apikey.NewService(deps.Store),
-		ipLimiter:           newAPIRateLimiter(300, 60),
-		keyLimiter:          newAPIRateLimiter(120, 30),
+		ipLimiter:           httpratelimit.New(300, 60),
+		keyLimiter:          httpratelimit.New(120, 30),
 		asyncWrites:         newAsyncStoreWriter(256, logger),
 		dashboardAuthSecret: dashboardAuthSecret,
 		afterFunc:           time.AfterFunc,
@@ -453,13 +450,6 @@ func (s *Server) registerRoutes() {
 		s.echo.GET("/auth/oidc/callback", s.completeOIDC)
 	}
 	if s.mode == ModeOnboarding {
-		s.echo.GET("/", s.redirectToOnboarding)
-		s.echo.GET("/onboarding", s.onboarding)
-		s.echo.POST("/onboarding/tracker", s.onboardingTracker)
-		s.echo.POST("/onboarding/credentials", s.onboardingCredentials)
-		s.echo.POST("/onboarding/project", s.onboardingProject)
-		s.echo.POST("/onboarding/agent", s.onboardingAgent)
-		s.echo.POST("/onboarding/write", s.onboardingWrite)
 		return
 	}
 
@@ -486,12 +476,6 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/reports", s.reports)
 	s.echo.GET("/operations", s.operationsPage)
 	s.echo.GET("/events", s.events)
-	s.echo.GET("/onboarding", s.redirectToDashboard)
-	s.echo.POST("/onboarding/tracker", s.onboardingTracker)
-	s.echo.POST("/onboarding/credentials", s.onboardingCredentials)
-	s.echo.POST("/onboarding/project", s.onboardingProject)
-	s.echo.POST("/onboarding/agent", s.onboardingAgent)
-	s.echo.POST("/onboarding/write", s.onboardingWrite)
 	apiReadAuth := s.apiAuth(false)
 	mcpReadAuth := s.mcpAPIAuth()
 	apiMutateAuth := s.apiAuth(true)
@@ -523,8 +507,6 @@ func (s *Server) registerRoutes() {
 	s.echo.DELETE("/api/v1/projects/:project_id/budget/override", s.apiBudgetOverrideClear, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.GET("/api/v1/projects/:project_id/work-attempts/:attempt_id", s.apiWorkAttemptReceipt, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/projects/:project_id/issues/explanation", s.apiIssueExplanation, apiReadAuth, apiReadScope, s.operatorAuthority)
-	s.echo.POST("/api/v1/projects/:project_id/issues/explanation", s.apiIssueParkAcknowledgement, apiMutateAuth, apiProjectWriteScope)
-	s.echo.POST("/api/v1/projects/:project_id/issues/progress-credit", s.apiIssueProgressCredit, apiMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/staleness-warnings/acknowledge", s.apiStalenessWarningsAcknowledgement, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/staleness-warnings/:warning_id/acknowledge", s.apiStalenessWarningAcknowledgement, apiDashboardMutateAuth, apiProjectWriteScope)
 	s.echo.POST("/api/v1/projects/:project_id/work-attempts/:attempt_id/recovery", s.apiWorkAttemptRecovery, apiDashboardMutateAuth, apiProjectWriteScope)
@@ -543,7 +525,6 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/api/v1/forge/availability/clear", s.apiForgeAvailabilityClear, apiDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/api/v1/failure-breaker/canary", s.apiFailureBreakerCanary, apiDashboardMutateAuth, apiAdminScope)
 	s.echo.POST("/api/v1/webhooks/github", s.githubWebhook)
-	s.echo.POST("/api/v1/intake/:project_id/:source", s.intakeWebhook)
 	s.echo.GET("/api/v1/refresh", s.methodNotAllowed, apiDashboardReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/usage", s.apiUsage, apiReadAuth, apiReadScope)
 	s.echo.GET("/api/v1/workflow/timeline", s.apiWorkflowTimeline, apiReadAuth, apiReadScope)
@@ -910,7 +891,7 @@ func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot)
 		InstanceName:          instanceName,
 		Version:               s.version,
 		Build:                 s.build,
-		ConnectorName:         s.connector.Name(),
+		ConnectorName:         s.connectorName(),
 		DashboardURL:          s.dashboardURL,
 		Snapshot:              snapshot,
 		ConfiguredAgents:      agents,
@@ -945,7 +926,7 @@ func (s *Server) dashboardFirstPaintData(ctx context.Context, snapshot telemetry
 		InstanceName:          instanceName,
 		Version:               s.version,
 		Build:                 s.build,
-		ConnectorName:         s.connector.Name(),
+		ConnectorName:         s.connectorName(),
 		DashboardURL:          s.dashboardURL,
 		Snapshot:              snapshot,
 		ConfiguredAgents:      agents,
@@ -1036,7 +1017,7 @@ func (s *Server) projectDashboardDataFromProjects(
 		InstanceName:              instanceName,
 		Version:                   s.version,
 		Build:                     s.build,
-		ConnectorName:             s.connector.Name(),
+		ConnectorName:             s.connectorName(),
 		DashboardURL:              s.dashboardURL,
 		Snapshot:                  scopedSnapshot,
 		ConfiguredAgents:          agents,
@@ -1227,7 +1208,6 @@ func (s *Server) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 	updateStatus := telemetry.Update{}
 	backendOutages := []telemetry.BackendOutage{}
 	failureBreakers := []telemetry.FailureBreaker{}
-	dispatchLoops := []telemetry.DispatchLoop{}
 	trackerUnavailable := []telemetry.TrackerCondition{}
 	forgeUnavailable := []telemetry.ForgeCondition{}
 	ciUnavailable := []telemetry.CICondition{}
@@ -1277,7 +1257,6 @@ func (s *Server) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 			updateStatus = snapshot.Update
 			backendOutages = append(backendOutages, snapshot.BackendOutages...)
 			failureBreakers = append(failureBreakers, snapshot.FailureBreakers...)
-			dispatchLoops = append(dispatchLoops, snapshot.DispatchLoops...)
 			trackerUnavailable = append(trackerUnavailable, snapshot.TrackerUnavailable...)
 			forgeUnavailable = append(forgeUnavailable, snapshot.ForgeUnavailable...)
 			ciUnavailable = append(ciUnavailable, snapshot.CIUnavailable...)
@@ -1309,7 +1288,7 @@ func (s *Server) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 		"hub":       configuredStatus(s.hub),
 		"store":     configuredStatus(s.store),
 		"registry":  configuredStatus(s.registry),
-		"connector": configuredStatus(s.connector),
+		"connector": configuredStatus(s.currentConnector()),
 	}
 	orphanedProcesses, orphanErr := s.orphanedAgentProcesses(ctx, latestSnapshot, now)
 	if orphanErr != nil {
@@ -1327,13 +1306,13 @@ func (s *Server) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 	faultDispatchStalls := faultDispatchStatuses(dispatchStalls)
 	actionableBreakers := faultFailureBreakers(failureBreakers)
 	actionableOutages := faultBackendOutages(backendOutages)
-	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, faultDispatchStalls, trackerUnavailable, forgeUnavailable, ciUnavailable, actionableBreakers, dispatchLoops, actionableOutages, tickLiveness, refreshFailures)
+	projectHealth = applyNeedsAttentionToProjectHealth(projectHealth, faultDispatchStalls, trackerUnavailable, forgeUnavailable, ciUnavailable, actionableBreakers, actionableOutages, tickLiveness, refreshFailures)
 	var budgets []healthBudget
 	var workflows []healthWorkflowSource
 	if status != "draining" {
 		budgets = s.enforcedBudgets()
 		workflows = s.workflowSources()
-		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(faultDispatchStalls) > 0 || len(actionableBreakers) > 0 || len(dispatchLoops) > 0 || len(actionableOutages) > 0 || len(laneSignalWarnings) > 0 || len(faultStalenessWarnings(stalenessWarnings)) > 0 || len(strandedActiveIssues) > 0 || len(cleanupFaults) > 0 || strings.TrimSpace(updateStatus.LastError) != "" || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld || ioPressure.CapacityConstrained || ioPressure.DispatchHeld || cpuPressure.CapacityConstrained || cpuPressure.DispatchHeld || orphanedProcesses.Count > 0 {
+		if len(trackerUnavailable) > 0 || len(forgeUnavailable) > 0 || len(ciUnavailable) > 0 || len(faultDispatchStalls) > 0 || len(actionableBreakers) > 0 || len(actionableOutages) > 0 || len(laneSignalWarnings) > 0 || len(faultStalenessWarnings(stalenessWarnings)) > 0 || len(strandedActiveIssues) > 0 || len(cleanupFaults) > 0 || strings.TrimSpace(updateStatus.LastError) != "" || tickLivenessNeedsAttention(tickLiveness) || len(refreshFailures) > 0 || memoryPressure.DispatchHeld || ioPressure.CapacityConstrained || ioPressure.DispatchHeld || cpuPressure.CapacityConstrained || cpuPressure.DispatchHeld || orphanedProcesses.Count > 0 {
 			status = "needs_attention"
 		}
 		if pauseExitNeedsAttention(projectHealth) {
@@ -1372,7 +1351,6 @@ func (s *Server) readInstanceHealth(ctx context.Context) (healthResponse, int) {
 		CIUnavailable:          ciUnavailable,
 		BackendOutages:         backendOutages,
 		FailureBreakers:        failureBreakers,
-		DispatchLoops:          dispatchLoops,
 		LaneSignalWarnings:     laneSignalWarnings,
 		StalenessWarnings:      stalenessWarnings,
 		StrandedIssues:         strandedActiveIssues,
@@ -1408,13 +1386,7 @@ func faultDispatchStatuses(statuses []telemetry.DispatchStatus) []telemetry.Disp
 func faultFailureBreakers(breakers []telemetry.FailureBreaker) []telemetry.FailureBreaker {
 	faults := make([]telemetry.FailureBreaker, 0, len(breakers))
 	for _, breaker := range breakers {
-		parkedItems := 0
-		for _, item := range breaker.Items {
-			if item.Parked {
-				parkedItems++
-			}
-		}
-		if observability.FailureBreaker(breaker.EligibleCandidateCount, len(breaker.Items), parkedItems) == observability.ClassFault {
+		if observability.FailureBreaker(breaker.EligibleCandidateCount) == observability.ClassFault {
 			faults = append(faults, breaker)
 		}
 	}
@@ -1505,8 +1477,8 @@ func (s *Server) orphanedAgentProcesses(ctx context.Context, snapshot telemetry.
 	return summary, nil
 }
 
-func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, trackerUnavailable []telemetry.TrackerCondition, forgeUnavailable []telemetry.ForgeCondition, ciUnavailable []telemetry.CICondition, breakers []telemetry.FailureBreaker, loops []telemetry.DispatchLoop, outages []telemetry.BackendOutage, tickLiveness []telemetry.TickLiveness, refreshFailures []telemetry.RefreshFailure) []healthProject {
-	needsAttention := make(map[string]struct{}, len(stalls)+len(trackerUnavailable)+len(forgeUnavailable)+len(ciUnavailable)+len(breakers)+len(loops)+len(outages)+len(tickLiveness))
+func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telemetry.DispatchStatus, trackerUnavailable []telemetry.TrackerCondition, forgeUnavailable []telemetry.ForgeCondition, ciUnavailable []telemetry.CICondition, breakers []telemetry.FailureBreaker, outages []telemetry.BackendOutage, tickLiveness []telemetry.TickLiveness, refreshFailures []telemetry.RefreshFailure) []healthProject {
+	needsAttention := make(map[string]struct{}, len(stalls)+len(trackerUnavailable)+len(forgeUnavailable)+len(ciUnavailable)+len(breakers)+len(outages)+len(tickLiveness))
 	refreshByProject := make(map[string]telemetry.RefreshFailure, len(refreshFailures))
 	for _, stall := range stalls {
 		if projectID := strings.TrimSpace(stall.ProjectID); projectID != "" && stall.Stalled {
@@ -1530,11 +1502,6 @@ func applyNeedsAttentionToProjectHealth(projects []healthProject, stalls []telem
 	}
 	for _, breaker := range breakers {
 		if projectID := strings.TrimSpace(breaker.ProjectID); projectID != "" {
-			needsAttention[projectID] = struct{}{}
-		}
-	}
-	for _, loop := range loops {
-		if projectID := strings.TrimSpace(loop.ProjectID); projectID != "" {
 			needsAttention[projectID] = struct{}{}
 		}
 	}
@@ -1678,19 +1645,6 @@ func (s *Server) enforcedBudgets() []healthBudget {
 		})
 	}
 	return budgets
-}
-
-func (s *Server) redirectToOnboarding(c echo.Context) error {
-	return c.Redirect(http.StatusFound, "/onboarding")
-}
-
-func (s *Server) redirectToDashboard(c echo.Context) error {
-	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
-		return err
-	} else if ok && scenario.Page == "onboarding" {
-		return s.demoOnboarding(c, scenario)
-	}
-	return c.Redirect(http.StatusFound, "/")
 }
 
 func render(c echo.Context, component templ.Component) error {
@@ -1838,10 +1792,23 @@ func configuredStatus(value any) string {
 }
 
 func (s *Server) connectorName() string {
-	if s.connector == nil {
+	conn := s.currentConnector()
+	if conn == nil {
 		return ""
 	}
-	return s.connector.Name()
+	return conn.Name()
+}
+
+func (s *Server) currentConnector() connector.Connector {
+	if s.connector != nil || s.registry == nil {
+		return s.connector
+	}
+	for _, trackedProject := range s.registry.List() {
+		if conn := trackedProject.Connector(); conn != nil {
+			return conn
+		}
+	}
+	return nil
 }
 
 type healthResponse struct {
@@ -1866,7 +1833,6 @@ type healthResponse struct {
 	CIUnavailable          []telemetry.CICondition          `json:"ci_unavailable,omitempty"`
 	BackendOutages         []telemetry.BackendOutage        `json:"backend_outages,omitempty"`
 	FailureBreakers        []telemetry.FailureBreaker       `json:"failure_breakers,omitempty"`
-	DispatchLoops          []telemetry.DispatchLoop         `json:"dispatch_loops,omitempty"`
 	LaneSignalWarnings     []telemetry.LaneSignalWarning    `json:"lane_signal_warnings,omitempty"`
 	StalenessWarnings      []telemetry.StalenessWarning     `json:"staleness_warnings,omitempty"`
 	StrandedIssues         []telemetry.StrandedIssue        `json:"stranded_active_issues,omitempty"`

@@ -3,6 +3,7 @@ package hubserver
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -37,7 +38,7 @@ func TestRunnerProblemsHeartbeat(t *testing.T) {
 			r.redemption.IsolationTier = test.tier
 			r.enroll(t)
 			if test.sprite {
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capabilities_json=json_set(capabilities_json,'$.sprite_name',hostname) WHERE id=?", r.binding.MachineID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET machine_facts_ready=NULL,capabilities_json=json_set(capabilities_json,'$.sprite_name',hostname) WHERE id=?", r.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -118,12 +119,33 @@ func TestRunnerHubProblems(t *testing.T) {
 	}{
 		{"version_unsupported", 3, false},
 		{"settings_rejected", 2, true},
+		{"update_applied_not_running", 2, false},
 	} {
 		t.Run(test.code, func(t *testing.T) {
 			f := newDefaultNativeFixture(t, Config{})
 			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim)
 			r.enroll(t)
 			heartbeat := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "protocol_major": test.protocol, "settings_rejected": test.rejected, "backend_isolation": isolation.Report{"codex": {isolation.NativeTrusted}}, "problems": []runnerauth.Problem{runnerauth.NewProblem("keep_awake_failed")}}
+			if test.code == "update_applied_not_running" {
+				now := f.service.config.now()
+				running := runnerauth.BuildEvidence{Version: "1.0.0", Commit: strings.Repeat("a", 40), Source: "release", SHA256: strings.Repeat("b", 64), OS: "linux", Architecture: "amd64", ObservedAt: now}
+				applied := running
+				applied.Version, applied.Commit, applied.SHA256, applied.VerifiedRelease = "1.0.1", strings.Repeat("c", 40), strings.Repeat("d", 64), true
+				report := &runnerauth.UpdateObservation{Discovery: "unknown", Protocol: 1, Service: "detent", Supported: true, Running: running, ObservedAt: now,
+					Receipt: &runnerauth.UpdateReceipt{Status: "applied", ExecutionArtifact: true, Applied: &applied, ObservedAt: now,
+						Request: runnerauth.UpdateRequest{ID: "update-fixture", Service: "detent", Release: true, Version: "1.0.1", RequestedAt: now}}}
+				report.Revision = report.BuildRevision()
+				report.Receipt.Request.ExpectedBuildRevision = report.Revision
+				request, err := json.Marshal(report.Receipt.Request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE runner_identities SET routing_settings_json=json_set(routing_settings_json,'$.update_request',json(?)) WHERE organization_id=? AND id=?", string(request), f.project.OrganizationID, r.binding.RunnerID); err != nil {
+					t.Fatal(err)
+				}
+				heartbeat["update"] = report
+				heartbeat["version"], heartbeat["os"], heartbeat["architecture"] = "1.0.0", "linux", "amd64"
+			}
 			post := func() {
 				t.Helper()
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, heartbeat), http.StatusOK)
@@ -148,6 +170,13 @@ func TestRunnerHubProblems(t *testing.T) {
 			if !found {
 				t.Fatalf("missing %s: %+v", test.code, view.Problems)
 			}
+			if test.code == "update_applied_not_running" {
+				for _, problem := range view.Problems {
+					if problem.Code == test.code && (!strings.Contains(problem.Message, "1.0.0") || !strings.Contains(problem.Message, "1.0.1")) {
+						t.Fatalf("update skew lost build versions: %+v", problem)
+					}
+				}
+			}
 			if exclusions := view.Exclusions(f.project.ID, policy.Requirements{}, false); len(exclusions) != 0 {
 				t.Fatalf("diagnostics affected dispatch: %+v", exclusions)
 			}
@@ -162,6 +191,13 @@ func TestRunnerHubProblems(t *testing.T) {
 			heartbeat["settings_rejected"] = false
 			heartbeat["backend_isolation"] = isolation.Report{"codex": {isolation.Sandbox, isolation.NativeTrusted}}
 			delete(heartbeat, "problems")
+			if report, ok := heartbeat["update"].(*runnerauth.UpdateObservation); ok {
+				report.Running = *report.Receipt.Applied
+				heartbeat["version"] = report.Running.Version
+				report.Receipt.Status = "running"
+				report.Receipt.Running = &report.Running
+				report.Revision = report.BuildRevision()
+			}
 			post()
 			view = read()
 			if view.Health != "online" || len(view.Problems) != 0 {
@@ -261,7 +297,7 @@ func TestRunnerConfigurationChangesDoNotRequireApproval(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET capabilities_json = json_set(capabilities_json, ?, json(?)) WHERE id = ?", "$.native_admission."+r.binding.RunnerID+"."+view.ProjectID, string(raw), r.binding.MachineID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE machines SET machine_facts_ready=NULL,capabilities_json= json_set(capabilities_json, ?, json(?)) WHERE id = ?", "$.native_admission."+r.binding.RunnerID+"."+view.ProjectID, string(raw), r.binding.MachineID); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -328,6 +364,210 @@ func TestRunnerConfigurationChangesDoNotRequireApproval(t *testing.T) {
 				view.SelectedPolicy, view.EffectivePolicy = &approved, &approved
 				post(&view)
 				read(0)
+			}
+		})
+	}
+}
+
+func TestRunnerCachedProbeProblemsHeartbeat(t *testing.T) {
+	for _, test := range []struct {
+		name, code             string
+		cached, backend, mixed bool
+		visible                bool
+	}{
+		{name: "cached probe", code: "backend_probe_failed", cached: true},
+		{name: "uncached probe", code: "backend_probe_failed", visible: true},
+		{name: "backend failure", code: "backend_probe_failed", cached: true, backend: true, visible: true},
+		{name: "settings failure", code: "settings_invalid", cached: true, visible: true},
+		{name: "cached probe with settings failure", code: "backend_probe_failed", cached: true, mixed: true, visible: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			now := f.service.config.now()
+			f.service.config.now = func() time.Time { return now }
+			f.service.database.now = f.service.config.now
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat)
+			r.enroll(t)
+			problem := runnerauth.NewProblem(test.code)
+			problem.Subject = "backend_isolation"
+			problem.Check = "runner isolation probe"
+			problem.CachedCapabilities = test.cached
+			if test.backend {
+				problem.Subject = "example-project/codex"
+				problem.Check = "codex login status"
+			}
+			problems := []runnerauth.Problem{problem}
+			if test.mixed {
+				problems = append(problems, runnerauth.NewProblem("settings_invalid"))
+			}
+			heartbeat := map[string]any{"display_name": "Runner", "capacity": 2, "version": "test", "backend_isolation": isolation.Report{"example-project/codex": {isolation.NativeTrusted}}, "problems": problems}
+			post := func() {
+				t.Helper()
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/machines/"+string(r.binding.MachineID)+"/heartbeat", r.redemption.Credential, heartbeat), http.StatusOK)
+			}
+			read := func() runnerauth.Runner {
+				t.Helper()
+				response := performHubAPIRequest(t, f.service, http.MethodGet, r.identityPath()+"/routing", testHubAdminToken, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var view runnerauth.Runner
+				decodeHubResponse(t, response, &view)
+				return view
+			}
+			first := now
+			for _, age := range []time.Duration{0, time.Minute, 2*time.Minute - time.Nanosecond, 2 * time.Minute, 3 * time.Minute} {
+				now = first.Add(age)
+				if age == 2*time.Minute && !test.visible {
+					if view := read(); view.Health != "needs_attention" || len(view.Problems) != 1 {
+						t.Fatalf("persistent failure did not age into visibility: %+v", view)
+					}
+				}
+				post()
+				if age == time.Minute {
+					tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tx.Rollback()
+					if err := refreshRunnerProblems(t.Context(), tx, f.project.OrganizationID, r.binding.RunnerID, now); err != nil {
+						t.Fatal(err)
+					}
+					if err := tx.Commit(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				view := read()
+				visible := test.visible || age >= 2*time.Minute
+				if (view.Health == "needs_attention") != visible || (len(view.Problems) > 0) != visible {
+					t.Fatalf("age=%v health=%s problems=%+v", age, view.Health, view.Problems)
+				}
+				fleet := hostedFleetRunnerView(view, "test", nil, now)
+				if (len(fleet.Problems) > 0) != visible || (fleet.Health == "needs_attention") != visible {
+					t.Fatalf("diagnostics and health differ at %v: %+v", age, fleet)
+				}
+				if test.mixed && age < 2*time.Minute && (len(fleet.Problems) != 1 || fleet.Problems[0].Code != "settings_invalid") {
+					t.Fatalf("genuine workflow error hidden: %+v", fleet.Problems)
+				}
+				var raw string
+				if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT problems_json FROM runner_identities WHERE id = ?", r.binding.RunnerID).Scan(&raw); err != nil {
+					t.Fatal(err)
+				}
+				var stored []runnerauth.Problem
+				if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+					t.Fatal(err)
+				}
+				if len(stored) != len(problems) || !stored[0].FirstSeen.Equal(first) {
+					t.Fatalf("raw problem continuity lost at %v: %+v", age, stored)
+				}
+			}
+			delete(heartbeat, "problems")
+			post()
+			if view := read(); view.Health != "online" || len(view.Problems) != 0 {
+				t.Fatalf("completed probe did not clear failure: %+v", view)
+			}
+			now = now.Add(time.Second)
+			heartbeat["problems"] = problems
+			post()
+			view := read()
+			if (view.Health == "needs_attention") != test.visible {
+				t.Fatalf("new occurrence inherited prior persistence: %+v", view)
+			}
+		})
+	}
+}
+
+func TestRunnerExpiredRuntimeProblems(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		phase    string
+		age      time.Duration
+		released bool
+		expired  bool
+		finished bool
+		want     bool
+	}{
+		{name: "fresh completion", phase: "completed", age: 89 * time.Second},
+		{name: "expired completion", phase: "completed", age: 90 * time.Second, want: true},
+		{name: "hours of renewal", phase: "completed", age: 3 * time.Hour, want: true},
+		{name: "expired implementation", phase: "implementation", age: 90 * time.Second, want: true},
+		{name: "released attempt", phase: "completed", age: 3 * time.Hour, released: true},
+		{name: "expired lease", phase: "completed", age: 3 * time.Hour, expired: true},
+		{name: "terminal attempt", phase: "completed", age: 3 * time.Hour, finished: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now().UTC()
+			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }})
+			approveHubTestPolicy(t, f.service, f.base+"/policy", hubTestPolicy())
+			r := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
+			r.enroll(t)
+			other := prepareRunner(t, f, runnerauth.Read, runnerauth.Heartbeat, runnerauth.Claim, runnerauth.Events)
+			other.enroll(t)
+			publishCapacity(t, f, r, capacityReport(now))
+			issue := f.create(t, "Example work")
+			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", r.redemption.Credential, providerClaim(r, issue, "example-session"))
+			requireNativeStatus(t, response, http.StatusOK)
+			var lease tracker.NativeLease
+			decodeHubResponse(t, response, &lease)
+			event := nativeStartedEvent(lease)
+			event.Data.Runtime = &tracker.NativeRuntimeObservation{LocalAttemptID: 42, Generation: 1, Phase: test.phase, HeartbeatAt: now.Add(-test.age)}
+			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", r.redemption.Credential, event), http.StatusOK)
+			expires := now.Add(90 * time.Second)
+			if test.expired {
+				expires = now
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET renewed_at=?, expires_at=? WHERE lease_id=?", formatHubTime(now), formatHubTime(expires), lease.ID); err != nil {
+				t.Fatal(err)
+			}
+			if test.released {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE leases SET released_at=? WHERE lease_id=?", formatHubTime(now), lease.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.finished {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET status='failed' WHERE id=?", event.Data.AttemptID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			read := func(runner runnerFixture) runnerauth.Runner {
+				t.Helper()
+				response := performHubAPIRequest(t, f.service, http.MethodGet, runner.identityPath()+"/routing", testHubAdminToken, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var view runnerauth.Runner
+				decodeHubResponse(t, response, &view)
+				return view
+			}
+			view := read(r)
+			if (len(view.Problems) == 1) != test.want || (view.Health == "needs_attention") != test.want {
+				t.Fatalf("health=%s problems=%+v, want expired runtime=%v", view.Health, view.Problems, test.want)
+			}
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			admission, err := readRunnerForDispatch(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{Runner: runnerauth.Identity{Binding: r.binding}}}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			if len(admission.Leases) != 0 || len(admission.Problems) != 0 || admission.Health != "online" || !reflect.DeepEqual(admission.Exclusions(f.project.ID, policy.Requirements{}, false), view.Exclusions(f.project.ID, policy.Requirements{}, false)) {
+				t.Fatalf("runtime display enrichment changed admission: %+v", admission)
+			}
+			if test.want {
+				problem := view.Problems[0]
+				if problem.Code != "runtime_expired" || problem.ProjectID != string(f.project.ID) || problem.Subject != event.Data.AttemptID || problem.FirstSeen.IsZero() || !problem.ReportedAt.Equal(now) {
+					t.Fatalf("missing attempt attribution: %+v", problem)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json, '$.runtime.heartbeat_at', ?) WHERE id=?", formatHubTime(now), event.Data.AttemptID); err != nil {
+					t.Fatal(err)
+				}
+				if fresh := read(r); len(fresh.Problems) != 0 || fresh.Health != "online" {
+					t.Fatalf("runtime warning did not clear: %+v", fresh)
+				}
+			}
+			if foreign := read(other); len(foreign.Problems) != 0 {
+				t.Fatalf("runtime warning leaked to another runner: %+v", foreign.Problems)
 			}
 		})
 	}

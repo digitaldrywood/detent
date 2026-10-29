@@ -37,6 +37,7 @@ import (
 	provenance "github.com/digitaldrywood/detent/internal/releaseprovenance"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
@@ -226,10 +227,40 @@ func (w localWorkerPolicyWatcher) Watch(context.Context) (<-chan configwatcher.U
 	return w.updates, nil
 }
 
-func localWorkerHub(t *testing.T) (*hubclient.Scheduler, *hubclient.NativeClient, *hubclient.NativeConnector, config.Workflow, func(string) connector.Issue, func()) {
+var localWorkerHubTemplate struct {
+	once sync.Once
+	data []byte
+	err  error
+}
+
+func localWorkerHub(t *testing.T, observe ...func(*http.Request)) (*hubclient.Scheduler, *hubclient.NativeClient, *hubclient.NativeConnector, config.Workflow, func(string) connector.Issue, func()) {
+	return localWorkerHubFixture(t, nil, observe...)
+}
+
+func localWorkerHubFixture(t *testing.T, expose func(http.Handler, tracker.OrganizationID, tracker.ProjectID, string, config.Workflow), observe ...func(*http.Request)) (*hubclient.Scheduler, *hubclient.NativeClient, *hubclient.NativeConnector, config.Workflow, func(string) connector.Issue, func()) {
 	t.Helper()
 	const adminToken = "fixture-admin"
-	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), InitialAdminToken: []byte(adminToken)})
+	localWorkerHubTemplate.once.Do(func() {
+		path := filepath.Join(t.TempDir(), "template.db")
+		template, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: path, InitialAdminToken: []byte(adminToken)})
+		if err != nil {
+			localWorkerHubTemplate.err = err
+			return
+		}
+		if err := template.Close(); err != nil {
+			localWorkerHubTemplate.err = err
+			return
+		}
+		localWorkerHubTemplate.data, localWorkerHubTemplate.err = os.ReadFile(path)
+	})
+	if localWorkerHubTemplate.err != nil {
+		t.Fatal(localWorkerHubTemplate.err)
+	}
+	databasePath := filepath.Join(t.TempDir(), "hub.db")
+	if err := os.WriteFile(databasePath, localWorkerHubTemplate.data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: databasePath, InitialAdminToken: []byte(adminToken)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,6 +270,9 @@ func localWorkerHub(t *testing.T) (*hubclient.Scheduler, *hubclient.NativeClient
 		}
 	})
 	httpClient := &http.Client{Transport: workerHubTransport(func(request *http.Request) (*http.Response, error) {
+		for _, observer := range observe {
+			observer(request)
+		}
 		recorder := httptest.NewRecorder()
 		service.Handler().ServeHTTP(recorder, request)
 		return recorder.Result(), nil
@@ -321,6 +355,9 @@ func localWorkerHub(t *testing.T) (*hubclient.Scheduler, *hubclient.NativeClient
 	if err != nil {
 		t.Fatal(err)
 	}
+	if expose != nil {
+		expose(service.Handler(), organization, project.ID, token.Token, workflow)
+	}
 	create := func(name string) connector.Issue {
 		t.Helper()
 		draft := tracker.CreateIssue{Mutation: tracker.Mutation{IdempotencyKey: policy.Digest([]byte(name))}, Title: name, State: "Todo",
@@ -364,8 +401,9 @@ func localWorkerHub(t *testing.T) (*hubclient.Scheduler, *hubclient.NativeClient
 }
 
 func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
+	scratch := t.TempDir()
 	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
-		t.Setenv(name, "")
+		t.Setenv(name, scratch)
 	}
 	if testing.Short() {
 		t.Skip("process and Hub lifecycle integration")
@@ -403,7 +441,7 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 	if err := os.WriteFile(path, []byte(localWorkerWorkflow), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	selected, err := projectpkg.New(projectpkg.Config{Project: globalconfig.Project{ID: "local", Workdir: root, Workflow: path}, Workflow: workflow}, projectpkg.Dependencies{
+	selected, err := projectfixture.New(projectpkg.Config{Project: globalconfig.Project{ID: "local", Workdir: root, Workflow: path}, Workflow: workflow}, projectpkg.Dependencies{
 		Runner: run, Scheduling: localWorkerPolicyScheduling{scheduler}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), WorkflowReconcileInterval: time.Hour,
 		WorkflowWatcherFactory: func(string) (projectpkg.WorkflowWatcher, error) { return localWorkerPolicyWatcher{policyUpdates}, nil },
 	})
@@ -635,6 +673,38 @@ func TestLocalWorkerReleaseAndPolicyCoexistence(t *testing.T) {
 	finish(a, true)
 	if _, err := os.Stat(a.binary); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("obsolete artifact retained after final owner exited: %v", err)
+	}
+	lost := start("Summarize documents", "1.0.3", runnerpkg.RunModeImplement)
+	runnerClient, ok := scheduler.NativeClient("local")
+	if !ok {
+		t.Fatal("runner client is unavailable")
+	}
+	if err := runnerClient.Release(ctx, lost.request.Execution.Recovery().Lease, "cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scheduler.RenewClaim(ctx, lost.issue.ID, time.Now()); !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
+		t.Fatalf("released claim renewal = %v", err)
+	}
+	select {
+	case result := <-lost.result:
+		if result.Err == nil {
+			t.Fatal("claim-lost worker completed successfully")
+		}
+	case <-ctx.Done():
+		t.Fatal("claim loss did not stop active execution")
+	}
+	if alive, err := procgroup.Alive(lost.identity); err != nil || alive {
+		t.Fatalf("claim-lost worker survived cleanup: %t %v", alive, err)
+	}
+	if scheduler.RunExecution(lost.issue.ID) == lost.request.Execution {
+		t.Fatal("claim-lost worker retained its native claim")
+	}
+	lostItem, err := native.Issue(ctx, tracker.NativeWorkItemID(lost.issue.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := native.Transition(ctx, lostItem.WorkItemID, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: "lost-worker-done"}, ExpectedRevision: lostItem.Revision, State: "Done", Reason: "user_requested"}); err != nil {
+		t.Fatal(err)
 	}
 	revoked := start("Classify documents", "1.0.3", runnerpkg.RunModeImplement)
 	revoke()

@@ -7,15 +7,15 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
 	"github.com/labstack/echo/v4"
-
-	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type healthFindingsPage struct {
+	ChangeSequence      int64                       `json:"change_sequence"`
 	BaselineUnavailable []healthBaselineUnavailable `json:"baseline_unavailable"`
 	Items               []healthFinding             `json:"items"`
 	NextCursor          string                      `json:"next_cursor,omitempty"`
@@ -27,7 +27,7 @@ func (s *Service) getHealthFindings(c echo.Context) error {
 	if raw := c.QueryParam("limit"); raw != "" {
 		value, err := strconv.Atoi(raw)
 		if err != nil || value < 1 || value > 100 {
-			return s.nativeAPIError(c, nativeInvalid("limit must be between 1 and 100"))
+			return s.nativeAPIError(c, nativePublicInvalid("limit must be between 1 and 100"))
 		}
 		limit = value
 	}
@@ -46,15 +46,15 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 		state = "open"
 	}
 	if state != "open" && state != "resolved" && state != "all" {
-		return page, nativeInvalid("state must be open, resolved or all")
+		return page, nativePublicInvalid("state must be open, resolved or all")
 	}
 	if limit < 1 || limit > 100 {
-		return page, nativeInvalid("limit must be between 1 and 100")
+		return page, nativePublicInvalid("limit must be between 1 and 100")
 	}
 	if since != "" {
 		at, err := time.Parse(time.RFC3339Nano, since)
 		if err != nil {
-			return page, nativeInvalid("since must be an RFC3339 timestamp")
+			return page, nativePublicInvalid("since must be an RFC3339 timestamp")
 		}
 		since = formatHubTime(at)
 	}
@@ -62,49 +62,89 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 	if cursor != "" {
 		raw, err := base64.RawURLEncoding.DecodeString(cursor)
 		if err != nil {
-			return page, nativeInvalid("invalid findings cursor")
+			return page, nativePublicInvalid("invalid findings cursor")
 		}
 		after, err = strconv.ParseInt(string(raw), 10, 64)
 		if err != nil || after < 1 {
-			return page, nativeInvalid("invalid findings cursor")
+			return page, nativePublicInvalid("invalid findings cursor")
 		}
 	}
-	if _, err := readNativeProject(ctx, s.database.reader, scope); err != nil {
+	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
 		return page, err
 	}
+	defer tx.Rollback()
+	page.ChangeSequence, _, err = readDashboardWatermark(ctx, tx, scope)
+	if err != nil {
+		return page, err
+	}
+	if _, err := readNativeProject(ctx, tx, scope); err != nil {
+		return page, err
+	}
+	var query nativeQueryer = tx
+	if scope.credential.HostedRole == "reporter" {
+		prepared, prepareErr := prepareNativePageQuery(ctx, tx, scope, "", "native_issue_actors")
+		if prepareErr != nil {
+			return page, prepareErr
+		}
+		query = prepared
+	}
 	resolved := state == "resolved"
+	args := []any{scope.organization, state, resolved, scope.project, state, since, since, since, after}
+
 	visibility := ""
-	args := []any{scope.project, scope.organization, state, resolved, scope.project, state, since, since, since, after}
 	if scope.credential.HostedRole == "reporter" {
 		condition, visibilityArgs := scope.issueVisibilitySQL("i")
 		visibility = " AND EXISTS(SELECT 1 FROM health_finding_issues fi JOIN issues i ON i.native_id=fi.work_item_id WHERE fi.finding_id=health_findings.id AND i.organization_id=? AND i.project_id=? AND (" + condition + "))"
 		args = append(args, scope.organization, scope.project)
 		args = append(args, visibilityArgs...)
 	}
-	args = append(args, limit+1)
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable,slack_unavailable_at,slack_status_code,
- COALESCE((SELECT work_item_id FROM health_finding_issues WHERE finding_id=health_findings.id AND project_id=?), '') FROM health_findings
- WHERE organization_id=? AND (?='all' OR (resolved_at IS NOT NULL)=?) AND EXISTS(SELECT 1 FROM json_each(projects_json) WHERE value=?)
+	args = append(args, healthReadLimit+1)
+	rows, err := query.QueryContext(ctx, `SELECT rowid,id,fingerprint,signal,class,subject_json,opened_at,last_seen_at,resolved_at,severity,summary,next_action,evidence_json,email_unavailable,slack_unavailable_at,slack_status_code,projects_json,projects_projected FROM health_findings
+ WHERE organization_id=? AND (?='all' OR (resolved_at IS NOT NULL)=?) AND (projects_projected IS NULL OR EXISTS(SELECT 1 FROM health_finding_projects fp WHERE fp.finding_id=health_findings.id AND fp.project_id=?))
  AND ((?='all' AND resolved_at IS NULL) OR ?='' OR julianday(last_seen_at)>=julianday(?) OR julianday(resolved_at)>=julianday(?)) AND rowid>?`+visibility+` ORDER BY rowid LIMIT ?`, args...)
 	if err != nil {
 		return page, err
 	}
 	defer rows.Close()
 	var last int64
+	count := 0
 	for rows.Next() {
 		var f healthFinding
 		var rowid int64
 		var subject, opened, seen, evidence string
 		var ended, slackFailed sql.NullString
 		var slackStatus sql.NullInt64
-		var item tracker.NativeWorkItemID
-		if err := rows.Scan(&rowid, &f.ID, &f.Fingerprint, &f.Signal, &f.Class, &subject, &opened, &seen, &ended, &f.Severity, &f.Summary, &f.NextAction, &evidence, &f.EmailUnavailable, &slackFailed, &slackStatus, &item); err != nil {
+		var projects string
+		var projected sql.NullInt64
+		if err := rows.Scan(&rowid, &f.ID, &f.Fingerprint, &f.Signal, &f.Class, &subject, &opened, &seen, &ended, &f.Severity, &f.Summary, &f.NextAction, &evidence, &f.EmailUnavailable, &slackFailed, &slackStatus, &projects, &projected); err != nil {
 			return page, err
 		}
-		if item != "" {
-			f.FiledBy = "health_detector"
-			f.Issues = []healthFindingIssue{{ProjectID: scope.project, WorkItemID: item}}
+		count++
+		if count > healthReadLimit {
+			return page, errHealthReadLimit
 		}
+		if !projected.Valid {
+			var ids []string
+			if err := json.Unmarshal([]byte(projects), &ids); err != nil {
+				return page, err
+			}
+			if !slices.Contains(ids, string(scope.project)) {
+				continue
+			}
+		}
+		links, err := readHealthFindingLinks(ctx, query, scope, f.ID)
+		if err != nil {
+			return page, err
+		}
+		f.Issues = links
+		if scope.credential.HostedRole == "reporter" && len(links) == 0 {
+			continue
+		}
+		if len(links) > 0 {
+			f.FiledBy = "health_detector"
+		}
+
 		if len(page.Items) == limit {
 			page.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(last, 10)))
 			break
@@ -143,7 +183,7 @@ func (s *Service) readHealthFindings(ctx context.Context, scope nativeScope, sta
 		return page, err
 	}
 	var tick, unavailable string
-	err = s.database.reader.QueryRowContext(ctx, "SELECT last_tick_at,baseline_unavailable_json FROM health_detector_ticks WHERE organization_id=?", scope.organization).Scan(&tick, &unavailable)
+	err = tx.QueryRowContext(ctx, "SELECT last_tick_at,baseline_unavailable_json FROM health_detector_ticks WHERE organization_id=?", scope.organization).Scan(&tick, &unavailable)
 	if errors.Is(err, sql.ErrNoRows) {
 		return page, nil
 	}

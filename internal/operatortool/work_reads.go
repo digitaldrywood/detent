@@ -67,6 +67,7 @@ const WorkHistoryPageBytes = MaxResultBytes / 4
 // WorkReadRequest contains application selectors only. Organization and principal
 // always come from the connection. Each operation permits only its own fields.
 type WorkReadRequest struct {
+	ArchiveURL      bool     `json:"archive_url,omitempty"`
 	View            string   `json:"view,omitempty"`
 	ProjectID       string   `json:"project_id"`
 	Since           string   `json:"since,omitempty"`
@@ -109,13 +110,14 @@ type WorkReader interface {
 // WorkReadResult preserves source freshness separately from when the application
 // read was made. Data is a concrete application model at every call site.
 type WorkReadResult[T any] struct {
-	ProjectID   string              `json:"project_id"`
-	Reference   string              `json:"reference,omitempty"`
-	URL         string              `json:"url,omitempty"`
-	GeneratedAt time.Time           `json:"generated_at"`
-	Freshness   explain.SourceState `json:"freshness"`
-	ExpiresAt   *time.Time          `json:"expires_at,omitempty"`
-	Data        T                   `json:"data"`
+	ProjectID   string                     `json:"project_id"`
+	Reference   string                     `json:"reference,omitempty"`
+	URL         string                     `json:"url,omitempty"`
+	GeneratedAt time.Time                  `json:"generated_at"`
+	Freshness   explain.SourceState        `json:"freshness"`
+	ExpiresAt   *time.Time                 `json:"expires_at,omitempty"`
+	Data        T                          `json:"data"`
+	Archive     *tracker.ArchiveDescriptor `json:"archive,omitempty"`
 }
 
 func EncodeResult(value any) (Result, error) { return encodeResult(value) }
@@ -123,11 +125,11 @@ func EncodeResult(value any) (Result, error) { return encodeResult(value) }
 func WorkReadCatalog() []Definition {
 	var definitions []Definition
 	for _, spec := range []struct{ name, description, fields string }{
-		{WorkList, "List or search work items in one authorized project. Native projects support ranked stemmed/prefix OR search with matched snippets, RFC3339 created_after (inclusive), created_before (exclusive), updated_after (inclusive), type (bug or change_request), verification (pending lists Done issues awaiting the filer's verify_fix; verified lists confirmed fixes), created_by (principal ID or me for a human caller), archived selection, OR selections within each filter, and workspace/work projections. Combine created_by=me with verification=pending for the caller's issues to verify. GitHub snapshots refuse unsupported native selectors.", "query created_after created_before updated_after fingerprint open type verification state label states labels created_by assignee assignees priority priorities archived include cursor offset limit"},
+		{WorkList, "List or search work items in one authorized project. Native projects support ranked stemmed/prefix OR search with matched snippets, RFC3339 created_after (inclusive), created_before (exclusive), updated_after (inclusive), type (bug or change_request), verification (pending lists Done issues awaiting the filer's verify_fix; verified lists confirmed fixes), created_by (principal ID or me for a human caller), archived selection, OR selections within each filter, and workspace/work projections. Explicit include=[\"summary\"] returns only lane-scan fields and the latest transition reason. Combine created_by=me with verification=pending for the caller's issues to verify. GitHub snapshots refuse unsupported native selectors.", "query created_after created_before updated_after fingerprint open type verification state label states labels created_by assignee assignees priority priorities archived include cursor offset limit"},
 		{HealthFindings, "Read project-scoped health findings and the detector last tick, with bounded pagination.", "state since cursor limit"},
 		{WorkConfig, "Read configured project lanes, priorities, available labels and effective Reporter filing templates by issue type.", ""},
 		{WorkItem, "Read a work item's detail and source freshness. For native retained evidence use view=recovery, then follow data.next_cursor with the same view and reference. Each response contains one base64 JSON record fragment with section, record_id, original version_id, byte offset, total_bytes and SHA-256; section=complete ends traversal. This includes full review text, command output, frozen historical policy and discussion omitted from bounded recovery or get_change. Decode fragments individually; do not assemble the whole history.", "reference view cursor"},
-		{WorkComments, "Read a bounded page of work-item comments with edit revisions.", "reference cursor offset limit"},
+		{WorkComments, "Read a bounded page of work-item comments with edit revisions. Native pages may return fewer than limit items to fit the byte budget; follow next_cursor until absent. Native projects require cursor paging; offset is supported only for GitHub snapshots. A single comment too large for a page requires work_bulk_export.", "reference cursor offset limit"},
 		{WorkPRComments, "Read a bounded page of the work item's linked PR discussion through the existing forge reader. The application selects the repository and PR; deployments without a PR discussion reader are unavailable.", "reference offset limit"},
 		{WorkHistory, "Read durable application history, identifying the tracker or workflow source; separate from recent_activity's live snapshot.", "reference cursor offset limit"},
 		{WorkVersion, "Read a saved native issue or comment revision.", "reference comment_id revision"},
@@ -145,13 +147,17 @@ func WorkReadCatalog() []Definition {
 	} {
 		properties := map[string]any{"project_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}}
 		required := []string{"project_id"}
+		switch spec.name {
+		case WorkHistory, WorkRuns, WorkVersion, WorkAttemptReceipt, BoardSession, BoardSessionHistory, WorkItem:
+			spec.fields += " archive_url"
+		}
 		for field := range strings.FieldsSeq(spec.fields) {
 			switch field {
 			case "type":
 				properties[field] = map[string]any{"type": "string", "enum": []string{"bug", "change_request"}}
 			case "verification":
 				properties[field] = map[string]any{"type": "string", "enum": []string{"pending", "verified"}}
-			case "open":
+			case "open", "archive_url":
 				properties[field] = map[string]any{"type": "boolean"}
 			case "limit":
 				properties[field] = map[string]any{"type": "integer", "minimum": 1, "maximum": MaxItemLimit}
@@ -510,6 +516,65 @@ func NativeListIssue(issue tracker.NativeIssue) tracker.NativeIssue {
 	issue.Provenance = nil
 	issue.ExternalReferences = nil
 	issue.Change = nil
-	issue.OmittedFields = []string{"body", "linked_source", "provenance", "external_references", "change"}
+	issue.OmittedFields = slices.Clone(issue.OmittedFields)
+	for _, field := range []string{"body", "linked_source", "provenance", "external_references", "change"} {
+		if !slices.Contains(issue.OmittedFields, field) {
+			issue.OmittedFields = append(issue.OmittedFields, field)
+		}
+	}
 	return issue
+}
+
+func BoundNativeListIssue(issue tracker.NativeIssue) (tracker.NativeIssue, error) {
+	issue = NativeListIssue(issue)
+	raw, err := json.Marshal(issue)
+	if err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	fields := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	fields["latest_transition_reason"], err = json.Marshal(issue.LatestTransitionReason)
+	if err != nil {
+		return tracker.NativeIssue{}, err
+	}
+	names := make([]string, 0, len(fields))
+	for name := range fields {
+		if !slices.Contains([]string{"organization_id", "project_id", "work_item_id", "number", "revision", "profile", "omitted_fields"}, name) {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	slices.SortStableFunc(names, func(a, b string) int { return len(fields[b]) - len(fields[a]) })
+	for index := 0; ; index++ {
+		fields["omitted_fields"], err = json.Marshal(issue.OmittedFields)
+		if err != nil {
+			return tracker.NativeIssue{}, err
+		}
+		raw, err = json.Marshal(fields)
+		if err != nil {
+			return tracker.NativeIssue{}, err
+		}
+		if len(raw) <= WorkListPageBytes/4 {
+			var bounded tracker.NativeIssue
+			if err := json.Unmarshal(raw, &bounded); err != nil {
+				return tracker.NativeIssue{}, err
+			}
+			if reason, ok := fields["latest_transition_reason"]; ok {
+				if err := json.Unmarshal(reason, &bounded.LatestTransitionReason); err != nil {
+					return tracker.NativeIssue{}, err
+				}
+			}
+			return bounded, nil
+		}
+		if index == len(names) {
+			return tracker.NativeIssue{}, ErrResultTooLarge
+		}
+		name := names[index]
+		delete(fields, name)
+		if !slices.Contains(issue.OmittedFields, name) {
+			issue.OmittedFields = append(issue.OmittedFields, name)
+		}
+	}
 }

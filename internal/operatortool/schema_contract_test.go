@@ -55,6 +55,8 @@ func TestCatalogDecoderContract(t *testing.T) {
 		StopRun:               reflect.TypeFor[StopRunArguments](),
 		ActionResult:          reflect.TypeFor[ActionResultArguments](),
 		ConnectionInfo:        reflect.TypeFor[struct{}](),
+		OAuthGrantList:        reflect.TypeFor[OAuthGrantListArguments](),
+		OAuthGrantRevoke:      reflect.TypeFor[OAuthGrantArguments](),
 		AppBootstrapPayload:   reflect.TypeFor[struct{}](),
 		AppUpdates:            reflect.TypeFor[struct{}](),
 		ReleaseNotes:          reflect.TypeFor[ReleaseNotesArguments](),
@@ -62,7 +64,7 @@ func TestCatalogDecoderContract(t *testing.T) {
 		"get_operator_chat":   reflect.TypeFor[OperatorChatReadArguments](),
 		"post_operator_chat":  reflect.TypeFor[OperatorChatArguments](),
 		"monthly_usage_costs": reflect.TypeFor[MonthlyUsageArguments](),
-		BillingStatus:         reflect.TypeFor[struct{}](),
+		BillingStatus:         reflect.TypeFor[BillingStatusArguments](),
 		BillingUsage:          reflect.TypeFor[struct{}](),
 		BillingExport:         reflect.TypeFor[struct{}](),
 		HostedPlan:            reflect.TypeFor[struct{}](),
@@ -87,6 +89,9 @@ func TestCatalogDecoderContract(t *testing.T) {
 		"create_native_project":          reflect.TypeFor[ProjectRequest[ProjectCreateInput]](),
 		"create_hosted_project":          reflect.TypeFor[ProjectRequest[HostedProjectCreateInput]](),
 		"save_onboarding":                reflect.TypeFor[ProjectRequest[OnboardingInput]](),
+		"rename_project":                 reflect.TypeFor[RenameProjectArguments](),
+		"set_organization_logo":          reflect.TypeFor[SetOrganizationLogoArguments](),
+		"set_project_icon":               reflect.TypeFor[SetProjectIconArguments](),
 		"update_project_integration":     reflect.TypeFor[ProjectRequest[IntegrationInput]](),
 		"bind_native_repository":         reflect.TypeFor[ProjectRequest[RepositoryInput]](),
 		"start_git_hub_import":           reflect.TypeFor[ProjectRequest[ImportStartInput]](),
@@ -98,6 +103,8 @@ func TestCatalogDecoderContract(t *testing.T) {
 		"project_native_summary":         reflect.TypeFor[ProjectRequest[SummaryInput]](),
 		"remove_project_secret":          reflect.TypeFor[ProjectRequest[struct{}]](),
 		"import_sprite_usage":            reflect.TypeFor[ProjectRequest[SpriteUsageInput]](),
+		UpdateSpritePool:                 reflect.TypeFor[ProjectRequest[SpritePoolInput]](),
+		UpdateProjectSpriteAllocation:    reflect.TypeFor[ProjectRequest[SpriteAllocationInput]](),
 		GetOrganizationModelSelection:    reflect.TypeFor[ModelSelectionReadRequest](),
 		GetProjectModelSelection:         reflect.TypeFor[ModelSelectionReadRequest](),
 		UpdateOrganizationModelSelection: reflect.TypeFor[ProjectRequest[ModelSelectionInput]](),
@@ -130,6 +137,8 @@ func TestCatalogDecoderContract(t *testing.T) {
 	}
 	for _, definition := range definitions {
 		switch {
+		case IsThreadTool(definition.Name):
+			targets[definition.Name] = reflect.TypeFor[ThreadArguments]()
 		case IsWorkRead(definition.Name):
 			targets[definition.Name] = reflect.TypeFor[WorkReadRequest]()
 		case IsWorkTool(definition.Name):

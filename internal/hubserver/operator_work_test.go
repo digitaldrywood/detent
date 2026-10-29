@@ -2,12 +2,14 @@ package hubserver
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +18,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
@@ -242,17 +246,36 @@ func TestHubMCPWorkCommands(t *testing.T) {
 			t.Fatal("REST content was truncated by MCP shaping")
 		}
 		if tool == operatortool.WorkItem {
-			response := performHubAPIRequest(t, f.service, http.MethodGet, item.ContentRead.FullURL+"/comments", f.token, nil)
-			requireNativeStatus(t, response, http.StatusOK)
-			var comments tracker.Page[tracker.NativeComment]
-			decodeHubResponse(t, response, &comments)
-			if len(comments.Items) != len(largeSnapshot.Comments) {
-				t.Fatal("imported comments were lost")
+			remaining := map[string]string{}
+			for _, comment := range largeSnapshot.Comments {
+				remaining[comment.Provenance.ExternalID] = comment.Body
 			}
-			for _, comment := range comments.Items {
-				if comment.Body != largeSnapshot.Comments[0].Body {
-					t.Fatal("REST comment content was truncated")
+			commentsURL := item.ContentRead.FullURL + "/comments"
+			for nextURL := commentsURL; ; {
+				response := performHubAPIRequest(t, f.service, http.MethodGet, nextURL, f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
+				var comments tracker.Page[tracker.NativeComment]
+				decodeHubResponse(t, response, &comments)
+				if len(comments.Items) == 0 {
+					t.Fatal("imported comments page was empty")
 				}
+				for _, comment := range comments.Items {
+					body, ok := remaining[comment.Provenance.ExternalID]
+					if !ok {
+						t.Fatal("REST comment was unexpected or duplicated")
+					}
+					if comment.Body != body {
+						t.Fatal("REST comment content was truncated")
+					}
+					delete(remaining, comment.Provenance.ExternalID)
+				}
+				if comments.NextCursor == "" {
+					break
+				}
+				nextURL = commentsURL + "?cursor=" + url.QueryEscape(comments.NextCursor)
+			}
+			if len(remaining) != 0 {
+				t.Fatal("imported comments were lost")
 			}
 		}
 	}
@@ -373,6 +396,35 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if _, failed := call("add_comment", "comment", map[string]any{"identifier": identifier, "body": "Changed retry"}); !failed {
 		t.Fatal("changed comment retry was accepted")
 	}
+	t.Run("visual reference refusals", func(t *testing.T) {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project.ID); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+			defer cancel()
+			if _, err := f.service.database.db.ExecContext(ctx, "UPDATE projects SET require_visual_attachments=0 WHERE id=?", f.project.ID); err != nil {
+				t.Error(err)
+			}
+		})
+		const visual = "https://figma.com/design/example?token=private"
+		for _, test := range []struct {
+			tool   string
+			fields map[string]any
+		}{
+			{operatortool.FileIssue, map[string]any{"title": "Visual", "description": visual + issueContractTestSections, "state": "Todo"}},
+			{operatortool.CreateChange, map[string]any{"work_item_id": id, "title": "Visual", "body": visual}},
+			{operatortool.EditItem, map[string]any{"identifier": id, "body": visual + issueContractTestSections, "expected_revision": createdFields["revision"]}},
+			{operatortool.AddComment, map[string]any{"identifier": id, "body": visual}},
+			{operatortool.EditComment, map[string]any{"identifier": id, "comment_id": comment.ID, "body": visual, "expected_revision": commentFields["revision"]}},
+		} {
+			raw, failed := call(test.tool, "visual-"+test.tool, test.fields)
+			var refusal operatortool.RequestError
+			if !failed || json.Unmarshal(raw, &refusal) != nil || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, attachment.VisualReferenceMessage) || strings.Contains(refusal.Message, "private") {
+				t.Fatalf("%s refusal=%s failed=%v", test.tool, raw, failed)
+			}
+		}
+	})
 	for _, tt := range []struct {
 		name, tool string
 		fields     map[string]any
@@ -582,6 +634,36 @@ func TestHubMCPWorkCommands(t *testing.T) {
 	if published.Version.Source == nil || *published.Version.Source != capture.Source || published.Version.Policy.ID != input.PolicyID || published.Version.Actor.Kind != "human" || published.Version.Code.Availability != "unverified" {
 		t.Fatal("MCP source publication changed source, policy or operator provenance")
 	}
+	t.Run("Change visual reference refusals", func(t *testing.T) {
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project.ID); err != nil {
+			t.Fatal(err)
+		}
+
+		visualVersion := make(map[string]any, len(fields))
+		for key, value := range fields {
+			visualVersion[key] = value
+		}
+		visualVersion["expected_version_id"] = published.Version.ID
+		visualVersion["artifacts"] = []tracker.ChangeArtifact{{Kind: "artifact", URI: "https://example.test/screen.png", SHA256: input.Code.SHA256, Availability: "available"}}
+		for _, test := range []struct {
+			tool   string
+			fields map[string]any
+		}{
+			{operatortool.PublishChangeVersion, visualVersion},
+			{operatortool.DiscussChange, map[string]any{"work_item_id": id, "change_id": change.ChangeID, "body": "https://figma.com/design/example?secret=hidden"}},
+			{operatortool.ReviewChange, map[string]any{"work_item_id": id, "change_id": change.ChangeID, "version_id": published.Version.ID, "expected_revision": published.Detail.Change.Revision, "decision": "commented", "body": "https://figma.com/design/example?secret=hidden"}},
+		} {
+			raw, failed := call(test.tool, "visual-"+test.tool, test.fields)
+			var refusal operatortool.RequestError
+			if !failed || json.Unmarshal(raw, &refusal) != nil || refusal.Code != "invalid_request" || !strings.Contains(refusal.Message, attachment.VisualReferenceMessage) || strings.Contains(refusal.Message, "hidden") {
+				t.Fatalf("%s refusal=%s failed=%v", test.tool, raw, failed)
+			}
+		}
+		if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=0 WHERE id=?", f.project.ID); err != nil {
+			t.Fatal(err)
+		}
+	})
+
 	sourceURL := change.URL + "/versions/" + published.Version.ID + "/source"
 	response = performHubAPIRequest(t, f.service, http.MethodGet, sourceURL, f.token, nil)
 	requireNativeStatus(t, response, http.StatusOK)
@@ -851,4 +933,114 @@ func performHubWorkCall(t *testing.T, service *Service, path, token, name string
 	response := httptest.NewRecorder()
 	service.Handler().ServeHTTP(response, request)
 	return response
+}
+
+func TestSafeNativeWorkError(t *testing.T) {
+	f := newNativeFixture(t, nil, "", "public-filing-errors")
+	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+	now := time.Now().UTC()
+	validSource := tracker.Provenance{Provider: "github", ExternalID: "issue", AuthorID: "author", CreatedAt: now, UpdatedAt: now, ObservedAt: now}
+	for _, test := range []struct {
+		name    string
+		request tracker.CreateIssue
+		worker  bool
+		setup   string
+		message string
+	}{
+		{name: "Triage", request: tracker.CreateIssue{State: "Triage"}, message: "Triage is reserved for linked GitHub issue intake"},
+		{name: "Triage with Backlog", request: tracker.CreateIssue{State: "Triage"}, setup: `UPDATE projects SET states_json=json_insert(states_json, '$[#]', json('{"name":"Backlog"}')) WHERE id=?`, message: "Triage is reserved for linked GitHub issue intake; use Backlog for drafts"},
+		{name: "worker Triage with restricted Backlog", worker: true, request: tracker.CreateIssue{State: "Triage"}, setup: `UPDATE projects SET states_json=json_insert(states_json, '$[#]', json('{"name":"Backlog","operator_only":true}')) WHERE id=?`, message: "Triage is reserved for linked GitHub issue intake"},
+		{name: "title", request: tracker.CreateIssue{Title: strings.Repeat("x", 501)}, message: "Title must contain 1 to 500 bytes and body at most 256 KiB"},
+		{name: "priority", request: tracker.CreateIssue{Priority: new(4)}, message: "Priority must be between 0 and 3"},
+		{name: "label count", request: tracker.CreateIssue{Labels: make([]string, 101)}, message: "At most 100 labels or assignees are supported"},
+		{name: "label value", request: tracker.CreateIssue{Labels: []string{""}}, message: "Labels and assignees must contain 1 to 200 bytes"},
+		{name: "worker provenance", request: tracker.CreateIssue{Provenance: &validSource}, worker: true, message: "Imported provenance requires an operator"},
+		{name: "import provider", request: tracker.CreateIssue{Provenance: &tracker.Provenance{Provider: "unknown"}}, message: "Import source is invalid"},
+		{name: "import author", request: tracker.CreateIssue{Provenance: &tracker.Provenance{Provider: "github"}}, message: "Import source and author are invalid"},
+		{name: "import time", request: tracker.CreateIssue{Provenance: &tracker.Provenance{Provider: "github", ExternalID: "issue", AuthorID: "author"}}, message: "Import timestamps are invalid"},
+		{name: "compatibility project", setup: "UPDATE projects SET profile='github_compatible' WHERE id=?", message: "Compatibility project content is externally owned"},
+		{name: "unknown lane", request: tracker.CreateIssue{State: "Unknown"}, message: "Workflow state does not exist"},
+		{name: "operator lane", worker: true, setup: "UPDATE projects SET states_json=(SELECT json_set(states_json, '$[' || s.key || '].operator_only', json('true')) FROM json_each(states_json) s WHERE json_extract(s.value, '$.name')='Todo') WHERE id=?", message: "Workflow target requires an operator"},
+		{name: "reserved label", request: tracker.CreateIssue{Labels: []string{workspaceItemLabel}}, message: "Label detent:workspace is reserved"},
+		{name: "linked provenance", request: tracker.CreateIssue{GitHubIssueURL: "https://github.com/example-org/example-project/issues/1", Provenance: &validSource}, message: "Linked issues obtain provenance during runner intake"},
+		{name: "linked repository required", request: tracker.CreateIssue{GitHubIssueURL: "https://github.com/example-org/example-project/issues/1"}, message: linkedIssueRepositoryRequired},
+		{name: "linked repository mismatch", setup: "UPDATE projects SET checkout_repository='example-org/other-project' WHERE id=?", request: tracker.CreateIssue{GitHubIssueURL: "https://github.com/example-org/example-project/issues/1"}, message: linkedIssueRepositoryMismatch},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if test.setup != "" {
+				if _, err := tx.ExecContext(t.Context(), test.setup, f.project.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			request := test.request
+			if request.Title == "" {
+				request.Title = "Issue validation"
+			}
+			if request.Body == "" {
+				request.Body = issueContractTestSections
+			}
+			if request.State == "" {
+				request.State = "Todo"
+			}
+			caller := scope
+			if test.worker {
+				caller.credential.Scope = apiScopeWorker
+			}
+			_, cause := createNativeIssueTx(t.Context(), tx, caller, request, now)
+			err = safeNativeWorkError(cause)
+			var refusal *operatortool.RequestError
+			if !errors.As(err, &refusal) || refusal.Code != "invalid_request" || refusal.Message != test.message || errors.Is(err, operatortool.ErrSnapshotUnavailable) {
+				t.Fatalf("refusal=%v, want invalid_request: %s", err, test.message)
+			}
+			response := httptest.NewRecorder()
+			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/work-items", nil), response)
+			service := &Service{config: Config{Hosted: &HostedConfig{}, Logger: discardLogger()}}
+			if err := service.nativeAPIError(context, cause); err != nil {
+				t.Fatal(err)
+			}
+			if refusal := requireNativeCode(t, response, http.StatusUnprocessableEntity, "invalid_request"); refusal.Message != test.message {
+				t.Fatalf("hosted refusal=%s, want %s", refusal.Message, test.message)
+			}
+		})
+	}
+	_, sqlFailure := f.service.database.db.ExecContext(t.Context(), "SELECT missing_private_column FROM issues")
+	if sqlFailure == nil {
+		t.Fatal("expected SQL diagnostic")
+	}
+	for _, test := range []struct {
+		name  string
+		cause error
+	}{
+		{"private refusal", nativeInvalid("private refusal diagnostic")},
+		{"SQL failure", sqlFailure},
+		{"internal failure", errors.New("private database diagnostic")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := safeNativeWorkError(test.cause)
+			var refusal *operatortool.RequestError
+			if !errors.Is(err, operatortool.ErrSnapshotUnavailable) || !errors.Is(err, test.cause) || errors.As(err, &refusal) {
+				t.Fatalf("private failure=%v", err)
+			}
+			response := httptest.NewRecorder()
+			context := echo.New().NewContext(httptest.NewRequest(http.MethodPost, "/work-items", nil), response)
+			service := &Service{config: Config{Hosted: &HostedConfig{}, Logger: discardLogger()}, database: f.service.database}
+			if err := service.nativeAPIError(context, test.cause); err != nil {
+				t.Fatal(err)
+			}
+			var failure apiErrorResponse
+			decodeHubResponse(t, response, &failure)
+			want := "Native operation could not be completed"
+			if test.name == "private refusal" {
+				want = "Unprocessable Entity: invalid request"
+			}
+			if failure.Message != want {
+				t.Fatalf("hosted private failure=%s", response.Body.String())
+			}
+		})
+	}
 }

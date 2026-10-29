@@ -67,10 +67,15 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 	source := testenv.TempDir(t)
 	remote := filepath.Join(testenv.TempDir(t), "origin.git")
 	nativeLandingGit(t, t.Context(), source, "init", "-b", "main")
-	nativeLandingGit(t, t.Context(), source, "config", "user.name", "Landing Test")
-	nativeLandingGit(t, t.Context(), source, "config", "user.email", "landing@example.test")
-	nativeLandingGit(t, t.Context(), source, "config", "commit.gpgsign", "false")
-	nativeLandingGit(t, t.Context(), source, "config", "core.hooksPath", os.DevNull)
+	configPath := filepath.Join(source, ".git", "config")
+	gitConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitConfig = append(gitConfig, []byte(fmt.Sprintf("\n[user]\n\tname = Landing Test\n\temail = landing@example.test\n[commit]\n\tgpgsign = false\n[core]\n\thooksPath = %s\n", os.DevNull))...)
+	if err := os.WriteFile(configPath, gitConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(source, "base.txt"), []byte("base\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -94,14 +99,13 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 	nativeLandingGit(t, t.Context(), source, "remote", "add", "origin", repository+".git")
 	nativeLandingGit(t, t.Context(), source, "push", "-u", "origin", "main")
 	base := nativeLandingGit(t, t.Context(), remote, "rev-parse", "refs/heads/main")
-	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(testenv.TempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
+	root := filepath.Join(testenv.TempDir(t), "workspaces")
+	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: root, SourceRoot: source, AutoBranch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "default", ID: issue.ID, Identifier: issue.Identifier})
-	if err != nil {
-		t.Fatal(err)
-	}
+	info := workspace.Info{Key: "reviewed-source", Path: filepath.Join(root, "reviewed-source"), Branch: "detent/reviewed-source"}
+	nativeLandingGit(t, t.Context(), source, "worktree", "add", "-b", info.Branch, info.Path, "main")
 	issue.BranchName = info.Branch
 	if err := os.WriteFile(filepath.Join(info.Path, "feature.txt"), []byte("reviewed feature\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -214,16 +218,8 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 			w.WriteHeader(http.StatusNotFound)
 		}
 	})
-	previous := http.DefaultClient
-	http.DefaultClient = &http.Client{Transport: nativeLandingTransport(func(request *http.Request) (*http.Response, error) {
-		if request.URL.Host != "native-landing.test" {
-			return nil, fmt.Errorf("unexpected landing host %s", request.URL.Host)
-		}
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		return response.Result(), nil
-	})}
-	t.Cleanup(func() { http.DefaultClient = previous })
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
 	cfg := config.Config{}
 	cfg.Gate.Run = "true"
 	if len(ci) > 0 {
@@ -231,7 +227,7 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 	}
 	cfg.Worker.GitHubToken = "native-landing-test-token"
 	cfg.Tracker.Kind = config.TrackerGitHub
-	cfg.Tracker.Endpoint = "https://native-landing.test/graphql"
+	cfg.Tracker.Endpoint = server.URL + "/graphql"
 	provider := &mergeFastPathAgentBackend{}
 	agent, err := runpkg.NewRunner(runpkg.Dependencies{Workflow: config.Workflow{Config: cfg}, Workspace: backend, AgentBackend: provider, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
@@ -243,12 +239,6 @@ func newNativeLandingJourney(t *testing.T, issue connector.Issue, mergeMessage s
 	journey.issue, journey.target, journey.base = issue, target, base
 	journey.remote, journey.merge, journey.info, journey.mergeCalls = remote, merge, info, &puts
 	return journey
-}
-
-type nativeLandingTransport func(*http.Request) (*http.Response, error)
-
-func (f nativeLandingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	return f(request)
 }
 
 func (j *nativeLandingJourney) run(t *testing.T) (runpkg.RunResult, error) {
@@ -264,7 +254,7 @@ func (j *nativeLandingJourney) run(t *testing.T) (runpkg.RunResult, error) {
 			t.Fatalf("base movement rewrote published branch %s: head %s, updates %s", j.publishedBranch, published, updates)
 		}
 	}
-	if result.NativeLanding.Landed && (result.NativeLanding.MergeSHA != j.merge || nativeLandingGit(t, t.Context(), j.remote, "rev-parse", "refs/heads/main") != j.merge) {
+	if result.NativeLanding.Landed && (j.target.GitHubPullRequest && result.NativeLanding.MergeSHA != j.merge || nativeLandingGit(t, t.Context(), j.remote, "rev-parse", "refs/heads/main") != result.NativeLanding.MergeSHA) {
 		t.Fatalf("landing receipt differs from actual base: %#v", result.NativeLanding)
 	}
 	return result, err
@@ -272,6 +262,7 @@ func (j *nativeLandingJourney) run(t *testing.T) (runpkg.RunResult, error) {
 
 type nativeLandingJourneyExecution struct {
 	target   runpkg.NativeLandingTarget
+	recovery tracker.NativeRecovery
 	started  int
 	recorded []runpkg.NativeLanding
 }
@@ -288,8 +279,8 @@ func (*nativeLandingJourneyExecution) Checkpoint(context.Context, tracker.Native
 	return nil
 }
 func (*nativeLandingJourneyExecution) Finish(context.Context, string) error { return nil }
-func (*nativeLandingJourneyExecution) Recovery() tracker.NativeRecovery {
-	return tracker.NativeRecovery{}
+func (e *nativeLandingJourneyExecution) Recovery() tracker.NativeRecovery {
+	return e.recovery
 }
 func (e *nativeLandingJourneyExecution) StartLanding(context.Context, int64, uint64) error {
 	e.started++

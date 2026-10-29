@@ -20,6 +20,7 @@ type ChangeSource struct {
 	Version       tracker.ChangeVersion `json:"version"`
 	Bundle        []byte                `json:"bundle,omitempty"`
 	PreviousHeads []string              `json:"previous_heads,omitempty"`
+	Transferred   bool                  `json:"transferred,omitempty"`
 }
 
 func changeSourceScratch() (string, error) {
@@ -261,6 +262,9 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 	}
 	defer release()
 	paused, err := l.verifyReworkBranch(ctx, info, issue)
+	if err == nil && paused && issue.Source.Transferred {
+		return false, refuse(LandRefusalHeadMoved, "the transferred version has unresolved paused-rebase custody; preserve and reconcile the assigned worktree through source recovery before retrying transfer")
+	}
 	if err != nil || paused {
 		return false, err
 	}
@@ -268,18 +272,27 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 	if err != nil {
 		return false, err
 	}
-	if state.HeadSHA == issue.Source.Version.HeadSHA || len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 {
-		return false, nil
+	if issue.Source.Transferred && issue.Source.Version.Source == nil {
+		return false, refuse(LandRefusalMissingHead, "the transferred version has no retained bundle; republish the exact head with source capture before retrying transfer")
 	}
-	previous := issue.Source.Version.Source != nil && slices.Contains(issue.Source.PreviousHeads, state.HeadSHA)
-	if state.UnpushedCommits > 0 && !previous {
-		return false, nil
-	}
-	if state.HeadSHA != issue.Source.Version.BaseSHA || previous {
-		if !previous {
-			return false, refuse(LandRefusalHeadMoved, "the existing clean worktree differs from the recorded source base and head; preserve its current head and reconcile the Change before recovery")
+	transferred := issue.Source.Transferred
+	if !transferred {
+		if state.HeadSHA == issue.Source.Version.HeadSHA || len(state.TrackedPaths) != 0 || len(state.UntrackedPaths) != 0 {
+			return false, nil
 		}
+		previous := issue.Source.Version.Source != nil && slices.Contains(issue.Source.PreviousHeads, state.HeadSHA)
+		if state.UnpushedCommits > 0 && !previous {
+			return false, nil
+		}
+		if state.HeadSHA != issue.Source.Version.BaseSHA && !previous && !l.headIntegrated(ctx, info.Path, issue, state.HeadSHA) {
+			return false, refuse(LandRefusalHeadMoved, fmt.Sprintf("the existing clean worktree head %s differs from the recorded source base and head of version %s; preserve its current head and reconcile the Change before recovery", state.HeadSHA, issue.Source.Version.ID))
+		}
+	}
+	if transferred || state.HeadSHA != issue.Source.Version.BaseSHA {
 		if _, err := l.quarantineWorktree(ctx, info.Path); err != nil {
+			if transferred {
+				return false, refuse(LandRefusalHeadMoved, fmt.Sprintf("transferred version %s has unresolved local source custody; reconcile the assigned worktree through source recovery before retrying transfer: %v", issue.Source.Version.ID, err))
+			}
 			return false, err
 		}
 		if _, err := l.runGit(ctx, "branch", "-f", info.Branch, issue.Source.Version.HeadSHA); err != nil {
@@ -296,4 +309,13 @@ func (l *LocalGit) prepareChangeSourceWorktree(ctx context.Context, info Info, i
 	}
 	_, err = runGitAt(ctx, info.Path, "-c", "core.hooksPath="+os.DevNull, "reset", "--hard", issue.Source.Version.HeadSHA)
 	return false, err
+}
+
+func (l *LocalGit) headIntegrated(ctx context.Context, path string, issue Issue, head string) bool {
+	base, err := l.localProgressBase(ctx, path, issue)
+	if err != nil || !validLandingHead(base) {
+		return false
+	}
+	_, err = runGitAt(ctx, path, "merge-base", "--is-ancestor", head, base)
+	return err == nil
 }

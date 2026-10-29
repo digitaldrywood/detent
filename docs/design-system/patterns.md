@@ -100,7 +100,7 @@ The composer has its own rounded shape and attached-banner geometry; do not appl
 
 ### Settings and forms
 
-One `SettingsRow` per setting: title, optional help and status, and a trailing control, inside a `SettingsSection` on a `SettingsPageContainer`. A row stacks below a 32rem container width and becomes two columns (`minmax(0,1fr)` and `minmax(10rem,auto)`, `gap-8`) from it; the row is a named container (`@container/settings-row`), because a settings panel's width does not follow the screen. Associate labels and help with their inputs and keep errors beside the field they affect. Reuse the existing reset and unavailable patterns where the setting supports them. Settings sections are navigated with `SettingsSidebarNav`, not tabs.
+One `SettingsRow` per setting: title, optional help and status, and a trailing control, inside a `SettingsSection` on a `SettingsPageContainer`. A row stacks below a 32rem container width and becomes two columns (`minmax(0,1fr)` and `minmax(10rem,auto)`, `gap-8`) from it; the row is a named container (`@container/settings-row`), because a settings panel's width does not follow the screen. Associate labels and help with their inputs and keep errors beside the field they affect. Reuse the existing reset and unavailable patterns where the setting supports them. Organization settings sections use `SettingsSidebarNav`. Per-project settings at `/settings/projects/<slug>/<tab>` use line-variant `Tabs`, one tab per URL, horizontally scrollable on narrow screens. The active tab scrolls into view, and unsaved section edits use a discard `AlertDialog` before tab, project or browser history navigation.
 
 ```tsx
 <div className="grid gap-1.5">
@@ -126,7 +126,7 @@ One `SettingsRow` per setting: title, optional help and status, and a trailing c
 
 ### Work board and issues
 
-The board keeps its own workflow semantics. [INV-13](../invariants.md#inv-13--a-board-card-is-a-title-and-one-status-line) limits an issue card to identity, title, at most one actionable status line of 48 Unicode characters, and the existing priority controls, with model and effort visibility as the invariant specifies for each density. This system adds no card metric, banner, badge or diagnostic. The orchestrator owns lane state; the board reads it.
+The board keeps its own workflow semantics. [INV-13](../invariants.md#inv-13--a-board-card-is-a-title-and-one-status-line) limits an issue card to identity, title, at most one actionable status line of 48 Unicode characters, and the existing priority controls. The identity row holds the project, issue and PR references, origin, model and configured effort, with the card menu inside it; titles wrap without a fixed height budget. The approved Cloud split footer places status and priority above a divider, then a compact muted row containing only attempt count and relative update time with small icons. Compact may hide effort before model; Cozy and Comfy retain effort. The board browser fixture checks this layout at 240, 260, 320 and 400 CSS pixels across densities and themes. This system adds no card metric, banner, badge or diagnostic. The orchestrator owns lane state; the board reads it.
 
 The issue page composes the description, `ActivityFeed`, the shared composer and the properties column, whose pickers open one at a time. Change Request review stays on the linked change page.
 

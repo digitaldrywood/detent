@@ -86,7 +86,7 @@ describe("the banner rail Detent builds for the stack", () => {
     expect(screen.getByTestId("execution-copy").textContent).toContain("Running");
   });
 
-  // §10.11: the reader who may never send is told why, once, on the rail.
+  // The reader who may never send is told why, once, on the rail.
   it("states a blocked reason on the rail without the caller asking", () => {
     mount({ blockedReason: "You can read this chat but not send messages" });
     expect(screen.getByText("You can read this chat but not send messages")).toBeTruthy();

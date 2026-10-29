@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 const (
@@ -67,12 +68,12 @@ func parseReportsFilter(params url.Values) (reportsFilter, error) {
 	}
 	for _, values := range [][]string{f.Labels, f.Priorities, f.Types, f.FiledBy, f.Runners, f.Models, f.Stages} {
 		if len(values) > reportsMaxFilterValues || len(strings.Join(values, "\x00")) > 4096 {
-			return f, nativeInvalid("Report filters accept at most 32 values each")
+			return f, nativePublicInvalid("Report filters accept at most 32 values each")
 		}
 	}
 	for _, value := range f.Priorities {
 		if priority, err := strconv.Atoi(value); err != nil || priority < 0 || priority > 3 || strconv.Itoa(priority) != value {
-			return f, nativeInvalid("Priority must be 0, 1, 2 or 3")
+			return f, nativePublicInvalid("Priority must be 0, 1, 2 or 3")
 		}
 	}
 	for _, value := range f.Types {
@@ -95,7 +96,7 @@ func reportsWindow(params url.Values, now time.Time) (operatortool.AnalyticsWind
 	if fromValue == "" && toValue == "" {
 		hours := reportsRangeHours[params.Get("range")]
 		if hours == 0 {
-			return operatortool.AnalyticsWindow{}, nativeInvalid("Unsupported report range")
+			return operatortool.AnalyticsWindow{}, nativePublicInvalid("Unsupported report range")
 		}
 		from = reportsWindowStart(to, hours)
 	} else {
@@ -112,7 +113,7 @@ func reportsWindow(params url.Values, now time.Time) (operatortool.AnalyticsWind
 			to = now.UTC()
 		}
 		if !from.Before(to) || to.Sub(from) > reportsMaxCustomSpan {
-			return operatortool.AnalyticsWindow{}, nativeInvalid("A custom range runs forward from a past day and spans at most 90 days")
+			return operatortool.AnalyticsWindow{}, nativePublicInvalid("A custom range runs forward from a past day and spans at most 90 days")
 		}
 	}
 	span := to.Sub(from)
@@ -130,7 +131,7 @@ func reportsWindow(params url.Values, now time.Time) (operatortool.AnalyticsWind
 func reportsDay(value string, end bool) (time.Time, error) {
 	day, err := time.Parse(time.DateOnly, value)
 	if err != nil {
-		return time.Time{}, nativeInvalid("A custom range needs from and to as YYYY-MM-DD days in UTC")
+		return time.Time{}, nativePublicInvalid("A custom range needs from and to as YYYY-MM-DD days in UTC")
 	}
 	if end {
 		day = day.AddDate(0, 0, 1)
@@ -204,9 +205,9 @@ func reportsAttemptClause(ctx context.Context, alias string) (string, []any, err
 		values     []string
 		expression string
 	}{
-		{scope.attempts.Runners, "coalesce((SELECT lr.runner_id FROM lease_runners lr WHERE lr.lease_id=" + alias + ".lease_id),json_extract(" + alias + ".data_json,'$.runner_id'),'')"},
-		{scope.attempts.Models, "coalesce(nullif(trim(json_extract(" + alias + ".data_json,'$.runtime.identity.resolved_model.value')),''),nullif(trim(json_extract(" + alias + ".data_json,'$.runtime.identity.requested_model.value')),''),'" + reportsUnavailableName + "')"},
-		{scope.attempts.Stages, "coalesce(nullif(trim(json_extract(" + alias + ".data_json,'$.runtime.identity.role')),''),'" + reportsUnavailableName + "')"},
+		{scope.attempts.Runners, reportRunnerColumn(alias)},
+		{scope.attempts.Models, reportModelColumn(alias)},
+		{scope.attempts.Stages, reportRoleColumn(alias)},
 	} {
 		if len(filter.values) == 0 {
 			continue
@@ -238,20 +239,20 @@ func reportsIssueSubquery(scope nativeScope, f reportsFilter, from, to time.Time
 	var statement strings.Builder
 	statement.WriteString(`SELECT ri.native_id FROM main.issues ri LEFT JOIN workflow_states rws ON rws.id=ri.workflow_state_id
  WHERE ri.organization_id=? AND ri.project_id=? AND ri.native_id IS NOT NULL AND julianday(ri.created_at)<julianday(?)
- AND (coalesce(rws.terminal,0)=0 OR julianday(ri.updated_at)>=julianday(?) OR EXISTS (SELECT 1 FROM native_attempts rwa WHERE rwa.organization_id=ri.organization_id AND rwa.project_id=ri.project_id AND rwa.work_item_id=ri.native_id AND julianday(rwa.updated_at)>=julianday(?)))`)
+ AND (coalesce(rws.terminal,0)=0 OR julianday(ri.updated_at)>=julianday(?) OR EXISTS (SELECT 1 FROM report_attempts rwa WHERE rwa.organization_id=ri.organization_id AND rwa.project_id=ri.project_id AND rwa.work_item_id=ri.native_id AND julianday(rwa.updated_at)>=julianday(?)))`)
 	args := []any{scope.organization, scope.project, formatHubTime(to), formatHubTime(from), formatHubTime(from)}
 	for _, filter := range []struct {
 		values []string
 		clause string
 		window bool
 	}{
-		{f.Labels, "EXISTS (SELECT 1 FROM json_each(ri.labels_json) rl WHERE rl.value IN (SELECT value FROM json_each(?)))", false},
+		{f.Labels, "EXISTS (SELECT 1 FROM native_issue_page_filter_values rl WHERE rl.issue_id=ri.id AND rl.kind='label' AND rl.value IN (SELECT value FROM json_each(?)))", false},
 		{f.Types, "ri.issue_type IN (SELECT value FROM json_each(?))", false},
-		{f.FiledBy, "json_extract(ri.actor_json,'$.principal_id') IN (SELECT value FROM json_each(?))", false},
+		{f.FiledBy, nativeIssuePrincipal("ri") + " IN (SELECT value FROM json_each(?))", false},
 		{f.Priorities, "EXISTS (SELECT 1 FROM queue_entries rq WHERE rq.issue_id=ri.id AND CAST(rq.priority_override AS TEXT) IN (SELECT value FROM json_each(?)))", false},
-		{f.Runners, `EXISTS (SELECT 1 FROM native_attempts ra WHERE ra.organization_id=ri.organization_id AND ra.project_id=ri.project_id AND ra.work_item_id=ri.native_id
+		{f.Runners, `EXISTS (SELECT 1 FROM report_attempts ra WHERE ra.organization_id=ri.organization_id AND ra.project_id=ri.project_id AND ra.work_item_id=ri.native_id
  AND julianday(ra.started_at)<julianday(?) AND julianday(ra.updated_at)>=julianday(?)
- AND coalesce((SELECT rlr.runner_id FROM lease_runners rlr WHERE rlr.lease_id=ra.lease_id),json_extract(ra.data_json,'$.runner_id'),'') IN (SELECT value FROM json_each(?)))`, true},
+ AND coalesce((SELECT rlr.runner_id FROM lease_runners rlr WHERE rlr.lease_id=ra.lease_id),ra.runner_id,'') IN (SELECT value FROM json_each(?)))`, true},
 	} {
 		if len(filter.values) == 0 {
 			continue
@@ -294,7 +295,10 @@ func (s *Service) readReportsFacets(ctx context.Context, projects []string, w op
 		return out, fmt.Errorf("encode report projects: %w", err)
 	}
 	organization := s.config.Hosted.OrganizationID
-	q := s.database.reader
+	q, err := prepareReportsQuery(ctx, s.database.reader, nativeScope{organization: tracker.OrganizationID(organization)}, "report_attempts", "native_issue_actors", "native_issue_page_filter_values")
+	if err != nil {
+		return out, err
+	}
 	read := func(statement string, scan func(values ...string), args ...any) error {
 		if ownership, ok := reportsScopeFrom(ctx); ok && ownership.reporterPrincipal != "" {
 			column := "a.work_item_id"
@@ -328,22 +332,22 @@ func (s *Service) readReportsFacets(ctx context.Context, projects []string, w op
 		}
 		return errors.Join(rows.Err(), rows.Close())
 	}
-	if err := read(`SELECT DISTINCT l.value,'' FROM issues i, json_each(i.labels_json) l WHERE i.organization_id=? AND i.project_id IN (SELECT value FROM json_each(?)) AND l.type='text' ORDER BY l.value LIMIT ?`,
+	if err := read(`SELECT DISTINCT l.value,'' FROM issues i JOIN native_issue_page_filter_values l ON l.issue_id=i.id AND l.kind='label' WHERE i.organization_id=? AND i.project_id IN (SELECT value FROM json_each(?)) ORDER BY l.value LIMIT ?`,
 		func(values ...string) { out.Labels = append(out.Labels, values[0]) }, organization, encoded, reportsFacetLimit); err != nil {
 		return out, fmt.Errorf("read report label facets: %w", err)
 	}
-	if err := read(`SELECT f.principal,`+nativeActorDisplayName("f.principal", "?")+` FROM (SELECT DISTINCT json_extract(i.actor_json,'$.principal_id') AS principal FROM issues i WHERE i.organization_id=? AND i.project_id IN (SELECT value FROM json_each(?)) AND coalesce(json_extract(i.actor_json,'$.principal_id'),'')<>'') f ORDER BY 2,1 LIMIT ?`,
+	if err := read(`SELECT f.principal,`+nativeActorDisplayName("f.principal", "?")+` FROM (SELECT DISTINCT `+nativeIssuePrincipal("i")+` AS principal FROM issues i WHERE i.organization_id=? AND i.project_id IN (SELECT value FROM json_each(?)) AND coalesce(`+nativeIssuePrincipal("i")+`,'')<>'') f ORDER BY 2,1 LIMIT ?`,
 		func(values ...string) { out.FiledBy = append(out.FiledBy, reportsFacet{values[0], values[1]}) }, organization, organization, encoded, reportsFacetLimit); err != nil {
 		return out, fmt.Errorf("read report filer facets: %w", err)
 	}
 	models, stages, runners := map[string]bool{}, map[string]bool{}, map[string]reportsFacet{}
 	for _, project := range projects {
-		if err := read(`SELECT DISTINCT coalesce(nullif(trim(json_extract(a.data_json,'$.runtime.identity.resolved_model.value')),''),nullif(trim(json_extract(a.data_json,'$.runtime.identity.requested_model.value')),''),'`+reportsUnavailableName+`'),coalesce(nullif(trim(json_extract(a.data_json,'$.runtime.identity.role')),''),'`+reportsUnavailableName+`')
-FROM native_attempts a WHERE a.organization_id=? AND a.project_id=? AND julianday(a.updated_at)>=julianday(?) AND julianday(a.started_at)<julianday(?) LIMIT ?`,
+		if err := read(`SELECT DISTINCT `+reportModelColumn("a")+`,`+reportRoleColumn("a")+`
+FROM report_attempts a WHERE a.organization_id=? AND a.project_id=? AND julianday(a.updated_at)>=julianday(?) AND julianday(a.started_at)<julianday(?) LIMIT ?`,
 			func(values ...string) { models[values[0]], stages[values[1]] = true, true }, organization, project, formatHubTime(w.From), formatHubTime(w.To), reportsFacetLimit); err != nil {
 			return out, fmt.Errorf("read report attempt facets: %w", err)
 		}
-		if err := read(`SELECT DISTINCT r.id,coalesce(r.display_name,'') FROM native_attempts a JOIN lease_runners lr ON lr.lease_id=a.lease_id JOIN runner_identities r ON r.id=lr.runner_id AND r.organization_id=a.organization_id
+		if err := read(`SELECT DISTINCT r.id,coalesce(r.display_name,'') FROM report_attempts a JOIN lease_runners lr ON lr.lease_id=a.lease_id JOIN runner_identities r ON r.id=lr.runner_id AND r.organization_id=a.organization_id
 WHERE a.organization_id=? AND a.project_id=? AND julianday(a.updated_at)>=julianday(?) AND julianday(a.started_at)<julianday(?) LIMIT ?`,
 			func(values ...string) { runners[values[0]] = reportsFacet{values[0], values[1]} }, organization, project, formatHubTime(w.From), formatHubTime(w.To), reportsFacetLimit); err != nil {
 			return out, fmt.Errorf("read report runner facets: %w", err)

@@ -707,7 +707,6 @@ type projectKanbanCard struct {
 	RecentCompletion      bool
 	DisabledText          string
 	RuntimeIdentity       agentidentity.Identity
-	ParkSummary           telemetry.ParkSummary
 	CompletionProgress    telemetry.CompletionProgress
 }
 
@@ -3316,7 +3315,6 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		Movable:               strings.TrimSpace(issue.ID) != "" && issue.Metadata[projectKanbanRecentCompletionMetadataKey] != "true",
 		RecentCompletion:      issue.Metadata[projectKanbanRecentCompletionMetadataKey] == "true",
 		RuntimeIdentity:       issue.RuntimeIdentity,
-		ParkSummary:           issue.ParkSummary,
 		CompletionProgress:    issue.CompletionProgress,
 	}
 	if projectKanbanCardUsesInternalIssueView(data, card) {
@@ -7719,21 +7717,20 @@ func failureBreakerDetailParts(breaker telemetry.FailureBreaker, now time.Time) 
 		}
 		detail += "."
 	}
-	parkedCopy := failureBreakerParkedCopy(breaker)
 	if strings.TrimSpace(breaker.CanaryIssueID) != "" {
-		return detail + " The project is dispatching one canary candidate." + parkedCopy, time.Time{}, false
+		return detail + " The project is dispatching one canary candidate.", time.Time{}, false
 	}
 	if !breaker.ResumeAt.IsZero() && breaker.ResumeAt.After(now) {
 		copy := detail + " The project may dispatch one eligible candidate after the project cooldown at"
 		if breaker.EligibleCandidateCount != nil && *breaker.EligibleCandidateCount == 0 {
 			copy += "; no candidate is currently eligible"
 		}
-		return copy + parkedCopy, breaker.ResumeAt, true
+		return copy, breaker.ResumeAt, true
 	}
 	if breaker.EligibleCandidateCount != nil && *breaker.EligibleCandidateCount == 0 {
-		return detail + " Project canary dispatch is ready, but no eligible candidate is currently available." + parkedCopy, time.Time{}, false
+		return detail + " Project canary dispatch is ready, but no eligible candidate is currently available.", time.Time{}, false
 	}
-	return detail + " The project may dispatch one eligible candidate now." + parkedCopy, time.Time{}, false
+	return detail + " The project may dispatch one eligible candidate now.", time.Time{}, false
 }
 
 func failureBreakerCauseLabel(breaker telemetry.FailureBreaker) string {
@@ -7782,22 +7779,6 @@ func failureBreakerBackendLabel(breaker telemetry.FailureBreaker) string {
 		parts = append(parts, "provider "+value)
 	}
 	return strings.Join(parts, " · ")
-}
-
-func failureBreakerParkedCopy(breaker telemetry.FailureBreaker) string {
-	parked := 0
-	for _, item := range breaker.Items {
-		if item.Parked || strings.EqualFold(strings.TrimSpace(item.CurrentState), "Blocked") {
-			parked++
-		}
-	}
-	if parked == 0 {
-		return ""
-	}
-	if parked == 1 {
-		return " The affected Blocked item will not retry merely because the project canary is eligible; it needs recovery or operator action."
-	}
-	return " The " + formatCount(parked) + " affected Blocked items will not retry merely because the project canary is eligible; they need recovery or operator action."
 }
 
 func failureBreakerItemLabel(item telemetry.FailureBreakerItem) string {

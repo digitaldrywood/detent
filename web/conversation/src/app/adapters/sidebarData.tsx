@@ -7,6 +7,7 @@ import type {
 } from "../../contracts/index.ts";
 
 import type { SidebarFinding } from "./sidebarFindings.ts";
+import type { SidebarHumanAction } from "./sidebarHumanActions.ts";
 
 export interface SidebarNavigation {
   /** The path of the current route, e.g. `/work/p/proj_1`. */
@@ -19,6 +20,7 @@ export interface SidebarNavigation {
 }
 
 export interface SidebarShellData {
+  readonly projectSwitcher?: { readonly open: boolean; readonly setOpen: (open: boolean) => void };
   readonly organizationName: string;
   readonly projects: readonly BootstrapProject[];
   readonly activeProjectId: string | null;
@@ -37,15 +39,32 @@ export interface SidebarShellData {
   readonly onRename: (conversationId: string, title: string) => Promise<void>;
   readonly attention: ReadonlySet<string>;
   readonly findings?: readonly SidebarFinding[];
-  /** The picker choices the hover card names the model from (§14). */
+  readonly humanActions?: readonly SidebarHumanAction[];
+  /** The picker choices the hover card names the model from. */
   readonly preferenceChoices?: PreferenceChoices | undefined;
-  /** Navigation for the Work destination and the Browse group (A.1, A.6). */
+  /** Navigation for the Work destination and the Browse group. */
   readonly navigation?: SidebarNavigation | undefined;
 }
 
 const SidebarDataContext = React.createContext<SidebarShellData | null>(null);
 
-export const SidebarDataProvider = SidebarDataContext.Provider;
+export type ProjectCounts = Readonly<Record<string, { running: number; blocked: number }>>;
+const ProjectCountsContext = React.createContext<{ counts: ProjectCounts; setCounts: React.Dispatch<React.SetStateAction<ProjectCounts>> } | null>(null);
+
+export function SidebarDataProvider({ value, children }: { value: SidebarShellData | null; children: React.ReactNode }): React.ReactElement {
+  const [counts, setCounts] = React.useState<ProjectCounts>({});
+  const context = React.useMemo(() => ({ counts, setCounts }), [counts]);
+  return <SidebarDataContext.Provider value={value}><ProjectCountsContext.Provider value={context}>{children}</ProjectCountsContext.Provider></SidebarDataContext.Provider>;
+}
+
+export function useSidebarProjectCounts(): ProjectCounts {
+  return React.use(ProjectCountsContext)?.counts ?? {};
+}
+
+export function usePublishProjectCounts(counts: ProjectCounts | undefined): void {
+  const setCounts = React.use(ProjectCountsContext)?.setCounts;
+  React.useEffect(() => { if (counts !== undefined) setCounts?.(counts); }, [counts, setCounts]);
+}
 
 export function useSidebarData(): SidebarShellData | null {
   return React.use(SidebarDataContext);
@@ -70,8 +89,7 @@ const SIDEBAR_SEARCH_SELECTOR = 'aside.dc-side input[type="search"]';
  * offers no way to observe it, and the shell needs it for one thing: asking
  * the hub for conversations past the first page so the sidebar's own
  * title search can find them. Listening to the input it already renders is
- * how the shell learns the query without the component being edited
- * (decisions.md §16).
+ * how the shell learns the query without the component being edited.
  *
  * The listener must not re-render during the same event dispatch. The search
  * box is a controlled input: a shell re-render triggered from a capture-phase

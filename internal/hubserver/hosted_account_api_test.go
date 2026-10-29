@@ -217,6 +217,9 @@ func TestHostedAccountClientRoutesMounted(t *testing.T) {
 		"POST /api/v2/organizations":                                                       true,
 		"POST " + hostedOrganizationBase + "/projects/:project/attachments":                true,
 		"GET " + hostedOrganizationBase + "/projects/:project/attachments/:param/metadata": true,
+		"GET /api/cloud/account/oauth-grants":                                              true,
+		"DELETE /api/cloud/account/oauth-grants/:param":                                    true,
+		"GET /api/cloud/account/github/repositories":                                       true,
 	}
 	entry, err := parser.ParseFile(token.NewFileSet(), "../cloudentry/access_keys.go", nil, 0)
 	if err != nil {

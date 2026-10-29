@@ -39,14 +39,46 @@ func TestAttemptDiffBodyMigrationAndRetention(t *testing.T) {
 		name                           string
 		currentChange, running, latest bool
 		expired                        bool
+		legacy                         bool
+		currentVersion, versionAttempt any
 	}{
-		{name: "superseded", expired: true},
+		{name: "superseded", expired: true, legacy: true},
 		{name: "current Change", currentChange: true},
+		{name: "converted current Change", currentChange: true, currentVersion: "version_current", versionAttempt: "attempt_old"},
+		{name: "converted superseded version", currentChange: true, currentVersion: "version_other", versionAttempt: "attempt_old", expired: true},
+		{name: "converted unrelated attempt", currentChange: true, currentVersion: "version_current", versionAttempt: "attempt_other", expired: true},
+		{name: "converted current version with unknown attempt", currentChange: true, currentVersion: "version_current"},
+		{name: "unknown current version with converted attempt", currentChange: true, versionAttempt: "attempt_old"},
 		{name: "running", running: true},
 		{name: "latest work item", latest: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newAttemptDiffFixture(t)
+			if test.legacy {
+				for _, statement := range []string{"PRAGMA auto_vacuum=NONE", "VACUUM"} {
+					if _, err := f.service.database.db.ExecContext(t.Context(), statement); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var mode int
+				if err := f.service.database.db.QueryRowContext(t.Context(), "PRAGMA auto_vacuum").Scan(&mode); err != nil {
+					t.Fatal(err)
+				}
+				if mode != 0 {
+					t.Fatalf("legacy auto_vacuum=%d, want 0", mode)
+				}
+				cfg := f.service.config
+				if err := f.service.Close(); err != nil {
+					t.Fatal(err)
+				}
+				f.service = openTestService(t, cfg)
+				if err := f.service.database.db.QueryRowContext(t.Context(), "PRAGMA auto_vacuum").Scan(&mode); err != nil {
+					t.Fatal(err)
+				}
+				if mode != 0 {
+					t.Fatalf("startup rebuilt legacy database: auto_vacuum=%d", mode)
+				}
+			}
 			response := f.post(t, f.request(2, tracker.AttemptDiffFile{Path: "legacy.go", Status: tracker.DiffStatusModified, Additions: 7, Deletions: 3, Patch: "@@ legacy\n+preserved\n"}))
 			requireNativeStatus(t, response, http.StatusAccepted)
 			var receipt tracker.AttemptDiffReceipt
@@ -62,14 +94,14 @@ func TestAttemptDiffBodyMigrationAndRetention(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.currentChange {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json) VALUES ('change_current',?,?,?,'{"current_version_id":"version_current"}')`, f.project.OrganizationID, f.project.ID, f.issue.WorkItemID); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_requests(id,organization_id,project_id,work_item_id,record_json,claim_version_id) VALUES ('change_current',?,?,?,'{"current_version_id":"version_current"}',?)`, f.project.OrganizationID, f.project.ID, f.issue.WorkItemID, test.currentVersion); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_versions(id,change_id,number,record_json) VALUES ('version_current','change_current',1,'{"attempt_id":"attempt_old"}')`); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO change_versions(id,change_id,number,record_json,attempt_id) VALUES ('version_current','change_current',1,'{"attempt_id":"attempt_old"}',?),('version_other','change_current',2,'{"attempt_id":"attempt_other"}','attempt_other')`, test.versionAttempt); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE attempt_diff_body_migration SET vacuum_pending=1`); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE attempt_diff_body_migration SET vacuum_pending=?`, !test.legacy); err != nil {
 				t.Fatal(err)
 			}
 			var migrated diffbody.File
@@ -96,6 +128,9 @@ func TestAttemptDiffBodyMigrationAndRetention(t *testing.T) {
 					requireNativeStatus(t, diffBodyRequest(t, f, f.service.attemptDiffBodyStored, file), http.StatusNoContent)
 				}
 				if !inline {
+					if !batch.VacuumPending {
+						t.Fatal("migration does not report pending vacuum")
+					}
 					break
 				}
 			}
@@ -120,6 +155,20 @@ func TestAttemptDiffBodyMigrationAndRetention(t *testing.T) {
 			}
 			response = diffBodyRequest(t, f, f.service.vacuumAttemptDiffBodies, struct{}{})
 			requireNativeStatus(t, response, http.StatusOK)
+			var mode int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "PRAGMA auto_vacuum").Scan(&mode); err != nil {
+				t.Fatal(err)
+			}
+			if mode != 2 {
+				t.Fatalf("vacuum auto_vacuum=%d, want 2", mode)
+			}
+			batchResponse := diffBodyRequest(t, f, f.service.attemptDiffBodyBatch, struct{}{})
+			requireNativeStatus(t, batchResponse, http.StatusOK)
+			var batch diffbody.Batch
+			decodeHubResponse(t, batchResponse, &batch)
+			if batch.VacuumPending {
+				t.Fatal("completed vacuum remains pending")
+			}
 			var size struct {
 				Table  int64 `json:"attempt_diff_files_bytes"`
 				Inline int64 `json:"inline_body_bytes"`

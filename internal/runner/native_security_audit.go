@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -15,7 +16,9 @@ import (
 )
 
 func (execution SecurityAuditExecution) auditRun(snapshot securityaudit.Snapshot) securityaudit.Run {
-	return securityaudit.Run{
+	run := securityaudit.Run{
+		Verification:       execution.Verification,
+		Checks:             snapshot.Checks,
 		ID:                 execution.SessionID,
 		InvocationID:       execution.InvocationID,
 		ProjectID:          snapshot.ProjectID,
@@ -45,12 +48,14 @@ func (execution SecurityAuditExecution) auditRun(snapshot securityaudit.Snapshot
 		CompletedAt:        execution.CompletedAt,
 		RecordedAt:         execution.CompletedAt,
 	}
+	securityaudit.NormalizeAttribution(&run)
+	return run
 }
 
 func (r *Runner) auditNativeChange(ctx context.Context, req RunRequest) (approved bool, err error) {
 	defer func() {
 		if err != nil {
-			err = fmt.Errorf("%w: security audit: %w", ErrValidatorInfrastructure, err)
+			err = fmt.Errorf("%w: security audit: %w", ErrValidatorInfrastructure, failedStep("security_audit", err))
 		}
 	}()
 
@@ -70,19 +75,46 @@ func (r *Runner) auditNativeChange(ctx context.Context, req RunRequest) (approve
 	if input.Diff == nil || input.Version.BaseSHA != input.Diff.BaseSHA || input.Version.HeadSHA != input.Diff.HeadSHA || input.Version.Repository != input.Diff.Repository {
 		return false, errors.New("security audit diff differs from the immutable version")
 	}
+	binding, err := validationStepBinding(req.Execution, input, "security_audit")
+	if err != nil {
+		return false, err
+	}
+	previous, err := loadStep(ctx, req.Execution, binding)
+	if err != nil {
+		return false, failedStep("security_audit", err)
+	}
+	if previous.Step != "" && previous.SecurityAudit != nil {
+		err := execution.RecordSecurityAudit(ctx, *previous.SecurityAudit)
+		return previous.SecurityAudit.Verdict == "pass", failedStep("security_audit_publication", err)
+	}
 	snapshot, err := connector.SecurityAuditSnapshot(string(req.Execution.Recovery().Issue.ProjectID), req.Issue, *input.Diff)
 	if err != nil {
 		return false, err
 	}
 
+	commands := make([]gate.CommandResult, 0, len(input.Commands)+1)
+	if input.Version.Validation != nil {
+		commands = append(commands, *input.Version.Validation)
+	}
+	commands = append(commands, input.Commands...)
+	latest := make(map[string]int, len(commands))
+	for i, command := range commands {
+		latest[command.Command] = i
+	}
+	for i, command := range commands {
+		if latest[command.Command] != i || command.ExitCode == 0 || command.BaseReproduction == nil {
+			continue
+		}
+		snapshot.Checks = append(snapshot.Checks, securityaudit.CheckComparison{Head: gate.CommandObservation(command), Base: *command.BaseReproduction})
+	}
 	var publisher ValidationEvidenceExecution
 	if evidence, ok := req.Execution.(ValidationEvidenceExecution); ok {
 		publisher = evidence
 	}
-	_, err = r.Audit(ctx, SecurityAuditRequest{Issue: req.Issue, Snapshot: snapshot, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate, evidence: publisher,
+	_, err = r.Audit(ctx, SecurityAuditRequest{usageExecution: req.Execution, Issue: req.Issue, Snapshot: snapshot, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate, evidence: publisher,
 		complete: func(ctx context.Context, audit SecurityAuditExecution) error {
 			run := audit.auditRun(snapshot)
-			review := tracker.SecurityAuditReview{Identity: audit.RuntimeIdentity, SessionID: audit.SessionID, DiffDigest: input.Diff.Digest, Run: run}
+			review := tracker.SecurityAuditReview{VersionID: input.Version.ID, Identity: audit.RuntimeIdentity, SessionID: audit.SessionID, DiffDigest: input.Diff.Digest, Run: run}
 			evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: snapshot.ProjectID, Repository: run.Repository, PRNumber: run.PRNumber, BaseSHA: input.Version.BaseSHA, HeadSHA: input.Version.HeadSHA}, "", cfg.BlockOn)
 			if !evaluation.Allowed && evaluation.Reason != securityaudit.ReasonUnresolvedFindings {
 				return fmt.Errorf("security audit evidence is incomplete: %s", evaluation.Diagnostic())
@@ -90,9 +122,16 @@ func (r *Runner) auditNativeChange(ctx context.Context, req RunRequest) (approve
 			review.Verdict = "pass"
 			if !evaluation.Allowed {
 				review.Verdict = "rework"
+				if run.HumanAction() != "" {
+					review.Verdict = "wait"
+				}
+			}
+			binding.CompletedAt, binding.SecurityAudit = r.now(), &review
+			if err := recordStep(ctx, req.Execution, binding); err != nil {
+				return err
 			}
 			if err := execution.RecordSecurityAudit(ctx, review); err != nil {
-				return err
+				return failedStep("security_audit_publication", err)
 			}
 			approved = evaluation.Allowed
 			return nil
@@ -103,7 +142,7 @@ func (r *Runner) auditNativeChange(ctx context.Context, req RunRequest) (approve
 func (r *Runner) auditNativeLanding(ctx context.Context, req RunRequest, target NativeLandingTarget, files workspace.FileDiffs) (review *tracker.SecurityAuditReview, err error) {
 	defer func() {
 		if err != nil {
-			err = fmt.Errorf("%w: landing security audit: %w", ErrValidatorInfrastructure, err)
+			err = fmt.Errorf("%w: landing security audit: %w", ErrValidatorInfrastructure, failedStep("security_audit", err))
 		}
 	}()
 	execution, ok := req.Execution.(NativeSecurityAuditExecution)
@@ -135,7 +174,7 @@ func (r *Runner) auditNativeLanding(ctx context.Context, req RunRequest, target 
 	if evidence, ok := req.Execution.(ValidationEvidenceExecution); ok {
 		publisher = evidence
 	}
-	_, err = r.Audit(ctx, SecurityAuditRequest{Issue: issue, Snapshot: snapshot, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate, evidence: publisher,
+	_, err = r.Audit(ctx, SecurityAuditRequest{usageExecution: req.Execution, Issue: issue, Snapshot: snapshot, StartedAt: r.now(), SelectorContext: req.SelectorContext, OnUsageUpdate: req.OnUsageUpdate, evidence: publisher,
 		complete: func(ctx context.Context, audit SecurityAuditExecution) error {
 			run := audit.auditRun(snapshot)
 			evaluation := securityaudit.Evaluate(run, nil, securityaudit.Key{ProjectID: snapshot.ProjectID, Repository: target.Repository, BaseSHA: files.BaseSHA, HeadSHA: files.HeadSHA}, "", cfg.BlockOn)
@@ -145,6 +184,9 @@ func (r *Runner) auditNativeLanding(ctx context.Context, req RunRequest, target 
 			result := &tracker.SecurityAuditReview{VersionID: target.VersionID, Landing: true, Identity: audit.RuntimeIdentity, SessionID: audit.SessionID, DiffDigest: diff.Digest, Run: run, Verdict: "pass"}
 			if !evaluation.Allowed {
 				result.Verdict = "rework"
+				if run.HumanAction() != "" {
+					result.Verdict = "wait"
+				}
 			}
 			if err := execution.RecordSecurityAudit(ctx, *result); err != nil {
 				return err

@@ -13,6 +13,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -20,6 +21,7 @@ import (
 
 // ConversationConfig enables the conversation product on the hub.
 type ConversationConfig struct {
+	ArchiveContents attachment.ArchiveContentStore `yaml:"-"`
 	// Enabled mounts the conversation API and streams.
 	Enabled bool
 	// Backend runs coordinator turns for conversations without a linked
@@ -45,7 +47,7 @@ type ConversationConfig struct {
 	ControlQueueSize int
 	// SettleWindow is how long a conversation whose execution has ended or
 	// never started may sit without activity before it settles. Zero selects
-	// defaultConversationSettleWindow (decisions section 14).
+	// defaultConversationSettleWindow.
 	SettleWindow time.Duration
 }
 
@@ -71,7 +73,7 @@ const (
 	// human answer when the configuration names no timeout.
 	defaultConversationQuestionTimeout = 24 * time.Hour
 	// defaultConversationSettleWindow is the project settle window when the
-	// configuration names none (decisions section 14).
+	// configuration names none.
 	defaultConversationSettleWindow = 24 * time.Hour
 	// conversationSettleBatch bounds one settle sweep, and
 	// conversationReferencePage bounds one "referenced from" listing.
@@ -153,11 +155,16 @@ func newConversationService(server *Service, cfg ConversationConfig) *conversati
 		config: cfg,
 		logger: server.config.Logger.With("component", "conversation"),
 	}
+	service.store.reader = server.database.reader
+	service.store.database = server.database
+	service.store.contents = cfg.ArchiveContents
+	if server.config.Hosted != nil && server.config.Hosted.SharedEntry != nil {
+		service.store.contents = server.config.Hosted.SharedEntry.ArchiveContents
+	}
 	service.coordinator = newConversationCoordinator(service)
 	service.controls = newConversationControlRouter(service)
 	service.settle = make(chan struct{})
 	service.settled = make(chan struct{})
-	service.store.reader = server.database.reader
 	go service.settleLoop()
 	return service
 }
@@ -194,7 +201,7 @@ func (c *conversationService) start(ctx context.Context) error {
 // settleLoop settles conversations that have been finished and idle for the
 // project's settle window. The sweep is periodic rather than scheduled: a
 // conversation that wakes in the meantime is simply not a candidate when the
-// sweep next runs (decisions section 14).
+// sweep next runs.
 func (c *conversationService) settleLoop() {
 	defer close(c.settled)
 	ticker := time.NewTicker(conversationSettleInterval)
@@ -225,7 +232,7 @@ func (c *conversationService) settleLoop() {
 				c.logger.Info("conversation.settle_sweep", "settled", settled)
 			}
 			// Abandoned uploads go with the same tick: nobody sent them and
-			// their bytes are the expensive part (section 17.1).
+			// their bytes are the expensive part.
 			swept, err := c.sweepAttachments(context.Background())
 			if err != nil {
 				c.logger.Warn("conversation.attachment_sweep_failed", "error", err)
@@ -379,11 +386,11 @@ func (b *notificationBroker) closeAll() {
 // Error codes specific to conversations, in addition to the shared native
 // vocabulary (not_found, invalid_request, idempotency_conflict).
 func conversationForbidden(message string) error {
-	return &nativeError{Code: "forbidden", Message: message, status: http.StatusForbidden}
+	return &nativeError{Code: "forbidden", Message: message, status: http.StatusForbidden, publicMessage: true}
 }
 
 func conversationStale(message string) error {
-	return nativeStaleExecution(message)
+	return &nativeError{Code: "stale_execution", Message: message, status: http.StatusConflict, publicMessage: true}
 }
 
 // conversationStaleOwner reports an owner-generation mismatch with both
@@ -391,7 +398,7 @@ func conversationStale(message string) error {
 // without a second request. Either identifier may be null.
 func conversationStaleOwner(message, expected, current string) error {
 	return &nativeError{
-		Code: "stale_execution", Message: message, status: http.StatusConflict,
+		Code: "stale_execution", Message: message, status: http.StatusConflict, publicMessage: true,
 		Details: map[string]any{"expected_attempt_id": conversationOptional(expected), "current_attempt_id": conversationOptional(current)},
 	}
 }
@@ -423,22 +430,23 @@ func staleExecutionAttempts(err error) (expected, current string, ok bool) {
 	return read("expected_attempt_id"), read("current_attempt_id"), true
 }
 
-// logStaleExecution reports a rejected control whose owner generation is no
-// longer current. It is called once per rejected request, at the boundary
-// that answers it, so path names the API command kind or the worker
-// endpoint that refused the control. Anything else is ignored.
-func (c *conversationService) logStaleExecution(path, conversationID string, err error) {
+func conversationStaleExecutionError(path, conversationID string, err error) error {
 	expected, current, ok := staleExecutionAttempts(err)
 	if !ok {
-		return
+		return err
 	}
-	c.logger.Warn("conversation.stale_execution",
-		"conversation_id", conversationID, "expected_attempt_id", expected,
-		"current_attempt_id", current, "path", path)
+	var failure *nativeError
+	if !errors.As(err, &failure) {
+		return err
+	}
+	refusal := *failure
+	refusal.logAttributes = []any{"component", "conversation", "conversation_id", conversationID,
+		"expected_attempt_id", expected, "current_attempt_id", current, "path", path}
+	return &refusal
 }
 
 func conversationAlreadyLinked(existing string) error {
-	err := &nativeError{Code: "conversation_already_linked", Message: "The conversation or issue is already linked", status: http.StatusConflict}
+	err := &nativeError{Code: "conversation_already_linked", Message: "The conversation or issue is already linked", status: http.StatusConflict, publicMessage: true}
 	if existing != "" {
 		err.Details = map[string]any{"existing_conversation_id": existing}
 	}
@@ -446,19 +454,19 @@ func conversationAlreadyLinked(existing string) error {
 }
 
 func conversationQuestionAnswered() error {
-	return &nativeError{Code: "question_already_answered", Message: "The question has already been answered", status: http.StatusConflict}
+	return &nativeError{Code: "question_already_answered", Message: "The question has already been answered", status: http.StatusConflict, publicMessage: true}
 }
 
 func conversationUnsupported(message string) error {
-	return &nativeError{Code: "unsupported_control", Message: message, status: http.StatusUnprocessableEntity}
+	return &nativeError{Code: "unsupported_control", Message: message, status: http.StatusUnprocessableEntity, publicMessage: true}
 }
 
 func conversationShareRequired() error {
-	return &nativeError{Code: "share_history_required", Message: "Linking shares the conversation history; confirm with share_history", status: http.StatusUnprocessableEntity}
+	return &nativeError{Code: "share_history_required", Message: "Linking shares the conversation history; confirm with share_history", status: http.StatusUnprocessableEntity, publicMessage: true}
 }
 
 func conversationProjectFixed() error {
-	return &nativeError{Code: "conversation_project_fixed", Message: "Conversations never move between projects", status: http.StatusUnprocessableEntity}
+	return &nativeError{Code: "conversation_project_fixed", Message: "Conversations never move between projects", status: http.StatusUnprocessableEntity, publicMessage: true}
 }
 
 func conversationQueueFull() error {
@@ -473,7 +481,7 @@ func translateConversationError(err error) error {
 	}
 	var revision *errConversationRevision
 	if errors.As(err, &revision) {
-		return &nativeError{Code: "revision_conflict", Message: "The conversation changed; reload and retry", status: http.StatusConflict}
+		return &nativeError{Code: "revision_conflict", Message: "The conversation changed; reload and retry", status: http.StatusConflict, publicMessage: true}
 	}
 	if errors.Is(err, conversation.ErrStaleExecution) {
 		return conversationStale(err.Error())
@@ -529,7 +537,7 @@ func conversationActorFor(scope nativeScope) conversation.Actor {
 	return conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: scope.credential.ID}
 }
 
-// Public resource projections (contract section 5).
+// Public resource projections (the conversation contract).
 
 type conversationOwnerResource struct {
 	PrincipalID string `json:"principal_id"`
@@ -546,7 +554,7 @@ type conversationExecutionResource struct {
 	ThreadID  *string `json:"thread_id"`
 	TurnID    *string `json:"turn_id"`
 	// Resume reports what the bound runner continued from: its own provider
-	// thread, a transcript, or nothing (decisions section 10.4).
+	// thread, a transcript, or nothing.
 	Resume       string                    `json:"resume"`
 	Capabilities conversation.Capabilities `json:"capabilities"`
 	Error        *string                   `json:"error"`
@@ -576,7 +584,7 @@ type conversationResource struct {
 	Status         conversation.Status     `json:"status"`
 	Archived       bool                    `json:"archived"`
 	// Preferences are the conversation's turn preferences; each field is
-	// "auto" or an explicit value (decisions section 14).
+	// "auto" or an explicit value.
 	Preferences       conversation.Preferences      `json:"preferences"`
 	SubjectWorkItemID *string                       `json:"subject_work_item_id,omitempty"`
 	WorkItemID        *string                       `json:"work_item_id"`
@@ -590,11 +598,13 @@ type conversationResource struct {
 	UpdatedAt         time.Time                     `json:"updated_at"`
 	LastMessageAt     *time.Time                    `json:"last_message_at"`
 	// MessageCount is the whole history, so the share confirmation can say
-	// how much becomes readable (decisions section 10.5).
+	// how much becomes readable.
 	MessageCount int64 `json:"message_count"`
 }
 
 type conversationMessageResource struct {
+	revision       int64
+	contentID      string
 	ID             string                   `json:"id"`
 	ConversationID string                   `json:"conversation_id"`
 	Seq            int64                    `json:"seq"`
@@ -609,10 +619,10 @@ type conversationMessageResource struct {
 	Actor          conversation.Actor       `json:"actor"`
 	CommandKey     *string                  `json:"command_key"`
 	// References are the issues and conversations the text names, resolved
-	// against the project (decisions section 14).
+	// against the project.
 	References []conversationReferenceResource `json:"references"`
 	// Attachments are the uploads the message carries, each with the URL
-	// that streams it (decisions section 17.1).
+	// that streams it.
 	Attachments []conversation.Attachment `json:"attachments"`
 	CreatedAt   time.Time                 `json:"created_at"`
 	UpdatedAt   time.Time                 `json:"updated_at"`
@@ -804,6 +814,8 @@ func projectMessage(record conversationMessageRecord) conversationMessageResourc
 		data = record.Data
 	}
 	return conversationMessageResource{
+		contentID:      record.ContentID,
+		revision:       record.Revision,
 		ID:             record.ID,
 		ConversationID: record.ConversationID,
 		Seq:            record.Seq,
@@ -878,7 +890,7 @@ func (c *conversationService) appendMessage(ctx context.Context, tx *sql.Tx, rec
 		return err
 	}
 	// A new message is activity: a settled conversation wakes before the
-	// message is announced (decisions section 14).
+	// message is announced.
 	if err := c.unsettle(ctx, tx, record, now); err != nil {
 		return err
 	}
@@ -889,7 +901,7 @@ func (c *conversationService) appendMessage(ctx context.Context, tx *sql.Tx, rec
 }
 
 // unsettle returns a settled conversation to active. Any accepted command or
-// new message wakes it; there is no unarchive action (decisions section 14).
+// new message wakes it; there is no unarchive action.
 func (c *conversationService) unsettle(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
 	if record.Status != conversation.StatusSettled {
 		return nil
@@ -996,13 +1008,16 @@ WHERE i.organization_id = ? AND lower(p.name) = ? AND i.number = ?`
 
 // updateMessage persists a changed message and its message.updated event.
 // A message that reached a terminal delivery has its final text, so its
-// references are extracted then rather than on every streamed delta
-// (decisions section 14). For any other delivery the caller's record must
+// references are extracted then rather than on every streamed delta.
+// For any other delivery the caller's record must
 // already carry its stored references, which every read path fills, because
 // the event it emits replaces the client's copy of the message.
 func (c *conversationService) updateMessage(ctx context.Context, tx *sql.Tx, message conversationMessageRecord, now time.Time) error {
 	message.UpdatedAt = now
 	if err := c.store.updateMessage(ctx, tx, message); err != nil {
+		return err
+	}
+	if err := tx.QueryRowContext(ctx, "SELECT content_attachment_id,revision FROM conversation_messages WHERE id=? AND conversation_id=?", message.ID, message.ConversationID).Scan(&message.ContentID, &message.Revision); err != nil {
 		return err
 	}
 	if message.Delivery.Terminal() {
@@ -1038,18 +1053,15 @@ func (c *conversationService) appendDelta(ctx context.Context, tx *sql.Tx, messa
 // message's byte length before the append; the stored text is never read
 // back and rewritten, so a long streamed message costs only its new bytes.
 func (c *conversationService) appendDeltaAt(ctx context.Context, tx *sql.Tx, conversationID, messageID string, offset int64, text string, now time.Time) error {
-	result, err := tx.ExecContext(ctx, "UPDATE conversation_messages SET text = text || ?, updated_at = ? WHERE id = ? AND conversation_id = ?", text, conversationTime(now), messageID, conversationID)
-	if err != nil {
-		return fmt.Errorf("append message delta: %w", err)
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("append message delta: %w", err)
-	}
-	if affected == 0 {
+	var revision int64
+	err := tx.QueryRowContext(ctx, "UPDATE conversation_messages SET text = text || ?, updated_at = ?, revision=revision+1 WHERE id = ? AND conversation_id = ? RETURNING revision", text, conversationTime(now), messageID, conversationID).Scan(&revision)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nativeNotFound()
 	}
-	if _, err := c.store.appendEvent(ctx, tx, conversationID, conversation.EventMessageDelta, conversationDeltaBody(messageID, offset, text), now); err != nil {
+	if err != nil {
+		return fmt.Errorf("append message delta: %w", err)
+	}
+	if _, err := c.store.appendEvent(ctx, tx, conversationID, conversation.EventMessageDelta, conversationDeltaFact{MessageID: messageID, Revision: revision, Offset: offset, Bytes: len(text)}, now); err != nil {
 		return err
 	}
 	return nil

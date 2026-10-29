@@ -13,6 +13,12 @@ import (
 )
 
 func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector, claim tracker.NativeClaim, limit int) ([]tracker.NativeLease, error) {
+	discoveryCtx := ctx
+	if request.BeginDiscovery != nil {
+		var finish context.CancelFunc
+		discoveryCtx, finish = request.BeginDiscovery(ctx)
+		defer finish()
+	}
 	leases := make([]tracker.NativeLease, 0, limit)
 	batchSession := claim.SessionID
 	providerEnabled := s.providerReports != nil
@@ -23,27 +29,40 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 	reports := append([]providercapacity.Report(nil), s.machine.ProviderReports...)
 	s.mu.Unlock()
 	preview := tracker.NativeCapacityPreview{NativeClaim: claim}
-	boundedPreview, err := source.client.HubFeature(ctx, tracker.NativeDispatchWaitCapability)
+	boundedPreview, err := source.client.HubFeature(discoveryCtx, tracker.NativeDispatchWaitCapability)
 	if err != nil {
+		if discoveryCtx.Err() != nil && ctx.Err() == nil {
+			return leases, nil
+		}
 		return leases, err
 	}
 	if providerEnabled {
 		claim.Capabilities = append(claim.Capabilities, tracker.NativeProviderCapacityCapability)
 	}
 	evaluated := 0
+	admissionDeferred := false
 	var waiting error
 	for {
 		if boundedPreview && request.CandidateLimit > 0 {
 			preview.Limit = min(100, request.CandidateLimit-evaluated)
 		}
 		var page tracker.NativeCapacityPage
-		if err := source.client.client.request(ctx, http.MethodPost, source.client.base()+"/claims/preview", preview, &page); err != nil {
+		if err := source.client.client.request(discoveryCtx, http.MethodPost, source.client.base()+"/claims/preview", preview, &page); err != nil {
+			if discoveryCtx.Err() != nil && ctx.Err() == nil {
+				return leases, nil
+			}
 			return leases, err
+		}
+		if discoveryCtx.Err() != nil {
+			return leases, ctx.Err()
 		}
 		if len(page.Items) > 100 {
 			return leases, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("provider candidate page exceeds the negotiated bound"))
 		}
 		for _, issue := range page.Items {
+			if discoveryCtx.Err() != nil {
+				return leases, ctx.Err()
+			}
 			if request.CandidateLimit > 0 && evaluated >= request.CandidateLimit {
 				break
 			}
@@ -52,11 +71,11 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 				continue
 			}
 			evaluated++
-			if request.CandidateReady != nil && !request.CandidateReady(ctx, candidate) {
+			if request.CandidateReady != nil && !request.CandidateReady(discoveryCtx, candidate) {
 				continue
 			}
 			if providerEnabled {
-				requirement, err := request.ProviderRequirement(ctx, candidate, reports)
+				requirement, err := request.ProviderRequirement(discoveryCtx, candidate, reports)
 				if err != nil {
 					waiting = errors.Join(orchestrator.ErrSchedulingUnavailable, err)
 					continue
@@ -76,8 +95,9 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 			if request.NativeLandingBatch && candidate.State == "Merging" {
 				claim.SessionID = "landing/" + batchSession + "/" + claim.SessionID
 			}
-			lease, err, admitted := claimPreviewCandidate(ctx, request, source, claim, candidate)
+			lease, err, admitted := s.claimPreviewCandidate(ctx, request, source, claim, candidate)
 			if !admitted {
+				admissionDeferred = true
 				continue
 			}
 			if request.CandidateClaimObserved != nil {
@@ -112,11 +132,14 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 			}
 			waiting = err
 		}
+		if discoveryCtx.Err() != nil {
+			return leases, ctx.Err()
+		}
 		if providerEnabled && len(page.Items) == 0 && page.Next == 0 && len(leases) == 0 {
 			claim.ProviderCandidates = nil
-			lease, err, admitted := claimPreviewCandidate(ctx, request, source, claim, connector.Issue{})
+			lease, err, admitted := s.claimPreviewCandidate(ctx, request, source, claim, connector.Issue{})
 			if !admitted {
-				return leases, ErrNoClaimableWork
+				return leases, nil
 			}
 			if err == nil {
 				return leases, errors.Join(orchestrator.ErrSchedulingUnavailable, errors.New("hub claimed work absent from its provider preview"), source.client.Release(context.WithoutCancel(ctx), lease, "failed"))
@@ -124,7 +147,7 @@ func (s *Scheduler) claimPreviewCandidates(ctx context.Context, request orchestr
 			return leases, err
 		}
 		if page.Next == 0 || request.CandidateLimit > 0 && evaluated >= request.CandidateLimit {
-			if len(leases) > 0 {
+			if len(leases) > 0 || admissionDeferred {
 				return leases, nil
 			}
 			if page.Next != 0 && (waiting == nil || errors.Is(waiting, ErrNoClaimableWork)) {
@@ -176,7 +199,7 @@ func (e *nativeExecution) ProviderCapacity() *providercapacity.Reservation {
 	return e.claim.lease.ProviderReservation
 }
 
-func claimPreviewCandidate(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector, claim tracker.NativeClaim, candidate connector.Issue) (tracker.NativeLease, error, bool) {
+func (s *Scheduler) claimPreviewCandidate(ctx context.Context, request orchestrator.SchedulingRequest, source *NativeConnector, claim tracker.NativeClaim, candidate connector.Issue) (tracker.NativeLease, error, bool) {
 	if request.CandidateAdmission != nil {
 		release, allowed := request.CandidateAdmission(candidate)
 		if !allowed {
@@ -184,6 +207,5 @@ func claimPreviewCandidate(ctx context.Context, request orchestrator.SchedulingR
 		}
 		defer release()
 	}
-	lease, err := source.client.Claim(ctx, claim)
-	return lease, err, true
+	return s.claimNative(ctx, source, claim)
 }

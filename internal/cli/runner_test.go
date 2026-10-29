@@ -23,7 +23,6 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
-	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/observability"
@@ -33,6 +32,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testutil/fakehub"
+	"github.com/digitaldrywood/detent/internal/testutil/projectfixture"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -175,7 +176,7 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	t.Parallel()
 
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Workspace.Root = t.TempDir()
 
 	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", globalconfig.Memory{}, gobudget.Budget{}, nil, nil, serviceapi.Connection{})
@@ -194,7 +195,7 @@ func TestBuildRunnerDependenciesCarriesServiceConnection(t *testing.T) {
 	t.Parallel()
 
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Workspace.Root = t.TempDir()
 	cfg.Workspace.Kind = workspace.KindFilesystem
 	cfg.Hooks.AfterCreate = "printf A > hook-marker"
@@ -256,7 +257,7 @@ func TestBuildRunnerSupportsClaudeCodeBackendRoutes(t *testing.T) {
 
 	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 workspace:
   root: ` + strconv.Quote(filepath.Join(t.TempDir(), "workspaces")) + `
 agents:
@@ -420,7 +421,7 @@ func TestBuildRunnerUsesTopLevelPricingPath(t *testing.T) {
 	t.Parallel()
 
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Workspace.Root = t.TempDir()
 	cfg.Budget.PricingPath = filepath.Join(t.TempDir(), "missing-models.yaml")
 
@@ -655,7 +656,7 @@ func TestBuildWorkspaceBackendUsesProjectWorkdirAsSourceRoot(t *testing.T) {
 
 	source := initRunnerSourceRepo(t)
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Workspace.Root = filepath.Join(t.TempDir(), "workspaces")
 	cfg.Workspace.SourceRoot = ""
 
@@ -858,7 +859,7 @@ func TestProjectDependenciesUseRuntimeGitHubTokenSource(t *testing.T) {
 			if tt.appID != "" {
 				tracker += "  github_app_id: '" + tt.appID + "'\n  github_app_installation_id: '456'\n  github_app_private_key_path: /example/app.pem\n"
 			}
-			raw = []byte(strings.Replace(string(raw), "tracker:\n  kind: memory\n", tracker, 1))
+			raw = []byte(strings.Replace(string(raw), "tracker:\n  kind: hub_native\n", tracker, 1))
 			if tt.worker != "" {
 				raw = []byte(strings.Replace(string(raw), "codex:\n", "worker:\n  github_token: "+tt.worker+"\ncodex:\n", 1))
 			}
@@ -1057,13 +1058,13 @@ func TestPublishSnapshotOnceUsesLastKnownTrackerStateUntilHydration(t *testing.T
 	t.Parallel()
 
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
-	trackedProject, err := projectpkg.New(projectpkg.Config{
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	trackedProject, err := projectfixture.New(projectpkg.Config{
 		Project:  globalconfig.Project{ID: "alpha", Workdir: t.TempDir(), Weight: 1},
 		Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
 	}, projectpkg.Dependencies{})
 	if err != nil {
-		t.Fatalf("project.New() error = %v", err)
+		t.Fatalf("projectfixture.New() error = %v", err)
 	}
 	registry := projectpkg.NewRegistry()
 	mustSetProject(t, registry, trackedProject)
@@ -1121,7 +1122,7 @@ func TestPublishSnapshotOnceReplacesLastKnownStatePerProject(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			registry := projectpkg.NewRegistry()
-			alpha := newRefreshProjectWithConnector(t, "alpha", memory.New(memory.Config{Issues: []connector.Issue{{
+			alpha := newRefreshProjectWithConnector(t, "alpha", fakehub.New(fakehub.Config{Issues: []connector.Issue{{
 				ID:         "live-alpha",
 				Identifier: "example/alpha#1",
 				State:      "Todo",
@@ -1140,7 +1141,7 @@ func TestPublishSnapshotOnceReplacesLastKnownStatePerProject(t *testing.T) {
 				waitForProjectDataSeq(t, alpha, 1)
 			}
 			mustSetProject(t, registry, alpha)
-			mustSetProject(t, registry, newRefreshProjectWithConnector(t, "bravo", memory.New(memory.Config{})))
+			mustSetProject(t, registry, newRefreshProjectWithConnector(t, "bravo", fakehub.New(fakehub.Config{})))
 
 			cached := telemetry.Snapshot{
 				LastKnown:      true,
@@ -1210,13 +1211,13 @@ func TestPublishSnapshotOnceExpiresLastKnownSnapshotDuringHydration(t *testing.T
 	t.Parallel()
 
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
-	trackedProject, err := projectpkg.New(projectpkg.Config{
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	trackedProject, err := projectfixture.New(projectpkg.Config{
 		Project:  globalconfig.Project{ID: "alpha", Workdir: t.TempDir(), Weight: 1},
 		Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
 	}, projectpkg.Dependencies{})
 	if err != nil {
-		t.Fatalf("project.New() error = %v", err)
+		t.Fatalf("projectfixture.New() error = %v", err)
 	}
 	registry := projectpkg.NewRegistry()
 	mustSetProject(t, registry, trackedProject)
@@ -1349,8 +1350,8 @@ func TestPublishSnapshotOnceDoesNotLetPausedProjectsHoldFleetReadiness(t *testin
 	mustSetProject(t, registry, healthy)
 
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
-	pausedProject, err := projectpkg.New(projectpkg.Config{
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	pausedProject, err := projectfixture.New(projectpkg.Config{
 		Project: globalconfig.Project{
 			ID:      "bravo",
 			Workdir: t.TempDir(),
@@ -1360,7 +1361,7 @@ func TestPublishSnapshotOnceDoesNotLetPausedProjectsHoldFleetReadiness(t *testin
 		Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
 	}, projectpkg.Dependencies{})
 	if err != nil {
-		t.Fatalf("project.New() error = %v", err)
+		t.Fatalf("projectfixture.New() error = %v", err)
 	}
 	mustSetProject(t, registry, pausedProject)
 
@@ -1402,9 +1403,9 @@ func TestPublishSnapshotOnceSurfacesProjectStartupError(t *testing.T) {
 
 	provisionErr := errors.New("provision failed")
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Tracker.AutoProvision = true
-	failedProject, err := projectpkg.New(projectpkg.Config{
+	failedProject, err := projectfixture.New(projectpkg.Config{
 		Project: globalconfig.Project{
 			ID:      "bravo",
 			Workdir: t.TempDir(),
@@ -1417,7 +1418,7 @@ func TestPublishSnapshotOnceSurfacesProjectStartupError(t *testing.T) {
 		}},
 	})
 	if err != nil {
-		t.Fatalf("project.New() error = %v", err)
+		t.Fatalf("projectfixture.New() error = %v", err)
 	}
 	if err := failedProject.Start(context.Background()); !errors.Is(err, provisionErr) {
 		t.Fatalf("Project.Start() error = %v, want %v", err, provisionErr)
@@ -1642,9 +1643,9 @@ func TestPublishSnapshotOncePausedProjectSuppressesStartupError(t *testing.T) {
 
 	provisionErr := errors.New("provision failed")
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 	cfg.Tracker.AutoProvision = true
-	failedProject, err := projectpkg.New(projectpkg.Config{
+	failedProject, err := projectfixture.New(projectpkg.Config{
 		Project: globalconfig.Project{
 			ID:      "bravo",
 			Workdir: t.TempDir(),
@@ -1657,7 +1658,7 @@ func TestPublishSnapshotOncePausedProjectSuppressesStartupError(t *testing.T) {
 		}},
 	})
 	if err != nil {
-		t.Fatalf("project.New() error = %v", err)
+		t.Fatalf("projectfixture.New() error = %v", err)
 	}
 	if err := failedProject.Start(context.Background()); !errors.Is(err, provisionErr) {
 		t.Fatalf("Project.Start() error = %v, want %v", err, provisionErr)
@@ -1829,7 +1830,7 @@ func TestPublishSnapshotOncePreservesPipeline(t *testing.T) {
 				CodexReviewState: "P1",
 			},
 		}
-		project := newRefreshProjectWithConnector(t, "alpha", memory.New(memory.Config{
+		project := newRefreshProjectWithConnector(t, "alpha", fakehub.New(fakehub.Config{
 			Issues: []connector.Issue{pipelineIssue},
 		}))
 		if err := project.Start(context.Background()); err != nil {
@@ -2525,7 +2526,7 @@ func writeWorkflowFile(t *testing.T) string {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "WORKFLOW.md")
 	content := "---\n" +
-		"tracker:\n  kind: memory\n" +
+		"tracker:\n  kind: hub_native\n" +
 		"codex:\n  command: codex app-server\n" +
 		"workspace:\n  root: " + filepath.Join(dir, "workspaces") + "\n" +
 		"---\n\nTest workflow prompt.\n"
@@ -2661,8 +2662,8 @@ func newRefreshProjectWithConnector(t *testing.T, id string, projectConnector co
 	t.Helper()
 
 	cfg := workflowconfig.Default()
-	cfg.Tracker.Kind = workflowconfig.TrackerMemory
-	project, err := projectpkg.New(projectpkg.Config{
+	cfg.Tracker.Kind = workflowconfig.TrackerHubNative
+	project, err := projectfixture.New(projectpkg.Config{
 		Project: globalconfig.Project{
 			ID:      id,
 			Workdir: t.TempDir(),
@@ -2671,7 +2672,7 @@ func newRefreshProjectWithConnector(t *testing.T, id string, projectConnector co
 		Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
 	}, projectpkg.Dependencies{Connector: projectConnector})
 	if err != nil {
-		t.Fatalf("project.New() error = %v", err)
+		t.Fatalf("projectfixture.New() error = %v", err)
 	}
 	return project
 }
@@ -2716,9 +2717,9 @@ func TestPublishSnapshotOnceReportsHostCache(t *testing.T) {
 	for _, paused := range []bool{false, true} {
 		t.Run(map[bool]string{false: "running", true: "paused"}[paused], func(t *testing.T) {
 			cfg := workflowconfig.Default()
-			cfg.Tracker.Kind = workflowconfig.TrackerMemory
+			cfg.Tracker.Kind = workflowconfig.TrackerHubNative
 			cfg.Workspace.Root = t.TempDir()
-			tracked, err := projectpkg.New(projectpkg.Config{
+			tracked, err := projectfixture.New(projectpkg.Config{
 				Project:  globalconfig.Project{ID: "cache-test", Workdir: t.TempDir(), Weight: 1, Paused: paused},
 				Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
 			}, projectpkg.Dependencies{HostCacheReport: func() *toolcache.Report { return &toolcache.Report{BuildBytes: 47 << 30} }})
@@ -2810,4 +2811,14 @@ func TestPublishSnapshotsReportsPendingRunner(t *testing.T) {
 		cancel()
 		<-done
 	})
+}
+
+func TestBuildOpenCodeBackend(t *testing.T) {
+	backend, err := buildAgentBackend(workflowconfig.AgentBackend{ID: "open", Kind: workflowconfig.AgentBackendOpenCode, Protocol: "acp", Command: "opencode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := backend.(runnerpkg.AgentToolBackend); !ok {
+		t.Fatal("OpenCode backend does not expose native worker tools")
+	}
 }

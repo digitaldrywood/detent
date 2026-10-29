@@ -36,6 +36,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/serviceapi"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/toolcache"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workflowmetrics"
@@ -417,7 +418,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[0].LastEvent != "workspace_create_started" || !usageUpdates[0].LastEventAt.Equal(startedAt) {
 		t.Fatalf("workspace usage update = %#v, want startup progress", usageUpdates[0])
 	}
-	if usageUpdates[1].DispatchLoopStart == nil || !usageUpdates[1].DispatchLoopStart.WorkspaceDiffAvailable {
+	if usageUpdates[1].CompletionSourceStart == nil || !usageUpdates[1].CompletionSourceStart.WorkspaceDiffAvailable {
 		t.Fatalf("dispatch loop start update = %#v, want available workspace baseline", usageUpdates[1])
 	}
 	usageUpdates = usageUpdates[2:]
@@ -545,15 +546,15 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		"Work on digitaldrywood/detent#22 attempt 2",
 		"## Existing workspace recovery",
 		"unpushed commits: 1",
-		"## Available skills",
-		"## Available skills\n\n- review",
 	} {
 		if !strings.Contains(codexClient.request.Prompt, want) {
 			t.Fatalf("codex prompt missing %q:\n%s", want, codexClient.request.Prompt)
 		}
 	}
-	if strings.Contains(codexClient.request.Prompt, "Issue needs code review.") {
-		t.Fatal("codex prompt includes skill trigger prose")
+	for _, unwanted := range []string{"## Available skills", "- review", "Issue needs code review."} {
+		if strings.Contains(codexClient.request.Prompt, unwanted) {
+			t.Fatalf("codex prompt lists repository skills %q", unwanted)
+		}
 	}
 	if workspaceBackend.recoveryCalls != 2 {
 		t.Fatalf("RecoveryState calls = %d, want initial and final checks", workspaceBackend.recoveryCalls)
@@ -566,9 +567,6 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if sessionStore.finished.FinalState != FinalStateCompleted || sessionStore.finished.TotalTokens != 125 || sessionStore.finished.Turns != 1 || sessionStore.finished.Model != "gpt-5-codex-resolved" {
 		t.Fatalf("SessionFinish = %#v, want completed session with tokens", sessionStore.finished)
-	}
-	if !result.SkillDraftProposed || !sessionStore.finished.SkillDraftProposed {
-		t.Fatalf("skill draft telemetry result/store = %v/%v, want true/true", result.SkillDraftProposed, sessionStore.finished.SkillDraftProposed)
 	}
 	if sessionStore.finished.ProviderThreadID != "thread-1" || sessionStore.finished.ProviderSessionID != "thread-1-turn-1" {
 		t.Fatalf("SessionFinish provider IDs = %#v, want thread-1/thread-1-turn-1", sessionStore.finished)
@@ -691,7 +689,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 		{
 			name: "streamed no-op combined push does not change head",
 			updates: []AgentUpdate{
-				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push origin HEAD && detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
 				{Type: AgentUpdateToolOutput, ItemID: "push", Tool: "commandExecution", Delta: "Everything up-to-date"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
@@ -702,7 +700,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 			updates: []AgentUpdate{
 				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
-				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label-base64 Y2k6cmVhZHk"},
+				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label-base64 Y2k6cmVhZHk"},
 				{Type: AgentUpdateToolCompleted, ItemID: "relabel", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -714,7 +712,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 			updates: []AgentUpdate{
 				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
-				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 9999 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 9999 --label ci:ready"},
 				{Type: AgentUpdateToolCompleted, ItemID: "relabel", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -725,7 +723,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 			updates: []AgentUpdate{
 				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
-				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/another --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent hub ci-trigger-label --repository digitaldrywood/another --pull-request 1212 --label ci:ready"},
 				{Type: AgentUpdateToolCompleted, ItemID: "relabel", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -734,7 +732,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 		{
 			name: "combined push and CI trigger label records both deliveries",
 			updates: []AgentUpdate{
-				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel", Tool: "commandExecution", Status: "completed", Delta: "branch pushed and label reapplied"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -744,7 +742,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 		{
 			name: "repository push substring does not invalidate combined delivery order",
 			updates: []AgentUpdate{
-				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository acme/push-service --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent hub ci-trigger-label --repository acme/push-service --pull-request 1212 --label ci:ready"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel", Tool: "commandExecution", Status: "completed", Delta: "branch pushed and label reapplied"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -755,7 +753,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 		{
 			name: "push after label in combined command requires fresh reapplication",
 			updates: []AgentUpdate{
-				{Type: AgentUpdateToolStarted, ItemID: "push-relabel-push", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready && git push origin HEAD"},
+				{Type: AgentUpdateToolStarted, ItemID: "push-relabel-push", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready && git push origin HEAD"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel-push", Tool: "commandExecution", Status: "completed", Delta: "first branch updated; label reapplied; Everything up-to-date"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -772,7 +770,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 		{
 			name: "combined push and CI trigger failure remains deliverable error",
 			updates: []AgentUpdate{
-				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel", Tool: "commandExecution", Status: "failed", Delta: "remote: push rejected"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -781,7 +779,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 		{
 			name: "combined label failure requires target ref evidence",
 			updates: []AgentUpdate{
-				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "push-relabel", Tool: "commandExecution", Delta: "git push -u origin HEAD && detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push-relabel", Tool: "commandExecution", Status: "failed", Delta: "branch pushed; ci-trigger-label: HTTP 500"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -792,9 +790,9 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 			updates: []AgentUpdate{
 				{Type: AgentUpdateToolStarted, ItemID: "push", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
-				{Type: AgentUpdateToolStarted, ItemID: "ready", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "ready", Tool: "commandExecution", Delta: "detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
 				{Type: AgentUpdateToolCompleted, ItemID: "ready", Tool: "commandExecution", Status: "completed", Delta: "ready label reapplied"},
-				{Type: AgentUpdateToolStarted, ItemID: "race", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:race"},
+				{Type: AgentUpdateToolStarted, ItemID: "race", Tool: "commandExecution", Delta: "detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:race"},
 				{Type: AgentUpdateToolCompleted, ItemID: "race", Tool: "commandExecution", Status: "completed", Delta: "race label reapplied"},
 				{Type: AgentUpdateTurnCompleted, Status: "completed"},
 			},
@@ -805,7 +803,7 @@ func TestRunAgentTurnFailsForUnrecoveredDeliverableCommandError(t *testing.T) {
 			updates: []AgentUpdate{
 				{Type: AgentUpdateToolStarted, ItemID: "push-1", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push-1", Tool: "commandExecution", Status: "completed", Delta: "branch pushed"},
-				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
+				{Type: AgentUpdateToolStarted, ItemID: "relabel", Tool: "commandExecution", Delta: "detent hub ci-trigger-label --repository digitaldrywood/detent --pull-request 1212 --label ci:ready"},
 				{Type: AgentUpdateToolCompleted, ItemID: "relabel", Tool: "commandExecution", Status: "completed", Delta: "label reapplied"},
 				{Type: AgentUpdateToolStarted, ItemID: "push-2", Tool: "commandExecution", Delta: "git push -u origin HEAD"},
 				{Type: AgentUpdateToolCompleted, ItemID: "push-2", Tool: "commandExecution", Status: "completed", Delta: "branch pushed again"},
@@ -1296,7 +1294,7 @@ exit /b %errorlevel%
 				command += " && printf '%s\\n' 'later assertion failed' >&2 && exit 19"
 				actualCommand += " && printf '%s\\n' 'later assertion failed' >&2 && exit 19"
 			}
-			commandCtx, cancelCommand := context.WithTimeout(t.Context(), 30*time.Second)
+			commandCtx, cancelCommand := context.WithCancel(testenv.WaitContext(t, t.Context()))
 			defer cancelCommand()
 			var cmd *exec.Cmd
 			if runtime.GOOS == "windows" {
@@ -1726,6 +1724,7 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 		wantScratch bool
 	}{
 		{name: "completed turn"},
+		{name: "completed turn with survivors", reapErr: errors.New("workspace processes remained after SIGKILL"), wantReap: true, wantScratch: true},
 		{name: "cancelled turn", runErr: context.Canceled, wantErr: context.Canceled, wantReap: true},
 		{name: "cancelled turn reap deadline", runErr: context.Canceled, wantErr: context.Canceled, reapErr: context.DeadlineExceeded, wantReap: true, wantScratch: true},
 	}
@@ -1736,6 +1735,9 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 
 			workspacePath := t.TempDir()
 			backend := &scratchWritingAgentBackend{runErr: tt.runErr}
+			if tt.name == "completed turn with survivors" {
+				backend.workerProcess = procgroup.Identity{PID: 2345}
+			}
 			t.Cleanup(func() {
 				if err := workspace.CleanupWorkerScratch(workspacePath, backend.tempDir); err != nil {
 					t.Errorf("fixture scratch cleanup: %v", err)
@@ -1782,13 +1784,13 @@ func TestRunAgentTurnReclaimsWorkerScratch(t *testing.T) {
 			if reaped != tt.wantReap {
 				t.Fatalf("workspace reaped = %v, want %v", reaped, tt.wantReap)
 			}
-			if got := errors.Is(execution.err, ErrWorkerProcessReap); got != tt.wantScratch {
+			if got := errors.Is(execution.cleanupErr, ErrWorkerProcessReap); got != tt.wantScratch {
 				t.Fatalf("worker reap failure = %v, want %v: %v", got, tt.wantScratch, execution.err)
 			}
-			if tt.reapErr != nil && !errors.Is(execution.err, tt.reapErr) {
+			if tt.reapErr != nil && !errors.Is(execution.cleanupErr, tt.reapErr) {
 				t.Fatalf("turn error = %v, want reap cause %v", execution.err, tt.reapErr)
 			}
-			if execution.cleanupErr != nil {
+			if execution.cleanupErr != nil && !tt.wantScratch {
 				t.Fatalf("scratch removal error: %v (turn error: %v)", execution.cleanupErr, execution.err)
 			}
 			if scratchRoot := workspace.WorkerScratchRoot(workspacePath); backend.tempDir == "" || !strings.HasPrefix(backend.tempDir, scratchRoot+string(filepath.Separator)) {
@@ -1911,7 +1913,7 @@ func TestRunAgentTurnCleansWorkerScratchAfterProcessReap(t *testing.T) {
 			if !scratchPresentDuringReap {
 				t.Fatal("worker scratch was removed before process reaping")
 			}
-			if got := errors.Is(execution.err, ErrWorkerProcessReap); got != tt.wantScratch {
+			if got := errors.Is(execution.cleanupErr, ErrWorkerProcessReap); got != tt.wantScratch {
 				t.Fatalf("runAgentTurn() worker reap error = %v, want %v: %v", got, tt.wantScratch, execution.err)
 			}
 			if tt.wantScratch && len(sessionStore.reaps) != 0 {
@@ -1987,7 +1989,7 @@ func TestConfiguredRuntimeIdentityKeepsClaudeIntentDistinct(t *testing.T) {
 
 	workflow, err := config.ParseWorkflow([]byte(`---
 tracker:
-  kind: memory
+  kind: hub_native
 agents:
   backends:
     - id: claude-local
@@ -2642,10 +2644,7 @@ func TestRunnerRunAdmissionPreservesScratchUntilDescendantsExit(t *testing.T) {
 				},
 			})
 			wantRetained := tt.processErr != nil || tt.workspaceErr != nil
-			if errors.Is(err, ErrWorkerProcessReap) != wantRetained {
-				t.Fatalf("Run error = %v, want reap failure %t", err, wantRetained)
-			}
-			if !wantRetained && err != nil {
+			if err != nil {
 				t.Fatal(err)
 			}
 			_, statErr := os.Stat(fixture)
@@ -4405,6 +4404,84 @@ func TestRunnerClassifiesWorkspaceBranchHold(t *testing.T) {
 	want := "branch held by worktree at \"/review/PR-1917\" (PR #1917 checkout) — will resume when released"
 	if err.Error() != want {
 		t.Fatalf("Run() error = %q, want %q", err, want)
+	}
+}
+
+func TestRunnerClassifiesChangeSourceRefusal(t *testing.T) {
+	t.Parallel()
+	refusal := &workspace.LandRefusal{Kind: workspace.LandRefusalHeadMoved, Reason: "the existing clean worktree differs from the recorded source base and head"}
+	transient := errors.New("Hub change read unavailable")
+	for _, test := range []struct {
+		name         string
+		source       bool
+		state        string
+		published    bool
+		recoverError error
+		wantRecovery bool
+	}{
+		{name: "code attempt with retained source requires recovery", source: true, wantRecovery: true},
+		{name: "refusal without retained source stays workspace preparation"},
+		{name: "superseded transferred version requires recovery", source: true, recoverError: fmt.Errorf("%w (Change %q, selected version %q, current version %q)", ErrChangeSourceVersionSuperseded, "change_example", "version_selected", "version_current"), wantRecovery: true},
+		{name: "transient change read retries source recovery", source: true, recoverError: transient, wantRecovery: true},
+		{name: "Rework with unavailable published source fails before provider", state: "Rework", published: true, recoverError: transient, wantRecovery: true},
+		{name: "code claim with published source restores before provider", published: true, wantRecovery: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			execution := &reworkReviewExecution{recoverError: test.recoverError}
+			if test.source {
+				execution.recovery.SourceVersionID = "version_1"
+				execution.source = workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "version_1", ChangeID: "change_1"}}
+			}
+			if test.published {
+				execution.recovery.Change = &tracker.NativeChangeReference{ChangeID: "change_1", VersionID: "version_1", HeadSHA: "published-head"}
+				execution.source = workspace.ChangeSource{Version: tracker.ChangeVersion{ID: "version_1", ChangeID: "change_1"}}
+			}
+			agent := &fakeCodexClient{}
+			runner, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Tracker: config.Tracker{Kind: config.TrackerHubNative}}}, Workspace: &fakeWorkspaceBackend{createErr: refusal}, AgentBackend: agent})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := test.state
+			if state == "" {
+				state = "In Progress"
+			}
+			supervisor, err := NewSupervisor(runner, SupervisorConfig{FailureRetryBaseDelay: 10 * time.Second, MaxRetryBackoff: 25 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "example-org/example-project#1", State: state}}
+			completion := supervisor.Run(t.Context(), request)
+			err = completion.Err
+			cause := error(refusal)
+			if test.recoverError != nil {
+				cause = test.recoverError
+			}
+			if !errors.Is(err, cause) || errors.Is(err, ErrNativeRecoveryRequired) != test.wantRecovery || errors.Is(err, ErrWorkspacePreparation) == (test.wantRecovery || test.recoverError != nil) {
+				t.Fatalf("source refusal error = %v", err)
+			}
+			if agent.calls != 0 {
+				t.Fatalf("provider started %d turns before source recovery", agent.calls)
+			}
+			if test.wantRecovery && (execution.failure == nil || execution.failure.ErrorClass != "source_recovery" || execution.failure.Attribution != "instance" || execution.failure.Stage != "workspace_preparation") {
+				t.Fatalf("terminal failure = %#v, want instance source_recovery before provider", execution.failure)
+			}
+			if test.wantRecovery && (!completion.Retryable || completion.RetryAttempt != 1 || completion.RetryDelay != 10*time.Second) {
+				t.Fatalf("source refusal bypassed failure retry owner: retryable=%t attempt=%d delay=%s error=%v", completion.Retryable, completion.RetryAttempt, completion.RetryDelay, completion.Err)
+			}
+			if errors.Is(test.recoverError, ErrChangeSourceVersionSuperseded) {
+				if !strings.Contains(execution.failure.Error, test.recoverError.Error()) {
+					t.Fatalf("completion lost source selection identities: %s", execution.failure.Error)
+				}
+				for i, delay := range []time.Duration{20 * time.Second, 25 * time.Second, 25 * time.Second} {
+					request.Attempt = completion.RetryAttempt
+					completion = supervisor.Run(t.Context(), request)
+					if !errors.Is(completion.Err, ErrChangeSourceVersionSuperseded) || !completion.Retryable || completion.RetryAttempt != i+2 || completion.RetryDelay != delay || agent.calls != 0 {
+						t.Fatalf("repeated refusal: retryable=%t attempt=%d delay=%s error=%v provider calls=%d", completion.Retryable, completion.RetryAttempt, completion.RetryDelay, completion.Err, agent.calls)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -6206,14 +6283,23 @@ func TestRunnerValidateRejectsReviewWorkspaceMutation(t *testing.T) {
 		heads       []string
 		verifyErrAt int
 		turnErr     error
+		reapFailure bool
+		output      string
 	}{
+		{name: "successful review with survivors", heads: []string{"head", "head", "head"}, reapFailure: true},
+		{name: "failed review with survivors", heads: []string{"head", "head", "head"}, reapFailure: true, turnErr: errors.New("review turn failed")},
 		{name: "changed head before cleanup", heads: []string{"head", "other", "head"}},
 		{name: "dirty tree with turn error", heads: []string{"head", "head", "head"}, verifyErrAt: 2, turnErr: errors.New("turn failed")},
 		{name: "changed head after cleanup with turn error", heads: []string{"head", "head", "other"}, turnErr: errors.New("turn failed")},
+		{name: "garbage output", heads: []string{"head", "head", "head"}, output: "not a verdict"},
+		{name: "malformed output", heads: []string{"head", "head", "head"}, output: `{broken} {"verdict":"pass","score":1}`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			ws := &reviewMutationWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir()}}, heads: tt.heads, verifyErrAt: tt.verifyErrAt}
-			backend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","score":1,"summary":"pass"}`}}, result: AgentTurnResult{ThreadID: "thread", TurnID: "turn"}, err: tt.turnErr}
+			backend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateProcessStarted, WorkerProcess: procgroup.Identity{PID: 1234}}, {Type: AgentUpdateMessageDelta, Delta: `{"verdict":"pass","score":1,"summary":"pass"}`}}, result: AgentTurnResult{ThreadID: "thread", TurnID: "turn"}, err: tt.turnErr}
+			if tt.output != "" {
+				backend.updates[1].Delta = tt.output
+			}
 			runner, err := NewRunner(Dependencies{
 				Workflow:  config.Workflow{Config: config.Config{Agents: config.Agents{Backends: []config.AgentBackend{{ID: "codex", Kind: "codex", Protocol: "app-server", Command: "codex app-server"}}, Routes: []config.AgentRoute{{Name: "validator", Role: RoleValidator, Backend: "codex", Model: "test"}}}}, Prompt: "Review"},
 				Workspace: ws, AgentBackend: backend,
@@ -6221,12 +6307,25 @@ func TestRunnerValidateRejectsReviewWorkspaceMutation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = runner.Validate(t.Context(), testValidatorRequest(connector.Issue{ID: "issue", Identifier: "owner/repo#1", PullRequest: &connector.PullRequest{Number: 1, BaseSHA: "base", HeadSHA: "head", BranchName: "branch", State: "OPEN"}}))
-			if !errors.Is(err, ErrValidatorInfrastructure) {
+			runner.reapWorkspaceProcesses = func(context.Context, string, time.Duration) (int, error) {
+				if tt.reapFailure {
+					return 1, errors.New("workspace processes remained after SIGKILL")
+				}
+				return 0, nil
+			}
+			result, err := runner.Validate(t.Context(), testValidatorRequest(connector.Issue{ID: "issue", Identifier: "owner/repo#1", PullRequest: &connector.PullRequest{Number: 1, BaseSHA: "base", HeadSHA: "head", BranchName: "branch", State: "OPEN"}}))
+			if tt.reapFailure {
+				if !errors.Is(err, tt.turnErr) {
+					t.Fatalf("cleanup changed validator outcome: %v, want %v", err, tt.turnErr)
+				}
+			} else if !errors.Is(err, ErrValidatorInfrastructure) {
 				t.Fatalf("Validate() error = %v, want infrastructure failure", err)
 			}
-			if !ws.afterRun {
-				t.Fatal("after_run was not called")
+			if tt.output != "" && (result.Submitted || result.Verdict != "") {
+				t.Fatalf("invalid output produced a verdict: %+v", result)
+			}
+			if ws.afterRun == tt.reapFailure {
+				t.Fatalf("after_run=%t, reap failure=%t", ws.afterRun, tt.reapFailure)
 			}
 		})
 	}
@@ -6808,11 +6907,11 @@ func TestRunnerRunKeepsSuccessfulOutcomeAfterArtifactCleanupFailure(t *testing.T
 						t.Fatalf("workspace reaps = %d, want 1", workspaceReaps)
 					}
 					if reapTest.err != nil {
-						if !errors.Is(err, reapTest.err) || !strings.Contains(err.Error(), "worker process reap failed: reap orphaned workspace processes:") {
-							t.Fatalf("Run() error = %v, want wrapped workspace scan error", err)
+						if err != nil || result.FinalState != FinalStateCompleted || sessionStore.finished.FinalState != FinalStateCompleted {
+							t.Fatalf("cleanup failure changed successful work: error=%v result=%q session=%q", err, result.FinalState, sessionStore.finished.FinalState)
 						}
-						if result.FinalState == FinalStateCompleted || sessionStore.finished.FinalState == FinalStateCompleted {
-							t.Fatalf("scan failure completed: result %q, session %q", result.FinalState, sessionStore.finished.FinalState)
+						if !strings.Contains(logs.String(), "attribution=instance") || !strings.Contains(logs.String(), reapTest.err.Error()) {
+							t.Fatalf("cleanup failure lost instance evidence: %s", logs.String())
 						}
 						if cleanupCalls != 0 || len(sessionStore.reaps) != 0 {
 							t.Fatalf("scan failure cleanup calls = %d, reaps = %v, want no cleanup or recorded reaps", cleanupCalls, sessionStore.reaps)
@@ -6837,23 +6936,41 @@ func TestRunnerRunKeepsSuccessfulOutcomeAfterArtifactCleanupFailure(t *testing.T
 	}
 }
 
-func TestParseValidatorResultRejectsMissingOutput(t *testing.T) {
+func TestParseValidatorResult(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		output string
+		name    string
+		output  string
+		wantErr bool
+		verdict string
 	}{
-		{name: "empty", output: ""},
-		{name: "whitespace", output: " \n\t"},
-		{name: "prose without verdict", output: "The change looks good."},
+		{name: "empty", wantErr: true},
+		{name: "whitespace", output: " \n\t", wantErr: true},
+		{name: "prose without verdict", output: "The change looks good.", wantErr: true},
+		{name: "trailing prose with braces", output: "{\"verdict\":\"pass\",\"score\":1}\n\nNote: more context {x}", verdict: "pass"},
+		{name: "fenced object with trailing prose", output: "```json\n{\"verdict\":\"rework\",\"score\":1}\n```\nNote: {x}", verdict: "rework"},
+		{name: "nested and quoted braces", output: `Review: {"verdict":"wait","score":1,"summary":"A } and an escaped \"{\"","findings":[{"body":"{nested}"}]} Note: {x}`, verdict: "wait"},
+		{name: "first verdict wins", output: `{"verdict":"rework","score":1} {"verdict":"pass","score":1}`, verdict: "rework"},
+		{name: "malformed first object", output: `{broken} {"verdict":"pass","score":1}`, wantErr: true},
+		{name: "truncated object", output: `{"verdict":"pass"`, wantErr: true},
+		{name: "absent verdict", output: `{"score":1}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if _, err := parseValidatorResult(tt.output); err == nil {
-				t.Fatal("parseValidatorResult() error = nil, want missing JSON error")
+			result, err := parseValidatorResult(tt.output)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseValidatorResult() error = %v, wantErr %t", err, tt.wantErr)
+			}
+			if result.Verdict != tt.verdict {
+				t.Fatalf("verdict = %q, want %q", result.Verdict, tt.verdict)
+			}
+			if tt.verdict != "pass" {
+				if _, stopped := gate.EvaluateValidator(gate.ValidatorConfig{Enabled: true}, result); !stopped {
+					t.Fatalf("invalid or non-passing verdict approved: %+v", result)
+				}
 			}
 		})
 	}
@@ -6871,6 +6988,7 @@ func TestParseValidatorCriterionEvidence(t *testing.T) {
 		{name: "receipt", entry: `{"criterion":"Reject invalid input","kind":"receipt","reference":"make check","head_sha":"head","tree_sha":"tree","behavior":"Invalid input errors"}`, want: []gate.CriterionEvidence{{Criterion: "Reject invalid input", Kind: "receipt", Reference: "make check", HeadSHA: "head", TreeSHA: "tree", Behavior: "Invalid input errors"}}},
 		{name: "test", entry: `{"criterion":"Reject invalid input","kind":"test","reference":"input_test.go:TestInvalid","behavior":"Malformed input returns an error"}`, want: []gate.CriterionEvidence{{Criterion: "Reject invalid input", Kind: "test", Reference: "input_test.go:TestInvalid", Behavior: "Malformed input returns an error"}}},
 		{name: "not verified", entry: `{"criterion":"Reject invalid input","kind":"not_verified","reference":"No regression test"}`, want: []gate.CriterionEvidence{{Criterion: "Reject invalid input", Kind: "not_verified", Reference: "No regression test"}}},
+		{name: "unsatisfiable", entry: `{"criterion":"Production sign-in","kind":"not_verified","unverified_class":"unsatisfiable","reference":"Requires a real third-party client"}`, want: []gate.CriterionEvidence{{Criterion: "Production sign-in", Kind: "not_verified", UnverifiedClass: gate.CriterionUnsatisfiable, Reference: "Requires a real third-party client"}}},
 		{name: "empty map", want: []gate.CriterionEvidence{}},
 		{name: "restates implementation", entry: `{"criterion":"Reject invalid input","kind":"test","reference":"input_test.go:TestInvalid","behavior":"Copies code","restates_implementation":true}`, want: []gate.CriterionEvidence{{Criterion: "Reject invalid input", Kind: "test", Reference: "input_test.go:TestInvalid", Behavior: "Copies code", RestatesImplementation: true}}},
 		{name: "malformed entry", entry: `"receipt"`, invalid: true},
@@ -7764,7 +7882,7 @@ func TestRunnerReconcileWorkspacesUsesResidualReconciler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
-	active := []connector.Issue{{ID: "issue-2140", Identifier: "digitaldrywood/detent#2140"}}
+	active := []connector.Issue{{ID: "issue-2140", Identifier: "digitaldrywood/detent#2140", Metadata: map[string]string{"workspace_cleanup_running": "true"}}}
 
 	result, err := runner.ReconcileWorkspaces(t.Context(), active)
 	if err != nil {
@@ -7777,7 +7895,7 @@ func TestRunnerReconcileWorkspacesUsesResidualReconciler(t *testing.T) {
 	if result.Removed != 1 || result.ActiveSkipped != 2 || len(result.CompletedPaths) != 1 || result.CompletedPaths[0] != "/workspaces/removed" || len(result.Failures) != 1 {
 		t.Fatalf("ReconcileWorkspaces() = %+v", result)
 	}
-	if len(workspaceBackend.active) != 1 || workspaceBackend.active[0].ProjectID != "default" || workspaceBackend.active[0].Identifier != active[0].Identifier {
+	if len(workspaceBackend.active) != 1 || !workspaceBackend.active[0].CleanupInUse || workspaceBackend.active[0].ProjectID != "default" || workspaceBackend.active[0].Identifier != active[0].Identifier {
 		t.Fatalf("ReconcileResiduals() active issues = %+v", workspaceBackend.active)
 	}
 }

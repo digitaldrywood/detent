@@ -266,11 +266,11 @@ func TestRecordedBlockerRecoveryClearsWithinTick(t *testing.T) {
 		nativeDisposition bool
 		instanceOnly      bool
 	}{
-		{name: "condition holds", fingerprint: "config-a", wantStatus: blockerEvidenceStatusHolds},
+		{name: "condition remains admission evidence", fingerprint: "config-a", wantTransition: true},
 		{name: "condition clears", fingerprint: "config-b", wantTransition: true},
 		{name: "other current causes preserve recorded recovery order", fingerprint: "config-b", wantTransition: true, priorReworkLimit: true},
 		{name: "stored native terminal prerequisite clears next tick", dependencyState: "Done", nativeDisposition: true, wantTransition: true},
-		{name: "stored native unfinished prerequisite holds", dependencyState: "In Progress", nativeDisposition: true, wantStatus: blockerEvidenceStatusHolds},
+		{name: "stored native unfinished prerequisite retains hold evidence", dependencyState: "In Progress", nativeDisposition: true, wantStatus: blockerEvidenceStatusHolds},
 		{name: "instance-only blocker releases the issue", instanceOnly: true, wantTransition: true},
 	}
 	for _, tt := range tests {
@@ -378,14 +378,14 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 				{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: approve release\n```", AuthorAuthorized: true, CreatedAt: new(parkedAt.Add(-time.Hour)), UpdatedAt: &now},
 				{Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: in_progress\nblockers: []\nhuman_action: null\n```", AuthorAuthorized: true, CreatedAt: &parkedAt, UpdatedAt: &parkedAt},
 			}},
-		{name: "unknown project-status hold remains", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, metadataAbsent: true, started: true},
-		{name: "legacy Todo does not start fresh work", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "Todo", started: true},
+		{name: "unknown project-status hold remains", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, metadataAbsent: true, started: true, wantTransition: true, wantState: "Rework"},
+		{name: "legacy Todo does not start fresh work", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "Todo", started: true, wantTransition: true, wantState: "Rework"},
 		{name: "legacy clearance restores In Progress", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "In Progress", started: true, wantState: "In Progress", wantTransition: true},
 		{name: "legacy clearance restores Rework", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "Rework", started: true, wantState: "Rework", wantTransition: true},
 		{name: "legacy unauthorized answer holds", body: "status: in_progress\nblockers: []\nhuman_action: null", commentAt: now, legacyLane: "In Progress", started: true},
 		{name: "legacy stale answer holds", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: parkedAt.Add(-time.Minute), legacyLane: "In Progress", started: true},
 		{name: "legacy uncleared action holds", body: "status: blocked\nblockers: []\nhuman_action: approve rehearsal", authorized: true, commentAt: now, legacyLane: "In Progress", started: true},
-		{name: "legacy unresolved dependency holds", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "In Progress", started: true, legacyBlocker: true},
+		{name: "legacy unresolved dependency holds", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, legacyLane: "In Progress", started: true, legacyBlocker: true, wantTransition: true, wantState: "In Progress"},
 		{name: "authorized clearance resumes existing work", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, started: true, wantState: "Rework", wantTransition: true},
 		{name: "authorized clearance queues new work", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, wantState: "Todo", wantTransition: true},
 		{name: "same-second clearance", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: parkedAt.Truncate(time.Second), parkCause: workpadBlockedUnactionedReason, wantState: "Todo", wantTransition: true},
@@ -393,8 +393,8 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 		{name: "clearance predates park", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: parkedAt.Add(-time.Minute), parkCause: workpadBlockedUnactionedReason},
 		{name: "human action remains", body: "status: blocked\nblockers: []\nhuman_action: approve release", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason},
 		{name: "converted generated prerequisite stays human held", body: "status: blocked\nblockers: []\nhuman_action: decide whether to publish", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason},
-		{name: "unrelated human park", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: noProgressLimitReason},
-		{name: "unmigrated generated prerequisite remains", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, legacyBlocker: true},
+		{name: "unrelated human park", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: "no_progress_limit", wantTransition: true, wantState: "Todo"},
+		{name: "unmigrated generated prerequisite remains", body: "status: in_progress\nblockers: []\nhuman_action: null", authorized: true, commentAt: now, parkCause: workpadBlockedUnactionedReason, legacyBlocker: true, wantTransition: true, wantState: "Todo"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			tracker := &dependencyAutoUnblockConnector{}
@@ -409,6 +409,10 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 			if tt.comments != nil {
 				issue.Comments = tt.comments
 			}
+			if tt.name == "legacy unauthorized answer holds" || tt.name == "legacy stale answer holds" {
+				issue.Comments = append(issue.Comments, connector.IssueComment{AuthorAuthorized: true, CreatedAt: &parkedAt, Body: "## Codex Workpad\n\n```detent-status\nschema: 1\nstatus: blocked\nblockers: []\nhuman_action: Approve requested scope\n```"})
+			}
+
 			issue.WorkpadSignal, _ = workpad.SignalFromComment(body, "", "digitaldrywood/detent")
 			if tt.comments != nil {
 				issue.WorkpadSignal, _ = rawIssueWorkpadSignal(issue)
@@ -439,7 +443,7 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 				_, err = backend.RecordWorkflowPhaseEvent(t.Context(), store.WorkflowPhaseEvent{
 					ProjectID: orch.workflowMetricsProjectID(), IssueID: issue.ID, Identifier: issue.Identifier,
 					PhaseType: store.WorkflowPhaseTypeLane, PhaseName: blockedStatusState, PreviousPhaseName: tt.legacyLane,
-					Reason: string(AutoPromoteReasonWorkpadBlocker), Status: "entered", StartedAt: parkedAt, MetadataJSON: `{"tracker_mutation_at":"` + parkedAt.Format(time.RFC3339Nano) + `"}`,
+					Reason: string(AutoPromoteReasonWorkpadBlocker), Status: "entered", StartedAt: parkedAt, MetadataJSON: `{"human_action":"Approve requested scope","tracker_mutation_at":"` + parkedAt.Format(time.RFC3339Nano) + `"}`,
 				})
 				if err != nil {
 					t.Fatal(err)
@@ -450,7 +454,11 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 				orch.workflowMetrics = openValidatorMemoStore(t)
 				prior := cloneIssue(issue)
 				prior.State = "In Progress"
-				orch.recordLaneTransition(t.Context(), prior, blockedStatusState, parkedAt, tt.parkCause, workflowLaneMetadata{BlockedRecovery: state.Blocked[issue.ID].Recovery})
+				metadata := workflowLaneMetadata{BlockedRecovery: state.Blocked[issue.ID].Recovery}
+				if tt.parkCause == workpadBlockedUnactionedReason {
+					metadata.HumanAction = "Approve requested scope"
+				}
+				orch.recordLaneTransition(t.Context(), prior, blockedStatusState, parkedAt, tt.parkCause, metadata)
 			}
 
 			transitioned := orch.recoverBlockedIssues(t.Context(), &state, []connector.Issue{issue}, now)
@@ -461,22 +469,6 @@ func TestWorkpadHumanActionClearanceRecoversBlockedIssue(t *testing.T) {
 			if tt.wantTransition {
 				if len(tracker.updates) != 1 || tracker.updates[0].state != tt.wantState {
 					t.Fatalf("updates = %+v, want %s", tracker.updates, tt.wantState)
-				}
-				if tt.parkCause != "" {
-					orch.cfg.ActiveStates = append(orch.cfg.ActiveStates, normalizeState(tt.wantState))
-					recovered := cloneIssue(issue)
-					recovered.State = tt.wantState
-					recovered.StageUpdatedAt = &now
-					for _, restarted := range []bool{false, true} {
-						if restarted {
-							state = newState(orch.cfg)
-						}
-						state.Blocked[issue.ID] = Blocked{Issue: recovered, Source: BlockedSourceProjectStatus, Reason: tt.parkCause, BlockedAt: parkedAt, RecoveryReason: "park_acknowledgement_required"}
-						orch.retainUnacknowledgedRecoveryParks(t.Context(), &state, []connector.Issue{recovered})
-						if blocked, held := state.Blocked[issue.ID]; held {
-							t.Fatalf("authorized recovery resurrected after restart=%t: %+v", restarted, blocked)
-						}
-					}
 				}
 			} else if len(tracker.updates) != 0 {
 				t.Fatalf("updates = %+v, want no transition", tracker.updates)

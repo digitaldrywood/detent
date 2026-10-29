@@ -197,7 +197,7 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			name:          "a bot finding never surfaced is surfaced, not resolved",
 			refusal:       conversation,
 			client:        &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "chatgpt-codex-connector", "Bot", "Honor partial baselines"))}},
-			wantReason:    []string{ReviewConversationsRefusalText, "chatgpt-codex-connector on web/app.ts:7: Honor partial baselines"},
+			wantReason:    []string{ReviewConversationsRefusalText, "chatgpt-codex-connector on web/app.ts:7: unaddressed: Honor partial baselines"},
 			wantMutations: []string{"surface:T1"},
 			wantCursors:   1,
 			wantRework:    true,
@@ -232,7 +232,7 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 			name:        "human conversations are surfaced in the refusal and never resolved",
 			refusal:     conversation,
 			client:      &reviewThreadClient{pages: []string{reviewThreadsPage("", reviewThreadNode("T1", false, "example-user", "User", "Please rename this", surfacedEarlier))}},
-			wantReason:  []string{"example-user on web/app.ts:7: Please rename this"},
+			wantReason:  []string{"example-user on web/app.ts:7: unaddressed: Please rename this"},
 			wantCursors: 1,
 			wantRework:  true,
 		},
@@ -283,7 +283,7 @@ func TestResolveLandingReviewThreads(t *testing.T) {
 					t.Fatalf("ResolveReviewConversation()=%v, success=%t", err, test.wantSuccess)
 				}
 			} else {
-				err = resolveLandingReviewThreads(context.Background(), test.client, "example/repo", 7, head, test.refusal)
+				err = resolveLandingReviewThreads(context.Background(), test.client, "example/repo", 7, head, test.refusal, LandOptions{})
 				var refusal *LandRefusal
 				if !errors.As(err, &refusal) || refusal.Kind != LandRefusalProtected {
 					t.Fatalf("resolveLandingReviewThreads() = %v, want a protected refusal", err)

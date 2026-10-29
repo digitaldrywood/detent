@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -49,20 +50,6 @@ type recordedBlockerEvaluation struct {
 	Holds        bool
 	Unverifiable bool
 	HumanOwned   bool
-}
-
-// instanceOnly reports blockers that all belong to the instance. They never
-// hold an issue: the instance retries the work instead.
-func (e recordedBlockerEvaluation) instanceOnly() bool {
-	if !e.Found || e.HumanOwned || len(e.Evidence) == 0 {
-		return false
-	}
-	for _, evidence := range e.Evidence {
-		if evidence.Owner != workpad.BlockerOwnerInstance && evidence.Status != blockerEvidenceStatusCleared {
-			return false
-		}
-	}
-	return true
 }
 
 func (o *Orchestrator) evaluateRecordedBlockers(
@@ -734,10 +721,8 @@ func (o *Orchestrator) applyRecordedBlockerRecovery(
 		signature := dependencyAutoUnblockBlockerSignature(dependencies, cfg, o.cfg.TerminalStates)
 		return o.applyDependencyAutoUnblock(ctx, state, issue, dependencies, signature, targetState, now)
 	}
-	if entry, ok := o.latestWorkflowLaneEntry(ctx, issue); ok && entry.Metadata.BlockedRecovery == nil {
-		if park, found := o.currentBlockedRecoveryPark(ctx, state, issue); found && park.Owner == blockedRecoveryOwnerHuman && park.Cause == workpadBlockedUnactionedReason {
-			targetState = park.TargetState
-		}
+	if entry, ok := o.latestWorkflowLaneEntry(ctx, issue); ok && entry.Metadata.BlockedRecovery == nil && o.currentBlockedHumanIntent(ctx, state, issue) && stateIn(entry.Event.PreviousPhaseName, normalizedStates([]string{"In Progress", "Rework"})) {
+		targetState = entry.Event.PreviousPhaseName
 	}
 	encoded, err := json.Marshal(evidence)
 	if err != nil {
@@ -749,8 +734,11 @@ func (o *Orchestrator) applyRecordedBlockerRecovery(
 	signature := workpad.ContentHash(strings.TrimSpace(issue.Identifier) + "\n" + string(encoded))
 	metadata := workflowLaneMetadataWithActionSignature(workflowLaneMetadata{}, workflowActionRecordedBlockerRecovery, signature)
 	if park, found := o.currentBlockedRecoveryPark(ctx, state, issue); found && park.Owner == blockedRecoveryOwnerHuman && park.Cause == workpadBlockedUnactionedReason {
+		park.SourceRevision = holdSourceRevision(issue)
+		park.ExpiresAt = now.Add(o.cfg.MaxRetryBackoff)
 		metadata.BlockedRecovery = &park
 	}
+
 	if err := o.updateIssueStateByIDStrictWithMetadata(
 		ctx,
 		state,
@@ -814,15 +802,19 @@ func recordedBlockerRecoveryComment(
 	return b.String()
 }
 
-// completeRecordedInstanceBlockers retries a run whose only blockers belong to
-// the instance. Reporting an instance blocker is not issue no-progress, so the
-// issue keeps its lane and retries with backoff instead of moving to Blocked.
 func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, state *State, event runpkg.Completion, running Running, reports ...*workpad.Signal) bool {
 	if event.Err != nil || running.Mode == runpkg.RunModePlan || event.Result.FinalState != "" && event.Result.FinalState != FinalStateCompleted {
 		return false
 	}
-	issue, current := o.refreshImplementCompletionIssue(ctx, running.Issue)
-	if !current || workspaceIssueTerminal(issue, o.cfg.TerminalStates) {
+	issue := running.Issue
+	if len(reports) == 0 {
+		var current bool
+		issue, current = o.refreshImplementCompletionIssue(ctx, issue)
+		if !current {
+			return false
+		}
+	}
+	if workspaceIssueTerminal(issue, o.cfg.TerminalStates) {
 		return false
 	}
 	signal := issue.WorkpadSignal
@@ -842,8 +834,10 @@ func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, sta
 		return false
 	}
 	instance := false
+	unverifiable := len(signal.Blockers) > 0 && signal.HumanAction == ""
 	for _, blocker := range signal.Blockers {
 		instance = instance || blocker.Owner == workpad.BlockerOwnerInstance
+		unverifiable = unverifiable && blocker.Owner == workpad.BlockerOwnerInstance && blocker.Unverifiable
 	}
 	if !instance {
 		return false
@@ -851,6 +845,28 @@ func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, sta
 	evidence := o.evaluateRecordedBlockerSignal(ctx, state, issue, signal, nil, event.CompletedAt)
 	if diffStatsPresent(event.Result.DiffStats) {
 		running.DiffStats = event.Result.DiffStats
+	}
+	if signature := unverifiableInstanceBlockerSignature(evidence.Evidence); unverifiable && signature != "" && o.workAttempts != nil {
+		attempts, err := o.workAttempts.ListRecentTerminalWorkAttempts(ctx, store.WorkAttemptHistoryQuery{
+			ProjectID: strings.TrimSpace(o.cfg.Project.ID), IssueID: issue.ID, Identifier: issue.Identifier,
+			IssueURL: issue.URL, WorkerType: workAttemptWorkerType(issue, running.Mode), Limit: 1,
+		})
+		if err != nil {
+			o.deferTrackerUnavailableCompletion(ctx, state, event, running, err)
+			return true
+		}
+		if len(attempts) > 0 && attempts[0].ID != running.WorkAttemptID && attempts[0].TerminalState == store.WorkAttemptTerminalSuccess {
+			var previous struct {
+				Evidence []telemetry.BlockerEvidence `json:"blocker_evidence"`
+			}
+			progress, found := implementProgressRecordFromAnyAttempt(attempts[0])
+			if json.Unmarshal([]byte(attempts[0].WorkerMetadataJSON), &previous) == nil && found &&
+				sameInstanceBlockerSource(progress.WorkspaceDiffStats, running.DiffStats) &&
+				unverifiableInstanceBlockerSignature(previous.Evidence) == signature {
+				action := "Resolve the instance prerequisite or supply the missing evidence before resuming: " + workpad.Reason(signal)
+				return o.parkPermissionWait(ctx, state, event, running, permissionWaitRecord{Question: action, Kind: "approval_or_input", Source: "terminal_detent_status"})
+			}
+		}
 	}
 	if event.Result.PullRequestHeadPushed && !event.Result.CITriggerLabelReapplied {
 		o.scheduleCITriggerLabel(ctx, issue, gate.Effective(o.cfg.AutoPromote.Gate).RequiredStatusChecks, running.Attempt, true, false)
@@ -866,11 +882,39 @@ func (o *Orchestrator) completeRecordedInstanceBlockers(ctx context.Context, sta
 		return true
 	}
 	o.recordCompletionUsage(ctx, state, event, issue)
-	metadata := map[string]any{"blocker_evidence": evidence.Evidence}
+	metadata := implementCompletionProgressMetadata(implementCompletionProgressDecision{
+		Outcome: store.WorkAttemptTerminalSuccess, WorkspaceDiffStats: running.DiffStats, WorkpadStatus: signal.Status,
+	})
+	metadata["blocker_evidence"] = evidence.Evidence
 	if len(reports) > 0 && event.Result.NativeChange != nil {
 		metadata = mergeWorkAttemptMetadata(metadata, nativeChangeMetadata(event.Result.NativeChange))
 	}
 	o.completeDurableWorkAttemptWithMetadata(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", detail, metadata)
 	delete(state.mergeReservations, issue.ID)
 	return true
+}
+
+func unverifiableInstanceBlockerSignature(evidence []telemetry.BlockerEvidence) string {
+	if len(evidence) == 0 {
+		return ""
+	}
+	items := make([]string, 0, len(evidence))
+	for _, item := range evidence {
+		if item.Owner != workpad.BlockerOwnerInstance || !item.Unverifiable || strings.TrimSpace(item.Reason) == "" {
+			return ""
+		}
+		item.AgeSeconds = 0
+		item.RecordedAt = nil
+		items = append(items, marshalWorkAttemptJSON(item))
+	}
+	slices.Sort(items)
+	return marshalWorkAttemptJSON(items)
+}
+
+func sameInstanceBlockerSource(previous implementProgressDiffStats, current DiffStats) bool {
+	if current.HeadSHA == "" || current.Status != "clean" && (current.TreeSHA == "" || current.Fingerprint == "") {
+		return false
+	}
+	return previous.HeadSHA == current.HeadSHA && previous.TreeSHA == current.TreeSHA &&
+		previous.Fingerprint == current.Fingerprint && previous.Status == current.Status
 }

@@ -54,10 +54,14 @@ func (a hubChangeApplication) result(scope nativeScope, args operatortool.Change
 }
 
 func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args operatortool.ChangeArguments) (value operatortool.ChangeResult, resultErr error) {
+	ctx = a.service.contentContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
 	defer func() {
 		if resultErr != nil {
+			if archive := nativeArchiveReadError(resultErr); archive != nil {
+				resultErr = archive
+			}
 			resultErr = fmt.Errorf("%s: %w", strings.ReplaceAll(name, "_", " "), resultErr)
 		}
 	}()
@@ -66,6 +70,8 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 		return operatortool.ChangeResult{}, err
 	}
 	s := a.service
+	ctx = s.archiveContext(ctx, scope, args.ArchiveURL)
+	defer func() { value.Archive = nativeArchiveDescriptor(ctx) }()
 	result := a.result(scope, args)
 	switch name {
 	case operatortool.ArtifactLibrary:
@@ -127,7 +133,11 @@ func (a hubChangeApplication) ReadChange(ctx context.Context, name string, args 
 		} else {
 			if _, err = readChange(ctx, tx, scope, args.ItemID, args.ChangeID); err == nil {
 				var version tracker.ChangeVersion
-				version, err = readChangeVersion(ctx, tx, args.ChangeID, args.VersionID)
+				var query nativeQueryer
+				query, err = archiveQuery(ctx, tx, args.ItemID, "change", args.ChangeID, 0)
+				if err == nil {
+					version, err = readChangeVersion(ctx, query, args.ChangeID, args.VersionID)
+				}
 				result.Version = &version
 			}
 		}
@@ -172,6 +182,10 @@ func changeLimit(args operatortool.ChangeArguments) int {
 }
 
 func (a hubChangeApplication) MutateChange(ctx context.Context, name string, args operatortool.ChangeArguments) (operatortool.ChangeResult, error) {
+	ctx = a.service.contentContext(ctx)
+	if content, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
+		ctx = context.WithValue(ctx, changeContentKey{}, &changeContent{call: content.call, register: content.register})
+	}
 	scope, err := a.authorized(ctx, args, name != operatortool.ArtifactAccess)
 	if err != nil {
 		return operatortool.ChangeResult{}, err
@@ -184,6 +198,18 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 	path := result.URL
 	method := "POST"
 	switch name {
+	case operatortool.PublishReleasePick:
+		if args.ReleasePick == nil {
+			return result, operatortool.ErrInvalidArguments
+		}
+		request := tracker.PublishReleasePick{Mutation: command, ReleasePickInput: *args.ReleasePick, ExpectedRevision: tracker.Revision(args.ExpectedRevision)}
+		publication, err := s.prepareReleasePublication(ctx, scope, args.ItemID, request)
+		if err != nil {
+			return result, err
+		}
+		input = request
+		path += "/release-pick/publication"
+		op = func(context.Context, *sql.Tx, nativeScope, time.Time) (any, error) { return publication, nil }
 	case operatortool.AssociateReleasePick:
 		if args.ReleasePick == nil {
 			return result, operatortool.ErrInvalidArguments
@@ -214,6 +240,11 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 				return result, &operatortool.RequestError{Code: failure.Code, Message: message}
 			}
 			return result, err
+		}
+		if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok && len(request.SourceBundle) > 0 {
+			if _, err := prepareChangeContent(ctx, string(scope.organization), request.SourceBundle); err != nil {
+				return result, err
+			}
 		}
 		op = func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 			return s.publishChangeVersionCommand(ctx, tx, scope, args.ItemID, args.ChangeID, request, now)
@@ -305,7 +336,7 @@ func (a hubChangeApplication) MutateChange(ctx context.Context, name string, arg
 	default:
 		return result, operatortool.ErrUnknownTool
 	}
-	result.Receipt, err = s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: method + " " + path, Item: args.ItemID, Feature: "collaboration", ArtifactRead: name == operatortool.ArtifactAccess}, command, input, op)
+	result.Receipt, err = s.executeNativeMutation(ctx, scope, nativeCommandOptions{OperationID: method + " " + path, Item: args.ItemID, ChangeID: args.ChangeID, VersionID: args.VersionID, Feature: "collaboration", ArtifactRead: name == operatortool.ArtifactAccess}, command, input, op)
 	if err != nil {
 		return result, err
 	}

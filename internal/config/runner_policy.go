@@ -37,6 +37,9 @@ func (r Runners) Validate() []string {
 }
 
 func ResolvePolicy(workflow Workflow) (policy.Descriptor, error) {
+	if workflow.executionPolicy != nil {
+		return cloneNativePolicy(*workflow.executionPolicy), nil
+	}
 	cfg := workflow.Config
 	if err := cfg.Validate(); err != nil {
 		return policy.Descriptor{}, err

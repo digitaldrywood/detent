@@ -170,6 +170,13 @@ func sourceBytes(snapshot Snapshot) (int, error) {
 		}
 		size += len(raw)
 	}
+	if snapshot.Verification != nil {
+		raw, err := json.Marshal(snapshot.Verification)
+		if err != nil {
+			return 0, err
+		}
+		size += len(raw)
+	}
 	if snapshot.Chunk != nil {
 		raw, err := json.Marshal(snapshot.Chunk)
 		if err != nil {
@@ -198,13 +205,18 @@ func (p Plan) Aggregate(outputs []ChunkOutput) (Result, string, error) {
 			prior[finding.ID] = true
 		}
 	}
+	if p.snapshot.Verification != nil {
+		for _, finding := range p.snapshot.Verification.Findings {
+			prior[finding.ID] = true
+		}
+	}
 	for index, output := range outputs {
 		if output.Identity != p.chunks[index] {
 			return Result{}, "", errors.New("security audit chunk identity mismatch")
 		}
 		chunkResult, err := ParseOutput(output.Output)
 		if err == nil {
-			err = ValidateContinuation(p.snapshot.Previous, chunkResult)
+			err = ValidateSnapshotContinuation(p.snapshot, chunkResult)
 		}
 		if err != nil {
 			return Result{}, "", fmt.Errorf("security audit chunk %d: %w", index, err)
@@ -229,10 +241,12 @@ func (p Plan) Aggregate(outputs []ChunkOutput) (Result, string, error) {
 			}
 			existing, ok := findings[finding.ID]
 			if ok {
-				if existing.Status != "resolved" && finding.Status == "resolved" {
-					finding = existing
+				if existing.Certainty != CertaintyUndetermined {
+					if finding.Certainty == CertaintyUndetermined || existing.Status != "resolved" && existing.Status != "rejected" && (finding.Status == "resolved" || finding.Status == "rejected") {
+						finding = existing
+					}
 				}
-				if existing.Severity < finding.Severity {
+				if existing.Severity != "" && finding.Severity != "" && existing.Severity < finding.Severity {
 					finding.Severity = existing.Severity
 				}
 			}
@@ -247,8 +261,14 @@ func (p Plan) Aggregate(outputs []ChunkOutput) (Result, string, error) {
 	for _, id := range ids {
 		finding := findings[id]
 		result.Findings = append(result.Findings, finding)
-		if finding.Status != "resolved" {
-			result.Verdict = VerdictFail
+		if finding.Status != "resolved" && finding.Status != "rejected" {
+			if finding.Certainty == CertaintyUndetermined {
+				if result.Verdict != VerdictFail {
+					result.Verdict = VerdictUndetermined
+				}
+			} else {
+				result.Verdict = VerdictFail
+			}
 		}
 	}
 	raw, err := json.Marshal(struct {

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -18,8 +17,7 @@ func TestLocalGitLandingCI(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
 	}
-	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		state        string
@@ -54,6 +52,7 @@ func TestLocalGitLandingCI(t *testing.T) {
 		{name: "trigger permission refusal retains CI evidence", denied: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			f := newLandingFixture(t)
 			repository := "https://github.com/example/repo"
 			runGit(t, f.source, "config", "url.file://"+f.remote+".insteadOf", repository+".git")

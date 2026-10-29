@@ -15,7 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/changerequest"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
-	"github.com/digitaldrywood/detent/internal/intake"
+	"github.com/digitaldrywood/detent/internal/issuefiling"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workpad"
@@ -121,23 +121,6 @@ func (c *NativeConnector) FetchIssuesByStates(ctx context.Context, states []stri
 }
 
 func (c *NativeConnector) FetchIssueStatesByIDs(ctx context.Context, ids []string) ([]connector.Issue, error) {
-	if native, supported, err := c.client.heartbeatIssues(ctx); supported {
-		if err != nil {
-			return nil, err
-		}
-		var issues []connector.Issue
-		for _, item := range native {
-			if !slices.Contains(ids, string(item.WorkItemID)) {
-				continue
-			}
-			issue, err := c.issueWithLanding(ctx, item)
-			if err != nil {
-				return nil, err
-			}
-			issues = append(issues, issue)
-		}
-		return issues, nil
-	}
 	issues := make([]connector.Issue, 0, len(ids))
 	for _, id := range ids {
 		issue, err := c.client.Issue(ctx, tracker.NativeWorkItemID(id))
@@ -175,7 +158,7 @@ func (c *NativeConnector) issueWithLanding(ctx context.Context, native tracker.N
 			var err error
 			attempts, history, err = c.recordedBlockerContext(ctx, native.WorkItemID)
 			if err != nil {
-				return connector.Issue{}, err
+				return connector.Issue{}, fmt.Errorf("read recorded blockers for %s (%s): %w", issue.Identifier, native.WorkItemID, err)
 			}
 			if versioned {
 				c.client.client.reads.storeBlockerContext(native.WorkItemID, version, attempts, history)
@@ -365,10 +348,10 @@ func nativeMutationKeyForContext(ctx context.Context) tracker.Mutation {
 }
 
 func (c *NativeConnector) CreateIssue(ctx context.Context, draft connector.IssueDraft) (connector.Issue, error) {
-	return c.createIssue(ctx, intake.IssueDraft{Title: draft.Title, Body: draft.Body, Labels: draft.Labels}, "")
+	return c.createIssue(ctx, issuefiling.IssueDraft{Title: draft.Title, Body: draft.Body, Labels: draft.Labels}, "")
 }
 
-func (c *NativeConnector) createIssue(ctx context.Context, draft intake.IssueDraft, state string) (connector.Issue, error) {
+func (c *NativeConnector) createIssue(ctx context.Context, draft issuefiling.IssueDraft, state string) (connector.Issue, error) {
 	var priority *int
 	if draft.Priority != nil {
 		if *draft.Priority < 1 || *draft.Priority > 4 {
@@ -415,21 +398,21 @@ func (c *NativeConnector) createIssue(ctx context.Context, draft intake.IssueDra
 	return result, err
 }
 
-func (c *NativeConnector) FindIntakeIssue(ctx context.Context, marker string) (intake.Issue, bool, error) {
+func (c *NativeConnector) FindIntakeIssue(ctx context.Context, marker string) (issuefiling.Issue, bool, error) {
 	marker = strings.TrimSpace(marker)
 	if marker == "" {
-		return intake.Issue{}, false, nil
+		return issuefiling.Issue{}, false, nil
 	}
 	return c.findIntakeIssue(ctx, func(issue tracker.NativeIssue) bool { return strings.Contains(issue.Body, marker) })
 }
 
-func (c *NativeConnector) findIntakeIssue(ctx context.Context, match func(tracker.NativeIssue) bool) (intake.Issue, bool, error) {
-	var closed intake.Issue
+func (c *NativeConnector) findIntakeIssue(ctx context.Context, match func(tracker.NativeIssue) bool) (issuefiling.Issue, bool, error) {
+	var closed issuefiling.Issue
 	cursor := ""
 	for {
 		page, err := c.client.Issues(ctx, url.Values{"limit": {"20"}, "cursor": {cursor}})
 		if err != nil {
-			return intake.Issue{}, false, err
+			return issuefiling.Issue{}, false, err
 		}
 		for _, issue := range page.Items {
 			if issue.Archived || !match(issue) {
@@ -448,21 +431,21 @@ func (c *NativeConnector) findIntakeIssue(ctx context.Context, match func(tracke
 			return closed, closed.ID != "", nil
 		}
 		if page.NextCursor == cursor {
-			return intake.Issue{}, false, errors.New("hub repeated issue cursor")
+			return issuefiling.Issue{}, false, errors.New("hub repeated issue cursor")
 		}
 		cursor = page.NextCursor
 	}
 }
 
-func (c *NativeConnector) CreateIntakeIssue(ctx context.Context, draft intake.IssueDraft) (intake.Issue, error) {
+func (c *NativeConnector) CreateIntakeIssue(ctx context.Context, draft issuefiling.IssueDraft) (issuefiling.Issue, error) {
 	issue, err := c.createIssue(ctx, draft, "Backlog")
 	return nativeIntakeIssue(issue), err
 }
 
-func (c *NativeConnector) UpdateIntakeIssue(ctx context.Context, id string, draft intake.IssueDraft) (intake.Issue, error) {
+func (c *NativeConnector) UpdateIntakeIssue(ctx context.Context, id string, draft issuefiling.IssueDraft) (issuefiling.Issue, error) {
 	issue, err := c.client.Issue(ctx, tracker.NativeWorkItemID(id))
 	if err != nil {
-		return intake.Issue{}, err
+		return issuefiling.Issue{}, err
 	}
 	labels := slices.Clone(issue.Labels)
 	for _, label := range draft.Labels {
@@ -479,8 +462,8 @@ func (c *NativeConnector) SetIntakeIssueState(ctx context.Context, id, state str
 	return c.UpdateIssueState(ctx, id, state)
 }
 
-func nativeIntakeIssue(issue connector.Issue) intake.Issue {
-	return intake.Issue{State: issue.State, ID: issue.ID, Identifier: issue.Identifier, Number: issue.Number, URL: issue.URL, Body: issue.Description, Closed: issue.Closed, Reused: issue.PublicationReused}
+func nativeIntakeIssue(issue connector.Issue) issuefiling.Issue {
+	return issuefiling.Issue{State: issue.State, ID: issue.ID, Identifier: issue.Identifier, Number: issue.Number, URL: issue.URL, Body: issue.Description, Closed: issue.Closed, Reused: issue.PublicationReused}
 }
 
 // ChangeReviewed reports whether the given version is the change's current
@@ -708,12 +691,16 @@ func issueFromNative(native tracker.NativeIssue) connector.Issue {
 	}
 	issue.DependencySource = connector.BlockedRefSourceNative
 	if d := native.ReleaseDelivery; d != nil && !native.Terminal {
+		issue.Description += fmt.Sprintf("\n\nRelease source review: read source work item %s and Change %s in project %s, landed as %s. Independently verify its required acceptance scope against this delivery's current head before landing, including any required reachable graph or helper review. Retain historical audit evidence with its actual scope; a passing activation diff audit does not establish graph coverage. Missing source context or unverified required scope requires Rework through the existing review owner. The delivery requires its own current-head security audit; historical source evidence does not approve it.", d.SourceIssueID, d.SourceChangeID, native.ProjectID, d.SourceMergeSHA)
 		issue.BranchName = d.HeadRef
 		issue.PRRepository = d.Repository
 		issue.PullRequest = &connector.PullRequest{Number: d.PRNumber, URL: fmt.Sprintf("%s/pull/%d", d.Repository, d.PRNumber), State: "OPEN", BranchName: d.HeadRef, HeadSHA: d.HeadSHA, BaseRef: d.BaseRef, BaseSHA: d.BaseSHA}
 	}
 	issue.AuthorID = native.Actor.PrincipalID
 	issue.Closed = native.Terminal
+	if native.Terminal {
+		issue.ClosedAt = cloneTime(native.ClosedAt)
+	}
 	issue.Labels, issue.Assignees = native.Labels, native.Assignees
 	issue.CreatedAt, issue.UpdatedAt = cloneTime(&native.CreatedAt), cloneTime(&native.UpdatedAt)
 	issue.Metadata["hub_organization_id"] = string(native.OrganizationID)

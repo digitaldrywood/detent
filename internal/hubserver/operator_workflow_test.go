@@ -230,14 +230,14 @@ func TestHostedPolicyApprovalMCP(t *testing.T) {
 						if reply.Result.StructuredContent.Code != "policy_mismatch" {
 							t.Fatalf("stale refusal must be structured: %s", response.Body)
 						}
-						unchanged, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+						unchanged, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
 						if err != nil || !reflect.DeepEqual(unchanged.Policy, previous) {
 							t.Fatalf("stale refusal changed policy = %+v, %v", unchanged, err)
 						}
 					}
 				})
 			}
-			approved, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+			approved, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
 			if err != nil || !reflect.DeepEqual(approved.Policy, descriptor) || approved.ApprovedBy != key.ID {
 				t.Fatalf("approval=%+v error=%v", approved, err)
 			}
@@ -534,7 +534,7 @@ func TestWorkflowExecutionFailureProjection(t *testing.T) {
 
 func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 	for _, test := range []struct {
-		name, tool, target             string
+		name, tool, target, reason     string
 		scope                          apikey.Scope
 		revoked, expired, idle, denied bool
 		pressure                       bool
@@ -544,6 +544,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 		{name: "write Done", tool: operatortool.MoveItem, target: "Done", scope: apikey.ScopeWrite},
 		{name: "write terminal creation", tool: operatortool.FileIssue, target: "Done", scope: apikey.ScopeWrite},
 		{name: "write Cancelled", tool: operatortool.MoveItem, target: "Cancelled", scope: apikey.ScopeWrite},
+		{name: "write Cancelled with reason", tool: operatortool.MoveItem, target: "Cancelled", reason: "Needs Logan's Mac to verify emulators", scope: apikey.ScopeWrite},
 		{name: "idle write Done", tool: operatortool.MoveItem, target: "Done", scope: apikey.ScopeWrite, idle: true},
 		{name: "restored connection under session pressure", tool: operatortool.MoveItem, target: "Done", scope: apikey.ScopeWrite, pressure: true},
 		{name: "read write denied", tool: operatortool.MoveItem, target: "Done", scope: apikey.ScopeRead, denied: true},
@@ -614,7 +615,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 					t.Fatalf("create=%s %v", result.Content, err)
 				}
 				issue = created.Data
-				raw, _ = json.Marshal(operatortool.MoveItemArguments{ProjectID: string(f.project), RequestID: "move", Identifier: string(issue.WorkItemID), TargetState: test.target, ExpectedRevision: int64(issue.Revision)})
+				raw, _ = json.Marshal(operatortool.MoveItemArguments{ProjectID: string(f.project), RequestID: "move", Identifier: string(issue.WorkItemID), TargetState: test.target, ReasonDetail: test.reason, ExpectedRevision: int64(issue.Revision)})
 				call = operatortool.Call{Name: test.tool, Arguments: raw}
 			case operatortool.FileIssue:
 				ctx, err = operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead})
@@ -624,12 +625,9 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 				raw, _ := json.Marshal(map[string]any{"description": nativeContractTestBody, "project_id": f.project, "request_id": "create-terminal", "title": "Terminal creation", "state": test.target})
 				call = operatortool.Call{Name: test.tool, Arguments: raw}
 			default:
-				current, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+				current, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
 				if err != nil {
-					var failure *nativeError
-					if !errors.As(err, &failure) || failure.Code != "policy_mismatch" {
-						t.Fatal(err)
-					}
+					t.Fatal(err)
 				}
 				workflow, err := workflowconfig.ParseProjectDefinition(workflowconfig.ProjectDefinitionSources{
 					ConfigPath: "detent.yaml", HasConfig: true,
@@ -700,8 +698,14 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 					if json.Unmarshal(result.Content, &receipt) != nil || receipt.Data.State != test.target || receipt.Data.Revision != issue.Revision+1 {
 						t.Fatalf("transition=%s", result.Content)
 					}
+					if test.tool == operatortool.MoveItem {
+						var detail string
+						if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT COALESCE(json_extract(data_json,'$.reason_detail'),'') FROM collaboration_events WHERE work_item_id=? AND type='workflow.transitioned' ORDER BY sequence DESC LIMIT 1", issue.WorkItemID).Scan(&detail); err != nil || detail != test.reason {
+							t.Fatalf("reason_detail=%q want %q error=%v", detail, test.reason, err)
+						}
+					}
 				} else {
-					approval, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+					approval, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
 					if err != nil || !reflect.DeepEqual(approval.Policy, descriptor) || approval.ApprovedBy != key.ID {
 						t.Fatalf("policy=%+v %v", approval, err)
 					}
@@ -746,7 +750,7 @@ func TestMCPAuthorityExecutesDirectly(t *testing.T) {
 								t.Fatalf("%s refusal = %v (%s, %s)", refusal.name, err, code, message)
 							}
 						}
-						unchanged, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
+						unchanged, _, err := readProjectPolicy(t.Context(), f.service.database.db, policyScope)
 						if err != nil || !reflect.DeepEqual(unchanged.Policy, descriptor) {
 							t.Fatalf("refusal changed policy = %+v, %v", unchanged, err)
 						}

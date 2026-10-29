@@ -1,4 +1,4 @@
-// The exec stream (decisions.md §18.12): output frames accumulate in arrival
+// The exec stream: output frames accumulate in arrival
 // order, `exited 0` settles succeeded, `exited 3` settles failed, a truncated
 // span is marked, and every teardown path writes a terminal status.
 //
@@ -91,7 +91,7 @@ function output(data: string, extra: Record<string, unknown> = {}): unknown {
 }
 
 describe("the exec stream", () => {
-  it("sends one `run` with no stream, and acknowledges on §18.2's cadence", async () => {
+  it("sends one `run` with no stream, and acknowledges on the relay protocol's cadence", async () => {
     const h = harness();
     await flush();
     expect(h.frames()).toHaveLength(1);
@@ -137,7 +137,7 @@ describe("the exec stream", () => {
     expect(h.stream.snapshot.error).toBeNull();
 
     // The runner follows `exited` with `closed`, and that must not rewrite the
-    // outcome: §18.12's "every teardown path writes a terminal status" is
+    // outcome: the project actions contract's "every teardown path writes a terminal status" is
     // once, not repeatedly.
     h.deliver({ channel: "exec", stream: "stream_1", type: "closed" });
     expect(h.stream.snapshot.status).toBe("succeeded");
@@ -165,7 +165,7 @@ describe("the exec stream", () => {
     expect(h.stream.snapshot.error).toBe("The command was killed by SIGKILL.");
   });
 
-  // §18.12: the runner emits the marker once, as its own span, and keeps
+  // The runner emits the marker once, as its own span, and keeps
   // draining the pipe so the exit code still means what it says.
   it("marks a truncated span and keeps the outcome", async () => {
     const h = harness();
@@ -239,7 +239,7 @@ describe("the exec stream", () => {
 });
 
 describe("output decoding", () => {
-  it("honours §18.2's base64 encoding", () => {
+  it("honours the relay protocol's base64 encoding", () => {
     expect(decodeOutputSpan({ data: "aGVsbG8=", encoding: "base64" })).toEqual({
       text: "hello",
       truncated: false,
@@ -301,6 +301,7 @@ describe("a run read back from the hub", () => {
       updated_at: "2026-09-12T10:00:05Z",
     } as ActionRun;
     expect(snapshotFromRecord(record, "Run tests")).toEqual({
+      revision: 3,
       runId: "run_9",
       actionId: "action_1",
       name: "Run tests",
@@ -314,7 +315,7 @@ describe("a run read back from the hub", () => {
     });
   });
 
-  it("gives each §18.12 reason its own sentence", () => {
+  it("gives each project actions contract reason its own sentence", () => {
     expect(reasonSentence("stream_closed")).toBe(
       "The run's stream closed before the command exited.",
     );

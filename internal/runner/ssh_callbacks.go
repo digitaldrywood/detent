@@ -21,6 +21,8 @@ import (
 )
 
 type SSHRunRequest struct {
+	SourceIteration bool
+	StepReceipts    bool
 	IsolationPolicy *isolation.Policy
 	BatchedLanding  bool
 	ExecutionTools  []AgentTool
@@ -50,7 +52,7 @@ func (r *Runner) SSHHosts() []string {
 func NewSSHRunRequest(request RunRequest) SSHRunRequest {
 	wire := SSHRunRequest{IsolationPolicy: request.Issue.IsolationPolicy, Request: request, BatchedLanding: request.LandingBatch != nil}
 	callbacks := map[string]bool{
-		"usage": request.OnUsageUpdate != nil, "activity": request.OnActivityUpdate != nil,
+		"usage": true, "activity": request.OnActivityUpdate != nil,
 		"override": request.OnOverrideRejected != nil, "progress": request.ProgressProbe != nil,
 		"checkpoint": request.CheckpointValidate != nil, "tools": request.AgentToolHandler != nil,
 		"model_permit": request.AcquireModelPermit != nil,
@@ -61,6 +63,8 @@ func NewSSHRunRequest(request RunRequest) SSHRunRequest {
 		}
 	}
 	if request.Execution != nil {
+		_, wire.SourceIteration = request.Execution.(NativeSourceIterationExecution)
+		_, wire.StepReceipts = stepExecution(request.Execution)
 		recovery := request.Execution.Recovery()
 		wire.Recovery = &recovery
 		_, wire.Native = request.Execution.(ArtifactSourceExecution)
@@ -104,14 +108,18 @@ func (wire SSHRunRequest) Bind(ctx context.Context, peer *SSHPeer) RunRequest {
 		}
 	}
 	if wire.Recovery != nil {
-		execution := &sshExecution{peer: peer, recovery: *wire.Recovery}
+		execution := &sshExecution{peer: peer, recovery: *wire.Recovery, stepReceipts: wire.StepReceipts}
 		request.Execution = execution
 		if wire.Native {
 			sources := wire.Sources
 			if sources == nil {
 				sources = &SSHExecutionSources{}
 			}
-			request.Execution = &sshNativeExecution{batchedLanding: wire.BatchedLanding, sshExecution: execution, sources: sources, capacity: wire.Capacity, tools: wire.ExecutionTools}
+			native := &sshNativeExecution{batchedLanding: wire.BatchedLanding, sshExecution: execution, sources: sources, capacity: wire.Capacity, tools: wire.ExecutionTools}
+			request.Execution = native
+			if wire.SourceIteration {
+				request.Execution = &sshSourceIterationExecution{sshNativeExecution: native}
+			}
 		}
 	}
 	return request
@@ -133,6 +141,11 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 		if strings.HasPrefix(method, "execution.") {
 			name := strings.TrimPrefix(method, "execution.")
 			switch name {
+			case "RecordStep", "Step":
+				if _, ok := request.Execution.(StepExecution); !ok {
+					return nil, nil
+				}
+				return invokeSSHMethod(ctx, request.Execution, name, arguments)
 			case "PrepareFinish":
 				if _, ok := request.Execution.(CompletionExecution); !ok {
 					return nil, nil
@@ -165,7 +178,7 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 					return NativeValidation{}, nil
 				}
 				return invokeSSHMethod(ctx, request.Execution, name, arguments)
-			case "PrepareReview", "RecordSourceValidation", "Validate", "Start", "Checkpoint", "RecordValidator", "RecordReview", "RecordSecurityAudit", "PrepareArtifacts", "ArtifactLog", "FinalizeArtifacts", "PublishValidationEvidence", "SetRepository", "LandingTarget", "RecordLanding", "RecordUsage", "AvailabilityDeadline", "ObserveRuntime", "StartLanding", "ObserveLanding", "RecoverChangeSource":
+			case "SourceReview", "PrepareSourceIteration", "PrepareReview", "RecordSourceValidation", "Validate", "Start", "Checkpoint", "RecordValidator", "RecordReview", "RecordSecurityAudit", "PrepareArtifacts", "ArtifactLog", "FinalizeArtifacts", "PublishValidationEvidence", "SetRepository", "LandingTarget", "RecordLanding", "RecordUsage", "AvailabilityDeadline", "ObserveRuntime", "StartLanding", "ObserveLanding", "RecoverChangeSource", "ReconcileReleaseDelivery":
 				return invokeSSHMethod(ctx, request.Execution, name, arguments)
 			}
 			return nil, errors.New("unsupported SSH execution method")
@@ -209,9 +222,12 @@ func NewSSHCallbackHandler(request RunRequest, sessions SessionStore, checker Bu
 }
 
 type sshExecution struct {
-	peer     *SSHPeer
-	recovery tracker.NativeRecovery
+	peer         *SSHPeer
+	recovery     tracker.NativeRecovery
+	stepReceipts bool
 }
+
+func (e *sshExecution) StepReceiptsEnabled() bool { return e.stepReceipts }
 
 func (e *sshExecution) Guard(ctx context.Context) (context.Context, func(), error) {
 	return ctx, func() {}, nil
@@ -224,6 +240,16 @@ func (e *sshExecution) Start(ctx context.Context, identity tracker.NativeExecuti
 }
 func (e *sshExecution) Checkpoint(ctx context.Context, checkpoint tracker.NativeCheckpoint) error {
 	return e.peer.Call(ctx, "execution.Checkpoint", nil, checkpoint)
+}
+
+func (e *sshExecution) RecordStep(ctx context.Context, receipt tracker.NativeStepReceipt) error {
+	return e.peer.Call(ctx, "execution.RecordStep", nil, receipt)
+}
+
+func (e *sshExecution) Step(ctx context.Context, binding tracker.NativeStepReceipt) (tracker.NativeStepReceipt, error) {
+	var receipt tracker.NativeStepReceipt
+	err := e.peer.Call(ctx, "execution.Step", &receipt, binding)
+	return receipt, err
 }
 
 // The central owner finishes execution even if the SSH host disappears.
@@ -269,6 +295,14 @@ func (r *Runner) SSHWorkflow(ctx context.Context) (config.Workflow, bool, bool, 
 
 func (r *Runner) SSHCallbackHandler(request RunRequest) func(context.Context, string, []json.RawMessage) (any, error) {
 	_, _, checker, estimator := r.runtimeSnapshot()
+	forward := request.OnUsageUpdate
+	request.OnUsageUpdate = func(update UsageUpdate) error {
+		r.providerUsage.Observe(update.RuntimeIdentity.BackendID, update.RateLimits)
+		if forward == nil {
+			return nil
+		}
+		return forward(update)
+	}
 	return NewSSHCallbackHandler(request, r.store, checker, estimator)
 }
 

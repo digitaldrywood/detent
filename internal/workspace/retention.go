@@ -98,7 +98,7 @@ func (l *LocalGit) SweepRetention(ctx context.Context, request RetentionRequest)
 		if err == nil {
 			for _, record := range records {
 				since, ok := completed[record.IssueID]
-				if !ok || since.IsZero() || request.Now.Before(since.Add(7*24*time.Hour)) {
+				if !ok || since.IsZero() || request.Now.Before(since.Add(time.Hour)) {
 					continue
 				}
 				pids, err := scanOwnedWorkspaceProcessIDs(ctx, record.Path, l.scanWorkspacePaths)

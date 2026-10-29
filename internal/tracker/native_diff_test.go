@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// The denylist of decisions section 18.4 is applied by path string, to both
+// The diff path denylist is applied by path string, to both
 // path and old_path, because a deleted or renamed file has no canonical target
 // to resolve.
 
@@ -222,7 +222,7 @@ func TestValidateDiffFiles(t *testing.T) {
 	}
 }
 
-// Mergeability aside, the generation shape travels as 18.5 writes it.
+// Mergeability aside, the generation shape travels as the Diff contract writes it.
 func TestAttemptDiffGenerationJSON(t *testing.T) {
 	t.Parallel()
 	if err := ValidateDiffGeneration(DiffGeneration{Source: DiffSourceAttempt, Seq: 1}); err != nil {

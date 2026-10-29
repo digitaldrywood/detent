@@ -23,9 +23,12 @@ func TestAdmissionCandidateHistory(t *testing.T) {
 	first := admissionmodel.IssueRecord{ID: "one", Identifier: "DD-1", Fingerprint: "first", EvaluatedAt: now, SkipReason: "stale_or_ineligible"}
 	second := admissionmodel.IssueRecord{ID: "two", Fingerprint: "second", EvaluatedAt: now}
 	revised := admissionmodel.IssueRecord{ID: "one", Fingerprint: "revised", EvaluatedAt: now.Add(time.Minute), ProposalID: "proposal"}
+	revisedSecond := second
+	revisedSecond.SkipReason = "stale_or_ineligible"
 	for _, record := range []admissionmodel.RunRecord{
 		{ProjectID: "detent", Issues: []admissionmodel.IssueRecord{first, second}},
 		{ProjectID: "detent", Issues: []admissionmodel.IssueRecord{revised}},
+		{ProjectID: "detent", Issues: []admissionmodel.IssueRecord{revisedSecond}},
 		{ProjectID: "detent", Issues: []admissionmodel.IssueRecord{{ID: "one", ProposalID: "legacy"}}},
 		{ProjectID: "detent"},
 		{ProjectID: "other", Issues: []admissionmodel.IssueRecord{first}},
@@ -35,20 +38,38 @@ func TestAdmissionCandidateHistory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, test := range []struct {
-		project string
-		want    map[string]admissionmodel.IssueRecord
-	}{
-		{project: "detent", want: map[string]admissionmodel.IssueRecord{"one": revised, "two": second}},
-		{project: "other", want: map[string]admissionmodel.IssueRecord{"one": first}},
-		{project: "empty", want: map[string]admissionmodel.IssueRecord{}},
-	} {
-		t.Run(test.project, func(t *testing.T) {
-			got, err := backend.AdmissionCandidateHistory(t.Context(), test.project)
-			if err != nil || !reflect.DeepEqual(got, test.want) {
-				t.Fatalf("history = %#v, %v; want %#v", got, err, test.want)
+	for _, stage := range []string{"typed", "legacy", "backfilled"} {
+		sqliteBackend := backend.(*sqliteStore)
+		if stage == "legacy" {
+			if _, err := sqliteBackend.db.ExecContext(t.Context(), `DELETE FROM backlog_admission_run_issues`); err != nil {
+				t.Fatal(err)
 			}
-		})
+			if _, err := sqliteBackend.db.ExecContext(t.Context(), `UPDATE backlog_admission_runs SET projection_ready=NULL`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if stage == "backfilled" {
+			if count, err := sqliteBackend.BackfillTypedProjections(t.Context()); err != nil || count != 6 {
+				t.Fatalf("admission backfill count=%d err=%v", count, err)
+			}
+		}
+
+		for _, test := range []struct {
+			project string
+			want    map[string]admissionmodel.IssueRecord
+		}{
+			{project: "detent", want: map[string]admissionmodel.IssueRecord{"one": revised, "two": revisedSecond}},
+			{project: "other", want: map[string]admissionmodel.IssueRecord{"one": first}},
+			{project: "empty", want: map[string]admissionmodel.IssueRecord{}},
+		} {
+			t.Run(stage+"/"+test.project, func(t *testing.T) {
+				got, err := backend.AdmissionCandidateHistory(t.Context(), test.project)
+				if err != nil || !reflect.DeepEqual(got, test.want) {
+					t.Fatalf("history = %#v, %v; want %#v", got, err, test.want)
+				}
+			})
+		}
+
 	}
 }
 

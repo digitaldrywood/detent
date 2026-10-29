@@ -10,16 +10,19 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/providercapacity"
 	"github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/runnerauth"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/testenv"
@@ -34,30 +37,61 @@ func TestNativeAdmissionBatch(t *testing.T) {
 
 	t.Parallel()
 	for _, test := range []struct {
-		name         string
-		slots        int
-		budget       int
-		waiting      int
-		preview      bool
-		failAfter    int
-		failClaim    int
-		want         int
-		failCode     string
-		failStatus   int
-		failPreview  bool
-		oversized    bool
-		emptyPreview bool
-		wantError    bool
+		name             string
+		slots            int
+		budget           int
+		waiting          int
+		preview          bool
+		failAfter        int
+		failClaim        int
+		want             int
+		failCode         string
+		failStatus       int
+		failPreview      bool
+		oversized        bool
+		emptyPreview     bool
+		wantError        bool
+		cancelDiscovery  bool
+		cancelParent     bool
+		cancelRelease    bool
+		missingIsolation bool
+		refusalBody      string
 	}{
+		{name: "late missing isolation with failed release", slots: 6, budget: 14, preview: true, missingIsolation: true, wantError: true},
+		{name: "late claim unauthorized oversized body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusUnauthorized, refusalBody: "oversized", wantError: true},
+		{name: "late claim forbidden oversized body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusForbidden, refusalBody: "oversized", wantError: true},
+		{name: "late claim badrequest oversized body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusBadRequest, refusalBody: "oversized", wantError: true},
+		{name: "late claim unauthorized failing body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusUnauthorized, refusalBody: "failing", wantError: true},
+		{name: "late claim forbidden failing body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusForbidden, refusalBody: "failing", wantError: true},
+		{name: "late claim badrequest failing body releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "refusal", failStatus: http.StatusBadRequest, refusalBody: "failing", wantError: true},
+		{name: "late hydration unauthorized oversized body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusUnauthorized, refusalBody: "oversized", wantError: true},
+		{name: "late hydration forbidden oversized body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusForbidden, refusalBody: "oversized", wantError: true},
+		{name: "late hydration badrequest oversized body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusBadRequest, refusalBody: "oversized", wantError: true},
+		{name: "late hydration unauthorized failing body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusUnauthorized, refusalBody: "failing", wantError: true},
+		{name: "late hydration forbidden failing body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusForbidden, refusalBody: "failing", wantError: true},
+		{name: "late hydration badrequest failing body releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "refusal", failStatus: http.StatusBadRequest, refusalBody: "failing", wantError: true},
 		{name: "six slots", slots: 6, budget: 14, preview: true, want: 6},
 		{name: "oversized recovery preserves both candidates", slots: 2, budget: 2, preview: true, oversized: true, want: 2},
-		{name: "bounded hydration failure releases both candidates", slots: 2, budget: 2, preview: true, oversized: true, failAfter: 2, want: 2},
+		{name: "bounded hydration failure releases both candidates", slots: 2, budget: 2, preview: true, oversized: true, failAfter: 2, want: 2, wantError: true},
 		{name: "project slots", slots: 2, budget: 10, preview: true, want: 2},
 		{name: "one evaluation budget", slots: 6, budget: 3, preview: true, want: 3},
 		{name: "waiting head", slots: 6, budget: 6, waiting: 4, preview: true, want: 2},
 		{name: "direct claims", slots: 6, budget: 14, want: 6},
-		{name: "hydration releases whole batch", slots: 6, budget: 14, preview: true, failAfter: 2},
-		{name: "claim failure releases partial batch", slots: 6, budget: 14, preview: true, failClaim: 3},
+		{name: "hydration retains prefix", slots: 6, budget: 14, preview: true, failAfter: 2, want: 1},
+		{name: "direct hydration retains prefix", slots: 6, budget: 14, failAfter: 2, want: 1},
+		{name: "hydration cleanup cancellation releases each lease once", slots: 6, budget: 14, preview: true, failAfter: 2, cancelRelease: true, wantError: true},
+		{name: "claim failure retains partial batch", slots: 6, budget: 14, preview: true, failClaim: 3, want: 2},
+		{name: "direct claim failure retains partial batch", slots: 6, budget: 14, failClaim: 3, want: 2},
+		{name: "preview discovery cancellation retains claims", slots: 6, budget: 14, preview: true, cancelDiscovery: true, want: 2},
+		{name: "direct discovery cancellation is unused", slots: 6, budget: 14, cancelDiscovery: true, want: 6},
+		{name: "preview parent cancellation releases batch", slots: 6, budget: 14, preview: true, cancelParent: true, wantError: true},
+		{name: "direct parent cancellation releases batch", slots: 6, budget: 14, cancelParent: true, wantError: true},
+		{name: "direct policy denial releases batch", slots: 6, budget: 14, failClaim: 3, failCode: "claim_not_permitted", failStatus: http.StatusForbidden, wantError: true},
+		{name: "direct policy mismatch releases batch", slots: 6, budget: 14, failClaim: 3, failCode: "policy_mismatch", wantError: true},
+		{name: "preview late unauthorized releases batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "unauthorized", failStatus: http.StatusUnauthorized, wantError: true},
+		{name: "direct late unauthorized releases batch", slots: 6, budget: 14, failClaim: 3, failCode: "unauthorized", failStatus: http.StatusUnauthorized, wantError: true},
+		{name: "preview hydration unauthorized releases batch", slots: 6, budget: 14, preview: true, failAfter: 2, failCode: "unauthorized", failStatus: http.StatusUnauthorized, wantError: true},
+		{name: "direct hydration unauthorized releases batch", slots: 6, budget: 14, failAfter: 2, failCode: "unauthorized", failStatus: http.StatusUnauthorized, wantError: true},
 		{name: "direct provider full", slots: 6, budget: 14, failClaim: 1, failCode: "provider_capacity"},
 		{name: "direct runner full", slots: 6, budget: 14, failClaim: 1, failCode: "runner_capacity"},
 		{name: "direct host full", slots: 6, budget: 14, failClaim: 1, failCode: "host_capacity"},
@@ -73,6 +107,8 @@ func TestNativeAdmissionBatch(t *testing.T) {
 		{name: "partial provider full", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "provider_capacity", want: 2},
 		{name: "partial runner full", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "runner_capacity", want: 2},
 		{name: "partial host full", slots: 6, budget: 14, failClaim: 3, failCode: "host_capacity", want: 2},
+		{name: "direct plan full", slots: 6, budget: 14, failClaim: 1, failCode: "plan_capacity"},
+		{name: "partial plan full", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "plan_capacity", want: 2},
 		{name: "unauthorized", slots: 6, budget: 14, failClaim: 1, failCode: "unauthorized", failStatus: http.StatusUnauthorized, wantError: true},
 		{name: "policy denied releases partial batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "claim_not_permitted", failStatus: http.StatusForbidden, wantError: true},
 		{name: "unrelated conflict releases partial batch", slots: 6, budget: 14, preview: true, failClaim: 3, failCode: "policy_mismatch", wantError: true},
@@ -125,10 +161,41 @@ func TestNativeAdmissionBatch(t *testing.T) {
 					return true
 				}
 			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			discoveryCtx, cancelDiscovery := context.WithCancel(ctx)
+			defer cancelDiscovery()
+			request.BeginDiscovery = func(context.Context) (context.Context, context.CancelFunc) {
+				return discoveryCtx, func() {}
+			}
+			acquired := make(map[string]tracker.NativeLease)
+			released := make(map[string]bool)
+			releaseAttempts := make(map[string]int)
+			rejectedLease := ""
+			bodyError := errors.New("injected response body failure")
+			releaseError := errors.New("injected uncertain release failure")
+			refusalResponse := func(response *httptest.ResponseRecorder) *http.Response {
+				result := response.Result()
+				switch test.refusalBody {
+				case "oversized":
+					result.Body = io.NopCloser(strings.NewReader(strings.Repeat("x", maxResponseBytes+1)))
+				case "failing":
+					result.Body = io.NopCloser(iotest.ErrReader(bodyError))
+				}
+				return result
+			}
 			transport := h.failChanges.next
 			recoveries := 0
 			claims := 0
 			h.failChanges.next = executionRoundTrip(func(r *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(r.URL.Path, "/release") {
+					parts := strings.Split(r.URL.Path, "/")
+					id := parts[len(parts)-2]
+					releaseAttempts[id]++
+					if id == rejectedLease {
+						return nil, releaseError
+					}
+				}
 				if test.emptyPreview && strings.HasSuffix(r.URL.Path, "/claims/preview") {
 					response := httptest.NewRecorder()
 					response.WriteString(`{"items":[]}`)
@@ -137,7 +204,7 @@ func TestNativeAdmissionBatch(t *testing.T) {
 				if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claims") {
 					claims++
 					if claims == test.failClaim && test.failCode == "" {
-						return nil, errors.New("injected claim failure")
+						return nil, context.DeadlineExceeded
 					}
 				}
 				if test.failPreview && strings.HasSuffix(r.URL.Path, "/claims/preview") || test.failCode != "" && claims == test.failClaim && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claims") {
@@ -152,7 +219,7 @@ func TestNativeAdmissionBatch(t *testing.T) {
 						response.WriteHeader(status)
 						fmt.Fprintf(response, `{"code":%q,"message":"injected refusal"}`, test.failCode)
 					}
-					return response.Result(), nil
+					return refusalResponse(response), nil
 				}
 				if r.Method == http.MethodGet && r.URL.Query().Get("view") == "recovery" {
 					recoveries++
@@ -160,21 +227,121 @@ func TestNativeAdmissionBatch(t *testing.T) {
 						if test.oversized && r.URL.Query().Get("cursor") == "" {
 							t.Fatal("hydration failure did not reach required body continuation")
 						}
+						if test.failCode != "" {
+							response := httptest.NewRecorder()
+							response.WriteHeader(test.failStatus)
+							fmt.Fprintf(response, `{"code":%q}`, test.failCode)
+							return refusalResponse(response), nil
+						}
 						return nil, errors.New("injected hydration failure")
 					}
 				}
-				return transport.RoundTrip(r)
+				response, err := transport.RoundTrip(r)
+				if err == nil && response.StatusCode == http.StatusOK && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/claims") {
+					payload, readErr := io.ReadAll(response.Body)
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					if err := response.Body.Close(); err != nil {
+						t.Fatal(err)
+					}
+					response.Body = io.NopCloser(strings.NewReader(string(payload)))
+					var lease tracker.NativeLease
+					if err := json.Unmarshal(payload, &lease); err != nil {
+						t.Fatal(err)
+					}
+					acquired[string(lease.ID)] = lease
+					if test.missingIsolation && claims == 3 {
+						h.native.client.baseURL.Scheme = "https"
+						identityPath := filepath.Join(t.TempDir(), "private", "runner.json")
+						file, err := runnerauth.Initialize(identityPath, h.native.client.baseURL.String())
+						if err != nil {
+							t.Fatal(err)
+						}
+						file.Credential = h.native.client.tokenSource()
+						file.Identity.ExpiresAt = time.Now().Add(runnerauth.CredentialTTL)
+						if err := runnerauth.Save(identityPath, file); err != nil {
+							t.Fatal(err)
+						}
+						h.native.client.runner = &runnerCredentialSource{path: identityPath}
+						rejectedLease = string(lease.ID)
+						lease.IsolationPolicy = nil
+						payload, err := json.Marshal(lease)
+						if err != nil {
+							t.Fatal(err)
+						}
+						response.Body = io.NopCloser(strings.NewReader(string(payload)))
+					}
+					if len(acquired) == 2 {
+						if test.cancelDiscovery {
+							cancelDiscovery()
+						}
+						if test.cancelParent {
+							cancel()
+						}
+					}
+				}
+				if err == nil && response.StatusCode < 300 && strings.HasSuffix(r.URL.Path, "/release") {
+					parts := strings.Split(r.URL.Path, "/")
+					released[parts[len(parts)-2]] = true
+					if test.cancelRelease {
+						cancel()
+					}
+				}
+				return response, err
 			})
-			issues, err := h.scheduler.FetchCandidateIssues(t.Context(), request)
-			if test.failAfter != 0 || test.failClaim != 0 && test.failCode == "" || test.wantError {
+			issues, err := h.scheduler.FetchCandidateIssues(ctx, request)
+			retained := make(map[string]bool)
+			for _, issue := range issues {
+				claim := h.scheduler.nativeClaims[issue.ID]
+				retained[string(claim.lease.ID)] = true
+				if claim.recovery.Issue.WorkItemID != tracker.NativeWorkItemID(issue.ID) {
+					t.Fatal("returned an unhydrated claim")
+				}
+			}
+			for id, lease := range acquired {
+				_, cached := h.native.client.nativeLeases.Load(h.native.base() + "/" + string(lease.WorkItemID))
+				if cached != retained[id] {
+					t.Fatalf("lease cache differs from returned batch: cached=%t retained=%t", cached, retained[id])
+				}
+				if id == rejectedLease {
+					if releaseAttempts[id] != 1 || retained[id] || released[id] {
+						t.Fatalf("uncertain release retried or retained: attempts=%d retained=%t released=%t", releaseAttempts[id], retained[id], released[id])
+					}
+					continue
+				}
+				if test.wantError && releaseAttempts[id] != 1 {
+					t.Fatalf("lease %s cleanup attempts = %d, want 1", id, releaseAttempts[id])
+				}
+				if retained[id] == released[id] {
+					t.Fatalf("acquired lease %s must be returned or released: retained=%t released=%t", id, retained[id], released[id])
+				}
+			}
+			if len(h.scheduler.nativeClaims) != len(issues) || len(h.scheduler.claims) != len(issues) || len(h.scheduler.claimPolicies) != len(issues) {
+				t.Fatal("scheduler installed claims outside the returned batch")
+			}
+			if test.failClaim != 0 && test.failCode == "" && claims != test.failClaim {
+				t.Fatal("ambiguous failed claim was retried")
+			}
+			request.BeginDiscovery = nil
+			if test.wantError {
 				if err == nil || len(issues) != 0 {
 					t.Fatalf("hydration failure = %d issues, %v", len(issues), err)
 				}
 				if test.failCode != "" {
 					var failure *APIError
-					if !errors.As(err, &failure) || failure.Code != test.failCode {
+					if !errors.As(err, &failure) || (test.refusalBody == "" && failure.Code != test.failCode) || (test.failStatus != 0 && failure.Status != test.failStatus) {
 						t.Fatalf("refusal lost its typed owner: %v", err)
 					}
+				}
+				if test.refusalBody == "failing" && !errors.Is(err, bodyError) {
+					t.Fatalf("lost body error: %v", err)
+				}
+				if test.missingIsolation {
+					if rejectedLease == "" || !errors.Is(err, orchestrator.ErrSchedulingUnavailable) || !errors.Is(err, releaseError) || !strings.Contains(err.Error(), "isolation policy") {
+						t.Fatalf("lost contract or cleanup error: %v", err)
+					}
+					return
 				}
 				h.failChanges.next = transport
 				readyIDs = nil
@@ -290,6 +457,7 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 		second          bool
 		external        bool
 		instance        bool
+		retainedWriter  bool
 	}{
 		{name: "reported prerequisite registers dependency hold"},
 		{name: "instance-owned blocker recovers on any runner without a dependency", instance: true},
@@ -307,6 +475,7 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 		{name: "new approved policy recovers historical report", advancePolicy: true},
 		{name: "later released claim retains recorded recovery", laterLease: "released", dirty: true},
 		{name: "later expired claim retains recorded recovery", laterLease: "expired", dirty: true},
+		{name: "later expired claim seeding isolates retired writer", laterLease: "expired", dirty: true, retainedWriter: true},
 		{name: "later active claim retains hold", laterLease: "active", refusal: "active"},
 		{name: "later completed attempt supersedes report", laterLease: "attempt", refusal: "attempt"},
 		{name: "human action retains hold", refusal: "human"},
@@ -491,7 +660,29 @@ func TestNativeRecordedDependencyAdmission(t *testing.T) {
 			}
 			latestFence := attempt.FencingToken
 			if test.laterLease != "" {
+				var retiredPath string
+				if test.retainedWriter {
+					h.reopen(func(path string) error {
+						retiredPath = path
+						return nil
+					})
+				}
 				h.reopen(func(path string) error {
+					if retiredPath != "" {
+						retired, err := sql.Open("sqlite", retiredPath)
+						if err != nil {
+							return err
+						}
+						defer retired.Close()
+						tx, err := retired.BeginTx(t.Context(), nil)
+						if err != nil {
+							return err
+						}
+						defer tx.Rollback()
+						if _, err := tx.ExecContext(t.Context(), "UPDATE leases SET renewed_at = renewed_at WHERE lease_id = ?", attempt.LeaseID); err != nil {
+							return err
+						}
+					}
 					db, err := sql.Open("sqlite", path)
 					if err != nil {
 						return err
@@ -572,6 +763,9 @@ SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status, 
 				if err != nil {
 					t.Fatal(err)
 				}
+				if current.Revision != blocked.Revision {
+					t.Fatalf("same-lane operator hold created a record revision: %d/%d", current.Revision, blocked.Revision)
+				}
 				request.ExpectedRevision = current.Revision
 			case "policy":
 				h.repolicy(t)
@@ -620,8 +814,7 @@ SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status, 
 			t.Cleanup(func() { cancel(); <-done })
 			waitHolding := func(want int) {
 				t.Helper()
-				deadline := time.After(10 * time.Second)
-				for {
+				testenv.WaitUntil(t, t.Context(), func() error {
 					current, err := orch.State(t.Context())
 					if err != nil {
 						t.Fatal(err)
@@ -637,16 +830,15 @@ SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status, 
 						if h.state(t, issue.ID) != "Blocked" {
 							t.Fatal("unfinished prerequisite released the dependency hold")
 						}
-						return
+						return nil
 					}
 					select {
 					case <-started:
 						t.Fatal("native recovery dispatched before prerequisite readiness")
-					case <-deadline:
-						t.Fatalf("native recovery never observed the unmet predicate: %+v", entry)
-					case <-time.After(10 * time.Millisecond):
+					default:
 					}
-				}
+					return fmt.Errorf("native recovery never observed the unmet predicate: %+v", entry)
+				})
 			}
 			if test.laterLease == "" {
 				waitHolding(wantBlockers)
@@ -677,7 +869,7 @@ SELECT ?, organization_id, project_id, work_item_id, ?, ?, ?, sequence, status, 
 						t.Fatal("prerequisite recovery lost fresh fencing or retained dirty checkpoint")
 					}
 				}
-			case <-time.After(10 * time.Second):
+			case <-testenv.WaitContext(t, t.Context()).Done():
 				t.Fatalf("native recorded recovery did not autonomously dispatch: state=%s", h.state(t, issue.ID))
 			}
 			page, err := h.admin.History(t.Context(), blocked.WorkItemID, "")

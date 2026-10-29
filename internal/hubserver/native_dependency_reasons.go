@@ -30,6 +30,13 @@ func readNativeDependencyDetails(ctx context.Context, q nativeQueryer, scope nat
 }
 
 func readNativeDependencyDetailsBatch(ctx context.Context, q nativeQueryer, scope nativeScope, issues []*tracker.NativeIssue) error {
+	if scope.credential.HostedRole == "reporter" {
+		pageQuery, pageErr := prepareNativePageQuery(ctx, q, nativeScope{organization: scope.organization}, "", "native_issue_actors")
+		if pageErr != nil {
+			return pageErr
+		}
+		q = pageQuery
+	}
 	if len(issues) == 0 {
 		return nil
 	}
@@ -179,7 +186,7 @@ func readNativeDependencyDetailsBatch(ctx context.Context, q nativeQueryer, scop
 	if loaded != len(items) {
 		return sql.ErrNoRows
 	}
-	return readNativeRelatedBatch(ctx, q, scope, items, selection)
+	return readNativeRelatedBatch(ctx, q, scope, items)
 }
 
 func validDependencyReason(text string) bool {
@@ -194,13 +201,13 @@ func validDependencyReason(text string) bool {
 func (s *Service) updateNativeDependencyReason(c echo.Context) error {
 	var request tracker.UpdateDependencyReason
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	scope := nativeRequestScope(c)
-	options := nativeCommandOptions{OperationID: "dependency-reason/" + c.Param("item"), Item: c.Param("item"), RequireLease: true, Feature: "collaboration", DeferBoardProjection: true}
+	options := nativeCommandOptions{OperationID: "dependency-reason/" + c.Param("item"), Item: c.Param("item"), RequireLease: true, Feature: "collaboration"}
 	result, err := s.executeNativeMutation(c.Request().Context(), scope, options, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, _ time.Time) (any, error) {
 		if !validDependencyReason(request.Text) || (request.Kind != "blocked" && request.Kind != "unblocks") {
-			return nil, nativeInvalid("Reason must be plain text of at most 140 characters and kind blocked or unblocks")
+			return nil, nativePublicInvalid("Reason must be plain text of at most 140 characters and kind blocked or unblocks")
 		}
 		if _, _, err := readNativeIssue(ctx, tx, scope, c.Param("item")); err != nil {
 			return nil, err
@@ -232,6 +239,13 @@ func (s *Service) updateNativeDependencyReason(c echo.Context) error {
 }
 
 func readNativeDependencyReference(ctx context.Context, q nativeQueryer, scope nativeScope, id tracker.NativeWorkItemID) (*tracker.NativeDependency, error) {
+	if scope.credential.HostedRole == "reporter" {
+		pageQuery, pageErr := prepareNativePageQuery(ctx, q, nativeScope{organization: scope.organization}, "", "native_issue_actors")
+		if pageErr != nil {
+			return nil, pageErr
+		}
+		q = pageQuery
+	}
 	condition, grantArgs := scope.credential.projectGrantSQL("i.organization_id", "i.project_id")
 	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
 	condition = "(" + condition + ") AND (" + visibility + ")"

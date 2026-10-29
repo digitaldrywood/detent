@@ -58,8 +58,7 @@ func TestCloudModelSelectionDelivery(t *testing.T) {
 					return
 				}
 				if r.URL.Path == "/api/v2/organizations/org_test/projects/prj_test/policy" {
-					w.WriteHeader(http.StatusConflict)
-					_ = json.NewEncoder(w).Encode(map[string]string{"code": "policy_mismatch", "message": "No approved repository policy"})
+					_, _ = w.Write([]byte(`{"policy":null}`))
 					return
 				}
 				if r.URL.Path != "/api/v2/organizations/org_test/projects/prj_test" {

@@ -14,7 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/workspacesession"
 )
 
-// Action runs end to end (decisions section 18.12): the row that exists before
+// Action runs end to end: the row that exists before
 // the process, the refusals that stop a command reaching a worktree it must
 // not touch, the reads a person comes back to, and the runner report that
 // records a run nobody asked for.
@@ -373,7 +373,7 @@ func TestWorkspaceWorkerActionRunReport(t *testing.T) {
 		}
 		// But it is claimed, by the runner that started it. A run that is not
 		// queued and names no executor would read as one the hub's own dispatch
-		// could still hand out (section 18.12).
+		// could still hand out.
 		row, err := readProjectActionRunByID(t.Context(), f.service.database.db, run.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -430,7 +430,7 @@ func TestWorkspaceWorkerActionRunReport(t *testing.T) {
 			// action produces, and JSON escaping turns one byte into six. At a
 			// smaller body limit this report is answered 413 and the run that
 			// actually finished is never recorded -- it sits running, which is
-			// the one outcome section 18.12 exists to prevent.
+			// the one outcome the project actions contract exists to prevent.
 			report := f.workerPost(t, session.ID, "action-runs", workspaceActionRunReport{
 				WorkspaceIdentity: workspaceIdentity(lease), ActionID: action.ID,
 				Status: workspacesession.RunSucceeded,

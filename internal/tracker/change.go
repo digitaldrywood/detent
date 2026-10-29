@@ -93,19 +93,27 @@ type ApproveChangeReviewPolicy struct {
 	Policy     ChangeReviewPolicy `json:"policy"`
 }
 
+type ReviewDisposition struct {
+	HeadSHA     string `json:"head_sha"`
+	ThreadID    string `json:"thread_id"`
+	Disposition string `json:"disposition"`
+	Evidence    string `json:"evidence"`
+}
+
 type ChangeVersionInput struct {
-	Validation   *gate.CommandResult      `json:"validation,omitempty"`
-	BaseSHA      string                   `json:"base_sha"`
-	HeadSHA      string                   `json:"head_sha"`
-	MergeBaseSHA string                   `json:"merge_base_sha"`
-	Repository   string                   `json:"repository"`
-	Code         ChangeArtifact           `json:"code"`
-	Artifacts    []ChangeArtifact         `json:"artifacts"`
-	RunID        string                   `json:"run_id,omitempty"`
-	AttemptID    string                   `json:"attempt_id,omitempty"`
-	PolicyID     string                   `json:"policy_id"`
-	External     *ChangeExternalReference `json:"external,omitempty"`
-	Source       *ChangeSource            `json:"source,omitempty"`
+	ReviewDispositions []ReviewDisposition      `json:"review_dispositions,omitempty"`
+	Validation         *gate.CommandResult      `json:"validation,omitempty"`
+	BaseSHA            string                   `json:"base_sha"`
+	HeadSHA            string                   `json:"head_sha"`
+	MergeBaseSHA       string                   `json:"merge_base_sha"`
+	Repository         string                   `json:"repository"`
+	Code               ChangeArtifact           `json:"code"`
+	Artifacts          []ChangeArtifact         `json:"artifacts"`
+	RunID              string                   `json:"run_id,omitempty"`
+	AttemptID          string                   `json:"attempt_id,omitempty"`
+	PolicyID           string                   `json:"policy_id"`
+	External           *ChangeExternalReference `json:"external,omitempty"`
+	Source             *ChangeSource            `json:"source,omitempty"`
 }
 
 type ChangeCheckExpectation struct {
@@ -154,6 +162,8 @@ type SecurityAuditReview struct {
 }
 
 type ChangeReview struct {
+	RepairDependencies   []NativeWorkItemID    `json:"repair_dependencies,omitempty"`
+	RepairRefusal        string                `json:"repair_refusal,omitempty"`
 	SecurityAudit        *SecurityAuditReview  `json:"security_audit,omitempty"`
 	SessionMachineID     MachineID             `json:"session_machine_id,omitempty"`
 	ImplementationReview *gate.ValidatorResult `json:"implementation_review,omitempty"`

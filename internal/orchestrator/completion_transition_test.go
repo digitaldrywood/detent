@@ -96,6 +96,79 @@ func TestCompletedActiveReviewRequiresFinishedWork(t *testing.T) {
 	}
 }
 
+func TestWorkflowWriteStaleFencingStopsCompletedReviewRetry(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		err    error
+		lost   bool
+		direct bool
+	}{
+		{name: "stale fencing", err: fmt.Errorf("stale_fencing_token: %w", runpkg.ErrExecutionAuthorityUnavailable), lost: true},
+		{name: "stale direct promotion", err: fmt.Errorf("stale_fencing_token: %w", runpkg.ErrExecutionAuthorityUnavailable), lost: true, direct: true},
+		{name: "current token"},
+		{name: "network", err: errors.New("connection reset by peer")},
+		{name: "server", err: completionDeferralAvailabilityError()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			now := time.Date(2026, 10, 27, 1, 0, 0, 0, time.UTC)
+			cfg := normalizeConfig(Config{ActiveStates: []string{"In Progress"}, TerminalStates: []string{"Done"}})
+			issues := make([]connector.Issue, 2)
+			state := newState(cfg)
+			for index := range issues {
+				issue := completionTransitionIssue("In Progress", "OPEN")
+				issue.ID = fmt.Sprintf("wi_item_%d", index)
+				issue.PullRequest.HeadSHA = "published-head"
+				issue.PullRequest.Number = index + 1
+				issue.PullRequest.MergeableState = "clean"
+				issue.PullRequest.CIStatus = "pass"
+				if test.direct {
+					issue.PullRequest.UnresolvedReviewThreads = []connector.PullRequestReviewThread{{Path: "example.go", Line: 1}}
+				}
+				issue.Comments = []connector.IssueComment{{Body: "```detent-status\nschema: 1\nstatus: complete\nblockers: []\nhuman_action: null\n```"}}
+				issues[index] = issue
+				state.Completed[issue.ID] = Completed{Issue: issue, FinalState: FinalStateCompleted, CompletedAt: now, successfulAttemptPersisted: true}
+				state.Claimed[issue.ID] = Claimed{Issue: issue}
+			}
+			backend := &autoPromoteTickConnector{stateIssues: issues, updateErr: test.err}
+			claims := &hubSchedulingSource{}
+			orch := &Orchestrator{cfg: cfg, connector: backend, scheduling: claims}
+			orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, issues, now)
+			if len(backend.updates) != 2 {
+				t.Fatalf("initial writes = %v, want one per item", backend.updates)
+			}
+			if test.lost {
+				if len(state.Completed) != 0 || len(state.Claimed) != 0 || claims.releases != 2 {
+					t.Errorf("stale leases retained local state: completed=%d claimed=%d releases=%d", len(state.Completed), len(state.Claimed), claims.releases)
+				}
+			} else if test.err != nil {
+				if len(state.Completed) != 2 || len(state.Claimed) != 2 || claims.releases != 0 {
+					t.Fatal("transient failure discarded completion or lease")
+				}
+				backend.updateErr = nil
+			}
+			for tick := 1; tick <= 3; tick++ {
+				orch.transitionCompletedActiveIssuesToReview(t.Context(), &state, backend.stateIssues, now.Add(time.Duration(tick)*time.Minute))
+			}
+			wantWrites := 2
+			if test.err != nil && !test.lost {
+				wantWrites = 4
+			}
+			if len(backend.updates) != wantWrites {
+				t.Fatalf("writes after later ticks = %d, want %d", len(backend.updates), wantWrites)
+			}
+			if !test.lost {
+				for _, issue := range backend.stateIssues {
+					if issue.State != "Human Review" {
+						t.Fatalf("current lease did not transition: %s", issue.State)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestCompletedActiveReviewTargetState(t *testing.T) {
 	t.Parallel()
 
@@ -821,9 +894,12 @@ func TestHandleRunResultReleasesClaimWhenReviewThreadsUnavailable(t *testing.T) 
 		completionErr error
 		wantClaimed   bool
 		wantReleases  int
+		usablePR      bool
 	}{
 		{name: "REST budget reserved", reason: connector.PullRequestHydrationReasonRESTBudgetReserved, wantReleases: 1},
 		{name: "rate limited", reason: connector.PullRequestHydrationReasonRateLimited, wantReleases: 1},
+		{name: "review REST budget with usable PR", reason: connector.PullRequestHydrationReasonRESTBudgetReserved, wantReleases: 1, usablePR: true},
+		{name: "review rate limit with usable PR", reason: connector.PullRequestHydrationReasonRateLimited, wantReleases: 1, usablePR: true},
 		{name: "persistence failed", reason: connector.PullRequestHydrationReasonRESTBudgetReserved, completionErr: errors.New("attempt store unavailable"), wantClaimed: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -835,7 +911,13 @@ func TestHandleRunResultReleasesClaimWhenReviewThreadsUnavailable(t *testing.T) 
 			issue.PullRequest.HeadSHA = "head-sha"
 			issue.PullRequest.CIStatus = "pass"
 			issue.PullRequest.HydrationUnavailableReason = tt.reason
+			if tt.usablePR {
+				issue.PullRequest.HydrationUnavailableReason = ""
+			}
 			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+			if tt.usablePR {
+				tracker.reviewThreadUnavailable = tt.reason
+			}
 			attempts := &recordingWorkAttemptStore{completionErrors: []error{tt.completionErr}}
 			scheduling := &hubSchedulingSource{}
 			cfg := normalizeConfig(Config{
@@ -848,7 +930,7 @@ func TestHandleRunResultReleasesClaimWhenReviewThreadsUnavailable(t *testing.T) 
 				TerminalStates:         []string{"Done", "Cancelled"},
 				ContinuationRetryDelay: time.Minute,
 			})
-			orch := &Orchestrator{cfg: cfg, connector: tracker, scheduling: scheduling, workAttempts: attempts}
+			orch := &Orchestrator{cfg: cfg, connector: &autoPromoteTickMergeConnector{autoPromoteTickConnector: tracker}, scheduling: scheduling, workAttempts: attempts}
 			state := newState(cfg)
 			state.Running[issue.ID] = Running{
 				Issue:               issue,
@@ -874,17 +956,18 @@ func TestHandleRunResultReleasesClaimWhenReviewThreadsUnavailable(t *testing.T) 
 				},
 			})
 
-			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != store.WorkAttemptTerminalSuccess {
-				t.Fatalf("completions = %#v, want one successful persisted attempt", attempts.completions)
+			wantTerminal := store.WorkAttemptTerminalNoProgress
+			if tt.usablePR {
+				wantTerminal = store.WorkAttemptTerminalSuccess
+			}
+			if len(attempts.completions) != 1 || attempts.completions[0].TerminalState != wantTerminal {
+				t.Fatalf("completions = %#v, want one no-progress attempt", attempts.completions)
 			}
 			if _, ok := state.Running[issue.ID]; ok {
 				t.Fatalf("Running[%q] present after completion", issue.ID)
 			}
-			if _, ok := state.Retry[issue.ID]; ok {
-				t.Fatalf("Retry[%q] present while review-thread hydration is pending", issue.ID)
-			}
-			if _, ok := state.Completed[issue.ID]; !ok {
-				t.Fatalf("Completed[%q] missing while review-thread hydration is pending", issue.ID)
+			if retry, ok := state.Retry[issue.ID]; ok == tt.wantClaimed || ok && retry.Attempt != 2 {
+				t.Fatalf("retry = %+v, present=%t, want attempt 2 after persistence", retry, ok)
 			}
 			_, claimed := state.Claimed[issue.ID]
 			if claimed != tt.wantClaimed {
@@ -896,12 +979,17 @@ func TestHandleRunResultReleasesClaimWhenReviewThreadsUnavailable(t *testing.T) 
 			if len(tracker.updates) != 0 {
 				t.Fatalf("updates = %#v, want no backend transition", tracker.updates)
 			}
-			if got := tracker.reviewThreadHydrations; !reflect.DeepEqual(got, []string{issue.ID}) {
-				t.Fatalf("review thread hydrations = %#v, want one for %s", got, issue.ID)
+			wantHydrations := 0
+			if tt.usablePR {
+				wantHydrations = 1
+			}
+			if got := tracker.reviewThreadHydrations; len(got) != wantHydrations {
+				t.Fatalf("review thread hydration attempted before PR evidence was available: %v", got)
 			}
 			laterIssue := cloneIssue(issue)
 			laterIssue.PullRequest.HydrationUnavailableReason = ""
 			delete(state.Completed, issue.ID)
+			delete(state.Retry, issue.ID)
 			decision := orch.dispatchPlanner().dispatchableIssueDecision(laterIssue, &state, false, now.Add(time.Minute), "")
 			if tt.wantClaimed {
 				if decision.reason != dispatchSkipAlreadyClaimed {
@@ -920,6 +1008,7 @@ func TestHydrationUnavailableDoesNotReleaseReplacementTrackerClaim(t *testing.T)
 	now := time.Date(2026, 9, 13, 18, 0, 0, 0, time.UTC)
 	issue := completionTransitionIssue("Rework", "OPEN")
 	issue.PullRequest.HydrationUnavailableReason = connector.PullRequestHydrationReasonRESTBudgetReserved
+	issue.Fields["Detent Owner"] = "worker"
 	issue.Fields["Detent Lease"] = now.Add(-time.Minute).Format(time.RFC3339Nano)
 	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
 	cfg := normalizeConfig(Config{
@@ -931,6 +1020,8 @@ func TestHydrationUnavailableDoesNotReleaseReplacementTrackerClaim(t *testing.T)
 		TerminalStates: []string{"Done", "Cancelled"},
 		Claiming: ClaimingConfig{
 			Enabled:    true,
+			Owner:      "worker",
+			OwnerField: "Detent Owner",
 			LeaseField: "Detent Lease",
 		},
 	})
@@ -1679,7 +1770,7 @@ func TestCompletedReviewTransitionUsesExistingPromotionOwner(t *testing.T) {
 			}
 			if tc.want == "" {
 				for _, update := range tracker.updates {
-					if update.state != "Blocked" {
+					if update.state != "Rework" {
 						t.Fatalf("unsafe transition: %+v", update)
 					}
 				}

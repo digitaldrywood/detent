@@ -124,8 +124,18 @@ func (o *ConfigurationOwner) applyLocalBinding(ctx context.Context, cfg globalco
 		view.Constraint = "The selected configuration revision changed; read it before retrying."
 		return view
 	}
-	globalRaw, err := os.ReadFile(o.selected.Path)
-	if err != nil || policy.Digest(globalRaw) != revision {
+	unchanged := false
+	if o.settings == nil {
+		globalRaw, readErr := os.ReadFile(o.selected.Path)
+		err = readErr
+		unchanged = policy.Digest(globalRaw) == revision
+	} else {
+		err = o.mutate(ctx, func(_ *globalconfig.Config, currentRevision string) bool {
+			unchanged = currentRevision == revision
+			return false
+		})
+	}
+	if err != nil || !unchanged {
 		view.Constraint = "The selected configuration revision changed; read it before retrying."
 		return view
 	}

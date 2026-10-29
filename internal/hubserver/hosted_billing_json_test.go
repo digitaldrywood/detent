@@ -160,14 +160,16 @@ func TestHostedBillingJSONForTheClient(t *testing.T) {
 func TestHostedBillingJSONSubscriptionRestrictions(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name   string
-		status string
-		cancel bool
-		renews bool
+		name     string
+		status   string
+		cancel   bool
+		renews   bool
+		cancelAt bool
 	}{
-		{"multiple subscriptions", "multiple_subscriptions", false, false},
-		{"active subscription", "active", false, true},
-		{"canceling subscription", "active", true, false},
+		{"multiple subscriptions", "multiple_subscriptions", false, false, false},
+		{"active subscription", "active", false, true, false},
+		{"canceling subscription", "active", true, false, false},
+		{"explicit cancellation date", "active", false, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -176,6 +178,9 @@ func TestHostedBillingJSONSubscriptionRestrictions(t *testing.T) {
 			if test.status == "active" {
 				state.Snapshot = activeBillingSnapshot(f.service.config.now())
 				state.Snapshot.CancelAtPeriodEnd = test.cancel
+				if test.cancelAt {
+					state.Snapshot.CancelAt = state.Snapshot.PeriodEnd.Add(-time.Minute)
+				}
 			}
 			raw, err := json.Marshal(state)
 			if err != nil {
@@ -195,8 +200,14 @@ func TestHostedBillingJSONSubscriptionRestrictions(t *testing.T) {
 			if err := json.Unmarshal(usage.Body.Bytes(), &view); err != nil {
 				t.Fatal(err)
 			}
-			if view.CanCheckout || (!view.RenewsAt.IsZero()) != test.renews {
+			if view.CanCheckout || (view.RenewsAt != nil) != test.renews || (view.CancelsAt != nil) != (test.cancel || test.cancelAt) {
 				t.Fatalf("subscription usage flags=%+v", view)
+			}
+			if test.renews && !view.RenewsAt.Equal(state.Snapshot.PeriodEnd) || test.cancel && !view.CancelsAt.Equal(state.Snapshot.PeriodEnd) {
+				t.Fatalf("subscription dates=%+v", view)
+			}
+			if test.cancelAt && !view.CancelsAt.Equal(state.Snapshot.CancelAt) {
+				t.Fatalf("cancellation date=%v", view.CancelsAt)
 			}
 		})
 	}
@@ -207,12 +218,12 @@ func TestHostedBillingUsageJSON(t *testing.T) {
 	f, provider := newHostedBillingFixture(t)
 	configureTestCredits(t, f, provider)
 	cfg := f.service.config.Hosted
-	cfg.Plans.Plans = append(cfg.Plans.Plans, capacityHostedPlans().Plans[1:4]...)
-	cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_growth", Plan: PlanReference{ID: "growth", Version: 1}})
+	cfg.Plans.Plans = append(cfg.Plans.Plans, capacityHostedPlans().Plans...)
+	cfg.Billing.Prices = append(cfg.Billing.Prices, HostedBillingPrice{PriceID: "price_growth", Plan: PlanReference{ID: "growth", Version: 2}})
 	if err := f.service.database.configureHostedPlans(t.Context(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plans SET record_json=json_set(record_json,'$.allowances.projects',31,'$.monthly_usd_cents',15900) WHERE id='growth' AND version=1"); err != nil {
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE hosted_plans SET record_json=json_set(record_json,'$.allowances.history_records',31) WHERE id='growth' AND version=2"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO ai_credit_accounts(organization_id,mode,balance_micros) VALUES(?,'live',0)", cfg.OrganizationID); err != nil {
@@ -253,17 +264,89 @@ func TestHostedBillingUsageJSON(t *testing.T) {
 			if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
 				t.Fatal(err)
 			}
-			if view.ChargedAIMicros != 90000 || view.AICredits == nil || len(view.AICredits.History) != 0 || len(view.ComparisonPlans) != 3 {
+			if view.ChargedAIMicros != 90000 || view.AICredits == nil || len(view.AICredits.History) != 0 || len(view.ComparisonPlans) != 5 {
 				t.Fatalf("usage view=%+v", view)
 			}
-			if view.ComparisonPlans[1].Allowances["projects"] != 31 || view.ComparisonPlans[1].MonthlyUSDCents == nil || *view.ComparisonPlans[1].MonthlyUSDCents != 15900 || view.ComparisonPlans[1].PriceID != "price_growth" {
-				t.Fatalf("comparison plan did not read authoritative catalog: %+v", view.ComparisonPlans[1])
+			if view.ComparisonPlans[3].Allowances["history_records"] != 31 || view.ComparisonPlans[3].MonthlyUSDCents == nil || *view.ComparisonPlans[3].MonthlyUSDCents != 24900 || view.ComparisonPlans[3].PriceID != "price_growth" {
+				t.Fatalf("comparison plan did not read authoritative catalog: %+v", view.ComparisonPlans[3])
+			}
+			for index, want := range []struct {
+				id                    string
+				version, cents, slots int64
+			}{{"free", 1, 0, 2}, {"starter", 1, 4900, 8}, {"team", 2, 9900, 20}, {"growth", 2, 24900, 50}, {"scale", 2, -1, 100}} {
+				got := view.ComparisonPlans[index]
+				cents := int64(-1)
+				if got.MonthlyUSDCents != nil {
+					cents = *got.MonthlyUSDCents
+				}
+				if got.ID != want.id || got.Version != want.version || cents != want.cents || got.Allowances["concurrent_work"] != want.slots {
+					t.Fatalf("comparison %d = %+v", index, got)
+				}
 			}
 			if view.CanCheckout != (role == "owner") || view.CanBuyCredits != (role == "owner") || view.CanManage != (role == "owner") {
 				t.Fatalf("incorrect purchase authority: %+v", view)
 			}
 			if !view.ChatUsage.Range.From.Equal(window.From) || !view.ChatUsage.Range.To.Equal(window.To) {
 				t.Fatalf("incorrect billing period: %+v", view.ChatUsage.Range)
+			}
+		})
+	}
+}
+
+func TestHostedBillingUsageComplimentaryPlan(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name                          string
+		ended, revoked, future, noEnd bool
+	}{
+		{name: "expiring"}, {name: "no end", noEnd: true}, {name: "expired", ended: true}, {name: "revoked", revoked: true}, {name: "future", future: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f, _ := newHostedBillingFixture(t)
+			cfg := f.service.config.Hosted
+			cfg.Plans.Plans = append(cfg.Plans.Plans, capacityHostedPlans().Plans...)
+			if err := f.service.database.configureHostedPlans(t.Context(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			now := f.service.config.now()
+			end := now.Add(30 * 24 * time.Hour)
+			grant := HostedGrant{ID: "grant_example", Plan: PlanReference{ID: "team", Version: 2}, Scope: []string{"native_execution"}, StartsAt: now.Add(-time.Hour), ExpiresAt: &end}
+			if test.noEnd {
+				grant.ExpiresAt = nil
+			}
+			if test.ended {
+				end = now.Add(-time.Hour)
+			}
+			if test.revoked {
+				grant.RevokedAt = &now
+			}
+			if test.future {
+				grant.StartsAt = now.Add(time.Hour)
+			}
+			raw, err := json.Marshal(grant)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "INSERT INTO hosted_complimentary_grants(id,record_json) VALUES(?,?)", grant.ID, string(raw)); err != nil {
+				t.Fatal(err)
+			}
+			response := f.billingAPI(t, "owner", http.MethodGet, "/billing?view=usage", "")
+			requireNativeStatus(t, response, http.StatusOK)
+			var view hostedBillingUsageView
+			if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+				t.Fatal(err)
+			}
+			active := !test.ended && !test.revoked && !test.future
+			if view.Complimentary != active || active && (view.Name != "Team" || view.EffectiveBase != grant.Plan || view.MonthlyUSDCents == nil || *view.MonthlyUSDCents != 9900) {
+				t.Fatalf("plan view=%+v", view)
+			}
+			if active && !test.noEnd {
+				if view.ExpiresAt == nil || !view.ExpiresAt.Equal(end) {
+					t.Fatalf("expiry=%v", view.ExpiresAt)
+				}
+			} else if view.ExpiresAt != nil || !strings.Contains(response.Body.String(), `"expires_at":null`) {
+				t.Fatalf("unexpected expiry: %s", response.Body.String())
 			}
 		})
 	}

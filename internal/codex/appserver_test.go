@@ -461,21 +461,32 @@ func TestUpdateFromMessagePreservesCumulativeAndLastTokenUsage(t *testing.T) {
 
 func TestAppServerCheckHealthCompletesInitializeHandshake(t *testing.T) {
 	t.Parallel()
-
-	transport := newFakeAppServerTransport([]Message{
-		responseMessage(t, initializeRequestID, `{"userAgent":"codex-cli/test"}`),
-	})
-	server, err := NewAppServer(staticTransportFactory{transport: transport}, WithReadTimeout(time.Second))
-	if err != nil {
-		t.Fatalf("NewAppServer() error = %v", err)
-	}
-	if err := server.CheckHealth(context.Background()); err != nil {
-		t.Fatalf("CheckHealth() error = %v", err)
-	}
-
-	sent := transport.sentMessages()
-	if len(sent) != 2 || sent[0].Method != "initialize" || sent[1].Method != "initialized" {
-		t.Fatalf("sent messages = %#v, want initialize handshake", sent)
+	for _, slow := range []bool{false, true} {
+		t.Run(strconv.FormatBool(slow), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				transport := &notifyingStartupTransport{requestID: initializeRequestID}
+				var connection Transport = transport
+				if !slow {
+					transport.fakeAppServerTransport = *newFakeAppServerTransport([]Message{responseMessage(t, initializeRequestID, `{}`)})
+					connection = &transport.fakeAppServerTransport
+				}
+				server, err := NewAppServer(staticTransportFactory{transport: connection})
+				if err != nil {
+					t.Fatal(err)
+				}
+				started := time.Now()
+				if err := server.CheckHealth(t.Context()); err != nil {
+					t.Fatalf("CheckHealth() error = %v", err)
+				}
+				if !slow && !time.Now().Equal(started) {
+					t.Fatal("fast initialization was delayed")
+				}
+				sent := transport.sentMessages()
+				if len(sent) != 2 || sent[0].Method != "initialize" || sent[1].Method != "initialized" {
+					t.Fatalf("sent messages = %#v, want initialize handshake", sent)
+				}
+			})
+		})
 	}
 }
 

@@ -1,3 +1,4 @@
+import { PROJECT_SETTINGS_TABS, projectSettingsPath } from "../../app/settings/projectSettings.ts";
 import {
   SETTINGS_SECTION_IDS,
   SETTINGS_SECTION_LABELS as SECTION_LABELS_BY_ID,
@@ -74,18 +75,6 @@ const SETTINGS_INDEX: readonly IndexEntry[] = [
     keywords: "fleet agent capacity busy host",
   },
   {
-    section: "integrations",
-    title: "Repository",
-    targetId: "settings-integrations",
-    keywords: "github pull request branch remote",
-  },
-  {
-    section: "integrations",
-    title: "Runner routing",
-    targetId: "settings-integrations",
-    keywords: "dispatch provider lane",
-  },
-  {
     section: "plan",
     title: "Allowances",
     targetId: "settings-plan",
@@ -110,6 +99,8 @@ const SETTINGS_INDEX: readonly IndexEntry[] = [
     keywords: "shortcut keyboard slash",
   },
   { section: "whats-new", title: "What's new", targetId: "settings-whats-new", keywords: "release notes changelog new improved fixed builds" },
+  { section: "integrations", title: "Slack", targetId: "slack-notifications", keywords: "notifications incoming webhook" },
+  { section: "integrations", title: "Sprites", targetId: "sprites", keywords: "organization token Fly" },
   { section: "about", title: "Detent", targetId: "settings-about", keywords: "version build hub api" },
   {
     section: "about",
@@ -134,6 +125,15 @@ export function settingsSearchItems(
     ...(entry.targetId === undefined ? {} : { targetId: entry.targetId }),
     ...(entry.keywords === undefined ? {} : { keywords: entry.keywords }),
   }));
+}
+
+export function projectSettingsSearchItems(projects: readonly { readonly id: string; readonly name: string; readonly slug?: string }[]): readonly SettingsSearchItem[] {
+  return projects.flatMap((project) => PROJECT_SETTINGS_TABS.map((tab) => ({
+    id: `project-${project.id}-${tab.id}`,
+    title: `${project.name} · ${tab.label}`,
+    to: projectSettingsPath(project, tab.id),
+    keywords: `project settings ${tab.id === "general" ? "identity slug archive duplicate" : tab.id === "repository" ? "github pull request branch remote integration" : tab.id === "workflow" ? "policy states lanes" : tab.id === "models" ? "selection effort planning implementation validation" : tab.id === "runners" ? "routing dispatch provider sprite token" : "delete project"}`,
+  })));
 }
 
 export function searchSettings(

@@ -1,46 +1,43 @@
+import { Link } from "@tanstack/react-router";
 import { SHELL_SHORTCUTS } from "../lib/shortcuts.ts";
 import {
-  BlocksIcon,
+  ArrowRightIcon,
+  CheckIcon,
+  ClockIcon,
+  LockKeyholeIcon,
+  TriangleAlertIcon,
   CreditCardIcon,
   InfoIcon,
   KeyboardIcon,
-  PanelsTopLeftIcon,
   ReceiptTextIcon,
   Settings2Icon,
 } from "lucide-react";
 import React from "react";
 
 import { Button } from "../../components/ui/button.tsx";
+import { Select, SelectTrigger, SelectValue, SelectPopup, SelectItem } from "../../components/ui/select.tsx";
+import { Label } from "../../components/ui/label.tsx";
 import { Switch } from "../../components/ui/switch.tsx";
-import { UsageMeter } from "../../components/ui/usage-meter.tsx";
+import { UsageMeter, formatUsageValue } from "../../components/ui/usage-meter.tsx";
 import { Badge } from "../../components/ui/badge.tsx";
 import { Alert, AlertDescription, AlertTitle } from "../../components/ui/alert.tsx";
 import { Kbd } from "../../components/ui/kbd.tsx";
-import {
-  Select,
-  SelectItem,
-  SelectPopup,
-  SelectTrigger,
-  SelectValue,
-} from "../../components/ui/select.tsx";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
   WorkspaceBreadcrumbSeparator,
 } from "../../components/WorkspaceBreadcrumb.tsx";
 import { WorkspacePageHeader } from "../../components/WorkspacePageHeader.tsx";
-import type { BillingReport, BillingUsageReport, PlanReport, ProjectsResponse } from "../../contracts/account.ts";
+import type { DailySummaryPreference, BillingReport, BillingUsageReport, ComparisonPlan, PlanReport } from "../../contracts/account.ts";
 import { ControlError } from "../account/controls.tsx";
 import { useAccountApi, useAccountBootstrap } from "../account/context.ts";
-import { PLATFORM } from "../entry/api.ts";
+import { Avatar } from "../../components/ui/avatar.tsx";
+import { AccountWidgets } from "./AccountWidgets.tsx";
 import { newKey } from "../account/idempotency.ts";
 import { OrganizationMembersRoute } from "../account/Organization.tsx";
 import { OrganizationOverviewRoute, OrganizationModelsRoute } from "../account/OrganizationOverview.tsx";
-import { ProjectSettingsRoute } from "../account/ProjectSettings.tsx";
 import { useMutation, useResource } from "../account/useResource.ts";
 import { RunnersSettings } from "../fleet/RunnersSection.tsx";
-import { setupStepsLeftLabel } from "../work/components/FirstRun.tsx";
-import { useNewProject } from "../projects/NewProject.tsx";
 import { usePageTitle } from "../pageTitle.ts";
 import { keybindingCatalogue } from "../adapters/keybindings.ts";
 import {
@@ -50,13 +47,15 @@ import {
   settingsNavItems,
   type SettingsSectionId,
 } from "./sections.tsx";
-import { CreditSettings } from "./CreditSettings.tsx";
-import { approachingPlanLimits, nextFittingPlan, planUsageRows } from "./planUsage.ts";
-import { formatShortTimestamp } from "../../timestampFormat.ts";
-import { formatCount, formatTokens, formatUsd } from "../usage/usageFormat.ts";
-import { useClientSettings } from "../adapters/settings.ts";
+import { BillingPlanStatus, CreditSettings } from "./CreditSettings.tsx";
+import { approachingPlanLimits, nextFittingPlan, planUsageRows, planStatus } from "./planUsage.ts";
+import { Skeleton } from "../../components/ui/skeleton.tsx";
+import { SettingsHelp } from "./SettingsHelp.tsx";
+import { cn } from "../../lib/utils.ts";
+import { formatCount, formatUsd } from "../usage/usageFormat.ts";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout.tsx";
-import { ProjectRankSettings } from "./ProjectRankSettings.tsx";
+import { ProjectsSettings } from "./ProjectsSettings.tsx";
+export { ProjectsSettings } from "./ProjectsSettings.tsx";
 import { SpritesCard } from "../account/SpritesCard.tsx";
 import { SlackSettings } from "./SlackSettings.tsx";
 import { WhatsNewSettings } from "./WhatsNewSettings.tsx";
@@ -67,6 +66,8 @@ import { basePath, signInPath } from "../../runtime/basePath.ts";
 export function allowanceLabel(name: string): string {
   return name.replace(/^api_/, "API ").replaceAll("_", " ");
 }
+
+
 
 /** An allowance row's three facts: consumed, allowed, and whether it is over. */
 export interface AllowanceRow {
@@ -101,7 +102,7 @@ export function AllowanceList({ rows }: { readonly rows: readonly AllowanceRow[]
           >
             {row.used.toLocaleString()} / {row.limit.toLocaleString()}
             {row.overLimit ? <span className="ps-1.5 text-xs">over limit</span> : null}
-            {row.name === "projects" || row.name === "unarchived_issues" ? <span className="ps-1.5 text-xs">{Math.max(0, row.limit - row.used).toLocaleString()} remaining</span> : null}
+            {row.name === "concurrent_work" || row.name === "unarchived_issues" ? <span className="ps-1.5 text-xs">{Math.max(0, row.limit - row.used).toLocaleString()} remaining</span> : null}
           </span>
         </li>
       ))}
@@ -111,65 +112,67 @@ export function AllowanceList({ rows }: { readonly rows: readonly AllowanceRow[]
 
 // --- Sections ---------------------------------------------------------------
 
-/** General: what this session is, and which organization it is acting on. */
 export function GeneralSettings(): React.ReactElement {
   const bootstrap = useAccountBootstrap();
   const api = useAccountApi();
-  const notifications = useResource(() => api.issueNotificationPreference(), [api]);
+  const selfHosted = bootstrap?.self_hosted ?? false;
+  const notifications = useResource(() => selfHosted ? Promise.resolve({ enabled: false }) : api.issueNotificationPreference(), [api, selfHosted]);
   const saveNotifications = useMutation(async (enabled: boolean) => {
     const value = await api.saveIssueNotificationPreference(enabled);
     notifications.set(value);
     return value;
   });
+  const summary = useResource(() => selfHosted ? Promise.resolve(null) : api.dailySummaryPreference(), [api, selfHosted]);
+  const saveSummary = useMutation(async (changes: Partial<DailySummaryPreference>) => {
+    if (!summary.value) return null;
+    const current = summary.value;
+    const value = await api.saveDailySummaryPreference({
+      enabled: current.enabled,
+      send_time: current.send_time,
+      time_zone: current.time_zone,
+      days: current.days,
+      ...changes,
+    });
+    summary.set(value);
+    return value;
+  });
+  const summaryValue = summary.value;
+  const summaryDisabled = summary.loading || summary.error !== null || saveSummary.pending || !summaryValue;
+  const times = Array.from({ length: 48 }, (_, index) => {
+    const hour = Math.floor(index / 2);
+    const minute = index % 2 ? "30" : "00";
+    return { value: `${String(hour).padStart(2, "0")}:${minute}`, label: `${hour % 12 || 12}:${minute} ${hour < 12 ? "AM" : "PM"}` };
+  });
+  const zones = Array.from(new Set([summaryValue?.time_zone ?? "UTC", Intl.DateTimeFormat().resolvedOptions().timeZone, "UTC", ...Intl.supportedValuesOf("timeZone")])).sort();
   const signOut = useMutation(async () => {
     await api.logout();
     globalThis.location?.assign(signInPath());
     return null;
   });
+  const actor = bootstrap?.actor;
+  const name = [actor?.first_name, actor?.last_name].filter(Boolean).join(" ").trim() || actor?.email || "Your account";
+  const role = actor?.role ? actor.role.charAt(0).toUpperCase() + actor.role.slice(1) : null;
 
   return (
     <SettingsPageContainer>
-      <SettingsSection
-        id="settings-general"
-        title="General"
-        icon={<Settings2Icon className="size-3.5" />}
-      >
-        <SettingsRow
-          id="settings-general-organization"
-          title="Organization"
-          description="The organization every project, runner and conversation on this session belongs to."
-          control={
-            <span className="text-sm text-foreground">
-              {bootstrap?.organization.name ?? "Not signed in"}
-            </span>
-          }
-        />
+      <SettingsSection id="settings-general" title="General" icon={<Settings2Icon className="size-3.5" />}>
         <SettingsRow
           id="settings-general-account"
-          title="Your account"
-          description={bootstrap?.actor.email ?? "This hub does not report an actor."}
-          status={bootstrap === null ? undefined : `Role: ${bootstrap.actor.role}`}
-          control={
-            <div className="flex flex-wrap items-center gap-2">
-              {bootstrap?.actor.platform_role ? (
-                <Button size="sm" variant="outline" render={<a href={PLATFORM} />}>
-                  Platform console
-                </Button>
-              ) : null}
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={signOut.pending}
-                onClick={() => void signOut.call()}
-              >
-                {signOut.pending ? "Signing out…" : "Sign out"}
-              </Button>
-            </div>
-          }
+          title={<span className="flex items-center gap-3">
+            <Avatar name={name} src={actor?.profile_picture_url} size="md" />
+            <span className="min-w-0">
+              <span className="flex flex-wrap items-center gap-2">{name}{role ? <Badge variant="secondary" size="sm">{role}</Badge> : null}</span>
+              <span className="block break-all text-xs font-normal text-muted-foreground">{actor?.email}</span>
+            </span>
+          </span>}
+          control={selfHosted ? undefined : <Button className="w-full sm:w-auto" size="sm" variant="outline" disabled={signOut.pending} onClick={() => void signOut.call()}>
+            {signOut.pending ? "Signing out…" : "Sign out"}
+          </Button>}
         />
-        {bootstrap?.actor.role === "owner" || bootstrap?.actor.role === "admin" ? <ProjectRankSettings /> : null}
-        <SettingsRow
+        <ControlError message={signOut.error ? "Sign out failed. Please try again." : null} />
+        {!selfHosted && <SettingsRow
           id="settings-general-issue-notifications"
+          controlLayout="inline"
           title="Issue email notifications"
           description="Notify me about issues I filed or commented on."
           control={<Switch
@@ -178,173 +181,60 @@ export function GeneralSettings(): React.ReactElement {
             disabled={notifications.loading || notifications.error !== null || saveNotifications.pending}
             onCheckedChange={(enabled) => void saveNotifications.call(enabled)}
           />}
-        />
+        />}
         <ControlError message={(notifications.error ?? saveNotifications.error)?.message ?? null} />
-        {bootstrap?.plan == null ? null : (
-          <SettingsRow
-            id="settings-general-plan"
-            title="Plan"
-            description={bootstrap.plan.name}
-            status={`Usage window ends ${bootstrap.plan.window_ends_at}`}
-          />
-        )}
-      </SettingsSection>
-    </SettingsPageContainer>
-  );
-}
-
-export function ProjectsSettings({
-  onNavigate,
-}: {
-  readonly onNavigate?: (to: string) => void;
-}): React.ReactElement {
-  const api = useAccountApi();
-  const bootstrap = useAccountBootstrap();
-  const canManage = bootstrap?.actor.can_manage ?? false;
-  const projects = useResource<ProjectsResponse>(() => api.projects(), [api]);
-  const { openNewProject } = useNewProject();
-
-  return (
-    <SettingsPageContainer>
-      <SettingsSection
-        id="settings-projects"
-        title="Projects"
-        icon={<PanelsTopLeftIcon className="size-3.5" />}
-        headerAction={
-          canManage ? (
-            <Button size="xs" variant="outline" onClick={openNewProject}>
-              New project
-            </Button>
-          ) : null
-        }
-      >
-        {projects.loading && projects.value === undefined ? (
-          <SettingsRow title="Loading the projects" />
-        ) : projects.error !== null ? (
-          <SettingsRow
-            title="Projects are not available"
-            description={
-              projects.error.isAccessError
-                ? "You do not have access to this organization's projects."
-                : projects.error.message
-            }
-            control={
-              <Button size="sm" variant="outline" onClick={() => void projects.refresh()}>
-                Try again
-              </Button>
-            }
-          />
-        ) : (projects.value ?? []).length === 0 ? (
-          <SettingsRow
-            title="No projects yet"
-            description="A project is where issues, runners and a repository binding live."
-          />
-        ) : (
-          (projects.value ?? []).map((project) => (
-            <SettingsRow
-              key={project.id}
-              title={project.name}
-              description={`${project.profile} · ${project.states.length} workflow states`}
-              status={
-                project.onboarding.ready
-                  ? "Set up"
-                  : setupStepsLeftLabel(project.onboarding.steps.filter((step) => step.state !== "ready").length)
-              }
-              control={
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => onNavigate?.(`/settings/integrations?project=${project.id}`)}
-                  >
-                    Settings
-                  </Button>
-                  {project.onboarding.ready ? null : (
-                    <Button size="sm" onClick={() => onNavigate?.(`/projects/${project.id}/setup`)}>
-                      Finish setup
-                    </Button>
-                  )}
-                </div>
-              }
-            />
-          ))
-        )}
-      </SettingsSection>
-    </SettingsPageContainer>
-  );
-}
-
-export function IntegrationsSettings({
-  project,
-  onNavigate,
-}: {
-  readonly project: string | null;
-  readonly onNavigate?: (to: string) => void;
-}): React.ReactElement {
-  const bootstrap = useAccountBootstrap();
-  const projects = bootstrap?.projects ?? [];
-  const selected = project ?? projects[0]?.id ?? "";
-
-  if (projects.length === 0) {
-    return (
-      <SettingsPageContainer>
-        <SlackSettings />
-        {bootstrap ? <SettingsSection title="Organization Sprites"><SpritesCard projectId="" canManage={bootstrap.actor.can_manage} /></SettingsSection> : null}
-        <SettingsSection
-          id="settings-integrations"
-          title="Integrations"
-          icon={<BlocksIcon className="size-3.5" />}
+        {!selfHosted && <SettingsRow
+          id="settings-general-daily-summary"
+          controlLayout="inline"
+          title="Daily summary email"
+          description={`Each morning, email me what shipped, what needs me and what was spent in ${bootstrap?.organization.name ?? "this organization"} over the last 24 hours.`}
+          control={<Switch
+            aria-label="Daily summary email"
+            checked={summaryValue?.enabled ?? false}
+            disabled={summaryDisabled}
+            onCheckedChange={(enabled) => void saveSummary.call({ enabled, ...(enabled && summaryValue?.configured === false ? { time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone } : {}) })}
+          />}
         >
-          <SettingsRow
-            title="No projects yet"
-            description="An integration binds one project to one repository, so there has to be a project first."
-          />
-        </SettingsSection>
-      </SettingsPageContainer>
-    );
-  }
-
-  const picker = (
-    <>
-      <SlackSettings />
-        {bootstrap ? <SettingsSection title="Organization Sprites"><SpritesCard projectId="" canManage={bootstrap.actor.can_manage} /></SettingsSection> : null}
-      <SettingsSection
-        id="settings-integrations"
-        title="Integrations"
-        icon={<BlocksIcon className="size-3.5" />}
-      >
-        <SettingsRow
-          title="Project"
-          description="Integration, intake, projection and policy are configured per project."
-          control={
-            <Select
-              value={selected}
-              onValueChange={(value) =>
-                onNavigate?.(`/settings/integrations?project=${String(value)}`)
-              }
-            >
-              <SelectTrigger aria-label="Project" size="sm" className="min-w-44">
-                <SelectValue>
-                  {projects.find((candidate) => candidate.id === selected)?.name ?? selected}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup>
-                {projects.map((candidate) => (
-                  <SelectItem key={candidate.id} value={candidate.id}>
-                    {candidate.name}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
+          {summaryValue?.enabled && <>
+            <div className="mt-4 grid gap-3 sm:grid-cols-3 sm:max-w-lg">
+              <div className="min-w-0 space-y-1">
+                <Label htmlFor="daily-summary-time" className="text-xs text-muted-foreground">Send at</Label>
+                <Select value={summaryValue.send_time} items={times} disabled={summaryDisabled} onValueChange={(send_time) => { if (send_time) void saveSummary.call({ send_time }); }}>
+                  <SelectTrigger id="daily-summary-time" size="sm" className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectPopup>{times.map((time) => <SelectItem key={time.value} value={time.value}>{time.label}</SelectItem>)}</SelectPopup>
+                </Select>
+              </div>
+              <div className="min-w-0 space-y-1">
+                <Label htmlFor="daily-summary-zone" className="text-xs text-muted-foreground">Time zone</Label>
+                <Select value={summaryValue.time_zone} disabled={summaryDisabled} onValueChange={(time_zone) => { if (time_zone) void saveSummary.call({ time_zone }); }}>
+                  <SelectTrigger id="daily-summary-zone" size="sm" className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectPopup>{zones.map((zone) => <SelectItem key={zone} value={zone}>{zone}</SelectItem>)}</SelectPopup>
+                </Select>
+              </div>
+              <div className="min-w-0 space-y-1">
+                <Label htmlFor="daily-summary-days" className="text-xs text-muted-foreground">Days</Label>
+                <Select value={summaryValue.days} items={[{ value: "every_day", label: "Every day" }, { value: "weekdays", label: "Weekdays" }]} disabled={summaryDisabled} onValueChange={(days) => { if (days === "every_day" || days === "weekdays") void saveSummary.call({ days }); }}>
+                  <SelectTrigger id="daily-summary-days" size="sm" className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectPopup><SelectItem value="every_day">Every day</SelectItem><SelectItem value="weekdays">Weekdays</SelectItem></SelectPopup>
+                </Select>
+              </div>
+            </div>
+            <p className="my-5 text-xs text-muted-foreground">Next summary: {summaryValue.next_send ? new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: summaryValue.time_zone }).format(new Date(summaryValue.next_send)) : "Not scheduled"}. Sent to {summaryValue.recipient}.</p>
+          </>}
+          <ControlError message={(summary.error ?? saveSummary.error)?.message ?? null} />
+        </SettingsRow>}
       </SettingsSection>
-    </>
+      {!selfHosted && <AccountWidgets />}
+    </SettingsPageContainer>
   );
+}
 
-  // One scroll container, not two: the picker goes inside the project screen's
-  // own `SettingsPageContainer` through its `header` slot.
-  return <ProjectSettingsRoute key={selected} projectId={selected} onNavigate={onNavigate} header={picker} />;
+export function IntegrationsSettings(): React.ReactElement {
+  const bootstrap = useAccountBootstrap();
+  return <SettingsPageContainer>
+    <SlackSettings />
+    {bootstrap ? <SettingsSection title="Organization Sprites"><SpritesCard projectId="" canManage={bootstrap.actor.can_manage} /></SettingsSection> : null}
+  </SettingsPageContainer>;
 }
 
 export function planPriceText(plan: PlanReport): string {
@@ -356,24 +246,57 @@ export function PlanSettings(): React.ReactElement {
   const api = useAccountApi();
   const bootstrap = useAccountBootstrap();
   const plan = useResource<PlanReport>(() => api.plan(), [api]);
-  const billing = useResource<BillingUsageReport>(() => api.billingUsage(), [api]);
-  const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
+  const billing = useResource<BillingUsageReport>(
+    () => api.billingUsage(),
+    [api],
+  );
   const report = plan.error === null ? plan.value : undefined;
   const usage = billing.error === null ? billing.value : undefined;
   const rows = report === undefined ? [] : planUsageRows(report);
+  const excluded = rows.filter(
+    (row) =>
+      row.limit <= 0 ||
+      (row.name.startsWith("artifact_") &&
+        !report?.features?.includes("hosted_artifacts")),
+  );
+  const included = rows.filter((row) => !excluded.includes(row));
   const warnings = report === undefined ? [] : approachingPlanLimits(report);
-  const planName = report?.name || report?.effective_base.id || "current plan";
-  const reset = formatShortTimestamp(report?.window_ends_at ?? "", timestampFormat);
-  const artifactRetention = report?.allowances.artifact_retention_seconds;
-  const comparisons = usage?.comparison_plans.toSorted((a, b) => (a.monthly_usd_cents ?? Infinity) - (b.monthly_usd_cents ?? Infinity)) ?? [];
-  const nextPlan = report === undefined ? undefined : nextFittingPlan(report, comparisons);
-  const canBill = bootstrap?.actor.role === "owner" && bootstrap.support == null;
+  const planName = usage?.name || report?.name || "Current plan";
+  const comparisons = usage?.comparison_plans ?? [];
+  const currentRef = usage?.effective_base ?? report?.effective_base;
+  const currentOffered = comparisons.some(
+    (candidate) =>
+      candidate.id === currentRef?.id &&
+      candidate.version === currentRef.version,
+  );
+  const comparisonColumns: readonly ComparisonPlan[] =
+    report === undefined || currentOffered
+      ? comparisons
+      : [
+          {
+            id: currentRef?.id ?? "",
+            version: currentRef?.version ?? 1,
+            name: planName,
+            monthly_usd_cents:
+              usage?.monthly_usd_cents ?? report.monthly_usd_cents,
+            features: report.features ?? [],
+            allowances: report.allowances,
+            price_id: "",
+            included_ai_credit_micros: 0,
+          },
+          ...comparisons,
+        ];
+  const nextPlan =
+    report === undefined ? undefined : nextFittingPlan(report, comparisons);
+  const canView =
+    bootstrap?.actor.role === "owner" || bootstrap?.actor.role === "admin";
+  const canBill =
+    bootstrap?.actor.role === "owner" && bootstrap.support == null;
   const canCheckout = canBill && usage?.can_checkout === true;
   const canManage = canBill && usage?.can_manage === true;
-  const canBuy = canBill && usage?.can_buy_credits === true;
   const purchaseKeys = React.useRef(new Map<string, string>());
   const checkout = useMutation(async (price: string) => {
-    if (!canCheckout) return;
+    if (!canCheckout || usage?.checkout_pending) return;
     let key = purchaseKeys.current.get(price);
     if (key === undefined) {
       key = newKey();
@@ -387,149 +310,463 @@ export function PlanSettings(): React.ReactElement {
     const result = await api.portal({ key: newKey() });
     globalThis.location?.assign(result.url);
   });
-  const credits = usage?.ai_credits;
-  const [creditPrice, setCreditPrice] = React.useState("");
-  const selectedCreditPrice = credits?.packs.some((pack) => pack.price_id === creditPrice) ? creditPrice : credits?.packs[0]?.price_id ?? "";
-  const buy = useMutation(async () => {
-    if (!canBuy || selectedCreditPrice === "") return;
-    let key = purchaseKeys.current.get(selectedCreditPrice);
-    if (key === undefined) {
-      key = newKey();
-      purchaseKeys.current.set(selectedCreditPrice, key);
-    }
-    const result = await api.creditCheckout({ price: selectedCreditPrice, key });
-    globalThis.location?.assign(result.url);
-  });
-  const autoPack = credits?.packs.find((pack) => pack.price_id === credits.price_id);
   const comparePlans = () => {
     const target = document.getElementById("settings-plan-comparison");
     target?.scrollIntoView({ block: "start" });
     target?.focus({ preventScroll: true });
   };
-  const renewal = usage?.renews_at;
-  const renewalDate = renewal && !renewal.startsWith("0001-") ? new Date(renewal).toLocaleDateString() : null;
-  const period = usage?.chat_usage.range;
+  const status = usage === undefined ? null : planStatus(usage);
+  const expiry = usage?.expires_at
+    ? `Expires ${new Date(usage.expires_at).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}`
+    : usage?.complimentary || currentRef?.id === "free"
+      ? "Never expires"
+      : status?.replace(/, \d{4}/, "");
+  const reset = report?.window_ends_at
+    ? new Date(report.window_ends_at).toLocaleTimeString("en-US", {
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : null;
+  const moveButton = (candidate: ComparisonPlan, primary = false) =>
+    canBill &&
+    candidate.price_id !== "" &&
+    candidate.monthly_usd_cents != null ? (
+      <Button
+        size="xs"
+        className="w-full md:w-auto"
+        variant={primary ? "default" : "outline"}
+        disabled={
+          !canCheckout || usage?.checkout_pending === true || checkout.pending
+        }
+        onClick={() => void checkout.call(candidate.price_id)}
+      >
+        {checkout.pending ? "Opening…" : `Move to ${candidate.name || "plan"}`}
+      </Button>
+    ) : null;
+  const error = plan.error ?? billing.error;
+
+  if (!canView || error?.isAccessError)
+    return (
+      <SettingsPageContainer>
+        <SettingsSection id="settings-plan" title="Plan & usage">
+          <SettingsRow
+            title="Plan and usage need owner or admin access"
+            description="Ask an organization owner or admin to manage your plan."
+          />
+        </SettingsSection>
+      </SettingsPageContainer>
+    );
+  if (
+    (plan.loading && report === undefined) ||
+    (billing.loading && usage === undefined)
+  )
+    return (
+      <SettingsPageContainer>
+        <SettingsSection
+          id="settings-plan"
+          title="Plan"
+          icon={<ReceiptTextIcon className="size-3.5" />}
+        >
+          <div
+            role="status"
+            aria-label="Loading plan and usage"
+            className="space-y-4 p-4"
+          >
+            <Skeleton className="h-5 w-48" />
+            <Skeleton className="h-4 w-64 max-w-full" />
+            <Skeleton className="h-4 w-32" />
+          </div>
+        </SettingsSection>
+      </SettingsPageContainer>
+    );
 
   return (
     <SettingsPageContainer>
       {warnings.length > 0 ? (
         <Alert variant="warning">
-          <AlertTitle>Approaching your {planName} limits</AlertTitle>
+          <TriangleAlertIcon className="size-4" />
+          <AlertTitle>
+            {currentRef?.id === "free" &&
+            warnings.some((row) => row.used >= row.limit)
+              ? "At your Free limit"
+              : `Approaching your ${planName} limits`}
+          </AlertTitle>
           <AlertDescription>
-            <p>{warnings.map((row) => row.label).join(", ")} {warnings.length === 1 ? "is" : "are"} approaching or at the limit.
-              {warnings.some((row) => row.name === "unarchived_issues") ? " Archive finished issues to free capacity." : ""}
-              {nextPlan === undefined
-                ? usage === undefined ? " Compare plans when billing usage is available." : " No larger listed plan provides more headroom for all current usage."
-                : ` Move to ${nextPlan.name ?? nextPlan.id} for ${nextPlan.allowances.projects === undefined ? "unlimited" : formatCount(nextPlan.allowances.projects)} projects and ${nextPlan.allowances.unarchived_issues === undefined ? "unlimited" : formatCount(nextPlan.allowances.unarchived_issues)} open issues.`}
-            </p>
-            <div><Button size="sm" onClick={comparePlans}>Compare plans</Button></div>
+            <div className="flex flex-wrap items-center gap-2">
+              {warnings.map((row) => (
+                <Badge key={row.name} variant="warning">
+                  {row.label} {formatUsageValue(row.used, row.unit)} /{" "}
+                  {formatUsageValue(row.limit, row.unit)}
+                </Badge>
+              ))}
+              <Button size="sm" variant="outline" onClick={comparePlans}>
+                Compare plans
+              </Button>
+              {currentRef?.id === "free" && nextPlan
+                ? moveButton(nextPlan, true)
+                : null}
+            </div>
           </AlertDescription>
         </Alert>
       ) : null}
-      <SettingsSection id="settings-plan" title="Plan" icon={<ReceiptTextIcon className="size-3.5" />}>
-        {plan.loading && plan.value === undefined ? (
-          <SettingsRow title="Loading the plan" />
-        ) : plan.error !== null ? (
-          <SettingsRow title="Plan is not available" description={plan.error.isAccessError ? "Plan and usage need owner or admin access." : plan.error.message} />
-        ) : report === undefined ? null : (
+      <SettingsSection
+        id="settings-plan"
+        title="Plan"
+        icon={<ReceiptTextIcon className="size-3.5" />}
+      >
+        {error !== null ? (
           <SettingsRow
-            title={planName}
-            description="Hosting and model-provider charges are separate."
-            status={<>{planPriceText(report)}{renewalDate === null ? null : ` · Renews ${renewalDate}`}</>}
-            control={canBill ? (
-              <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="outline" disabled={!canManage || portal.pending} onClick={() => void portal.call()}>{portal.pending ? "Opening…" : "Manage billing"}</Button>
-                <Button size="sm" onClick={comparePlans}>Upgrade</Button>
-              </div>
-            ) : null}
+            title="Plan and usage are not available"
+            description={error?.message}
+            control={
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  void plan.refresh();
+                  void billing.refresh();
+                }}
+              >
+                Try again
+              </Button>
+            }
           />
+        ) : report === undefined ? null : (
+          <>
+            <SettingsRow
+              title={
+                <span className="flex flex-wrap items-center gap-2">
+                  {planName}
+                  {usage?.complimentary ? (
+                    <Badge variant="outline" size="sm">
+                      Complimentary
+                    </Badge>
+                  ) : report.monthly_usd_cents != null ? (
+                    <span className="font-normal text-muted-foreground">
+                      {formatUsd(
+                        (usage?.monthly_usd_cents ?? report.monthly_usd_cents) /
+                          100,
+                      ).replace(/\.00$/, "")}
+                    </span>
+                  ) : null}
+                  <span className="hidden sm:inline-flex">
+                    <SettingsHelp label="Plan details">
+                      {planPriceText({
+                        ...report,
+                        monthly_usd_cents:
+                          usage?.monthly_usd_cents ?? report.monthly_usd_cents,
+                      })}
+                    </SettingsHelp>
+                  </span>
+                </span>
+              }
+              status={
+                status ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    {usage?.complimentary && usage.expires_at ? (
+                      <span className="size-1.5 rounded-full bg-success" />
+                    ) : null}
+                    {status}
+                  </span>
+                ) : null
+              }
+              control={
+                canBill ? (
+                  <div className="flex w-full gap-2 sm:w-auto">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="flex-1 sm:flex-none"
+                      disabled={!canManage || portal.pending}
+                      onClick={() => void portal.call()}
+                    >
+                      {portal.pending ? "Opening…" : "Manage billing"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="flex-1 sm:flex-none"
+                      onClick={comparePlans}
+                    >
+                      Upgrade
+                    </Button>
+                  </div>
+                ) : null
+              }
+            />
+            <div
+              id="settings-ai-usage"
+              className="flex flex-wrap items-center justify-between gap-3 px-3 py-3 text-sm sm:px-4"
+            >
+              <div className="flex flex-wrap items-baseline gap-2">
+                <span className="text-muted-foreground">AI credits</span>
+                <span className="tabular-nums">
+                  {usage?.ai_credits
+                    ? formatUsd(usage.ai_credits.balance_micros / 1000000)
+                    : "Not enabled"}
+                </span>
+                {usage ? (
+                  <span className="text-xs text-muted-foreground">
+                    {formatUsd(usage.charged_ai_micros / 1000000)} spent this
+                    period
+                  </span>
+                ) : null}
+              </div>
+              {canBill ? (
+                <a
+                  className="inline-flex items-center gap-1 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  href={`${basePath()}/settings/billing`}
+                >
+                  Billing <ArrowRightIcon className="size-3.5" />
+                </a>
+              ) : null}
+            </div>
+          </>
         )}
       </SettingsSection>
-      {report === undefined ? null : (
-        <SettingsSection id="settings-plan-capacity" title="Capacity" hideTitle>
-          {["Capacity", "Storage", "This hour"].map((group) => (
-            <SettingsRow key={group} title={group} description={group === "Capacity" ? "Counts across the whole organization." : group === "This hour" ? `Resets ${reset || "when the current window ends"}` : undefined}>
-              <div className="grid grid-cols-1 gap-x-8 gap-y-6 py-3 sm:grid-cols-2">
-                {rows.filter((row) => row.group === group).map((row) => (
+      {report === undefined || error !== null ? null : (
+        <SettingsSection id="settings-plan-capacity" title="Usage">
+          {["Organization", "Storage", "This hour"].map((group) => {
+            const meters = included.filter((row) => row.group === group);
+            return meters.length === 0 ? null : (
+              <div key={group} className="px-3 py-2 sm:px-4">
+                <div className="flex items-center justify-between gap-3 py-1 text-xs text-muted-foreground">
+                  <h3>{group}</h3>
+                  {group === "This hour" && reset ? (
+                    <span className="inline-flex items-center gap-1">
+                      <ClockIcon className="size-3" />
+                      Resets {reset}
+                    </span>
+                  ) : null}
+                </div>
+                {meters.map((row) => (
                   <UsageMeter
                     key={row.name}
+                    layout="row"
                     label={row.label}
                     used={row.used}
                     limit={row.limit}
                     unit={row.unit}
                     limitOnly={row.limitOnly}
-                    notIncludedOn={row.limit === 0 && row.used === 0 ? planName : undefined}
-                    description={row.name === "artifact_retained_bytes" && artifactRetention !== undefined
-                      ? `${row.description ?? ""} Kept for ${formatCount(artifactRetention / 86400)} days.`
-                      : group === "This hour" ? `Resets ${reset || "when the current window ends"}` : row.description}
+                    description={row.description}
+                    detail={
+                      <SettingsHelp
+                        label={row.label}
+                      >{`${row.limitOnly ? `Up to ${formatUsageValue(row.limit, row.unit)}` : row.used >= row.limit ? "Limit reached" : `${formatUsageValue(Math.max(0, row.limit - row.used), row.unit)} left`}${row.description ? `. ${row.description}` : ""}`}</SettingsHelp>
+                    }
                   />
                 ))}
-                {group === "Storage" && !rows.some((row) => row.name === "artifact_retained_bytes") ? (
-                  <UsageMeter label="Artifact storage" used={report.usage.artifact_retained_bytes ?? 0} limit={0} unit="bytes"
-                    unlimited={report.features?.includes("hosted_artifacts") === true}
-                    notIncludedOn={report.features?.includes("hosted_artifacts") === true ? undefined : planName}
-                    description={artifactRetention === undefined ? "Build outputs and uploads." : `Build outputs and uploads · kept for ${formatCount(artifactRetention / 86400)} days.`} />
-                ) : null}
               </div>
-            </SettingsRow>
-          ))}
+            );
+          })}
+          {excluded.length > 0 ? (
+            <div className="grid gap-3 px-3 py-4 sm:grid-cols-[184px_minmax(0,1fr)] sm:gap-4 sm:px-4">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <LockKeyholeIcon className="size-3.5" />
+                Not on your plan
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {excluded.map((row) => (
+                  <Badge key={row.name} variant="secondary">
+                    {row.label}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </SettingsSection>
       )}
-      <SettingsSection id="settings-ai-usage" title="AI credits" headerAction={canBuy ? (
-        <Button size="xs" variant="outline" disabled={buy.pending || selectedCreditPrice === ""} onClick={() => void buy.call()}>{buy.pending ? "Opening…" : "Buy credits"}</Button>
-      ) : null}>
-        {billing.loading && billing.value === undefined ? <SettingsRow title="Loading AI credit usage" />
-          : billing.error !== null ? <SettingsRow title="AI usage is not available" description={billing.error.message} control={<Button size="sm" variant="outline" onClick={() => void billing.refresh()}>Try again</Button>} />
-          : usage === undefined ? null : (
-            <>
-              <SettingsRow title="Current period" description={`${period?.from.slice(0, 10)} – ${period?.to.slice(0, 10)}`} />
-              <div className="grid grid-cols-1 sm:grid-cols-3">
-                <SettingsRow title="Balance" status={credits === undefined ? "Credits are not enabled" : formatUsd(credits.balance_micros / 1000000)}
-                  description={credits === undefined ? undefined : credits.auto_enabled
-                    ? `Auto top-up: ${autoPack === undefined ? "selected pack" : formatUsd(autoPack.usd_cents / 100)} below ${formatUsd(credits.threshold_cents / 100)}`
-                    : "Auto top-up: off"} />
-                <SettingsRow title="Spent this period" status={formatUsd(usage.charged_ai_micros / 1000000)} description="Charged AI credits, including the model cost multiplier." />
-                <SettingsRow title="Tokens this period" status={formatTokens(usage.chat_usage.tokens)} description={`${formatTokens(Math.max(0, usage.chat_usage.input - usage.chat_usage.cached_input))} input · ${formatTokens(usage.chat_usage.cached_input)} cached · ${formatTokens(usage.chat_usage.output)} output`} />
-              </div>
-              {canBuy && (credits?.packs.length ?? 0) > 1 ? (
-                <SettingsRow title="Credit pack" control={
-                  <Select value={selectedCreditPrice} onValueChange={(value) => setCreditPrice(String(value))}>
-                    <SelectTrigger size="sm" aria-label="Credit pack"><SelectValue>{credits?.packs.find((pack) => pack.price_id === selectedCreditPrice)?.label}</SelectValue></SelectTrigger>
-                    <SelectPopup>{credits?.packs.map((pack) => <SelectItem key={pack.price_id} value={pack.price_id}>{pack.label} · {formatUsd(pack.usd_cents / 100)}</SelectItem>)}</SelectPopup>
-                  </Select>
-                } />
-              ) : canBuy ? <SettingsRow title="Credit pack" description={`${credits?.packs[0]?.label} · ${formatUsd((credits?.packs[0]?.usd_cents ?? 0) / 100)}`} /> : null}
-              {credits?.failure ? <SettingsRow title="Auto top-up needs attention" description={credits.failure} /> : null}
-              {credits?.in_flight ? <SettingsRow title="Automatic top-up pending" description="Your balance changes after Stripe confirms payment." /> : null}
-              {usage.chat_usage.unpriced_turns > 0 ? <SettingsRow title="Pricing pending" description={`${formatCount(usage.chat_usage.unpriced_turns)} turns are awaiting pricing; charged spend updates once pricing is recorded.`} /> : null}
-            </>
-          )}
-      </SettingsSection>
-      <SettingsSection id="settings-plan-comparison" title="Plans" headerAction={<span className="text-xs text-muted-foreground">Per organization per month</span>}>
-        {billing.loading && billing.value === undefined ? <SettingsRow title="Loading plans" />
-          : billing.error !== null ? <SettingsRow title="Plans are not available" description={billing.error.message} />
-          : comparisons.length === 0 ? <SettingsRow title="No comparison plans are available" /> : (
-            <div className="grid grid-cols-1 sm:grid-cols-3">
-              {comparisons.map((candidate) => {
-                const current = candidate.id === report?.effective_base.id && candidate.version === report?.effective_base.version;
-                const label = candidate.name ?? candidate.id;
-                return (
-                  <SettingsRow key={`${candidate.id}-${candidate.version}`} title={<>{label} {current ? <Badge variant="outline" size="sm">Current</Badge> : null}</>}>
-                    <div className="space-y-3 pb-3 text-sm">
-                      <p>{candidate.monthly_usd_cents == null ? "Custom price" : formatUsd(candidate.monthly_usd_cents / 100)}<br />
-                        {candidate.allowances.projects === undefined ? "Unlimited projects" : `${formatCount(candidate.allowances.projects)} projects`}<br />
-                        {candidate.allowances.unarchived_issues === undefined ? "Unlimited open issues" : `${formatCount(candidate.allowances.unarchived_issues)} open issues`}</p>
-                      {!current && canBill ? <Button size="sm" variant={candidate.id === nextPlan?.id && candidate.version === nextPlan?.version ? "default" : "outline"} disabled={!canCheckout || usage?.checkout_pending === true || candidate.price_id === "" || checkout.pending} onClick={() => void checkout.call(candidate.price_id)}>{checkout.pending ? "Opening…" : `Move to ${label}`}</Button> : null}
-                    </div>
-                  </SettingsRow>
-                );
-              })}
+      {usage === undefined || error !== null ? null : (
+        <SettingsSection
+          id="settings-plan-comparison"
+          title="Plans"
+          headerAction={
+            <span className="text-xs text-muted-foreground">
+              Per organization per month
+            </span>
+          }
+        >
+          <div
+            role="table"
+            className="grid md:grid-flow-col md:auto-cols-fr"
+            aria-label="Compare plans"
+          >
+            <div role="row" className="sr-only">
+              <span role="columnheader">Plan</span>
+              <span role="columnheader">Concurrent work</span>
+              <span role="columnheader">AI credits / month</span>
+              <span role="columnheader">Hosted artifacts</span>
+              <span role="columnheader">Projects</span>
+              <span role="columnheader">Storage</span>
+              <span role="columnheader">Plan action or expiry</span>
             </div>
-          )}
-        {canBill && usage?.checkout_pending === true ? <SettingsRow title="Checkout in progress" description="Finish the existing checkout, or wait for it to expire before choosing another plan." />
-          : canBill && usage?.can_checkout === false && usage.can_manage ? <SettingsRow title="Subscription changes" description="Manage your existing subscription through Manage billing." /> : null}
-        {checkout.error || portal.error || buy.error ? <SettingsRow title="Billing action failed"><div className="pb-3"><ControlError message={checkout.error?.message ?? portal.error?.message ?? buy.error?.message ?? null} /></div></SettingsRow> : null}
-      </SettingsSection>
+            <div
+              aria-hidden="true"
+              className="hidden grid-rows-[110px_44px_44px_44px_44px_44px_64px] text-xs text-muted-foreground md:grid"
+            >
+              <div />
+              <div className="flex items-center border-t border-border/50 px-3">
+                Concurrent work
+              </div>
+              <div className="flex items-center border-t border-border/50 px-3">
+                AI credits / month
+              </div>
+              <div className="flex items-center border-t border-border/50 px-3">
+                Hosted artifacts
+              </div>
+              <div className="flex items-center border-t border-border/50 px-3">
+                Projects
+              </div>
+              <div className="flex items-center border-t border-border/50 px-3">
+                Storage
+              </div>
+              <div className="border-t border-border/50" />
+            </div>
+            {comparisonColumns.map((candidate) => {
+              const current =
+                candidate.id === currentRef?.id &&
+                candidate.version === currentRef.version;
+              const custom =
+                candidate.id === "scale" && candidate.version === 2;
+              const slots = custom
+                ? "Custom"
+                : candidate.allowances.concurrent_work === undefined
+                  ? "Unlimited"
+                  : `${formatCount(candidate.allowances.concurrent_work)} slots`;
+              const projects =
+                candidate.allowances.projects === undefined
+                  ? "Unlimited"
+                  : formatCount(candidate.allowances.projects);
+              const label =
+                current && candidate.id === "pilot_free"
+                  ? "Legacy pilot"
+                  : candidate.name || "Plan";
+              return (
+                <div
+                  role="row"
+                  key={`${candidate.id}-${candidate.version}`}
+                  aria-current={current ? "true" : undefined}
+                  className={cn(
+                    "grid grid-cols-[1fr_auto] gap-2 p-3 md:grid-cols-1 md:grid-rows-[110px_44px_44px_44px_44px_44px_64px] md:gap-0 md:p-0",
+                    current &&
+                      "relative z-1 rounded-xl bg-info/8 ring-2 ring-info ring-inset",
+                  )}
+                >
+                  <div
+                    role="rowheader"
+                    className="col-span-2 flex items-center justify-between gap-2 md:col-span-1 md:flex-col md:items-start md:justify-center md:px-3"
+                  >
+                    <h3 className="flex flex-wrap items-center gap-1.5 text-sm">
+                      {label}
+                      {current ? <Badge size="sm">Current</Badge> : null}
+                    </h3>
+                    <span
+                      className={cn(
+                        "tabular-nums",
+                        custom || candidate.monthly_usd_cents == null
+                          ? "text-xs text-muted-foreground"
+                          : "text-lg font-semibold",
+                      )}
+                    >
+                      {custom
+                        ? "Contact us"
+                        : candidate.monthly_usd_cents == null
+                          ? "Custom"
+                          : formatUsd(
+                              candidate.monthly_usd_cents / 100,
+                            ).replace(/\.00$/, "")}
+                    </span>
+                  </div>
+                  <div className="col-span-2 flex flex-wrap gap-x-3 gap-y-1 md:contents">
+                    <div
+                      role="cell"
+                      className="text-xs text-muted-foreground md:flex md:items-center md:border-t md:border-border/50 md:px-3 md:text-foreground"
+                    >
+                      <span className="sr-only">Concurrent work: </span>
+                      {slots}
+                      {custom ? (
+                        <span className="md:hidden"> slots</span>
+                      ) : null}
+                    </div>
+                    <div role="cell" className="text-xs text-muted-foreground md:flex md:items-center md:border-t md:border-border/50 md:px-3 md:text-foreground">
+                      <span className="md:sr-only">AI credits / month: </span>
+                      {candidate.included_ai_credit_micros === null ? "Custom" : (candidate.included_ai_credit_micros ?? 0) > 0 ? formatUsd(candidate.included_ai_credit_micros! / 1_000_000) : "—"}
+                    </div>
+                    <div
+                      role="cell"
+                      className="text-xs md:flex md:items-center md:border-t md:border-border/50 md:px-3"
+                    >
+                      {candidate.features.includes("hosted_artifacts") ? (
+                        <span className="inline-flex items-center gap-1 text-success-foreground">
+                          <CheckIcon aria-hidden="true" className="size-3.5" />
+                          <span className="md:sr-only">Hosted artifacts</span>
+                          <span className="sr-only"> included</span>
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">
+                          <span className="sr-only">
+                            Hosted artifacts: not included
+                          </span>
+                          <span className="hidden md:inline">—</span>
+                        </span>
+                      )}
+                    </div>
+                    <div
+                      role="cell"
+                      className="text-xs text-muted-foreground md:flex md:items-center md:border-t md:border-border/50 md:px-3 md:text-foreground"
+                    >
+                      {projects}
+                      <span className="md:sr-only"> projects</span>
+                    </div>
+                    <div
+                      role="cell"
+                      className="text-xs text-muted-foreground md:flex md:items-center md:border-t md:border-border/50 md:px-3 md:text-foreground"
+                    >
+                      {custom
+                        ? "Custom"
+                        : candidate.allowances.collaboration_bytes === undefined
+                          ? "Unlimited"
+                          : formatUsageValue(candidate.allowances.collaboration_bytes, "bytes")}
+                      <span className="md:sr-only"> storage</span>
+                    </div>
+                  </div>
+                  <div
+                    role="cell"
+                    className="col-span-2 flex items-center text-xs text-muted-foreground md:col-span-1 md:border-t md:border-border/50 md:px-2"
+                  >
+                    {current
+                      ? expiry
+                      : moveButton(
+                          candidate,
+                          currentRef?.id === "free" &&
+                            candidate.id === "starter",
+                        )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {canBill && usage.checkout_pending ? (
+            <SettingsRow
+              title="Checkout in progress"
+              description="Finish the existing checkout, or wait for it to expire before choosing another plan."
+            />
+          ) : canBill && !usage.can_checkout && usage.can_manage ? (
+            <SettingsRow
+              title="Subscription changes"
+              description="Manage your existing subscription through Manage billing."
+            />
+          ) : null}
+          {checkout.error || portal.error ? (
+            <SettingsRow title="Billing action failed">
+              <ControlError
+                message={
+                  checkout.error?.message ?? portal.error?.message ?? null
+                }
+              />
+            </SettingsRow>
+          ) : null}
+        </SettingsSection>
+      )}
     </SettingsPageContainer>
   );
 }
@@ -671,64 +908,19 @@ export function BillingSettings(): React.ReactElement {
           />
         ) : billing.value === undefined || status === null ? null : (
           <>
-            <SettingsRow title={billing.value.entitlement.name ?? billing.value.entitlement.effective_base.id} status={planPriceText(billing.value.entitlement)} description="Detent subscriptions cover hosting. Model-provider charges remain separate; no AI-dollar allowance is included." />
-            <SettingsRow title="Capacity" description="Archive issues to free capacity; existing data, reading and exports remain available.">
-              <AllowanceList rows={allowanceRows(billing.value.entitlement).filter((row) => row.name === "projects" || row.name === "unarchived_issues")} />
-            </SettingsRow>
-            <SettingsRow
-              title={status.title}
-              description={status.description}
-              status={`Reconciled ${billing.value.reconciled_at || "never"}`}
-              control={
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={portal.pending || billing.value.can_manage === false}
-                  onClick={() => void portal.call()}
-                >
-                  {portal.pending ? "Opening…" : "Billing portal"}
-                </Button>
-              }
-            />
-            {billing.value.checkout_pending === true ? (
-              <SettingsRow
-                title="Checkout in progress"
-                description="A checkout is still open. Finish it, or wait for it to expire before choosing another plan."
-              />
-            ) : null}
-            {billing.value.prices.map((price) => (
-              <SettingsRow
-                key={price.id}
-                title={price.label}
-                description="Per organization; manage plan changes in the billing portal."
-                control={
-                  <Button
-                    size="sm"
-                    disabled={checkout.pending || billing.value?.can_checkout === false}
-                    onClick={() => void checkout.call(price.id)}
-                  >
-                    {checkout.pending ? "Opening…" : "Upgrade"}
-                  </Button>
-                }
-              />
-            ))}
-            {billing.value.chat_usage === undefined ? null : (
-              <SettingsRow
-                title="AI usage this billing period"
-                description={`${billing.value.chat_usage.range.from.slice(0, 10)} – ${billing.value.chat_usage.range.to.slice(0, 10)} · ${billing.value.chat_usage.turns.toLocaleString()} ${billing.value.chat_usage.turns === 1 ? "turn" : "turns"}${billing.value.chat_usage.unpriced_turns > 0 ? ` · ${billing.value.chat_usage.unpriced_turns} ${billing.value.chat_usage.unpriced_turns === 1 ? "turn" : "turns"} awaiting pricing` : ""}`}
-                status={`${billing.value.chat_usage.tokens.toLocaleString()} tokens · $${billing.value.chat_usage.cost_usd.toFixed(6)} USD`}
-              />
-            )}
-            <SettingsRow title="">
-              <div className="pb-3">
-                <ControlError message={checkout.error?.message ?? portal.error?.message ?? null} />
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-4 py-3 sm:flex sm:justify-between">
+              <BillingPlanStatus report={billing.value} />
+              <div className="contents sm:flex sm:items-center sm:gap-3">
+                <Link to="/settings/$section" params={{ section: "plan" }} className="text-sm text-foreground hover:underline">Change plan →</Link>
+                <Button size="sm" className="col-span-2 w-full sm:w-auto" variant="outline" disabled={portal.pending || billing.value.can_manage === false} onClick={() => void portal.call()}>{portal.pending ? "Opening…" : "Billing portal"}</Button>
               </div>
-            </SettingsRow>
+            </div>
+            {checkout.error !== null || portal.error !== null ? <div className="px-4 py-3"><ControlError message={checkout.error?.message ?? portal.error?.message ?? null} /></div> : null}
           </>
         )}
       </SettingsSection>
-      {billing.value?.ai_credits === undefined ? null : (
-        <CreditSettings credits={billing.value.ai_credits} refresh={billing.refresh} />
+      {billing.error !== null || billing.value?.ai_credits === undefined ? null : (
+        <CreditSettings credits={billing.value.ai_credits} report={billing.value} refresh={billing.refresh} />
       )}
     </SettingsPageContainer>
   );
@@ -808,23 +1000,24 @@ export function AboutSettings(): React.ReactElement {
 
 export function SettingsRoute({
   section = DEFAULT_SECTION,
-  project = null,
+  runnerId,
   onNavigate,
 }: {
   /** The path segment after `/settings`. */
   readonly section?: SettingsSectionId;
-  /** `?project=`, for the Integrations section. */
-  readonly project?: string | null;
+  readonly runnerId?: string;
   /** The router's navigation. Absent in a test that renders the page alone. */
   readonly onNavigate?: (to: string) => void;
 }): React.ReactElement {
   const bootstrap = useAccountBootstrap();
   const canManage = bootstrap?.actor.can_manage ?? false;
   const supporting = bootstrap?.support != null;
+  const selfHosted = bootstrap?.self_hosted ?? false;
+  const [runnerName, setRunnerName] = React.useState("Runner");
 
   const items = React.useMemo(
-    () => settingsNavItems({ canManage, supporting }),
-    [canManage, supporting],
+    () => settingsNavItems({ canManage, supporting, selfHosted }),
+    [canManage, supporting, selfHosted],
   );
   // A section the actor cannot read is not on the list, so asking for it by
   // path lands on the default rather than on an empty column.
@@ -836,10 +1029,8 @@ export function SettingsRoute({
     ? requestedSection
     : DEFAULT_SECTION;
   const activeLabel = items.find((item) => item.id === activeId)?.label ?? SETTINGS_SECTION_LABELS[activeId];
-  const projectName = bootstrap?.projects.find((candidate) => candidate.id === project)?.name;
   usePageTitle(
-    activeId === "general" ? "Settings" : activeId === "runners" ? "Runners" : activeLabel,
-    projectName,
+    runnerId ? runnerName : activeId === "general" ? "Settings" : activeLabel,
   );
 
   return (
@@ -856,26 +1047,28 @@ export function SettingsRoute({
               <WorkspaceBreadcrumbSeparator />
             </>
           ) : null}
-          <WorkspaceBreadcrumbItem current className="min-w-10">
-            <span className="min-w-0 truncate">{activeId === "organization" ? "Overview" : activeLabel}</span>
+          <WorkspaceBreadcrumbItem current={!runnerId} className="min-w-10">
+            <span className="min-w-0 truncate">{runnerId ? <a href={`${basePath()}/settings/runners`} onClick={(event) => { if (onNavigate && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); onNavigate("/settings/runners"); } }}>Runners</a> : activeId === "organization" ? "Overview" : activeLabel}</span>
           </WorkspaceBreadcrumbItem>
+          {runnerId ? <><WorkspaceBreadcrumbSeparator /><WorkspaceBreadcrumbItem current><span className="truncate">{runnerName}</span></WorkspaceBreadcrumbItem></> : null}
         </WorkspaceBreadcrumb>
       </WorkspacePageHeader>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        <SettingsBody section={activeId} project={project} onNavigate={onNavigate} />
+        <SettingsBody runnerId={runnerId} onRunnerName={setRunnerName} section={activeId} onNavigate={onNavigate} />
       </div>
     </div>
   );
 }
 
 function SettingsBody({
+  runnerId, onRunnerName,
   section,
-  project,
   onNavigate,
 }: {
+  readonly runnerId?: string;
+  readonly onRunnerName?: (name: string) => void;
   readonly section: SettingsSectionId;
-  readonly project: string | null;
   readonly onNavigate?: (to: string) => void;
 }): React.ReactElement {
   switch (section) {
@@ -888,9 +1081,9 @@ function SettingsBody({
     case "projects":
       return <ProjectsSettings onNavigate={onNavigate} />;
     case "runners":
-      return <RunnersSettings />;
+      return <RunnersSettings runnerId={runnerId} onNavigate={onNavigate} onRunnerName={onRunnerName} />;
     case "integrations":
-      return <IntegrationsSettings project={project} onNavigate={onNavigate} />;
+      return <IntegrationsSettings />;
     case "mcp":
       return <MCPSettings />;
     case "plan":

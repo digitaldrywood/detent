@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { FileTree as FileTreeModel, FileTreeDirectoryHandle } from "@pierre/trees";
 import React from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { options as preactOptions } from "preact";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   FileSurface,
@@ -33,7 +34,19 @@ vi.mock("../../src/components/DiffWorkerPoolProvider.tsx", () => ({
   DiffWorkerPoolProvider: (props: { children?: React.ReactNode }) => <>{props.children}</>,
 }));
 
-afterEach(cleanup);
+const originalPreactScheduler = preactOptions.requestAnimationFrame;
+
+beforeEach(() => {
+  preactOptions.requestAnimationFrame = queueMicrotask;
+});
+
+afterEach(async () => {
+  try {
+    await act(async () => cleanup());
+  } finally {
+    preactOptions.requestAnimationFrame = originalPreactScheduler;
+  }
+});
 
 function entry(overrides: Partial<FileEntry> = {}): FileEntry {
   return {

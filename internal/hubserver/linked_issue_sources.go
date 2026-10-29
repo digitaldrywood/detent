@@ -46,10 +46,10 @@ const linkedIssueRepositoryMismatch = "GitHub issue must belong to this native p
 
 func validateLinkedIssueRepository(integration ProjectIntegration, repository string) error {
 	if integration.Profile == "native" && integration.Repository == "" && integration.CheckoutRepository == "" {
-		return nativeInvalid(linkedIssueRepositoryRequired)
+		return nativePublicInvalid(linkedIssueRepositoryRequired)
 	}
 	if integration.Profile != "native" || (!strings.EqualFold(repository, integration.Repository) && !strings.EqualFold(repository, integration.CheckoutRepository)) {
-		return nativeInvalid(linkedIssueRepositoryMismatch)
+		return nativePublicInvalid(linkedIssueRepositoryMismatch)
 	}
 	return nil
 }
@@ -65,7 +65,7 @@ func createLinkedIssueInStateTx(ctx context.Context, tx *sql.Tx, scope nativeSco
 		return tracker.NativeIssue{}, nativeInvalid(err.Error())
 	}
 	if request.Provenance != nil {
-		return tracker.NativeIssue{}, nativeInvalid("Linked issues obtain provenance during runner intake")
+		return tracker.NativeIssue{}, nativePublicInvalid("Linked issues obtain provenance during runner intake")
 	}
 	integration, err := readProjectIntegration(ctx, tx, scope)
 	if err != nil {
@@ -95,15 +95,7 @@ AND (native_source_key = ? OR (repository_id = ? AND github_number = ?))`, scope
 	if verified := scope.scheduledRepair; verified != nil && verified.importURL == canonical && verified.importReason == "" && !titleSupplied && !bodySupplied && request.Priority == nil {
 		candidate := tracker.NativeIssue{Body: verified.importBody, IssueContract: &issuecontract.State{}}
 		applyScheduledRepairContract(ctx, tx, scope, &candidate, now)
-		project, err := readNativeProject(ctx, tx, scope)
-		if err != nil {
-			return tracker.NativeIssue{}, err
-		}
-		eligible := false
-		for _, state := range project.States {
-			eligible = eligible || state.Name == "Todo" && state.Dispatchable && !state.Terminal && !state.OperatorOnly
-		}
-		if len(candidate.IssueContract.ConfirmedSections) != 0 && eligible {
+		if len(candidate.IssueContract.ConfirmedSections) != 0 {
 			matches, err := resolveNativeDuplicatesTx(ctx, tx, scope, tracker.CreateIssue{Title: request.Title, Body: verified.importBody}, now, true)
 			if err != nil {
 				return tracker.NativeIssue{}, err
@@ -123,6 +115,7 @@ AND (native_source_key = ? OR (repository_id = ? AND github_number = ?))`, scope
 			request.State, request.Priority, request.Body = "Todo", new(0), verified.importBody
 			bodySupplied = true
 			scope.sourceActor = nativeIntegrationActor("github")
+			scope.importedContent = true
 		} else if verified.importReason == "" {
 			verified.importReason = "Scheduled CI import requires a dispatchable nonterminal Todo lane"
 		}
@@ -149,7 +142,7 @@ AND (native_source_key = ? OR (repository_id = ? AND github_number = ?))`, scope
 func (s *Service) intakeLinkedIssue(c echo.Context) error {
 	var request tracker.GitHubIntake
 	if err := decodeAPIJSON(c, &request); err != nil {
-		return invalidAPIRequest(c, err)
+		return s.invalidAPIRequest(c, err)
 	}
 	return s.nativeMutation(c, request.Mutation, request, func(ctx context.Context, tx *sql.Tx, scope nativeScope, now time.Time) (any, error) {
 		return intakeLinkedIssueTx(ctx, tx, scope, c.Param("item"), request.Snapshot, now)
@@ -162,12 +155,12 @@ func intakeLinkedIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, id 
 		return nil, err
 	}
 	if issue.Profile != "native" || issue.LinkedSource == nil {
-		return nil, nativeInvalid("Issue has no linked source awaiting intake")
+		return nil, nativePublicInvalid("Issue has no linked source awaiting intake")
 	}
 	completed := issue.LinkedSource.Status == "complete"
 	canonical, _, _, err := tracker.ParseGitHubIssueURL(snapshot.URL)
 	if err != nil || canonical != issue.LinkedSource.URL {
-		return nil, nativeInvalid("Intake source does not match the linked issue")
+		return nil, nativePublicInvalid("Intake source does not match the linked issue")
 	}
 	if err := validateNativeContent(snapshot.Title, snapshot.Body, nil, nil, nil); err != nil {
 		return nil, err
@@ -181,17 +174,13 @@ func intakeLinkedIssueTx(ctx context.Context, tx *sql.Tx, scope nativeScope, id 
 			return nil, err
 		}
 		if len(comment.Body) > 64<<10 || seen[comment.Provenance.ExternalID] {
-			return nil, nativeInvalid("Intake discussion contains an oversized or duplicate comment")
+			return nil, nativePublicInvalid("Intake discussion contains an oversized or duplicate comment")
 		}
 		seen[comment.Provenance.ExternalID] = true
 	}
 	// Native field ownership includes an explicit edit back to the initial
 	// value. Comparing only strings would lose that human intent.
-	var titleOwned, bodyOwned bool
-	err = tx.QueryRowContext(ctx, `SELECT
-title_supplied OR EXISTS (SELECT 1 FROM collaboration_events e, json_each(e.data_json, '$.fields') f WHERE e.work_item_id = s.work_item_id AND e.type = 'issue.edited' AND f.value = 'title'),
-body_supplied OR EXISTS (SELECT 1 FROM collaboration_events e, json_each(e.data_json, '$.fields') f WHERE e.work_item_id = s.work_item_id AND e.type = 'issue.edited' AND f.value = 'body')
-FROM linked_issue_sources s WHERE work_item_id = ?`, issue.WorkItemID).Scan(&titleOwned, &bodyOwned)
+	titleOwned, bodyOwned, err := readNativeEditedOwnership(ctx, tx, issue.WorkItemID)
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +213,7 @@ FROM linked_issue_sources s WHERE work_item_id = ?`, issue.WorkItemID).Scan(&tit
 	if _, err := tx.ExecContext(ctx, "UPDATE linked_issue_sources SET snapshot_json = ? WHERE work_item_id = ?", raw, issue.WorkItemID); err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE issues SET provenance_json = ?, author_login = ? WHERE native_id = ?", provenance, snapshot.Provenance.AuthorID, issue.WorkItemID); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE issues SET provenance_json = ?, author_login = ?, provenance_provider = ?, provenance_external_id = ? WHERE native_id = ?", provenance, snapshot.Provenance.AuthorID, snapshot.Provenance.Provider, snapshot.Provenance.ExternalID, issue.WorkItemID); err != nil {
 		return nil, err
 	}
 	issue.LinkedSource.Status = "complete"
@@ -232,9 +221,5 @@ FROM linked_issue_sources s WHERE work_item_id = ?`, issue.WorkItemID).Scan(&tit
 	if verified := scope.scheduledRepair; verified != nil && verified.importURL == canonical && verified.importReason != "" {
 		reason += ": " + verified.importReason
 	}
-	issue, err = persistNativeIssue(ctx, tx, scope, issue, "github.imported", tracker.CollaborationData{Operation: "source_intake", Reason: reason}, now)
-	if err == nil && !completed {
-		err = enqueueLinkedSourceSummary(ctx, tx, scope, issue, "intake", false, now)
-	}
-	return issue, err
+	return persistNativeIssue(ctx, tx, scope, issue, "github.imported", tracker.CollaborationData{Operation: "source_intake", Reason: reason}, now)
 }

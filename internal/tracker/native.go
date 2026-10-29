@@ -13,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/mutation"
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/projecticon"
 	"github.com/digitaldrywood/detent/internal/workpad"
 
 	"github.com/digitaldrywood/detent/internal/providercapacity"
@@ -50,7 +51,7 @@ const NativeRunnerSetupDeclarationCapability = "runner_setup_declaration"
 // NativeWorkspaceCapability is declared by a runner's workspace lane on its
 // claim. It is what separates the lane that holds a workspace session open
 // from the lane that runs issues: a workspace is its own work item kind and
-// the ordinary claim never sees one (decisions section 18.1). The signal is a
+// the ordinary claim never sees one. The signal is a
 // declared capability rather than a label filter, because a label filter is a
 // preference an operator can set on any lane and this is an authority.
 const NativeWorkspaceCapability = "workspace_sessions"
@@ -90,11 +91,13 @@ type Provenance struct {
 }
 
 type NativeIssue struct {
-	ReleaseDelivery    *ReleaseDelivery     `json:"release_delivery,omitempty"`
-	IssueContract      *issuecontract.State `json:"issue_contract,omitempty" yaml:"issue_contract,omitempty"`
-	OmittedFields      []string             `json:"omitted_fields,omitempty"`
-	LinkedSource       *LinkedIssueSource   `json:"linked_source,omitempty"`
-	IgnoreDependencies bool                 `json:"ignore_dependencies,omitempty"`
+	ChangeSequence         int64                `json:"change_sequence,omitempty"`
+	LatestTransitionReason string               `json:"-"`
+	ReleaseDelivery        *ReleaseDelivery     `json:"release_delivery,omitempty"`
+	IssueContract          *issuecontract.State `json:"issue_contract,omitempty" yaml:"issue_contract,omitempty"`
+	OmittedFields          []string             `json:"omitted_fields,omitempty"`
+	LinkedSource           *LinkedIssueSource   `json:"linked_source,omitempty"`
+	IgnoreDependencies     bool                 `json:"ignore_dependencies,omitempty"`
 	NativeReference
 	WebURL             string              `json:"web_url"`
 	PublicationReused  bool                `json:"publication_reused,omitempty"`
@@ -109,6 +112,7 @@ type NativeIssue struct {
 	ReporterStatus     string              `json:"reporter_status,omitempty"`
 	Archived           bool                `json:"archived"`
 	Terminal           bool                `json:"terminal"`
+	SchedulingEligible *bool               `json:"scheduling_eligible,omitempty"`
 	Priority           *int                `json:"priority,omitempty"`
 	Labels             []string            `json:"labels"`
 	Assignees          []string            `json:"assignees"`
@@ -150,8 +154,7 @@ type NativePullRequest struct {
 // produce one" are different facts and they decide differently.
 const (
 	// NativeChangeConnectorNone is a project with no GitHub connector, which
-	// is decisions section 18.6's "projects without a GitHub connector show
-	// the change request alone". No pull request can ever mirror its changes.
+	// shows the change request alone. No pull request can ever mirror its changes.
 	NativeChangeConnectorNone = "none"
 	// NativeChangeConnectorGitHub is a project with a GitHub repository bound
 	// and enabled, whose changes a pull request can mirror even when none
@@ -162,7 +165,7 @@ const (
 // NativeIssueChange is a work item's change review surface: what the hub
 // itself holds for the item, and whether a pull request can ever mirror it.
 //
-// Decisions section 18.6 joins the hub's own change request with the GitHub
+// The pull request contract joins the hub's own change request with the GitHub
 // connector's projection of its pull request, and a project without a
 // connector shows the change request alone. A promotion decision needs the
 // same two halves: whether the item's change is reviewed on a pull request at
@@ -187,7 +190,7 @@ type NativeIssueChange struct {
 	HeadSHA string `json:"head_sha,omitempty"`
 	// Revision is the work item revision the recorded change covers: the
 	// revision the succeeded attempt that produced it was dispatched for
-	// (decisions section 9.2.1's native_attempts.work_item_revision). Zero
+	// (native_attempts.work_item_revision). Zero
 	// means no attempt has recorded a change or an attempt diff for the item.
 	Revision Revision `json:"revision,string"`
 }
@@ -242,6 +245,7 @@ type NativeComment struct {
 	Body           string           `json:"body"`
 	Actor          Actor            `json:"actor"`
 	EditedBy       *Actor           `json:"edited_by,omitempty"`
+	Deleted        bool             `json:"deleted,omitempty"`
 	Provenance     *Provenance      `json:"provenance,omitempty"`
 	CreatedAt      time.Time        `json:"created_at"`
 	UpdatedAt      time.Time        `json:"updated_at"`
@@ -253,10 +257,16 @@ type Mutation struct {
 	FencingToken   FencingToken `json:"fencing_token,string,omitempty"`
 }
 
+type ScheduledFailure struct {
+	PreviousGreenSHA string                 `json:"previous_green_sha"`
+	Evidence         gate.ScheduledEvidence `json:"evidence"`
+}
+
 type CreateIssue struct {
 	Mutation
 	ChallengeToken      string                          `json:"challenge_token,omitempty"`
 	NotDuplicateOf      []int                           `json:"not_duplicate_of,omitempty"`
+	ScheduledFailure    *ScheduledFailure               `json:"scheduled_failure,omitempty"`
 	ScheduledValidation *gate.ScheduledValidationReport `json:"scheduled_validation,omitempty"`
 	GitHubIssueURL      string                          `json:"github_issue_url,omitempty"`
 	Type                string                          `json:"type,omitempty"`
@@ -376,6 +386,7 @@ type UpdateComment struct {
 	Mutation
 	ExpectedRevision Revision `json:"expected_revision,string"`
 	Body             string   `json:"body"`
+	Deleted          bool     `json:"deleted,omitempty"`
 }
 
 const (
@@ -473,6 +484,7 @@ type EventCompaction struct {
 }
 
 type NativeIssuePage struct {
+	ChangeSequence int64 `json:"change_sequence"`
 	Page[NativeIssue]
 	Total        int                `json:"total"`
 	Work         *NativeWorkSummary `json:"work,omitempty"`
@@ -506,17 +518,18 @@ type NativeWorkLane struct {
 type NativeState = policy.State
 
 type NativeProject struct {
-	CloneURL            string          `json:"clone_url,omitempty"`
-	Repository          string          `json:"repository,omitempty"`
-	Slug                string          `json:"slug"`
-	ModelSelection      json.RawMessage `json:"model_selection,omitempty"`
-	WorkflowMarkdown    string          `json:"workflow_markdown,omitempty"`
-	ID                  ProjectID       `json:"project_id"`
-	OrganizationID      OrganizationID  `json:"organization_id"`
-	Name                string          `json:"name"`
-	Profile             string          `json:"profile"`
-	States              []NativeState   `json:"states"`
-	RequireDependencies bool            `json:"require_dependencies"`
+	Icon                *projecticon.Icon `json:"project_icon"`
+	CloneURL            string            `json:"clone_url,omitempty"`
+	Repository          string            `json:"repository,omitempty"`
+	Slug                string            `json:"slug"`
+	ModelSelection      json.RawMessage   `json:"model_selection,omitempty"`
+	WorkflowMarkdown    string            `json:"workflow_markdown,omitempty"`
+	ID                  ProjectID         `json:"project_id"`
+	OrganizationID      OrganizationID    `json:"organization_id"`
+	Name                string            `json:"name"`
+	Profile             string            `json:"profile"`
+	States              []NativeState     `json:"states"`
+	RequireDependencies bool              `json:"require_dependencies"`
 }
 
 type NativeClaim struct {
@@ -540,6 +553,7 @@ type NativeClaim struct {
 }
 
 type NativeLease struct {
+	RunDetailBatching   bool                          `json:"run_detail_batching,omitempty"`
 	IsolationPolicy     *isolation.Policy             `json:"isolation_policy,omitempty"`
 	ProviderReservation *providercapacity.Reservation `json:"provider_reservation,omitempty"`
 	ServerTime          time.Time                     `json:"server_time"`
@@ -572,6 +586,7 @@ type NativeCapacityPage struct {
 }
 
 type NativeLeaseMutation struct {
+	CancelAttempt   bool         `json:"cancel_attempt,omitempty"`
 	LandingCapacity int          `json:"landing_capacity,omitempty"`
 	FencingToken    FencingToken `json:"fencing_token,string"`
 	TTLSeconds      int64        `json:"ttl_seconds,omitempty"`
@@ -588,6 +603,7 @@ type NativeDisposition struct {
 }
 
 type NativeRunData struct {
+	Steps           []NativeStepReceipt       `json:"steps,omitempty"`
 	ProcessUsage    *procgroup.Usage          `json:"process_usage,omitempty"`
 	TerminalFailure *NativeTerminalFailure    `json:"terminal_failure,omitempty"`
 	Finalization    *NativeFinalization       `json:"finalization,omitempty"`
@@ -609,7 +625,7 @@ type NativeRunData struct {
 	Outcome         string                    `json:"outcome,omitempty"`
 	ArtifactIDs     []string                  `json:"artifact_ids,omitempty"`
 	// Usage is what the attempt has spent so far, one entry per provider and
-	// model (decisions section 17.5). A runner that reports none leaves the
+	// model. A runner that reports none leaves the
 	// field out, so the event is byte-identical to what it was before.
 	Usage []NativeUsage `json:"usage,omitempty"`
 }
@@ -621,6 +637,7 @@ type NativeEvidence struct {
 }
 
 type NativeRunEvent struct {
+	PriorEvents []NativeRunEvent `json:"prior_events,omitempty"`
 	Mutation
 	Type          string        `json:"type"`
 	SchemaVersion int           `json:"schema_version"`

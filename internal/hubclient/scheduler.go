@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -29,7 +30,11 @@ import (
 const hubWorkItemField = "detent_hub_work_item_id"
 
 type SchedulerConfig struct {
-	AvailableCapacity     func(context.Context, int) int
+	ReleasedStopped   func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error)
+	AvailableCapacity func(context.Context, int) int
+
+	StorageConstraint func(context.Context) string
+
 	RefreshProjects       func(context.Context, *Scheduler) error
 	Skills                func(project string) []skills.ProviderSkill
 	PrepareProject        func(context.Context, string) error
@@ -57,7 +62,13 @@ type SchedulerConfig struct {
 }
 
 type Scheduler struct {
-	availableCapacity     func(context.Context, int) int
+	controlMu         sync.RWMutex
+	controlPaused     atomic.Bool
+	releasedStopped   func(context.Context, tracker.NativeWorkItemID, tracker.NativeAttempt) (bool, error)
+	availableCapacity func(context.Context, int) int
+
+	storageConstraint func(context.Context) string
+
 	hostMetrics           *hostmetrics.Collector
 	hostMetricsMu         sync.Mutex
 	refreshProjects       func(context.Context, *Scheduler) error
@@ -66,6 +77,7 @@ type Scheduler struct {
 	projectConfiguration  func(context.Context, string, *runnerauth.ProjectConfigurationRequest) runnerauth.ProjectConfiguration
 	prepareProject        func(context.Context, string) error
 	runnerSetupDeclared   func(context.Context, string) *bool
+	claimAdmission        func() (func(), bool)
 	updateOwner           func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation
 	capacityConfiguration func(context.Context, *runnerauth.CapacityRequest) *runnerauth.CapacityConfig
 	localChecks           map[string]runnerauth.LocalChecks
@@ -97,8 +109,20 @@ type Scheduler struct {
 	claims                map[string]tracker.Lease
 	leaseHold             func(context.Context) (func(), error)
 	leaseHoldRelease      func()
-	leaseHoldPending      bool
+	leaseHoldPending      chan struct{}
+	nativeFetches         int
 	githubBatchRunning    bool
+}
+
+func (s *Scheduler) PauseController() func() {
+	s.controlMu.Lock()
+	s.controlPaused.Store(true)
+	s.controlMu.Unlock()
+	return func() {
+		s.controlMu.Lock()
+		s.controlPaused.Store(false)
+		s.controlMu.Unlock()
+	}
 }
 
 func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
@@ -122,7 +146,11 @@ func NewScheduler(client *Client, config SchedulerConfig) (*Scheduler, error) {
 		sessionID = randomSessionID
 	}
 	scheduler := &Scheduler{
-		availableCapacity:     config.AvailableCapacity,
+		releasedStopped:   config.ReleasedStopped,
+		availableCapacity: config.AvailableCapacity,
+
+		storageConstraint: config.StorageConstraint,
+
 		refreshProjects:       config.RefreshProjects,
 		prepareProject:        config.PrepareProject,
 		runnerSetupDeclared:   config.RunnerSetupDeclared,
@@ -165,6 +193,13 @@ func (s *Scheduler) HeartbeatInterval() time.Duration {
 		return 0
 	}
 	return s.heartbeatInterval
+}
+
+func (s *Scheduler) WorkspaceStorageConstraint(ctx context.Context) string {
+	if s.storageConstraint == nil {
+		return ""
+	}
+	return s.storageConstraint(ctx)
 }
 
 func (s *Scheduler) FetchCandidateIssues(ctx context.Context, request orchestrator.SchedulingRequest) ([]connector.Issue, error) {
@@ -332,6 +367,9 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 	s.mu.Lock()
 	native, isNative := s.nativeClaims[issueID]
 	lease, ok := s.claims[issueID]
+	if isNative && native.execution != nil {
+		native.execution.RetainCompletion()
+	}
 	s.mu.Unlock()
 	if !ok {
 		// A missing native publisher cannot prove prepared Finish settled.
@@ -340,56 +378,46 @@ func (s *Scheduler) ReleaseClaim(ctx context.Context, issueID string, reason str
 		}
 		return nil
 	}
-	var err, finishErr error
+	var err error
 	if isNative {
 		if native.execution != nil {
-			if err := native.execution.finishPrepared(ctx); err != nil {
-				if !claimLost(err) && !errors.Is(err, orchestrator.ErrSchedulingClaimLost) {
-					return err
-				}
-				// Retire the obsolete lease through the same release owner, but
-				// report that its terminal publication never settled.
-				finishErr = errors.Join(runner.ErrExecutionAuthorityUnavailable, err)
+			err = native.execution.finishPrepared(ctx)
+			var rejection *nativeCompletionRejection
+			if err != nil && !errors.As(err, &rejection) {
+				return err
 			}
 		}
-		retain := false
-		if native.execution != nil {
-			native.execution.mu.Lock()
-			data := native.execution.data
-			finalization := data.Finalization
-			completedSource := data.Disposition != nil && data.Disposition.Status == "complete" && finalization != nil &&
-				finalization.Settled && finalization.Changed && finalization.ChangeID != "" && finalization.VersionID != "" && finalization.HeadSHA != "" &&
-				finalization.VersionError == "" && finalization.Error == ""
-			retain = s.client.runner != nil && (data.Outcome == "" || data.Outcome == "interrupted" && !completedSource)
-			native.execution.mu.Unlock()
-		}
-		if native.execution != nil {
-			if err := native.execution.closeWorkers(ctx); err != nil {
-				return errors.Join(finishErr, err)
-			}
-		}
-		if !retain {
+		if native.execution == nil {
 			err = native.source.client.Release(ctx, native.lease, "released")
 		}
 	} else {
 		err = s.client.Release(ctx, lease, reason)
 	}
-	if err != nil && !claimLost(err) {
-		return errors.Join(finishErr, err)
+	var rejection *nativeCompletionRejection
+	if err != nil && !claimLost(err) && !errors.As(err, &rejection) {
+		return err
 	}
 	s.mu.Lock()
 	if current, ok := s.claims[issueID]; ok && current.FencingToken != lease.FencingToken {
 		s.mu.Unlock()
-		return finishErr
+		return nil
 	}
 	delete(s.claims, issueID)
 	delete(s.nativeClaims, issueID)
 	delete(s.claimPolicies, issueID)
 	s.mu.Unlock()
-	return finishErr
+	if rejection != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Scheduler) ensureMachine(ctx context.Context) error {
+	s.controlMu.RLock()
+	defer s.controlMu.RUnlock()
+	if s.controlPaused.Load() {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now().UTC()
@@ -523,7 +551,7 @@ func routingDeferred(err error) bool {
 		return false
 	}
 	switch failure.Code {
-	case "provider_capacity", "provider_incompatible", "provider_candidate_changed", "selector_no_match", "runner_disabled", "runner_draining", "runner_offline", "runner_capacity", "host_capacity", "project_access_denied", "claim_not_permitted":
+	case "provider_capacity", "provider_incompatible", "provider_candidate_changed", "selector_no_match", "runner_disabled", "runner_draining", "runner_offline", "runner_capacity", "host_capacity", "plan_capacity", "project_access_denied", "claim_not_permitted":
 		return true
 	default:
 		return false
@@ -563,6 +591,12 @@ func cloneTime(value *time.Time) *time.Time {
 
 func intPointer(value int) *int {
 	return &value
+}
+
+func (s *Scheduler) SetClaimAdmission(admission func() (func(), bool)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.claimAdmission = admission
 }
 
 func (s *Scheduler) SetUpdateOwner(owner func(context.Context, *runnerauth.UpdateRequest) *runnerauth.UpdateObservation) {

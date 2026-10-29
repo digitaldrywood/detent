@@ -1,6 +1,6 @@
 // Handoff (U06) against the mock hub. No DOM: this is the runtime contract.
 //
-// The three rules under test are decisions.md §3: the link key is an
+// The three link rules under test: the link key is an
 // idempotency key, a second link is refused with the conversation to navigate
 // to instead, and a link without an explicit share confirmation is refused.
 import * as Option from "effect/Option";
@@ -127,7 +127,7 @@ describe("handoff", () => {
     const failure = second.failure;
     if (failure._tag !== "ApiRequestError") throw new Error("Expected an API failure.");
     expect(failure.code).toBe("conversation_already_linked");
-    // The client can navigate rather than duplicating (decisions.md §3.4).
+    // The client can navigate rather than duplicating.
     expect(readAlreadyLinked(failure.details)?.existing_conversation_id).toBe(conversationId);
   });
 

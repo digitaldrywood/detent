@@ -200,6 +200,7 @@ func removeLegacy(ctx context.Context, workspaceRoot string, chmod func(*os.Root
 
 // Report describes the locally resolved caches for doctor and status.
 type Report struct {
+	Deferred         bool   `json:"deferred,omitempty"`
 	AgeExpiredBytes  int64  `json:"age_expired_bytes"`
 	SizeEvictedBytes int64  `json:"size_evicted_bytes"`
 	RetainedBytes    int64  `json:"retained_bytes"`

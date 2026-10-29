@@ -8,10 +8,10 @@ The JSON structure is shared in `internal/operations`. Historical aggregation
 lives in the store; the web layer adds instance identity, current merge-queue
 telemetry, explicit human gates, and issue links.
 
-The operator health metric is tokens per merged PR per project per day across
-both hosts. Compute it from recorded history, never the dashboard or completion
-receipt averages. See [Token spend diagnosis](diagnosis.md#token-spend) for the
-authoritative sources, merge definition, and runnable audit queries.
+Token efficiency is measured as tokens per merged PR per project per day from
+recorded history, not from dashboard or completion receipt averages. See
+[Token spend diagnosis](diagnosis.md#token-spend) for the sources and merge
+definition.
 
 ## Stats
 
@@ -61,18 +61,16 @@ action cursor.
 ## Operator routine
 
 Board remediation runs as one routine on the refresh tick, gated by a
-per-project allowlist. It consolidates the former separate loops; there is no
-separate tick path for any of them and no external repair script.
+per-project allowlist.
 
 ```yaml
 operator:
-  actions: [return_retired_parks, clear_closed_dependencies, restore_stuck_merging]
+  actions: [clear_closed_dependencies, restore_stuck_merging]
   merge_wedge_seconds: 7200
 ```
 
 | Action | Absorbs | Lane reason | Default |
 | --- | --- | --- | --- |
-| `return_retired_parks` | blocked-cause recovery and recorded-blocker recovery (`tracker.blocked_recovery`) | `blocked_recovery`, `cause_blocked_recovery`, `recorded_blocker_recovery` | on |
 | `clear_closed_dependencies` | dependency auto-unblock (`tracker.dependency_auto_unblock`) | `dependency_auto_unblock` | on |
 | `restore_stuck_merging` | stale-Merging reconciliation | the existing stale-Merging reasons | on |
 | `merge_when_wedged` | manual merge of a gated-green PR when the merge path is wedged | `merge_worker_programmatic_merge` | off |
@@ -89,17 +87,20 @@ Merging for at least `merge_wedge_seconds`, and neither a native queue entry
 nor a merge worker is acting on it. It uses the project's configured
 `merge_method` and records the merge under `merge_worker_programmatic_merge`.
 Actions never change repository settings and never pause or unpause projects.
+Any other name in `actions` is a configuration error.
 
-`file_deduped_issue` and `apply_doctor_config_fix` from the design are not
-available yet; naming them in `actions` is a configuration error.
+Blocked-lane recovery is not an allowlisted action. Every refresh re-reads each
+`Blocked` issue's current intent: an issue holding an explicit human question,
+permission request or operator stop stays in `Blocked`; any other issue is
+returned to a dispatchable lane through the machine retry owner (lane reasons
+such as `cause_blocked_recovery` and `recorded_blocker_recovery`). Historical
+park metadata never keeps an issue in `Blocked`.
 
 ## Exporting the page
 
 `detent report --html <path>` writes the same report as a self-contained HTML
-file for readers away from the runner. It replaces the external
-`monitor.py` watcher and `repair.py` repair script, which are retired; actions
-now come from the operator routine and are visible in the report itself. A
-launchd agent keeps a synced copy current:
+file for readers away from the runner. A launchd agent can keep a copy
+current:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -112,7 +113,7 @@ launchd agent keeps a synced copy current:
     <string>/usr/local/bin/detent</string>
     <string>report</string>
     <string>--html</string>
-    <string>/Users/operator/Dropbox/Detent/Detent Status.html</string>
+    <string>/Users/example/Reports/detent-status.html</string>
   </array>
   <key>StartInterval</key><integer>600</integer>
   <key>EnvironmentVariables</key>
@@ -126,13 +127,34 @@ On Linux, a systemd user timer calling the same command is equivalent.
 
 ## Runner service logs
 
-`detent start` and runner registration install launchd or systemd services with
+`detent hub runner register --service` installs a launchd or systemd service with
 stdout and stderr appended to `logs/service.out.log` and `logs/service.err.log`
 beside the runner's global config. With the default runner config, these are
 `~/.config/detent-runner/logs/service.out.log` and
 `~/.config/detent-runner/logs/service.err.log`. Installation prints both paths.
 Failed service starts are throttled to one restart per minute by the service
 manager.
+
+While the runner is running, it checks these two files at startup and once per
+second, independently of worker activity. Service retention shares the application
+logging settings: `log_max_size_bytes` defaults to 52428800 (50 MiB), and
+`log_max_backups` defaults to 5. Nonpositive values use these finite defaults for
+service files. Each file keeps up to five numbered snapshots (`.1` is newest),
+each containing at most the most recent 50 MiB at the default limit. An already
+oversized file is reduced on the first check. The active file can exceed the
+threshold by output written between checks; retained history is capped at
+250 MiB per stream with the defaults.
+
+Retention copies the bounded tail to a private temporary file and closes it
+successfully before rotating existing snapshots and promoting the new snapshot.
+Failed snapshot writes leave existing history and active output intact and remove
+the incomplete temporary file. It then truncates the active file in place, keeping
+the service's and inherited workers' append descriptors usable without a restart
+or a worker drain. Output concurrent with copy/truncate may be lost. Snapshots
+are private (0600); active file permissions and log redaction are unchanged.
+Only the installed service log files actually connected to stdout/stderr are
+retained. Services using the system journal keep OS-owned retention. These files
+are disposable diagnostics and are never used to recover jobs.
 
 Startup validation is project-specific. A project with unusable tracker
 credentials reports its error and repair command through runner problems while
@@ -160,15 +182,12 @@ delete rollouts; the doctor total remains available for operator inspection.
 
 `detent doctor` reports each worker-profile SQLite file size (including
 sidecars), the Detent rollout total, and their combined size. It warns above
-2 GiB; the doctor check does not delete files. Inspect the sizes before and
-after an operator-controlled boot on each host to verify reclaimed bytes.
-A host with a running Codex app-server will defer log maintenance.
+2 GiB; the doctor check does not delete files. A host with a running Codex
+app-server defers log maintenance.
 
-User-level Codex databases, such as `~/.codex/logs_<N>.sqlite`, are the
-operator's responsibility. With Codex closed, its disposable log database and
-sidecars can safely be removed and will be recreated. Thread state and history
-contain session data: back them up and review what would be lost before manual
-pruning. Detent never prunes user-level SQLite databases.
+Detent never prunes user-level Codex databases, such as
+`~/.codex/logs_<N>.sqlite`. Codex recreates its log database when it is
+removed; thread state and history databases contain session data.
 
 ## Profiling
 

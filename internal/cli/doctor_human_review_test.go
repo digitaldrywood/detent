@@ -71,7 +71,11 @@ func TestDoctorHumanReviewLane(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := workflowconfig.Default()
 			cfg.Review.Human = tt.human
-			cfg.Tracker.Kind = workflowconfig.TrackerMemory
+			cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+			cfg.Tracker.APIKey = "fixture-token"
+			cfg.Tracker.ProjectSlug = "fixture-project"
+			cfg.Tracker.Repository = "example-org/example-project"
+			cfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
 			deps := doctorDeps{autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
 				return &fakeDoctorAutoPromoteConnector{issues: tt.issues}, nil
 			}}

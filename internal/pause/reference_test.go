@@ -17,6 +17,43 @@ func TestResolveReference(t *testing.T) {
 		wantErr   string
 	}{
 		{
+			name:      "native project number without GitHub tracker",
+			pausedID:  "prj_example",
+			reference: "prj_example#42",
+			trackers: []Tracker{{
+				ProjectID: "prj_example", Kind: "hub_native", Repository: "example-org/example-project",
+			}},
+			want: ReferenceResolution{ProjectID: "prj_example", Reference: "prj_example#42"},
+		},
+		{
+			name:      "native project number uses current native tracker",
+			pausedID:  "prj_example",
+			reference: "prj_example#42",
+			trackers: []Tracker{
+				{ProjectID: "prj_example", Kind: "hub_native", Repository: "example-org/example-project"},
+				{ProjectID: "github-project", Kind: "github", Repository: "example-org/prj_example"},
+			},
+			want: ReferenceResolution{ProjectID: "prj_example", Reference: "prj_example#42"},
+		},
+		{
+			name:      "native number stays scoped to native tracker",
+			pausedID:  "prj_example",
+			reference: "#42",
+			trackers: []Tracker{{
+				ProjectID: "prj_example", Kind: "hub_native", Repository: "example-org/example-project",
+			}},
+			want: ReferenceResolution{ProjectID: "prj_example", Reference: "#42"},
+		},
+		{
+			name:      "native work item uses current native tracker",
+			pausedID:  "prj_example",
+			reference: "wi_example",
+			trackers: []Tracker{{
+				ProjectID: "prj_example", Kind: "hub_native", Repository: "example-org/example-project",
+			}},
+			want: ReferenceResolution{ProjectID: "prj_example", Reference: "wi_example"},
+		},
+		{
 			name:      "local sqlite rejects unmatched GitHub reference",
 			pausedID:  "video",
 			reference: "digitaldrywood/video-studio#147",

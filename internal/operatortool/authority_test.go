@@ -17,12 +17,23 @@ import (
 // application's current authority changes, or reach a read on denial.
 func TestCurrentAuthorityExecution(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		change  func(*Connection, *Authority)
-		denied  bool
-		message string
+		name                string
+		change              func(*Connection, *Authority)
+		denied              bool
+		message             string
+		providerUnavailable bool
 	}{
 		{name: "current grant"},
+		{name: "provider unavailable resolving authority", denied: true, providerUnavailable: true, change: func(c *Connection, a *Authority) {
+			c.Resolve = func(context.Context) (Authority, error) {
+				return Authority{}, fmt.Errorf("private provider detail: %w", ErrProviderUnavailable)
+			}
+		}},
+		{name: "provider unavailable checking authority", denied: true, providerUnavailable: true, change: func(c *Connection, a *Authority) {
+			a.Check = func(context.Context, Requirement) error {
+				return fmt.Errorf("private provider detail: %w", ErrProviderUnavailable)
+			}
+		}},
 		{name: "revoked credential", denied: true, change: func(c *Connection, a *Authority) {
 			c.Resolve = func(context.Context) (Authority, error) { return Authority{}, errors.New("secret lookup detail") }
 		}},
@@ -58,14 +69,18 @@ func TestCurrentAuthorityExecution(t *testing.T) {
 			ctx = WithConnection(t.Context(), connection)
 			_, err := executor.Execute(ctx, Call{Name: BoardState, Arguments: json.RawMessage(`{"project_id":"project"}`)})
 			if test.denied {
-				if !errors.Is(err, ErrAccessDenied) || reads != 0 {
+				wantError := ErrAccessDenied
+				if test.providerUnavailable {
+					wantError = ErrProviderUnavailable
+				}
+				if !errors.Is(err, wantError) || reads != 0 {
 					t.Fatalf("err=%v reads=%d", err, reads)
 				}
 				if test.message != "" && !strings.Contains(err.Error(), test.message) {
 					t.Fatalf("denial detail lost: %v", err)
 				}
 				// An approved action must resolve again, exactly like a direct call.
-				if _, err := AuthorizeCurrent(ctx, Requirement{Scope: apikey.ScopeWrite, ProjectID: "project"}); !errors.Is(err, ErrAccessDenied) {
+				if _, err := AuthorizeCurrent(ctx, Requirement{Scope: apikey.ScopeWrite, ProjectID: "project"}); !errors.Is(err, wantError) {
 					t.Fatalf("approved action authorization = %v", err)
 				}
 			} else if err != nil || reads != 1 {
