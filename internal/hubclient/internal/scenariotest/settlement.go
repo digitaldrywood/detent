@@ -1050,7 +1050,7 @@ func RunSettlement(t *testing.T, scenarios []SettlementScenario, factories Const
 			if test.PublicationWriteRefusal != "" {
 				owner := execution.(*ownedExecution)
 				if err := owner.PrepareFinish(guarded, test.Outcome, "", nil); err != nil || owner.CompletionSnapshot().Publication == nil {
-					t.Fatalf("prepare held publication: %v", err)
+					t.Fatalf("prepare held publication: %v, change=%+v, calls=%d", err, owner.NativeChange(), publicationCalls)
 				}
 				switch test.PublicationWriteRefusal {
 				case "version":
