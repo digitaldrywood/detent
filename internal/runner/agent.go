@@ -1645,10 +1645,12 @@ func restoreRunWorkspaceCheckpoint(req RunRequest, runWorkspace workspace.Backen
 			}
 		}
 	}
-	if req.Execution != nil && !nativeLanding && !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), *issue) {
-		issue.Checkpoint = nativeRestorableCheckpoint(req.Execution.Recovery(), issue.Source)
-		if previous := req.Execution.Recovery().SourceAttempt(); issue.Checkpoint != nil && normalizeRunMode(req.Mode) == RunModeImplement && previous != nil && previous.Identity != nil && previous.Identity.Role == RoleRework {
-			issue.NativeRework = true
+	if req.Execution != nil && !nativeLanding {
+		if !sameMachineWorkspaceRetained(runWorkspace, req.Execution.Recovery(), *issue) {
+			issue.Checkpoint = nativeRestorableCheckpoint(req.Execution.Recovery(), issue.Source)
+			if previous := req.Execution.Recovery().SourceAttempt(); issue.Checkpoint != nil && normalizeRunMode(req.Mode) == RunModeImplement && previous != nil && previous.Identity != nil && previous.Identity.Role == RoleRework {
+				issue.NativeRework = true
+			}
 		}
 		if previous := req.Execution.Recovery().SourceAttempt(); previous != nil && cleanLocalCheckpoint(previous.Checkpoint) {
 			issue.FreshCheckout = true
