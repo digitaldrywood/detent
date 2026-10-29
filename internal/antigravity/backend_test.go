@@ -41,6 +41,7 @@ func TestRunTurnStream(t *testing.T) {
 		{mode: "no_result", wantError: "exited before a result", capacity: true},
 		{mode: "no_init", wantError: "outside a conversation", capacity: true},
 		{mode: "foreign_step", wantError: "different conversation", capacity: true},
+		{mode: "foreign_result", wantError: "result belongs to a different conversation", capacity: true},
 		{mode: "malformed", wantError: "invalid Antigravity stream record", capacity: true},
 		{mode: "truncated", wantError: "unexpected EOF", capacity: true},
 		{mode: "turn_limit", wantError: "session turn limit exceeded"},
@@ -276,6 +277,7 @@ func TestAntigravityProcess(t *testing.T) {
 		step(map[string]any{"step_index": 1, "state": "ACTIVE", "step_type": "agent_response", "text_delta": reply})
 	}
 	step(map[string]any{"step_index": 1, "state": "DONE", "step_type": "agent_response", "usage": map[string]any{"input_tokens": 10, "output_tokens": 5, "thinking_tokens": 1, "cache_read_tokens": 0}})
+	step(map[string]any{"step_index": 1, "state": "DONE", "step_type": "agent_response", "usage": map[string]any{"input_tokens": 10, "output_tokens": 5, "thinking_tokens": 1, "cache_read_tokens": 0}})
 	if mode == "turn_limit" {
 		step(map[string]any{"step_index": 2, "state": "DONE", "step_type": "agent_response", "usage": map[string]any{"input_tokens": 1}})
 	}
@@ -293,7 +295,11 @@ func TestAntigravityProcess(t *testing.T) {
 	if mode == "no_result" {
 		os.Exit(0)
 	}
-	send(map[string]any{"event": "result", "result": map[string]any{"conversation_id": "fixture-conversation", "status": "SUCCESS", "response": "hello\u2028world\n", "usage": map[string]any{"input_tokens": 23, "output_tokens": 8}}})
+	conversation := "fixture-conversation"
+	if mode == "foreign_result" {
+		conversation = "other"
+	}
+	send(map[string]any{"event": "result", "result": map[string]any{"conversation_id": conversation, "status": "SUCCESS", "response": "hello\u2028world\n", "usage": map[string]any{"input_tokens": 23, "output_tokens": 8}}})
 	os.Exit(0)
 }
 
@@ -430,7 +436,11 @@ func TestInfrastructureClassification(t *testing.T) {
 
 func TestNewAgentBackendRequiresLaunchContract(t *testing.T) {
 	factory := func(context.Context, []string) *exec.Cmd { return nil }
-	for _, options := range []Options{{Home: t.TempDir()}, {CommandFactory: factory}, {Home: "relative", CommandFactory: factory}} {
+	operator, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, options := range []Options{{Home: t.TempDir()}, {CommandFactory: factory}, {Home: "relative", CommandFactory: factory}, {Home: operator, CommandFactory: factory}, {Home: operator + string(filepath.Separator), CommandFactory: factory}} {
 		if _, err := NewAgentBackend(options); err == nil {
 			t.Errorf("NewAgentBackend(%#v) accepted an incomplete launch contract", options)
 		}

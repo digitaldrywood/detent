@@ -58,6 +58,7 @@ type turnState struct {
 	turns         int
 	tokens        runner.AgentTokenCounts
 	toolsStarted  map[int]bool
+	usageCounted  map[int]bool
 	promptWritten bool
 }
 
@@ -177,6 +178,9 @@ func (b *AgentBackend) exchange(ctx context.Context, records <-chan scanResult, 
 				if !started {
 					return &infrastructureError{err: errors.New("antigravity succeeded without a conversation"), startup: true}
 				}
+				if r.Result.ConversationID != "" && r.Result.ConversationID != s.sessionID {
+					return &infrastructureError{err: errors.New("antigravity result belongs to a different conversation")}
+				}
 				return nil
 			}
 		}
@@ -233,9 +237,13 @@ func (s *turnState) step(u stepUpdate) error {
 			}
 		}
 	}
-	if u.Usage == nil || u.State == "ACTIVE" {
+	if u.Usage == nil || u.State == "ACTIVE" || s.usageCounted[u.StepIndex] {
 		return nil
 	}
+	if s.usageCounted == nil {
+		s.usageCounted = make(map[int]bool)
+	}
+	s.usageCounted[u.StepIndex] = true
 	s.turns++
 	if err := s.reportUsage(*u.Usage); err != nil {
 		return err

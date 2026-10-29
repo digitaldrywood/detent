@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
@@ -43,7 +44,20 @@ func NewAgentBackend(options Options) (*AgentBackend, error) {
 	if !filepath.IsAbs(options.Home) {
 		return nil, errors.New("antigravity requires an absolute dedicated home")
 	}
+	if operator, err := os.UserHomeDir(); err == nil && sameDirectory(options.Home, operator) {
+		return nil, errors.New("antigravity home must not be the operator's home")
+	}
 	return &AgentBackend{options: options}, nil
+}
+
+func sameDirectory(a, b string) bool {
+	resolve := func(path string) string {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			return resolved
+		}
+		return filepath.Clean(path)
+	}
+	return resolve(a) == resolve(b)
 }
 
 func (*AgentBackend) VerifyResume(context.Context, runner.AgentProcessRequest, runner.AgentResume) error {
