@@ -511,4 +511,20 @@ describe("empty project import", () => {
     await screen.findByText("Imported task 12");
     expect(screen.queryByRole("dialog", { name: "Import issues" })).toBeNull();
   }, 30_000);
+
+  it("keeps import on the board once the project has cards", async () => {
+    await mountShell("/work/p/proj_alpha", { organization: "seeded" });
+    const action = await screen.findByTestId("board-import-issues");
+    expect(screen.queryByRole("button", { name: "Import from GitHub" })).toBeNull();
+    await waitFor(() => expect((action as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(action);
+    const dialog = await screen.findByRole("dialog", { name: "Import issues" });
+    await within(dialog).findByRole("region", { name: "Import GitHub issues" });
+  }, 30_000);
+
+  it("leaves import off the all-projects board", async () => {
+    await mountShell("/work", { organization: "seeded" });
+    await screen.findByTestId("board-new-issue");
+    expect(screen.queryByTestId("board-import-issues")).toBeNull();
+  }, 30_000);
 });

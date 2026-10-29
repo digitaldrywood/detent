@@ -8,7 +8,7 @@ import { useSavedViews, type SavedView } from "./lib/savedViews.tsx";
 // into a silent overwrite.
 import React from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { ChevronDownIcon, HistoryIcon, LoaderCircleIcon, PlusIcon, SparklesIcon } from "lucide-react";
+import { ChevronDownIcon, DownloadIcon, HistoryIcon, LoaderCircleIcon, PlusIcon, SparklesIcon } from "lucide-react";
 
 import { ToggleGroup, ToggleGroupItem } from "../../components/ui/toggle-group.tsx";
 import { Button, InlineButton, SplitButton } from "../../components/ui/button.tsx";
@@ -293,6 +293,7 @@ export function WorkBoard({ projectId, savedView }: { projectId: string | null; 
     accountBootstrap?.actor.role,
   );
   const canCreateHere = newIssue.canCreate && creatable.length > 0;
+  const importTarget = projectId !== null && canCreateHere ? projectId : null;
   const firstRun =
     noProjects ||
     (board.resolved && board.error === null && board.items.length === 0 && !narrowed(view) &&
@@ -328,18 +329,34 @@ export function WorkBoard({ projectId, savedView }: { projectId: string | null; 
       )}
       connection={chip}
       actions={noProjects ? null : (
-        <Button
-          size="sm"
-          className="hidden md:inline-flex"
-          data-testid="board-new-issue"
-          aria-keyshortcuts={NEW_ISSUE_KEYSHORTCUTS}
-          disabled={!canCreateHere}
-          title={canCreateHere ? "New issue (C)" : ISSUE_CREATION_NEEDS_WRITE}
-          onClick={() => newIssue.openNewIssue({ projectId })}
-        >
-          <PlusIcon />
-          New issue
-        </Button>
+        <>
+          {projectId === null ? null : (
+            <Button
+              size="sm"
+              variant="outline"
+              className="hidden md:inline-flex"
+              data-testid="board-import-issues"
+              disabled={importTarget === null}
+              title={importTarget === null ? ISSUE_CREATION_NEEDS_WRITE : "Import issues"}
+              onClick={() => { if (importTarget !== null) setImportProject(importTarget); }}
+            >
+              <DownloadIcon />
+              Import issues
+            </Button>
+          )}
+          <Button
+            size="sm"
+            className="hidden md:inline-flex"
+            data-testid="board-new-issue"
+            aria-keyshortcuts={NEW_ISSUE_KEYSHORTCUTS}
+            disabled={!canCreateHere}
+            title={canCreateHere ? "New issue (C)" : ISSUE_CREATION_NEEDS_WRITE}
+            onClick={() => newIssue.openNewIssue({ projectId })}
+          >
+            <PlusIcon />
+            New issue
+          </Button>
+        </>
       )}
       mobileActions={
         <SplitButton className="md:hidden" aria-label="Work actions">
@@ -368,6 +385,16 @@ export function WorkBoard({ projectId, savedView }: { projectId: string | null; 
                 New issue
                 <MenuShortcut>C</MenuShortcut>
               </MenuItem>
+              {projectId === null ? null : (
+                <MenuItem
+                  className="min-h-11 sm:min-h-11"
+                  disabled={importTarget === null}
+                  onClick={() => { if (importTarget !== null) setImportProject(importTarget); }}
+                >
+                  <DownloadIcon />
+                  Import issues
+                </MenuItem>
+              )}
               <MenuSeparator />
               <MenuItem className="min-h-11 sm:min-h-11" onClick={() => setOpenMobile(true)}>
                 <HistoryIcon />
