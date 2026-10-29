@@ -1512,46 +1512,62 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 			{name: "legacy event", legacy: true},
 		} {
 			t.Run(fmt.Sprintf("%d retained/local %s", retained, test.name), func(t *testing.T) {
-				tx, err := d.db.BeginTx(t.Context(), nil)
+				ctx := f.service.runDetailContext(t.Context())
+				var stored string
+				if err := d.reader.QueryRowContext(ctx, "SELECT COALESCE(NULLIF(payload_object_key,''),data_json) FROM native_attempts WHERE id=?", runEvent.Data.AttemptID).Scan(&stored); err != nil {
+					t.Fatal(err)
+				}
+				event := runEvent
+				if err := decodeRunDetail(ctx, d.reader, stored, &event.Data); err != nil {
+					t.Fatal(err)
+				}
+				event.IdempotencyKey = "local-accounting"
+				previous := event.Data
+				if test.legacy {
+					event.Data.AttemptID, event.Data.Sequence = newNativeID("attempt"), 0
+				} else if !test.start && !test.replay {
+					event.Type, event.Data.Sequence = "run.observed", 2
+					event.Data.Runtime = &tracker.NativeRuntimeObservation{HeartbeatAt: now, Phase: "implementation"}
+					if test.unchanged {
+						runtime := *event.Data.Runtime
+						runtime.HeartbeatAt = now.Add(-time.Second)
+						previous.Runtime = &runtime
+					}
+					previous.Evidence = []tracker.NativeEvidence{{AttachmentID: "att_retained", Caption: "保留された証拠", Reference: "retained"}}
+				}
+				prepared := event.Data
+				if !test.start && !test.legacy {
+					prepared.Evidence = previous.Evidence
+				}
+				raw, err := marshalNative(prepared)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := prepareChangeContent(ctx, string(f.project.OrganizationID), []byte(raw)); err != nil {
+					t.Fatal(err)
+				}
+				prior, err := marshalNative(previous)
+				if err != nil {
+					t.Fatal(err)
+				}
+				priorRef, err := prepareChangeContent(ctx, string(f.project.OrganizationID), []byte(prior))
+				if err != nil {
+					t.Fatal(err)
+				}
+				tx, err := d.db.BeginTx(ctx, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
 				defer tx.Rollback()
-				var stored string
-				if err := tx.QueryRowContext(t.Context(), "SELECT data_json FROM native_attempts WHERE id=?", runEvent.Data.AttemptID).Scan(&stored); err != nil {
-					t.Fatal(err)
-				}
-				event := runEvent
-				if err := json.Unmarshal([]byte(stored), &event.Data); err != nil {
-					t.Fatal(err)
-				}
-				event.IdempotencyKey = "local-accounting"
 				if test.start {
-					if _, err := tx.ExecContext(t.Context(), "DELETE FROM native_attempt_events WHERE attempt_id=?", event.Data.AttemptID); err != nil {
+					if _, err := tx.ExecContext(ctx, "DELETE FROM native_attempt_events WHERE attempt_id=?", event.Data.AttemptID); err != nil {
 						t.Fatal(err)
 					}
-					if _, err := tx.ExecContext(t.Context(), "DELETE FROM native_attempts WHERE id=?", event.Data.AttemptID); err != nil {
+					if _, err := tx.ExecContext(ctx, "DELETE FROM native_attempts WHERE id=?", event.Data.AttemptID); err != nil {
 						t.Fatal(err)
 					}
-				} else if test.legacy {
-					event.Data.AttemptID, event.Data.Sequence = newNativeID("attempt"), 0
-				} else if !test.replay {
-					event.Type, event.Data.Sequence = "run.observed", 2
-					event.Data.Runtime = &tracker.NativeRuntimeObservation{HeartbeatAt: now, Phase: "implementation"}
-					priorRuntime := "null"
-					if test.unchanged {
-						previous := *event.Data.Runtime
-						previous.HeartbeatAt = now.Add(-time.Second)
-						priorRuntime, err = marshalNative(previous)
-						if err != nil {
-							t.Fatal(err)
-						}
-					}
-					evidence, err := marshalNative([]tracker.NativeEvidence{{AttachmentID: "att_retained", Caption: "保留された証拠", Reference: "retained"}})
-					if err != nil {
-						t.Fatal(err)
-					}
-					if _, err := tx.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json,'$.runtime',json(?),'$.evidence',json(?)) WHERE id=?", priorRuntime, evidence, event.Data.AttemptID); err != nil {
+				} else if !test.legacy && !test.replay {
+					if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET payload_object_key=? WHERE id=?", priorRef.Key, event.Data.AttemptID); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -1568,7 +1584,7 @@ func TestHostedNativeMutationConsumption(t *testing.T) {
 				scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: credential}
 				publish := true
 				if !test.legacy {
-					appended, history, err := recordNativeAttempt(t.Context(), tx, scope, runItem, &event, now, false)
+					appended, history, err := recordNativeAttempt(ctx, tx, scope, runItem, &event, now, false)
 					if err != nil {
 						t.Fatal(err)
 					}
