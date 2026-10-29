@@ -132,7 +132,7 @@ func readValidationAudit(ctx context.Context, query nativeQueryer, scope nativeS
 	return audit, nil
 }
 
-func readValidationCandidates(ctx context.Context, query nativeQueryer, scope nativeScope, item, change, attempt string, scheduled gate.ScheduledEvidence) ([]tracker.ValidationComparison, bool, error) {
+func readValidationCandidates(ctx context.Context, query nativeQueryer, scope nativeScope, item, change, attempt string, scheduled gate.ScheduledEvidence) (_ []tracker.ValidationComparison, _ bool, resultErr error) {
 	type rankedCandidate struct {
 		value        tracker.ValidationComparison
 		rowid, fence int64
@@ -155,7 +155,7 @@ func readValidationCandidates(ctx context.Context, query nativeQueryer, scope na
 		if err != nil {
 			return nil, false, err
 		}
-		defer rows.Close()
+		defer func(rows *changeLegacyRows) { resultErr = errors.Join(resultErr, rows.Close()) }(rows)
 		count := 0
 		for rows.Next() {
 			count++
@@ -164,17 +164,14 @@ func readValidationCandidates(ctx context.Context, query nativeQueryer, scope na
 			var rowid, fence int64
 			var merge sql.NullString
 			if err := rows.Scan(&candidate.WorkItemID, &versionRaw, &candidate.NativeAttemptID, &candidate.NativeRunID, &candidate.LocalAttemptID, &receiptRaw, &changeRaw, &rowid, &fence, &merge); err != nil {
-				rows.Close()
 				return nil, false, err
 			}
 			var version tracker.ChangeVersion
 			var request tracker.ChangeRequest
 			if err := json.Unmarshal([]byte(versionRaw), &version); err != nil {
-				rows.Close()
 				return nil, false, err
 			}
 			if err := json.Unmarshal([]byte(changeRaw), &request); err != nil {
-				rows.Close()
 				return nil, false, err
 			}
 			if validationRepository(version.Repository) != scheduled.Repository {
@@ -188,7 +185,6 @@ func readValidationCandidates(ctx context.Context, query nativeQueryer, scope na
 			if receiptRaw != "" {
 				var receipt tracker.NativeLandingReceipt
 				if err := json.Unmarshal([]byte(receiptRaw), &receipt); err != nil {
-					rows.Close()
 					return nil, false, err
 				}
 				if receipt.Gate != nil {

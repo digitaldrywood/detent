@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -43,7 +44,7 @@ func replaceBoardPageFilterValues(ctx context.Context, q nativeExecer, card trac
 	return err
 }
 
-func readLegacyPageFilterValues(ctx context.Context, q nativeQueryer, scope nativeScope, item, family string) (nativePageFact, error) {
+func readLegacyPageFilterValues(ctx context.Context, q nativeQueryer, scope nativeScope, item, family string) (_ nativePageFact, resultErr error) {
 	board := family == "native_board_filter_values"
 	f := nativePageFact{name: family, columns: "issue_id,kind,value", known: "SELECT v.issue_id,v.kind,v.value FROM main.native_issue_page_filter_values v JOIN main.issues i ON i.id=v.issue_id WHERE i.page_filters_ready=1"}
 	query := "SELECT id,labels_json,assignees_json FROM main.issues WHERE page_filters_ready IS NULL"
@@ -75,7 +76,7 @@ func readLegacyPageFilterValues(ctx context.Context, q nativeQueryer, scope nati
 	if err != nil {
 		return f, err
 	}
-	defer rows.Close()
+	defer func(rows *changeLegacyRows) { resultErr = errors.Join(resultErr, rows.Close()) }(rows)
 	for rows.Next() {
 		var id any
 		var raw, assigneesRaw string

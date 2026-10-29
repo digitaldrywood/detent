@@ -10,12 +10,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
-func readRecoveryChangeCheck(ctx context.Context, q nativeQueryer, change, version, run string) ([]tracker.ChangeCheck, error) {
+func readRecoveryChangeCheck(ctx context.Context, q nativeQueryer, change, version, run string) (_ []tracker.ChangeCheck, resultErr error) {
 	rows, err := queryChangeLegacyRows(ctx, q, `SELECT record_json,check_run_id FROM change_evidence WHERE change_id=? AND kind='check' AND version_id=? AND (check_run_id=? OR check_run_id IS NULL) ORDER BY sequence DESC`, change, version, run)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func(rows *changeLegacyRows) { resultErr = errors.Join(resultErr, rows.Close()) }(rows)
 	checks := []tracker.ChangeCheck{}
 	for rows.Next() {
 		var raw string
@@ -44,12 +44,12 @@ func readRecoveryChangeCheck(ctx context.Context, q nativeQueryer, change, versi
 	return checks, nil
 }
 
-func legacyRecoveryReviews(ctx context.Context, q nativeQueryer, change, version string) ([]tracker.ChangeReview, map[string]bool, error) {
+func legacyRecoveryReviews(ctx context.Context, q nativeQueryer, change, version string) (_ []tracker.ChangeReview, _ map[string]bool, resultErr error) {
 	rows, err := queryChangeLegacyRows(ctx, q, `SELECT sequence,record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' ORDER BY sequence DESC`, change, version)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
+	defer func(rows *changeLegacyRows) { resultErr = errors.Join(resultErr, rows.Close()) }(rows)
 	type selectedReview struct {
 		sequence int64
 		review   tracker.ChangeReview

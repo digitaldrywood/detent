@@ -176,7 +176,7 @@ func prepareNativePageQuery(ctx context.Context, q nativeQueryer, scope nativeSc
 	return prepared, nil
 }
 
-func readLegacyPageFact(ctx context.Context, q nativeQueryer, scope nativeScope, item, family string) (nativePageFact, error) {
+func readLegacyPageFact(ctx context.Context, q nativeQueryer, scope nativeScope, item, family string) (_ nativePageFact, resultErr error) {
 	if family == "report_attempts" || family == "report_events" {
 		return readLegacyReportFact(ctx, q, scope, family)
 	}
@@ -238,7 +238,7 @@ func readLegacyPageFact(ctx context.Context, q nativeQueryer, scope nativeScope,
 	if err != nil {
 		return f, err
 	}
-	defer rows.Close()
+	defer func(rows *changeLegacyRows) { resultErr = errors.Join(resultErr, rows.Close()) }(rows)
 	for rows.Next() {
 		var raw string
 		var values []any
