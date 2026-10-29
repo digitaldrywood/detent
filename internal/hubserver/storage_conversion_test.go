@@ -700,6 +700,17 @@ func TestStorageConversionDiscoveryInitialization(t *testing.T) {
 	if !ok {
 		t.Fatal("missing payload migration rollback")
 	}
+	storedTextMigration, err := migrationFiles.ReadFile("migrations/20261029061743_conversation_stored_text_bytes.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedTextUp, storedTextDown, ok := strings.Cut(string(storedTextMigration), "-- +goose Down")
+	if !ok {
+		t.Fatal("missing stored text migration rollback")
+	}
+	if _, err := db.db.ExecContext(ctx, storedTextDown); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.db.ExecContext(ctx, payloadDown); err != nil {
 		t.Fatal(err)
 	}
@@ -717,6 +728,9 @@ SELECT ?,?,n,'attempt','legacy-'||n,1,'{"obsolete":"payload"}' FROM history`, fi
 		t.Fatal(err)
 	}
 	if _, err := db.db.ExecContext(ctx, payloadUp); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.ExecContext(ctx, storedTextUp); err != nil {
 		t.Fatal(err)
 	}
 	var progress int
