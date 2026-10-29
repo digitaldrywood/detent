@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -22,13 +23,13 @@ func TestProgressCheckUsesReadOnlyBackendAndJSONBudget(t *testing.T) {
 	}
 	t.Setenv("TMPDIR", root)
 	output := `{"outcome":"reroute","step":"implement","reason":"` + strings.Repeat("evidence ", 100) + `","evidence":["failed-attempt"]}`
-	backend := &fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateTokenUsage, Tokens: AgentTokenUsage{InputTokens: 100, OutputTokens: 50}}, {Type: AgentUpdateMessageDelta, ItemID: "final", Delta: output}}}
+	backend := &progressPolicyBackend{fakeCodexClient: fakeCodexClient{updates: []AgentUpdate{{Type: AgentUpdateTokenUsage, Tokens: AgentTokenUsage{InputTokens: 100, OutputTokens: 50}}, {Type: AgentUpdateMessageDelta, ItemID: "final", Delta: output}}}}
 	r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "default", Backend: "codex", Model: "example-model", Default: true}}}}}, Workspace: &fakeWorkspaceBackend{}, AgentBackend: backend})
 	if err != nil {
 		t.Fatal(err)
 	}
 	execution := &progressUsageExecution{}
-	decision, err := r.CheckProgress(t.Context(), RunRequest{Issue: connector.Issue{ID: "example-issue"}, Mode: RunModeImplement, Execution: execution}, progresscheck.Request{ProjectID: "example-project", IssueID: "example-issue", PolicyID: "policy", EvidenceRevision: "revision", Attempts: []progresscheck.Attempt{{ID: "failed-attempt", Outcome: "failed"}}, AvailableSteps: []string{RunModeImplement}})
+	decision, err := r.CheckProgress(t.Context(), RunRequest{Issue: connector.Issue{ID: "example-issue", IsolationPolicy: &isolation.Policy{Tier: isolation.NativeTrusted}}, Mode: RunModeImplement, Execution: execution}, progresscheck.Request{ProjectID: "example-project", IssueID: "example-issue", PolicyID: "policy", EvidenceRevision: "revision", Attempts: []progresscheck.Attempt{{ID: "failed-attempt", Outcome: "failed"}}, AvailableSteps: []string{RunModeImplement}})
 	if err != nil || decision.Outcome != progresscheck.Reroute {
 		t.Fatalf("decision=%+v err=%v", decision, err)
 	}
@@ -45,6 +46,15 @@ func TestProgressCheckUsesReadOnlyBackendAndJSONBudget(t *testing.T) {
 	if !strings.Contains(request.Prompt, "failed-attempt") || !strings.Contains(request.Prompt, progresscheck.Instructions) {
 		t.Fatal("backend did not receive evidence and decision contract")
 	}
+}
+
+type progressPolicyBackend struct{ fakeCodexClient }
+
+func (b *progressPolicyBackend) RunTurn(ctx context.Context, req AgentTurnRequest, observe AgentUpdateHandler) (AgentTurnResult, error) {
+	if policy, ok := isolation.FromContext(ctx); !ok || policy.Tier != isolation.NativeTrusted {
+		return AgentTurnResult{}, errors.New("runner claim isolation policy is unavailable")
+	}
+	return b.fakeCodexClient.RunTurn(ctx, req, observe)
 }
 
 type progressUsageExecution struct {

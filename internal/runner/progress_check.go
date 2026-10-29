@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/digitaldrywood/detent/internal/gobudget"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -22,6 +23,9 @@ func (b progressTextBackend) Generate(ctx context.Context, instructions, input s
 }
 
 func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence progresscheck.Request) (progresscheck.Decision, error) {
+	if req.Issue.IsolationPolicy != nil {
+		ctx = isolation.WithPolicy(ctx, *req.Issue.IsolationPolicy)
+	}
 	ctx, cancel := context.WithTimeout(ctx, progresscheck.MaxDuration)
 	defer cancel()
 	if req.Execution == nil {

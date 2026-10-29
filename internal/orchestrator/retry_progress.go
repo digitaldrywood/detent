@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 )
@@ -35,7 +37,7 @@ func (b *retryProgressBackend) Decide(ctx context.Context, request progresscheck
 	return b.runner.CheckProgress(ctx, b.run, request)
 }
 
-func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest) error {
+func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest) (returnErr error) {
 	source, ok := o.scheduling.(retryProgressSource)
 	if !ok || o.progressRunner == nil {
 		return nil
@@ -47,6 +49,13 @@ func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest
 		return err
 	}
 	backend := &retryProgressBackend{runner: o.progressRunner, run: *run}
+	defer func() {
+		if returnErr != nil && backend.called && run.Execution != nil {
+			finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			returnErr = errors.Join(returnErr, run.Execution.Finish(finishCtx, "failed"))
+		}
+	}()
 	record, checked, err := progresscheck.Check(ctx, request, backend, owner)
 	if err != nil {
 		return err
@@ -57,32 +66,35 @@ func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest
 	run.ProgressDecision = record
 	run.PriorAttempt.Source = "Progress check comment " + record.CommentID
 	run.PriorAttempt.Reason = strings.TrimSpace(run.PriorAttempt.Reason + "\n" + record.Decision.Reason)
+	previousMode := run.Mode
 	switch record.Decision.Outcome {
 	case progresscheck.Progressing:
-		return nil
 	case progresscheck.Reroute:
 		switch record.Decision.Step {
 		case RunModeImplement, RunModeMerge:
-			previousMode := run.Mode
 			run.Mode = record.Decision.Step
-			if run.Mode != previousMode {
-				if admission, ok := o.scheduling.(interface {
-					ReadmitRetryProgress(context.Context, RunRequest, runpkg.ProviderCapacityResolver) (runpkg.Execution, error)
-				}); ok {
-					execution, err := admission.ReadmitRetryProgress(ctx, *run, o.providerCapacity)
-					if err != nil {
-						return fmt.Errorf("admit progress step: %w", err)
-					}
-					run.Execution = execution
-				}
-			}
-			return nil
+		default:
+			return errors.New("progress decision cannot be dispatched")
 		}
 	case progresscheck.SystemDefect:
 		if !backend.called {
 			return nil
 		}
 		return fmt.Errorf("progress check filed dependency %s", record.DefectIssueID)
+	default:
+		return errors.New("progress decision cannot be dispatched")
 	}
-	return errors.New("progress decision cannot be dispatched")
+	if backend.called || run.Mode != previousMode {
+		if admission, ok := o.scheduling.(interface {
+			ReadmitRetryProgress(context.Context, RunRequest, runpkg.ProviderCapacityResolver) (runpkg.Execution, *isolation.Policy, error)
+		}); ok {
+			execution, policy, err := admission.ReadmitRetryProgress(ctx, *run, o.providerCapacity)
+			if err != nil {
+				return fmt.Errorf("admit progress step: %w", err)
+			}
+			run.Execution = execution
+			run.Issue.IsolationPolicy = policy
+		}
+	}
+	return nil
 }
