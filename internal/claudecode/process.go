@@ -26,10 +26,18 @@ func (b *AgentBackend) RunTurn(
 	req runner.AgentTurnRequest,
 	onUpdate runner.AgentUpdateHandler,
 ) (turnResult runner.AgentTurnResult, turnErr error) {
+	return b.runTurn(ctx, req, onUpdate, false)
+}
+
+func (b *AgentBackend) runTurn(ctx context.Context, req runner.AgentTurnRequest, onUpdate runner.AgentUpdateHandler, finalizing bool) (turnResult runner.AgentTurnResult, turnErr error) {
 	if req.ToolBudget != nil {
 		previous := onUpdate
 		onUpdate = func(update runner.AgentUpdate) error {
-			if err := req.ToolBudget.Observe(update); err != nil {
+			observation := update
+			if observation.Type == runner.AgentUpdateToolOutput && (observation.Status == "completed" || observation.Status == "failed") {
+				observation.Type = runner.AgentUpdateToolCompleted
+			}
+			if err := req.ToolBudget.Observe(observation); err != nil && !errors.Is(err, runner.ErrInvestigationBudget) {
 				return err
 			}
 			if previous != nil {
@@ -42,6 +50,15 @@ func (b *AgentBackend) RunTurn(
 	turnTimeout := b.options.TurnTimeout
 	if req.TurnTimeout > 0 {
 		turnTimeout = req.TurnTimeout
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return runner.AgentTurnResult{}, context.DeadlineExceeded
+		}
+		if turnTimeout <= 0 || remaining < turnTimeout {
+			turnTimeout = remaining
+		}
 	}
 	if turnTimeout > 0 {
 		var cancel context.CancelFunc
@@ -191,6 +208,12 @@ func (b *AgentBackend) RunTurn(
 	if finalErr != nil && strings.EqualFold(strings.TrimSpace(state.resultSubtype), "error_max_turns") {
 		finalErr = errors.Join(runner.ErrSessionTurnLimitExceeded, finalErr)
 	}
+	if !finalizing && req.ToolBudget.Exhausted() && !json.Valid([]byte(state.resultText)) && state.sessionID != "" && ctx.Err() == nil && (finalErr == nil || errors.Is(finalErr, runner.ErrSessionTurnLimitExceeded)) {
+		req.Resume = runner.AgentResume{SessionID: state.sessionID}
+		req.Prompt = req.ToolBudget.FinalPrompt(ctx)
+		req.MaxTurns = 1
+		return b.runTurn(ctx, req, onUpdate, true)
+	}
 	status := runner.FinalStateCompleted
 	if finalErr != nil {
 		status = runner.FinalStateFailed
@@ -238,7 +261,10 @@ func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.Agen
 		if !req.ReadOnly {
 			policy.ExtraNetworkDomains = req.ExtraNetworkDomains
 		}
-		policy.WritableRoots = []string{req.Workspace}
+		policy.WritableRoots = nil
+		if req.Workspace != "" {
+			policy.WritableRoots = append(policy.WritableRoots, req.Workspace)
+		}
 		if req.TempDir != "" {
 			policy.WritableRoots = append(policy.WritableRoots, req.TempDir)
 		}
@@ -267,6 +293,9 @@ func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.Agen
 			sandbox["network"] = map[string]any{"allowedDomains": []string{}, "allowUnixSockets": []string{}, "allowAllUnixSockets": false, "allowLocalBinding": false, "strictAllowlist": true}
 			permissions := settings["permissions"].(map[string]any)
 			permissions["deny"] = append(permissions["deny"].([]string), "Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch")
+			if req.ToolBudget != nil || req.Workspace == "" {
+				permissions["deny"] = append(permissions["deny"].([]string), "Read", "Glob", "Grep")
+			}
 		}
 		if policy.Tier == "sandbox" && len(b.options.ExtraArgs) > 0 {
 			return nil, nil, errors.New("runner isolation cannot apply Claude extra arguments")
@@ -321,6 +350,9 @@ func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.Agen
 		return nil, nil, ErrNilCommand
 	}
 	cmd.Dir = req.Workspace
+	if cmd.Dir == "" && req.IsolatedTools {
+		cmd.Dir = req.TempDir
+	}
 	if len(cmd.Args) == 0 {
 		cmd.Args = []string{cmd.Path}
 	}
@@ -387,6 +419,8 @@ func (b *AgentBackend) argv(req runner.AgentTurnRequest) []string {
 		)
 		if req.TextOnly {
 			args = append(args, "--tools", "", "--mcp-config", `{"mcpServers":{}}`)
+		} else if req.IsolatedTools && (req.ToolBudget != nil || req.Workspace == "") {
+			args = append(args, "--tools", "")
 		} else {
 			args = append(args, "--tools", "Read", "Glob", "Grep")
 		}

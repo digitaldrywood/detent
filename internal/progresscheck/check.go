@@ -13,8 +13,8 @@ import (
 
 const (
 	CompleteStep       = "complete"
-	MaxToolCalls       = 32
-	MaxToolResultBytes = 256 << 10
+	MaxToolCalls       = 80
+	MaxToolResultBytes = 1 << 20
 	MaxDuration        = 3 * time.Minute
 	MaxAttempts        = 12
 	MaxReceipts        = 24

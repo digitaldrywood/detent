@@ -875,3 +875,58 @@ func canonicalPath(t *testing.T, path string) string {
 	}
 	return canonical
 }
+
+func TestInvestigationBudgetPreservesFinalDecision(t *testing.T) {
+	for _, fallback := range []bool{false, true} {
+		t.Run(strconv.FormatBool(fallback), func(t *testing.T) {
+			decision := `{"outcome":"reroute","step":"implement","reason":"Repair failure","diagnosis":"failed: observed assertion failure","instruction":"Repair the failing assertion","evidence":["failed"]}`
+			encoded, err := json.Marshal(decision)
+			if err != nil {
+				t.Fatal(err)
+			}
+			header := `{"type":"system","subtype":"init","session_id":"session-investigation"}` + "\n"
+			evidence := `{"type":"assistant","message":{"id":"read-message","content":[{"type":"tool_use","id":"read-1","name":"Read","input":{"file_path":"source.go"}}]}}` + "\n" + `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"read-1","content":"four"}]}}` + "\n"
+			final := `{"type":"assistant","message":{"id":"final","content":[{"type":"text","text":` + string(encoded) + `}]}}` + "\n" + `{"type":"result","subtype":"success","session_id":"session-investigation","result":` + string(encoded) + `}` + "\n"
+			first := header + evidence + final
+			if fallback {
+				first = header + evidence + `{"type":"result","subtype":"success","session_id":"session-investigation","result":""}` + "\n"
+			}
+			paths := []string{filepath.Join(t.TempDir(), "first.jsonl"), filepath.Join(t.TempDir(), "final.jsonl")}
+			for i, content := range []string{first, header + final} {
+				if err := os.WriteFile(paths[i], []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			calls := 0
+			coverDir := t.TempDir()
+			backend := newTestBackend(t, Options{CommandFactoryWithArgs: func(ctx context.Context, args []string) *exec.Cmd {
+				if calls > 1 {
+					t.Error("repeated final turn")
+					return nil
+				}
+				if calls == 1 && (!strings.Contains(strings.Join(args, " "), "--resume session-investigation") || !strings.Contains(strings.Join(args, " "), "--max-turns 1")) {
+					t.Errorf("final turn lost session: %v", args)
+				}
+				cmd := catCommand(paths[calls], "", 0)(ctx)
+				cmd.Env = append(cmd.Env, "GOCOVERDIR="+coverDir)
+				calls++
+				return cmd
+			}})
+			var output strings.Builder
+			ctx := t.Context()
+			result, err := backend.RunTurn(ctx, runner.AgentTurnRequest{Workspace: t.TempDir(), TempDir: t.TempDir(), ReadOnly: true, ToolBudget: runner.NewAgentToolBudget(1, 1000)}, func(update runner.AgentUpdate) error {
+				if update.Type == runner.AgentUpdateMessageDelta {
+					output.WriteString(update.Delta)
+				}
+				return nil
+			})
+			wantCalls := 1
+			if fallback {
+				wantCalls = 2
+			}
+			if err != nil || context.Cause(ctx) != nil || output.String() != decision || result.SessionID != "session-investigation" || calls != wantCalls {
+				t.Fatalf("decision=%q result=%+v calls=%d err=%v cause=%v", output.String(), result, calls, err, context.Cause(ctx))
+			}
+		})
+	}
+}
