@@ -33,8 +33,16 @@ func TestCoordinatorActionQueryMetadata(t *testing.T) {
 					t.Fatal(err)
 				}
 				message := conversationMessageRecord{Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "Example proposal", Data: data, Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}}
+				plan, err := f.conversations.newPublicationPlan(t.Context(), record.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := plan.appendMessage(t.Context(), &message); err != nil {
+					t.Fatal(err)
+				}
+				ctx := plan.context(t.Context())
 				f.transact(t, func(tx *sql.Tx) error {
-					return f.conversations.appendMessage(t.Context(), tx, &record, &message, f.service.config.now())
+					return f.conversations.appendMessage(ctx, tx, &record, &message, plan.now)
 				})
 			}
 			prepare := func() {
@@ -45,8 +53,10 @@ func TestCoordinatorActionQueryMetadata(t *testing.T) {
 					}
 					return
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversation_messages SET query_metadata_version=0,operator_action_id=NULL,operator_action_agent=NULL,operator_action_result=NULL WHERE conversation_id=?`, record.ID); err != nil {
-					t.Fatal(err)
+				for _, message := range f.messages(t, record.ID) {
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversation_messages SET content_attachment_id='',text=?,data_json=?,query_metadata_version=0,operator_action_id=NULL,operator_action_agent=NULL,operator_action_result=NULL WHERE id=?`, message.Text, string(message.Data), message.ID); err != nil {
+						t.Fatal(err)
+					}
 				}
 				if stage == "backfilled" {
 					if err := f.service.convertConversationQueryMetadata(t.Context()); err != nil {

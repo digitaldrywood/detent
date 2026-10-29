@@ -407,7 +407,15 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := f.service.database.db.ExecContext(ctx, "UPDATE native_attempts SET payload_object_key=?, finalization_settled=?, finalization_changed=?, finalization_change_id=?, finalization_version_id=? WHERE id=?", ref.Key, finalization.Settled, finalization.Changed, finalization.ChangeID, finalization.VersionID, f.attempt); err != nil {
+					if err := f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
+						if _, err := recordPayloadAttachment(ctx, tx, f.scope(), f.issue.WorkItemID, ref, formatHubTime(f.now)); err != nil {
+							return err
+						}
+						if _, err := tx.ExecContext(ctx, "UPDATE native_attempts SET payload_object_key=? WHERE id=?", ref.Key, f.attempt); err != nil {
+							return err
+						}
+						return updateAttemptHotProjection(ctx, tx, f.attempt, "succeeded", attempt.NativeRunData)
+					}); err != nil {
 						t.Fatal(err)
 					}
 				}

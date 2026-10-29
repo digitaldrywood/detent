@@ -68,6 +68,9 @@ func (s *Service) authorizeChangeSource(ctx context.Context, scope nativeScope, 
 	if change.WorkItemID != tracker.NativeWorkItemID(item) {
 		return false, nativePublicInvalid("Publish through the Change Request's primary issue")
 	}
+	if err := validateChangeVersion(request.ChangeVersionInput); err != nil {
+		return false, err
+	}
 	if err := requireChangeRun(ctx, tx, scope, change, request); err != nil {
 		return false, err
 	}
