@@ -248,6 +248,7 @@ func TestAttemptDiffBodyExpiryCandidates(t *testing.T) {
 		unrelated      int
 		nullAttempts   int
 		otherTenant    bool
+		otherSource    int
 	}{
 		{name: "bounded manifest and file expiry", unrelated: 10},
 		{name: "bounded expiry with project history", unrelated: 1000},
@@ -255,6 +256,8 @@ func TestAttemptDiffBodyExpiryCandidates(t *testing.T) {
 		{name: "ten thousand null attempts in another project", nullAttempts: 10000},
 		{name: "ten null attempts in another tenant", nullAttempts: 10, otherTenant: true},
 		{name: "ten thousand null attempts in another tenant", nullAttempts: 10000, otherTenant: true},
+		{name: "ten newer diffs from another source", otherSource: 10},
+		{name: "ten thousand newer diffs from another source", otherSource: 10000},
 		{name: "archived file manifest expiry", archive: true},
 		{name: "new claim protects selected bodies", claimAfterRead: true},
 	} {
@@ -334,6 +337,15 @@ SELECT id,2,organization_id,project_id,'archive','sha256',1,1 FROM attempt_diffs
 					t.Fatal(err)
 				}
 			}
+			if test.otherSource > 0 {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?)
+INSERT INTO attempt_diffs(id,attempt_id,organization_id,project_id,work_item_id,source,seq,base_sha,head_sha,
+producer_kind,producer_id,producer_runner_id,producer_lease_id,producer_fencing_token,created_at)
+SELECT 'diff_workspace_'||i,'attempt_workspace',?,?,?,'workspace',i,'base','head','workspace','producer','runner','lease',1,? FROM n`,
+					test.otherSource, f.project.OrganizationID, f.project.ID, f.issue.WorkItemID, formatHubTime(time.Now().Add(time.Hour))); err != nil {
+					t.Fatal(err)
+				}
+			}
 			readCtx, cancelRead := context.WithTimeout(t.Context(), hubReadTimeout)
 			defer cancelRead()
 			candidates, err := f.service.selectDiffBodyExpiryCandidates(readCtx, time.Now().Add(-diffBodyRetention))
@@ -354,6 +366,8 @@ SELECT id,2,organization_id,project_id,'archive','sha256',1,1 FROM attempt_diffs
 						t.Fatalf("protected project's file selected for expiry: %s", file.diffID)
 					}
 				}
+			}
+			if test.nullAttempts > 0 || test.otherSource > 0 {
 				if _, err := f.service.database.db.ExecContext(t.Context(), `ANALYZE`); err != nil {
 					t.Fatal(err)
 				}
@@ -372,6 +386,9 @@ SELECT id,2,organization_id,project_id,'archive','sha256',1,1 FROM attempt_diffs
 					defer tx.Rollback()
 					examined.Store(0)
 					statement := strings.ReplaceAll(query.statement, "WHERE v.attempt_id", "WHERE "+probe+"(v.id) AND v.attempt_id")
+					if test.otherSource > 0 {
+						statement = strings.ReplaceAll(query.statement, "WHERE latest.organization_id", "WHERE "+probe+"(latest.id) AND latest.organization_id")
+					}
 					result, err := tx.ExecContext(t.Context(), statement, query.args...)
 					if err != nil {
 						t.Fatal(err)
@@ -382,13 +399,13 @@ SELECT id,2,organization_id,project_id,'archive','sha256',1,1 FROM attempt_diffs
 					if err := tx.Rollback(); err != nil {
 						t.Fatal(err)
 					}
-					t.Logf("%s writer examined %d versions with %d unrelated NULL attempts", query.name, examined.Load(), test.nullAttempts)
+					t.Logf("%s writer examined %d rows with %d unrelated NULL attempts and %d other-source diffs", query.name, examined.Load(), test.nullAttempts, test.otherSource)
 					if examined.Load() != 1 {
-						t.Errorf("%s writer examined %d versions, want only the candidate attempt's version", query.name, examined.Load())
+						t.Errorf("%s writer examined %d rows, want 1", query.name, examined.Load())
 					}
 				}
 			}
-			if test.unrelated > 0 || test.nullAttempts > 0 {
+			if test.unrelated > 0 || test.nullAttempts > 0 || test.otherSource > 0 {
 				if _, err := f.service.database.db.ExecContext(t.Context(), `ANALYZE`); err != nil {
 					t.Fatal(err)
 				}
@@ -403,6 +420,12 @@ SELECT id,2,organization_id,project_id,'archive','sha256',1,1 FROM attempt_diffs
 				} {
 					plan := explainQueryPlan(t, f.service.database.db, query.statement, query.args)
 					for _, detail := range plan {
+						if test.otherSource > 0 && (strings.HasPrefix(detail, "SCAN latest") ||
+							strings.HasPrefix(detail, "SEARCH latest ") && !strings.Contains(detail, "source=?") ||
+							strings.Contains(detail, "TEMP B-TREE")) {
+							t.Errorf("%s latest lookup walks or sorts history with %d other-source diffs: %s", query.name, test.otherSource, strings.Join(plan, "\n"))
+							break
+						}
 						if strings.HasPrefix(detail, "SCAN c") || strings.HasPrefix(detail, "SCAN v") ||
 							strings.HasPrefix(detail, "SEARCH c ") && !strings.Contains(detail, "claim_version_id=?") ||
 							strings.HasPrefix(detail, "SEARCH v ") && !strings.Contains(detail, "attempt_id=?") {
