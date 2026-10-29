@@ -1,15 +1,15 @@
 ---
 name: detent-operator-introspection
-description: Answer read-only operator questions about one issue in a running Detent instance, including its lane, latest transition, active work, eligibility, required gate, and evidence freshness. Use when asked why an issue is stuck, whether it is being worked, why it is not advancing, or how trustworthy Detent's current answer is.
+description: Answer read-only operator questions about one issue in a Detent Hub, including its lane, latest transition, active work, eligibility, required gate, and evidence freshness. Use when asked why an issue is stuck, whether it is being worked, why it is not advancing, or how trustworthy Detent's current answer is.
 ---
 
 # Detent operator introspection
 
-Bundle version: 2
+Bundle version: 3
 
 Expected response schema: 3
 
-Select the one question class that matches the request. Make its call once. The command returns one JSON object and enforces a request timeout and response-size limit. Keep diagnostics on stderr. Do not add filtering commands before inspecting the complete object.
+Select the one question class that matches the request. Call Hub MCP `explain_item` once with the selected project ID and canonical native work-item ID (`wi_...`). The tool returns a bounded explanation object. Inspect the complete response, including any tool error. Do not add filtering commands before inspecting the complete object.
 
 ## Decision tree
 
@@ -19,13 +19,15 @@ Use for questions such as "Why is this issue in this lane?" Read `current_lane` 
 
 Call once:
 
-```sh
-detent --format json issue '<issue-ref>' --explain --project '<project-id>'
+Hub MCP `explain_item` arguments:
+
+```json
+{"project_id":"<project-id>","reference":"<work-item-id>"}
 ```
 
 Stop: Report the lane and transition with their observation times when the evidence is available or live.
 
-Escalate: Ask the operator for the project ID or an unambiguous issue reference if either is missing. Escalate with the returned source limitations when no transition evidence supports a conclusion.
+Escalate: Ask the operator for the project ID or the canonical native work-item ID if either is missing. Escalate with the returned source limitations when no transition evidence supports a conclusion.
 
 ### Active work
 
@@ -33,8 +35,10 @@ Use for questions such as "Is this issue actually being worked on?" Read `attemp
 
 Call once:
 
-```sh
-detent --format json issue '<issue-ref>' --explain --project '<project-id>'
+Hub MCP `explain_item` arguments:
+
+```json
+{"project_id":"<project-id>","reference":"<work-item-id>"}
 ```
 
 Stop: Report whether the model shows a current attempt or session, and distinguish an absent record from unavailable evidence.
@@ -47,8 +51,10 @@ Use for questions such as "Why is this issue not advancing?" Read `eligibility`,
 
 Call once:
 
-```sh
-detent --format json issue '<issue-ref>' --explain --project '<project-id>'
+Hub MCP `explain_item` arguments:
+
+```json
+{"project_id":"<project-id>","reference":"<work-item-id>"}
 ```
 
 Stop: Report the recorded eligibility and gate states and their reasons when the model supplies them.
@@ -61,26 +67,24 @@ Use for questions such as "How current or trustworthy is this answer?" Read `obs
 
 Call once:
 
-```sh
-detent --format json issue '<issue-ref>' --explain --project '<project-id>'
+Hub MCP `explain_item` arguments:
+
+```json
+{"project_id":"<project-id>","reference":"<work-item-id>"}
 ```
 
 Stop: Treat only `live` evidence as current. Treat `available` as readable, then assess its observation, selection, heartbeat, and completion timestamps before describing it as current. Treat transition attribution as established only when `latest_transition.provenance.trustworthy` is true; otherwise report its `trustworthy_since` boundary and preserve the recorded origin as unverified history. Label `last_known`, `expired`, `unavailable`, or `corrupt` evidence explicitly.
 
 Escalate: Escalate when degraded or missing evidence prevents the requested conclusion. A successful response with degraded fields is still a success, not permission to use another data source.
 
-## Interpret command outcomes
+## Interpret tool outcomes
 
 - Success: Require `schema` to equal 3. Answer from the returned fields and cite degraded or last-known sources.
-- `dashboard_unauthorized` (HTTP 401): A supplied credential is invalid or expired. Stop; do not retry anonymously. Escalate for a valid supported read credential.
-- `dashboard_forbidden` (HTTP 403): The request is understood but not allowed. If the diagnostic identifies `api_token_required`, API access requires an operator-configured credential; this is not a missing issue. Otherwise the credential lacks the required read access. Stop and escalate without attempting to recover credential plaintext.
-- `ambiguous_reference`: The reference matches more than one issue. Stop and ask for an issue ID, canonical identifier, or full issue URL in the selected project.
-- `issue_not_found`: No issue matches the reference in the selected project. Stop and ask the operator to verify both values.
-- `runtime_unavailable`: The running service cannot currently build the explanation model. Stop this investigation; retry later, or escalate if an immediate answer is required.
-- `dashboard_unreachable` or `dashboard_timeout`: The service is stopped, unreachable, or unresponsive. Stop and escalate with the diagnostic.
-- `unsupported_model_version`: The CLI and running service do not share this response model. Stop and escalate for an upgrade or restart.
-- `dashboard_request_failed`: The service returned an unclassified failure. Stop and escalate with the diagnostic.
+- Authentication or authorization failure (HTTP 401 or 403): Stop; do not retry anonymously. If the diagnostic identifies `api_token_required`, access requires an operator-configured credential. Escalate for supported read access without attempting to recover credential plaintext.
+- Invalid or missing reference: Verify the project ID and canonical native work-item ID. Do not substitute a bare issue number, title, or URL.
+- Unavailable runtime or source: Report the returned limitation. A readable historical record does not establish current activity.
+- Unreachable service, timeout, unsupported schema, or another tool error: Stop and escalate with the diagnostic. Do not infer issue state from the failure.
 
 ## Boundaries
 
-Use only the read command above. Never substitute raw database access, dashboard HTML scraping, log searches, plaintext credential recovery, mutating commands, or proposal tools. Keep installation outside repository `.detent/skills` directories; those files are worker-task metadata, not ambient operator skills. Follow any fleet-specific process only from the operator's own workflow documentation.
+Use only the Hub MCP read above. Never substitute raw database access, dashboard HTML scraping, log searches, plaintext credential recovery, mutating commands, or proposal tools. Keep installation outside repository `.detent/skills` directories; those files are worker-task metadata, not ambient operator skills. Follow any fleet-specific process only from the operator's own workflow documentation.
