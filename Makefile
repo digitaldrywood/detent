@@ -54,7 +54,7 @@ GOLANGCI_LINT := $(GOLANGCI_LINT_DIR)/golangci-lint
 GOSEC_EXCLUDES ?= G115,G301,G304,G306,G703,G704
 GOSEC_EXCLUDE_DIRS ?= .detent
 GOSEC_EXCLUDE_DIR_FLAGS := $(addprefix -exclude-dir=,$(GOSEC_EXCLUDE_DIRS))
-.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-race coverage-check test-cover soak visual-e2e lint vet gosec-build security-gosec-determinism check check-fast check-land modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-create db-migrate setup clean help
+.PHONY: dev generate check-migrations check-generated css css-watch app app-dev app-test check-app build test test-fast test-race coverage-check test-cover soak visual-e2e lint vet gosec-build security-gosec-determinism check check-fast check-land check-release modernize-check nilaway-audit nilaway-changed source-metadata release-snapshot sqlc db-create db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -272,6 +272,10 @@ check: check-invariants check-migrations check-generated check-app build lint ve
 
 check-land:
 	NILAWAY_VERSION="$(NILAWAY_VERSION)" NILAWAY_INCLUDE_PKGS="$(NILAWAY_INCLUDE_PKGS)" bash scripts/check-land.sh "$(CHECK_LAND_BASE)" "$(APP_DIR)" "$(TEST_PROCS)"
+
+.PHONY: check-release
+check-release:
+	bash scripts/check-release.sh "$(TEST_PROCS)"
 
 .PHONY: check-landing
 check-landing:

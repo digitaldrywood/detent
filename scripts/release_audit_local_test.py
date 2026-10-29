@@ -63,8 +63,6 @@ class ReleaseAuditLocalTest(unittest.TestCase):
                     '    statuses = [] if os.environ["SUITE"] == "absent" else [{"context": "scheduled-full-ci", "state": "success", "id": 1}]\n'
                     '    if os.environ["SUITE"] == "superseded": statuses.append({"context": "scheduled-full-ci", "state": "failure", "id": 2})\n'
                     '    print(json.dumps([{"sha": "other" if os.environ["SUITE"] == "wrong-sha" else os.environ["HEAD"], "statuses": statuses}]))\n'
-                    'elif any("/workflows/ci.yml/runs?" in a for a in args): print("123")\n'
-                    'elif any("/runs/123/jobs?" in a for a in args): print("456")\n'
                 )
                 (binaries / "codex").write_text(
                     '#!/usr/bin/env python3\n'
@@ -91,10 +89,10 @@ class ReleaseAuditLocalTest(unittest.TestCase):
                     self.assertIn("context=release-security-audit", posts[0])
                     retained = list((repo / "tmp").glob("release-audit.*/findings.json"))
                     self.assertEqual(json.loads(retained[0].read_text()), message)
-                reruns = [args for args in requests if args[:2] == ["run", "rerun"]]
-                self.assertEqual(reruns, [["run", "rerun", "123", "--job", "456", "--repo", "example-org/example-project"]] if state == "success" and suite == "success" else [])
+                dispatches = [args for args in requests if args[:2] == ["workflow", "run"]]
+                self.assertEqual(dispatches, [["workflow", "run", "release-finalize.yml", "--repo", "example-org/example-project", "--ref", "release/v1.10"]] if state == "success" and suite == "success" else [])
                 if state == "success" and suite != "success":
-                    self.assertIn("Waiting for the suite", result.stdout)
+                    self.assertIn("Waiting for local validation", result.stdout)
                 self.assertEqual(git("worktree", "list", "--porcelain").count("worktree "), 1)
 
 

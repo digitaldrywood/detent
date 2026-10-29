@@ -52,7 +52,7 @@ func TestCoordinatorTagToSigningProvenance(t *testing.T) {
 			if !workflowPushesTag(t, "release.yml", backend.tag.Name) {
 				t.Fatal("tag does not trigger signing workflow")
 			}
-			tagCI := workflowPushesTag(t, "ci.yml", backend.tag.Name)
+			tagCI := workflowPushesTag(t, "release-finalize.yml", backend.tag.Name)
 			check := func(id int, status, conclusion string) string {
 				return fmt.Sprintf(`{"id":%d,"name":"Lint","head_sha":%q,"status":%q,"conclusion":%q,"app":{"id":15368}}`, id, commit, status, conclusion)
 			}
@@ -130,7 +130,7 @@ func TestCoordinatorLocalGateStatusToSigningProvenance(t *testing.T) {
 			}}
 			coordinator := release.New(release.Config{Enabled: true, RequireGreenCI: true, MinMergedIssues: 1, VersionBump: "patch"}, backend)
 			status, _ := coordinator.Evaluate(t.Context(), now)
-			if backend.tag.Name == "" || !workflowPushesTag(t, "release.yml", backend.tag.Name) || workflowPushesTag(t, "ci.yml", backend.tag.Name) {
+			if backend.tag.Name == "" || !workflowPushesTag(t, "release.yml", backend.tag.Name) || workflowPushesTag(t, "release-finalize.yml", backend.tag.Name) {
 				t.Fatalf("tag workflow routing or coordinator failed: %#v", status)
 			}
 			dir := t.TempDir()

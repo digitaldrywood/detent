@@ -16,35 +16,10 @@ func newAttachCommand(lookup func(string) string, httpClient *http.Client) *cobr
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: time.Minute}
 	}
-	var configPath, project, organization, hubURL, identityFile, tokenEnv, name, contentType string
+	var target nativeProjectFlags
+	var name, contentType string
 	cmd := &cobra.Command{Use: "attach <file>", Short: "Upload a Cloud issue attachment and print its markdown reference", Example: "  detent attach screenshot.png --project my-project\n  detent attach trace.txt --project prj_example --organization org_example --hub-url https://cloud.detent.build", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-		cfg := hubclient.Config{URL: hubURL, IdentityFile: identityFile, HTTPClient: httpClient}
-		selectedTokenEnv := tokenEnv
-		org, id := organization, project
-		if cfg.URL == "" {
-			resolution, err := globalconfig.ResolvePath(configPath)
-			if err != nil {
-				return err
-			}
-			settings, err := globalconfig.Read(resolution.Path)
-			if err != nil {
-				return err
-			}
-			cfg.URL, cfg.IdentityFile = settings.Client.URL, settings.Client.IdentityFile
-			org = settings.Client.OrganizationID
-			if mapped := settings.Client.NativeProjects[project]; mapped != "" {
-				id = mapped
-			}
-			if !cmd.Flags().Changed("token-env") && settings.Client.TokenEnvironment != "" {
-				selectedTokenEnv = settings.Client.TokenEnvironment
-			}
-		}
-		cfg.TokenSource = func() string { return lookup(selectedTokenEnv) }
-		client, err := hubclient.New(cfg)
-		if err != nil {
-			return err
-		}
-		native, err := client.Native(tracker.OrganizationID(org), tracker.ProjectID(id))
+		native, err := target.client(cmd, lookup, httpClient)
 		if err != nil {
 			return err
 		}
@@ -55,13 +30,51 @@ func newAttachCommand(lookup func(string) string, httpClient *http.Client) *cobr
 		_, err = fmt.Fprintln(cmd.OutOrStdout(), result.Reference)
 		return err
 	}}
-	cmd.Flags().StringVar(&configPath, "config", "", "Customer global configuration path")
-	cmd.Flags().StringVar(&project, "project", "", "Configured project name or native project ID")
-	cmd.Flags().StringVar(&organization, "organization", "", "Native organization ID")
-	cmd.Flags().StringVar(&hubURL, "hub-url", "", "Explicit Cloud entry URL")
-	cmd.Flags().StringVar(&identityFile, "identity-file", "", "Enrolled runner identity file")
-	cmd.Flags().StringVar(&tokenEnv, "token-env", "DETENT_HUB_TOKEN", "Environment variable containing a scoped credential")
+	target.register(cmd)
 	cmd.Flags().StringVar(&name, "name", "", "Attachment filename; defaults to the file's basename")
 	cmd.Flags().StringVar(&contentType, "content-type", "", "File content type; inferred when omitted")
 	return cmd
+}
+
+type nativeProjectFlags struct {
+	configPath, project, organization, hubURL, identityFile, tokenEnv string
+}
+
+func (f *nativeProjectFlags) register(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&f.configPath, "config", "", "Customer global configuration path")
+	cmd.Flags().StringVar(&f.project, "project", "", "Configured project name or native project ID")
+	cmd.Flags().StringVar(&f.organization, "organization", "", "Native organization ID")
+	cmd.Flags().StringVar(&f.hubURL, "hub-url", "", "Explicit Cloud entry URL")
+	cmd.Flags().StringVar(&f.identityFile, "identity-file", "", "Enrolled runner identity file")
+	cmd.Flags().StringVar(&f.tokenEnv, "token-env", "DETENT_HUB_TOKEN", "Environment variable containing a scoped credential")
+}
+
+func (f *nativeProjectFlags) client(cmd *cobra.Command, lookup func(string) string, httpClient *http.Client) (*hubclient.NativeClient, error) {
+	cfg := hubclient.Config{URL: f.hubURL, IdentityFile: f.identityFile, HTTPClient: httpClient}
+	selectedTokenEnv := f.tokenEnv
+	org, id := f.organization, f.project
+	if cfg.URL == "" {
+		resolution, err := globalconfig.ResolvePath(f.configPath)
+		if err != nil {
+			return nil, err
+		}
+		settings, err := globalconfig.Read(resolution.Path)
+		if err != nil {
+			return nil, err
+		}
+		cfg.URL, cfg.IdentityFile = settings.Client.URL, settings.Client.IdentityFile
+		org = settings.Client.OrganizationID
+		if mapped := settings.Client.NativeProjects[f.project]; mapped != "" {
+			id = mapped
+		}
+		if !cmd.Flags().Changed("token-env") && settings.Client.TokenEnvironment != "" {
+			selectedTokenEnv = settings.Client.TokenEnvironment
+		}
+	}
+	cfg.TokenSource = func() string { return lookup(selectedTokenEnv) }
+	client, err := hubclient.New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return client.Native(tracker.OrganizationID(org), tracker.ProjectID(id))
 }

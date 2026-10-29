@@ -57,3 +57,19 @@ func (s schedulerGoTestReceipts) Record(ctx context.Context, receipt gotestrecei
 	}
 	return native.RecordGoTestReceipt(ctx, receipt)
 }
+
+type nativeGoTestReceipts struct {
+	client *NativeClient
+}
+
+func (c *NativeClient) GoTestReceipts() gotestreceipt.Store {
+	return nativeGoTestReceipts{client: c}
+}
+
+func (s nativeGoTestReceipts) Lookup(ctx context.Context, key string) ([]gotestreceipt.Candidate, error) {
+	return s.client.LookupGoTestReceipts(ctx, key)
+}
+
+func (s nativeGoTestReceipts) Record(ctx context.Context, receipt gotestreceipt.Receipt) error {
+	return s.client.RecordGoTestReceipt(ctx, receipt)
+}

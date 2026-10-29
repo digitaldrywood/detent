@@ -78,18 +78,8 @@ if ! gh api --paginate --slurp "repos/$repository/commits/$sha/status?per_page=1
     ([.[].statuses[] | select(.context == "scheduled-full-ci")] | max_by(.id) |
       .state == "success" and (.id | type == "number") and .id > 0)
   ' > /dev/null; then
-  echo "Waiting for the suite: no current scheduled-full-ci success on $sha; no finalize rerun."
+  echo "Waiting for local validation: no current scheduled-full-ci success on $sha; run scripts/release-validate-local.sh $branch."
   exit 0
 fi
-run_id="$(gh api "repos/$repository/actions/workflows/ci.yml/runs?branch=$branch&head_sha=$sha&status=completed&per_page=1" --jq '.workflow_runs[0].id // empty')"
-if [ -z "$run_id" ]; then
-  echo "No completed CI run for $branch at $sha; the next completed suite can tag."
-  exit 0
-fi
-job_id="$(gh api --paginate "repos/$repository/actions/runs/$run_id/jobs?filter=latest&per_page=100" --jq '.jobs[] | select(.name == "Finalize scheduled validation") | .id')"
-if [ -z "$job_id" ]; then
-  echo "CI run $run_id has no Finalize scheduled validation job; no job rerun."
-  exit 0
-fi
-gh run rerun "$run_id" --job "$job_id" --repo "$repository"
-echo "Reran Finalize scheduled validation job $job_id in CI run $run_id."
+gh workflow run release-finalize.yml --repo "$repository" --ref "$branch"
+echo "Dispatched release-finalize.yml on $branch."

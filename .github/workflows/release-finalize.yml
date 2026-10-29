@@ -1,0 +1,38 @@
+name: Release Finalize
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-finalize-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    name: Tag validated release
+    if: startsWith(github.ref, 'refs/heads/release/')
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      statuses: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Publish the validated tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_DEVELOP_SHA: ${{ github.sha }}
+          CI_RELEASE_BRANCH: ${{ github.ref_name }}
+          TMPDIR: ${{ runner.temp }}
+          DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON: ${{ vars.DETENT_RELEASE_REQUIRED_CHECK_NAMES_JSON }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          bash scripts/release-finalize.sh

@@ -1,85 +1,81 @@
 package invariants
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
-	"strings"
+	"regexp"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
 
-func checkWorkflow(data []byte) error {
-	var workflow struct {
-		On   map[string]yaml.Node `yaml:"on"`
-		Jobs map[string]struct {
-			If    string    `yaml:"if"`
-			Needs yaml.Node `yaml:"needs"`
-			Steps []struct {
-				Run string `yaml:"run"`
-			} `yaml:"steps"`
-		} `yaml:"jobs"`
-	}
+var finalizerCommand = regexp.MustCompile(`\bbash scripts/release-finalize\.sh\b`)
+
+var validationCommand = regexp.MustCompile(`\bgo test\b|\bmake (test|check|lint|vet|security|visual-e2e)\b|\bnpm (run )?test\b|\bplaywright test\b|\bgolangci-lint\b`)
+
+type workflowFile struct {
+	On   map[string]yaml.Node `yaml:"on"`
+	Jobs map[string]struct {
+		Steps []struct {
+			Uses string `yaml:"uses"`
+			Run  string `yaml:"run"`
+		} `yaml:"steps"`
+	} `yaml:"jobs"`
+}
+
+func checkWorkflow(name string, data []byte) error {
+	var workflow workflowFile
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
 		return err
 	}
 	for event := range workflow.On {
-		if event != "schedule" && event != "workflow_dispatch" && event != "pull_request" {
-			return fmt.Errorf("INV-5 CI must not trigger on %s", event)
-		}
-	}
-	for _, event := range []string{"schedule", "workflow_dispatch"} {
-		if _, ok := workflow.On[event]; !ok {
-			return fmt.Errorf("INV-5 %s trigger missing", event)
-		}
-	}
-	if _, pr := workflow.On["pull_request"]; pr {
-		if _, ok := workflow.Jobs["verify-fast"]; !ok {
-			return errors.New("INV-5 PR validation must reuse verify-fast")
-		}
-		for name, job := range workflow.Jobs {
-			if name == "verify-fast" {
-				continue
+		switch event {
+		case "pull_request", "merge_group", "schedule":
+			return fmt.Errorf("INV-5 %s must not trigger on %s", name, event)
+		case "pull_request_target":
+			if name != "cla.yml" || len(workflow.Jobs) != 1 {
+				return fmt.Errorf("INV-5 %s must not trigger on %s", name, event)
 			}
-			const excludePR = "github.event_name != 'pull_request'"
-			if job.If != excludePR && !strings.HasPrefix(job.If, excludePR+" && ") {
-				return fmt.Errorf("INV-5 %s must exclude PR events", name)
+			for _, job := range workflow.Jobs {
+				if len(job.Steps) != 1 || job.Steps[0].Uses != "contributor-assistant/github-action@v2.6.1" || job.Steps[0].Run != "" {
+					return fmt.Errorf("INV-5 %s may only run the CLA assistant on %s", name, event)
+				}
 			}
 		}
 	}
-	finalize, ok := workflow.Jobs["finalize"]
-	if !ok {
-		return errors.New("INV-5 CI finalize job missing")
-	}
-	var needs []string
-	if finalize.Needs.Kind == yaml.ScalarNode {
-		needs = []string{finalize.Needs.Value}
-	} else if err := finalize.Needs.Decode(&needs); err != nil {
-		return err
-	}
-	for name := range workflow.Jobs {
-		if name != "finalize" && !slices.Contains(needs, name) {
-			return fmt.Errorf("INV-5 finalizer must need %s", name)
+	for jobName, job := range workflow.Jobs {
+		for _, step := range job.Steps {
+			if validationCommand.MatchString(step.Run) {
+				return fmt.Errorf("INV-5 %s job %s runs validation in GitHub Actions", name, jobName)
+			}
 		}
 	}
-	for _, step := range finalize.Steps {
-		if strings.Contains(step.Run, "scripts/scheduled-ci-finish.sh") {
-			return nil
+	if name == "release-finalize.yml" {
+		if _, ok := workflow.On["workflow_dispatch"]; !ok || len(workflow.On) != 1 {
+			return fmt.Errorf("INV-5 %s must trigger only on workflow_dispatch", name)
 		}
+		for _, job := range workflow.Jobs {
+			for _, step := range job.Steps {
+				if finalizerCommand.MatchString(step.Run) {
+					return nil
+				}
+			}
+		}
+		return fmt.Errorf("INV-5 %s must run scripts/release-finalize.sh", name)
 	}
-	return errors.New("INV-5 finalizer must run scripts/scheduled-ci-finish.sh")
+	return nil
 }
 
 func TestRepositoryWorkflow(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join(repositoryRoot(t), ".github/workflows/ci.yml"))
-	if err != nil {
-		t.Fatal(err)
+	workflows := filepath.Join(repositoryRoot(t), ".github", "workflows")
+	for _, removed := range []string{"ci.yml", "windows-tests.yml", "portability-stress.yml"} {
+		if _, err := os.Stat(filepath.Join(workflows, removed)); err == nil {
+			t.Errorf("INV-5 GitHub Actions validation workflow %s must not exist", removed)
+		}
 	}
-	if err := checkWorkflow(data); err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(filepath.Join(workflows, "release-finalize.yml")); err != nil {
+		t.Errorf("INV-5 release-finalize.yml missing: %v", err)
 	}
 }
 
@@ -97,59 +93,35 @@ func TestRepositoryHasNoPullRequestActions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var workflow struct {
-			On   map[string]yaml.Node `yaml:"on"`
-			Jobs map[string]struct {
-				Steps []struct {
-					Uses string `yaml:"uses"`
-					Run  string `yaml:"run"`
-				} `yaml:"steps"`
-			} `yaml:"jobs"`
-		}
-		if err := yaml.Unmarshal(data, &workflow); err != nil {
-			t.Fatal(err)
-		}
-		for _, event := range []string{"pull_request", "pull_request_target", "merge_group"} {
-			if _, ok := workflow.On[event]; ok {
-				if entry.Name() == "ci.yml" && event == "pull_request" {
-					if err := checkWorkflow(data); err != nil {
-						t.Error(err)
-					}
-					continue
-				}
-				if entry.Name() == "cla.yml" && event == "pull_request_target" && len(workflow.Jobs) == 1 {
-					job, ok := workflow.Jobs["cla"]
-					if ok && len(job.Steps) == 1 && job.Steps[0].Uses == "contributor-assistant/github-action@v2.6.1" && job.Steps[0].Run == "" {
-						continue
-					}
-				}
-				t.Errorf("INV-5 %s must not trigger on %s", entry.Name(), event)
-			}
+		if err := checkWorkflow(entry.Name(), data); err != nil {
+			t.Error(err)
 		}
 	}
 }
 
 func TestWorkflowViolations(t *testing.T) {
-	const jobs = "jobs:\n  test:\n    runs-on: ubuntu-latest\n  finalize:\n    needs: [test]\n    steps:\n      - run: bash scripts/scheduled-ci-finish.sh\n"
-	const prJobs = "jobs:\n  verify-fast:\n    runs-on: ubuntu-latest\n  finalize:\n    if: github.event_name != 'pull_request'\n    needs: [verify-fast]\n    steps:\n      - run: bash scripts/scheduled-ci-finish.sh\n"
+	const cla = "on:\n  pull_request_target:\njobs:\n  cla:\n    steps:\n      - uses: contributor-assistant/github-action@v2.6.1\n"
+	const finalize = "on:\n  workflow_dispatch:\njobs:\n  finalize:\n    steps:\n      - run: bash scripts/release-finalize.sh\n"
 	for _, tt := range []struct {
-		name, workflow string
-		wantErr        bool
+		name, file, workflow string
+		wantErr              bool
 	}{
-		{name: "valid", workflow: "on:\n  schedule:\n  workflow_dispatch:\n" + jobs},
-		{name: "push trigger", workflow: "on:\n  schedule:\n  workflow_dispatch:\n  push:\n" + jobs, wantErr: true},
-		{name: "bounded pull request guard", workflow: "on:\n  schedule:\n  workflow_dispatch:\n  pull_request:\n" + prJobs},
-		{name: "pull request leaks full suite", workflow: "on:\n  schedule:\n  workflow_dispatch:\n  pull_request:\n" + strings.Replace(prJobs, "    if: github.event_name != 'pull_request'\n", "", 1), wantErr: true},
-		{name: "pull request trigger without guard", workflow: "on:\n  schedule:\n  workflow_dispatch:\n  pull_request:\n" + jobs, wantErr: true},
-		{name: "schedule missing", workflow: "on:\n  workflow_dispatch:\n" + jobs, wantErr: true},
-		{name: "dispatch missing", workflow: "on:\n  schedule:\n" + jobs, wantErr: true},
-		{name: "finalizer missing", workflow: "on:\n  schedule:\n  workflow_dispatch:\njobs:\n  test:\n    runs-on: ubuntu-latest\n", wantErr: true},
-		{name: "job outside finalizer", workflow: "on:\n  schedule:\n  workflow_dispatch:\n" + jobs + "  extra:\n    runs-on: ubuntu-latest\n", wantErr: true},
-		{name: "finalizer skips script", workflow: "on:\n  schedule:\n  workflow_dispatch:\n" + strings.Replace(jobs, "bash scripts/scheduled-ci-finish.sh", "true", 1), wantErr: true},
-		{name: "malformed", workflow: "on: [", wantErr: true},
+		{name: "dispatch-only release flow", file: "release-cut.yml", workflow: "on:\n  workflow_dispatch:\njobs:\n  cut:\n    steps:\n      - run: bash scripts/release-cut.sh\n"},
+		{name: "cla exception", file: "cla.yml", workflow: cla},
+		{name: "finalizer", file: "release-finalize.yml", workflow: finalize},
+		{name: "pull request validation", file: "ci.yml", workflow: "on:\n  pull_request:\njobs:\n  test:\n    steps:\n      - run: go build ./...\n", wantErr: true},
+		{name: "scheduled suite", file: "nightly.yml", workflow: "on:\n  schedule:\njobs:\n  test:\n    steps:\n      - run: true\n", wantErr: true},
+		{name: "merge queue", file: "queue.yml", workflow: "on:\n  merge_group:\njobs: {}\n", wantErr: true},
+		{name: "go tests in actions", file: "release.yml", workflow: "on:\n  workflow_dispatch:\njobs:\n  test:\n    steps:\n      - run: go test ./...\n", wantErr: true},
+		{name: "lint in actions", file: "release.yml", workflow: "on:\n  workflow_dispatch:\njobs:\n  lint:\n    steps:\n      - run: make lint\n", wantErr: true},
+		{name: "pull request target outside cla", file: "other.yml", workflow: cla, wantErr: true},
+		{name: "cla running code", file: "cla.yml", workflow: cla + "      - run: make build\n", wantErr: true},
+		{name: "finalizer on push", file: "release-finalize.yml", workflow: "on:\n  workflow_dispatch:\n  push:\n" + finalize[len("on:\n  workflow_dispatch:\n"):], wantErr: true},
+		{name: "finalizer skips script", file: "release-finalize.yml", workflow: "on:\n  workflow_dispatch:\njobs:\n  finalize:\n    steps:\n      - run: true\n", wantErr: true},
+		{name: "malformed", file: "x.yml", workflow: "on: [", wantErr: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := checkWorkflow([]byte(tt.workflow)); (err != nil) != tt.wantErr {
+			if err := checkWorkflow(tt.file, []byte(tt.workflow)); (err != nil) != tt.wantErr {
 				t.Fatalf("checkWorkflow() error = %v, want error %t", err, tt.wantErr)
 			}
 		})

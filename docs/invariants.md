@@ -187,50 +187,51 @@ landing ownership, cleanup and retention of moved or unknown heads.
 The `detent doctor` queue diagnostic reports programmatic merges while a queue
 is present; live queue settings require operator inspection.
 
-## INV-5 — Local pull-request validation and scheduled release evidence
+## INV-5 — Local validation and release evidence
 
-This repository requires no branch status check. The only PR validation is
-`.github/workflows/ci.yml` on `pull_request`: its existing Linux `verify-fast`
-job checks the PR merge commit with Windows amd64/arm64 cross-builds and amd64
-vet. No other job, Windows VM or landing gate runs on PR events, and no
-validation workflow starts from `pull_request_target` or `merge_group`. The
-other event exception is `.github/workflows/cla.yml`, which runs only
-`contributor-assistant/github-action` without checking out or executing PR code.
+GitHub Actions runs no validation. No workflow triggers on `pull_request`,
+`merge_group` or `schedule`, and no workflow step runs Go tests, lint, vet,
+security scans or browser journeys. The only pull-request event is
+`.github/workflows/cla.yml` on `pull_request_target`, which runs only
+`contributor-assistant/github-action` without checking out or executing PR
+code. This repository requires no branch status check.
 
 Each Change passes the finalization gate (`make check-landing`) on its own
 reviewed head before landing. Develop accepts integration risk between Changes
-that merge cleanly: a clean batch lands without revalidating the combined tree,
-the hourly full suite on pinned `develop` commits detects integration failures,
-and scheduled reporting owns their repair. Ordinary landing waits for no
-additional CI producer or scheduled validation.
+that merge cleanly; `scripts/release-validate-local.sh develop` runs the full
+suite, `make check-release`, on our own hardware through `detent validate`, so
+passing Go test binaries are reused from Hub receipts, and posts
+`develop-full-ci` on the exact commit. Ordinary landing waits for no additional
+CI producer or full-suite validation.
 
-Only a green full suite on the release branch head produces release evidence;
-develop evidence is never reused after cherry-picks. Every release starts from
-a frozen develop snapshot on a release branch, fixes land on develop first and
-are cherry-picked with `-x` through release-branch PRs, and no develop
-prerelease or source-gate-only deployment path exists. Release API calls belong
+Only a green `make check-release` on the exact release branch head produces
+release evidence: `scripts/release-validate-local.sh release/vX.Y` posts
+`scheduled-full-ci` on that head, and develop evidence is never reused after
+cherry-picks. Every release starts from a frozen develop snapshot on a release
+branch, fixes land on develop first and are cherry-picked with `-x` through
+release-branch PRs, and no develop prerelease or source-gate-only deployment
+path exists. Stable tags are created only by `release-finalize.yml` in GitHub
+Actions, after the latest `scheduled-full-ci` and `release-security-audit`
+statuses on the current release head are successful. Release API calls belong
 to operators and GitHub Actions, never Detent runners. The release flow is
 specified in [the release workflow](../WORKFLOW.md#release).
 
-**Enforcement:** checks assert outcomes only: no workflow triggers on
-`pull_request`, `pull_request_target` or `merge_group` except the bounded
-`ci.yml` Windows guard and the `cla.yml` exception; `ci.yml` triggers only on
-`pull_request`, `schedule` and `workflow_dispatch`, isolates its other jobs from
-PR events, and its
-finalize job needs every other job in the parsed workflow and runs
-`scripts/scheduled-ci-finish.sh`; the finalizer fails the run when any job
-concluded other than success and creates stable tags only after a green
-release-branch suite; and `release.yml` verifies provenance of the exact tagged
-commit before building. Checks must not pin workflow shape such as job
-conditions, schedules, shard counts, timeouts or command text except where
-needed to enforce the bounded PR guard.
-`TestCIWindowsChecksUseExistingLinuxVetStep` in the repository root;
+**Enforcement:** checks assert outcomes only: `ci.yml`,
+`windows-tests.yml` and `portability-stress.yml` do not exist; no workflow
+triggers on `pull_request`, `merge_group` or `schedule`, `pull_request_target`
+is limited to the `cla.yml` exception, and no workflow step runs validation
+commands; `release-finalize.yml` triggers only on `workflow_dispatch` and runs
+`scripts/release-finalize.sh`; the finalizer tags only when every required
+status is green on the exact current release head and never redispatches a tag
+whose provenance no longer matches; and `release.yml` verifies provenance of the
+exact tagged commit before building.
 `TestRepositoryWorkflow`, `TestRepositoryHasNoPullRequestActions`, and
 `TestWorkflowViolations` in `internal/invariants`;
 `TestReleaseWorkflowAuthenticatesExactCommitProvenance` in the repository root;
+`TestValidateCommandReusesGoTestReceiptsAcrossCheckouts` in `internal/cli`;
 `TestMakeCheckFastOverlapsWorktrees` in `tools/checklock`; `TestParseProblems`,
 `TestReport`, `TestCloudReport`, `TestCloudDestinationAuthority`,
-`TestReleaseStabilization`, and `TestScheduledFinalizer` in `tools/cifailure`.
+`TestReleaseStabilization`, and `TestReleaseFinalizer` in `tools/cifailure`.
 Review preserves project-specific policy and release authority.
 
 ## INV-6 — Isolated agent home
