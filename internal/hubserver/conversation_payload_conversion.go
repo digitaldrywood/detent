@@ -22,7 +22,11 @@ func (s *Service) convertConversationPayload(ctx context.Context, scope nativeSc
 		return err
 	}
 	var row int64
-	err = s.database.reader.QueryRowContext(ctx, "SELECT r.rowid FROM "+family.from+" WHERE c.organization_id=? AND c.project_id=? AND r.conversation_id=? AND "+family.where+" ORDER BY r.rowid LIMIT 1", scope.organization, scope.project, id).Scan(&row)
+	order := "r.rowid"
+	if family.name == "tool_revisions" {
+		order = "r.message_id,r.revision"
+	}
+	err = s.database.reader.QueryRowContext(ctx, "SELECT r.rowid FROM "+family.from+" WHERE c.organization_id=? AND c.project_id=? AND r.conversation_id=? AND "+family.where+" ORDER BY "+order+" LIMIT 1", scope.organization, scope.project, id).Scan(&row)
 	if errors.Is(err, sql.ErrNoRows) {
 		_, err = s.database.db.ExecContext(ctx, `UPDATE storage_conversion_progress SET complete=1,updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=?`, formatHubTime(now), scope.organization, scope.project, family.name, id)
 		return err

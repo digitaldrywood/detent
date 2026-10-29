@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"reflect"
 	"strconv"
@@ -49,9 +50,29 @@ func TestConversationToolBackfillAfterLiveUpdate(t *testing.T) {
 		}
 		f.commit(t, tx)
 	}
+	var selections []tracedStatement
+	ctx := withRequestTiming(t.Context(), &requestTiming{trace: func(query string, args []driver.NamedValue) {
+		if !strings.HasPrefix(query, "SELECT r.rowid FROM conversation_tool_revisions ") {
+			return
+		}
+		statement := tracedStatement{query: query}
+		for _, arg := range args {
+			statement.args = append(statement.args, arg.Value)
+		}
+		selections = append(selections, statement)
+	}})
 	for range 12 {
-		if err := f.service.convertLegacyStorage(t.Context(), f.now); err != nil {
+		if err := f.service.convertLegacyStorage(ctx, f.now); err != nil {
 			t.Fatal(err)
+		}
+	}
+	if len(selections) == 0 {
+		t.Fatal("tool revision conversion selection was not traced")
+	}
+	for _, statement := range selections {
+		plan := strings.Join(explainQueryPlan(t, f.store.reader, statement.query, statement.args), "; ")
+		if !strings.Contains(plan, "SEARCH r USING ") || (!strings.Contains(plan, "conversation_tool_revisions_payload_pending") && !strings.Contains(plan, "storage_queued_tool_revisions")) || strings.Contains(plan, "TEMP B-TREE") {
+			t.Errorf("unbounded tool revision conversion selection: %s", plan)
 		}
 	}
 	var pending, archived int

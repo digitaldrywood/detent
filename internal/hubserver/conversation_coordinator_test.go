@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -184,34 +185,109 @@ func (f *coordinatorFixture) coordinator() conversationCoordinator {
 }
 
 func TestCoordinatorPublicationRefreshesBeforeMutation(t *testing.T) {
-	objects := &conversationContentFixture{}
-	f := newCoordinatorFixture(t, "publication-conflict", objects)
-	record := f.seed(t, "publication conflict", nil)
-	var interfere sync.Once
-	objects.onIO = func() error {
-		var err error
-		interfere.Do(func() {
-			_, err = f.service.database.db.ExecContext(t.Context(), "UPDATE conversations SET revision=revision+1 WHERE id=?", record.ID)
+	for _, change := range []string{"revision", "event sequence", "preferences", "execution"} {
+		t.Run(change, func(t *testing.T) {
+			f := newCoordinatorFixture(t, "publication-conflict")
+			record := f.seed(t, "publication conflict", nil)
+			updated := record
+			switch change {
+			case "preferences":
+				updated.Preferences.ReasoningEffort = "high"
+			case "execution":
+				updated.Execution.Status = conversation.ExecutionCompleted
+			}
+			updated.Preferences = updated.Preferences.Normalized()
+			preparedUpdate := prepareTestConversationRecord(t, f.conversations.store, updated)
+			message := conversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageStatus, Text: "prepared", Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}}
+			preparations, mutations := 0, 0
+			err := f.coordinator().(*conversationTurnCoordinator).write(t.Context(), record.ID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
+				mutations++
+				if record.Preferences != updated.Preferences || record.Execution.Status != updated.Execution.Status {
+					t.Fatalf("mutation used stale payload: preferences=%+v execution=%+v", record.Preferences, record.Execution)
+				}
+				return f.conversations.appendMessage(ctx, tx, record, &message, now)
+			}, func(ctx context.Context, p *conversationPublicationPlan) error {
+				preparations++
+				if err := p.appendMessage(ctx, &message); err != nil {
+					return err
+				}
+				if preparations != 1 {
+					return nil
+				}
+				tx, err := f.service.database.db.BeginTx(ctx, nil)
+				if err != nil {
+					return err
+				}
+				defer tx.Rollback()
+				switch change {
+				case "revision":
+					_, err = tx.ExecContext(ctx, "UPDATE conversations SET revision=revision+1 WHERE id=?", record.ID)
+				case "event sequence":
+					_, err = tx.ExecContext(ctx, "UPDATE conversations SET event_seq=event_seq+1 WHERE id=?", record.ID)
+				default:
+					err = f.conversations.store.updateConversation(preparedUpdate, tx, &updated, record.Revision)
+				}
+				if err != nil {
+					return err
+				}
+				return f.service.database.commit(ctx, tx)
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if preparations != 2 || mutations != 1 {
+				t.Fatalf("preparations=%d mutations=%d; want 2 and 1", preparations, mutations)
+			}
+			if got := f.messages(t, record.ID); len(got) != 1 || got[0].ID != message.ID || got[0].Text != message.Text {
+				t.Fatalf("committed messages=%v", got)
+			}
+			got := f.conversation(t, record.ID)
+			if got.Preferences != updated.Preferences || got.Execution.Status != updated.Execution.Status {
+				t.Fatalf("concurrent payload update lost: preferences=%+v execution=%+v", got.Preferences, got.Execution)
+			}
 		})
-		return err
 	}
-	message := conversationMessageRecord{Role: conversation.RoleSystem, Kind: conversation.MessageStatus, Text: "prepared", Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}}
-	preparations, mutations := 0, 0
-	err := f.coordinator().(*conversationTurnCoordinator).write(t.Context(), record.ID, func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
-		mutations++
-		return f.conversations.appendMessage(ctx, tx, record, &message, now)
-	}, func(ctx context.Context, p *conversationPublicationPlan) error {
-		preparations++
-		return p.appendMessage(ctx, &message)
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if preparations != 2 || mutations != 1 {
-		t.Fatalf("preparations=%d mutations=%d; want 2 and 1", preparations, mutations)
-	}
-	if got := f.messages(t, record.ID); len(got) != 1 || got[0].ID != message.ID || got[0].Text != message.Text {
-		t.Fatalf("committed messages=%v", got)
+}
+
+func TestCoordinatorWriterReadsIgnoreHistory(t *testing.T) {
+	for _, count := range []int{1, 128} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) {
+			f := newCoordinatorFixture(t, "writer-history")
+			record := f.seed(t, "writer history", nil)
+			for range count {
+				f.history(t, &record, conversation.RoleAssistant, "historical answer", conversation.DeliveryCompleted)
+			}
+			var statements []tracedStatement
+			ctx := withRequestTiming(t.Context(), &requestTiming{writerTrace: func(query string, args []driver.NamedValue) {
+				if !strings.HasPrefix(query, "SELECT ") || !strings.Contains(query, "FROM conversations WHERE id") {
+					return
+				}
+				statement := tracedStatement{query: query}
+				for _, arg := range args {
+					statement.args = append(statement.args, arg.Value)
+				}
+				statements = append(statements, statement)
+			}})
+			err := f.coordinator().(*conversationTurnCoordinator).write(ctx, record.ID, func(_ context.Context, _ *sql.Tx, record *conversationRecord, _ time.Time) error {
+				if record.MessageCount != int64(count) {
+					t.Fatalf("message count=%d want=%d", record.MessageCount, count)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(statements) == 0 {
+				t.Fatal("coordinator writer read was not traced")
+			}
+			for _, statement := range statements {
+				for _, detail := range explainQueryPlan(t, f.service.database.reader, statement.query, statement.args) {
+					if strings.Contains(detail, "conversation_messages") || strings.Contains(detail, "native_archive_sections") {
+						t.Errorf("coordinator writer reads history: %s", detail)
+					}
+				}
+			}
+		})
 	}
 }
 

@@ -374,7 +374,7 @@ func coordinatorHandles(record conversationRecord) bool {
 }
 
 func (c *conversationTurnCoordinator) readConversation(ctx context.Context, query nativeQueryer, id string) (conversationRecord, error) {
-	record, err := c.service.store.readConversationRecord(ctx, query, query.QueryRowContext(ctx, "SELECT "+conversationReadColumns+" FROM conversations WHERE id = ?", id))
+	record, err := c.service.store.readConversationRecord(ctx, query, query.QueryRowContext(ctx, "SELECT "+conversationReadProjection(ctx, query, id)+" FROM conversations WHERE id = ?", id))
 	if err != nil {
 		return record, fmt.Errorf("read conversation %s: %w", id, err)
 	}
@@ -462,15 +462,19 @@ func (c *conversationTurnCoordinator) write(ctx context.Context, conversationID 
 			defer func() {
 				resultErr = errors.Join(resultErr, rollbackConversationPreparation(tx))
 			}()
-			record, err := c.readConversation(ctx, tx, conversationID)
-			if err != nil {
-				return false, err
+			var revision, sequence int64
+			if err := tx.QueryRowContext(ctx, "SELECT revision,event_seq FROM conversations WHERE id=?", conversationID).Scan(&revision, &sequence); err != nil {
+				return false, fmt.Errorf("read conversation revision: %w", err)
 			}
-			if record.Revision != original.Revision || record.EventSeq != original.EventSeq {
+			if revision != original.Revision || sequence != original.EventSeq {
 				if err := rollbackConversationPreparation(tx); err != nil {
 					return false, err
 				}
 				return true, nil
+			}
+			record, err := c.readConversation(ctx, tx, conversationID)
+			if err != nil {
+				return false, err
 			}
 			if !coordinatorHandles(record) {
 				return false, errCoordinatorLinked
