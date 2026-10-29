@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/serviceapi"
@@ -32,6 +33,10 @@ func DependencyReasonGeneratorFromContext(ctx context.Context) DependencyReasonG
 }
 
 func (r *Runner) dependencyReasonGenerator(backend AgentBackend, template AgentTurnRequest, execution Execution, backendKind string) DependencyReasonGenerator {
+	return r.textGenerator(backend, template, execution, backendKind, 560, "Return only the requested sentence. Do not call tools or read files.")
+}
+
+func (r *Runner) textGenerator(backend AgentBackend, template AgentTurnRequest, execution Execution, backendKind string, maxBytes int, instructions string) DependencyReasonGenerator {
 	return func(ctx context.Context, prompt string) (textResult string, returnErr error) {
 		scratchRoot := ""
 		for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
@@ -63,10 +68,13 @@ func (r *Runner) dependencyReasonGenerator(backend AgentBackend, template AgentT
 		request.SupplementalTools = false
 		request.Resume = AgentResume{}
 		request.MaxTurns = 1
-		request.ToolInstructions = "Return only the requested sentence. Do not call tools or read files."
+		request.ToolInstructions = instructions
 		var text strings.Builder
 		lastItem := ""
 		usage := RunResult{Model: request.Model}
+		if usage.Model == "" {
+			usage.Model = "provider_default"
+		}
 		result, err, cleanupErr := runAgentBackendTurn(ctx, backend, request, func(update AgentUpdate) error {
 			if update.Type == AgentUpdateTokenUsage {
 				usage.Tokens = TokenTotals{InputTokens: update.Tokens.InputTokens, CachedInputTokens: update.Tokens.CachedInputTokens, OutputTokens: update.Tokens.OutputTokens}
@@ -83,15 +91,17 @@ func (r *Runner) dependencyReasonGenerator(backend AgentBackend, template AgentT
 					text.Reset()
 					lastItem = key
 				}
-				if text.Len()+len(update.Delta) > 560 {
-					return errors.New("dependency reason exceeds text limit")
+				if text.Len()+len(update.Delta) > maxBytes {
+					return errors.New("generated text exceeds limit")
 				}
 				text.WriteString(update.Delta)
 			}
 			return nil
 		})
 		usage.ReportedCostMicros, usage.CostSource = result.ReportedCostMicros, result.CostSource
-		reportTurnUsage(ctx, execution, usage, request.Model, backendKind, r.usageCostUSD, r.logger)
+		usageCtx, cancelUsage := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		reportTurnUsage(usageCtx, execution, usage, request.Model, backendKind, r.usageCostUSD, r.logger)
+		cancelUsage()
 		if err := errors.Join(err, cleanupErr); err != nil {
 			return "", err
 		}

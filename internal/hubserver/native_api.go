@@ -245,6 +245,8 @@ func (s *Service) registerNativeRoutes(e *echo.Echo) {
 	e.PATCH(nativeBase+"/work-items/:item/comments/:comment", s.updateNativeComment, write)
 	e.GET(nativeBase+"/work-items/:item/history", s.listNativeHistory, read)
 	e.GET(nativeBase+"/work-items/:item/runtime", s.getNativeRuntime, read)
+	e.GET(nativeBase+"/work-items/:item/progress", s.getNativeProgress, read)
+	e.POST(nativeBase+"/work-items/:item/progress", s.publishNativeProgress, worker)
 	e.GET(nativeBase+"/work-items/:item/explanation", s.getNativeExplanation, read)
 	e.GET(nativeBase+"/work-items/:item/source-recovery", s.getNativeSourceRecovery, read)
 	e.POST(nativeBase+"/work-items/:item/source-recovery", s.transferNativeSource, write)
