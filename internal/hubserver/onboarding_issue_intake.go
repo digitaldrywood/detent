@@ -205,7 +205,7 @@ func (s *Service) commandGitHubBatchOperation(request tracker.GitHubBatchCommand
 					return nil, err
 				}
 			}
-			batch = &tracker.GitHubBatch{ID: newNativeID("intake"), Revision: revision, RunnerID: request.RunnerID, Discovery: tracker.GitHubDiscovery{ProjectV2: request.ProjectV2, Snapshots: true, Repository: strings.ToLower(repository), Labels: request.Labels, IncludeClosed: request.IncludeClosed}, Status: "discovering", Page: tracker.GitHubDiscoveryPage{Issues: []tracker.GitHubIssuePreview{}}, Items: []tracker.GitHubBatchItem{}, HubOwned: s.config.ImportBackend != nil}
+			batch = &tracker.GitHubBatch{ID: payloadNativeID(ctx, "intake"), Revision: revision, RunnerID: request.RunnerID, Discovery: tracker.GitHubDiscovery{ProjectV2: request.ProjectV2, Snapshots: true, Repository: strings.ToLower(repository), Labels: request.Labels, IncludeClosed: request.IncludeClosed}, Status: "discovering", Page: tracker.GitHubDiscoveryPage{Issues: []tracker.GitHubIssuePreview{}}, Items: []tracker.GitHubBatchItem{}, HubOwned: s.config.ImportBackend != nil}
 			actor := scope.actor()
 			batch.RequestedBy = &actor
 			batch.Limit, err = s.githubBatchLimit(ctx, tx, now)
