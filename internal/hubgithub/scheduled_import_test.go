@@ -7,15 +7,18 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
@@ -105,7 +108,28 @@ func TestScheduledWebhookImportEndToEnd(t *testing.T) {
 			if test.state == "Todo" {
 				client.steps = append(client.steps, restStep{method: http.MethodGet, path: path + "/jobs?per_page=100", response: map[string]any{"jobs": []map[string]any{{"id": 456, "run_id": 123, "name": "Verify", "head_sha": sha, "status": "completed", "conclusion": "failure", "started_at": "2026-10-01T00:00:00Z", "completed_at": "2026-10-01T00:01:00Z"}}}})
 			}
-			service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: databasePath(t), InitialAdminToken: []byte(token), GitHubWebhookSecret: []byte(secret), ImportBackend: NewImporter(client), ReconcileBackend: NewReconciler(client), Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+			var contentMu sync.Mutex
+			contentObjects := make(map[string][]byte)
+			content := func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				if err := request.Reference.Validate(request.Organization); err != nil {
+					return nil, err
+				}
+				contentMu.Lock()
+				defer contentMu.Unlock()
+				if request.Write {
+					contentObjects[request.Reference.Key] = bytes.Clone(request.Data)
+					return nil, nil
+				}
+				data, found := contentObjects[request.Reference.Key]
+				if !found {
+					return nil, errors.New("archive unavailable")
+				}
+				return bytes.Clone(data), nil
+			}
+			service, err := hubserver.Open(t.Context(), hubserver.Config{DatabasePath: databasePath(t), InitialAdminToken: []byte(token), GitHubWebhookSecret: []byte(secret), ImportBackend: NewImporter(client), ReconcileBackend: NewReconciler(client), Content: content, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 			if err != nil {
 				t.Fatal(err)
 			}

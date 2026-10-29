@@ -181,14 +181,29 @@ func (s *Service) executeAnalyticsRead(ctx context.Context, call operatortool.Ca
 func (s *Service) readAnalyticsReport(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow) (nativeAnalyticsReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	return s.readAnalyticsReportFrom(ctx, credential, r, w, analyticsRollupReader{s.database.reader})
+	projects, err := s.analyticsReadableProjects(ctx, credential, r)
+	if err != nil {
+		return nativeAnalyticsReport{}, err
+	}
+	return s.readAnalyticsReportFor(ctx, credential, r, w, analyticsRollupReader{s.database.reader}, false, projects)
 }
 
-func (s *Service) readAnalyticsReportFrom(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow, q nativeQueryer) (nativeAnalyticsReport, error) {
-	return s.readAnalyticsReportFor(ctx, credential, r, w, q, false)
+func (s *Service) analyticsReadableProjects(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest) ([]string, error) {
+	projects, err := s.usageReadableProjects(ctx, credential)
+	if err != nil {
+		return nil, err
+	}
+	projects = slices.DeleteFunc(projects, func(id string) bool {
+		if r.ProjectID != "" && id != r.ProjectID {
+			return true
+		}
+		_, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: id})
+		return err != nil
+	})
+	return projects, nil
 }
 
-func (s *Service) readAnalyticsReportFor(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow, q nativeQueryer, diagnostics bool) (nativeAnalyticsReport, error) {
+func (s *Service) readAnalyticsReportFor(ctx context.Context, credential apiCredential, r operatortool.AnalyticsRequest, w operatortool.AnalyticsWindow, q nativeQueryer, diagnostics bool, projects []string) (nativeAnalyticsReport, error) {
 	ctx, reporterErr := prepareReporterReadContext(ctx, q, nativeScope{organization: tracker.OrganizationID(s.config.Hosted.OrganizationID), credential: credential})
 	if reporterErr != nil {
 		return nativeAnalyticsReport{}, reporterErr
@@ -198,17 +213,6 @@ func (s *Service) readAnalyticsReportFor(ctx context.Context, credential apiCred
 		return nativeAnalyticsReport{}, pagingErr
 	}
 	report := nativeAnalyticsReport{OrganizationID: s.config.Hosted.OrganizationID, Projects: []nativeAnalyticsProject{}, ObservedAt: s.config.now().UTC(), Window: w}
-	projects, err := s.usageReadableProjects(ctx, credential)
-	if err != nil {
-		return report, err
-	}
-	projects = slices.DeleteFunc(projects, func(id string) bool {
-		if r.ProjectID != "" && id != r.ProjectID {
-			return true
-		}
-		_, err := operatortool.AuthorizeCurrent(ctx, operatortool.Requirement{Scope: apikey.ScopeRead, ProjectID: id})
-		return err != nil
-	})
 	sort.Strings(projects)
 	end := min(len(projects), r.Offset+r.Limit)
 	if end < len(projects) {

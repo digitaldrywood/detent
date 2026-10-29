@@ -88,12 +88,21 @@ func (s *Service) hostedDiagnostics(c echo.Context) error {
 func (s *Service) readCloudDiagnostics(ctx context.Context, credential apiCredential, w operatortool.AnalyticsWindow) (diagnosticsReport, error) {
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	q := analyticsRollupReader{s.database.reader}
-	analytics, err := s.readAnalyticsReportFor(ctx, credential, operatortool.AnalyticsRequest{Limit: 100}, w, q, true)
+	r := operatortool.AnalyticsRequest{Limit: 100}
+	projects, err := s.analyticsReadableProjects(ctx, credential, r)
 	if err != nil {
 		return diagnosticsReport{}, err
 	}
-	return s.readHostedDiagnosticsFrom(ctx, analytics, q)
+	requests, err := s.diagnosticsRequestMetrics(ctx)
+	if err != nil {
+		return diagnosticsReport{}, err
+	}
+	q := analyticsRollupReader{s.database.reader}
+	analytics, err := s.readAnalyticsReportFor(ctx, credential, r, w, q, true, projects)
+	if err != nil {
+		return diagnosticsReport{}, err
+	}
+	return readHostedDiagnosticsSnapshot(ctx, analytics, q, requests)
 }
 
 func (s *Service) readHostedDiagnostics(ctx context.Context, analytics nativeAnalyticsReport) (diagnosticsReport, error) {
@@ -103,18 +112,27 @@ func (s *Service) readHostedDiagnostics(ctx context.Context, analytics nativeAna
 }
 
 func (s *Service) readHostedDiagnosticsFrom(ctx context.Context, analytics nativeAnalyticsReport, reader nativeQueryer) (diagnosticsReport, error) {
+	requests, err := s.diagnosticsRequestMetrics(ctx)
+	if err != nil {
+		return diagnosticsReport{}, err
+	}
+	return readHostedDiagnosticsSnapshot(ctx, analytics, reader, requests)
+}
+
+func (s *Service) diagnosticsRequestMetrics(ctx context.Context) (*requestMetricsReport, error) {
+	requests, visible, err := s.adminRequestMetrics(ctx)
+	if err != nil || !visible {
+		return nil, err
+	}
+	return &requests, nil
+}
+
+func readHostedDiagnosticsSnapshot(ctx context.Context, analytics nativeAnalyticsReport, reader nativeQueryer, requests *requestMetricsReport) (diagnosticsReport, error) {
 	w := analytics.Window
-	out := diagnosticsReport{From: w.From, To: w.To, Partial: analytics.NextOffset != nil, Capacity: []diagnosticsCapacity{}, SkipReasons: []nativeAnalyticsSkip{}}
+	out := diagnosticsReport{From: w.From, To: w.To, Partial: analytics.NextOffset != nil, Capacity: []diagnosticsCapacity{}, SkipReasons: []nativeAnalyticsSkip{}, Requests: requests}
 	for at := w.From; at.Before(w.To); at = at.Add(time.Hour) {
 		zero := 0
 		out.Capacity = append(out.Capacity, diagnosticsCapacity{Hour: at, Todo: &zero})
-	}
-	requests, visible, err := s.adminRequestMetrics(ctx)
-	if err != nil {
-		return out, err
-	}
-	if visible {
-		out.Requests = &requests
 	}
 	var transitions, attempts, usage, receipts, receiptTotal, queue, claims, ready, skipped, identity int
 	refusals := map[string]int{}

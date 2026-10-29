@@ -281,6 +281,11 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 		t.Fatalf("admin MCP route latency buckets: %+v", report.RouteLatency.Buckets)
 	}
 	t.Run("analytics reads beside a held writer", func(t *testing.T) {
+		if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+			t.Fatal(err)
+		}
+		f.service.stopHealthDetector()
+		f.service.outbox.stop()
 		request := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(t.Context())
 		request.AddCookie(&http.Cookie{Name: hostedCookie, Value: owner.token})
 		c := f.service.echo.NewContext(request, httptest.NewRecorder())
@@ -321,7 +326,12 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 				if err != nil {
 					t.Fatal(err)
 				}
-				ctx := testenv.WaitContext(t, authorityContext)
+				reader := f.service.database.reader
+				reader.SetMaxOpenConns(1)
+				defer reader.SetMaxOpenConns(readerConnections)
+				waits := reader.Stats().WaitCount
+				ctx, cancel := context.WithCancel(testenv.WaitContext(t, authorityContext))
+				defer cancel()
 				var held *sql.Tx
 				holdWriter := func() error {
 					writer, err := f.service.database.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -354,7 +364,32 @@ SELECT 'prj_other',organization_id,'foreign-project-sentinel','github_compatible
 					return authority, nil
 				}
 				ctx = operatortool.WithConnection(ctx, connection)
-				got, err := read.run(ctx)
+				var got any
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					got, err = read.run(ctx)
+				}()
+				defer func() {
+					cancel()
+					<-done
+				}()
+				testenv.WaitUntil(t, t.Context(), func() error {
+					select {
+					case <-done:
+						return nil
+					default:
+					}
+					if reader.Stats().WaitCount > waits {
+						return nil
+					}
+					return errors.New("analytics read has not completed")
+				})
+				select {
+				case <-done:
+				default:
+					t.Fatal("analytics read requested another reader while holding the only connection")
+				}
 				if err != nil {
 					t.Fatalf("read beside held writer: %v", err)
 				}
