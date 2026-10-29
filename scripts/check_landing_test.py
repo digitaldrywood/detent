@@ -2,11 +2,14 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -29,6 +32,14 @@ with Path(".git/trace").open("a") as stream:
     stream.write(json.dumps({"tool": name, "args": args, "budget": os.environ.get("GOMAXPROCS"), "token": "DETENT_API_TOKEN" in os.environ}) + "\n")
 if (name == "go" and args[:1] == [os.environ.get("FAIL_STAGE")]) or (name == "golangci-lint" and os.environ.get("FAIL_STAGE") == "lint"):
     sys.exit(17)
+if name == "go" and args[:1] == [os.environ.get("HANG_STAGE")]:
+    reader, writer = os.pipe()
+    child = os.fork()
+    if child == 0:
+        print("fixture-ready", flush=True)
+        os.read(reader, 1)
+    else:
+        os.waitpid(child, 0)
 if name == "python3" and os.environ.get("FAIL_STAGE") == "nilaway":
     sys.exit(17)
 if name == "go" and args[:1] == ["test"] and "-list" not in args and os.environ.get("FAIL_HUB_PATTERN") and "-run" in args and re.search(args[args.index("-run") + 1], os.environ["FAIL_HUB_PATTERN"]):
@@ -99,7 +110,62 @@ class LandingGateTest(unittest.TestCase):
 
     def run_gate(self, base="origin/develop", budget="2"):
         (self.root / ".git/trace").write_text("")
-        return subprocess.run(["bash", "scripts/check-landing.sh", base, budget, self.linter], cwd=self.root, env=self.env, capture_output=True, text=True, timeout=30)
+        command = ["bash", "scripts/check-landing.sh", base, budget, self.linter]
+        with subprocess.Popen(command, cwd=self.root, env=self.env, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, start_new_session=True) as process:
+            try:
+                stdout, stderr = process.communicate(timeout=30)
+            except BaseException:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate()
+                raise
+            return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+    def test_gate_timeout_joins_descendants_before_next_selection(self):
+        self.env["HANG_STAGE"] = "build"
+        communicate = subprocess.Popen.communicate
+        killpg = os.killpg
+        stopped = set()
+        processes = []
+        drained = set()
+
+        def stop(group, sig):
+            if sig == signal.SIGKILL:
+                stopped.add(group)
+            return killpg(group, sig)
+
+        def expire(process, *args, **kwargs):
+            if kwargs.get("timeout") == 30:
+                processes.append(process)
+                output = b""
+                while b"fixture-ready\n" not in output:
+                    self.assertTrue(select.select([process.stdout], [], [], 5)[0])
+                    chunk = os.read(process.stdout.fileno(), 65536)
+                    self.assertTrue(chunk, "fixture exited before its child was ready")
+                    output += chunk
+                raise subprocess.TimeoutExpired(process.args, 30)
+            result = communicate(process, *args, timeout=5, **kwargs)
+            drained.add(process.pid)
+            return result
+
+        try:
+            with mock.patch.object(os, "killpg", stop), mock.patch.object(subprocess.Popen, "communicate", expire):
+                with self.assertRaises(subprocess.TimeoutExpired) as caught:
+                    self.run_gate()
+                self.assertEqual(caught.exception.timeout, 30)
+                self.assertEqual(len(processes), 1)
+                self.assertIn(processes[0].pid, stopped, "gate timeout left fixture descendants running")
+                self.assertIn(processes[0].pid, drained, "gate timeout did not drain descendant output")
+        finally:
+            for process in processes:
+                try:
+                    killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
 
     def trace(self):
         path = self.root / ".git/trace"
