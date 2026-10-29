@@ -3211,6 +3211,7 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 			}
 			var expected *tracker.ChangeDetail
 			var deliveryHeadRef string
+			var deliveredTargetHead string
 			var candidate connector.Issue
 			if test.rework && !genuinePublication {
 				info, err := backend.Create(t.Context(), workspace.Issue{ProjectID: "local", ID: issue.ID, Identifier: issue.Identifier})
@@ -3399,6 +3400,17 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatal(err)
 				}
 				expected = &detail
+				if test.absorbed || test.delivered != "" {
+					target := "main"
+					if test.delivered == "release" {
+						target = "release/v1.2"
+					}
+					head, err := exec.CommandContext(t.Context(), "git", "-C", remote, "rev-parse", "refs/heads/"+target).Output()
+					if err != nil {
+						t.Fatal(err)
+					}
+					deliveredTargetHead = strings.TrimSpace(string(head))
+				}
 				if test.failDetail {
 					next := h.native.client.httpClient.Transport
 					h.native.client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
@@ -4740,24 +4752,33 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 				if err := h.admin.client.request(t.Context(), http.MethodGet, h.admin.base()+"/attempts/"+attempt+"/diff", nil, &stored); err != nil {
 					t.Fatal(err)
 				}
-				if (test.delivered == "" || test.delivered == "ancestor" || test.delivered == "exact") && (stored.BaseSHA != stored.HeadSHA || len(stored.Files) != 0) {
-					t.Fatalf("absorbed fixture did not finish empty: %+v", stored)
+				version := expected.Versions[len(expected.Versions)-1]
+				if stored.BaseSHA != version.BaseSHA || stored.HeadSHA != version.HeadSHA || len(stored.Files) != 1 || stored.Files[0].Path != "PRESERVED.md" || stored.Files[0].Additions != 1 || stored.Files[0].Deletions != 0 || stored.AttemptID != attempt || stored.Producer.LeaseID != execution.Recovery().Lease.ID || stored.Producer.FencingToken != execution.Recovery().Lease.FencingToken {
+					t.Fatalf("incorporated source lost its reviewed delta or attempt identity: %+v", stored)
 				}
 				if test.formal || test.hold {
-					if change.Landing != nil || detail.Change.Landed != nil || !strings.Contains(change.VersionError, "the final attempt diff does not identify the current Change Request head") {
+					if change.Landing != nil || detail.Change.Landed != nil || change.VersionID != version.ID || change.VersionError != "" || test.formal && (change.Reviewed || detail.Summary.NativeReview != "changes_requested") {
 						t.Fatalf("human rejection was waived: %+v", change)
 					}
 					h.complete(t, issue.ID, change)
 					evidence, err := h.admin.RuntimeEvidence(t.Context(), tracker.NativeWorkItemID(issue.ID), attempt)
-					if err != nil || evidence.Attempt == nil || evidence.Attempt.Finalization == nil || evidence.Attempt.Finalization.SourceVersion == nil || evidence.Attempt.Finalization.SourceVersion.VersionID != expected.Change.CurrentVersion || evidence.Attempt.Finalization.VersionError != change.VersionError || evidence.Attempt.ClaimReleasedAt == nil {
+					if err != nil || evidence.Attempt == nil || evidence.Attempt.Finalization == nil || evidence.Attempt.Finalization.ChangeID != expected.Change.ID || evidence.Attempt.Finalization.VersionID != version.ID || evidence.Attempt.Finalization.HeadSHA != version.HeadSHA || evidence.Attempt.Finalization.VersionError != change.VersionError || evidence.Attempt.ClaimReleasedAt == nil || test.hold && (evidence.Attempt.Disposition == nil || !evidence.Attempt.Disposition.HumanAction) {
 						t.Fatalf("refusal projection lost existing source provenance: %+v, %v", evidence.Attempt, err)
 					}
 				} else {
-					merge, target := stored.BaseSHA, "main"
+					target := "main"
 					if test.delivered == "release" {
-						merge, target = stored.HeadSHA, "release/v1.2"
+						target = "release/v1.2"
 					}
-					if change.Landing == nil || !change.Landing.Landed || detail.Change.Landed == nil || detail.Change.Landed.VersionID != expected.Change.CurrentVersion || detail.Change.Landed.MergeSHA != merge || detail.Change.Landed.BaseRef != target || change.VersionError != "" {
+					head, err := exec.CommandContext(t.Context(), "git", "-C", remote, "rev-parse", "refs/heads/"+target).Output()
+					if err != nil {
+						t.Fatal(err)
+					}
+					merge := deliveredTargetHead
+					if test.advanceTarget {
+						merge = targetHead
+					}
+					if merge == "" || strings.TrimSpace(string(head)) != merge || change.Landing == nil || !change.Landing.Landed || detail.Change.Landed == nil || detail.Change.Landed.VersionID != expected.Change.CurrentVersion || detail.Change.Landed.MergeSHA != merge || detail.Change.Landed.BaseRef != target || change.VersionError != "" {
 						t.Fatalf("absorbed source lacks authentic landing: change=%+v detail=%+v", change, detail)
 					}
 					if test.delivered == "" {
@@ -4936,7 +4957,11 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 					t.Fatal(err)
 				}
 				owner := execution.(*nativeExecution).data
-				if targetHead == "" || stored.BaseSHA != targetHead || stored.HeadSHA != execution.(*nativeExecution).worktreeHead || stored.AttemptID != owner.AttemptID || stored.Producer.FencingToken != execution.Recovery().Lease.FencingToken {
+				wantBase := targetHead
+				if !test.staged && !test.commit {
+					wantBase = expected.Versions[len(expected.Versions)-1].BaseSHA
+				}
+				if targetHead == "" || stored.BaseSHA != wantBase || stored.HeadSHA != execution.(*nativeExecution).worktreeHead || stored.AttemptID != owner.AttemptID || stored.Producer.FencingToken != execution.Recovery().Lease.FencingToken {
 					t.Fatalf("final diff lost prepared source or fenced attempt identity: %+v, target=%s", stored, targetHead)
 				}
 				if test.staged || test.commit {
@@ -4944,11 +4969,12 @@ func TestNativeRunnerOpensChangeAndLeavesDispatch(t *testing.T) {
 						t.Fatalf("final diff did not preserve only the owned issue delta: %+v", stored)
 					}
 				} else {
-					if stored.HeadSHA != stored.BaseSHA || len(stored.Files) != 0 {
+					version := expected.Versions[len(expected.Versions)-1]
+					if stored.HeadSHA != version.HeadSHA || len(stored.Files) != 1 || stored.Files[0].Path != "PRESERVED.md" || stored.Files[0].Additions != 1 || stored.Files[0].Deletions != 0 {
 						t.Fatalf("clean Rework attributed upstream work to the issue: %+v", stored)
 					}
 					detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), expected.Change.ID)
-					if err != nil || !reflect.DeepEqual(detail, *expected) || change == nil || change.VersionID != "" || change.Landing != nil || change.VersionError == "" {
+					if err != nil || !reflect.DeepEqual(detail, *expected) || change == nil || change.VersionID != version.ID || change.Reviewed || change.Landing != nil || change.VersionError != "" {
 						t.Fatalf("clean Rework changed historical provenance or waived refusal: change=%+v detail=%+v error=%v", change, detail, err)
 					}
 					h.complete(t, issue.ID, change)

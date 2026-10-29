@@ -225,7 +225,7 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtimeStore, err := store.Open(t.Context(), store.Config{Path: filepath.Join(t.TempDir(), "runtime.db")})
+	runtimeStore, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,11 +394,8 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 	}
 	orchCfg := orchestrator.Config{
 		Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, Plan: plan,
-		PollInterval: 20 * time.Millisecond, MaxConcurrentAgents: 1,
+		PollInterval: time.Hour, MaxConcurrentAgents: 1,
 		ActiveStates: []string{"Todo", "In Progress"}, ObservedStates: []string{"Human Review"}, TerminalStates: []string{"Done"},
-	}
-	if abandon || failure == "workspace" {
-		orchCfg.PollInterval = time.Hour
 	}
 	var runBackend runner.Backend = agent
 	observed := make(chan nativePlanRunObservation, 8)
@@ -406,7 +403,6 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		orchCfg.ObservedStates = append(orchCfg.ObservedStates, "Blocked")
 	}
 	if planningRecovery && !manualCheckpoint && !cleanCheckpoint {
-		orchCfg.PollInterval = time.Hour
 		runBackend = &nativePlanObservedRunner{Runner: agent, observed: observed}
 	}
 	orch, err := orchestrator.New(orchCfg, orchestrator.Dependencies{Connector: h.connector, Scheduling: h.scheduler, Runner: runBackend, WorkAttempts: runtimeStore, LaneLedger: runtimeStore, WorkflowMetrics: runtimeStore, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
@@ -493,7 +489,6 @@ func testNativePlannerHandoff(t *testing.T, abandon bool, failure, planRecoveryR
 		if err != nil || !response.Queued {
 			t.Fatalf("fresh implementation handoff = %v, %v", response.Status, err)
 		}
-		orchCfg.PollInterval = 20 * time.Millisecond
 		if err := orch.UpdateRuntime(t.Context(), orchestrator.RuntimeUpdate{Config: orchCfg}); err != nil {
 			t.Fatal(err)
 		}
