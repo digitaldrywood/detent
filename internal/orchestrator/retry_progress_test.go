@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/backendcapacity"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
@@ -24,12 +25,25 @@ type progressScheduling struct {
 	admissionError error
 }
 
-func (s *progressScheduling) ReadmitRetryProgress(_ context.Context, _ RunRequest, _ runpkg.ProviderCapacityResolver) (runpkg.Execution, error) {
+type progressExecution struct {
+	planDispatchExecution
+	finished string
+}
+
+func (e *progressExecution) Finish(ctx context.Context, outcome string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	e.finished = outcome
+	return nil
+}
+
+func (s *progressScheduling) ReadmitRetryProgress(_ context.Context, run RunRequest, _ runpkg.ProviderCapacityResolver) (runpkg.Execution, *isolation.Policy, error) {
 	s.admissions++
 	if s.admissionError != nil {
-		return nil, s.admissionError
+		return nil, nil, s.admissionError
 	}
-	return &planDispatchExecution{}, nil
+	return &progressExecution{}, run.Issue.IsolationPolicy, nil
 }
 
 func (s *progressScheduling) RetryProgress(_ context.Context, issue connector.Issue) (progresscheck.Request, progresscheck.Owner, error) {
@@ -115,11 +129,15 @@ func TestRetryProgressDispatch(t *testing.T) {
 			o := &Orchestrator{cfg: cfg, scheduling: source, progressRunner: checker, supervisor: newTestSupervisor(t, worker, cfg), runResults: make(chan runpkg.Completion, 1)}
 			state := newState(cfg)
 			now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-			req := RunRequest{Issue: issue, Mode: RunModeImplement, Execution: &planDispatchExecution{}}
+			execution := &progressExecution{}
+			req := RunRequest{Issue: issue, Mode: RunModeImplement, Execution: execution}
 			err := o.prepareRetryProgress(t.Context(), &req)
 			wantError := tt.err != nil || tt.decision.Outcome == progresscheck.SystemDefect
 			if (err != nil) != wantError || !wantError && req.Mode != tt.want {
 				t.Fatalf("progress request mode=%q error=%v", req.Mode, err)
+			}
+			if wantError && execution.finished != "failed" {
+				t.Fatalf("failed progress check retained its execution: outcome=%s", execution.finished)
 			}
 			if tt.err == nil {
 				replay := RunRequest{Issue: issue, Mode: RunModeImplement, Execution: req.Execution}
@@ -187,7 +205,7 @@ func TestRetryProgressDoesNotDelayHealthyDispatch(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		cfg := normalizeConfig(Config{MaxConcurrentAgents: 2, ActiveStates: []string{"Todo", "In Progress"}, Project: scheduler.ProjectCandidate{ID: "example-project"}, WorkerHosts: []string{"worker-a"}})
 		issue := dispatchTestIssue("stuck", "In Progress")
-		source := &progressScheduling{hubSchedulingSource: hubSchedulingSource{execution: &planDispatchExecution{}}, request: progresscheck.Request{ProjectID: "example-project", IssueID: issue.ID, PolicyID: "policy", EvidenceRevision: "1", AvailableSteps: []string{RunModeImplement}, Attempts: []progresscheck.Attempt{{ID: "failed", Outcome: "failed"}}}, records: map[string]progresscheck.Record{}, defects: map[string]string{}}
+		source := &progressScheduling{hubSchedulingSource: hubSchedulingSource{execution: &progressExecution{}}, request: progresscheck.Request{ProjectID: "example-project", IssueID: issue.ID, PolicyID: "policy", EvidenceRevision: "1", AvailableSteps: []string{RunModeImplement}, Attempts: []progresscheck.Attempt{{ID: "failed", Outcome: "failed"}}}, records: map[string]progresscheck.Record{}, defects: map[string]string{}}
 		release := make(chan struct{})
 		checker := &progressRunner{started: make(chan RunRequest, 1), release: release, decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Reason: "Continue with new evidence", Evidence: []string{"failed"}}}
 		worker := newWorkerHostRunner()
@@ -249,6 +267,7 @@ func TestRetryProgressReadmitsSelectedMode(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name     string
+		mode     string
 		retained bool
 		refused  bool
 	}{
@@ -256,6 +275,8 @@ func TestRetryProgressReadmitsSelectedMode(t *testing.T) {
 		{name: "retained decision", retained: true},
 		{name: "new admission refused", refused: true},
 		{name: "retained admission refused", retained: true, refused: true},
+		{name: "new decision in the same mode", mode: RunModeImplement},
+		{name: "retained decision in the same mode", mode: RunModeImplement, retained: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			issue := dispatchTestIssue("example-issue", "Todo")
@@ -273,10 +294,18 @@ func TestRetryProgressReadmitsSelectedMode(t *testing.T) {
 			}
 			checker := &progressRunner{decision: decision}
 			o := &Orchestrator{scheduling: source, progressRunner: checker}
-			original := &planDispatchExecution{}
-			request := RunRequest{Issue: issue, Mode: RunModePlan, Execution: original}
+			original := &progressExecution{}
+			mode := tt.mode
+			if mode == "" {
+				mode = RunModePlan
+			}
+			request := RunRequest{Issue: issue, Mode: mode, Execution: original}
 			err := o.prepareRetryProgress(t.Context(), &request)
-			if source.admissions != 1 || request.Mode != RunModeImplement || request.ProgressDecision.Decision.Step != RunModeImplement {
+			wantAdmissions := 1
+			if tt.retained && mode == RunModeImplement {
+				wantAdmissions = 0
+			}
+			if source.admissions != wantAdmissions || request.Mode != RunModeImplement || request.ProgressDecision.Decision.Step != RunModeImplement {
 				t.Fatalf("selected step was not readmitted: admissions=%d mode=%s decision=%+v", source.admissions, request.Mode, request.ProgressDecision)
 			}
 			wantCalls := 1
@@ -290,7 +319,7 @@ func TestRetryProgressReadmitsSelectedMode(t *testing.T) {
 				if !errors.Is(err, source.admissionError) || request.Execution != original {
 					t.Fatalf("admission refusal did not preserve its error and execution: %v", err)
 				}
-			} else if err != nil || request.Execution == original {
+			} else if err != nil || (request.Execution == original) != (wantAdmissions == 0) {
 				t.Fatalf("reroute retained its old execution: %v", err)
 			}
 		})
