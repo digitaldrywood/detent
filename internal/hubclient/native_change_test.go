@@ -1746,7 +1746,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			if test.publicationWriteRefusal != "" {
 				owner := execution.(*nativeExecution)
 				if err := owner.PrepareFinish(guarded, test.outcome, "", nil); err != nil || owner.publication == nil {
-					t.Fatalf("prepare held publication: %v", err)
+					t.Fatalf("prepare held publication: %v, change=%+v, calls=%d", err, owner.change, publicationCalls)
 				}
 				switch test.publicationWriteRefusal {
 				case "version":
