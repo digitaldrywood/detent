@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -155,7 +156,14 @@ AND (?=0 OR n.first_sequence<=?) ORDER BY n.first_sequence DESC LIMIT 1`, scope.
 	unrestricted := scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly && scope.credential.Hosted == nil
 	unrestricted = unrestricted || scope.credential.Hosted != nil && scope.credential.EntryKey == nil && scope.credential.HostedKeyScope == "" && (scope.credential.HostedRole == "owner" || scope.credential.HostedRole == "admin")
 	presign := r.presign && unrestricted
-	response, err := reader(ctx, ref, presign)
+	response, err := readRuntimeObject(ctx, nativeRuntimeObjectKey{kind: "archive", organization: string(scope.organization), reference: ref, presign: presign}, func() (entryauthority.ArchiveResponse, error) {
+		return reader(ctx, ref, presign)
+	})
+	var hydration *nativeRuntimeHydration
+	if errors.As(err, &hydration) {
+		r.descriptor = nil
+		return attachment.ArchiveSection{}, false, err
+	}
 	if err != nil {
 		return fail("unavailable")
 	}

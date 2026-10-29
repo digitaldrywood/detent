@@ -82,6 +82,12 @@ func readChangeContent(ctx context.Context, organization string, ref attachment.
 	if ref.Validate(organization) != nil {
 		return nil, artifact.ErrIntegrity
 	}
+	return readRuntimeObject(ctx, nativeRuntimeObjectKey{kind: "content", organization: organization, reference: ref}, func() ([]byte, error) {
+		return readChangeContentObject(ctx, organization, ref)
+	})
+}
+
+func readChangeContentObject(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
 	content, ok := ctx.Value(changeContentKey{}).(*changeContent)
 	if !ok {
 		return nil, errors.New("immutable content storage unavailable")

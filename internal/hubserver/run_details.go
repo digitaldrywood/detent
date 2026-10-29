@@ -488,7 +488,9 @@ func readRunDetailSegment(ctx context.Context, q nativeQueryer, detail *runDetai
 	if err := ref.Validate(detail.Organization); err != nil {
 		return nil, fmt.Errorf("validate run detail attachment: %w", errors.Join(artifact.ErrIntegrity, err))
 	}
-	raw, err := owner.store.ReadDetail(ctx, detail.Organization, ref)
+	raw, err := readRuntimeObject(ctx, nativeRuntimeObjectKey{kind: "run_detail", organization: detail.Organization, reference: ref}, func() ([]byte, error) {
+		return owner.store.ReadDetail(ctx, detail.Organization, ref)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read run detail archive: %w", err)
 	}

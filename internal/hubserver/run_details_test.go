@@ -776,6 +776,12 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 				if err := tx.Commit(); err != nil {
 					t.Fatal(err)
 				}
+				store.beforeRead = func(context.Context) error {
+					if readers, writers := f.service.database.reader.Stats().InUse, f.service.database.db.Stats().InUse; readers != 0 || writers != 0 {
+						return fmt.Errorf("run detail I/O holds database connections: readers=%d writers=%d", readers, writers)
+					}
+					return nil
+				}
 				var writer *writerTiming
 				f.service.echo.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
 					return func(c echo.Context) error {
@@ -874,6 +880,9 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 				contentReads := 0
 				f.service.config.Content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
 					contentReads++
+					if readers, writers := f.service.database.reader.Stats().InUse, f.service.database.db.Stats().InUse; readers != 0 || writers != 0 {
+						return nil, fmt.Errorf("attempt content I/O holds database connections: readers=%d writers=%d", readers, writers)
+					}
 					return objects.call(ctx, request)
 				}
 				for _, endpoint := range []string{"runtime", "explanation"} {
@@ -893,6 +902,33 @@ func TestNativeRuntimeRunDetailHistoryCost(t *testing.T) {
 					}
 					if reads != expectedReads || contentReads != expectedContent {
 						t.Errorf("converted runtime read cost: details=%d content=%d", reads, contentReads)
+					}
+				}
+				if history == 1 {
+					table := archiveTestTable(t, f.service, "native_attempts", "id=?", latest)
+					ref, data := publishTestSection(t, f, string(issue.WorkItemID), "run", latest, 1, 1, table)
+					for _, availability := range []string{"available", "unavailable", "invalid"} {
+						f.service.config.ArchiveReader = func(_ context.Context, got attachment.ArchiveReference, _ bool) (entryauthority.ArchiveResponse, error) {
+							if readers, writers := f.service.database.reader.Stats().InUse, f.service.database.db.Stats().InUse; readers != 0 || writers != 0 {
+								t.Errorf("archive I/O holds database connections: readers=%d writers=%d", readers, writers)
+							}
+							if got != ref || availability == "unavailable" {
+								return entryauthority.ArchiveResponse{}, errors.New("archive unavailable")
+							}
+							if availability == "invalid" {
+								return entryauthority.ArchiveResponse{Data: []byte("invalid archive")}, nil
+							}
+							return entryauthority.ArchiveResponse{Data: data}, nil
+						}
+						response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(issue.WorkItemID)+"/runtime", f.token, nil)
+						status := http.StatusOK
+						if availability != "available" {
+							status = http.StatusServiceUnavailable
+						}
+						requireNativeStatus(t, response, status)
+						if availability != "available" && !strings.Contains(response.Body.String(), "archive_"+availability) {
+							t.Fatalf("archive failure lost its classification: %s", response.Body.String())
+						}
 					}
 				}
 			})

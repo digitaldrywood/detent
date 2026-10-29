@@ -1534,7 +1534,7 @@ func (s *Service) readConversationSnapshotFor(ctx context.Context, scope nativeS
 			if !diagnoseMissing {
 				return nil, nativeNotFound()
 			}
-			runtime, err := readNativeRuntime(ctx, s.database.reader, scope, item, "", s.config.now())
+			runtime, err := s.readNativeRuntime(ctx, scope, item, "")
 			if err != nil {
 				return nil, err
 			}

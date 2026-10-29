@@ -17,6 +17,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/agentidentity"
+	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
@@ -227,12 +228,74 @@ func (s *Service) readNativeRuntime(ctx context.Context, scope nativeScope, item
 	ctx = s.runDetailContext(ctx)
 	ctx, cancel := context.WithTimeout(ctx, hubReadTimeout)
 	defer cancel()
-	tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return tracker.NativeRuntimeEvidence{}, err
+	prepared := &nativeRuntimePreparation{objects: make(map[nativeRuntimeObjectKey]nativeRuntimeObjectResult)}
+	ctx = context.WithValue(ctx, nativeRuntimePreparationKey{}, prepared)
+	for {
+		tx, err := s.database.reader.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			return tracker.NativeRuntimeEvidence{}, err
+		}
+		prepared.collecting = true
+		result, readErr := readNativeRuntimeWithAdmission(ctx, tx, scope, item, attemptID, s.config.now().UTC(), minimumRunnerVersion(s.config.Version), admission...)
+		prepared.collecting = false
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			return tracker.NativeRuntimeEvidence{}, errors.Join(readErr, err)
+		}
+		var hydration *nativeRuntimeHydration
+		if !errors.As(readErr, &hydration) {
+			return result, readErr
+		}
+		if len(prepared.objects) >= nativeRuntimeObjectLimit {
+			return tracker.NativeRuntimeEvidence{}, &nativeError{Code: "runtime_object_limit", Message: "Runtime object references exceed the read bound", status: http.StatusServiceUnavailable, publicMessage: true}
+		}
+		hydration.read()
 	}
-	defer tx.Rollback()
-	return readNativeRuntimeWithAdmission(ctx, tx, scope, item, attemptID, s.config.now().UTC(), minimumRunnerVersion(s.config.Version), admission...)
+}
+
+const nativeRuntimeObjectLimit = 256
+
+type nativeRuntimePreparationKey struct{}
+
+type nativeRuntimeObjectKey struct {
+	kind, organization string
+	reference          attachment.ArchiveReference
+	presign            bool
+}
+
+type nativeRuntimePreparation struct {
+	collecting bool
+	objects    map[nativeRuntimeObjectKey]nativeRuntimeObjectResult
+}
+
+type nativeRuntimeObjectResult struct {
+	value any
+	err   error
+}
+
+type nativeRuntimeHydration struct {
+	read func()
+}
+
+func (*nativeRuntimeHydration) Error() string { return "runtime object requires hydration" }
+
+func readRuntimeObject[T any](ctx context.Context, key nativeRuntimeObjectKey, read func() (T, error)) (T, error) {
+	prepared, ok := ctx.Value(nativeRuntimePreparationKey{}).(*nativeRuntimePreparation)
+	if !ok || !prepared.collecting {
+		return read()
+	}
+	if value, found := prepared.objects[key]; found {
+		decoded, ok := value.value.(T)
+		if !ok {
+			var zero T
+			return zero, errors.New("runtime object cache type mismatch")
+		}
+		return decoded, value.err
+	}
+	var zero T
+	return zero, &nativeRuntimeHydration{read: func() {
+		value, err := read()
+		prepared.objects[key] = nativeRuntimeObjectResult{value: value, err: err}
+	}}
 }
 
 func readNativeRuntime(ctx context.Context, query nativeQueryer, scope nativeScope, item, attemptID string, now time.Time, admission ...tracker.NativeAdmissionContext) (tracker.NativeRuntimeEvidence, error) {
@@ -468,17 +531,13 @@ func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope native
 	var actor, data, at string
 	statement := "SELECT id, sequence, type, schema_version, actor_json, " + collaborationPayloadColumn("") + ", recorded_at,payload_version,scheduler_present,scheduler_outcome,scheduler_reason,scheduler_source,scheduler_runner_id,scheduler_at,scheduler_revision,scheduler_change_id,scheduler_version_id,scheduler_head_sha,scheduler_change_present,event_revision FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type=?"
 	args := []any{scope.organization, scope.project, item, kind}
-	if outcome != "" && explanationRead(ctx) {
+	if outcome != "" {
 		base := statement
-		statement = "SELECT * FROM (" + base + " AND scheduler_outcome=? ORDER BY sequence DESC LIMIT 1) UNION ALL SELECT * FROM (" + base + " AND scheduler_outcome IS NULL ORDER BY sequence DESC LIMIT 64) ORDER BY sequence DESC"
+		statement = "SELECT * FROM (" + base + " AND scheduler_outcome=? ORDER BY sequence DESC LIMIT 1) UNION ALL SELECT * FROM (" + base + " AND scheduler_outcome IS NULL ORDER BY sequence DESC LIMIT 65) ORDER BY sequence DESC"
 		args = append(args, outcome, scope.organization, scope.project, item, kind)
 	} else {
-		if outcome != "" {
-			statement += " AND (scheduler_outcome=? OR scheduler_outcome IS NULL)"
-			args = append(args, outcome)
-		}
 		statement += " ORDER BY sequence DESC"
-		statement += " LIMIT 64"
+		statement += " LIMIT 1"
 	}
 	rows, err := q.QueryContext(ctx, statement, args...)
 	if err != nil {
@@ -486,6 +545,7 @@ func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope native
 	}
 	defer rows.Close()
 	found := false
+	legacy := 0
 	for rows.Next() {
 		var version int
 		var present, changePresent sql.NullBool
@@ -516,6 +576,12 @@ func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope native
 			}
 		}
 		if outcome != "" {
+			if !decisionOutcome.Valid {
+				legacy++
+				if legacy > 64 {
+					return tracker.CollaborationEvent{}, &nativeError{Code: "scheduler_history_projection_pending", Message: "Scheduler history projection is incomplete", status: http.StatusServiceUnavailable, publicMessage: true}
+				}
+			}
 			var projection tracker.CollaborationData
 			if err := decodeRunHistory(ctx, q, data, &projection); err != nil {
 				return tracker.CollaborationEvent{}, err

@@ -20,24 +20,28 @@ type analyticsEventProjection struct {
 }
 
 func (s *Service) convertSchedulerDecisions(ctx context.Context) error {
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT id,data_json,recorded_at FROM collaboration_events WHERE analytics_projection_version IS NULL ORDER BY id LIMIT ?`, storageConversionRows)
+	ctx = s.runDetailContext(ctx)
+	const statement = `SELECT id,CASE WHEN payload_version=1 THEN 'event:' || id ELSE data_json END,recorded_at
+FROM collaboration_events WHERE id IN (
+ SELECT id FROM (SELECT id FROM collaboration_events WHERE analytics_projection_version IS NULL ORDER BY id LIMIT ?)
+ UNION
+ SELECT id FROM (SELECT id FROM collaboration_events WHERE type='scheduler.decision' AND scheduler_outcome IS NULL ORDER BY id LIMIT ?)
+ ORDER BY id LIMIT ?
+) ORDER BY id`
+	rows, err := s.database.reader.QueryContext(ctx, statement, storageConversionRows, storageConversionRows, storageConversionRows)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	type candidate struct {
-		id   string
-		data analyticsEventProjection
-		at   time.Time
+		id, raw string
+		at      time.Time
 	}
 	candidates := []candidate{}
 	for rows.Next() {
 		var c candidate
-		var raw, at string
-		if err := rows.Scan(&c.id, &raw, &at); err != nil {
-			return errors.Join(err, rows.Close())
-		}
-		if err := json.Unmarshal([]byte(raw), &c.data); err != nil {
+		var at string
+		if err := rows.Scan(&c.id, &c.raw, &at); err != nil {
 			return errors.Join(err, rows.Close())
 		}
 		c.at, err = parseTimeValue(at)
@@ -50,7 +54,15 @@ func (s *Service) convertSchedulerDecisions(ctx context.Context) error {
 		return err
 	}
 	for _, c := range candidates {
-		if err := updateAnalyticsEventProjection(ctx, s.database.db, c.id, c.data, c.at); err != nil {
+		raw, err := resolveCollaborationPayload(ctx, s.database.reader, c.raw)
+		if err != nil {
+			return err
+		}
+		var data analyticsEventProjection
+		if err := json.Unmarshal([]byte(raw), &data); err != nil {
+			return err
+		}
+		if err := updateAnalyticsEventProjection(ctx, s.database.db, c.id, data, c.at); err != nil {
 			return err
 		}
 	}

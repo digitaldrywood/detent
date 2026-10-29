@@ -80,7 +80,7 @@ func appendLegacyNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScop
 }
 
 func TestCollaborationPayloadInlineBytes(t *testing.T) {
-	f := newDefaultNativeFixture(t, Config{now: func() time.Time { return time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC) }})
+	f := newDefaultNativeFixture(t, Config{Conversation: &ConversationConfig{Enabled: true}, now: func() time.Time { return time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC) }})
 	rowBytes := collaborationInlineBytesQuery(t, f.service.database.reader)
 	for _, kind := range []string{"run.started", "run.checkpointed", "run.observed", "run.finished", "scheduler.decision"} {
 		t.Run(kind, func(t *testing.T) {
@@ -151,10 +151,27 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 				}
 				if kind == "scheduler.decision" {
 					for _, lightweight := range []bool{false, true} {
+						original := f.service.config.Content
+						reads := 0
+						f.service.config.Content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+							reads++
+							if readers, writers := f.service.database.reader.Stats().InUse, f.service.database.db.Stats().InUse; readers != 0 || writers != 0 {
+								t.Errorf("object I/O holds database connections: readers=%d writers=%d", readers, writers)
+								return nil, errors.New("object I/O holds database connections")
+							}
+							return original(ctx, request)
+						}
 						ctx := context.WithValue(t.Context(), explanationReadKey{}, lightweight)
 						runtime, err := f.service.readNativeRuntime(ctx, scope, string(issue.WorkItemID), "")
+						if err == nil {
+							_, err = f.service.readConversationSnapshotFor(f.service.runDetailContext(ctx), scope, "", string(issue.WorkItemID), true)
+						}
+						f.service.config.Content = original
 						if err != nil {
 							t.Fatal(err)
+						}
+						if !lightweight && reads == 0 {
+							t.Fatal("runtime did not hydrate scheduler audit payload")
 						}
 						want := page.Items[1].Data
 						if lightweight {
@@ -192,6 +209,72 @@ func TestCollaborationPayloadInlineBytes(t *testing.T) {
 			}
 			if len(sizes) > 1 && sizes[0] != sizes[1] {
 				t.Fatalf("inline payload grows: %v", sizes)
+			}
+		})
+	}
+}
+
+func TestNativeRuntimeLegacyExclusionProjection(t *testing.T) {
+	for _, projected := range []bool{false, true} {
+		t.Run(fmt.Sprintf("older projected exclusion=%v", projected), func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			issue := f.create(t, "legacy scheduler history")
+			ctx := f.service.runDetailContext(t.Context())
+			if err := f.service.hubTransact(ctx, func(tx *sql.Tx, now time.Time) error {
+				for i := range 131 {
+					decision := tracker.NativeSchedulerDecision{Outcome: "ready", Reason: "available"}
+					if i < 2 {
+						decision.Outcome = "skipped"
+						decision.Reason = fmt.Sprintf("historical refusal %d", i)
+					}
+					if err := appendLegacyNativeHistory(ctx, tx, scope, string(issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &decision}, now); err != nil {
+						return err
+					}
+				}
+				statement := "UPDATE collaboration_events SET scheduler_outcome=NULL WHERE work_item_id=? AND type='scheduler.decision'"
+				if projected {
+					statement += " AND scheduler_reason<>'historical refusal 0'"
+				}
+				_, err := tx.ExecContext(ctx, statement, issue.WorkItemID)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, lightweight := range []bool{false, true} {
+				ctx := context.WithValue(t.Context(), explanationReadKey{}, lightweight)
+				evidence, err := f.service.readNativeRuntime(ctx, scope, string(issue.WorkItemID), "")
+				var pending *nativeError
+				if !errors.As(err, &pending) || pending.Code != "scheduler_history_projection_pending" {
+					t.Errorf("unprojected history returned an authoritative exclusion (lightweight=%v): exclusion=%+v err=%v", lightweight, evidence.NativeCandidateExclusion, err)
+				}
+			}
+			remaining := 131
+			if projected {
+				remaining--
+			}
+			for remaining > 0 {
+				if err := f.service.convertSchedulerDecisions(ctx); err != nil {
+					t.Fatal(err)
+				}
+				var next int
+				if err := f.service.database.reader.QueryRowContext(ctx, "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision' AND scheduler_outcome IS NULL", issue.WorkItemID).Scan(&next); err != nil {
+					t.Fatal(err)
+				}
+				if converted := remaining - next; converted <= 0 || converted > storageConversionRows {
+					t.Fatalf("projection did not make bounded durable progress: before=%d after=%d", remaining, next)
+				}
+				remaining = next
+			}
+			for _, lightweight := range []bool{false, true} {
+				ctx := context.WithValue(t.Context(), explanationReadKey{}, lightweight)
+				evidence, err := f.service.readNativeRuntime(ctx, scope, string(issue.WorkItemID), "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if event := evidence.NativeCandidateExclusion; event == nil || event.Data.Decision == nil || event.Data.Decision.Reason != "historical refusal 1" {
+					t.Fatalf("latest historical exclusion was lost (lightweight=%v): %+v", lightweight, event)
+				}
 			}
 		})
 	}
