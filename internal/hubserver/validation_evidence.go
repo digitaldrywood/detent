@@ -141,27 +141,23 @@ func readValidationCandidates(ctx context.Context, query nativeQueryer, scope na
 	ranked := []rankedCandidate{}
 	partial := false
 	for _, unknown := range []bool{false, true} {
-		limit := 21
-		if unknown {
-			limit = changeLegacyReadLimit + 1
-		}
-		rows, err := query.QueryContext(ctx, `SELECT c.work_item_id,v.record_json,COALESCE(a.id,''),COALESCE(a.run_id,''),COALESCE(a.local_attempt_id,0),COALESCE(r.record_json,''),c.record_json,v.rowid,COALESCE(a.fencing_token,0),r.merge_sha
+		statement := `SELECT c.work_item_id,v.record_json,COALESCE(a.id,''),COALESCE(a.run_id,''),COALESCE(a.local_attempt_id,0),COALESCE(r.record_json,''),c.record_json,v.rowid,COALESCE(a.fencing_token,0),r.merge_sha
  FROM change_versions v JOIN change_requests c ON c.id=v.change_id
  LEFT JOIN change_landing_receipts r ON r.version_id=v.id
  LEFT JOIN native_attempts a ON a.id=r.attempt_id AND a.organization_id=c.organization_id AND a.project_id=c.project_id
  WHERE c.organization_id=? AND c.project_id=? AND (?='' OR c.work_item_id=?) AND (?='' OR c.id=?) AND (?='' OR a.id=?)
  AND (r.merge_sha IS NULL AND r.attempt_id IS NOT NULL)=?
- ORDER BY (r.merge_sha=?) DESC,v.rowid DESC,a.fencing_token DESC LIMIT ?`, scope.organization, scope.project, item, item, change, change, attempt, attempt, unknown, scheduled.HeadSHA, limit)
+ ORDER BY (r.merge_sha=?) DESC,v.rowid DESC,a.fencing_token DESC`
+		if !unknown {
+			statement = "SELECT * FROM (" + statement + " LIMIT 21)"
+		}
+		rows, err := queryChangeLegacyRows(ctx, query, statement, scope.organization, scope.project, item, item, change, change, attempt, attempt, unknown, scheduled.HeadSHA)
 		if err != nil {
 			return nil, false, err
 		}
 		defer rows.Close()
 		count := 0
 		for rows.Next() {
-			if unknown && count == changeLegacyReadLimit {
-				rows.Close()
-				return nil, false, errChangeColumnsIncomplete
-			}
 			count++
 			var candidate tracker.ValidationComparison
 			var versionRaw, receiptRaw, changeRaw string

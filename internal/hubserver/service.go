@@ -33,6 +33,8 @@ const (
 )
 
 type Service struct {
+	changeColumnFamily      int
+	changeColumnAfter       any
 	dashboard               *dashboardDelivery
 	releaseNotes            []releasenotes.Build
 	activityDurations       activityDurationCache

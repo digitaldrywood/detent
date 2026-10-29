@@ -179,7 +179,6 @@ func activityStageTiming(a *operatortool.ActivityAttempt, phases []tracker.Nativ
 func readActivityAttempts(ctx context.Context, q nativeQueryer, organization string, projects []string, r operatortool.ActivityRequest, w operatortool.AnalyticsWindow, now time.Time, running bool) ([]operatortool.ActivityAttempt, error) {
 	out := []operatortool.ActivityAttempt{}
 	offset := 0
-	unknown := 0
 	for {
 		statement, args, err := activityAttemptsQuery(organization, projects, r, w, now, running)
 		if err != nil {
@@ -199,13 +198,6 @@ func readActivityAttempts(ctx context.Context, q nativeQueryer, organization str
 		}
 		for _, c := range candidates {
 			a := c.attempt
-			visibility, scoped := reportsScopeFrom(ctx)
-			if r.RunnerID != "" && !c.ready.Valid || scoped && visibility.reporterPrincipal != "" && !c.actor.Valid {
-				if unknown == changeLegacyReadLimit {
-					return nil, errChangeColumnsIncomplete
-				}
-				unknown++
-			}
 			if visibility, ok := reportsScopeFrom(ctx); ok && visibility.reporterPrincipal != "" {
 				principal := c.actor.String
 				if !c.actor.Valid {
