@@ -64,7 +64,7 @@ func diagnosticExcerpt(value string, limit int) string {
 	return strings.ToValidUTF8(value[:limit/2], "") + "\n[truncated; read retained receipt for more]\n" + strings.ToValidUTF8(value[len(value)-limit/2:], "")
 }
 
-func NativeRequest(recovery tracker.NativeRecovery, policy, instance string) Request {
+func NativeRequest(recovery tracker.NativeRecovery, policy, instance string, receipts ...Receipt) Request {
 	r := Request{ProjectID: string(recovery.Issue.ProjectID), IssueID: string(recovery.Issue.WorkItemID), PolicyID: policy,
 		EvidenceRevision: strconv.FormatInt(int64(recovery.Issue.Revision), 10), Instance: instance,
 		AvailableSteps: []string{"implement"}, Context: bound(recovery.Issue.Title+"\n"+recovery.Issue.Body, 2048)}
@@ -194,6 +194,7 @@ func NativeRequest(recovery tracker.NativeRecovery, policy, instance string) Req
 			r.Comments = append(r.Comments, nativeComment(comment))
 		}
 	}
+	r.Receipts = append(r.Receipts, receipts...)
 	if len(r.Receipts) > MaxReceipts {
 		r.Receipts = slices.Clone(r.Receipts[len(r.Receipts)-MaxReceipts:])
 	}

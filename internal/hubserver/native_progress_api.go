@@ -103,9 +103,8 @@ func (s *Service) nativeProgressRequest(ctx context.Context, scope nativeScope, 
 			recovery.Discussion = append(recovery.Discussion, comment)
 		}
 	}
-	request := progresscheck.NativeRequest(recovery, policy, instance)
-	request.EvidenceRevision = strconv.FormatInt(revision, 10)
-	if err := s.database.reader.QueryRowContext(ctx, "SELECT version FROM machines WHERE organization_id=? AND id=?", scope.organization, instance).Scan(&request.InstanceVersion); err != nil {
+	health, err := s.progressHealthReceipts(ctx, scope, item)
+	if err != nil {
 		return progresscheck.Request{}, 0, err
 	}
 	defect, state, err := readNativeProgressDefect(ctx, s.database.reader, scope, item)
@@ -113,10 +112,12 @@ func (s *Service) nativeProgressRequest(ctx context.Context, scope nativeScope, 
 		return progresscheck.Request{}, 0, err
 	}
 	if state == "Done" {
-		if len(request.Receipts) == progresscheck.MaxReceipts {
-			request.Receipts = request.Receipts[1:]
-		}
-		request.Receipts = append(request.Receipts, progresscheck.Receipt{ID: defect + ":done", Step: "system_defect", Outcome: "fixed"})
+		health = append(health, progresscheck.Receipt{ID: defect + ":done", Step: "system_defect", Outcome: "fixed"})
+	}
+	request := progresscheck.NativeRequest(recovery, policy, instance, health...)
+	request.EvidenceRevision = strconv.FormatInt(revision, 10)
+	if err := s.database.reader.QueryRowContext(ctx, "SELECT version FROM machines WHERE organization_id=? AND id=?", scope.organization, instance).Scan(&request.InstanceVersion); err != nil {
+		return progresscheck.Request{}, 0, err
 	}
 	after, err := progressRevision(ctx, s.database.reader, scope, item)
 	if err != nil {

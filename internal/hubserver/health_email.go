@@ -48,10 +48,6 @@ func healthEmailText(value string) string {
 }
 
 func (s *Service) commitHealthEvaluation(ctx context.Context, organization tracker.OrganizationID, now time.Time, findings []healthFinding, unavailable []healthBaselineUnavailable) error {
-	cancellations, err := readHealthCancellations(ctx, s.database.reader, organization)
-	if err != nil {
-		return err
-	}
 	if unavailable == nil {
 		unavailable = []healthBaselineUnavailable{}
 	}
@@ -72,10 +68,6 @@ func (s *Service) commitHealthEvaluation(ctx context.Context, organization track
 	if err != nil {
 		return err
 	}
-	issues, err := reportHealthFindings(ctx, tx, organization, now, cancellations)
-	if err != nil {
-		return err
-	}
 	notifications, err := s.claimHealthEmails(ctx, tx, organization, transitions)
 	if err != nil {
 		return err
@@ -85,13 +77,6 @@ func (s *Service) commitHealthEvaluation(ctx context.Context, organization track
 	}
 	if s.outbox != nil {
 		s.outbox.signal()
-	}
-	for _, issue := range issues {
-		raw, err := json.Marshal(issue)
-		if err != nil {
-			return err
-		}
-		s.wakeSpriteRunnersAfter(healthIssueScope(organization, issue.ProjectID), raw)
 	}
 	if len(notifications) == 0 {
 		return nil

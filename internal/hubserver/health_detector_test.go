@@ -812,7 +812,7 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 	}{
 		{name: "project bound", projects: true},
 		{name: "event bound"},
-		{name: "legacy cancellation bound", cancellations: true},
+		{name: "legacy cancellations do not block diagnostics", cancellations: true},
 		{name: "ordinary runtime traffic is excluded", nonsignal: true},
 		{name: "unknown runtime traffic before refusal", nonsignal: true, incomplete: true, laterSignal: "scheduler.decision"},
 		{name: "unknown runtime traffic before landing", nonsignal: true, incomplete: true, laterSignal: "run.finished"},
@@ -892,7 +892,7 @@ func TestHealthReadBoundsPreserveEvaluation(t *testing.T) {
 			} else {
 				err = f.service.evaluateOrganizationHealth(t.Context(), f.project.OrganizationID, now.Add(time.Minute))
 			}
-			success := test.nonsignal && !test.incomplete || test.candidates > 0 && test.candidates <= healthReadLimit
+			success := test.cancellations || test.nonsignal && !test.incomplete || test.candidates > 0 && test.candidates <= healthReadLimit
 			if success && err != nil || !success && !errors.Is(err, errHealthReadLimit) {
 				t.Fatalf("error=%v", err)
 			}

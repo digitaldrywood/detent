@@ -40,11 +40,15 @@ func TestAttemptDiagnosticsRetainsFailureOutput(t *testing.T) {
 func TestNativeRequestBoundsAndAuditBindings(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name string
-		text string
+		name     string
+		text     string
+		receipts []Receipt
 	}{
-		{"large text", strings.Repeat("evidence ", MaxInputBytes)},
-		{"JSON escaped text", strings.Repeat("\x00", MaxInputBytes)},
+		{name: "large text", text: strings.Repeat("evidence ", MaxInputBytes)},
+		{name: "JSON escaped text", text: strings.Repeat("\x00", MaxInputBytes)},
+		{name: "health evidence", text: strings.Repeat("\x00", MaxInputBytes), receipts: []Receipt{
+			{ID: "finding", Step: "health", Detail: strings.Repeat("\x00", MaxInputBytes)},
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			recovery := tracker.NativeRecovery{Issue: tracker.NativeIssue{NativeReference: tracker.NativeReference{ProjectID: "example-project", WorkItemID: "example-issue", Revision: 2}, Body: test.text}}
@@ -53,15 +57,18 @@ func TestNativeRequestBoundsAndAuditBindings(t *testing.T) {
 				recovery.Discussion = append(recovery.Discussion, tracker.NativeComment{ID: fmt.Sprintf("comment-%d", i), Revision: 1, Body: test.text, Actor: tracker.Actor{Kind: "human"}})
 			}
 			recovery.ChangeDetail = &tracker.ChangeDetail{Reviews: []tracker.ChangeReview{{ID: "audit", SecurityAudit: &tracker.SecurityAuditReview{Verdict: "pass", Run: securityaudit.Run{HeadSHA: "audited-head", BaseSHA: "audited-base"}}}}}
-			request := NativeRequest(recovery, "policy", "instance")
+			request := NativeRequest(recovery, "policy", "instance", test.receipts...)
 			if len(request.Attempts) != MaxAttempts || request.Attempts[0].ID != "attempt-18" || len(request.Comments) != MaxComments {
 				t.Fatalf("request bounds: attempts=%d comments=%d", len(request.Attempts), len(request.Comments))
 			}
 			if request.Attempts[0].Attribution != "instance" || request.Attempts[0].CheckpointSHA != "checkpoint" {
 				t.Fatal("attribution or checkpoint lost")
 			}
-			if len(request.Receipts) != 1 || request.Receipts[0].Step != "security_audit" || request.Receipts[0].BaseSHA != "audited-base" || request.Receipts[0].HeadSHA != "audited-head" || request.Receipts[0].Outcome != "pass" {
+			if len(request.Receipts) != 1+len(test.receipts) || request.Receipts[0].Step != "security_audit" || request.Receipts[0].BaseSHA != "audited-base" || request.Receipts[0].HeadSHA != "audited-head" || request.Receipts[0].Outcome != "pass" {
 				t.Fatalf("audit bindings=%+v", request.Receipts)
+			}
+			if len(test.receipts) > 0 && (request.Receipts[1].ID != "finding" || request.Receipts[1].Step != "health" || request.Receipts[1].Detail == "") {
+				t.Fatalf("additional evidence lost: %+v", request.Receipts)
 			}
 			encoded, err := json.Marshal(request)
 			if err != nil || len(encoded) > MaxInputBytes {

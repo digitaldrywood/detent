@@ -384,7 +384,7 @@ func TestHubWriterQueriesRequireAnOwnedReadReason(t *testing.T) {
 		"grantNativeTokenFor":               "Changes a native token grant under current authority.",
 		"recordWebhook":                     "Inserts the webhook inbox receipt once.",
 		"processWebhook":                    "Applies a webhook payload and advances the inbox receipt.",
-		"commitHealthEvaluation":            "Persists computed health findings and their history after legacy cancellation evaluation on the reader pool.",
+		"commitHealthEvaluation":            "Persists computed health findings and their history.",
 		"revokeHostedMemberLocally":         "Revokes local membership, tokens, sessions and grants.",
 		"hostedGrant":                       "Changes a member project grant under current authority.",
 		"createHostedProjectRecord":         "Creates the project together with its workflow and initial grants.",
