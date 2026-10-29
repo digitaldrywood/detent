@@ -169,9 +169,11 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 	for _, test := range []struct {
 		name        string
 		disappeared bool
+		cancelled   bool
 	}{
 		{name: "unresolved conflict enters bounded correction then Rework"},
 		{name: "disappeared conflict lands without a provider turn", disappeared: true},
+		{name: "cancelled Rework publishes verified empty source for review", cancelled: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			h := newNativeChangeHubTransport(t, "Human Review", []tracker.NativeState{
@@ -181,6 +183,11 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 				{Name: "Merging", Dispatchable: true, Transitions: []string{"Rework", "Done"}},
 				{Name: "Done", Terminal: true},
 			}, true)
+			if test.cancelled {
+				if _, err := h.admin.ApproveChangeReviewPolicy(t.Context(), tracker.ApproveChangeReviewPolicy{Mutation: nativeMutationKey(), Policy: tracker.ChangeReviewPolicy{PolicyID: h.descriptor.ID, RequireReview: true, RequiredChecks: []tracker.ChangeCheckSpec{}}}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			issue := h.createInProgress(t, "Preserve conflicting published source")
 			if err := h.connector.UpdateIssueState(t.Context(), issue.ID, "Rework"); err != nil {
 				t.Fatal(err)
@@ -244,25 +251,67 @@ func TestNativeIncorporationConflictResumesPublishedSource(t *testing.T) {
 				}
 				return candidates[0]
 			}
+			if test.cancelled {
+				if _, err := h.admin.ReviewChange(t.Context(), item, change.ID, version.ID, tracker.ReviewChange{Mutation: nativeMutationKey(), Decision: "changes_requested", Body: "Historical validation failure remains unresolved"}); err != nil {
+					t.Fatal(err)
+				}
+				nativeChangeGit(t, source, "revert", "--no-edit", "HEAD")
+				nativeChangeGit(t, source, "push", "origin", "main")
+				nativeChangeGit(t, info.Path, "merge", "--ff-only", headAt(source))
+				integrationHead = headAt(info.Path)
+				if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("temporary repair\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				nativeChangeGit(t, info.Path, "commit", "-am", "repair obsolete cause")
+				nativeChangeGit(t, info.Path, "revert", "--no-edit", "HEAD")
+			}
 			initial := claim()
 			owner := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
 			owner.SetRepository(nativeChangeRepository)
+			if test.cancelled {
+				if _, err := owner.RecoverChangeSource(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				owner.SetChangeSource(func(ctx context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
+					return workspace.CaptureChangeSource(ctx, info.Path, base, head)
+				})
+			}
+			finalHead := headAt(info.Path)
+
 			owner.SetDiffSource(func(context.Context) (tracker.AttemptDiffRequest, bool) {
-				return tracker.AttemptDiffRequest{BaseSHA: integrationHead, HeadSHA: integrationHead, Files: []tracker.AttemptDiffFile{}}, true
+				return tracker.AttemptDiffRequest{BaseSHA: integrationHead, HeadSHA: finalHead, Files: []tracker.AttemptDiffFile{}}, true
 			})
 			owner.SetIntegrationSource(func(ctx context.Context, v tracker.ChangeVersion, current string) (workspace.LandResult, error) {
 				return backend.(workspace.IntegrationVerifier).VerifyIntegratedChange(ctx, info, work, workspace.LandOptions{HeadSHA: v.HeadSHA, Repository: v.Repository, Method: "squash"}, v.BaseSHA, current)
 			})
-			if err := owner.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "test"}); err != nil {
+			if err := owner.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleRework, Backend: "codex", Model: "test"}); err != nil {
 				t.Fatal(err)
 			}
-			if err := owner.Checkpoint(t.Context(), tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "clean", HeadSHA: integrationHead, ExternalEffect: "none", EffectState: "none"}); err != nil {
+			if err := owner.Checkpoint(t.Context(), tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "clean", HeadSHA: finalHead, ExternalEffect: "none", EffectState: "none"}); err != nil {
 				t.Fatal(err)
 			}
 			if err := owner.PrepareFinish(t.Context(), "succeeded", "", nil); err != nil {
 				t.Fatal(err)
 			}
 			settled := owner.NativeChange()
+			if test.cancelled {
+				if settled == nil || !settled.Changed || settled.VersionError != "" || settled.VersionID == "" || settled.VersionID == version.ID || settled.HeadSHA != finalHead || settled.Reviewed || settled.Landing != nil {
+					t.Fatalf("verified cancellation failed to reach independent version review: %+v", settled)
+				}
+				detail, err := h.admin.Change(t.Context(), item, change.ID)
+				if err != nil || len(detail.Versions) != 2 || detail.Versions[0].ID != version.ID || detail.Change.CurrentLanding() != nil || len(detail.Reviews) != 1 || detail.Reviews[0].Decision != "changes_requested" || detail.Summary.Status != "needs_evidence" {
+					t.Fatalf("empty source discarded review or immutable history: %+v error=%v", detail, err)
+				}
+				current := detail.Versions[1]
+				if current.Source == nil || current.Source.DiffSHA256 != tracker.ChangeSourceDigest(nil) || current.BaseSHA != integrationHead || current.HeadSHA != finalHead {
+					t.Fatalf("empty version lacks verified source: %+v", current)
+				}
+				if err := owner.Finish(t.Context(), "succeeded"); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+
 			if settled == nil || settled.Landing == nil || settled.Landing.Path != "merge_resolution_pending" || settled.VersionID != version.ID || settled.HeadSHA != head || settled.VersionError != "" {
 				t.Fatalf("empty differing-head checkpoint did not preserve corrective work: %+v", settled)
 			}

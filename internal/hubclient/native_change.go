@@ -83,7 +83,7 @@ func (e *nativeExecution) settle(ctx context.Context, outcome string, finish int
 	}
 	change := &runner.NativeChange{
 		MergeResolution: e.mergeResolution,
-		Changed:         diff.HeadSHA != "" && diff.HeadSHA != diff.BaseSHA && len(diff.Files) > 0,
+		Changed:         diff.HeadSHA != "" && diff.HeadSHA != diff.BaseSHA && (len(diff.Files) > 0 || e.verifiedEmptyRework(diff)),
 		BaseSHA:         diff.BaseSHA, HeadSHA: diff.HeadSHA, Files: len(diff.Files),
 	}
 	e.change = change
@@ -464,7 +464,7 @@ func (e *nativeExecution) publishChangeVersion(ctx context.Context, changeID str
 		e.recoveredSource = &tracker.NativeChangeReference{ChangeID: changeID, VersionID: version.ID, HeadSHA: version.HeadSHA}
 		return version.ID, detail.Summary.Status == "reviewed", nil
 	}
-	if diff.HeadSHA == diff.BaseSHA || len(diff.Files) == 0 {
+	if diff.HeadSHA == diff.BaseSHA || len(diff.Files) == 0 && !e.verifiedEmptyRework(diff) {
 		return "", false, errors.New("the final attempt diff does not identify a changed source head to publish")
 	}
 	if e.repository == "" {

@@ -573,6 +573,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 		restoreRefusal          string
 		failCreate              bool
 		retainSource            bool
+		emptyRework             string
 		sourceRefusal           bool
 		failDiff                bool
 		failDetail              bool
@@ -711,6 +712,10 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			return tracker.AttemptDiffRequest{BaseSHA: head, HeadSHA: head, Files: []tracker.AttemptDiffFile{}}, true
 		}, existing: true, published: head,
 			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head}, wantChanges: 1, wantVersions: 1},
+		{name: "verified empty Rework publishes cancellation for independent review", emptyRework: "verified", retainSource: true, reviewer: true, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head), existing: true, published: nativeChangeFixtureHead("b"),
+			wantChange: &runner.NativeChange{Changed: true, BaseSHA: base, HeadSHA: head}, wantChanges: 1, wantVersions: 2},
+		{name: "unverified empty Rework preserves the mismatch", emptyRework: "unverified", retainSource: true, role: runner.RoleRework, outcome: "succeeded", worktree: "unpushed", source: nativeChangeDiff(head), existing: true, published: nativeChangeFixtureHead("b"),
+			wantDiagnostic: "the final attempt diff does not identify the current Change Request head", wantChanges: 1, wantVersions: 1},
 		{name: "empty unrelated head retains the mismatch for review", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(base), existing: true, published: head,
 			wantDiagnostic: "the final attempt diff does not identify the current Change Request head", wantChanges: 1, wantVersions: 1},
 		{name: "removed clean worktree reuses its matching final checkpoint diff", role: runner.RoleRework, outcome: "succeeded", worktree: "clean", source: nativeChangeDiff(head, "README.md"), existing: true, published: head, unreadFinal: true, checkpointHead: head,
@@ -1177,7 +1182,7 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			if test.source != nil {
 				execution.(runner.DiffExecution).SetDiffSource(test.source)
 			}
-			if test.mergeResolution {
+			if test.mergeResolution || test.emptyRework != "" {
 				if _, err := execution.(runner.ChangeSourceExecution).RecoverChangeSource(guarded); err != nil {
 					t.Fatal(err)
 				}
@@ -1185,6 +1190,10 @@ func TestNativeExecutionSettlesFinishedRun(t *testing.T) {
 			var retainedCapture tracker.ChangeSourceCapture
 			if test.retainSource {
 				retainedCapture = nativeChangeSourceFixture(t.Context(), t, base, head)
+				if test.emptyRework == "verified" {
+					retainedCapture.Source.DiffSHA256 = tracker.ChangeSourceDigest(nil)
+				}
+
 				execution.(runner.ChangeSourceExecution).SetChangeSource(func(_ context.Context, base, head string) (tracker.ChangeSourceCapture, error) {
 					return retainedCapture, nil
 				})

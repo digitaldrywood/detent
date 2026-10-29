@@ -29,7 +29,7 @@ func (e *nativeExecution) SetChangeSource(source func(context.Context, string, s
 }
 
 func (e *nativeExecution) retainChangeSource(ctx context.Context, diff tracker.AttemptDiffRequest) error {
-	if !e.sourceRequired || diff.HeadSHA == diff.BaseSHA || len(diff.Files) == 0 {
+	if !e.sourceRequired || diff.HeadSHA == diff.BaseSHA {
 		return nil
 	}
 	if e.retainedSource != nil && e.retainedSource.Source.BaseSHA == diff.BaseSHA && e.retainedSource.Source.HeadSHA == diff.HeadSHA {
@@ -174,4 +174,11 @@ func (e *nativeExecution) recoverLocalChangeSource(ctx context.Context, version 
 		return capture, err
 	}
 	return capture, nil
+}
+
+func (e *nativeExecution) verifiedEmptyRework(diff tracker.AttemptDiffRequest) bool {
+	return e.role == runner.RoleRework && e.recoveredSource != nil && e.sourceRequired &&
+		diff.BaseSHA != diff.HeadSHA && len(diff.Files) == 0 && e.retainedSource != nil &&
+		e.retainedSource.Source.Validate(diff.BaseSHA, diff.HeadSHA, e.retainedSource.Bundle) == nil &&
+		e.retainedSource.Source.DiffSHA256 == tracker.ChangeSourceDigest(nil)
 }
