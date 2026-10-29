@@ -171,12 +171,12 @@ RACE_HUB_SLICE := $(patsubst hub-%,%,$(filter hub-%,$(RACE_SHARD)))
 
 test-race: generate-docs
 	@if [ -z "$(RACE_SHARD)" ]; then \
-		$(GO_TEST) -short -race -timeout=30m ./... -count=1; \
+		$(GO_TEST) -short -race -timeout=30m ./...; \
 	elif [ -n "$(RACE_HUB_SLICE)" ]; then \
-		$(GO_TEST) -short -race -timeout=30m ./internal/hubserver -count=1 $(HUB_SLICE_$(RACE_HUB_SLICE)); \
+		$(GO_TEST) -short -race -timeout=30m ./internal/hubserver $(HUB_SLICE_$(RACE_HUB_SLICE)); \
 	else \
 		packages="$$(bash scripts/race-packages.sh $(RACE_SHARD))"; \
-		$(GO_TEST) -short -race -timeout=30m $$packages -count=1; \
+		$(GO_TEST) -short -race -timeout=30m $$packages; \
 	fi
 
 # COVER_SHARD=i/n runs one balanced slice; shard 1 also owns workspace and web.
@@ -188,7 +188,7 @@ COVER_HUB_SLICE := $(patsubst hub-%,%,$(filter hub-%,$(COVER_SHARD)))
 ifneq ($(COVER_HUB_SLICE),)
 test-cover:
 	@mkdir -p tmp
-	$(GO_TEST) -coverprofile=$(COVERPROFILE_RAW) ./internal/hubserver -count=1 $(HUB_SLICE_$(COVER_HUB_SLICE))
+	$(GO_TEST) -coverprofile=$(COVERPROFILE_RAW) ./internal/hubserver $(HUB_SLICE_$(COVER_HUB_SLICE))
 	@$(MAKE) coverage-check
 else
 test-cover:
@@ -206,16 +206,16 @@ test-cover:
 		esac; \
 	done; \
 	if [ -n "$$hub" ]; then \
-		$(GO_TEST) -coverprofile=tmp/hub-1-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_1); \
-		$(GO_TEST) -coverprofile=tmp/hub-2-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_2); \
-		$(GO_TEST) -coverprofile=tmp/hub-3-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_3); \
-		$(GO_TEST) -coverprofile=tmp/hub-4-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_4); \
-		$(GO_TEST) -coverprofile=tmp/hub-5-cover.raw.out ./internal/hubserver -count=1 $(HUB_SLICE_5); \
+		$(GO_TEST) -coverprofile=tmp/hub-1-cover.raw.out ./internal/hubserver $(HUB_SLICE_1); \
+		$(GO_TEST) -coverprofile=tmp/hub-2-cover.raw.out ./internal/hubserver $(HUB_SLICE_2); \
+		$(GO_TEST) -coverprofile=tmp/hub-3-cover.raw.out ./internal/hubserver $(HUB_SLICE_3); \
+		$(GO_TEST) -coverprofile=tmp/hub-4-cover.raw.out ./internal/hubserver $(HUB_SLICE_4); \
+		$(GO_TEST) -coverprofile=tmp/hub-5-cover.raw.out ./internal/hubserver $(HUB_SLICE_5); \
 		go run ./tools/covermerge -union tmp/hub-1-cover.raw.out tmp/hub-2-cover.raw.out tmp/hub-3-cover.raw.out tmp/hub-4-cover.raw.out tmp/hub-5-cover.raw.out > tmp/hub-cover.raw.out; \
 		profiles=tmp/hub-cover.raw.out; \
 	fi; \
 	if [ -n "$$remaining" ]; then \
-		$(GO_TEST) -coverprofile=tmp/packages-cover.raw.out $$remaining -count=1; \
+		$(GO_TEST) -coverprofile=tmp/packages-cover.raw.out $$remaining; \
 		profiles="$$profiles tmp/packages-cover.raw.out"; \
 	fi; \
 	set -- $$profiles; \
@@ -223,7 +223,7 @@ test-cover:
 	else go run ./tools/covermerge "$$@" > tmp/rest-cover.raw.out; fi
 	# Keep the web timing check isolated and coverage profiles disjoint.
 	@if [ "$(firstword $(subst /, ,$(COVER_SHARD)))" = 1 ]; then \
-		$(GO_TEST) -coverprofile=tmp/web-cover.raw.out ./internal/web -count=1 && \
+		$(GO_TEST) -coverprofile=tmp/web-cover.raw.out ./internal/web && \
 		go run ./tools/covermerge tmp/workspace-cover.raw.out tmp/rest-cover.raw.out tmp/web-cover.raw.out > $(COVERPROFILE_RAW); \
 	else \
 		cp tmp/rest-cover.raw.out $(COVERPROFILE_RAW); \
