@@ -14,6 +14,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
+const nativeProgressAttemptsSQL = `SELECT id FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND status <> 'running' ORDER BY fencing_token DESC LIMIT ?`
+
 type nativeProgressView struct {
 	Request progresscheck.Request `json:"request"`
 	Record  *progresscheck.Record `json:"record,omitempty"`
@@ -34,7 +36,7 @@ func (s *Service) nativeProgressRequest(ctx context.Context, scope nativeScope, 
 	if err != nil {
 		return progresscheck.Request{}, 0, err
 	}
-	rows, err := s.database.reader.QueryContext(ctx, `SELECT id FROM (SELECT id,status,fencing_token FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY fencing_token DESC LIMIT ?) WHERE status <> 'running' ORDER BY fencing_token DESC LIMIT ?`, scope.organization, scope.project, item, progresscheck.MaxAttempts+1, progresscheck.MaxAttempts)
+	rows, err := s.database.reader.QueryContext(ctx, nativeProgressAttemptsSQL, scope.organization, scope.project, item, progresscheck.MaxAttempts)
 	if err != nil {
 		return progresscheck.Request{}, 0, err
 	}
