@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 )
 
 type job struct {
@@ -23,6 +24,11 @@ type job struct {
 	Name        string    `json:"name"`
 	Conclusion  string    `json:"conclusion"`
 	URL         string    `json:"html_url"`
+	Steps       []struct {
+		Name       string `json:"name"`
+		Conclusion string `json:"conclusion"`
+		ExitCode   *int   `json:"exit_code"`
+	} `json:"steps"`
 }
 
 type openIssue struct {
@@ -171,6 +177,9 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 	if cloud, ok := destination.(*cloudDestination); ok && series == "" {
 		cloud.previousGreen = previousGreenJobs(ctx, gh, getenv, jobs)
 	}
+	var files []string
+	var missingFiles string
+	filesLoaded := false
 	for i, j := range jobs {
 		if (j.Name == "Finalize scheduled validation" && j.Conclusion != "failure") || j.Conclusion == "success" {
 			continue
@@ -182,12 +191,29 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 		if ctx.Err() != nil {
 			return errors.Join(errors.Join(failures...), incompleteReports(ctx, jobs[i:]))
 		}
+		if !filesLoaded {
+			files, missingFiles = changedFiles(ctx, gh, getenv)
+			filesLoaded = true
+		}
+		if ctx.Err() != nil {
+			return errors.Join(errors.Join(failures...), incompleteReports(ctx, jobs[i:]))
+		}
+		decision, err := classifyFailure(ctx, destination, j, log, logErr, files, missingFiles, getenv)
+		if err != nil {
+			failures = append(failures, err)
+			if ctx.Err() != nil {
+				return errors.Join(errors.Join(failures...), incompleteReports(ctx, jobs[i:]))
+			}
+			continue
+		}
+		sourceFailure := decision.Outcome != progresscheck.CIInfrastructure
 		problems := parseProblems(string(log), getenv("GITHUB_WORKSPACE"))
-		sourceFailure := len(problems) > 0
 		labels := []string{"detent:todo", "hotfix", "ci-scheduled-failure"}
-		if len(problems) == 0 {
+		if !sourceFailure {
 			labels = []string{"detent:backlog", "ci-scheduled-failure"}
-			evidence := "No reliable failed test or source diagnostic was available; this identity is limited to the job."
+		}
+		if len(problems) == 0 {
+			evidence := "No stable parsed problem identity was available; this identity is limited to the job."
 			if excerpt := strings.TrimSpace(ansiEscape.ReplaceAllString(string(log), "")); excerpt != "" {
 				evidence += "\n\n" + diagnosticExcerpt(excerpt)
 			}
@@ -222,6 +248,11 @@ func reportTo(ctx context.Context, input io.Reader, gh ghCommand, getenv func(st
 				disposition += " Under the human-approved Detent scheduled reporting policy, report failures at High priority, including unclassified and infrastructure failures. Reuse the open release-series stabilization owner for release suites and open job work for develop; promote matching Backlog intake through the native workflow owner, and preserve Urgent, human questions and operator holds. Reproduce this failure on the actual implementation-start base before edits, recording the original SHA, command and observed failure. Stop without speculative source changes if it cannot be reproduced. Preserve that diagnosis across unrelated rebases; reassess relevant intervening source or fixture changes and validate the integrated candidate under the selected workflow. Reuse applicable genuine exact-source command receipts; rerun for changed inputs, missing evidence or a concrete risk. Do not require a local-gate status or wait for CI before ordinary issue merging. This pinned failure does not prove a current staging outage or that the current candidate still fails."
 			}
 			body := fmt.Sprintf("Scheduled validation job **%s** (%s) failed on development commit %s.\n\nRun: %s\nJob: %s\nProblem: `%s`\n\n```text\n%s\n```\n\nDiagnose this problem using the linked logs. Runner setup, backend startup, network/download, and protocol failures belong to the CI instance. %s\n\n```detent-agent\nschema: 1\neffort: high\n```", j.Name, j.Conclusion, getenv("CI_DEVELOP_SHA"), runURL, j.URL, p.Key, p.Evidence, disposition)
+			classification, err := json.Marshal(decision)
+			if err != nil {
+				return fmt.Errorf("encode recorded CI classification: %w", err)
+			}
+			body += "\n\nRecorded CI decision:\n\n```json\n" + string(classification) + "\n```"
 			if !sourceFailure {
 				body += "\n\nThis issue is an intake for the CI instance owner. No source repair is authorized until a reproducible test or source diagnostic is identified."
 			}

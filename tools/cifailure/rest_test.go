@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -66,6 +67,12 @@ func restFixture(t *testing.T, f *fakeCloud, getenv func(string) string) *cloudD
 			}
 		} else {
 			switch {
+			case r.Method == http.MethodPost && path == "/scheduled-ci-decisions":
+				var input progresscheck.CIFailure
+				if err := decoder.Decode(&input); err != nil {
+					t.Fatal(err)
+				}
+				name, args["failure"] = "classify_ci_failure", input
 			case r.Method == http.MethodPost && path == "/work-items":
 				var input tracker.CreateIssue
 				if err := decoder.Decode(&input); err != nil {
@@ -134,6 +141,8 @@ func restFixture(t *testing.T, f *fakeCloud, getenv func(string) string) *cloudD
 				}
 				response = data.Project
 			}
+		} else if name == "classify_ci_failure" {
+			response = raw
 		} else if name == "record_scheduled_validation" {
 			response = f.reports[len(f.reports)-1]
 		} else if name == "add_comment" {

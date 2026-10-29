@@ -125,6 +125,8 @@ func (c *cloudREST) call(ctx context.Context, name string, args map[string]any, 
 		output = operatortool.WorkReadResult[tracker.NativeIssue]{ProjectID: c.project, Reference: stringArgument(args, "reference"), Data: item}
 	case "attribute_scheduled_failure":
 		return c.request(ctx, http.MethodPost, "/work-items", map[string]any{"idempotency_key": args["request_id"], "body": args["body"], "scheduled_failure": args["scheduled_failure"]}, result)
+	case "classify_ci_failure":
+		return c.request(ctx, http.MethodPost, "/scheduled-ci-decisions", args["failure"], result)
 	case "record_scheduled_validation":
 		return c.request(ctx, http.MethodPost, "/work-items", map[string]any{"idempotency_key": args["request_id"], "scheduled_validation": args["scheduled_validation"]}, result)
 	case "file_issue", "edit_item", "move_item", "add_comment":

@@ -117,6 +117,9 @@ func (f *fakeGH) command(_ context.Context, input string, args ...string) ([]byt
 		}
 		return []byte(log), nil
 	}
+	if len(args) >= 2 && strings.Contains(args[1], "/commits/") {
+		return []byte(`["internal/example.go"]`), nil
+	}
 	if len(args) < 4 || args[2] != "POST" {
 		return nil, fmt.Errorf("unexpected gh command: %v", args)
 	}
@@ -280,11 +283,8 @@ func TestReport(t *testing.T) {
 			}
 			for i, issue := range gh.created {
 				wantLabels := []string{"detent:todo", "hotfix", "ci-scheduled-failure"}
-				if strings.Contains(tt.name, "job identity") {
-					wantLabels = []string{"detent:backlog", "ci-scheduled-failure"}
-					if !strings.Contains(issue.Body, "This issue is an intake") {
-						t.Fatalf("unidentified failure became executable work: %s", issue.Body)
-					}
+				if strings.Contains(issue.Body, "No source repair is authorized") {
+					t.Fatalf("unknown decision blocked repair diagnosis: %s", issue.Body)
 				}
 				if !reflect.DeepEqual(gh.labels[i], wantLabels) {
 					t.Fatalf("labels = %v; want %v", gh.labels[i], wantLabels)

@@ -21,10 +21,12 @@ import (
 	"github.com/digitaldrywood/detent/internal/issueorigin"
 	"github.com/digitaldrywood/detent/internal/mcp"
 	"github.com/digitaldrywood/detent/internal/operatortool"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
 type fakeCloud struct {
+	decisions     map[string]progresscheck.CIDecision
 	reports       []gate.ScheduledValidationReport
 	items         []tracker.NativeIssue
 	comments      map[string][]tracker.NativeComment
@@ -70,6 +72,13 @@ func (f *fakeCloud) command(_ context.Context, name string, args map[string]any,
 	}
 	var output any
 	switch name {
+	case "classify_ci_failure":
+		failure := args["failure"].(progresscheck.CIFailure)
+		decision, ok := f.decisions[failure.JobName]
+		if !ok {
+			decision = progresscheck.CIDecision{Outcome: progresscheck.CIUnknown, Reason: "Fixture decision: diagnose the job through source repair."}
+		}
+		output = decision
 	case "record_scheduled_validation":
 		raw, err := json.Marshal(args["scheduled_validation"])
 		if err != nil {
@@ -354,6 +363,12 @@ func TestCloudReport(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			f := &fakeCloud{lost: tt.lost, fail: tt.fail, conflict: tt.conflict}
+			if tt.name == "imported infra labelled and promoted" {
+				f.decisions = map[string]progresscheck.CIDecision{
+					"Coverage": {Outcome: progresscheck.CIInfrastructure, Target: "runner shutdown", Reason: "The runner received a shutdown signal."},
+					"Race":     {Outcome: progresscheck.CIInfrastructure, Target: "runner shutdown", Reason: "The runner received a shutdown signal."},
+				}
+			}
 			if tt.worker {
 				body := issueorigin.Stamp("Worker evidence:\n"+diagnostic, issueorigin.Origin{Kind: "worker", Source: "worker-attempt", Fingerprint: "different-worker-wording"})
 				item := cloudItem("wi_worker", 1, body)

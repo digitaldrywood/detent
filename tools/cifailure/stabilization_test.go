@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/progresscheck"
 )
 
 func TestReleaseStabilization(t *testing.T) {
@@ -37,7 +38,10 @@ func TestReleaseStabilization(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			f := &fakeCloud{lost: test.lost}
+			f := &fakeCloud{lost: test.lost, decisions: map[string]progresscheck.CIDecision{
+				"Coverage": {Outcome: progresscheck.CISource, Target: "TestOne", Reason: "Test assertion failed."},
+				"Browser":  {Outcome: progresscheck.CIInfrastructure, Target: "runner connection", Reason: "Runner connection lost."},
+			}}
 			if test.legacy != "" {
 				body := issueorigin.Stamp(diagnostic+"\n<!-- detent:no-dispatch -->", issueorigin.Origin{Kind: "worker", Instance: "runner", Source: "implementation", Fingerprint: issueorigin.Fingerprint("go-test:owner/repo/pkg:TestOne")})
 				body += "\n<!-- detent-scheduled-occurrence:5bc4a83dd3a44323ccffc900c1d66513e9a64025d830bf015c37660a49a15393 -->"
