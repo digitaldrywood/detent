@@ -72,9 +72,9 @@ func TestCheckDecisionReplayAndEvidenceChange(t *testing.T) {
 		decision      Decision
 		changedSource bool
 	}{
-		{"changed source progresses", Decision{Outcome: Progressing, Reason: "Source changed since the failed attempt", Evidence: []string{"attempt-2"}}, true},
-		{"1748 repeated publication refusal reroutes", Decision{Outcome: Reroute, Step: "security_audit", Reason: "Produce the missing audit receipt before repeating publication", Evidence: []string{"attempt-1", "attempt-2"}}, false},
-		{"Detent refusal reports defect", Decision{Outcome: SystemDefect, Reason: "The publication protocol cannot carry the required audit evidence", Evidence: []string{"attempt-1", "attempt-2"}, DefectKey: "publication-audit-protocol", DefectTitle: "Publication cannot carry audit evidence", DefectBody: "Two unchanged-source attempts received the same 422 refusal"}, false},
+		{"repaired assertion progresses", Decision{Outcome: Progressing, Diagnosis: "attempt-2" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Convergence: "The failing validation now has a matching successful command receipt after the assertion was repaired", Reason: "The failing assertion has been repaired", Evidence: []string{"attempt-2"}}, true},
+		{"1748 repeated publication refusal reroutes", Decision{Outcome: Reroute, Step: "security_audit", Diagnosis: "attempt-1" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Produce the missing audit receipt before repeating publication", Evidence: []string{"attempt-1", "attempt-2"}}, false},
+		{"Detent refusal reports defect", Decision{Outcome: SystemDefect, Diagnosis: "attempt-1" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Reason: "The publication protocol cannot carry the required audit evidence", Evidence: []string{"attempt-1", "attempt-2"}, DefectKey: "publication-audit-protocol", DefectTitle: "Publication cannot carry audit evidence", DefectBody: "Two unchanged-source attempts received the same 422 refusal"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -104,7 +104,7 @@ func TestCheckDecisionReplayAndEvidenceChange(t *testing.T) {
 				}
 				request.EvidenceRevision = "revision-2"
 				request.Comments = []Comment{{ID: "human-comment", Revision: "1", Human: true, Body: "The publication protocol has been repaired"}}
-				backend.decision = Decision{Outcome: Progressing, Reason: "New human evidence requires another attempt", Evidence: []string{"human-comment"}}
+				backend.decision = Decision{Outcome: Progressing, Diagnosis: "human-comment" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Convergence: "The failing validation now has a matching successful command receipt after the assertion was repaired", Reason: "New human evidence requires another attempt", Evidence: []string{"human-comment"}}
 				changed, checked, err := Check(t.Context(), request, backend, owner)
 				if err != nil || !checked || changed.Decision.Outcome != Progressing || changed.RequestID == first.RequestID {
 					t.Fatalf("changed evidence = %+v, %v", changed, err)
@@ -121,7 +121,7 @@ func TestCheckSuccessAndPublicationFailure(t *testing.T) {
 	for _, success := range []bool{true, false} {
 		t.Run(map[bool]string{true: "success pays no turn", false: "publication failure does not return decision"}[success], func(t *testing.T) {
 			request := refusalRequest()
-			backend := &fakeBackend{decision: Decision{Outcome: Reroute, Step: "implement", Reason: "Repair source", Evidence: []string{"attempt-2"}}}
+			backend := &fakeBackend{decision: Decision{Outcome: Reroute, Step: "implement", Diagnosis: "attempt-2" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Repair source", Evidence: []string{"attempt-2"}}}
 			owner := &fakeOwner{publishErr: errors.New("tracker unavailable")}
 			if success {
 				request.Attempts[1].Outcome = "success"
@@ -147,8 +147,14 @@ func TestAIRejectsUnsafeOrMalformedDecisions(t *testing.T) {
 		name, output string
 		valid        bool
 	}{
-		{"progressing step is ignored", `{"outcome":"progressing","step":"implement","reason":"New evidence","evidence":["attempt-2"]}`, true},
-		{"typed reroute", `{"outcome":"reroute","step":"security_audit","reason":"Missing receipt","evidence":["attempt-2"]}`, true},
+		{"mechanical change without diagnosis", `{"outcome":"progressing","reason":"Source and base changed","evidence":["attempt-2"]}`, false},
+		{"reroute without actionable instruction", `{"outcome":"reroute","step":"implement","reason":"Try implementation again","evidence":["attempt-2"]}`, false},
+		{"diagnosis must cite evidence", `{"outcome":"reroute","step":"implement","reason":"Repair assertion","diagnosis":"The assertion still fails","instruction":"Repair the code exercised by TestExample and run it","evidence":["attempt-2"]}`, false},
+		{"diagnosed reroute still requires instruction", `{"outcome":"reroute","step":"implement","reason":"Repair assertion","diagnosis":"attempt-2: TestExample expects the repaired value but code returns the old value","evidence":["attempt-2"]}`, false},
+		{"mechanical change lacks convergence evidence", `{"outcome":"progressing","reason":"Source changed","diagnosis":"attempt-2: source finalization still fails after rebasing","evidence":["attempt-2"]}`, false},
+		{"base defect with diagnosis", `{"outcome":"system_defect","reason":"Repair base before retrying","diagnosis":"attempt-2: TestExample fails on the pinned base with the same assertion, independently of the diff","evidence":["attempt-2"],"defect_key":"base-example-assertion","defect_title":"Repair base assertion","defect_body":"The pinned base fails TestExample before applying the change; repair the exercised implementation and verify both base and change."}`, true},
+		{"progressing step is ignored", `{"outcome":"progressing","step":"implement","reason":"New evidence","diagnosis":"attempt-2 lacked a validation receipt","convergence":"The repaired assertion now has a successful validation receipt","evidence":["attempt-2"]}`, true},
+		{"typed reroute", `{"outcome":"reroute","step":"security_audit","reason":"Missing receipt","diagnosis":"attempt-2 lacks the audit receipt required by publication","instruction":"Run the audit against the pinned source and retain its receipt before publication","evidence":["attempt-2"]}`, true},
 		{"unknown outcome", `{"outcome":"park","reason":"Repeated","evidence":["attempt-2"]}`, false},
 		{"unavailable step", `{"outcome":"reroute","step":"bypass_audit","reason":"Missing receipt","evidence":["attempt-2"]}`, false},
 		{"lease field", `{"outcome":"progressing","reason":"Go","evidence":["attempt-2"],"lease_owner":"new"}`, false},

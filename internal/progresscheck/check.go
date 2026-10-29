@@ -84,6 +84,9 @@ type Request struct {
 }
 
 type Decision struct {
+	Diagnosis   string   `json:"diagnosis,omitempty"`
+	Instruction string   `json:"instruction,omitempty"`
+	Convergence string   `json:"convergence,omitempty"`
 	Outcome     Outcome  `json:"outcome"`
 	Step        string   `json:"step,omitempty"`
 	Reason      string   `json:"reason"`
@@ -275,12 +278,28 @@ func validateDecision(request Request, decision Decision) error {
 			return errors.New("progress decision cites unavailable evidence")
 		}
 	}
+	if strings.TrimSpace(decision.Diagnosis) == "" {
+		return errors.New("progress decision requires a diagnosis of the failure and its cause")
+	}
+	cited := false
+	for _, id := range decision.Evidence {
+		cited = cited || strings.Contains(decision.Diagnosis, id)
+	}
+	if !cited {
+		return errors.New("progress diagnosis must cite its evidence")
+	}
 	if decision.Outcome != SystemDefect && (decision.DefectKey != "" || decision.DefectTitle != "" || decision.DefectBody != "") {
 		return errors.New("progress decision has unrelated defect fields")
 	}
 	switch decision.Outcome {
 	case Progressing:
+		if strings.TrimSpace(decision.Convergence) == "" {
+			return errors.New("progressing decision requires evidence of convergence")
+		}
 	case Reroute:
+		if strings.TrimSpace(decision.Instruction) == "" {
+			return errors.New("reroute decision requires an actionable instruction")
+		}
 		for _, step := range request.AvailableSteps {
 			if step != "" && decision.Step == step {
 				return nil

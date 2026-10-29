@@ -32,7 +32,7 @@ type nativeProgressBackend struct{ calls int }
 
 func (b *nativeProgressBackend) Decide(context.Context, progresscheck.Request) (progresscheck.Decision, error) {
 	b.calls++
-	return progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Reason: "Repair the publication protocol", Evidence: []string{"failed-attempt"}}, nil
+	return progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Diagnosis: "failed-attempt" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Repair the publication protocol", Evidence: []string{"failed-attempt"}}, nil
 }
 
 func TestNativeRetryProgressOwnerAndSuccess(t *testing.T) {
@@ -227,7 +227,7 @@ func (a *nativeProgressRerouteAgent) RunTurn(ctx context.Context, _ runner.Agent
 	if err := update(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{InputTokens: 10, OutputTokens: 1}}); err != nil {
 		return runner.AgentTurnResult{}, err
 	}
-	output := progresscheck.Decision{Outcome: progresscheck.Reroute, Step: runner.RunModeImplement, Reason: "Implement after the failed plan", Evidence: []string{a.attempt}}
+	output := progresscheck.Decision{Outcome: progresscheck.Reroute, Step: runner.RunModeImplement, Diagnosis: a.attempt + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Implement after the failed plan", Evidence: []string{a.attempt}}
 	if a.decision != nil {
 		output = *a.decision
 	}
@@ -244,6 +244,10 @@ type nativeProgressWorkspace struct {
 }
 
 func (w nativeProgressWorkspace) Existing(workspace.Issue) (workspace.Info, error) {
+	return workspace.Info{Path: w.path}, nil
+}
+
+func (w nativeProgressWorkspace) Create(context.Context, workspace.Issue) (workspace.Info, error) {
 	return workspace.Info{Path: w.path}, nil
 }
 
@@ -507,7 +511,7 @@ func TestNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T) {
 			original := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
 			provider := &nativeProgressRerouteAgent{err: tt.failure, attempt: failed.data.AttemptID}
 			if tt.invalid {
-				provider.decision = &progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "unavailable", Reason: "Continue", Evidence: []string{failed.data.AttemptID}}
+				provider.decision = &progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "unavailable", Diagnosis: failed.data.AttemptID + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Continue", Evidence: []string{failed.data.AttemptID}}
 			}
 			agent, err := runner.NewRunner(runner.Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "implementation", Backend: "codex", Model: "code-model", Default: true}}}}}, Workspace: nativeProgressWorkspace{path: t.TempDir()}, AgentBackend: provider})
 			if err != nil {
@@ -654,7 +658,7 @@ func TestProgressPublicationRefreshesRevisionOnce(t *testing.T) {
 						status = test.status
 						body = map[string]string{"code": test.code, "error": "publication refused"}
 					} else {
-						body = progresscheck.Record{RequestID: id, ProjectID: evidence.ProjectID, IssueID: evidence.IssueID, EvidenceRevision: evidence.EvidenceRevision, Decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Reason: "Repair the publication protocol", Evidence: []string{"failed-attempt"}}, CommentID: "comment"}
+						body = progresscheck.Record{RequestID: id, ProjectID: evidence.ProjectID, IssueID: evidence.IssueID, EvidenceRevision: evidence.EvidenceRevision, Decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Diagnosis: "failed-attempt" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Repair the publication protocol", Evidence: []string{"failed-attempt"}}, CommentID: "comment"}
 					}
 				}
 				encoded, err := json.Marshal(body)

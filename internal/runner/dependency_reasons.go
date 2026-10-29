@@ -69,44 +69,48 @@ func (r *Runner) textGenerator(backend AgentBackend, template AgentTurnRequest, 
 		request.Resume = AgentResume{}
 		request.MaxTurns = 1
 		request.ToolInstructions = instructions
-		var text strings.Builder
-		lastItem := ""
-		usage := RunResult{Model: request.Model}
-		if usage.Model == "" {
-			usage.Model = "provider_default"
-		}
-		result, err, cleanupErr := runAgentBackendTurn(ctx, backend, request, func(update AgentUpdate) error {
-			if update.Type == AgentUpdateTokenUsage {
-				usage.Tokens = TokenTotals{InputTokens: update.Tokens.InputTokens, CachedInputTokens: update.Tokens.CachedInputTokens, OutputTokens: update.Tokens.OutputTokens}
-			}
-			if update.Billing != "" {
-				usage.BillingMode = update.Billing
-			}
-			if update.Type == AgentUpdateMessageDelta {
-				key := update.ItemID
-				if key == "" {
-					key = update.TurnID
-				}
-				if key != lastItem {
-					text.Reset()
-					lastItem = key
-				}
-				if text.Len()+len(update.Delta) > maxBytes {
-					return errors.New("generated text exceeds limit")
-				}
-				text.WriteString(update.Delta)
-			}
-			return nil
-		})
-		usage.ReportedCostMicros, usage.CostSource = result.ReportedCostMicros, result.CostSource
-		usageCtx, cancelUsage := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		reportTurnUsage(usageCtx, execution, usage, request.Model, backendKind, r.usageCostUSD, r.logger)
-		cancelUsage()
-		if err := errors.Join(err, cleanupErr); err != nil {
-			return "", err
-		}
-		return strings.TrimSpace(text.String()), nil
+		return r.generateTextTurn(ctx, backend, request, execution, backendKind, maxBytes, nil, nil)
 	}
+}
+
+func (r *Runner) generateTextTurn(ctx context.Context, backend AgentBackend, request AgentTurnRequest, execution Execution, backendKind string, maxBytes int, tools []AgentTool, handler AgentToolHandler) (string, error) {
+	var text strings.Builder
+	lastItem := ""
+	usage := RunResult{Model: request.Model}
+	if usage.Model == "" {
+		usage.Model = "provider_default"
+	}
+	result, err, cleanupErr := runAgentBackendTurnWithTools(ctx, backend, request, tools, handler, func(_ context.Context, update AgentUpdate) error {
+		if update.Type == AgentUpdateTokenUsage {
+			usage.Tokens = TokenTotals{InputTokens: update.Tokens.InputTokens, CachedInputTokens: update.Tokens.CachedInputTokens, OutputTokens: update.Tokens.OutputTokens}
+		}
+		if update.Billing != "" {
+			usage.BillingMode = update.Billing
+		}
+		if update.Type == AgentUpdateMessageDelta {
+			key := update.ItemID
+			if key == "" {
+				key = update.TurnID
+			}
+			if key != lastItem {
+				text.Reset()
+				lastItem = key
+			}
+			if text.Len()+len(update.Delta) > maxBytes {
+				return errors.New("generated text exceeds limit")
+			}
+			text.WriteString(update.Delta)
+		}
+		return nil
+	})
+	usage.ReportedCostMicros, usage.CostSource = result.ReportedCostMicros, result.CostSource
+	usageCtx, cancelUsage := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	reportTurnUsage(usageCtx, execution, usage, request.Model, backendKind, r.usageCostUSD, r.logger)
+	cancelUsage()
+	if err := errors.Join(err, cleanupErr); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(text.String()), nil
 }
 
 func (r *Runner) installDependencyReasonGenerator(ctx context.Context, req RunRequest) context.Context {

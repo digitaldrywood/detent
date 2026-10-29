@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubclient"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
@@ -91,11 +92,14 @@ type progressPublicationAgent struct {
 	attempt string
 }
 
-func (a progressPublicationAgent) RunTurn(_ context.Context, _ runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+func (a progressPublicationAgent) RunTurn(_ context.Context, request runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if !strings.Contains(request.Prompt, "TestExample: expected repaired value, got old value") || !request.ReadOnly || request.TextOnly || !request.IsolatedTools {
+		return runner.AgentTurnResult{}, fmt.Errorf("progress turn did not receive retained failure output and read-only investigation access")
+	}
 	if err := update(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{InputTokens: 10, OutputTokens: 1}}); err != nil {
 		return runner.AgentTurnResult{}, err
 	}
-	data, err := json.Marshal(progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Reason: "Repair the failed source", Evidence: []string{a.attempt}})
+	data, err := json.Marshal(progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Diagnosis: a.attempt + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Repair the failed source", Evidence: []string{a.attempt}})
 	if err != nil {
 		return runner.AgentTurnResult{}, err
 	}
@@ -108,6 +112,10 @@ type progressPublicationWorkspace struct {
 }
 
 func (w progressPublicationWorkspace) Existing(workspace.Issue) (workspace.Info, error) {
+	return workspace.Info{Path: w.path}, nil
+}
+
+func (w progressPublicationWorkspace) Create(context.Context, workspace.Issue) (workspace.Info, error) {
 	return workspace.Info{Path: w.path}, nil
 }
 
@@ -134,6 +142,7 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 					f.claim(t)
 				}
 				event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 2, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, Outcome: "failed"}}
+				event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "completed", HeartbeatAt: f.service.config.now(), Validation: &gate.CommandResult{Command: "go test ./example", ExitCode: 2, Stage: gate.StageSourceFinalization, HeadSHA: strings.Repeat("a", 40), TreeSHA: strings.Repeat("b", 40), DurationNS: 1, Output: "TestExample: expected repaired value, got old value"}}
 				if i == 0 || i > test.staleRunning {
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, event), http.StatusOK)
 				}
@@ -398,7 +407,7 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			input := progresscheck.Publication{Mutation: tracker.Mutation{LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, RequestID: id, PolicyID: f.policy, Instance: string(f.lease.MachineID), Decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Reason: "Produce audit evidence on the current source", Evidence: []string{f.attempt}}}
+			input := progresscheck.Publication{Mutation: tracker.Mutation{LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, RequestID: id, PolicyID: f.policy, Instance: string(f.lease.MachineID), Decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Diagnosis: f.attempt + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Produce audit evidence on the current source", Evidence: []string{f.attempt}}}
 			currentResponse := performHubAPIRequest(t, f.service, http.MethodGet, path, f.worker, nil)
 			requireNativeStatus(t, currentResponse, http.StatusOK)
 			var current tracker.NativeIssue

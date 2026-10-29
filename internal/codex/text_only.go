@@ -28,6 +28,20 @@ func textOnlySettings(workspace string) map[string]any {
 	return settings
 }
 
+func investigationSettings(workspace string) map[string]any {
+	settings := textOnlySettings(workspace)
+	settings["default_permissions"] = "detent-investigation"
+	settings["permissions"] = map[string]any{"detent-investigation": map[string]any{
+		"filesystem":      map[string]any{"/": "read", ":workspace_roots": "read"},
+		"workspace_roots": map[string]any{workspace: true},
+		"network":         map[string]any{"enabled": false},
+	}}
+	for _, feature := range []string{"shell_tool", "unified_exec", "view_image"} {
+		settings["features."+feature] = true
+	}
+	return settings
+}
+
 func (s *AppServer) disableTextOnlyMCP(ctx context.Context, transport Transport, req *RunTurnRequest) error {
 	if err := sendRequest(ctx, transport, configReadRequestID, "config/read", map[string]any{"cwd": req.Workspace, "includeLayers": false}); err != nil {
 		return err

@@ -127,13 +127,13 @@ func TestRetryProgressDispatch(t *testing.T) {
 		err      error
 		reason   string
 	}{
-		{name: "changed source dispatches same step", source: "new-head", decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Reason: "Source changed", Evidence: []string{"attempt-2"}}, want: RunModeImplement},
-		{name: "1748 unchanged 422 refusal reroutes to the audit pipeline", decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: RunModeMerge, Reason: "Run the merge pipeline to produce the missing audit receipt", Evidence: []string{"attempt-1", "attempt-2"}}, want: RunModeMerge},
-		{name: "Detent refusal files one dependency and retained decision is advisory", decision: progresscheck.Decision{Outcome: progresscheck.SystemDefect, Reason: "Protocol cannot carry the audit receipt", Evidence: []string{"attempt-1", "attempt-2"}, DefectKey: "audit-publication-protocol", DefectTitle: "Audit receipt cannot be published", DefectBody: "Repeated 422 on unchanged base and head"}},
+		{name: "changed source dispatches same step", source: "new-head", decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Diagnosis: "attempt-2" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Convergence: "The failing validation now has a matching successful command receipt after the assertion was repaired", Reason: "Source changed", Evidence: []string{"attempt-2"}}, want: RunModeImplement},
+		{name: "1748 unchanged 422 refusal reroutes to the audit pipeline", decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: RunModeMerge, Diagnosis: "attempt-1" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Run the merge pipeline to produce the missing audit receipt", Evidence: []string{"attempt-1", "attempt-2"}}, want: RunModeMerge},
+		{name: "Detent refusal files one dependency and retained decision is advisory", decision: progresscheck.Decision{Outcome: progresscheck.SystemDefect, Diagnosis: "attempt-1" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Reason: "Protocol cannot carry the audit receipt", Evidence: []string{"attempt-1", "attempt-2"}, DefectKey: "audit-publication-protocol", DefectTitle: "Audit receipt cannot be published", DefectBody: "Repeated 422 on unchanged base and head"}},
 		{name: "success pays no AI turn", outcome: "success", want: RunModeImplement},
 		{name: "backend failure permits ordinary retry", err: errors.New("provider unavailable"), reason: "provider unavailable", want: RunModeImplement},
 		{name: "timeout permits ordinary retry", err: context.DeadlineExceeded, reason: "context deadline exceeded", want: RunModeImplement},
-		{name: "progressing ignores suggested step", decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Step: RunModeMerge, Reason: "Continue", Evidence: []string{"attempt-2"}}, want: RunModeImplement},
+		{name: "progressing ignores suggested step", decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Step: RunModeMerge, Diagnosis: "attempt-2" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Convergence: "The failing validation now has a matching successful command receipt after the assertion was repaired", Reason: "Continue", Evidence: []string{"attempt-2"}}, want: RunModeImplement},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -197,7 +197,7 @@ func TestRetryProgressDispatch(t *testing.T) {
 					if tt.want != "" && request.Mode != tt.want {
 						t.Fatalf("dispatched mode=%q want %q", request.Mode, tt.want)
 					}
-					if tt.decision.Outcome == progresscheck.Reroute && (request.ProgressDecision.Decision.Step != tt.want || request.PriorAttempt.Reason != tt.decision.Reason) {
+					if tt.decision.Outcome == progresscheck.Reroute && (request.ProgressDecision.Decision.Step != tt.want || !strings.Contains(request.PriorAttempt.Reason, tt.decision.Reason) || !strings.Contains(request.PriorAttempt.Reason, tt.decision.Diagnosis) || !strings.Contains(request.PriorAttempt.Reason, tt.decision.Instruction)) {
 						t.Fatalf("reroute feedback missing: %+v", request.PriorAttempt)
 					}
 				}
@@ -206,7 +206,7 @@ func TestRetryProgressDispatch(t *testing.T) {
 						t.Fatalf("defects=%v comments=%d calls=%d", source.defects, source.comments, checker.calls)
 					}
 					source.request.Comments = []progresscheck.Comment{{ID: "human-input", Human: true, Revision: "1", Body: "The audit protocol is repaired"}}
-					checker.decision = progresscheck.Decision{Outcome: progresscheck.Progressing, Reason: "New human input", Evidence: []string{"human-input"}}
+					checker.decision = progresscheck.Decision{Outcome: progresscheck.Progressing, Diagnosis: "human-input" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Convergence: "The failing validation now has a matching successful command receipt after the assertion was repaired", Reason: "New human input", Evidence: []string{"human-input"}}
 					delete(state.Running, issue.ID)
 					if !o.dispatchIssue(t.Context(), &state, issue, 3, now, "worker-a") {
 						t.Fatal("new human input did not reopen dispatch")
@@ -230,7 +230,7 @@ func TestRetryProgressDoesNotDelayHealthyDispatch(t *testing.T) {
 		issue := dispatchTestIssue("stuck", "In Progress")
 		source := &progressScheduling{hubSchedulingSource: hubSchedulingSource{execution: &progressExecution{}}, request: progresscheck.Request{ProjectID: "example-project", IssueID: issue.ID, PolicyID: "policy", EvidenceRevision: "1", AvailableSteps: []string{RunModeImplement}, Attempts: []progresscheck.Attempt{{ID: "failed", Outcome: "failed"}}}, records: map[string]progresscheck.Record{}, defects: map[string]string{}}
 		release := make(chan struct{})
-		checker := &progressRunner{started: make(chan RunRequest, 1), release: release, decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Reason: "Continue with new evidence", Evidence: []string{"failed"}}}
+		checker := &progressRunner{started: make(chan RunRequest, 1), release: release, decision: progresscheck.Decision{Outcome: progresscheck.Progressing, Diagnosis: "failed" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Convergence: "The failing validation now has a matching successful command receipt after the assertion was repaired", Reason: "Continue with new evidence", Evidence: []string{"failed"}}}
 		worker := newWorkerHostRunner()
 		o := &Orchestrator{cfg: cfg, scheduling: source, progressRunner: checker, supervisor: newTestSupervisor(t, worker, cfg), runResults: make(chan runpkg.Completion, 2)}
 		state := newState(cfg)
@@ -304,7 +304,7 @@ func TestRetryProgressReadmitsSelectedMode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			issue := dispatchTestIssue("example-issue", "Todo")
 			source := &progressScheduling{request: progresscheck.Request{ProjectID: "example-project", IssueID: issue.ID, PolicyID: "policy", EvidenceRevision: "1", AvailableSteps: []string{RunModeImplement}, Attempts: []progresscheck.Attempt{{ID: "failed-plan", Step: runpkg.RolePlan, Outcome: "failed"}}}, records: map[string]progresscheck.Record{}}
-			decision := progresscheck.Decision{Outcome: progresscheck.Reroute, Step: RunModeImplement, Reason: "Continue with implementation", Evidence: []string{"failed-plan"}}
+			decision := progresscheck.Decision{Outcome: progresscheck.Reroute, Step: RunModeImplement, Diagnosis: "failed-plan" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the missing validation evidence in the source finalization path and verify the previously failing check on the pinned source", Reason: "Continue with implementation", Evidence: []string{"failed-plan"}}
 			if tt.retained {
 				id, err := source.request.ID()
 				if err != nil {
@@ -324,6 +324,9 @@ func TestRetryProgressReadmitsSelectedMode(t *testing.T) {
 			}
 			request := RunRequest{Issue: issue, Mode: mode, Execution: original}
 			err := o.prepareRetryProgress(t.Context(), &request)
+			if !strings.Contains(request.PriorAttempt.Reason, decision.Instruction) || !strings.Contains(request.PriorAttempt.Reason, decision.Diagnosis) {
+				t.Fatalf("implementation handoff lost diagnosis or instruction: %+v", request.PriorAttempt)
+			}
 			wantAdmissions := 1
 			if tt.retained && mode == RunModeImplement {
 				wantAdmissions = 0
