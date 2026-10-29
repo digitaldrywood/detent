@@ -208,14 +208,32 @@ func (record Record) Validate(request Request) error {
 	return validateRecord(request, id, record)
 }
 
+func (record Record) ValidatePublication(request Request) error {
+	id, err := request.ID()
+	if err != nil {
+		return err
+	}
+	if err := validateRecordBinding(request, id, record); err != nil {
+		return err
+	}
+	return validateDecision(request, record.Decision)
+}
+
 func validateRecord(request Request, id string, record Record) error {
+	if err := validateRecordBinding(request, id, record); err != nil {
+		return err
+	}
+	return validateDecisionVersion(request, record.Decision, record.Decision.Legacy())
+}
+
+func validateRecordBinding(request Request, id string, record Record) error {
 	if record.RequestID != id || record.ProjectID != request.ProjectID || record.IssueID != request.IssueID || record.EvidenceRevision != request.EvidenceRevision {
 		return errors.New("progress decision binding differs")
 	}
 	if record.CommentID == "" || record.Decision.Outcome == SystemDefect && record.DefectIssueID == "" {
 		return errors.New("progress decision publication receipts missing")
 	}
-	return validateDecisionVersion(request, record.Decision, record.Decision.Legacy())
+	return nil
 }
 
 func encodeRequest(request Request) ([]byte, error) {

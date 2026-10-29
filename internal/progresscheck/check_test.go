@@ -239,6 +239,12 @@ func TestRetainedLegacyDecisionsRemainValid(t *testing.T) {
 			if err := validateDecision(request, decision); err == nil {
 				t.Fatal("new AI decision accepted legacy shape")
 			}
+			if err := record.Validate(request); err != nil {
+				t.Fatalf("retained legacy record invalid: %v", err)
+			}
+			if err := record.ValidatePublication(request); err == nil {
+				t.Fatal("new publication accepted legacy shape")
+			}
 		})
 	}
 }

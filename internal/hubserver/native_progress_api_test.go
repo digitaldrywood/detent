@@ -337,7 +337,7 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 		evidenceChange string
 	}{
 		{name: "decision comment does not create new evidence"},
-		{name: "older runner decision remains replayable", legacy: true},
+		{name: "decision without diagnosis is refused on publication", legacy: true},
 		{name: "succeeded without change is checked", success: true},
 		{name: "succeeded without work product is checked", success: true, noProduct: true},
 		{name: "succeeded with source recovery blocker is checked", success: true, blocked: true},
@@ -466,7 +466,7 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				f.release(t)
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/progress", f.worker, input)
-			if test.changed || test.released || test.staleRevision {
+			if test.changed || test.released || test.staleRevision || test.legacy {
 				if response.Code == http.StatusOK {
 					t.Fatal("stale evidence or released authority published decision")
 				}
@@ -485,21 +485,6 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 			replayID, err := replay.Request.ID()
 			if err != nil || replayID != id || replay.Record == nil {
 				t.Fatalf("decision self-invalidated: id=%s want=%s record=%+v err=%v", replayID, id, replay.Record, err)
-			}
-			if test.legacy {
-				if !replay.Record.Decision.Legacy() {
-					t.Fatalf("legacy decision fields synthesized: %+v", replay.Record.Decision)
-				}
-				if err := replay.Record.Validate(replay.Request); err != nil {
-					t.Fatalf("retained legacy decision invalid: %v", err)
-				}
-				var diagnosis, instruction, convergence string
-				if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT diagnosis,instruction,convergence FROM native_progress_decisions WHERE work_item_id=? AND request_id=?", f.issue.WorkItemID, id).Scan(&diagnosis, &instruction, &convergence); err != nil {
-					t.Fatal(err)
-				}
-				if diagnosis != "" || instruction != "" || convergence != "" {
-					t.Fatalf("legacy fields were not stored empty: %q %q %q", diagnosis, instruction, convergence)
-				}
 			}
 			var comments int
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", f.issue.WorkItemID).Scan(&comments); err != nil {

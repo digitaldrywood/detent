@@ -67,7 +67,7 @@ func (o nativeProgressOwner) Publish(ctx context.Context, record progresscheck.R
 	if candidate.Decision.Outcome == progresscheck.SystemDefect {
 		candidate.DefectIssueID = "pending"
 	}
-	if err := candidate.Validate(o.request); err != nil {
+	if err := candidate.ValidatePublication(o.request); err != nil {
 		return progresscheck.Record{}, err
 	}
 	tx, err := o.service.database.db.BeginTx(ctx, nil)
