@@ -445,14 +445,16 @@ func testNativeRetryProgressReroute(t *testing.T, reserved, tighten bool) {
 func TestNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name    string
-		failure error
-		invalid bool
-		reason  string
+		name     string
+		failure  error
+		invalid  bool
+		conflict bool
+		reason   string
 	}{
 		{name: "backend", failure: errors.New("provider unavailable"), reason: "provider unavailable"},
 		{name: "timeout", failure: context.DeadlineExceeded, reason: "context deadline exceeded"},
 		{name: "invalid decision", invalid: true, reason: "progress decision names unavailable step"},
+		{name: "old Hub publication conflict", conflict: true, reason: "revision_conflict"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := time.Now()
@@ -460,6 +462,17 @@ func TestNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T) {
 			states[1].Transitions = append(states[1].Transitions, "Rework")
 			states = append(states, tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"Todo", "In Progress"}})
 			h := newNativeChangeHubTransport(t, "Human Review", states, true)
+			conflicts := 0
+			if tt.conflict {
+				next := h.failChanges.next
+				h.failChanges.next = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+					if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/progress") {
+						conflicts++
+						return &http.Response{StatusCode: http.StatusConflict, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":"revision_conflict","message":"evidence changed"}`)), Request: request}, nil
+					}
+					return next.RoundTrip(request)
+				})
+			}
 			issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Retry implementation after progress failure", Body: "Update the README." + issueContractTestSections})
 			if err != nil {
 				t.Fatal(err)
@@ -500,7 +513,7 @@ func TestNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T) {
 			}
 			issue = claim("Rework")
 			original := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
-			provider := &nativeProgressRerouteAgent{err: tt.failure}
+			provider := &nativeProgressRerouteAgent{err: tt.failure, attempt: failed.data.AttemptID}
 			if tt.invalid {
 				provider.decision = &progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "unavailable", Reason: "Continue", Evidence: []string{failed.data.AttemptID}}
 			}
@@ -538,6 +551,9 @@ func TestNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T) {
 			}
 			if started.request.Mode != runner.RunModeImplement || started.request.ProgressDecision.RequestID != "" || strings.Count(started.request.PriorAttempt.Reason, tt.reason) != 1 {
 				t.Fatalf("ordinary retry lost advisory failure: %+v", started.request)
+			}
+			if tt.conflict && conflicts != 2 {
+				t.Fatalf("old Hub conflict made %d publications, want 2", conflicts)
 			}
 
 			check, err := h.admin.NativeAttempt(t.Context(), tracker.NativeWorkItemID(issue.ID), original.data.AttemptID)

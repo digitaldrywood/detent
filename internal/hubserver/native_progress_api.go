@@ -21,7 +21,7 @@ type nativeProgressView struct {
 
 func progressRevision(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (int64, error) {
 	var sequence int64
-	err := q.QueryRowContext(ctx, "SELECT event_sequence + progress_evidence_revision FROM issues WHERE organization_id=? AND project_id=? AND native_id=?", scope.organization, scope.project, item).Scan(&sequence)
+	err := q.QueryRowContext(ctx, "SELECT progress_evidence_revision FROM issues WHERE organization_id=? AND project_id=? AND native_id=?", scope.organization, scope.project, item).Scan(&sequence)
 	return sequence, err
 }
 
