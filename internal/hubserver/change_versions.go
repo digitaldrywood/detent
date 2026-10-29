@@ -122,6 +122,7 @@ type preparedChangeVersion struct {
 	delivery   tracker.ReleaseDelivery
 	source     []byte
 	sourceRef  attachment.ArchiveReference
+	session    changeSessionAuthority
 }
 
 func (s *Service) prepareChangeVersion(ctx context.Context, tx *sql.Tx, scope nativeScope, item, changeID string, request tracker.PublishChangeVersion, now time.Time) (*preparedChangeVersion, error) {
@@ -214,6 +215,10 @@ func (s *Service) prepareChangeVersion(ctx context.Context, tx *sql.Tx, scope na
 		return nil, err
 	}
 	prepared := &preparedChangeVersion{change: change, version: version, raw: raw, associated: associated, delivery: delivery}
+	prepared.session, err = prepareChangeSession(ctx, tx, version)
+	if err != nil {
+		return nil, err
+	}
 	if version.Source != nil {
 		if _, ok := ctx.Value(changeContentKey{}).(*changeContent); ok {
 			prepared.sourceRef, err = preparedChangeContent(ctx, string(scope.organization), request.SourceBundle)
@@ -258,6 +263,9 @@ func (s *Service) publishChangeVersionCommand(ctx context.Context, tx *sql.Tx, s
 		activityURL = version.External.URL
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO change_versions (id, change_id, number, record_json, policy_revision_id, claim_head_sha, gate_github_pull_request, external_url, activity_external_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", version.ID, change.ID, version.Number, raw, version.PolicyID, version.HeadSHA, version.Policy.Gates.GitHubPullRequest, changeVersionExternalURL(version), activityURL); err != nil {
+		return nil, err
+	}
+	if err := freezeChangeSession(ctx, tx, version, prepared.session); err != nil {
 		return nil, err
 	}
 	if version.Validation != nil {

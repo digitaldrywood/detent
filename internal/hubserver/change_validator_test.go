@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
@@ -234,6 +235,24 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 		{"implementing session", func(r *tracker.ReviewChange) { r.Validator.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
 		{"validator reconciliation without a provider session", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
 		{"validator reconciliation for recovered source without a provider session", multipleReceipts, http.StatusOK, "reviewed", nil},
+		{"validator positive to zero self review", func(r *tracker.ReviewChange) { r.Validator.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"implementation review positive to zero self review", func(r *tracker.ReviewChange) { implementationReview(r); r.ImplementationReview.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"security audit positive to zero self review", func(r *tracker.ReviewChange) { r.SecurityAudit.SessionID, r.SecurityAudit.Run.ID = 41, 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"validator source zero current implementer self review", func(r *tracker.ReviewChange) { r.Validator.SessionID = 71 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"implementation review source zero current implementer self review", func(r *tracker.ReviewChange) { implementationReview(r); r.ImplementationReview.SessionID = 71 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"security audit source zero current implementer self review", func(r *tracker.ReviewChange) { r.SecurityAudit.SessionID, r.SecurityAudit.Run.ID = 71, 71 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"validator source zero same attempt self review", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"implementation review source zero same attempt self review", implementationReview, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"security audit source zero same attempt self review", func(_ *tracker.ReviewChange) {}, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"validator legacy recovered source without a provider session", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"implementation review legacy recovered source without a provider session", implementationReview, http.StatusOK, "needs_evidence", nil},
+		{"security audit legacy recovered source without a provider session", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"validator legacy positive history self review", func(r *tracker.ReviewChange) { r.Validator.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"implementation review legacy positive history self review", func(r *tracker.ReviewChange) { implementationReview(r); r.ImplementationReview.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"security audit legacy positive history self review", func(r *tracker.ReviewChange) { r.SecurityAudit.SessionID, r.SecurityAudit.Run.ID = 41, 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
+		{"validator legacy positive history separate review", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
+		{"implementation review legacy positive history separate review", implementationReview, http.StatusOK, "needs_evidence", nil},
+		{"security audit legacy positive history separate review", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
 		{"implementation review for recovered source without a provider session", implementationReview, http.StatusOK, "needs_evidence", nil},
 		{"security audit for recovered source without a provider session", func(_ *tracker.ReviewChange) {}, http.StatusOK, "reviewed", nil},
 		{"validator reconciliation reuses implementing session", func(r *tracker.ReviewChange) { r.Validator.SessionID = 41 }, http.StatusUnprocessableEntity, "needs_evidence", nil},
@@ -357,8 +376,12 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			event := nativeStartedEvent(lease)
 			event.Data.Identity.Role = "code"
 			event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 41}}
-			recoveredSource := strings.HasSuffix(test.name, "recovered source without a provider session")
-			if recoveredSource {
+			recoveredSource := strings.HasSuffix(test.name, "recovered source without a provider session") || strings.Contains(test.name, "source zero current implementer")
+			zeroSource := recoveredSource || strings.Contains(test.name, "source zero same attempt")
+			if zeroSource {
+				event.Data.Identity.Role = "rework"
+				event.Data.Runtime.Activity.SessionID = 0
+			} else if strings.Contains(test.name, "legacy positive history") {
 				event.Data.Identity.Role = "rework"
 				event.Data.Runtime.Activity.SessionID = 0
 			}
@@ -372,6 +395,25 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			path += "/" + change.ID
 			input := changeTestInput()
 			input.PolicyID, input.RunID, input.AttemptID = descriptor.ID, event.Data.RunID, event.Data.AttemptID
+			legacySource := strings.Contains(test.name, "legacy ")
+			if legacySource {
+				if strings.Contains(test.name, "legacy positive history") {
+					event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "first-implementing-session", 2
+					event.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 41}}
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, event), http.StatusOK)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET implementing_session_id=NULL WHERE id=?`, event.Data.AttemptID); err != nil {
+					t.Fatal(err)
+				}
+				if zeroSource {
+					event.Type, event.IdempotencyKey, event.Data.Sequence = "run.observed", "legacy-zero-observation", 2
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, event), http.StatusOK)
+					var session sql.NullInt64
+					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT implementing_session_id FROM native_attempts WHERE id=?`, event.Data.AttemptID).Scan(&session); err != nil || session.Valid {
+						t.Fatalf("legacy zero observation certified unknown history: session=%v err=%v", session, err)
+					}
+				}
+			}
 			if test.name == "separate session pass with multiple receipts" || test.name == "failed selected receipt cannot pass" || recoveredSource {
 				input.Validation = &gate.CommandResult{Command: "make check-land", HeadSHA: input.HeadSHA, TreeSHA: strings.Repeat("d", 40), DurationNS: 1}
 			}
@@ -380,6 +422,29 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			requireNativeStatus(t, response, http.StatusOK)
 			var version tracker.ChangeVersion
 			decodeHubResponse(t, response, &version)
+			if strings.Contains(test.name, "positive to zero") || strings.Contains(test.name, "legacy positive history") {
+				observation := event
+				observation.Type, observation.IdempotencyKey, observation.Data.Sequence = "run.observed", "erase-session", 2
+				observation.Data.Runtime = &tracker.NativeRuntimeObservation{Phase: "implementation", Activity: &workflowmetrics.ActivityProfile{Schema: 1, SessionID: 0}}
+				if !legacySource {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, observation), http.StatusConflict)
+				}
+				erased := event.Data
+				erased.MachineID = lease.MachineID
+				erased.Runtime = observation.Data.Runtime
+				raw, err := json.Marshal(erased)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET data_json=? WHERE id=?`, string(raw), event.Data.AttemptID); err != nil {
+					t.Fatal(err)
+				}
+				if legacySource {
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_attempts SET status='failed' WHERE id=?`, event.Data.AttemptID); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
 			if test.stages != nil && test.stages.gateKind != "" && version.Validation != nil {
 				t.Fatal("non-command fixture unexpectedly has a finalization receipt")
 			}
@@ -425,7 +490,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				event = merge
 				request.LeaseID, request.FencingToken = lease.ID, lease.FencingToken
 			}
-			if strings.HasPrefix(test.name, "security audit reconciliation") || strings.HasPrefix(test.name, "validator reconciliation") || recoveredSource {
+			if strings.HasPrefix(test.name, "security audit reconciliation") || strings.HasPrefix(test.name, "validator reconciliation") || recoveredSource || legacySource {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/leases/"+string(lease.ID)+"/release", worker, tracker.NativeLeaseMutation{FencingToken: lease.FencingToken, Reason: "completed"}), http.StatusNoContent)
 				lease = claimNativeAttempt(t, f, worker, "machine", "reconcile-session", issue.WorkItemID, descriptor.ID)
 				reconcile := nativeStartedEvent(lease)
@@ -437,6 +502,33 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, reconcile), http.StatusOK)
 				event = reconcile
 				request.LeaseID, request.FencingToken = lease.ID, lease.FencingToken
+			}
+			if legacySource {
+				var session sql.NullInt64
+				for range 100 {
+					if _, err := f.service.populateChangeSession(f.service.runDetailContext(t.Context())); err != nil {
+						t.Fatal(err)
+					}
+					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT implementing_session_id FROM change_versions WHERE id=?`, version.ID).Scan(&session); err != nil {
+						t.Fatal(err)
+					}
+					if session.Valid {
+						break
+					}
+				}
+				want := int64(0)
+				if strings.Contains(test.name, "legacy positive history") {
+					want = 41
+				}
+				if !session.Valid || session.Int64 != want {
+					t.Fatalf("recovered session = %v, want %d", session, want)
+				}
+				if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT implementing_session_id FROM native_attempts WHERE id=?`, version.AttemptID).Scan(&session); err != nil || !session.Valid || session.Int64 != want {
+					t.Fatalf("recovered observation authority = %v, want %d: %v", session, want, err)
+				}
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE change_versions SET implementing_session_id=99 WHERE id=?`, version.ID); err == nil {
+					t.Fatal("recovered source identity is mutable")
+				}
 			}
 			if strings.Contains(test.name, "visual") {
 				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE projects SET require_visual_attachments=1 WHERE id=?", f.project.ID); err != nil {
