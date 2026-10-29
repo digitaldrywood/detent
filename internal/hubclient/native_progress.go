@@ -141,7 +141,15 @@ func (o *progressOwner) Publish(ctx context.Context, record progresscheck.Record
 	if err != nil {
 		return progresscheck.Record{}, err
 	}
-	input := progresscheck.Publication{Mutation: tracker.Mutation{LeaseID: o.lease.ID, FencingToken: o.lease.FencingToken}, RequestID: record.RequestID, PolicyID: o.request.PolicyID, Instance: o.request.Instance, Decision: record.Decision}
+	modern, err := o.client.HubFeature(ctx, progresscheck.InvestigationCapability)
+	if err != nil {
+		return progresscheck.Record{}, err
+	}
+	decision := record.Decision
+	if !modern {
+		decision.Diagnosis, decision.Instruction, decision.Convergence = "", "", ""
+	}
+	input := progresscheck.Publication{Mutation: tracker.Mutation{LeaseID: o.lease.ID, FencingToken: o.lease.FencingToken}, RequestID: record.RequestID, PolicyID: o.request.PolicyID, Instance: o.request.Instance, Decision: decision}
 	current, err := o.client.Issue(ctx, o.lease.WorkItemID)
 	if err != nil {
 		return progresscheck.Record{}, err

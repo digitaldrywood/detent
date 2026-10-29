@@ -12,13 +12,15 @@ import (
 )
 
 const (
-	CompleteStep   = "complete"
-	MaxDuration    = 3 * time.Minute
-	MaxAttempts    = 12
-	MaxReceipts    = 24
-	MaxComments    = 24
-	MaxInputBytes  = 64 << 10
-	MaxOutputBytes = 8 << 10
+	CompleteStep       = "complete"
+	MaxToolCalls       = 32
+	MaxToolResultBytes = 256 << 10
+	MaxDuration        = 3 * time.Minute
+	MaxAttempts        = 12
+	MaxReceipts        = 24
+	MaxComments        = 24
+	MaxInputBytes      = 64 << 10
+	MaxOutputBytes     = 8 << 10
 )
 
 var ErrBackend = errors.New("progress check backend failed")
@@ -87,6 +89,9 @@ type Request struct {
 }
 
 type Decision struct {
+	Diagnosis   string   `json:"diagnosis,omitempty"`
+	Instruction string   `json:"instruction,omitempty"`
+	Convergence string   `json:"convergence,omitempty"`
 	Outcome     Outcome  `json:"outcome"`
 	Step        string   `json:"step,omitempty"`
 	Reason      string   `json:"reason"`
@@ -206,14 +211,32 @@ func (record Record) Validate(request Request) error {
 	return validateRecord(request, id, record)
 }
 
+func (record Record) ValidatePublication(request Request) error {
+	id, err := request.ID()
+	if err != nil {
+		return err
+	}
+	if err := validateRecordBinding(request, id, record); err != nil {
+		return err
+	}
+	return validateDecision(request, record.Decision)
+}
+
 func validateRecord(request Request, id string, record Record) error {
+	if err := validateRecordBinding(request, id, record); err != nil {
+		return err
+	}
+	return validateDecisionVersion(request, record.Decision, record.Decision.Legacy())
+}
+
+func validateRecordBinding(request Request, id string, record Record) error {
 	if record.RequestID != id || record.ProjectID != request.ProjectID || record.IssueID != request.IssueID || record.EvidenceRevision != request.EvidenceRevision {
 		return errors.New("progress decision binding differs")
 	}
 	if record.CommentID == "" || record.Decision.Outcome == SystemDefect && record.DefectIssueID == "" {
 		return errors.New("progress decision publication receipts missing")
 	}
-	return validateDecision(request, record.Decision)
+	return nil
 }
 
 func encodeRequest(request Request) ([]byte, error) {
@@ -258,7 +281,15 @@ func encodeRequest(request Request) ([]byte, error) {
 	return encoded, nil
 }
 
+func (decision Decision) Legacy() bool {
+	return decision.Diagnosis == "" && decision.Instruction == "" && decision.Convergence == ""
+}
+
 func validateDecision(request Request, decision Decision) error {
+	return validateDecisionVersion(request, decision, false)
+}
+
+func validateDecisionVersion(request Request, decision Decision, legacy bool) error {
 	encoded, err := json.Marshal(decision)
 	if err != nil || len(encoded) > MaxOutputBytes || strings.TrimSpace(decision.Reason) == "" || len(decision.Evidence) == 0 || len(decision.Evidence) > MaxReceipts {
 		return errors.New("progress decision requires bounded reasoning and evidence")
@@ -278,35 +309,28 @@ func validateDecision(request Request, decision Decision) error {
 			return errors.New("progress decision cites unavailable evidence")
 		}
 	}
+	if !legacy && strings.TrimSpace(decision.Diagnosis) == "" {
+		return errors.New("progress decision requires a diagnosis of the failure and its cause")
+	}
+	cited := false
+	for _, id := range decision.Evidence {
+		cited = cited || strings.Contains(decision.Diagnosis, id)
+	}
+	if !legacy && !cited {
+		return errors.New("progress diagnosis must cite its evidence")
+	}
 	if decision.Outcome != SystemDefect && (decision.DefectKey != "" || decision.DefectTitle != "" || decision.DefectBody != "") {
 		return errors.New("progress decision has unrelated defect fields")
 	}
 	switch decision.Outcome {
 	case Progressing:
+		if !legacy && strings.TrimSpace(decision.Convergence) == "" {
+			return errors.New("progressing decision requires evidence of convergence")
+		}
 	case Reroute:
-		if decision.Step == CompleteStep {
-			if !request.EmptyDelta || len(request.Attempts) == 0 || request.Attempts[len(request.Attempts)-1].LandingRefusal != "nothing_to_land" {
-				return errors.New("completion requires an empty landing refusal")
-			}
-			allowed := false
-			for _, step := range request.AvailableSteps {
-				allowed = allowed || step == CompleteStep
-			}
-			if !allowed {
-				return errors.New("completion requires current review and audit gates")
-			}
-			acceptanceEvidence := false
-			for _, id := range decision.Evidence {
-				for _, comment := range request.Comments {
-					acceptanceEvidence = acceptanceEvidence || comment.ID == id
-				}
-				for _, receipt := range request.Receipts {
-					acceptanceEvidence = acceptanceEvidence || receipt.ID == id && receipt.Step != "landing" && receipt.Step != "source"
-				}
-			}
-			if !acceptanceEvidence {
-				return errors.New("completion requires acceptance evidence beyond the empty delta")
-			}
+		CompleteStep = "complete"
+		if !legacy && strings.TrimSpace(decision.Instruction) == "" {
+			return errors.New("reroute decision requires an actionable instruction")
 		}
 		for _, step := range request.AvailableSteps {
 			if step != "" && decision.Step == step {

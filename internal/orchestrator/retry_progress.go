@@ -85,7 +85,10 @@ func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest
 	if last.LandingRefusal == "nothing_to_land" {
 		run.PriorAttempt.Reason = strings.TrimSpace(run.PriorAttempt.Reason + "\nnothing_to_land: " + last.Error)
 	}
-	run.PriorAttempt.Reason = strings.TrimSpace(run.PriorAttempt.Reason + "\n" + record.Decision.Reason)
+	run.PriorAttempt.Reason = strings.TrimSpace(run.PriorAttempt.Reason + "\n" + record.Decision.Reason + "\nDiagnosis: " + record.Decision.Diagnosis)
+	if record.Decision.Instruction != "" {
+		run.PriorAttempt.Reason += "\nNext instruction: " + record.Decision.Instruction
+	}
 	if record.Decision.Outcome == progresscheck.SystemDefect {
 		if !backend.called {
 			return nil

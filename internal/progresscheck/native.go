@@ -7,8 +7,62 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func AttemptDiagnostics(attempt tracker.NativeAttempt) string {
+	var detail strings.Builder
+	detail.WriteString("Attempt " + attempt.AttemptID + "\n")
+	write := func(label string, value any) {
+		encoded, err := json.Marshal(value)
+		if err == nil {
+			detail.WriteString(label + ": " + string(encoded) + "\n")
+		}
+	}
+	command := func(label string, result *gate.CommandResult) {
+		if result == nil {
+			return
+		}
+		copy := *result
+		copy.Command = bound(copy.Command, 512)
+		copy.Output = diagnosticExcerpt(copy.Output, 4096)
+		copy.OutputTruncated = copy.OutputTruncated || copy.Output != result.Output
+		copy.Pipeline = nil
+		write(label, copy)
+	}
+	if attempt.Runtime != nil {
+		command("validation", attempt.Runtime.Validation)
+		if attempt.Runtime.Landing != nil {
+			command("landing gate", attempt.Runtime.Landing.Gate)
+		}
+	}
+	for _, step := range attempt.Steps {
+		command("step "+step.Step, step.Validation)
+		if step.Validator != nil {
+			write("validator summary", step.Validator.Summary)
+			write("validator findings", step.Validator.Findings)
+			for i := range min(len(step.Validator.Commands), 8) {
+				command("validator command", &step.Validator.Commands[i])
+			}
+		}
+		if detail.Len() >= 12<<10 {
+			break
+		}
+	}
+	if attempt.TerminalFailure != nil {
+		write("terminal failure", attempt.TerminalFailure)
+	}
+	write("unavailable", attempt.Unavailable)
+	return diagnosticExcerpt(detail.String(), 12<<10)
+}
+
+func diagnosticExcerpt(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return strings.ToValidUTF8(value[:limit/2], "") + "\n[truncated; read retained receipt for more]\n" + strings.ToValidUTF8(value[len(value)-limit/2:], "")
+}
 
 func NativeRequest(recovery tracker.NativeRecovery, policy, instance string) Request {
 	r := Request{ProjectID: string(recovery.Issue.ProjectID), IssueID: string(recovery.Issue.WorkItemID), PolicyID: policy,

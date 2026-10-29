@@ -268,3 +268,75 @@ func sandboxSettings(t *testing.T) map[string]any {
 	}
 	return settings
 }
+
+func TestInvestigationRefusesWriteAndNetworkPermissions(t *testing.T) {
+	for _, tier := range []string{"", isolation.NativeTrusted, isolation.Sandbox} {
+		t.Run(tier, func(t *testing.T) {
+			options := Options{CommandFactoryWithArgs: func(ctx context.Context, args []string) *exec.Cmd { return exec.CommandContext(ctx, "claude", args...) }, ExtraArgs: nil}
+			if tier != "" {
+				options.IsolationPolicy = func() (isolation.Policy, error) {
+					return isolation.Policy{Tier: tier, WritableRoots: []string{"/writable"}, ExtraNetworkDomains: []string{"example.test"}, HostServices: []string{"unix:/tmp/example.sock"}, AllowLocalBinding: true}, nil
+				}
+			}
+			backend, err := NewAgentBackend(options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend.toolAddress = "127.0.0.1:12345"
+			cmd, settings, err := backend.commandWithIsolation(t.Context(), runner.AgentTurnRequest{Workspace: "/source", TempDir: "/scratch", ReadOnly: true, IsolatedTools: true, ExtraWritableRoots: []string{"/extra"}, ExtraNetworkDomains: []string{"github.com"}, AllowLocalBinding: true})
+			if tier != isolation.Sandbox || !isolation.SandboxAvailable() {
+				if err == nil || cmd != nil {
+					t.Fatalf("unenforceable investigation reached provider: cmd=%v err=%v", cmd, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			args := strings.Join(cmd.Args, " ")
+			if strings.Contains(args, "Bash,Read") || strings.Contains(args, "--add-dir") || !strings.Contains(args, "--tools Read Glob Grep") {
+				t.Fatalf("unsafe tools: %s", args)
+			}
+			sandbox := settings["sandbox"].(map[string]any)
+			filesystem := sandbox["filesystem"].(map[string]any)
+			network := sandbox["network"].(map[string]any)
+			if len(filesystem["allowWrite"].([]string)) != 0 || len(network["allowedDomains"].([]string)) != 0 || len(network["allowUnixSockets"].([]string)) != 0 || network["allowLocalBinding"] != false || sandbox["autoAllowBashIfSandboxed"] != false {
+				t.Fatalf("unsafe sandbox: %+v", sandbox)
+			}
+			for _, tool := range []string{"Bash", "Write", "Edit", "WebFetch", "WebSearch"} {
+				if !slices.Contains(settings["permissions"].(map[string]any)["deny"].([]string), tool) {
+					t.Fatalf("side effect tool permitted: %s", tool)
+				}
+			}
+			encoded, err := json.Marshal(settings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var effective map[string]any
+			if err := json.Unmarshal(encoded, &effective); err != nil {
+				t.Fatal(err)
+			}
+			if err := VerifyEffectiveIsolation(settings, effective); err != nil {
+				t.Fatal(err)
+			}
+			for _, attempt := range []struct {
+				name   string
+				mutate func(map[string]any)
+			}{
+				{"write attempt", func(s map[string]any) { s["filesystem"].(map[string]any)["allowWrite"] = []any{"/source"} }},
+				{"network attempt", func(s map[string]any) { s["network"].(map[string]any)["allowedDomains"] = []any{"github.com"} }},
+			} {
+				t.Run(attempt.name, func(t *testing.T) {
+					var attempted map[string]any
+					if err := json.Unmarshal(encoded, &attempted); err != nil {
+						t.Fatal(err)
+					}
+					attempt.mutate(attempted["sandbox"].(map[string]any))
+					if err := VerifyEffectiveIsolation(settings, attempted); err == nil {
+						t.Fatal("effective side effect permission accepted")
+					}
+				})
+			}
+		})
+	}
+}
