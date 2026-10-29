@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -209,6 +210,56 @@ func TestMappedNativeStartupUsesInspectedPolicy(t *testing.T) {
 
 func (s *policyTestScheduling) CheckProjectPolicy(_ context.Context, project, _ string, descriptor policy.Descriptor) error {
 	return descriptor.Match(s.approved[project])
+}
+
+func TestHostOverridesApplyWithoutPolicyConfiguration(t *testing.T) {
+	t.Parallel()
+	for _, override := range []string{"active hours", "model selection", "pricing path"} {
+		t.Run(override, func(t *testing.T) {
+			t.Parallel()
+			cfg := globalconfig.Project{ID: "example-project", Workdir: t.TempDir()}
+			workflow := workflowconfig.Workflow{Config: workflowconfig.Default()}
+			workflow.Config.Tracker.Kind = workflowconfig.TrackerHubNative
+			descriptor, err := ResolvePolicy(cfg, workflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			descriptor.Configuration = nil
+			descriptor = descriptor.WithID()
+			workflow.Config.Policy = descriptor
+			p := &Project{cfg: cfg, workflow: workflow, workflowActiveHours: workflow.Config.ActiveHours}
+			changed := cfg
+			switch override {
+			case "active hours":
+				changed.ActiveHours = &activehours.Config{Timezone: "UTC", Windows: []string{"Mon-Fri 09:00-17:00"}}
+			case "model selection":
+				changed.ModelSelection = &workflowconfig.ModelSelection{NormalModel: new("gpt-6.1-sol")}
+			case "pricing path":
+				changed.GlobalBudget.PricingPath = new(filepath.Join(cfg.Workdir, "pricing.json"))
+			}
+			if err := p.updateLiveConfig(t.Context(), changed); err != nil {
+				t.Fatalf("host override did not apply live: %v", err)
+			}
+			current := p.Workflow()
+			if current.Config.Policy.ID != descriptor.ID || current.Config.Policy.Configuration != nil {
+				t.Fatalf("host override changed policy: %+v", current.Config.Policy)
+			}
+			switch override {
+			case "active hours":
+				if !reflect.DeepEqual(current.Config.ActiveHours, changed.ActiveHours.Normalize()) || !reflect.DeepEqual(p.DispatchCandidate().ActiveHours, changed.ActiveHours.Normalize()) {
+					t.Fatalf("active hours not applied: %+v", current.Config.ActiveHours)
+				}
+			case "model selection":
+				if current.Config.EffectiveModelSelection().Model("normal") != "gpt-6.1-sol" {
+					t.Fatalf("model selection not applied: %+v", current.Config.Agents.ModelSelection)
+				}
+			case "pricing path":
+				if current.Config.Budget.PricingPath != *changed.GlobalBudget.PricingPath {
+					t.Fatalf("pricing path not applied: %s", current.Config.Budget.PricingPath)
+				}
+			}
+		})
+	}
 }
 
 func TestTrustedRefIgnoresWorkingBranchPolicyEdits(t *testing.T) {
