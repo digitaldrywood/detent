@@ -1701,9 +1701,10 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 		}
 	}
 	publicationRecovery := req.publicationRecovery(mode)
-	if req.Execution != nil && !nativeLanding && !publicationRecovery && reviewRecovery == nil && turnRecovery == nil && nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
-		if !req.operatorFreshRetry() {
-			resume, err := r.nativeInterruptedResumeState(ctx, req, agentRuntime)
+	if req.Execution != nil && !nativeLanding && !publicationRecovery && reviewRecovery == nil && turnRecovery == nil {
+		previous := req.Execution.Recovery().SourceAttempt()
+		if !req.operatorFreshRetry() && previous != nil && previous.Checkpoint != nil && previous.Checkpoint.Resume == "resume_session" {
+			resume, err := r.nativeSessionResumeState(ctx, req, agentRuntime)
 			if err != nil {
 				return RunResult{}, err
 			}
@@ -1714,7 +1715,9 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				req.RetryMode = RetryModeFresh
 			}
 		}
-		req.retainCheckpoint = true
+		if nativeInterruptedResumeAttempt(req.Execution.Recovery()) != nil {
+			req.retainCheckpoint = true
+		}
 	}
 	if err := r.checkResumePolicy(ctx, req, req.ResumeState); err != nil {
 		return RunResult{}, err

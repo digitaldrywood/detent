@@ -980,25 +980,24 @@ func nativeInterruptedResumeAttempt(recovery tracker.NativeRecovery) *tracker.Na
 	return previous
 }
 
-func (r *Runner) nativeInterruptedResumeState(ctx context.Context, req RunRequest, runtime agentRuntime) (store.AgentResumeState, error) {
+func (r *Runner) nativeSessionResumeState(ctx context.Context, req RunRequest, runtime agentRuntime) (store.AgentResumeState, error) {
 	recovery := req.Execution.Recovery()
-	previous := nativeInterruptedResumeAttempt(recovery)
-	if previous == nil {
+	previous := recovery.SourceAttempt()
+	if previous == nil || previous.Checkpoint == nil || previous.Checkpoint.Resume != "resume_session" || previous.Status == "running" && nativeInterruptedResumeAttempt(recovery) == nil {
 		return store.AgentResumeState{}, nil
 	}
-	restartable := previous.Checkpoint.GitRef() || cleanLocalCheckpoint(previous.Checkpoint)
-	if restartable && previous.MachineID != recovery.Lease.MachineID {
+	if previous.MachineID != recovery.Lease.MachineID {
 		return store.AgentResumeState{}, nil
 	}
-	state, err := r.lookupInterruptedResumeState(ctx, req, runtime, previous)
-	if err != nil && restartable {
+	state, err := r.lookupNativeResumeState(ctx, req, runtime, previous)
+	if err != nil && (previous.Checkpoint.GitRef() || cleanLocalCheckpoint(previous.Checkpoint) || nativeInterruptedResumeAttempt(recovery) == nil) {
 		r.logWorkerEvent(req.Issue, "worker_native_session_unavailable", "error", err)
 		return store.AgentResumeState{}, nil
 	}
 	return state, err
 }
 
-func (r *Runner) lookupInterruptedResumeState(ctx context.Context, req RunRequest, runtime agentRuntime, previous *tracker.NativeAttempt) (store.AgentResumeState, error) {
+func (r *Runner) lookupNativeResumeState(ctx context.Context, req RunRequest, runtime agentRuntime, previous *tracker.NativeAttempt) (store.AgentResumeState, error) {
 	resumeStore, ok := r.store.(store.AgentResumeStore)
 	if !ok || previous.Runtime == nil || previous.Runtime.LocalAttemptID <= 0 || previous.Identity == nil {
 		return store.AgentResumeState{}, ErrNativeRecoveryRequired
@@ -1044,7 +1043,7 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 	if checkpoint.UncertainForgeEffect() {
 		return "fresh_checkout", "publication_reconciliation_required"
 	}
-	if current != nil && current.Version.ID != "" && local != nil && local.HeadSHA == current.Version.HeadSHA &&
+	if current != nil && current.Version.ID != "" && local != nil && local.HeadSHA == current.Version.HeadSHA && checkpoint.HeadSHA != current.Version.HeadSHA &&
 		len(local.TrackedPaths) == 0 && len(local.UntrackedPaths) == 0 &&
 		(checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
 		return "fresh_checkout", "session_restart_required"

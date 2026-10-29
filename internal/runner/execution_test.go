@@ -210,6 +210,104 @@ func (w *resumedExecutionWorkspace) AfterRun(ctx context.Context, info workspace
 	w.LocalGit.AfterRun(ctx, info, issue)
 }
 
+func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		status   string
+		unpushed int
+	}{
+		{name: "killed clean attempt", status: "cancelled"},
+		{name: "killed unpushed attempt", status: "cancelled", unpushed: 1},
+		{name: "ordinary failed retry", status: "failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			path := filepath.Join(t.TempDir(), "sessions.db")
+			db, err := store.Open(ctx, store.Config{Path: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			started := time.Date(2026, 10, 29, 14, 0, 0, 0, time.UTC)
+			approved := runnerTestPolicy()
+			metadata, err := json.Marshal(map[string]policy.Descriptor{"policy": approved})
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity := agentidentity.Configured("codex", "codex", "default", RoleCode, "example-model", "openai", "high", "", started)
+			issue := connector.Issue{ID: "work", Identifier: "example-org/example-project#1", State: "In Progress", BranchName: "example/work"}
+			local := workspace.RecoveryState{HeadSHA: "head", WorkspaceFingerprint: "digest", UnpushedCommits: test.unpushed}
+			backend := &retainedExecutionWorkspace{fakeWorkspaceBackend: &fakeWorkspaceBackend{info: workspace.Info{Path: t.TempDir(), Branch: issue.BranchName}, recoveryStates: []workspace.RecoveryState{local}}}
+			providerErr := errors.New("provider interrupted")
+			agent := &fakeCodexClient{err: providerErr}
+			cfg := config.Config{Policy: approved}
+			cfg.Tracker.Kind = config.TrackerHubNative
+			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Role: RoleCode, Backend: "codex", Model: "example-model", Default: true}}
+			deps := Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Continue the issue"}, Store: db, Workspace: backend, AgentBackend: agent}
+			first, err := NewRunner(deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			attemptID, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "native", IssueID: issue.ID, WorkerType: "agent", StartedAt: started, RuntimeIdentity: identity, WorkerMetadataJSON: string(metadata)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessionID, _, err := first.startSession(ctx, RunRequest{Issue: issue, WorkAttemptID: attemptID}, started, identity, store.AgentResumeState{}, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			resume := AgentResume{ThreadID: "persisted-thread", SessionID: "persisted-session"}
+			first.persistSessionProviderIdentity(ctx, sessionID, AgentUpdate{ThreadID: resume.ThreadID, ProviderSessionID: resume.SessionID})
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			db, err = store.Open(ctx, store.Config{Path: path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			deps.Store = db
+			if test.status == "cancelled" {
+				if _, err := db.TimeoutExpiredWorkAttempts(ctx, store.WorkAttemptTimeout{Now: started.Add(time.Minute), ConfirmedGoneAttemptIDs: []int64{attemptID}, TerminalState: store.WorkAttemptTerminalAbandoned, ErrorClass: "service_restart"}); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := db.CompleteWorkAttempt(ctx, store.WorkAttemptCompletion{AttemptID: attemptID, CompletedAt: started.Add(time.Minute), Status: store.WorkAttemptStatusTerminal, TerminalState: store.WorkAttemptTerminalFailure, SessionFinalState: "failed", WorkerMetadataJSON: string(metadata)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			restarted, err := NewRunner(deps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			currentAttemptID, err := db.StartWorkAttempt(ctx, store.WorkAttemptStart{ProjectID: "native", IssueID: issue.ID, WorkerType: "agent", StartedAt: started.Add(time.Minute)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkpoint := executionCheckpoint(&local)
+			checkpoint.Resume = "resume_session"
+			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{ID: "new-lease", MachineID: "machine", FencingToken: 2}, Attempts: []tracker.NativeAttempt{{Status: test.status, Checkpoint: &checkpoint, NativeRunData: tracker.NativeRunData{MachineID: "machine", LeaseID: "old-lease", FencingToken: 1, Identity: &tracker.NativeExecutionIdentity{Role: RoleCode, Backend: "codex", Model: "example-model"}, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: attemptID, Identity: identity}}}}}}
+			_, err = restarted.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, WorkAttemptID: currentAttemptID, Generation: 2, Issue: issue, Mode: RunModeImplement, Execution: execution})
+			if !errors.Is(err, providerErr) || agent.calls != 1 || agent.request.Resume != resume || agent.verifiedResume != resume {
+				t.Fatalf("restart lost persisted provider session: error=%v calls=%d resume=%+v verified=%+v", err, agent.calls, agent.request.Resume, agent.verifiedResume)
+			}
+			decision := execution.runtime.Recovery
+			if decision == nil || decision.Action != "resume_session" || decision.Reason != "verified_local_session" || agent.request.Workspace != backend.info.Path {
+				t.Fatalf("restart lost recovery or workspace: decision=%+v workspace=%s", decision, agent.request.Workspace)
+			}
+			latest, err := db.(store.ActivityStore).LatestIssueAgentSession(ctx, store.IssueIdentity{ProjectID: "native", IssueID: issue.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			persisted, err := db.Queries().GetCodexSession(ctx, latest.DetentSessionID)
+			if err != nil || persisted.ResumedFromSessionID.Int64 != sessionID || persisted.WorkAttemptID.Int64 != currentAttemptID {
+				t.Fatalf("restart lost session provenance: session=%+v error=%v", persisted, err)
+			}
+		})
+	}
+}
+
 func TestNativeInterruptedCodeRecoversPersistedSession(t *testing.T) {
 	if testing.Short() {
 		t.Skip("git subprocess integration")
@@ -1066,6 +1164,43 @@ func TestNativeRecoveryDecision(t *testing.T) {
 		current *workspace.ChangeSource
 	}{
 		{"verified session", func(*tracker.NativeRecovery, **workspace.RecoveryState, *bool) {}, "resume_session", "verified_local_session", nil},
+		{"restart after kill retains clean current Change session", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Status = "cancelled"
+			r.Attempts[0].MachineID = "machine"
+			r.Attempts[0].Checkpoint.WorktreeState = "clean"
+			r.Attempts[0].Checkpoint.HeadSHA = "head"
+			r.Attempts[0].Checkpoint.WorkspaceDigest = "digest"
+		}, "resume_session", "verified_local_session", current},
+		{"restart after kill retains unpushed current Change session", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Status = "cancelled"
+			r.Attempts[0].MachineID = "machine"
+			r.Attempts[0].Checkpoint.HeadSHA = "head"
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+		}, "resume_session", "verified_local_session", current},
+		{"ordinary retry retains current Change session", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Status = "failed"
+			r.Attempts[0].MachineID = "machine"
+			r.Attempts[0].Checkpoint.WorktreeState = "clean"
+			r.Attempts[0].Checkpoint.HeadSHA = "head"
+			r.Attempts[0].Checkpoint.WorkspaceDigest = "digest"
+		}, "resume_session", "verified_local_session", current},
+		{"restart on another machine starts fresh", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Status = "cancelled"
+			r.Attempts[0].Checkpoint.HeadSHA = "head"
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+		}, "fresh_checkout", "session_restart_required", current},
+		{"restart with changed source starts fresh", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Status = "cancelled"
+			r.Attempts[0].MachineID = "machine"
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+		}, "fresh_checkout", "session_restart_required", current},
+		{"restart reconciles uncertain publication first", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
+			r.Attempts[0].Status = "cancelled"
+			r.Attempts[0].MachineID = "machine"
+			r.Attempts[0].Checkpoint.HeadSHA = "head"
+			remoteCheckpoint(r.Attempts[0].Checkpoint)
+			r.Attempts[0].Checkpoint.ExternalEffect, r.Attempts[0].Checkpoint.EffectState = "git_push", "ambiguous"
+		}, "fresh_checkout", "publication_reconciliation_required", current},
 		{"newer clean startup retains source session", func(r *tracker.NativeRecovery, _ **workspace.RecoveryState, _ *bool) {
 			r.Attempts = append(r.Attempts, tracker.NativeAttempt{NativeRunData: tracker.NativeRunData{MachineID: "other"}, Checkpoint: &tracker.NativeCheckpoint{Resume: "fresh_checkout", WorktreeState: "clean"}})
 		}, "resume_session", "verified_local_session", nil},
