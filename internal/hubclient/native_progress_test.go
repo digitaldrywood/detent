@@ -136,6 +136,77 @@ func TestNativeRetryProgressOwnerAndSuccess(t *testing.T) {
 	}
 }
 
+func TestNativeRetryProgressLoadsRepeatedLandingRefusals(t *testing.T) {
+	t.Parallel()
+	base, head := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	for _, test := range []struct {
+		name string
+		base string
+		head string
+		want bool
+	}{
+		{name: "same source", base: base, head: head, want: true},
+		{name: "changed base", base: strings.Repeat("c", 40), head: head},
+		{name: "changed head", base: base, head: strings.Repeat("c", 40)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			h := newNativeChangeHub(t, true)
+			issue := h.createInProgress(t, "Retry landing refusal")
+			var attempts []string
+			for _, source := range []struct{ base, head string }{{base, head}, {test.base, test.head}} {
+				h.claim(t, issue.ID)
+				execution := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+				if err := execution.StartLanding(t.Context(), 1, 0); err != nil {
+					t.Fatal(err)
+				}
+				if err := execution.ObserveLanding(t.Context(), runner.NativeLanding{RefusalKind: workspace.LandRefusalBaseMoved, BaseSHA: source.base, HeadSHA: source.head}); err != nil {
+					t.Fatal(err)
+				}
+				if err := execution.Checkpoint(t.Context(), tracker.NativeCheckpoint{Resume: "fresh_checkout", Storage: "local_only", Availability: "available", WorktreeState: "unpushed", HeadSHA: source.head, ExternalEffect: "none", EffectState: "none"}); err != nil {
+					t.Fatal(err)
+				}
+				if err := execution.Finish(t.Context(), "succeeded"); err != nil {
+					t.Fatal(err)
+				}
+				attempts = append(attempts, execution.data.AttemptID)
+				if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "waiting"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.claim(t, issue.ID)
+			claim := h.scheduler.nativeClaims[issue.ID]
+			for _, attempt := range claim.recovery.Attempts {
+				if attempt.AttemptID == attempts[0] {
+					t.Fatal("sparse claim recovery unexpectedly retained the preceding refusal")
+				}
+			}
+			client := claim.source.client.client.httpClient
+			transport := client.Transport
+			reads := 0
+			client.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+				if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/progress") {
+					reads++
+				}
+				return transport.RoundTrip(request)
+			})
+			request, _, err := h.scheduler.RetryProgress(t.Context(), issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reads != 1 || len(request.Attempts) != 2 {
+				t.Fatalf("progress history missing: reads=%d attempts=%+v", reads, request.Attempts)
+			}
+			if request.Attempts[0].ID != attempts[0] || request.Attempts[1].ID != attempts[1] {
+				t.Fatalf("progress attempts out of order: %+v", request.Attempts)
+			}
+			if got := progresscheck.NeedsCheck(request); got != test.want {
+				t.Fatalf("NeedsCheck=%v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 type nativeProgressRerouteAgent struct {
 	nativePlanningAgent
 	attempt     string
