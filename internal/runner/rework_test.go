@@ -407,7 +407,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		{name: "source version race refuses before coding", reviewResume: "pass", staged: true, sourceMismatch: true},
 		{name: "stale base refusal in code lane refreshes owned source", normal: true, staged: true, refusal: workspace.LandRefusalBaseMoved, baseRefresh: true, resume: true},
 		{name: "conflict refusal in code lane", normal: true, refusal: workspace.LandRefusalConflict},
-		{name: "conflict refusal clean replay resumes", normal: true, staged: true, refusal: workspace.LandRefusalConflict, resume: true},
+		{name: "conflict refusal clean replay restarts session", normal: true, staged: true, refusal: workspace.LandRefusalConflict, resume: true},
 		{name: "conflict refusal conflicting replay restarts", normal: true, refusal: workspace.LandRefusalConflict, resume: true},
 		{name: "non-conflict refusal preserves code session", normal: true, staged: true, refusal: workspace.LandRefusalHeadMoved, resume: true},
 		{name: "historical conflict preserves code session", normal: true, staged: true, refusal: workspace.LandRefusalConflict, historical: true, resume: true},
@@ -854,7 +854,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				}
 				if test.resume {
 					checkpoint.Resume = "resume_session"
-					execution.recovery.Attempts = append(execution.recovery.Attempts, tracker.NativeAttempt{Status: "succeeded", NativeRunData: tracker.NativeRunData{MachineID: "host", PolicyID: "unchanged-policy", Identity: &tracker.NativeExecutionIdentity{Role: RoleCode, Backend: "codex", Model: "provider_default"}}, Checkpoint: &checkpoint})
+					execution.recovery.Attempts = append(execution.recovery.Attempts, tracker.NativeAttempt{Status: "succeeded", NativeRunData: tracker.NativeRunData{MachineID: "host", PolicyID: "unchanged-policy", Identity: &tracker.NativeExecutionIdentity{Role: RoleCode, Backend: "codex", Model: "provider_default"}, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: 1}}, Checkpoint: &checkpoint})
 					request.RetryMode = RetryModeResume
 					request.ResumeState = store.AgentResumeState{ProviderThreadID: "source-thread", ProviderSessionID: "source-session"}
 				}
@@ -866,7 +866,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 					if got := strings.TrimSpace(runRunnerGit(t, info.Path, "merge-base", "HEAD", target)); got != wantBase {
 						t.Fatalf("agent starts on wrong base: merge-base=%s want=%s", got, wantBase)
 					}
-					wantResume := test.resume && (!prepareConflict || test.staged)
+					wantResume := test.resume && !prepareConflict
 					if resumed := !agentResumeEmpty(agent.request.Resume); resumed != wantResume {
 						t.Fatalf("provider resumed=%v, want %v", resumed, wantResume)
 					}
@@ -896,6 +896,9 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 			r, err := NewRunner(Dependencies{Workflow: config.Workflow{Config: cfg, Prompt: "Resolve the source"}, Workspace: backend, AgentBackend: agent})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.resume {
+				r.store = &fakeSessionStore{sessionID: 2, resumeState: store.AgentResumeState{DetentSessionID: 1, ProviderThreadID: "source-thread", ProviderSessionID: "source-session", RequestedModel: "provider_default", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: RoleCode}}
 			}
 			_, err = r.Run(t.Context(), request)
 			if test.checkpointRetry != "" {

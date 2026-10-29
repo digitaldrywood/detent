@@ -521,14 +521,14 @@ func TestPlacementIgnoresExhaustedSubscriptionQuota(t *testing.T) {
 			report := capacityReport(f.service.config.now())
 			report.Models, report.SharedAccountAlias, report.Availability = []string{"gpt-6.1-sol", "test-model"}, "sprite", "exhausted"
 			publishCapacity(t, f, sprite, report)
-			scope := setPlacementFixture(t, f, policy.Placement{Mode: "local_first", TodoThreshold: 1, OverflowSlots: 2}, 3)
+			scope := setPlacementFixture(t, f, policy.Placement{Mode: "blended"}, 3)
 			issue := f.create(t, "first")
 			f.create(t, "second")
 			decision, err := readPlacementSnapshot(t.Context(), f.service.database.db, scope, f.service.config.now(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if decision.Provisionable != 1 || decision.LocalFree != 1 {
+			if decision.Provisionable != 0 || decision.LocalFree != 1 || decision.SpriteFree != 1 {
 				t.Fatalf("exhausted Sprite account decision=%+v", decision.placementDecision)
 			}
 			r, status := local, http.StatusOK

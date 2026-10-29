@@ -371,6 +371,9 @@ func testNativeRetryProgressReroute(t *testing.T, reserved, tighten bool) {
 	}
 	issue = claimPlan()
 	original := h.scheduler.RunExecution(issue.ID)
+	if original == nil {
+		t.Fatal("progress claim has no execution")
+	}
 	change, err := h.admin.CreateChange(t.Context(), tracker.NativeWorkItemID(issue.ID), tracker.CreateChange{Mutation: nativeMutationKey(), Title: "Retained progress source"})
 	if err != nil {
 		t.Fatal(err)

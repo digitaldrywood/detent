@@ -1074,6 +1074,9 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 		return "manual_recovery", "local_checkpoint_changed"
 	}
 	if !localAvailable && checkpoint.WorktreeState != "clean" {
+		if nativeInterruptedResumeAttempt(recovery) != nil && !operatorFresh {
+			return "manual_recovery", "checkpoint_unavailable"
+		}
 		return "fresh_checkout", "checkpoint_unavailable"
 	}
 	if checkpoint.Availability == "missing" || checkpoint.Availability == "inaccessible" || checkpoint.Storage == "customer_store" {

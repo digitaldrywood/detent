@@ -728,8 +728,8 @@ func TestHostedEventsLegacyBoardPagesShareSummary(t *testing.T) {
 			t.Fatalf("board replay lost cards: %d", len(seen))
 		}
 	}
-	if summaries != 1 {
-		t.Fatalf("summary recomputed per subscriber or page: %d", summaries)
+	if summaries != 0 {
+		t.Fatalf("delivery recomputed the background summary: %d", summaries)
 	}
 }
 

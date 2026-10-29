@@ -173,9 +173,10 @@ func nativeSearchJoin(scope nativeScope, archived string, expressions []string, 
 	visibility, visibilityArgs := scope.issueVisibilitySQL("i")
 	args = append(args, visibilityArgs...)
 	archiveFilter := " AND i.archived=0"
-	if archived == "true" {
+	switch archived {
+	case "true":
 		archiveFilter = " AND i.archived=1"
-	} else if archived == "all" {
+	case "all":
 		archiveFilter = ""
 	}
 	text := "i.title"

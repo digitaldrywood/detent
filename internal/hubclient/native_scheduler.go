@@ -24,6 +24,7 @@ import (
 )
 
 type nativeClaim struct {
+	lifecycle            *sync.Mutex
 	lost                 bool
 	landingCapacity      int
 	execution            *nativeExecution

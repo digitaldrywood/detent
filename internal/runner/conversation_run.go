@@ -46,11 +46,11 @@ type conversationRunContextKey struct{}
 func (r *Runner) bindConversation(ctx context.Context, req RunRequest, backend AgentBackend, resumeThreadID string) (*conversationRun, error) {
 	execution, ok := req.Execution.(ConversationExecution)
 	if !ok {
-		return nil, nil
+		return nil, ErrNoConversation
 	}
 	live, ok := backend.(AgentLiveBackend)
 	if !ok || !live.SupportsLiveControl() {
-		return nil, nil
+		return nil, ErrNoConversation
 	}
 	session, err := execution.BindConversation(ctx, ConversationCapabilities{Steer: true, Interrupt: true, Answer: true, Continue: true}, resumeThreadID)
 	if err != nil {
@@ -58,10 +58,10 @@ func (r *Runner) bindConversation(ctx context.Context, req RunRequest, backend A
 			return nil, fmt.Errorf("bind conversation: %w", err)
 		}
 		r.logWorkerEventLevel(slog.LevelDebug, req.Issue, "worker_conversation_bind_skipped", telemetry.WorkAttemptIDKey, req.WorkAttemptID, "error", errorString(err))
-		return nil, nil
+		return nil, ErrNoConversation
 	}
 	if session == nil {
-		return nil, nil
+		return nil, ErrNoConversation
 	}
 	r.logWorkerEvent(req.Issue, "worker_conversation_bound", telemetry.WorkAttemptIDKey, req.WorkAttemptID, "conversation_id", session.ConversationID(), "thread_id", session.ResumeThreadID(), "resume", session.ResumeMode(), "thread_origin", conversationThreadOrigin(session))
 	return &conversationRun{session: session, logger: r.logger, issue: req.Issue}, nil

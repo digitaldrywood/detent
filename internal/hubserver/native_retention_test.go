@@ -853,8 +853,10 @@ func TestBackgroundStorageCancellationProgress(t *testing.T) {
 				return nil
 			}
 			f.now = f.now.Add(time.Minute)
-			if err := run(t.Context()); err != nil {
-				t.Fatal(err)
+			for range 2 {
+				if err := run(t.Context()); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if got := count(); got != 3 || resumed != 2 {
 				t.Fatalf("resumed units=%d committed=%d", resumed, got)

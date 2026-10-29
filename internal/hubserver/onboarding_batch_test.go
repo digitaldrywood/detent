@@ -23,7 +23,7 @@ func TestProjectOnboardingBatch(t *testing.T) {
 		{name: "draining runner", state: "draining"},
 		{name: "offline runner", stale: true},
 		{name: "failed checks", failedChecks: true},
-		{name: "exhausted provider", exhausted: true},
+		{name: "exhausted subscription remains ready", exhausted: true, ready: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newNativeFixture(t, nil, "", "first")

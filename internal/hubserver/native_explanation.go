@@ -65,11 +65,11 @@ func readRuntimeChangeDetail(ctx context.Context, q nativeQueryer, scope nativeS
 }
 
 func readExplanationCheckpoint(ctx context.Context, q nativeQueryer, scope nativeScope, item string) (nativeSourceCheckpoint, error) {
-	rows, err := q.QueryContext(ctx, `SELECT a.id,l.machine_id,COALESCE(lr.runner_id,''),COALESCE(NULLIF(r.display_name,''),m.hostname,''),a.status,l.released_at,a.checkpoint_json
+	rows, err := q.QueryContext(ctx, `SELECT a.id,l.machine_id,COALESCE(lr.runner_id,''),COALESCE(NULLIF(r.display_name,''),m.hostname,''),a.status,l.released_at,a.checkpoint_json,coalesce(a.failure_stage,'')='lease_release' AND a.cleanup_acknowledged_at IS NULL
 FROM (
- SELECT * FROM (SELECT id,lease_id,organization_id,status,checkpoint_json,fencing_token FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND checkpoint_preserves_source=1 ORDER BY fencing_token DESC LIMIT 1)
+ SELECT * FROM (SELECT id,lease_id,organization_id,status,checkpoint_json,fencing_token,failure_stage,cleanup_acknowledged_at FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND checkpoint_preserves_source=1 ORDER BY fencing_token DESC LIMIT 1)
  UNION ALL
- SELECT * FROM (SELECT id,lease_id,organization_id,status,checkpoint_json,fencing_token FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND checkpoint_preserves_source IS NULL ORDER BY fencing_token DESC LIMIT 64)
+ SELECT * FROM (SELECT id,lease_id,organization_id,status,checkpoint_json,fencing_token,failure_stage,cleanup_acknowledged_at FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND checkpoint_preserves_source IS NULL ORDER BY fencing_token DESC LIMIT 64)
 ) a
 JOIN leases l ON l.lease_id=a.lease_id LEFT JOIN lease_runners lr ON lr.lease_id=l.lease_id
 LEFT JOIN runner_identities r ON r.id=lr.runner_id AND r.organization_id=a.organization_id LEFT JOIN machines m ON m.id=l.machine_id AND m.organization_id=a.organization_id
@@ -81,7 +81,7 @@ ORDER BY a.fencing_token DESC`, scope.organization, scope.project, item, scope.o
 	for rows.Next() {
 		var source nativeSourceCheckpoint
 		var raw sql.NullString
-		if err := rows.Scan(&source.AttemptID, &source.MachineID, &source.RunnerID, &source.RunnerName, &source.Status, &source.Released, &raw); err != nil {
+		if err := rows.Scan(&source.AttemptID, &source.MachineID, &source.RunnerID, &source.RunnerName, &source.Status, &source.Released, &raw, &source.UnacknowledgedRelease); err != nil {
 			return source, err
 		}
 		if !raw.Valid {
