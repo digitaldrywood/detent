@@ -145,7 +145,6 @@ func refreshAnalyticsResidence(ctx context.Context, tx projectionQuery, scope na
 	defer rows.Close()
 	type event struct {
 		sequence int64
-		raw      string
 		analyticsResidenceEvent
 	}
 	var events []event
@@ -159,16 +158,15 @@ func refreshAnalyticsResidence(ctx context.Context, tx projectionQuery, scope na
 		if err != nil {
 			return err
 		}
-		e.raw = raw
+		if e.kind == "workflow.transitioned" {
+			if err := json.Unmarshal([]byte(raw), &e.data); err != nil {
+				return err
+			}
+		}
 		events = append(events, e)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return err
-	}
-	for i := range events {
-		if err := decodeRunHistory(ctx, tx, events[i].raw, &events[i].data); err != nil {
-			return err
-		}
 	}
 	mergeClaim := sample.MergeClaim
 	writeMerge := func(to time.Time) error {

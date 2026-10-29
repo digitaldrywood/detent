@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -14,10 +15,112 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
+
+func TestAnalyticsMaintenanceArchivedClaims(t *testing.T) {
+	for _, storageContext := range []bool{false, true} {
+		t.Run(fmt.Sprintf("storage-context-%v", storageContext), func(t *testing.T) {
+			start := time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)
+			now := start.Add(time.Hour)
+			objects := &changeObjectFixture{}
+			f := newDefaultNativeFixture(t, Config{Content: objects.call, now: func() time.Time { return now }})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			d := f.service.database
+			d.reader.SetMaxOpenConns(1)
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			scope.credential.ID = defaultHubOperatorID
+			var issue tracker.NativeIssue
+			if err := f.service.hubTransact(t.Context(), func(tx *sql.Tx, _ time.Time) error {
+				var err error
+				issue, err = createNativeFixtureIssueTx(t.Context(), tx, scope, tracker.CreateIssue{Title: "archived claims", Body: nativeContractTestBody, State: "Todo"}, start)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			id := string(issue.WorkItemID)
+			prepared := &claimPreparation{}
+			for _, minute := range []int{20, 40} {
+				data := tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", At: start.Add(time.Duration(minute) * time.Minute)}}
+				prepared.decisions = append(prepared.decisions, preparedClaimDecision{scope: scope, item: id, data: data})
+			}
+			ctx := context.WithValue(f.service.runDetailContext(t.Context()), claimPreparationKey{}, prepared)
+			if err := prepareClaimDecisionPayloads(ctx, prepared); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
+				for _, event := range []struct {
+					kind   string
+					minute int
+					data   tracker.CollaborationData
+				}{
+					{"workflow.transitioned", 10, tracker.CollaborationData{FromState: "Todo", ToState: "Rework", ReasonDetail: "review findings"}},
+					{"scheduler.decision", 20, prepared.decisions[0].data},
+					{"workflow.transitioned", 30, tracker.CollaborationData{FromState: "Rework", ToState: "Merging"}},
+					{"scheduler.decision", 40, prepared.decisions[1].data},
+					{"workflow.transitioned", 50, tracker.CollaborationData{FromState: "Merging", ToState: "Done"}},
+				} {
+					if err := appendNativeHistory(ctx, tx, scope, id, event.kind, event.data, start.Add(time.Duration(event.minute)*time.Minute)); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var archived int
+			if err := d.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND type='scheduler.decision' AND payload_version=1", id).Scan(&archived); err != nil || archived != 2 {
+				t.Fatalf("archived claims=%d, want 2: %v", archived, err)
+			}
+			var reads, snapshotReads int
+			f.service.config.Content = func(context.Context, entryauthority.ContentRequest) ([]byte, error) {
+				reads++
+				if d.reader.Stats().InUse > 0 {
+					snapshotReads++
+				}
+				return nil, errors.New("object storage unavailable during maintenance")
+			}
+			maintenanceCtx := t.Context()
+			if storageContext {
+				maintenanceCtx = f.service.contentContext(maintenanceCtx)
+			}
+			for range 20 {
+				f.service.maintainAnalyticsRollups(maintenanceCtx, now, false)
+				var pending bool
+				if err := d.reader.QueryRowContext(t.Context(), "SELECT EXISTS(SELECT 1 FROM analytics_rollup_dirty) OR EXISTS(SELECT 1 FROM analytics_rollup_backfill)").Scan(&pending); err != nil {
+					t.Fatal(err)
+				}
+				if !pending {
+					break
+				}
+			}
+			if reads != 0 {
+				t.Errorf("maintenance read %d objects, %d while holding a database snapshot", reads, snapshotReads)
+			}
+			var complete bool
+			if err := d.reader.QueryRowContext(t.Context(), "SELECT sequence=6 AND failed=0 AND refresh_phase=-1 FROM analytics_rollup_positions WHERE work_item_id=?", id).Scan(&complete); err != nil || !complete {
+				t.Fatalf("analytics maintenance did not finish: complete=%v, error=%v", complete, err)
+			}
+			var raw string
+			if err := d.reader.QueryRowContext(t.Context(), "SELECT data_json FROM analytics_hourly_rollups WHERE metric='completion' AND sample_id=?", id).Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			var sample analyticsResidenceSample
+			if err := json.Unmarshal([]byte(raw), &sample); err != nil {
+				t.Fatal(err)
+			}
+			cause := sample.Causes["Todo\x00review findings"]
+			if sample.Partial || sample.State != "Done" || sample.Queue != 1200 || sample.Lanes["Rework"] != 1200 || sample.Lanes["Merging"] != 1200 || sample.MergeClaim == nil || !sample.MergeClaim.Equal(start.Add(40*time.Minute)) || cause.Count != 1 || cause.ReasonDetail != "review findings" {
+				t.Fatalf("maintenance lost residence facts: %+v", sample)
+			}
+		})
+	}
+}
 
 func TestCommitReadOnlyTransactionSkipsRefreshes(t *testing.T) {
 	f := newUsageHostedFixture(t)
