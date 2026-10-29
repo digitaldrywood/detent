@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/artifact"
 	"github.com/digitaldrywood/detent/internal/attachment"
 	"github.com/digitaldrywood/detent/internal/conversation"
 )
@@ -29,6 +30,7 @@ type conversationMessageFact struct {
 }
 
 type conversationDeltaFact struct {
+	Text      string `json:"text,omitempty"`
 	Revision  int64  `json:"message_revision"`
 	MessageID string `json:"message_id"`
 	Offset    int64  `json:"seq"`
@@ -80,20 +82,20 @@ func (s *conversationStore) resolveEventContent(ctx context.Context, query nativ
 			if fact.MessageID == "" || fact.Revision == 0 {
 				continue
 			}
-			message, err := scanConversationMessage(query.QueryRowContext(ctx, "SELECT "+conversationMessageColumns+" FROM conversation_messages WHERE conversation_id=? AND id=?", id, fact.MessageID))
+			message, err := scanConversationMessage(query.QueryRowContext(ctx, "SELECT "+conversationMessageReadColumns+" FROM conversation_messages WHERE conversation_id=? AND id=?", id, fact.MessageID))
 			if err != nil {
 				return fmt.Errorf("resolve event message: %w", err)
 			}
-			if fact.ContentID != "" {
+			if fact.ContentID != "" && message.Role != conversation.RoleAssistant {
 				message.ContentID = fact.ContentID
 			} else if message.Kind == conversation.MessageTool && message.Actor.Kind == conversation.ActorCoordinator {
-				var text, tool, item, status string
-				err := query.QueryRowContext(ctx, `SELECT text,tool,item_id,status FROM conversation_tool_revisions WHERE conversation_id=? AND message_id=? AND revision=?`, id, fact.MessageID, fact.Revision).Scan(&text, &tool, &item, &status)
+				var text, tool, item, status, contentID string
+				err := query.QueryRowContext(ctx, `SELECT text,tool,item_id,status,content_attachment_id FROM conversation_tool_revisions WHERE conversation_id=? AND message_id=? AND revision=?`, id, fact.MessageID, fact.Revision).Scan(&text, &tool, &item, &status, &contentID)
 				if err != nil && !errors.Is(err, sql.ErrNoRows) {
 					return fmt.Errorf("resolve inline tool revision: %w", err)
 				}
 				if err == nil {
-					message.Text, message.ContentID = text, ""
+					message.Text, message.ContentID = text, contentID
 					message.Data, err = json.Marshal(map[string]string{"tool": tool, "item_id": item, "status": status})
 					if err != nil {
 						return err
@@ -139,7 +141,18 @@ func (s *conversationStore) resolveEventContent(ctx context.Context, query nativ
 			if err := json.Unmarshal(event.Data, &fact); err != nil {
 				return err
 			}
-			message, err := scanConversationMessage(query.QueryRowContext(ctx, "SELECT "+conversationMessageColumns+" FROM conversation_messages WHERE conversation_id=? AND id=?", id, fact.MessageID))
+			if fact.Text != "" {
+				if len(fact.Text) != fact.Bytes {
+					return errors.New("event delta text length is invalid")
+				}
+				encoded, err := json.Marshal(conversationDeltaBody(fact.MessageID, fact.Offset, fact.Text))
+				if err != nil {
+					return err
+				}
+				event.Data = encoded
+				continue
+			}
+			message, err := scanConversationMessage(query.QueryRowContext(ctx, "SELECT "+conversationMessageReadColumns+" FROM conversation_messages WHERE conversation_id=? AND id=?", id, fact.MessageID))
 			if err != nil {
 				return err
 			}
@@ -159,7 +172,7 @@ func (s *conversationStore) resolveEventContent(ctx context.Context, query nativ
 			if fact.QuestionID == "" {
 				continue
 			}
-			question, err := scanConversationQuestion(query.QueryRowContext(ctx, "SELECT "+conversationQuestionColumns+" FROM conversation_questions WHERE conversation_id=? AND id=?", id, fact.QuestionID))
+			question, err := s.readQuestion(ctx, query, id, fact.QuestionID)
 			if err != nil {
 				return fmt.Errorf("resolve event question: %w", err)
 			}
@@ -178,4 +191,34 @@ func (s *conversationStore) resolveEventContent(ctx context.Context, query nativ
 		event.Data = encoded
 	}
 	return nil
+}
+
+func (s *conversationStore) eventStorage(ctx context.Context, tx *sql.Tx, id string, data []byte, now time.Time) (string, string, error) {
+	if s.contents == nil {
+		return "", "", errors.New("conversation content storage is unavailable")
+	}
+	var organization, project, uploader string
+	if err := tx.QueryRowContext(ctx, "SELECT organization_id,project_id,owner_principal_id FROM conversations WHERE id=?", id).Scan(&organization, &project, &uploader); err != nil {
+		return "", "", err
+	}
+	prepared, ok := ctx.Value(conversationContentsKey{}).(preparedConversationContents)
+	ref, found := prepared[organization+"/"+artifact.Digest(data)]
+	if !ok || !found {
+		return "", "", errors.New("conversation event was not published before the transaction")
+	}
+	if err := ref.Validate(organization); err != nil {
+		return "", "", err
+	}
+	if err := s.recordContentArchive(ctx, tx, organization, project, uploader, ref, now); err != nil {
+		return "", "", err
+	}
+	return "{}", contentArchiveID(organization, ref), nil
+}
+
+func (s *conversationStore) readEventStorage(ctx context.Context, q nativeQueryer, id, contentID string) ([]byte, error) {
+	var organization string
+	if err := q.QueryRowContext(ctx, "SELECT organization_id FROM conversations WHERE id=?", id).Scan(&organization); err != nil {
+		return nil, err
+	}
+	return s.readConversationArchive(ctx, q, organization, contentID)
 }

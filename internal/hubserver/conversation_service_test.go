@@ -219,7 +219,7 @@ func TestConversationServiceWakesPendingWorkAfterRestart(t *testing.T) {
 				delivery conversation.Delivery
 			}{{unlinked, conversation.DeliverySaved}, {linked, conversation.DeliveryQueued}, {idle, conversation.DeliveryCompleted}} {
 				message := conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: seed.record.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "hello", Data: json.RawMessage("{}"), Delivery: seed.delivery, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}, CreatedAt: now, UpdatedAt: now}
-				if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+				if err := f.appendMessage(t, t.Context(), tx, &message); err != nil {
 					t.Fatalf("appendMessage() error = %v", err)
 				}
 			}

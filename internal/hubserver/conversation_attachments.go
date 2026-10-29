@@ -42,6 +42,7 @@ const (
 // while the upload is unsent; ExpiresAt is set only then.
 type conversationAttachmentRecord struct {
 	ID             string
+	ContentID      string
 	ConversationID string
 	OrganizationID tracker.OrganizationID
 	ProjectID      tracker.ProjectID
@@ -91,7 +92,7 @@ func projectAttachments(records []conversationAttachmentRecord) []conversation.A
 // Store.
 
 const conversationAttachmentColumns = `a.id, a.conversation_id, c.organization_id, c.project_id, coalesce(a.message_id, ''), a.principal_id,
- a.name, a.mime, a.size, a.artifact_ref, a.created_at, a.expires_at, a.deleted_at`
+ a.name, a.mime, a.size, a.artifact_ref, a.created_at, a.expires_at, a.deleted_at, a.content_attachment_id`
 
 const conversationAttachmentFrom = ` FROM conversation_attachments a JOIN conversations c ON c.id = a.conversation_id WHERE `
 
@@ -100,7 +101,7 @@ func scanConversationAttachment(row conversationScanner) (conversationAttachment
 	var created string
 	var expires, deleted sql.NullString
 	if err := row.Scan(&record.ID, &record.ConversationID, &record.OrganizationID, &record.ProjectID, &record.MessageID,
-		&record.PrincipalID, &record.Name, &record.MIME, &record.Size, &record.ArtifactRef, &created, &expires, &deleted); err != nil {
+		&record.PrincipalID, &record.Name, &record.MIME, &record.Size, &record.ArtifactRef, &created, &expires, &deleted, &record.ContentID); err != nil {
 		return record, err
 	}
 	var err error
@@ -146,24 +147,29 @@ func (s *conversationStore) readAttachmentByRef(ctx context.Context, query nativ
 	return record, true, nil
 }
 
-// insertAttachment stores an upload and its bytes.
 func (s *conversationStore) insertAttachment(ctx context.Context, tx *sql.Tx, record conversationAttachmentRecord, content []byte) error {
-	if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_attachments
- (id, conversation_id, message_id, principal_id, name, mime, size, artifact_ref, created_at, expires_at, deleted_at)
- VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-		record.ID, record.ConversationID, record.PrincipalID, record.Name, record.MIME, record.Size,
-		record.ArtifactRef, conversationTime(record.CreatedAt), conversationNullTime(record.ExpiresAt)); err != nil {
-		return fmt.Errorf("insert attachment: %w", err)
+	contentID, err := s.preparedRecordStorage(ctx, tx, string(record.OrganizationID), string(record.ProjectID), record.PrincipalID, content, record.CreatedAt)
+	if err != nil {
+		return err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO conversation_attachment_blobs (artifact_ref, content) VALUES (?, ?)", record.ArtifactRef, content); err != nil {
-		return fmt.Errorf("insert attachment content: %w", err)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_attachments
+ (id, conversation_id, message_id, principal_id, name, mime, size, artifact_ref, created_at, expires_at, deleted_at, content_attachment_id,conversion_state)
+ VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, ?,2)`,
+		record.ID, record.ConversationID, record.PrincipalID, record.Name, record.MIME, record.Size,
+		record.ArtifactRef, conversationTime(record.CreatedAt), conversationNullTime(record.ExpiresAt), contentID); err != nil {
+		return fmt.Errorf("insert attachment: %w", err)
 	}
 	return nil
 }
 
-// readAttachmentContent returns the stored bytes. A missing blob for a live
-// row cannot happen: the two are written and deleted in one transaction.
 func (s *conversationStore) readAttachmentContent(ctx context.Context, query nativeQueryer, ref string) ([]byte, error) {
+	var organization, contentID string
+	if err := query.QueryRowContext(ctx, `SELECT c.organization_id,a.content_attachment_id FROM conversation_attachments a JOIN conversations c ON c.id=a.conversation_id WHERE a.artifact_ref=? AND a.deleted_at IS NULL`, ref).Scan(&organization, &contentID); err != nil {
+		return nil, err
+	}
+	if contentID != "" {
+		return s.readConversationArchive(ctx, query, organization, contentID)
+	}
 	var content []byte
 	if err := query.QueryRowContext(ctx, "SELECT content FROM conversation_attachment_blobs WHERE artifact_ref = ?", ref).Scan(&content); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -501,7 +507,18 @@ func (s *Service) deleteConversationAttachment(c echo.Context) error {
 
 func (s *Service) commandDeleteAttachment(ctx context.Context, scope nativeScope, conversationID, id string) (json.RawMessage, error) {
 	service := s.conversations
-	err := service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+	ctx = newConversationArchiveReads(ctx)
+	record, err := service.loadConversation(ctx, service.store.reader, scope, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	now, err := s.database.currentTime()
+	if err != nil {
+		return nil, err
+	}
+	plan := &conversationPublicationPlan{service: service, record: record, original: record, now: now}
+	ctx = plan.context(ctx)
+	err = service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 		record, err := service.loadConversation(ctx, tx, scope, conversationID)
 		if err != nil {
 			return err
@@ -544,6 +561,33 @@ func (s *Service) commandUploadAttachment(ctx context.Context, scope nativeScope
 		return nil, nativeInvalid(err.Error())
 	}
 	service := s.conversations
+	ctx = newConversationArchiveReads(ctx)
+	record, err := service.store.readConversation(ctx, service.store.reader, scope.organization, scope.project, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := service.authorizeWrite(ctx, service.store.reader, scope, record); err != nil {
+		return nil, err
+	}
+	existing, found, err := service.store.readAttachmentByRef(ctx, service.store.reader, conversationAttachmentRef(id, scope.credential.ID, upload.key))
+	if err != nil {
+		return nil, err
+	}
+	if found && existing.DeletedAt == nil {
+		if _, err := service.store.readAttachmentContent(ctx, service.store.reader, existing.ArtifactRef); err != nil {
+			return nil, err
+		}
+	}
+	ctx, err = service.store.preparePayload(ctx, string(scope.organization), upload.content)
+	if err != nil {
+		return nil, err
+	}
+	now, err := s.database.currentTime()
+	if err != nil {
+		return nil, err
+	}
+	plan := &conversationPublicationPlan{service: service, record: record, original: record, now: now}
+	ctx = plan.context(ctx)
 	var stored conversationAttachmentRecord
 	err = service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 		record, err := service.loadConversation(ctx, tx, scope, id)

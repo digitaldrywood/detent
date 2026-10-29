@@ -1001,6 +1001,21 @@ func openTestService(t *testing.T, cfg Config) *Service {
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
 	}
+	if cfg.Conversation != nil && cfg.Conversation.Enabled {
+		conversationConfig := *cfg.Conversation
+		cfg.Conversation = &conversationConfig
+		if cfg.Hosted != nil && cfg.Hosted.SharedEntry != nil {
+			hosted := *cfg.Hosted
+			shared := *hosted.SharedEntry
+			hosted.SharedEntry = &shared
+			cfg.Hosted = &hosted
+			if shared.ArchiveContents == nil && shared.Content == nil {
+				shared.ArchiveContents = &conversationContentFixture{}
+			}
+		} else if conversationConfig.ArchiveContents == nil && cfg.content == nil {
+			conversationConfig.ArchiveContents = &conversationContentFixture{}
+		}
+	}
 
 	started := time.Now()
 	defer func() { t.Logf("hub_fixture_open_seconds=%.6f", time.Since(started).Seconds()) }()

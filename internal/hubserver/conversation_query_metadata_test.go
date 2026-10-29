@@ -219,7 +219,7 @@ func TestConversationEventQueryMetadata(t *testing.T) {
 			}
 			tx := f.tx(t)
 			for _, body := range []any{base, changed, base} {
-				if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventConversationUpdated, body, at); err != nil {
+				if _, err := f.insertLegacyEvent(t, t.Context(), tx, record.ID, conversation.EventConversationUpdated, body, at); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -256,16 +256,16 @@ func TestConversationEventQueryMetadata(t *testing.T) {
 	record := f.create(t, f.record(f.owner, "event identity", at))
 	tx := f.tx(t)
 	delivered := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "answer", Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}, CreatedAt: at}
-	if err := f.store.appendMessage(t.Context(), tx, &delivered); err != nil {
+	if err := f.insertLegacyMessage(t, t.Context(), tx, &delivered); err != nil {
 		t.Fatal(err)
 	}
 	for _, body := range []map[string]string{{"message_id": delivered.ID}, {"message_id": "missing"}} {
-		if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventMessageDelta, body, at); err != nil {
+		if _, err := f.insertLegacyEvent(t, t.Context(), tx, record.ID, conversation.EventMessageDelta, body, at); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, body := range []map[string]string{{"id": "one"}, {"id": "two"}, {"id": "one"}} {
-		if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventMessageUpdated, body, at); err != nil {
+		if _, err := f.insertLegacyEvent(t, t.Context(), tx, record.ID, conversation.EventMessageUpdated, body, at); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -278,7 +278,7 @@ func TestConversationEventQueryMetadata(t *testing.T) {
 		{"attempt_id": "attempt", "status": "completed", "thread_id": "thread", "turn_id": "turn"},
 		{}, {},
 	} {
-		if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventExecutionUpdated, body, at); err != nil {
+		if _, err := f.insertLegacyEvent(t, t.Context(), tx, record.ID, conversation.EventExecutionUpdated, body, at); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -344,15 +344,26 @@ func TestConversationQueryMetadataBackfill(t *testing.T) {
 			id = second.ID
 		}
 		message := conversationMessageRecord{ConversationID: id, Role: conversation.RoleAssistant, Kind: conversation.MessageText, Text: "proposal", Data: json.RawMessage(`{"operator_action":{"action":{"id":"action","agent":"Example Agent"}},"operator_action_result":"action-result","tool":"search","item_id":"item","status":"completed"}`), Delivery: conversation.DeliveryCompleted, Actor: conversation.Actor{Kind: conversation.ActorCoordinator}, CreatedAt: now}
-		if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+		if err := f.insertLegacyMessage(t, t.Context(), tx, &message); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, record := range []conversationRecord{first, second} {
-		if _, _, err := f.store.reserveCommand(t.Context(), tx, record.ID, "key", conversation.CommandMessage, "hash", now); err != nil {
+		execution, err := json.Marshal(record.Execution)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.store.appendEvent(t.Context(), tx, record.ID, conversation.EventMessageUpdated, map[string]string{"role": "user", "kind": "continue", "attempt_id": "attempt"}, now); err != nil {
+		if _, err := tx.ExecContext(t.Context(), `UPDATE conversations SET content_attachment_id='',execution_json=? WHERE id=?`, string(execution), record.ID); err != nil {
+			t.Fatal(err)
+		}
+		receipt, err := json.Marshal(conversation.Receipt{Key: "key", Kind: conversation.CommandMessage, Status: conversation.DeliverySaved, UpdatedAt: now})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO conversation_commands(conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at) VALUES(?,'key',?,'hash',?,?,?)`, record.ID, conversation.CommandMessage, string(receipt), conversationTime(now), conversationTime(now)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.insertLegacyEvent(t, t.Context(), tx, record.ID, conversation.EventMessageUpdated, map[string]string{"role": "user", "kind": "continue", "attempt_id": "attempt"}, now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -495,11 +506,13 @@ func TestConversationExecutionQueryMetadata(t *testing.T) {
 		{conversation.ExecutionFailed, false, "", false, true},
 		{conversation.ExecutionUnknown, false, "lease-first", true, true},
 	}
+	legacyExecutions := map[string]string{}
 	wantLive, wantSettle, wantLease := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for i, c := range cases {
 		record := f.record(f.owner, fmt.Sprintf("execution %d", i), at)
 		record.Execution = conversation.Execution{Status: c.status, Settled: c.settled, Owner: conversation.Owner{LeaseID: c.lease}, UpdatedAt: at}
 		record = f.create(t, record)
+		legacyExecutions[record.ID] = mustMarshalConversationExecution(t, f.store, record.ID, nil)
 		if c.live {
 			wantLive[record.ID] = true
 		}
@@ -512,6 +525,11 @@ func TestConversationExecutionQueryMetadata(t *testing.T) {
 	}
 	for _, stage := range []string{"typed", "legacy", "backfilled"} {
 		if stage == "legacy" {
+			for id, raw := range legacyExecutions {
+				if _, err := f.store.db.ExecContext(t.Context(), "UPDATE conversations SET content_attachment_id='',execution_json=? WHERE id=?", raw, id); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversations SET query_metadata_version=0,execution_status=NULL,execution_lease_id=NULL,execution_settled=NULL`); err != nil {
 				t.Fatal(err)
 			}
@@ -570,7 +588,7 @@ func TestConversationLegacyToolRevision(t *testing.T) {
 				record := f.create(t, f.record(f.owner, fmt.Sprintf("%s %s tool %d", stage, actor, index), now))
 				message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleAssistant, Kind: conversation.MessageTool, Text: "original", Data: json.RawMessage(`{"tool":"search","item_id":"item","status":"running"}`), Delivery: conversation.DeliveryResponding, Actor: conversation.Actor{Kind: actor, PrincipalID: f.owner}, CreatedAt: now}
 				tx := f.tx(t)
-				if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+				if err := f.insertLegacyMessage(t, t.Context(), tx, &message); err != nil {
 					t.Fatal(err)
 				}
 				f.commit(t, tx)
@@ -588,7 +606,7 @@ func TestConversationLegacyToolRevision(t *testing.T) {
 						}
 					}
 				}
-				prepared, err := f.store.prepareLegacyToolRevisions(t.Context(), record.ID)
+				prepared, err := f.store.prepareLegacyToolRevision(t.Context(), record.ID, message.ID)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -596,12 +614,12 @@ func TestConversationLegacyToolRevision(t *testing.T) {
 				message.Data = json.RawMessage(`{"tool":"search","item_id":"item","status":"completed"}`)
 				message.Actor = conversation.Actor{Kind: conversation.ActorCoordinator}
 				tx = f.tx(t)
-				if err := f.store.updateMessage(prepared, tx, message); err != nil {
+				if err := f.updateMessage(t, prepared, tx, message); err != nil {
 					t.Fatal(err)
 				}
 				f.commit(t, tx)
-				var text, tool, item, status string
-				err = f.service.database.reader.QueryRowContext(t.Context(), `SELECT text,tool,item_id,status FROM conversation_tool_revisions WHERE conversation_id=? AND message_id=? AND revision=1`, record.ID, message.ID).Scan(&text, &tool, &item, &status)
+				var text, tool, item, status, contentID string
+				err = f.service.database.reader.QueryRowContext(t.Context(), `SELECT text,tool,item_id,status,content_attachment_id FROM conversation_tool_revisions WHERE conversation_id=? AND message_id=? AND revision=1`, record.ID, message.ID).Scan(&text, &tool, &item, &status, &contentID)
 				if actor != conversation.ActorCoordinator {
 					if !errors.Is(err, sql.ErrNoRows) {
 						t.Fatalf("%s preserved a non-coordinator revision: %v", stage, err)
@@ -611,6 +629,18 @@ func TestConversationLegacyToolRevision(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if text != "" || contentID == "" {
+					t.Fatalf("legacy tool remained inline: text=%q content=%q", text, contentID)
+				}
+				raw, readErr := f.store.readConversationArchive(t.Context(), f.store.reader, string(record.OrganizationID), contentID)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				var content conversationContent
+				if err := json.Unmarshal(raw, &content); err != nil {
+					t.Fatal(err)
+				}
+				text = content.Text
 				if !reflect.DeepEqual([]string{text, tool, item, status}, []string{"original", "search", "item", "running"}) {
 					t.Fatalf("%s lost revision: %q %q %q %q", stage, text, tool, item, status)
 				}
@@ -633,19 +663,24 @@ func TestConversationUnknownExecutionNeverCompactsLiveLease(t *testing.T) {
 	record.SettledAt = &at
 	record.CreatedAt, record.UpdatedAt = at, at
 	record.Execution = conversation.Execution{Status: conversation.ExecutionCompleted, Owner: conversation.Owner{LeaseID: string(f.lease.ID)}, UpdatedAt: at}
+	ctx := prepareTestConversationRecord(t, f.chat.store, record)
 	tx := f.tx(t)
-	if err := f.chat.store.createConversation(t.Context(), tx, &record); err != nil {
+	if err := f.chat.store.createConversation(ctx, tx, &record); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.chat.store.appendEvent(t.Context(), tx, record.ID, conversation.EventHeartbeat, map[string]string{}, at); err != nil {
+	if _, err := (conversationFixture{store: f.chat.store}).appendEvent(t, t.Context(), tx, record.ID, conversation.EventHeartbeat, map[string]string{}, at); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	executionRaw, err := json.Marshal(record.Execution)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, stage := range []string{"typed", "legacy", "backfilled"} {
 		if stage == "legacy" {
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversations SET query_metadata_version=0,execution_status=NULL,execution_lease_id=NULL,execution_settled=NULL WHERE id=?`, record.ID); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversations SET content_attachment_id='',execution_json=?,query_metadata_version=0,execution_status=NULL,execution_lease_id=NULL,execution_settled=NULL WHERE id=?`, string(executionRaw), record.ID); err != nil {
 				t.Fatal(err)
 			}
 		}

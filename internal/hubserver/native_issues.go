@@ -586,6 +586,9 @@ func nativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, projec
 	issue := tracker.NativeIssue{NativeReference: tracker.NativeReference{OrganizationID: scope.organization, ProjectID: scope.project, WorkItemID: tracker.NativeWorkItemID(newNativeID("wi")), Revision: 1, Profile: "native"},
 		Type: request.Type, ReportContext: request.ReportContext, Title: request.Title, Body: request.Body, State: request.State, Priority: request.Priority, Labels: request.Labels, Assignees: request.Assignees,
 		Actor: scope.actor(), Provenance: request.Provenance, CreatedAt: now, UpdatedAt: now, LastActivityAt: now, Dependencies: []tracker.NativeWorkItemID{}}
+	if allocation, ok := ctx.Value(conversationIssueAllocationKey{}).(conversationIssueAllocation); ok && allocation.organization == scope.organization && allocation.project == scope.project {
+		issue.WorkItemID = allocation.id
+	}
 	issue.IssueContract = &issuecontract.State{Exempt: workspaceLabelAllowed(ctx)}
 	if (machineIntake || scope.scheduledRepair != nil && scope.scheduledRepair.importURL != "") && issue.Provenance == nil {
 		applyScheduledRepairContract(ctx, tx, scope, &issue, now)
@@ -692,6 +695,9 @@ func createNativeIssueDraft(ctx context.Context, tx *sql.Tx, scope nativeScope, 
 	}
 	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(number), 0) + 1 FROM issues WHERE organization_id = ? AND project_id = ?", scope.organization, scope.project).Scan(&issue.Number); err != nil {
 		return tracker.NativeIssue{}, err
+	}
+	if allocation, ok := ctx.Value(conversationIssueAllocationKey{}).(conversationIssueAllocation); ok && allocation.organization == scope.organization && allocation.project == scope.project && allocation.number != issue.Number {
+		return tracker.NativeIssue{}, conversationStale("The project changed during content preparation")
 	}
 	labels, err := marshalNative(issue.Labels)
 	if err != nil {

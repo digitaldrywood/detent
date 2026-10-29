@@ -161,6 +161,15 @@ func newConversationService(server *Service, cfg ConversationConfig) *conversati
 	if server.config.Hosted != nil && server.config.Hosted.SharedEntry != nil {
 		service.store.contents = server.config.Hosted.SharedEntry.ArchiveContents
 	}
+	if service.store.contents == nil {
+		call := server.config.content
+		if call == nil && server.config.Hosted != nil && server.config.Hosted.SharedEntry != nil {
+			call = server.config.Hosted.SharedEntry.Content
+		}
+		if call != nil {
+			service.store.contents = conversationArchiveStore{call: call}
+		}
+	}
 	service.coordinator = newConversationCoordinator(service)
 	service.controls = newConversationControlRouter(service)
 	service.settle = make(chan struct{})
@@ -839,10 +848,21 @@ func projectMessage(record conversationMessageRecord) conversationMessageResourc
 // loadConversation reads a conversation for the request scope and applies
 // the read rule. Any failure is an API error.
 func (c *conversationService) loadConversation(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (conversationRecord, error) {
+	record, err := c.loadConversationRow(ctx, query, scope, id)
+	if err != nil {
+		return conversationRecord{}, err
+	}
+	if err := c.store.resolveConversationRecord(ctx, query, &record); err != nil {
+		return conversationRecord{}, translateConversationError(err)
+	}
+	return record, nil
+}
+
+func (c *conversationService) loadConversationRow(ctx context.Context, query nativeQueryer, scope nativeScope, id string) (conversationRecord, error) {
 	if err := conversation.ValidateConversationID(id); err != nil {
 		return conversationRecord{}, nativeNotFound()
 	}
-	record, err := c.store.readConversation(ctx, query, scope.organization, scope.project, id)
+	record, err := c.store.readConversationRow(ctx, query, scope.organization, scope.project, id)
 	if err != nil {
 		return conversationRecord{}, translateConversationError(err)
 	}
@@ -870,7 +890,12 @@ func (s *Service) registerConversationRoutes(e *echo.Echo) {
 // fills identifiers and timestamps that are empty.
 func (c *conversationService) appendMessage(ctx context.Context, tx *sql.Tx, record *conversationRecord, message *conversationMessageRecord, now time.Time) error {
 	if message.ID == "" {
-		message.ID = conversation.NewMessageID()
+		if plan, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan); ok && plan.messageCursor < len(plan.messageIDs) {
+			message.ID = plan.messageIDs[plan.messageCursor]
+			plan.messageCursor++
+		} else {
+			message.ID = conversation.NewMessageID()
+		}
 	}
 	message.ConversationID = record.ID
 	if message.CreatedAt.IsZero() {
@@ -1035,8 +1060,6 @@ func (c *conversationService) updateMessage(ctx context.Context, tx *sql.Tx, mes
 	return nil
 }
 
-// appendDelta records streamed assistant text. The message row keeps the
-// accumulated text so a snapshot is complete without replaying deltas.
 func (c *conversationService) appendDelta(ctx context.Context, tx *sql.Tx, message *conversationMessageRecord, text string, now time.Time) error {
 	if err := c.appendDeltaAt(ctx, tx, message.ConversationID, message.ID, int64(len(message.Text)), text, now); err != nil {
 		return err
@@ -1049,19 +1072,21 @@ func (c *conversationService) appendDelta(ctx context.Context, tx *sql.Tx, messa
 	return nil
 }
 
-// appendDeltaAt appends text to a stored message in place. offset is the
-// message's byte length before the append; the stored text is never read
-// back and rewritten, so a long streamed message costs only its new bytes.
 func (c *conversationService) appendDeltaAt(ctx context.Context, tx *sql.Tx, conversationID, messageID string, offset int64, text string, now time.Time) error {
-	var revision int64
-	err := tx.QueryRowContext(ctx, "UPDATE conversation_messages SET text = text || ?, updated_at = ?, revision=revision+1 WHERE id = ? AND conversation_id = ? RETURNING revision", text, conversationTime(now), messageID, conversationID).Scan(&revision)
+	if c.store.contents == nil {
+		return errors.New("conversation content storage is unavailable")
+	}
+	statement := "UPDATE conversation_messages SET text_bytes=COALESCE(text_bytes,length(CAST(text AS BLOB)))+?,updated_at=?,revision=revision+1 WHERE id=? AND conversation_id=? AND COALESCE(text_bytes,length(CAST(text AS BLOB)))=? RETURNING revision"
+	args := []any{len(text), conversationTime(now), messageID, conversationID, offset}
+	fact := conversationDeltaFact{Text: text, MessageID: messageID, Offset: offset, Bytes: len(text)}
+	err := tx.QueryRowContext(ctx, statement, args...).Scan(&fact.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nativeNotFound()
+		return conversationStale("Message text changed")
 	}
 	if err != nil {
 		return fmt.Errorf("append message delta: %w", err)
 	}
-	if _, err := c.store.appendEvent(ctx, tx, conversationID, conversation.EventMessageDelta, conversationDeltaFact{MessageID: messageID, Revision: revision, Offset: offset, Bytes: len(text)}, now); err != nil {
+	if _, err := c.store.appendEvent(ctx, tx, conversationID, conversation.EventMessageDelta, fact, now); err != nil {
 		return err
 	}
 	return nil
