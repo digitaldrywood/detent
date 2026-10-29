@@ -162,7 +162,7 @@ func newConversationService(server *Service, cfg ConversationConfig) *conversati
 		service.store.contents = server.config.Hosted.SharedEntry.ArchiveContents
 	}
 	if service.store.contents == nil {
-		call := server.config.content
+		call := server.config.Content
 		if call == nil && server.config.Hosted != nil && server.config.Hosted.SharedEntry != nil {
 			call = server.config.Hosted.SharedEntry.Content
 		}

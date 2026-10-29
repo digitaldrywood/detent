@@ -995,6 +995,12 @@ func TestBackupCancellationRemovesPartialDestination(t *testing.T) {
 
 func openTestService(t *testing.T, cfg Config) *Service {
 	t.Helper()
+	if cfg.Content == nil && (cfg.Hosted == nil || cfg.Hosted.SharedEntry == nil || cfg.Hosted.SharedEntry.Content == nil) {
+		cfg.Content = (&changeObjectFixture{}).call
+	}
+	if cfg.RunDetails == nil && (cfg.Hosted == nil || cfg.Hosted.SharedEntry == nil || cfg.Hosted.SharedEntry.RunDetails == nil) {
+		cfg.RunDetails = &memoryRunDetails{}
+	}
 	if cfg.RunnerReleaseClient == nil {
 		cfg.RunnerReleaseClient = &runnerReleaseFixture{}
 	}
@@ -1012,7 +1018,7 @@ func openTestService(t *testing.T, cfg Config) *Service {
 			if shared.ArchiveContents == nil && shared.Content == nil {
 				shared.ArchiveContents = &conversationContentFixture{}
 			}
-		} else if conversationConfig.ArchiveContents == nil && cfg.content == nil {
+		} else if conversationConfig.ArchiveContents == nil && cfg.Content == nil {
 			conversationConfig.ArchiveContents = &conversationContentFixture{}
 		}
 	}

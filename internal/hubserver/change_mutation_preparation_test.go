@@ -108,7 +108,7 @@ func TestChangeMutationsBoundWriterWork(t *testing.T) {
 	for _, files := range []int{1, 128} {
 		t.Run(fmt.Sprintf("files_%d", files), func(t *testing.T) {
 			objects := &changeObjectFixture{}
-			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), content: objects.call})
+			service := openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Content: objects.call})
 			f := newChangeFixture(t, service)
 			input := changeTestInput()
 			bundle := changeMutationSource(t, &input, files)
@@ -195,7 +195,7 @@ func TestQualityEscapePreparesHistoryOutsideWriter(t *testing.T) {
 	for _, scenario := range []string{"legacy inline", "legacy archive", "concurrent assessment", "changed landing", "human override"} {
 		t.Run(scenario, func(t *testing.T) {
 			objects := &changeObjectFixture{}
-			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), content: objects.call}))
+			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), Content: objects.call}))
 			version := f.publish(t, "initial", "")
 			now := f.service.config.now()
 			landing := tracker.ChangeLanding{VersionID: version.ID, MergeSHA: strings.Repeat("d", 40), LandedAt: now.Add(-time.Hour), Quality: &tracker.LandingQualitySnapshot{IssueBody: "Accept valid input", Criteria: []string{"Accept valid input"}}}

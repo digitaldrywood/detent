@@ -617,11 +617,11 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, issueID, err := readNativeIssue(t.Context(), tx, scope, string(issue.WorkItemID))
+	_, _, err = readNativeIssue(t.Context(), tx, scope, string(issue.WorkItemID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := recordNativeSchedulingOutcome(t.Context(), tx, &scope, issueID, tracker.NativeSchedulerDecision{Source: "native_provider_capacity", Outcome: "skipped", Reason: "Current provider requirement has no available reservation"}, clock); err != nil {
+	if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_provider_capacity", Outcome: "skipped", Reason: "Current provider requirement has no available reservation", At: clock, WorkItemRevision: issue.Revision}}, clock); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -658,7 +658,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	response = performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(issue.WorkItemID)+"/events", worker, start)
 	requireNativeStatus(t, response, http.StatusOK)
 	w := operatortool.AnalyticsWindow{From: now.Truncate(time.Hour).Add(-time.Hour), To: now.Truncate(time.Hour).Add(time.Hour), Bucket: time.Hour}
-	report, err := readNativeAnalytics(t.Context(), f.service.database.db, scope, operatortool.AnalyticsRequest{Limit: 1}, w)
+	report, err := readNativeAnalytics(f.service.runDetailContext(t.Context()), f.service.database.reader, scope, operatortool.AnalyticsRequest{Limit: 1}, w)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -687,6 +687,14 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	}
 	if len(receipt.Summary.Hourly) != 2 {
 		t.Fatalf("hourly receipt missing: %+v", receipt.Summary)
+	}
+	restoreLegacyCollaborationPayloads(t, f.service, scope)
+	legacyRunJSON, err := marshalNative(start.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=?,detail_attachment_id=NULL,report_projection_version=NULL WHERE id=?", legacyRunJSON, start.Data.AttemptID); err != nil {
+		t.Fatal(err)
 	}
 	for _, test := range []struct {
 		name                                       string
@@ -808,7 +816,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 	for range maxAnalyticsPopulation + 1 {
 
 		data := tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "recorded", Outcome: "skipped", Reason: "capacity", At: now}}
-		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", data, now); err != nil {
+		if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", data, now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -845,7 +853,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 			priorAt, claimedAt := now.Add(-4*time.Minute), now.Add(-time.Minute)
 			prior := tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: test.source, Outcome: "skipped", RunnerID: test.runner, WorkItemRevision: test.revision, At: priorAt}}
 			claim := tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", WorkItemRevision: 1, At: claimedAt}}
-			if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", prior, priorAt); err != nil {
+			if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", prior, priorAt); err != nil {
 				t.Fatal(err)
 			}
 			if test.interrupted {
@@ -853,7 +861,7 @@ func TestNativeAnalyticsRuntimePopulation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", claim, claimedAt); err != nil {
+			if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "scheduler.decision", claim, claimedAt); err != nil {
 				t.Fatal(err)
 			}
 			window := operatortool.AnalyticsWindow{From: now.Add(-2 * time.Minute), To: now, Bucket: time.Minute}

@@ -96,7 +96,7 @@ func TestNativeRuntimeReadHistoryCost(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := appendNativeHistory(t.Context(), decisionTx, scope, string(f.issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped", Reason: "recorded refusal", At: now}}, now); err != nil {
+				if err := appendLegacyNativeHistory(t.Context(), decisionTx, scope, string(f.issue.WorkItemID), "scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped", Reason: "recorded refusal", At: now}}, now); err != nil {
 					decisionTx.Rollback()
 					t.Fatal(err)
 				}
@@ -389,7 +389,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 					}
 				}
 			}
-			evidence, err := readNativeRuntime(t.Context(), f.service.database.db, scope, string(issue.WorkItemID), "", now)
+			evidence, err := readNativeRuntime(f.service.runDetailContext(t.Context()), f.service.database.db, scope, string(issue.WorkItemID), "", now)
 			if err != nil || slices.Contains(evidence.Unavailable, "capacity_projection_truncated") != truncated || evidence.CurrentLease == nil || evidence.CurrentLease.ID != lease.ID {
 				t.Fatalf("runtime truncation or fenced lease lost: unavailable=%v lease=%#v error=%v", evidence.Unavailable, evidence.CurrentLease, err)
 			}
@@ -500,7 +500,7 @@ func TestNativeRuntimeReadSharedCapacityCost(t *testing.T) {
 			t.Fatalf("expired reservation remains occupied: %#v", r)
 		}
 	}
-	evidence, err := readNativeRuntime(t.Context(), f.service.database.db, scope, string(issue.WorkItemID), "", now.Add(91*time.Second))
+	evidence, err := readNativeRuntime(f.service.runDetailContext(t.Context()), f.service.database.db, scope, string(issue.WorkItemID), "", now.Add(91*time.Second))
 	if err != nil || evidence.Scheduling.Outcome != "unknown" || !slices.Contains(evidence.Unavailable, "capacity_projection_truncated") {
 		t.Fatalf("truncated exclusions became a complete scheduling decision: %#v %v", evidence.Scheduling, err)
 	}

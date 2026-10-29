@@ -65,8 +65,8 @@ type storageArchiveRoot struct {
 }
 
 func (s *Service) storageArchiveContent() entryauthority.ContentHandler {
-	if s.config.content != nil {
-		return s.config.content
+	if s.config.Content != nil {
+		return s.config.Content
 	}
 	if s.config.Hosted != nil && s.config.Hosted.SharedEntry != nil {
 		return s.config.Hosted.SharedEntry.Content

@@ -149,7 +149,7 @@ func TestHealthProjectionBackfill(t *testing.T) {
 	if err := first.service.database.reader.QueryRowContext(t.Context(), `SELECT actor_kind,actor_principal_id,transition_from,transition_to,transition_reason,transition_detail,transition_revision,event_landed,event_landing_at,scheduler_outcome,scheduler_reason,scheduler_source,scheduler_runner_id FROM collaboration_events WHERE id='evt_health_projection_000'`).Scan(&actor, &principal, &from, &to, &reason, &detail, &revision, &landed, &at, &outcome, &refusal, &source, &runner); err != nil {
 		t.Fatal(err)
 	}
-	if actor != "runner" || principal != "runner_example" || from != "Backlog" || to != "Todo" || reason != "worker_progress" || detail != "permission_wait" || revision != 42 || !landed || at != formatHubTime(now.Add(-time.Minute)) || outcome != "skipped" || refusal != "runner_capacity_full" || source != "native_claim" || runner != "runner_example" {
+	if actor != "runner" || principal != "runner_example" || from != "Backlog" || to != "Todo" || reason != "worker_progress" || detail != "" || revision != 42 || !landed || at != formatHubTime(now.Add(-time.Minute)) || outcome != "skipped" || refusal != "runner_capacity_full" || source != "native_claim" || runner != "runner_example" {
 		t.Fatalf("incorrect event facts: %s %s %s %s %s %s %d %v %s %s %s %s %s", actor, principal, from, to, reason, detail, revision, landed, at, outcome, refusal, source, runner)
 	}
 	for _, query := range []string{

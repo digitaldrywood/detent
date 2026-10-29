@@ -249,7 +249,7 @@ func TestAnalyticsCommitPlans(t *testing.T) {
 		{"scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Source: "native_claim", Outcome: "claimed", At: now}}},
 		{"workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}},
 	} {
-		if err := appendNativeHistory(ctx, tx, scope, item, event.kind, event.data, now); err != nil {
+		if err := appendLegacyNativeHistory(ctx, tx, scope, item, event.kind, event.data, now); err != nil {
 			t.Fatal(err)
 		}
 	}

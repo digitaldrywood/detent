@@ -200,7 +200,7 @@ func TestIssueParticipantEmails(t *testing.T) {
 					}
 					defer tx.Rollback()
 					scope := nativeScope{organization: "org_security", project: f.project, sourceActor: &eventActor}
-					if err := appendNativeHistory(t.Context(), tx, scope, string(item.WorkItemID), kind, data, at); err != nil {
+					if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(item.WorkItemID), kind, data, at); err != nil {
 						t.Fatal(err)
 					}
 					if err := tx.Commit(); err != nil {

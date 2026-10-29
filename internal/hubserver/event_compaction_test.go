@@ -56,7 +56,7 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 			}
 			defer tx.Rollback()
 			for index := range 20 {
-				if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt_first", Sequence: int64(index + 1)}}, now); err != nil {
+				if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt_first", Sequence: int64(index + 1)}}, now); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -74,7 +74,7 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 						run.AttemptID = fmt.Sprintf("attempt_checkpoint_%d", duplicate)
 						data.Run = &run
 					}
-					if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), kind, data, now); err != nil {
+					if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), kind, data, now); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -87,10 +87,10 @@ func TestEventCompactionWorkHistory(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt_second", Finalization: &tracker.NativeFinalization{HeadSHA: strings.Repeat("a", 40)}}}, now); err != nil {
+			if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt_second", Finalization: &tracker.NativeFinalization{HeadSHA: strings.Repeat("a", 40)}}}, now); err != nil {
 				t.Fatal(err)
 			}
-			if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt_second"}}, now); err != nil {
+			if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt_second"}}, now); err != nil {
 				t.Fatal(err)
 			}
 			if test.archived {
@@ -366,9 +366,32 @@ func TestEventCompactionRollback(t *testing.T) {
 	if counts["run.started"] != 1 || counts["run.checkpointed"] != 2 || counts["run.observed"] != 2 || counts["run.finished"] != 1 {
 		t.Fatalf("rollback lost run events: %v", counts)
 	}
-	var spans int
-	if err := a.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND json_type(data_json,'$.run.runtime.activity.spans')='array'`, a.issue.WorkItemID).Scan(&spans); err != nil {
+	rows, err := a.service.database.reader.QueryContext(t.Context(), "SELECT "+collaborationPayloadColumn("")+" FROM collaboration_events WHERE work_item_id=? AND type IN ('run.started','run.checkpointed','run.observed','run.finished')", a.issue.WorkItemID)
+	if err != nil {
 		t.Fatal(err)
+	}
+	defer rows.Close()
+	var payloads []string
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		payloads = append(payloads, raw)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	var spans int
+	ctx := a.service.runDetailContext(t.Context())
+	for _, raw := range payloads {
+		var data tracker.CollaborationData
+		if err := decodeRunHistory(ctx, a.service.database.reader, raw, &data); err != nil {
+			t.Fatal(err)
+		}
+		if data.Run != nil && data.Run.Runtime != nil && data.Run.Runtime.Activity != nil && data.Run.Runtime.Activity.Spans != nil {
+			spans++
+		}
 	}
 	if spans != 6 {
 		t.Fatalf("rollback lost activity payloads: %d", spans)
@@ -505,7 +528,7 @@ func TestTerminalAttemptCompactionPreservesReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	objects := &changeObjectFixture{}
-	a.service.config.content = objects.call
+	a.service.config.Content = objects.call
 	ctx := changeOperatorContext(t, a.service, a.token, string(a.project.OrganizationID))
 	executor := hostedOperatorExecutor{service: a.service}
 	reads := func() map[string]string {
@@ -625,7 +648,7 @@ func TestEventCompactionPassIsBoundedAndYieldsToWrites(t *testing.T) {
 	defer tx.Rollback()
 	backlog := 2*eventCompactionBatch + 37
 	for range backlog {
-		if err := appendNativeHistory(t.Context(), tx, a.scope, string(a.issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: a.start.Data.AttemptID, Runtime: a.runtime("implementation")}}, a.service.config.now()); err != nil {
+		if err := appendLegacyNativeHistory(t.Context(), tx, a.scope, string(a.issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: a.start.Data.AttemptID, Runtime: a.runtime("implementation")}}, a.service.config.now()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -678,8 +701,12 @@ func TestEventCompactionPassIsBoundedAndYieldsToWrites(t *testing.T) {
 	if written.Load() == 0 {
 		t.Fatal("no request write completed while retention passes ran")
 	}
-	if want := []int64{eventCompactionBatch, eventCompactionBatch, int64(backlog) + 4 - 2*eventCompactionBatch, 0}; !slices.Equal(removed, want) {
+	if want := []int64{eventCompactionBatch, eventCompactionBatch, int64(backlog) - 2*eventCompactionBatch, 0}; !slices.Equal(removed, want) {
 		t.Fatalf("removed per pass=%v want %v", removed, want)
+	}
+	var referenced int
+	if err := a.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM collaboration_events WHERE work_item_id=? AND payload_version=1 AND payload_attachment_id<>''", a.issue.WorkItemID).Scan(&referenced); err != nil || referenced != 4 {
+		t.Fatalf("archive references=%d, want 4: %v", referenced, err)
 	}
 	if counts := a.runEvents(t); counts["run.observed"] != backlog+1 || counts["run.checkpointed"] != 1 {
 		t.Fatalf("history after backfill=%v", counts)

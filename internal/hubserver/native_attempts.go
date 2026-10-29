@@ -908,8 +908,6 @@ WHERE l.lease_id=? AND l.fencing_token=? AND e.kind='lease_released' ORDER BY e.
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return tracker.NativeTerminalFailure{}, fmt.Errorf("read attempt lease release reason: %w", err)
 	}
-	failure := tracker.NativeTerminalFailure{ErrorClass: "lease_released", Stage: "lease_release", ObservedAt: now.UTC(),
-		Error: "attempt lease was released before the attempt finished; release reason unavailable (lease expired, replaced or its runner was revoked)"}
 	if reason.Valid {
 		var payload struct {
 			Reason string `json:"reason"`
@@ -919,10 +917,56 @@ WHERE l.lease_id=? AND l.fencing_token=? AND e.kind='lease_released' ORDER BY e.
 		}
 		reason.String = payload.Reason
 	}
-	if reason.Valid && validExecutionName(reason.String) {
-		failure.Error = "attempt lease was released before the attempt finished; release reason: " + reason.String
+	return nativeLeaseReleaseFailure(reason.String, now), nil
+}
+
+func nativeLeaseReleaseFailure(reason string, now time.Time) tracker.NativeTerminalFailure {
+	failure := tracker.NativeTerminalFailure{ErrorClass: "lease_released", Stage: "lease_release", ObservedAt: now.UTC(),
+		Error: "attempt lease was released before the attempt finished; release reason unavailable (lease expired, replaced or its runner was revoked)"}
+	if validExecutionName(reason) {
+		failure.Error = "attempt lease was released before the attempt finished; release reason: " + reason
 	}
-	return failure.Public(), nil
+	return failure.Public()
+}
+
+func (s *Service) prepareNativeLeaseCancellation(ctx context.Context, scope nativeScope, lease tracker.LeaseID, fencing tracker.FencingToken) (context.Context, error) {
+	ctx = s.runDetailContext(ctx)
+	var raw string
+	err := s.database.reader.QueryRowContext(ctx, `SELECT data_json FROM native_attempts
+WHERE lease_id=? AND fencing_token=? AND organization_id=? AND project_id=? AND status IN ('running','interrupted')`, lease, fencing, scope.organization, scope.project).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ctx, nil
+	}
+	if err != nil {
+		return ctx, err
+	}
+	var data tracker.NativeRunData
+	if err := decodeRunDetail(ctx, s.database.reader, raw, &data); err != nil {
+		return ctx, err
+	}
+	owner, ok := ctx.Value(runDetailContextKey{}).(*runDetailContext)
+	if !ok {
+		return ctx, errRunDetailStoreUnavailable
+	}
+	if data.Identity == nil {
+		owner.cancellation = &nativeLeaseCancellation{source: raw}
+		return ctx, nil
+	}
+	now, err := s.database.currentTime()
+	if err != nil {
+		return ctx, err
+	}
+	data.Sequence++
+	data.Outcome, data.Handoff, data.ArtifactIDs = "cancelled", nil, nil
+	if data.TerminalFailure == nil {
+		failure := nativeLeaseReleaseFailure("cancelled", now)
+		data.TerminalFailure = &failure
+	}
+	if err := storeRunDetail(ctx, owner, string(scope.organization), map[string]tracker.NativeRunData{runDetailEntry(data): data}); err != nil {
+		return ctx, err
+	}
+	owner.cancellation = &nativeLeaseCancellation{source: raw, at: now}
+	return ctx, nil
 }
 
 func cancelNativeLeaseAttempt(ctx context.Context, tx *sql.Tx, scope nativeScope, lease leaseRecord, now time.Time) error {
@@ -938,12 +982,9 @@ WHERE a.lease_id = ? AND a.fencing_token = ? AND a.organization_id = ? AND a.pro
 	if err != nil {
 		return err
 	}
-	var stored storedRun
-	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-		return err
-	}
-	if owner, ok := ctx.Value(runDetailContextKey{}).(*runDetailContext); ok && stored.Detail != nil {
-		owner.reuse[stored.AttemptID] = stored.Detail
+	owner, ok := ctx.Value(runDetailContextKey{}).(*runDetailContext)
+	if !ok || owner.cancellation == nil || owner.cancellation.source != raw {
+		return nativeExecutionConflict("Attempt changed while cancellation detail was prepared")
 	}
 	var previous tracker.NativeRunData
 	if err := decodeRunDetail(ctx, tx, raw, &previous); err != nil {
@@ -957,7 +998,7 @@ WHERE a.lease_id = ? AND a.fencing_token = ? AND a.organization_id = ? AND a.pro
 		MachineID: previous.MachineID, SessionID: previous.SessionID, RunnerID: previous.RunnerID,
 		Sequence: previous.Sequence + 1, Outcome: "cancelled"}
 	event := tracker.NativeRunEvent{Type: "run.finished", SchemaVersion: 1, Data: data}
-	_, history, err := recordNativeAttempt(ctx, tx, scope, item, &event, now, true)
+	_, history, err := recordNativeAttempt(ctx, tx, scope, item, &event, owner.cancellation.at, true)
 	if err != nil || !history {
 		return err
 	}

@@ -14,7 +14,7 @@ import (
 )
 
 func readNativeBlockerHistory(ctx context.Context, q nativeQueryer, scope nativeScope, issue tracker.NativeIssue) ([]tracker.CollaborationEvent, error) {
-	rows, err := q.QueryContext(ctx, `SELECT sequence, type, actor_json, data_json, recorded_at, page_projection_ready, event_revision FROM collaboration_events
+	rows, err := q.QueryContext(ctx, `SELECT sequence, type, actor_json, CASE WHEN page_projection_ready IS NULL THEN data_json ELSE '{}' END, recorded_at, page_projection_ready, event_revision,from_state,to_state,reason,run_present,run_attempt_id,run_fencing_token FROM collaboration_events
 WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND (event_revision IS NOT NULL OR page_projection_ready IS NULL) ORDER BY sequence`, scope.organization, scope.project, issue.WorkItemID)
 	if err != nil {
 		return nil, err
@@ -24,27 +24,21 @@ WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND (event_rev
 	for rows.Next() {
 		event := tracker.CollaborationEvent{OrganizationID: scope.organization, ProjectID: scope.project, AggregateID: issue.WorkItemID}
 		var actor, data, at string
-		var ready, revision sql.NullInt64
-		if err := rows.Scan(&event.AggregateSequence, &event.Type, &actor, &data, &at, &ready, &revision); err != nil {
+		var ready, revision, run, fence sql.NullInt64
+		var from, to, reason, attempt sql.NullString
+		if err := rows.Scan(&event.AggregateSequence, &event.Type, &actor, &data, &at, &ready, &revision, &from, &to, &reason, &run, &attempt, &fence); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(actor), &event.Actor); err != nil {
 			return nil, err
 		}
-		if !ready.Valid {
-			var projected tracker.CollaborationData
-			if err := decodePageEvent(data, &projected); err != nil {
-				return nil, err
-			}
-			if projected.Revision == 0 {
-				continue
-			}
-		}
-		if err := decodeRunHistory(ctx, q, data, &event.Data); err != nil {
-			return nil, err
-		}
 		if ready.Valid && ready.Int64 == 1 {
-			event.Data.Revision = tracker.Revision(revision.Int64)
+			event.Data = tracker.CollaborationData{Revision: tracker.Revision(revision.Int64), FromState: from.String, ToState: to.String, Reason: reason.String}
+			if run.Int64 == 1 {
+				event.Data.Run = &tracker.NativeRunData{AttemptID: attempt.String, FencingToken: tracker.FencingToken(fence.Int64)}
+			}
+		} else if err := decodePageEvent(data, &event.Data); err != nil {
+			return nil, err
 		}
 		if event.Data.Revision == 0 {
 			continue

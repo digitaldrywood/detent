@@ -2,7 +2,6 @@ package hubserver
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"time"
 
@@ -52,15 +51,25 @@ ORDER BY c.recorded_at,c.id LIMIT ? OFFSET ?`
 		return err
 	}
 	defer rows.Close()
+	type interval struct{ claimRaw, claimAt, priorRaw, priorType, priorAt string }
+	var intervals []interval
 	for rows.Next() {
+		var sample interval
+		if err := rows.Scan(&sample.claimRaw, &sample.claimAt, &sample.priorRaw, &sample.priorType, &sample.priorAt); err != nil {
+			return err
+		}
+		intervals = append(intervals, sample)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, sample := range intervals {
 		if queue.ClaimsObserved == maxAnalyticsPopulation {
 			out.Partial = true
 			break
 		}
-		var claimRaw, claimAt, priorRaw, priorType, priorAt string
-		if err := rows.Scan(&claimRaw, &claimAt, &priorRaw, &priorType, &priorAt); err != nil {
-			return err
-		}
+		claimRaw, claimAt, priorRaw, priorType, priorAt := sample.claimRaw, sample.claimAt, sample.priorRaw, sample.priorType, sample.priorAt
 		queue.ClaimsObserved++
 		var claim, prior tracker.CollaborationData
 		finish, finishErr := parseTimeValue(claimAt)
@@ -68,7 +77,7 @@ ORDER BY c.recorded_at,c.id LIMIT ? OFFSET ?`
 		if finishErr == nil && finish.After(queue.SourceAt) {
 			queue.SourceAt = finish
 		}
-		if priorType != "scheduler.decision" || finishErr != nil || startErr != nil || json.Unmarshal([]byte(claimRaw), &claim) != nil || json.Unmarshal([]byte(priorRaw), &prior) != nil || !nativeAnalyticsCapacityInterval(prior.Decision, claim.Decision, start, finish) {
+		if priorType != "scheduler.decision" || finishErr != nil || startErr != nil || decodeRunHistory(ctx, q, claimRaw, &claim) != nil || decodeRunHistory(ctx, q, priorRaw, &prior) != nil || !nativeAnalyticsCapacityInterval(prior.Decision, claim.Decision, start, finish) {
 			queue.IntervalsUnavailable++
 			continue
 		}

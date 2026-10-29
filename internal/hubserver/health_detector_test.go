@@ -414,7 +414,7 @@ func appendTestHealthEventAs(t *testing.T, f nativeFixture, actor tracker.Actor,
 	}
 	defer tx.Rollback()
 	scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID, sourceActor: &actor}
-	if err := appendNativeHistory(t.Context(), tx, scope, string(item.WorkItemID), kind, data, at); err != nil {
+	if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(item.WorkItemID), kind, data, at); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -1006,7 +1006,7 @@ func TestHealthDetectorChangeContent(t *testing.T) {
 			cfg := Config{DatabasePath: filepath.Join(t.TempDir(), "health.db")}
 			if test.archived {
 				objects := &changeObjectFixture{}
-				cfg.content = objects.call
+				cfg.Content = objects.call
 			}
 			service := openTestService(t, cfg)
 			service.stopHealthDetector()

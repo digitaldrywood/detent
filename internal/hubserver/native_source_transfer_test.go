@@ -63,7 +63,7 @@ func TestNativeSourceTransfer(t *testing.T) {
 			f := newChangeFixture(t, openTestService(t, Config{DatabasePath: filepath.Join(t.TempDir(), "hub.db"), now: clock.Now}))
 			if test.name == "transfer and duplicate request" {
 				objects := &changeObjectFixture{}
-				f.service.config.content = objects.call
+				f.service.config.Content = objects.call
 			}
 			var diagnostics bytes.Buffer
 			f.service.config.Logger = slog.New(slog.NewTextHandler(&diagnostics, nil))

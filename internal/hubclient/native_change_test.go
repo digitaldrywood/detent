@@ -29,6 +29,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/explain"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver"
@@ -190,6 +191,29 @@ func newNativeChangeHubConfigured(t *testing.T, review string, states []tracker.
 		conversationConfig := *config.Conversation
 		conversationConfig.ArchiveContents = &conversationArchiveFixture{}
 		config.Conversation = &conversationConfig
+	}
+	if config.Content == nil && (config.Hosted == nil || config.Hosted.SharedEntry == nil || config.Hosted.SharedEntry.Content == nil) {
+		var contentMu sync.Mutex
+		contentObjects := make(map[string][]byte)
+		config.Content = func(ctx context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if err := request.Reference.Validate(request.Organization); err != nil {
+				return nil, err
+			}
+			contentMu.Lock()
+			defer contentMu.Unlock()
+			if request.Write {
+				contentObjects[request.Reference.Key] = bytes.Clone(request.Data)
+				return nil, nil
+			}
+			data, found := contentObjects[request.Reference.Key]
+			if !found {
+				return nil, errors.New("archive unavailable")
+			}
+			return bytes.Clone(data), nil
+		}
 	}
 	if len(repositoryBackend) > 0 {
 		config.ReconcileBackend = repositoryBackend[0]

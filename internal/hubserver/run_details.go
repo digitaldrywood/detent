@@ -1,6 +1,7 @@
 package hubserver
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/workpad"
 
@@ -27,7 +29,12 @@ type runDetailContext struct {
 	reference    *attachment.ArchiveReference
 	runs         map[string]tracker.NativeRunData
 	cache        map[string]map[string]tracker.NativeRunData
-	reuse        map[string]*runDetailReference
+	cancellation *nativeLeaseCancellation
+}
+
+type nativeLeaseCancellation struct {
+	source string
+	at     time.Time
 }
 
 type runDetailReference struct {
@@ -54,9 +61,24 @@ func (s *Service) runDetailStore() attachment.DetailStore {
 		return s.config.RunDetails
 	}
 	if s.config.Hosted != nil && s.config.Hosted.SharedEntry != nil {
-		return s.config.Hosted.SharedEntry.RunDetails
+		if store := s.config.Hosted.SharedEntry.RunDetails; store != nil {
+			return store
+		}
+	}
+	if s.storageArchiveContent() != nil {
+		return contentRunDetails{}
 	}
 	return nil
+}
+
+type contentRunDetails struct{}
+
+func (contentRunDetails) StoreDetail(ctx context.Context, organization string, data []byte) (attachment.ArchiveReference, error) {
+	return prepareChangeContent(ctx, organization, data)
+}
+
+func (contentRunDetails) ReadDetail(ctx context.Context, organization string, ref attachment.ArchiveReference) ([]byte, error) {
+	return readChangeContent(ctx, organization, ref)
 }
 
 func (s *Service) runDetailContext(ctx context.Context) context.Context {
@@ -72,7 +94,7 @@ func (s *Service) runDetailContext(ctx context.Context) context.Context {
 	if s.config.Hosted != nil {
 		organization = s.config.Hosted.OrganizationID
 	}
-	return context.WithValue(ctx, runDetailContextKey{}, &runDetailContext{store: owner, organization: organization, cache: make(map[string]map[string]tracker.NativeRunData), reuse: make(map[string]*runDetailReference)})
+	return context.WithValue(ctx, runDetailContextKey{}, &runDetailContext{store: owner, organization: organization, cache: make(map[string]map[string]tracker.NativeRunData)})
 }
 
 func (s *Service) runDetailMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -137,11 +159,11 @@ func decodeRunDetail(ctx context.Context, q nativeQueryer, raw string, result *t
 }
 
 func decodeRunHistory(ctx context.Context, q nativeQueryer, raw string, result *tracker.CollaborationData) error {
-	resolved, err := resolveStorageJSON(ctx, []byte(raw))
+	resolved, err := resolveCollaborationPayload(ctx, q, raw)
 	if err != nil {
 		return err
 	}
-	raw = string(resolved)
+	raw = resolved
 	if err := json.Unmarshal([]byte(raw), result); err != nil {
 		return err
 	}
@@ -224,14 +246,6 @@ func encodeRunDetail(ctx context.Context, data tracker.NativeRunData, history bo
 	if !ok {
 		return marshalNative(data)
 	}
-	if ref := owner.reuse[data.AttemptID]; ref != nil {
-		compact := compactRun(data)
-		if !history {
-			compact.Handoff = nil
-		}
-		compact.TerminalFailure = data.TerminalFailure
-		return marshalNative(storedRun{NativeRunData: compact, Detail: ref})
-	}
 	if owner.reference == nil {
 		return marshalNative(data)
 	}
@@ -253,7 +267,7 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 	ctx = s.runDetailContext(ctx)
 	owner, ok := ctx.Value(runDetailContextKey{}).(*runDetailContext)
 	if !ok {
-		return ctx, nil
+		return ctx, errRunDetailStoreUnavailable
 	}
 	var previous string
 	var stored storedRun
@@ -262,8 +276,8 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 		if err := json.Unmarshal([]byte(previous), &stored); err != nil {
 			return ctx, err
 		}
-		if stored.Detail == nil || explanationRead(ctx) {
-			return ctx, nil
+		if explanationRead(ctx) {
+			return ctx, errRunDetailStoreUnavailable
 		}
 		var run tracker.NativeRunData
 		if err := decodeRunDetail(ctx, s.database.reader, previous, &run); err != nil {
@@ -291,41 +305,47 @@ func (s *Service) prepareRunDetail(ctx context.Context, scope nativeScope, item 
 		if err != nil {
 			return ctx, err
 		}
-		if event.Data.Sequence <= 0 {
-			return ctx, nativeInvalid("Run detail requires an ordered execution")
-		}
-		update, err := prepareNativeAttempt(ctx, s.database.reader, scope, issue.WorkItemID, &event, now, termination, prior)
-		if err != nil {
-			return ctx, err
-		}
-		if update.duplicate {
-			continue
-		}
-		prior = &update
-		if termination && stored.Detail != nil {
-			owner.reuse[event.Data.AttemptID] = stored.Detail
-			continue
+		if event.Data.Sequence > 0 {
+			update, err := prepareNativeAttempt(ctx, s.database.reader, scope, issue.WorkItemID, &event, now, termination, prior)
+			if err != nil {
+				return ctx, err
+			}
+			if update.duplicate {
+				continue
+			}
+			prior = &update
 		}
 		runs[runDetailEntry(event.Data)] = event.Data
 	}
 	if len(runs) == 0 {
 		return ctx, nil
 	}
+	return ctx, storeRunDetail(ctx, owner, string(scope.organization), runs)
+}
+
+func storeRunDetail(ctx context.Context, owner *runDetailContext, organization string, runs map[string]tracker.NativeRunData) error {
 	raw, err := json.Marshal(runs)
 	if err != nil {
-		return ctx, err
+		return err
 	}
-	ref, err := owner.store.StoreDetail(ctx, string(scope.organization), raw)
+	ref, err := owner.store.StoreDetail(ctx, organization, raw)
 	if err != nil {
-		return ctx, fmt.Errorf("store run detail archive: %w", err)
+		return fmt.Errorf("store run detail archive: %w", err)
 	}
-	if ref.Validate(string(scope.organization)) != nil {
-		return ctx, fmt.Errorf("validate stored run detail reference: %w", artifact.ErrIntegrity)
+	if ref.Validate(organization) != nil {
+		return fmt.Errorf("validate stored run detail reference: %w", artifact.ErrIntegrity)
+	}
+	verified, err := owner.store.ReadDetail(ctx, organization, ref)
+	if err != nil {
+		return fmt.Errorf("verify stored run detail archive: %w", err)
+	}
+	if !bytes.Equal(raw, verified) {
+		return fmt.Errorf("verify stored run detail archive: %w", artifact.ErrIntegrity)
 	}
 	owner.reference, owner.runs = &ref, runs
-	owner.organization = string(scope.organization)
-	owner.cache[newRunDetailReference(ref, string(scope.organization), "").AttachmentID] = runs
-	return ctx, nil
+	owner.organization = organization
+	owner.cache[newRunDetailReference(ref, organization, "").AttachmentID] = runs
+	return nil
 }
 
 func recordRunDetailReference(ctx context.Context, tx *sql.Tx, scope nativeScope, item tracker.NativeWorkItemID, data tracker.NativeRunData, now string) error {
@@ -338,8 +358,6 @@ func recordRunDetailReference(ctx context.Context, tx *sql.Tx, scope nativeScope
 	if owner.reference != nil {
 		ref = *owner.reference
 		id = newRunDetailReference(ref, string(scope.organization), "").AttachmentID
-	} else if previous := owner.reuse[data.AttemptID]; previous != nil {
-		id = previous.AttachmentID
 	} else {
 		return nil
 	}
@@ -470,7 +488,9 @@ func readRunDetailSegment(ctx context.Context, q nativeQueryer, detail *runDetai
 	if err := ref.Validate(detail.Organization); err != nil {
 		return nil, fmt.Errorf("validate run detail attachment: %w", errors.Join(artifact.ErrIntegrity, err))
 	}
-	raw, err := owner.store.ReadDetail(ctx, detail.Organization, ref)
+	raw, err := readRuntimeObject(ctx, nativeRuntimeObjectKey{kind: "run_detail", organization: detail.Organization, reference: ref}, func() ([]byte, error) {
+		return owner.store.ReadDetail(ctx, detail.Organization, ref)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("read run detail archive: %w", err)
 	}

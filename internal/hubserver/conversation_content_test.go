@@ -388,6 +388,7 @@ func TestConversationObjectReadsReleaseDatabaseTransactions(t *testing.T) {
 	for _, endpoint := range []string{"snapshot", "messages"} {
 		t.Run(endpoint, func(t *testing.T) {
 			f := newStorageArchiveFixture(t)
+			f.service.outbox.stop()
 			objects := &conversationContentFixture{}
 			f.store.contents = objects
 			record := f.create(t, f.record(f.owner, "read transaction", f.now))
@@ -695,7 +696,7 @@ func TestConversationUsesExistingArchiveBackend(t *testing.T) {
 	}
 	objects := map[string][]byte{}
 	writes := 0
-	f.service.config.content = func(_ context.Context, request entryauthority.ContentRequest) ([]byte, error) {
+	f.service.config.Content = func(_ context.Context, request entryauthority.ContentRequest) ([]byte, error) {
 		if f.store.db.Stats().InUse != 0 {
 			return nil, errors.New("archive backend held the writer")
 		}

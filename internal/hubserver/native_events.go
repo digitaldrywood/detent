@@ -244,6 +244,11 @@ func (s *Service) recordNativeRunEvent(ctx context.Context, tx *sql.Tx, scope na
 		}
 	}
 	if publish {
+		if request.Data.Sequence == 0 {
+			if err := recordRunDetailReference(ctx, tx, scope, issue.WorkItemID, request.Data, formatHubTime(now)); err != nil {
+				return nil, err
+			}
+		}
 		if request.Type == "run.finished" && request.Data.Outcome == "succeeded" && request.Data.Sequence > 0 {
 			issue, err = recordNativeDependencyBlockers(ctx, tx, scope, issue, request.Data.Disposition, now)
 			if err != nil {

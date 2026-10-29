@@ -272,7 +272,7 @@ const versionPublicationPushSQL = `WITH checkpoint AS (
  AND push_change_id=? AND push_version_id=? AND push_head_sha=?
  ORDER BY sequence DESC LIMIT 1
 )
-SELECT e.data_json FROM checkpoint e
+SELECT CASE WHEN e.payload_version=0 THEN e.data_json ELSE '{}' END,e.payload_version,e.claim_attempt_id,e.push_effect_id,e.push_checkpoint_head_sha,e.push_change_id,e.push_version_id,e.push_head_sha FROM checkpoint e
 JOIN native_attempts a ON a.id=e.claim_attempt_id
  AND a.organization_id=? AND a.project_id=? AND a.work_item_id=?
  AND a.run_id=e.run_id AND a.lease_id=e.run_lease_id AND a.fencing_token=e.run_fencing_token
@@ -295,19 +295,27 @@ func resolveVersionPublicationPush(ctx context.Context, query nativeQueryer, sco
 		return tracker.ChangePublicationPush{}, false, nil
 	}
 	if !handled {
-		var raw string
-		err := query.QueryRowContext(ctx, versionPublicationPushSQL, scope.organization, scope.project, item, version.ChangeID, version.ID, version.HeadSHA, scope.organization, scope.project, item).Scan(&raw)
+		var raw, attempt string
+		var payloadVersion int
+		var checkpoint tracker.NativeCheckpoint
+		var reference tracker.NativeChangeReference
+		err := query.QueryRowContext(ctx, versionPublicationPushSQL, scope.organization, scope.project, item, version.ChangeID, version.ID, version.HeadSHA, scope.organization, scope.project, item).Scan(&raw, &payloadVersion, &attempt, &checkpoint.EffectID, &checkpoint.HeadSHA, &reference.ChangeID, &reference.VersionID, &reference.HeadSHA)
 		if errors.Is(err, sql.ErrNoRows) {
 			return tracker.ChangePublicationPush{}, false, nil
 		}
 		if err != nil {
 			return tracker.ChangePublicationPush{}, false, err
 		}
-		var data tracker.CollaborationData
-		if err := decodeRunHistory(ctx, query, raw, &data); err != nil {
-			return tracker.ChangePublicationPush{}, false, err
+		if payloadVersion == 1 {
+			checkpoint.Change = &reference
+			run = &tracker.NativeRunData{AttemptID: attempt, Handoff: &checkpoint}
+		} else {
+			var data tracker.CollaborationData
+			if err := decodeRunHistory(ctx, query, raw, &data); err != nil {
+				return tracker.ChangePublicationPush{}, false, err
+			}
+			run = data.Run
 		}
-		run = data.Run
 	}
 	if run == nil {
 		return tracker.ChangePublicationPush{}, false, nil

@@ -138,7 +138,7 @@ func refreshAnalyticsResidence(ctx context.Context, tx projectionQuery, scope na
 			return err
 		}
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT sequence,type,recorded_at,data_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? AND sequence<=? AND (type='workflow.transitioned' OR (type='scheduler.decision' AND scheduler_source='native_claim' AND scheduler_outcome='claimed')) ORDER BY sequence`, scope.organization, scope.project, id, max(sample.Sequence, after), projectionUpper(before))
+	rows, err := tx.QueryContext(ctx, `SELECT sequence,type,recorded_at,`+collaborationPayloadColumn("")+` FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND sequence>? AND sequence<=? AND (type='workflow.transitioned' OR (type='scheduler.decision' AND scheduler_source='native_claim' AND scheduler_outcome='claimed')) ORDER BY sequence`, scope.organization, scope.project, id, max(sample.Sequence, after), projectionUpper(before))
 	if err != nil {
 		return err
 	}
@@ -158,8 +158,10 @@ func refreshAnalyticsResidence(ctx context.Context, tx projectionQuery, scope na
 		if err != nil {
 			return err
 		}
-		if err := json.Unmarshal([]byte(raw), &e.data); err != nil {
-			return err
+		if e.kind == "workflow.transitioned" {
+			if err := json.Unmarshal([]byte(raw), &e.data); err != nil {
+				return err
+			}
 		}
 		events = append(events, e)
 	}
@@ -947,7 +949,7 @@ ORDER BY i.native_id`, scope.organization, scope.project, batch)
 		if len(issues) == first {
 			return nil
 		}
-		events, err := q.QueryContext(ctx, `SELECT work_item_id,type,recorded_at,data_json FROM collaboration_events
+		events, err := q.QueryContext(ctx, `SELECT work_item_id,type,recorded_at,`+collaborationPayloadColumn("")+` FROM collaboration_events
 WHERE organization_id=? AND project_id=? AND julianday(recorded_at)<julianday(?)
 AND work_item_id IN (SELECT value FROM json_each(?))
 AND (type='workflow.transitioned' OR (type='scheduler.decision' AND (scheduler_outcome IS NULL OR (scheduler_source='native_claim' AND scheduler_outcome='claimed'))))
@@ -956,17 +958,28 @@ ORDER BY work_item_id,sequence`, scope.organization, scope.project, formatHubTim
 			return fmt.Errorf("read shipped transitions: %w", err)
 		}
 		defer events.Close()
+		type record struct {
+			id, at, raw string
+			event       analyticsResidenceEvent
+		}
+		var records []record
 		for events.Next() {
-			var id, at, raw string
-			var event analyticsResidenceEvent
-			if err := events.Scan(&id, &event.kind, &at, &raw); err != nil {
+			var r record
+			if err := events.Scan(&r.id, &r.event.kind, &r.at, &r.raw); err != nil {
 				return fmt.Errorf("read shipped transitions: %w", err)
 			}
-			if event.at, err = parseTimeValue(at); err != nil {
-				return fmt.Errorf("decode shipped transition time: %w", err)
+			records = append(records, r)
+		}
+		if err := errors.Join(events.Err(), events.Close()); err != nil {
+			return err
+		}
+		for _, r := range records {
+			id, event := r.id, r.event
+			if event.at, err = parseTimeValue(r.at); err != nil {
+				return err
 			}
-			if err := json.Unmarshal([]byte(raw), &event.data); err != nil {
-				return fmt.Errorf("decode shipped transition: %w", err)
+			if err := decodeRunHistory(ctx, q, r.raw, &event.data); err != nil {
+				return err
 			}
 			if event.kind == "scheduler.decision" && (event.data.Decision == nil || event.data.Decision.Source != "native_claim" || event.data.Decision.Outcome != "claimed") {
 				continue

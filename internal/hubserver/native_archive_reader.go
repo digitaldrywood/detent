@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/attachment"
+	"github.com/digitaldrywood/detent/internal/entryauthority"
 	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
@@ -155,7 +156,14 @@ AND (?=0 OR n.first_sequence<=?) ORDER BY n.first_sequence DESC LIMIT 1`, scope.
 	unrestricted := scope.credential.Scope == apiScopeAdmin && !scope.credential.NativeOnly && scope.credential.Hosted == nil
 	unrestricted = unrestricted || scope.credential.Hosted != nil && scope.credential.EntryKey == nil && scope.credential.HostedKeyScope == "" && (scope.credential.HostedRole == "owner" || scope.credential.HostedRole == "admin")
 	presign := r.presign && unrestricted
-	response, err := reader(ctx, ref, presign)
+	response, err := readRuntimeObject(ctx, nativeRuntimeObjectKey{kind: "archive", organization: string(scope.organization), reference: ref, presign: presign}, func() (entryauthority.ArchiveResponse, error) {
+		return reader(ctx, ref, presign)
+	})
+	var hydration *nativeRuntimeHydration
+	if errors.As(err, &hydration) {
+		r.descriptor = nil
+		return attachment.ArchiveSection{}, false, err
+	}
 	if err != nil {
 		return fail("unavailable")
 	}
@@ -355,9 +363,9 @@ func newNativeArchiveQuery(ctx context.Context, query nativeQueryer, section *at
 			if len(row) != len(table.Columns) {
 				return nil, attachment.ErrInvalid
 			}
-			for _, index := range indexes {
+			for i, index := range indexes {
 				if index < 0 {
-					flat = append(flat, json.RawMessage("null"))
+					flat = append(flat, archiveProjectionDefault(table.Name, columns[i]))
 				} else {
 					flat = append(flat, row[index])
 				}
@@ -499,14 +507,28 @@ func archiveConversationQuery(ctx context.Context, query nativeQueryer, id strin
 }
 
 func archiveProjectionColumn(table, column string) bool {
+	return archiveProjectionDefault(table, column) != nil
+}
+
+func archiveProjectionDefault(table, column string) json.RawMessage {
 	switch table {
 	case "conversation_events":
-		return slices.Contains([]string{"content_attachment_id", "delta_offset", "delta_bytes", "message_revision"}, column)
+		if slices.Contains([]string{"content_attachment_id", "delta_offset", "delta_bytes", "message_revision"}, column) {
+			return json.RawMessage("null")
+		}
 	case "conversation_messages":
-		return slices.Contains([]string{"actor_principal_id", "text_bytes", "stored_text_bytes"}, column)
+		if slices.Contains([]string{"actor_principal_id", "text_bytes", "stored_text_bytes"}, column) {
+			return json.RawMessage("null")
+		}
 	case "collaboration_events":
-		return slices.Contains([]string{"archive_operation", "archive_from_state", "archive_to_state", "archive_attempt_id", "archive_outcome", "archive_landed_commit"}, column)
-	default:
-		return false
+		switch column {
+		case "archive_operation", "archive_from_state", "archive_to_state", "archive_attempt_id", "archive_outcome", "archive_landed_commit":
+			return json.RawMessage("null")
+		case "payload_version", "payload_bytes", "payload_content_bytes", "scheduler_change_present":
+			return json.RawMessage("0")
+		case "payload_attachment_id", "payload_entry", "payload_object_key", "payload_sha256", "scheduler_change_id", "scheduler_version_id", "scheduler_head_sha", "run_outcome", "run_machine_id", "run_session_id", "run_runner_id", "push_effect_id", "push_checkpoint_head_sha":
+			return json.RawMessage(`""`)
+		}
 	}
+	return nil
 }

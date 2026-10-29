@@ -20,7 +20,7 @@ type analyticsCapacitySample struct {
 }
 
 func refreshAnalyticsClaims(ctx context.Context, tx projectionQuery, scope nativeScope, id string, through int64, before ...int64) error {
-	rows, err := tx.QueryContext(ctx, `SELECT e.id,e.data_json,e.recorded_at,coalesce(p.data_json,'null'),coalesce(p.type,''),coalesce(p.recorded_at,'') FROM collaboration_events e LEFT JOIN collaboration_events p ON p.organization_id=e.organization_id AND p.project_id=e.project_id AND p.work_item_id=e.work_item_id AND p.sequence=e.sequence-1 WHERE e.organization_id=? AND e.project_id=? AND e.work_item_id=? AND e.sequence>? AND e.sequence<=? AND e.type='scheduler.decision' AND e.scheduler_source='native_claim' AND e.scheduler_outcome='claimed'`, scope.organization, scope.project, id, through, projectionUpper(before))
+	rows, err := tx.QueryContext(ctx, `SELECT e.id,CASE WHEN e.scheduler_present IS NULL THEN e.data_json ELSE 'null' END,e.recorded_at,CASE WHEN p.scheduler_present IS NULL THEN coalesce(p.data_json,'null') ELSE 'null' END,coalesce(p.type,''),coalesce(p.recorded_at,''),coalesce(e.scheduler_source,''),coalesce(e.scheduler_outcome,''),coalesce(e.scheduler_runner_id,''),coalesce(e.scheduler_at,''),coalesce(e.scheduler_revision,0),coalesce(p.scheduler_source,''),coalesce(p.scheduler_outcome,''),coalesce(p.scheduler_runner_id,''),coalesce(p.scheduler_at,''),coalesce(p.scheduler_revision,0) FROM collaboration_events e LEFT JOIN collaboration_events p ON p.organization_id=e.organization_id AND p.project_id=e.project_id AND p.work_item_id=e.work_item_id AND p.sequence=e.sequence-1 WHERE e.organization_id=? AND e.project_id=? AND e.work_item_id=? AND e.sequence>? AND e.sequence<=? AND e.type='scheduler.decision' AND e.scheduler_source='native_claim' AND e.scheduler_outcome='claimed'`, scope.organization, scope.project, id, through, projectionUpper(before))
 	if err != nil {
 		return err
 	}
@@ -29,7 +29,9 @@ func refreshAnalyticsClaims(ctx context.Context, tx projectionQuery, scope nativ
 	for rows.Next() {
 		var sample analyticsCapacitySample
 		var raw, at, priorRaw, priorType, priorAt string
-		if err := rows.Scan(&sample.ID, &raw, &at, &priorRaw, &priorType, &priorAt); err != nil {
+		var claimDecision, priorDecision tracker.NativeSchedulerDecision
+		var claimDecisionAt, priorDecisionAt string
+		if err := rows.Scan(&sample.ID, &raw, &at, &priorRaw, &priorType, &priorAt, &claimDecision.Source, &claimDecision.Outcome, &claimDecision.RunnerID, &claimDecisionAt, &claimDecision.WorkItemRevision, &priorDecision.Source, &priorDecision.Outcome, &priorDecision.RunnerID, &priorDecisionAt, &priorDecision.WorkItemRevision); err != nil {
 			return err
 		}
 		sample.At, err = parseTimeValue(at)
@@ -39,7 +41,18 @@ func refreshAnalyticsClaims(ctx context.Context, tx projectionQuery, scope nativ
 		sample.AtNS = sample.At.UnixNano()
 		sample.Start, err = parseTimeValue(priorAt)
 		var claim, prior tracker.CollaborationData
-		sample.Valid = priorType == "scheduler.decision" && err == nil && json.Unmarshal([]byte(raw), &claim) == nil && json.Unmarshal([]byte(priorRaw), &prior) == nil && nativeAnalyticsCapacityInterval(prior.Decision, claim.Decision, sample.Start, sample.At)
+		claimTime, claimErr := parseTimeValue(claimDecisionAt)
+		priorTime, priorErr := parseTimeValue(priorDecisionAt)
+		claimDecision.At, priorDecision.At = claimTime, priorTime
+		claim.Decision, prior.Decision = &claimDecision, &priorDecision
+		claimValid, priorValid := claimErr == nil, priorErr == nil
+		if raw != "null" {
+			claimValid = json.Unmarshal([]byte(raw), &claim) == nil
+		}
+		if priorRaw != "null" {
+			priorValid = json.Unmarshal([]byte(priorRaw), &prior) == nil
+		}
+		sample.Valid = priorType == "scheduler.decision" && err == nil && claimValid && priorValid && nativeAnalyticsCapacityInterval(prior.Decision, claim.Decision, sample.Start, sample.At)
 		sample.StartNS = sample.Start.UnixNano()
 		if sample.Valid {
 			sample.SecondsNS = sample.At.Sub(sample.Start).Nanoseconds()

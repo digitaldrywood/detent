@@ -280,7 +280,7 @@ func TestAnalyticsEventProjectionUnknown(t *testing.T) {
 			{"scheduler.decision", tracker.CollaborationData{Decision: &tracker.NativeSchedulerDecision{Outcome: "skipped", Source: "native_claim", Reason: refusal, RunnerID: "runner"}}},
 			{"run.started", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt-" + string(issue.WorkItemID)}}},
 		} {
-			if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), event.kind, event.data, now); err != nil {
+			if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), event.kind, event.data, now); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -313,6 +313,7 @@ func TestAnalyticsEventProjectionUnknown(t *testing.T) {
 			}
 		}
 		verifyReports("native_claim", refusal)
+		restoreLegacyCollaborationPayloads(t, f.service, scope)
 		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE collaboration_events SET scheduler_source='typed-source',scheduler_reason='typed-reason' WHERE organization_id=? AND project_id=? AND type='scheduler.decision'`, scope.organization, scope.project); err != nil {
 			t.Fatal(err)
 		}

@@ -47,7 +47,7 @@ var (
 type Config struct {
 	dashboardDelivery              *dashboardDeliveryConfig
 	ArchiveReader                  entryauthority.ArchiveReader
-	content                        entryauthority.ContentHandler
+	Content                        entryauthority.ContentHandler
 	RunDetails                     attachment.DetailStore
 	Icons                          attachment.IconStore
 	RunnerReleaseClient            update.ReleaseClient

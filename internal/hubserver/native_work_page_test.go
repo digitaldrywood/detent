@@ -75,6 +75,7 @@ func TestNativeWorkListLegacyTerminalHistory(t *testing.T) {
 			before := unknown()
 			switch stage {
 			case "recovered without archive storage":
+				f.service.config.Content = nil
 				if f.service.storageArchiveContent() != nil {
 					t.Fatal("fixture unexpectedly has archive storage")
 				}

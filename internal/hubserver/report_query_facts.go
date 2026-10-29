@@ -81,7 +81,7 @@ func readLegacyReportFact(ctx context.Context, q nativeQueryer, scope nativeScop
 		query = "SELECT id,organization_id,project_id,work_item_id,lease_id,status,started_at,updated_at,data_json FROM main.native_attempts WHERE report_projection_version IS NULL"
 	case "report_events":
 		f.columns = "id,organization_id,project_id,work_item_id,sequence,type,recorded_at,data_json,scheduler_outcome,scheduler_source,scheduler_reason,analytics_from_state,analytics_to_state,from_state,to_state,analytics_projection_version"
-		f.known = "SELECT id,organization_id,project_id,work_item_id,sequence,type,recorded_at,data_json,scheduler_outcome,scheduler_source,scheduler_reason,analytics_from_state,analytics_to_state,analytics_from_state,analytics_to_state,analytics_projection_version FROM main.collaboration_events WHERE analytics_projection_version=1"
+		f.known = "SELECT id,organization_id,project_id,work_item_id,sequence,type,recorded_at," + collaborationPayloadColumn("") + ",scheduler_outcome,scheduler_source,scheduler_reason,analytics_from_state,analytics_to_state,analytics_from_state,analytics_to_state,analytics_projection_version FROM main.collaboration_events WHERE analytics_projection_version=1"
 		query = "SELECT id,organization_id,project_id,work_item_id,sequence,type,recorded_at,data_json FROM main.collaboration_events WHERE analytics_projection_version IS NULL"
 	}
 	args := []any{scope.organization}

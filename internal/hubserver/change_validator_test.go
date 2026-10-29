@@ -271,7 +271,7 @@ func TestChangeValidatorSessionAuthority(t *testing.T) {
 			var objects *changeObjectFixture
 			if strings.HasPrefix(test.name, "object-backed") {
 				objects = &changeObjectFixture{}
-				f.service.config.content = objects.call
+				f.service.config.Content = objects.call
 			}
 			descriptor := hubTestPolicy()
 			if test.name == "missing session" {

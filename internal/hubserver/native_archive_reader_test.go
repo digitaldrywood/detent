@@ -347,6 +347,47 @@ func TestArchiveQueryScopesLiveFallback(t *testing.T) {
 	f := newNativeFixture(t, nil, "", "archive-query-scope")
 	item := f.create(t, "Selected issue")
 	f.create(t, "Unrelated issue")
+	t.Run("history before payload reference migration", func(t *testing.T) {
+		original := archiveTestTable(t, f.service, "collaboration_events", "work_item_id=?", item.WorkItemID)
+		added := []string{"payload_version", "payload_attachment_id", "payload_entry", "payload_object_key", "payload_sha256", "payload_bytes", "payload_content_bytes", "scheduler_change_id", "scheduler_version_id", "scheduler_head_sha", "scheduler_change_present", "run_outcome", "run_machine_id", "run_session_id", "run_runner_id", "push_effect_id", "push_checkpoint_head_sha"}
+		legacy := attachment.ArchiveTable{Name: original.Name}
+		for _, column := range original.Columns {
+			if !slices.Contains(added, column) {
+				legacy.Columns = append(legacy.Columns, column)
+			}
+		}
+		for _, row := range original.Rows {
+			var cells []json.RawMessage
+			for i, column := range original.Columns {
+				if !slices.Contains(added, column) {
+					cells = append(cells, row[i])
+				}
+			}
+			legacy.Rows = append(legacy.Rows, cells)
+		}
+		section := &attachment.ArchiveSection{OrganizationID: string(f.project.OrganizationID), ProjectID: string(f.project.ID), WorkItemID: string(item.WorkItemID), SectionID: "legacy-history", Tables: []attachment.ArchiveTable{legacy}}
+		query, err := newNativeArchiveQuery(t.Context(), f.service.database.reader, section, string(item.WorkItemID), 1, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var version int
+		var raw, key, outcome string
+		if err := query.QueryRowContext(t.Context(), "SELECT payload_version,"+collaborationPayloadColumn("")+",payload_object_key,run_outcome FROM collaboration_events WHERE work_item_id=? ORDER BY sequence LIMIT 1", item.WorkItemID).Scan(&version, &raw, &key, &outcome); err != nil {
+			t.Fatal(err)
+		}
+		var got tracker.CollaborationData
+		if err := decodeRunHistory(t.Context(), query, raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		var expected string
+		if err := json.Unmarshal(original.Rows[0][slices.Index(original.Columns, "data_json")], &expected); err != nil {
+			t.Fatal(err)
+		}
+		encoded, err := marshalNative(got)
+		if err != nil || encoded != expected || version != 0 || key != "" || outcome != "" {
+			t.Fatalf("legacy history changed: version=%d key=%q outcome=%q payload=%s error=%v", version, key, outcome, encoded, err)
+		}
+	})
 	t.Run("historical schema keeps scalar values", func(t *testing.T) {
 		original := archiveTestTable(t, f.service, "collaboration_events", "work_item_id=?", item.WorkItemID)
 		legacy := attachment.ArchiveTable{Name: original.Name}

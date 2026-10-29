@@ -253,7 +253,7 @@ func TestNativeRetention(t *testing.T) {
 		}
 		defer tx.Rollback()
 		scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
-		if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt"}}, now); err != nil {
+		if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.observed", tracker.CollaborationData{Run: &tracker.NativeRunData{AttemptID: "attempt"}}, now); err != nil {
 			t.Fatal(err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -696,7 +696,7 @@ func TestNativeStorageArchiveRetention(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 			objects := map[string][]byte{}
-			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, content: func(_ context.Context, r entryauthority.ContentRequest) ([]byte, error) {
+			f := newDefaultNativeFixture(t, Config{now: func() time.Time { return now }, Content: func(_ context.Context, r entryauthority.ContentRequest) ([]byte, error) {
 				if r.Write {
 					objects[r.Reference.Key] = slices.Clone(r.Data)
 					return nil, nil
@@ -783,7 +783,7 @@ func TestBackgroundStorageCancellationProgress(t *testing.T) {
 					f.transition(t, string(issue.WorkItemID), "Done", f.now.Add(-73*time.Hour))
 				} else {
 					tx := f.tx(t)
-					if err := appendNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("output", 2048)}}, f.now); err != nil {
+					if err := appendLegacyNativeHistory(t.Context(), tx, scope, string(issue.WorkItemID), "run.finished", tracker.CollaborationData{Run: &tracker.NativeRunData{CompletionBody: strings.Repeat("output", 2048)}}, f.now); err != nil {
 						t.Fatal(err)
 					}
 					f.commit(t, tx)
@@ -791,7 +791,7 @@ func TestBackgroundStorageCancellationProgress(t *testing.T) {
 			}
 			count := func() int {
 				t.Helper()
-				query := `SELECT count(*) FROM collaboration_events WHERE json_type(data_json,'$._storage_archive')='object'`
+				query := `SELECT count(*) FROM collaboration_events WHERE payload_version=1 AND type IN ('run.started','run.checkpointed','run.observed','run.finished')`
 				if archive {
 					query = `SELECT count(*) FROM issue_storage_archives`
 				}
