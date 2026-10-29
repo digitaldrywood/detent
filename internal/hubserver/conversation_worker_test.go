@@ -89,8 +89,9 @@ func newConversationWorkerFixture(t *testing.T, contents ...attachment.ArchiveCo
 		Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: fixture.now},
 		CreatedAt: fixture.now, UpdatedAt: fixture.now,
 	}
+	ctx := prepareTestConversationRecord(t, fixture.chat.store, record)
 	tx := fixture.tx(t)
-	if err := fixture.chat.store.createConversation(t.Context(), tx, &record); err != nil {
+	if err := fixture.chat.store.createConversation(ctx, tx, &record); err != nil {
 		t.Fatalf("createConversation() error = %v", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -224,6 +225,13 @@ func (f *conversationWorkerFixture) queue(t *testing.T, kind conversation.Messag
 	if err := plan.saveConversation(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	initial, err := json.Marshal(conversation.Receipt{Key: key, Kind: commandKind, Status: conversation.DeliverySaved, UpdatedAt: now.UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := plan.prepareValue(t.Context(), initial); err != nil {
+		t.Fatal(err)
+	}
 	ctx = plan.context(t.Context())
 	tx := f.tx(t)
 	if _, _, err := f.chat.store.reserveCommand(ctx, tx, record.ID, key, commandKind, "hash-"+key, now); err != nil {
@@ -273,13 +281,9 @@ func (f *conversationWorkerFixture) messages(t *testing.T) map[string]conversati
 
 func (f *conversationWorkerFixture) receipt(t *testing.T, key string) conversation.Receipt {
 	t.Helper()
-	var encoded string
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT receipt_json FROM conversation_commands WHERE conversation_id = ? AND key = ?", f.record.ID, key).Scan(&encoded); err != nil {
-		t.Fatal(err)
-	}
-	var receipt conversation.Receipt
-	if err := json.Unmarshal([]byte(encoded), &receipt); err != nil {
-		t.Fatal(err)
+	receipt, found, err := f.chat.readReceipt(t.Context(), f.chat.store.reader, f.record.ID, key)
+	if err != nil || !found {
+		t.Fatalf("read receipt: found=%v error=%v", found, err)
 	}
 	return receipt
 }
@@ -298,6 +302,14 @@ func (f *conversationWorkerFixture) questions(t *testing.T) []conversationQuesti
 			t.Fatal(err)
 		}
 		records = append(records, record)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	for i := range records {
+		if err := f.chat.store.resolveQuestion(t.Context(), f.chat.store.reader, &records[i]); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return records
 }

@@ -368,7 +368,7 @@ func TestConversationSettleSweep(t *testing.T) {
 func setConversationExecution(t *testing.T, f conversationAPIFixture, id string, status conversation.ExecutionStatus) {
 	t.Helper()
 	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"UPDATE conversations SET execution_json = json_set(execution_json, '$.status', ?) WHERE id = ?", status, id); err != nil {
+		"UPDATE conversations SET content_attachment_id='',execution_json = ?,execution_status=? WHERE id = ?", mustMarshalConversationExecution(t, f.service.conversations.store, id, func(execution *conversation.Execution) { execution.Status = status }), status, id); err != nil {
 		t.Fatalf("set execution: %v", err)
 	}
 }

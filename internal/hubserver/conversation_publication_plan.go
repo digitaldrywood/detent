@@ -2,6 +2,7 @@ package hubserver
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/artifact"
@@ -31,6 +32,11 @@ type conversationPublicationPlan struct {
 
 func (p *conversationPublicationPlan) event(ctx context.Context, body any) error {
 	ctx = p.context(ctx)
+	if question, ok := body.(conversation.Question); ok {
+		if err := p.prepareQuestion(ctx, conversationQuestionRecord{Question: question}); err != nil {
+			return err
+		}
+	}
 	raw, err := marshalNative(compactConversationEvent(body))
 	if err != nil {
 		return err
@@ -178,6 +184,9 @@ func (p *conversationPublicationPlan) saveConversation(ctx context.Context) erro
 	ctx = p.context(ctx)
 	p.record.Revision++
 	p.record.UpdatedAt = p.now
+	if err := p.prepareRecord(ctx, p.record); err != nil {
+		return err
+	}
 	return p.event(ctx, projectConversation(p.record))
 }
 
@@ -194,6 +203,13 @@ func (p *conversationPublicationPlan) updateExecution(ctx context.Context, execu
 func (p *conversationPublicationPlan) recordReceipt(ctx context.Context, receipt conversation.Receipt) error {
 	ctx = p.context(ctx)
 	receipt.UpdatedAt = p.now
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		return err
+	}
+	if err := p.prepareValue(ctx, raw); err != nil {
+		return err
+	}
 	return p.event(ctx, receipt)
 }
 

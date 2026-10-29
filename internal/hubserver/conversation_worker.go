@@ -368,7 +368,7 @@ func requireConversationRecordOwner(record conversationRecord, identity conversa
 // readLinkedConversation resolves the canonical conversation of a work item
 // in the request scope.
 func (c *conversationService) readLinkedConversation(ctx context.Context, tx nativeQueryer, scope nativeScope, item string) (conversationRecord, error) {
-	record, err := readLinkedConversationRecord(ctx, tx, scope, item)
+	record, err := c.store.readLinkedConversationRecord(ctx, tx, scope, item)
 	if err != nil {
 		return record, err
 	}
@@ -378,12 +378,12 @@ func (c *conversationService) readLinkedConversation(ctx context.Context, tx nat
 	return record, nil
 }
 
-func readLinkedConversationRecord(ctx context.Context, tx nativeQueryer, scope nativeScope, item string) (conversationRecord, error) {
+func (s *conversationStore) readLinkedConversationRecord(ctx context.Context, tx nativeQueryer, scope nativeScope, item string) (conversationRecord, error) {
 	columns := conversationReadColumns
 	if plan, ok := ctx.Value(conversationPublicationKey{}).(*conversationPublicationPlan); ok && plan.record.WorkItemID == item {
 		columns = conversationReadProjection(ctx, tx, plan.record.ID)
 	}
-	record, err := scanConversation(tx.QueryRowContext(ctx, "SELECT "+columns+" FROM conversations WHERE organization_id = ? AND project_id = ? AND work_item_id = ?", scope.organization, scope.project, item))
+	record, err := s.readConversationRecord(ctx, tx, tx.QueryRowContext(ctx, "SELECT "+columns+" FROM conversations WHERE organization_id = ? AND project_id = ? AND work_item_id = ?", scope.organization, scope.project, item))
 	if errors.Is(err, sql.ErrNoRows) {
 		return record, nativeNotFound()
 	}
@@ -397,7 +397,7 @@ func (c *conversationService) ensureWorkerConversation(ctx context.Context, tx *
 	var record conversationRecord
 	var err error
 	if scope.credential.Scope == apiScopeWorker {
-		record, err = readLinkedConversationRecord(ctx, tx, scope, item)
+		record, err = c.store.readLinkedConversationRecord(ctx, tx, scope, item)
 		if err == nil {
 			readable := record
 			readable.ReadAudience = ""
@@ -486,15 +486,15 @@ func (c *conversationService) queryMessages(ctx context.Context, tx nativeQuerye
 // readReceipt returns the stored receipt for a command key; found is false
 // when the key was never reserved.
 func (c *conversationService) readReceipt(ctx context.Context, tx nativeQueryer, conversationID, key string) (receipt conversation.Receipt, found bool, err error) {
-	var encoded string
-	err = tx.QueryRowContext(ctx, "SELECT receipt_json FROM conversation_commands WHERE conversation_id = ? AND key = ?", conversationID, key).Scan(&encoded)
+	var encoded, contentID string
+	err = tx.QueryRowContext(ctx, "SELECT receipt_json,content_attachment_id FROM conversation_commands WHERE conversation_id = ? AND key = ?", conversationID, key).Scan(&encoded, &contentID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return conversation.Receipt{}, false, nil
 	}
 	if err != nil {
 		return conversation.Receipt{}, false, fmt.Errorf("read receipt: %w", err)
 	}
-	decoded, err := decodeConversationReceipt(encoded)
+	decoded, err := c.store.decodeReceipt(ctx, tx, conversationID, encoded, contentID)
 	if err != nil || decoded == nil {
 		return conversation.Receipt{}, false, err
 	}

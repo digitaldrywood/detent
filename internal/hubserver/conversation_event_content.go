@@ -172,7 +172,7 @@ func (s *conversationStore) resolveEventContent(ctx context.Context, query nativ
 			if fact.QuestionID == "" {
 				continue
 			}
-			question, err := scanConversationQuestion(query.QueryRowContext(ctx, "SELECT "+conversationQuestionColumns+" FROM conversation_questions WHERE conversation_id=? AND id=?", id, fact.QuestionID))
+			question, err := s.readQuestion(ctx, query, id, fact.QuestionID)
 			if err != nil {
 				return fmt.Errorf("resolve event question: %w", err)
 			}

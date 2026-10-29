@@ -197,7 +197,7 @@ func TestConversationPayloadRequiresPublication(t *testing.T) {
 				f.store.contents = &conversationContentFixture{}
 			}
 			now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-			record := f.create(t, f.record(f.owner, "publication", now))
+			record := f.createLegacyConversation(t, f.record(f.owner, "publication", now))
 			message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: "private content", Data: json.RawMessage(`{"key":"value"}`), Delivery: conversation.DeliverySaved, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}, CreatedAt: now, UpdatedAt: now}
 			tx := f.tx(t)
 			if err := f.store.appendMessage(t.Context(), tx, &message); err == nil {
@@ -235,6 +235,10 @@ func TestConversationPublicationReconcilesOutsideWriter(t *testing.T) {
 			}
 			now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
 			record := f.create(t, f.record(f.owner, "publication", now))
+			var initialReferences int
+			if err := f.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments").Scan(&initialReferences); err != nil {
+				t.Fatal(err)
+			}
 			objects := &conversationContentFixture{commitThenFail: outcome == "uncertain committed", fail: outcome == "uncertain absent"}
 			objects.onIO = func() error {
 				if f.store.db.Stats().InUse != 0 {
@@ -244,7 +248,7 @@ func TestConversationPublicationReconcilesOutsideWriter(t *testing.T) {
 				if err := f.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments").Scan(&references); err != nil {
 					return err
 				}
-				if references != 0 {
+				if references != initialReferences {
 					return errors.New("object reference preceded publication")
 				}
 				return nil
@@ -259,7 +263,7 @@ func TestConversationPublicationReconcilesOutsideWriter(t *testing.T) {
 					t.Fatalf("unresolved upload result=%v", err)
 				}
 				var references int
-				if err := f.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments").Scan(&references); err != nil || references != 0 {
+				if err := f.store.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM attachments").Scan(&references); err != nil || references != initialReferences {
 					t.Fatalf("uncertain upload left references=%d error=%v", references, err)
 				}
 				return
@@ -281,7 +285,7 @@ func TestConversationPublicationReconcilesOutsideWriter(t *testing.T) {
 				t.Fatalf("publications=%d objects=%d", objects.publications, len(objects.content))
 			}
 			var references, messages, events int
-			if err := f.store.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM attachments),(SELECT count(*) FROM conversation_messages),(SELECT count(*) FROM conversation_events)").Scan(&references, &messages, &events); err != nil || references != 2 || messages != 1 || events != 1 {
+			if err := f.store.reader.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM attachments),(SELECT count(*) FROM conversation_messages),(SELECT count(*) FROM conversation_events)").Scan(&references, &messages, &events); err != nil || references != initialReferences+2 || messages != 1 || events != 1 {
 				t.Fatalf("references=%d messages=%d events=%d error=%v", references, messages, events, err)
 			}
 		})

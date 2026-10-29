@@ -40,12 +40,14 @@ func newConversationFixture(t *testing.T) conversationFixture {
 	store := newConversationStore(f.service.database.db)
 	store.reader = f.service.database.reader
 	store.contents = &conversationContentFixture{}
+	owner, other := principal("owner"), principal("other")
+	f.service.tokenUseWork.Wait()
 	return conversationFixture{
 		nativeFixture: f,
 		store:         store,
 		organization:  organization,
-		owner:         principal("owner"),
-		other:         principal("other"),
+		owner:         owner,
+		other:         other,
 	}
 }
 
@@ -84,8 +86,12 @@ func (f conversationFixture) record(owner, title string, at time.Time) conversat
 
 func (f conversationFixture) create(t *testing.T, record conversationRecord) conversationRecord {
 	t.Helper()
+	if f.store.contents == nil {
+		return f.createLegacyConversation(t, record)
+	}
+	ctx := prepareTestConversationRecord(t, f.store, record)
 	tx := f.tx(t)
-	if err := f.store.createConversation(t.Context(), tx, &record); err != nil {
+	if err := f.store.createConversation(ctx, tx, &record); err != nil {
 		t.Fatalf("createConversation() error = %v", err)
 	}
 	f.commit(t, tx)
@@ -105,7 +111,7 @@ func TestConversationStoreCreateReadAndList(t *testing.T) {
 	issue := f.nativeFixture.create(t, "linked user chat")
 	shared.WorkItemID, shared.LinkedAt = string(issue.WorkItemID), &base
 	tx := f.tx(t)
-	if err := f.store.updateConversation(t.Context(), tx, &shared, shared.Revision); err != nil {
+	if err := f.updateConversation(t, t.Context(), tx, &shared, shared.Revision); err != nil {
 		t.Fatal(err)
 	}
 	f.commit(t, tx)
@@ -314,7 +320,7 @@ func TestConversationStoreUpdateRevision(t *testing.T) {
 	tx := f.tx(t)
 	record.Title = "renamed"
 	record.UpdatedAt = now.Add(time.Second)
-	if err := f.store.updateConversation(t.Context(), tx, &record, 1); err != nil {
+	if err := f.updateConversation(t, t.Context(), tx, &record, 1); err != nil {
 		t.Fatalf("updateConversation() error = %v", err)
 	}
 	if record.Revision != 2 {
@@ -329,14 +335,14 @@ func TestConversationStoreUpdateRevision(t *testing.T) {
 	}
 	stale := got
 	stale.Title = "stale"
-	err = f.store.updateConversation(t.Context(), tx, &stale, 1)
+	err = f.updateConversation(t, t.Context(), tx, &stale, 1)
 	var revision *errConversationRevision
 	if !errors.As(err, &revision) || revision.Current != 2 {
 		t.Fatalf("updateConversation(stale) error = %v, want revision conflict at 2", err)
 	}
 	missing := got
 	missing.ID = conversation.NewConversationID()
-	err = f.store.updateConversation(t.Context(), tx, &missing, 2)
+	err = f.updateConversation(t, t.Context(), tx, &missing, 2)
 	var failure *nativeError
 	if !errors.As(err, &failure) || failure.Code != "not_found" {
 		t.Fatalf("updateConversation(missing) error = %v, want not_found", err)
@@ -357,12 +363,12 @@ func TestConversationStoreLinkedIssueIsUnique(t *testing.T) {
 	linkedAt := now.Add(time.Second)
 	first.LinkedAt = &linkedAt
 	first.Visibility = conversation.VisibilityShared
-	if err := f.store.updateConversation(t.Context(), tx, &first, 1); err != nil {
+	if err := f.updateConversation(t, t.Context(), tx, &first, 1); err != nil {
 		t.Fatalf("updateConversation(link) error = %v", err)
 	}
 	second.WorkItemID = string(issue.WorkItemID)
 	second.LinkedAt = &linkedAt
-	err := f.store.updateConversation(t.Context(), tx, &second, 1)
+	err := f.updateConversation(t, t.Context(), tx, &second, 1)
 	var linked *errConversationLinked
 	if !errors.As(err, &linked) || linked.ExistingConversationID != first.ID {
 		t.Fatalf("updateConversation(second link) error = %v, want conversation_already_linked with %q", err, first.ID)
@@ -523,7 +529,7 @@ func TestConversationStoreQuestions(t *testing.T) {
 		},
 		RequestID: "req_1",
 	}
-	if err := f.store.upsertQuestion(t.Context(), tx, question); err != nil {
+	if err := f.upsertQuestion(t, t.Context(), tx, question); err != nil {
 		t.Fatalf("upsertQuestion() error = %v", err)
 	}
 	pending, err := f.store.listPendingQuestions(t.Context(), tx, record.ID)
@@ -537,7 +543,7 @@ func TestConversationStoreQuestions(t *testing.T) {
 	question.Answers = map[string][]string{"p": {"yes"}}
 	question.AnsweredBy = f.owner
 	question.UpdatedAt = now.Add(time.Minute)
-	if err := f.store.upsertQuestion(t.Context(), tx, question); err != nil {
+	if err := f.upsertQuestion(t, t.Context(), tx, question); err != nil {
 		t.Fatalf("upsertQuestion(update) error = %v", err)
 	}
 	got, err := f.store.readQuestion(t.Context(), tx, record.ID, question.ID)
@@ -575,15 +581,15 @@ func TestConversationStoreCommandsAndReceipts(t *testing.T) {
 	hash := conversation.RequestHash(command)
 
 	tx := f.tx(t)
-	existing, conflict, err := f.store.reserveCommand(t.Context(), tx, record.ID, command.Key, command.Kind, hash, now)
+	existing, conflict, err := f.reserveCommand(t, t.Context(), tx, record.ID, command.Key, command.Kind, hash, now)
 	if err != nil || existing != nil || conflict {
 		t.Fatalf("reserveCommand(first) = %#v, %v, %v", existing, conflict, err)
 	}
 	receipt := conversation.Receipt{Key: command.Key, Kind: command.Kind, Status: conversation.DeliveryQueued, MessageID: "msg_x", UpdatedAt: now.Add(time.Second)}
-	if err := f.store.updateReceipt(t.Context(), tx, record.ID, command.Key, receipt); err != nil {
+	if err := f.updateReceipt(t, t.Context(), tx, record.ID, command.Key, receipt); err != nil {
 		t.Fatalf("updateReceipt() error = %v", err)
 	}
-	existing, conflict, err = f.store.reserveCommand(t.Context(), tx, record.ID, command.Key, command.Kind, hash, now.Add(time.Minute))
+	existing, conflict, err = f.reserveCommand(t, t.Context(), tx, record.ID, command.Key, command.Kind, hash, now.Add(time.Minute))
 	if err != nil || conflict || existing == nil {
 		t.Fatalf("reserveCommand(replay) = %#v, %v, %v", existing, conflict, err)
 	}
@@ -592,15 +598,15 @@ func TestConversationStoreCommandsAndReceipts(t *testing.T) {
 	}
 	other := command
 	other.Text = "different"
-	existing, conflict, err = f.store.reserveCommand(t.Context(), tx, record.ID, command.Key, command.Kind, conversation.RequestHash(other), now)
+	existing, conflict, err = f.reserveCommand(t, t.Context(), tx, record.ID, command.Key, command.Kind, conversation.RequestHash(other), now)
 	if err != nil || !conflict || existing == nil || existing.Key != command.Key {
 		t.Fatalf("reserveCommand(conflict) = %#v, %v, %v", existing, conflict, err)
 	}
-	if err := f.store.updateReceipt(t.Context(), tx, record.ID, "missing", receipt); err == nil {
+	if err := f.updateReceipt(t, t.Context(), tx, record.ID, "missing", receipt); err == nil {
 		t.Fatal("updateReceipt(missing) must fail")
 	}
 	// The same key in another conversation is independent.
-	existing, conflict, err = f.store.reserveCommand(t.Context(), tx, second.ID, command.Key, command.Kind, hash, now)
+	existing, conflict, err = f.reserveCommand(t, t.Context(), tx, second.ID, command.Key, command.Kind, hash, now)
 	if err != nil || existing != nil || conflict {
 		t.Fatalf("reserveCommand(other conversation) = %#v, %v, %v", existing, conflict, err)
 	}
@@ -719,7 +725,7 @@ func TestConversationStoreEvents(t *testing.T) {
 				t.Fatal("replay crossed a conversation boundary")
 			}
 		}
-		if ids[0] != ids[1] || ids[2] != ids[3] || ids[0] == ids[2] || len(objects.content) != 6 {
+		if ids[0] != ids[1] || ids[2] != ids[3] || ids[0] == ids[2] || len(objects.content) != 8 {
 			t.Fatalf("org deduplication=%v objects=%d", ids, len(objects.content))
 		}
 		if _, err := f.store.readConversation(t.Context(), f.service.database.reader, f.organization, f.project.ID, records[2].ID); err == nil {
@@ -851,13 +857,13 @@ func TestConversationStoreNormalizeAfterRestart(t *testing.T) {
 			t.Fatalf("appendMessage() error = %v", err)
 		}
 		question := conversationQuestionRecord{Question: conversation.Question{ID: conversation.NewQuestionID(), ConversationID: record.ID, MessageID: message.ID, Status: test.in.question, Prompts: []conversation.Prompt{{ID: "p", Question: "?"}}, CreatedAt: now, UpdatedAt: now}}
-		if err := f.store.upsertQuestion(t.Context(), tx, question); err != nil {
+		if err := f.upsertQuestion(t, t.Context(), tx, question); err != nil {
 			t.Fatalf("upsertQuestion() error = %v", err)
 		}
-		if _, _, err := f.store.reserveCommand(t.Context(), tx, record.ID, "k", conversation.CommandMessage, "hash", now); err != nil {
+		if _, _, err := f.reserveCommand(t, t.Context(), tx, record.ID, "k", conversation.CommandMessage, "hash", now); err != nil {
 			t.Fatalf("reserveCommand() error = %v", err)
 		}
-		if err := f.store.updateReceipt(t.Context(), tx, record.ID, "k", conversation.Receipt{Key: "k", Kind: conversation.CommandMessage, Status: test.in.receipt, MessageID: message.ID, UpdatedAt: now}); err != nil {
+		if err := f.updateReceipt(t, t.Context(), tx, record.ID, "k", conversation.Receipt{Key: "k", Kind: conversation.CommandMessage, Status: test.in.receipt, MessageID: message.ID, UpdatedAt: now}); err != nil {
 			t.Fatalf("updateReceipt() error = %v", err)
 		}
 		f.commit(t, tx)
@@ -899,7 +905,7 @@ func TestConversationStoreNormalizeAfterRestart(t *testing.T) {
 			if conversation.QuestionStatus(status) != test.want.question {
 				t.Fatalf("question status = %q, want %q", status, test.want.question)
 			}
-			existing, _, err := f.store.reserveCommand(t.Context(), tx, ids[i], "k", conversation.CommandMessage, "hash", now)
+			existing, _, err := f.reserveCommand(t, t.Context(), tx, ids[i], "k", conversation.CommandMessage, "hash", now)
 			if err != nil || existing == nil {
 				t.Fatalf("reserveCommand() = %#v, %v", existing, err)
 			}
@@ -942,12 +948,15 @@ func TestConversationMigrationTables(t *testing.T) {
 			t.Fatal(err)
 		}
 		issue := f.nativeFixture.create(t, "worker issue")
-		tx, err := service.database.db.BeginTx(t.Context(), nil)
+		now := service.config.now()
+		worker := conversationRecord{ID: conversation.NewConversationID(), OrganizationID: f.project.OrganizationID, ProjectID: f.project.ID, OwnerPrincipalID: f.ownerID, Title: "worker", Origin: conversationOriginWorker, Visibility: conversation.VisibilityShared, Status: conversation.StatusActive, WorkItemID: string(issue.WorkItemID), LinkedAt: &now, Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now}, CreatedAt: now, UpdatedAt: now}
+		ctx := prepareTestConversationRecord(t, service.conversations.store, worker)
+		tx, err := service.database.db.BeginTx(ctx, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = tx.Rollback() })
-		worker, err := service.conversations.ensureWorkerConversation(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: f.ownerID}}, string(issue.WorkItemID), service.config.now())
+		err = service.conversations.store.createConversation(ctx, tx, &worker)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1167,4 +1176,104 @@ func (f conversationFixture) updateLegacyToolMessage(t *testing.T, ctx context.C
 	}
 	_, err = f.insertLegacyEvent(t, ctx, tx, message.ConversationID, conversation.EventMessageUpdated, projectMessage(message), now)
 	return err
+}
+
+func (f conversationFixture) createLegacyConversation(t *testing.T, record conversationRecord) conversationRecord {
+	t.Helper()
+	if err := validateConversationRecord(&record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Revision == 0 {
+		record.Revision = 1
+	}
+	execution, err := marshalNative(record.Execution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preferences, err := marshalNative(record.Preferences)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := f.tx(t)
+	_, err = tx.ExecContext(t.Context(), `INSERT INTO conversations (`+conversationColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, record.ID, record.OrganizationID, record.ProjectID, record.OwnerPrincipalID, record.OwnerSubject, record.Origin, record.Title, record.Visibility, record.Status, nullString(record.SubjectWorkItemID), nullString(record.WorkItemID), conversationNullTime(record.LinkedAt), record.Revision, record.ProviderThreadID, record.ProviderThreadRunnerID, record.ProviderThreadOrigin, execution, record.EventSeq, preferences, conversationTime(record.CreatedAt), conversationTime(record.UpdatedAt), conversationNullTime(record.LastMessageAt), conversationNullTime(record.SettledAt), record.Archived, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := executionQueryMetadata(record.Execution).write(t.Context(), tx, "conversations", "id=?", record.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.commit(t, tx)
+	return record
+}
+
+func (f conversationFixture) updateConversation(t *testing.T, ctx context.Context, tx *sql.Tx, record *conversationRecord, revision int64) error {
+	t.Helper()
+	raw, err := recordPayload(*record)
+	if err != nil {
+		return err
+	}
+	content, err := messageContent(conversationMessageRecord{Data: raw})
+	if err != nil {
+		return err
+	}
+	ctx, err = f.store.preparePayload(ctx, string(record.OrganizationID), content)
+	if err != nil {
+		return err
+	}
+	return f.store.updateConversation(ctx, tx, record, revision)
+}
+
+func (f conversationFixture) prepareValue(t *testing.T, ctx context.Context, tx *sql.Tx, id string, raw []byte) (context.Context, error) {
+	t.Helper()
+	var organization string
+	if err := tx.QueryRowContext(ctx, "SELECT organization_id FROM conversations WHERE id=?", id).Scan(&organization); err != nil {
+		return ctx, err
+	}
+	content, err := messageContent(conversationMessageRecord{Data: raw})
+	if err != nil {
+		return ctx, err
+	}
+	return f.store.preparePayload(ctx, organization, content)
+}
+
+func (f conversationFixture) upsertQuestion(t *testing.T, ctx context.Context, tx *sql.Tx, record conversationQuestionRecord) error {
+	t.Helper()
+	raw, err := questionPayload(record)
+	if err != nil {
+		return err
+	}
+	ctx, err = f.prepareValue(t, ctx, tx, record.ConversationID, raw)
+	if err != nil {
+		return err
+	}
+	return f.store.upsertQuestion(ctx, tx, record)
+}
+
+func (f conversationFixture) reserveCommand(t *testing.T, ctx context.Context, tx *sql.Tx, id, key string, kind conversation.CommandKind, hash string, now time.Time) (*conversation.Receipt, bool, error) {
+	t.Helper()
+	raw, err := json.Marshal(conversation.Receipt{Key: key, Kind: kind, Status: conversation.DeliverySaved, UpdatedAt: now.UTC()})
+	if err != nil {
+		return nil, false, err
+	}
+	ctx, err = f.prepareValue(t, ctx, tx, id, raw)
+	if err != nil {
+		return nil, false, err
+	}
+	return f.store.reserveCommand(ctx, tx, id, key, kind, hash, now)
+}
+
+func (f conversationFixture) updateReceipt(t *testing.T, ctx context.Context, tx *sql.Tx, id, key string, receipt conversation.Receipt) error {
+	t.Helper()
+	if receipt.Key == "" {
+		receipt.Key = key
+	}
+	raw, err := json.Marshal(receipt)
+	if err != nil {
+		return err
+	}
+	ctx, err = f.prepareValue(t, ctx, tx, id, raw)
+	if err != nil {
+		return err
+	}
+	return f.store.updateReceipt(ctx, tx, id, key, receipt)
 }

@@ -37,10 +37,14 @@ var storageConversionFamilies = []storageConversionFamily{
 	{name: "sources", column: "bundle", from: "change_sources r JOIN change_versions v ON v.id=r.version_id JOIN change_requests c ON c.id=v.change_id", where: "r.object_key=''", aggregate: "c.work_item_id"},
 	{name: "diff_files", from: "attempt_diff_files r JOIN attempt_diffs c ON c.id=r.diff_id", where: "c.object_key=''", aggregate: "c.work_item_id"},
 	{name: "tool_revisions", column: "text", from: "conversation_tool_revisions r JOIN conversations c ON c.id=r.conversation_id", where: "r.content_attachment_id=''", aggregate: "r.conversation_id"},
+	{name: "conversation_records", column: "execution_json", from: "conversations r", where: "r.content_attachment_id=''", aggregate: "r.id"},
+	{name: "conversation_questions", column: "prompts_json", from: "conversation_questions r JOIN conversations c ON c.id=r.conversation_id", where: "r.content_attachment_id=''", aggregate: "r.conversation_id"},
+	{name: "conversation_commands", column: "receipt_json", from: "conversation_commands r JOIN conversations c ON c.id=r.conversation_id", where: "r.content_attachment_id=''", aggregate: "r.conversation_id"},
+	{name: "conversation_attachments", column: "artifact_ref", from: "conversation_attachments r JOIN conversations c ON c.id=r.conversation_id", where: "r.content_attachment_id='' AND r.deleted_at IS NULL", aggregate: "r.conversation_id"},
 }
 
 func (f storageConversionFamily) scope() string {
-	if f.name == "messages" || f.name == "conversation_events" || f.name == "tool_revisions" || f.name == "versions" || f.name == "evidence" || f.name == "sources" || f.name == "diff_files" {
+	if f.name == "messages" || f.name == "conversation_events" || f.name == "tool_revisions" || f.name == "conversation_questions" || f.name == "conversation_commands" || f.name == "conversation_attachments" || f.name == "versions" || f.name == "evidence" || f.name == "sources" || f.name == "diff_files" {
 		return "c"
 	}
 	return "r"
@@ -66,7 +70,7 @@ const storageConversionDiscovery = `SELECT aggregate_id,through_rowid FROM stora
 WHERE organization_id=? AND project_id=? AND family=? AND (complete=0 OR format_version<>1)
 ORDER BY updated_at,aggregate_id LIMIT 4`
 
-const storageConversionSchedule = `SELECT organization_id,project_id,family,aggregate_id FROM storage_conversion_progress WHERE (complete=0 OR format_version<>1) AND family IN ('runs','attempts','analytics','conversation_events','messages','versions','evidence','sources','diff_files','tool_revisions') ORDER BY updated_at,organization_id,project_id,family,aggregate_id LIMIT 4`
+const storageConversionSchedule = `SELECT organization_id,project_id,family,aggregate_id FROM storage_conversion_progress WHERE (complete=0 OR format_version<>1) AND family IN ('runs','attempts','analytics','conversation_events','messages','versions','evidence','sources','diff_files','tool_revisions','conversation_records','conversation_questions','conversation_commands','conversation_attachments') ORDER BY updated_at,organization_id,project_id,family,aggregate_id LIMIT 4`
 
 type storageConversionProgress struct {
 	Family    string `json:"family"`
@@ -157,6 +161,7 @@ func (s *Service) convertLegacyStorage(ctx context.Context, now time.Time) error
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	type pending struct {
 		scope             nativeScope
 		family, aggregate string
@@ -330,6 +335,9 @@ format_version=excluded.format_version,through_rowid=max(through_rowid,excluded.
 }
 
 func (s *Service) convertStorageAggregate(ctx context.Context, scope nativeScope, family storageConversionFamily, aggregate string, now time.Time) error {
+	if family.recordPayload() {
+		return s.convertConversationRecordPayload(ctx, scope, family, aggregate, now)
+	}
 	if family.name == "messages" || family.name == "conversation_events" || family.name == "tool_revisions" {
 		return s.convertConversationPayload(ctx, scope, family, aggregate, now)
 	}
@@ -425,7 +433,7 @@ func storageConversionStamp(ctx context.Context, q nativeQueryer, scope nativeSc
 	var executionStatus, executionLease sql.NullString
 	var safe bool
 	var err error
-	if family.name == "messages" || family.name == "conversation_events" || family.name == "tool_revisions" {
+	if family.name == "messages" || family.name == "conversation_events" || family.name == "tool_revisions" || family.recordPayload() {
 		err = q.QueryRowContext(ctx, `SELECT c.revision,c.event_seq,c.status,c.execution_status,c.execution_lease_id,c.status='settled' AND c.execution_status IS NOT NULL AND c.execution_lease_id IS NOT NULL AND c.execution_status IN ('idle','completed','interrupted','failed') AND NOT EXISTS(SELECT 1 FROM conversation_messages m WHERE m.conversation_id=c.id AND m.delivery IN ('saved','queued','sending','sent','responding')) AND NOT EXISTS(SELECT 1 FROM conversation_questions q WHERE q.conversation_id=c.id AND q.status IN ('pending','sending','sent')) AND NOT EXISTS(SELECT 1 FROM leases l JOIN issues i ON i.id=l.issue_id WHERE i.organization_id=c.organization_id AND i.project_id=c.project_id AND (i.native_id=c.work_item_id OR i.native_id=c.subject_work_item_id OR l.lease_id=c.execution_lease_id) AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?)) AND NOT EXISTS(SELECT 1 FROM native_attempts a JOIN leases l ON l.lease_id=a.lease_id WHERE a.organization_id=c.organization_id AND a.project_id=c.project_id AND (a.work_item_id=c.work_item_id OR a.work_item_id=c.subject_work_item_id OR l.lease_id=c.execution_lease_id) AND (a.status='running' OR (l.released_at IS NULL AND julianday(l.expires_at)>julianday(?)))) FROM conversations c WHERE c.organization_id=? AND c.project_id=? AND c.id=?`, formatHubTime(now), formatHubTime(now), scope.organization, scope.project, aggregate).Scan(&revision, &sequence, &state, &executionStatus, &executionLease, &safe)
 	} else {
 		err = q.QueryRowContext(ctx, `SELECT i.revision,i.event_sequence,i.workflow_state_id,NOT EXISTS(SELECT 1 FROM leases l WHERE l.issue_id=i.id AND l.released_at IS NULL AND julianday(l.expires_at)>julianday(?)) AND NOT EXISTS(SELECT 1 FROM native_attempts a WHERE a.organization_id=i.organization_id AND a.project_id=i.project_id AND a.work_item_id=i.native_id AND a.status='running') FROM issues i WHERE i.organization_id=? AND i.project_id=? AND i.native_id=?`, formatHubTime(now), scope.organization, scope.project, aggregate).Scan(&revision, &sequence, &state, &safe)
@@ -437,7 +445,7 @@ func storageConversionStamp(ctx context.Context, q nativeQueryer, scope nativeSc
 		return "", false, err
 	}
 	values := []any{revision, sequence, state}
-	if family.name == "messages" || family.name == "conversation_events" || family.name == "tool_revisions" {
+	if family.name == "messages" || family.name == "conversation_events" || family.name == "tool_revisions" || family.recordPayload() {
 		values = append(values, archiveNullValue(executionStatus), archiveNullValue(executionLease))
 	}
 	raw, err := json.Marshal(values)

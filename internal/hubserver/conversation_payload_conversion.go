@@ -47,9 +47,9 @@ func (s *Service) convertConversationPayload(ctx context.Context, scope nativeSc
 		if err != nil {
 			return err
 		}
-		converted, err := s.convertConversationToolPayload(ctx, scope, family, id, message.ID, stamp, now)
-		if err != nil || converted {
-			return err
+		converted, conversionErr := s.convertConversationToolPayload(ctx, scope, family, id, message.ID, stamp, now)
+		if conversionErr != nil || converted {
+			return conversionErr
 		}
 		original, actor, oldContent = message.Text, string(message.Data), message.ContentID
 		if err := store.resolveMessageContents(ctx, s.database.reader, []*conversationMessageRecord{&message}); err != nil {
@@ -128,7 +128,7 @@ func (s *Service) convertConversationPayload(ctx context.Context, scope nativeSc
 			return fmt.Errorf("preserve converted tool revision: %w", err)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE storage_conversion_progress SET cursor_rowid=?,converted_rows=converted_rows+1,reclaimed_bytes=reclaimed_bytes+?,complete=NOT EXISTS(SELECT 1 FROM `+family.table()+` WHERE conversation_id=? AND `+family.pending()+`),updated_at=? WHERE organization_id=? AND project_id=? AND family=? AND aggregate_id=?`, row, max(0, len(original)+len(actor)-4), id, formatHubTime(now), scope.organization, scope.project, family.name, id); err != nil {
+	if _, err := tx.ExecContext(ctx, family.conversationPayloadCompletion(), row, max(0, len(original)+len(actor)-4), id, formatHubTime(now), scope.organization, scope.project, family.name, id); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE attempt_diff_body_migration SET vacuum_pending=1 WHERE singleton=1"); err != nil {

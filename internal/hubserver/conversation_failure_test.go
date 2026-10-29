@@ -3,6 +3,7 @@ package hubserver
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -328,6 +329,14 @@ func newConversationQuestionFixture(t *testing.T, status conversation.QuestionSt
 	if err := plan.updateExecution(t.Context(), execution); err != nil {
 		t.Fatal(err)
 	}
+	question := conversationQuestionRecord{Question: conversation.Question{
+		ID: questionID, ConversationID: record.ID, Status: status, Owner: execution.Owner,
+		Prompts:   []conversation.Prompt{{ID: "color", Question: "Which color?", Options: []conversation.Option{{Label: "red"}, {Label: "blue"}}}},
+		CreatedAt: plan.now, UpdatedAt: plan.now,
+	}}
+	if err := plan.prepareQuestion(t.Context(), question); err != nil {
+		t.Fatal(err)
+	}
 	ctx := plan.context(t.Context())
 	err = service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 		linked, err := service.store.readConversation(ctx, tx, f.project.OrganizationID, f.project.ID, record.ID)
@@ -337,11 +346,7 @@ func newConversationQuestionFixture(t *testing.T, status conversation.QuestionSt
 		if err := service.updateExecution(ctx, tx, &linked, execution, now); err != nil {
 			return err
 		}
-		return service.store.upsertQuestion(ctx, tx, conversationQuestionRecord{Question: conversation.Question{
-			ID: questionID, ConversationID: record.ID, Status: status, Owner: execution.Owner,
-			Prompts:   []conversation.Prompt{{ID: "color", Question: "Which color?", Options: []conversation.Option{{Label: "red"}, {Label: "blue"}}}},
-			CreatedAt: now, UpdatedAt: now,
-		}})
+		return service.store.upsertQuestion(ctx, tx, question)
 	})
 	if err != nil {
 		t.Fatalf("seed question: %v", err)
@@ -907,7 +912,7 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 			{name: "removed policy preserves owner", query: "DELETE FROM project_policies WHERE scope = (SELECT scope FROM lease_policies WHERE lease_id = ?)", retainsOwner: true},
 			{name: "released lease", query: "UPDATE leases SET released_at = acquired_at WHERE lease_id = ?"},
 			{name: "terminal attempt", query: "UPDATE native_attempts SET status = 'succeeded' WHERE lease_id = ?"},
-			{name: "foreign attempt", query: "UPDATE conversations SET execution_json = json_set(execution_json, '$.attempt_id', 'foreign-attempt') WHERE json_extract(execution_json, '$.lease_id') = ?"},
+			{name: "foreign attempt"},
 			{name: "foreign work item", query: "UPDATE native_attempts SET work_item_id = (SELECT native_id FROM issues WHERE title = 'foreign-worker-issue') WHERE lease_id = ?"},
 			{name: "foreign run", query: "UPDATE native_attempts SET run_id = 'foreign-run' WHERE lease_id = ?"},
 			{name: "wrong fence", query: "UPDATE native_attempts SET fencing_token = fencing_token + 1 WHERE lease_id = ?"},
@@ -925,7 +930,17 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 				if test.name == "foreign work item" {
 					f.create(t, "foreign-worker-issue")
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), test.query, f.lease.ID); err != nil {
+				if test.name == "foreign attempt" {
+					foreign := original
+					foreign.Owner.AttemptID = "foreign-attempt"
+					raw, err := json.Marshal(foreign)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversations SET execution_json=?,content_attachment_id='',execution_status=NULL,query_metadata_version=0 WHERE id=?`, string(raw), f.record.ID); err != nil {
+						t.Fatal(err)
+					}
+				} else if _, err := f.service.database.db.ExecContext(t.Context(), test.query, f.lease.ID); err != nil {
 					t.Fatal(err)
 				}
 				if err := f.chat.reconcileExecutions(t.Context()); err != nil {

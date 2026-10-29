@@ -1130,6 +1130,9 @@ func (s *Service) commandCreateConversation(ctx context.Context, scope nativeSco
 		freshRecord.OwnerSubject = scope.credential.Hosted.Subject
 	}
 	plan := &conversationPublicationPlan{service: service, record: freshRecord, now: now}
+	if err := plan.prepareRecord(ctx, freshRecord); err != nil {
+		return nil, err
+	}
 	if request.FirstMessage != nil {
 		if err := plan.command(ctx, scope, command); err != nil {
 			return nil, err
@@ -1193,15 +1196,19 @@ func (s *Service) commandPostConversation(ctx context.Context, scope nativeScope
 		return nil, bindErr
 	}
 	service := s.conversations
+	ctx = newConversationArchiveReads(ctx)
+	current, err := service.loadConversation(ctx, s.database.reader, scope, id)
+	if err != nil {
+		return nil, err
+	}
 	if _, found, err := service.readReceipt(ctx, service.store.reader, id, command.Key); err != nil {
 		return nil, err
 	} else if !found {
-		current, err := service.loadConversation(ctx, s.database.reader, scope, id)
-		if err != nil {
-			return nil, err
-		}
 		if err := service.authorizeWrite(ctx, s.database.reader, scope, current); err != nil {
 			return nil, err
+		}
+		if !service.server.ready.Load() {
+			return nil, &nativeError{Code: "unavailable", Message: "The Hub is shutting down; try again", status: http.StatusServiceUnavailable}
 		}
 		plan, err := service.newPublicationPlan(ctx, id)
 		if err != nil {
@@ -1211,11 +1218,18 @@ func (s *Service) commandPostConversation(ctx context.Context, scope nativeScope
 			return nil, err
 		}
 		ctx = plan.context(ctx)
+	} else {
+		now, err := s.database.currentTime()
+		if err != nil {
+			return nil, err
+		}
+		plan := &conversationPublicationPlan{service: service, record: current, original: current, now: now}
+		ctx = plan.context(ctx)
 	}
 	var record conversationRecord
 	var receipt *conversation.Receipt
 	replay := false
-	err := service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+	err = service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 		var err error
 		record, err = service.loadConversation(ctx, tx, scope, id)
 		if err != nil {

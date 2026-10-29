@@ -248,8 +248,9 @@ func (f *coordinatorFixture) seed(t *testing.T, title string, mutate func(*conve
 	if mutate != nil {
 		mutate(&record)
 	}
+	ctx := prepareTestConversationRecord(t, f.conversations.store, record)
 	f.transact(t, func(tx *sql.Tx) error {
-		return f.conversations.store.createConversation(t.Context(), tx, &record)
+		return f.conversations.store.createConversation(ctx, tx, &record)
 	})
 	return record
 }
@@ -645,6 +646,13 @@ func TestConversationCoordinatorCancel(t *testing.T) {
 		message, ok := lastReply(f.messages(t, record.ID))
 		return ok && message.Text == "thinking"
 	})
+	coordinator := f.coordinator().(*conversationTurnCoordinator)
+	coordinator.mu.Lock()
+	turn := coordinator.turns[record.ID]
+	coordinator.mu.Unlock()
+	if turn == nil {
+		t.Fatal("running turn is missing")
+	}
 	if !f.coordinator().Cancel(record.ID) {
 		t.Fatal("Cancel() = false with a running turn")
 	}
@@ -657,6 +665,11 @@ func TestConversationCoordinatorCancel(t *testing.T) {
 		t.Fatalf("user message = %s, want delivered after cancel", messages[0].Delivery)
 	}
 	waitUntil(t, "idle", func() bool { return f.conversation(t, record.ID).Execution.Status == conversation.ExecutionIdle })
+	select {
+	case <-turn.done:
+	case <-testenv.WaitContext(t, t.Context()).Done():
+		t.Fatal("cancelled turn did not finish")
+	}
 	if f.coordinator().Cancel(record.ID) {
 		t.Fatal("Cancel() = true after the turn ended")
 	}
@@ -741,12 +754,12 @@ func TestConversationCoordinatorStop(t *testing.T) {
 				t.Fatalf("execution = %s, want %s", got, wantExecution)
 			}
 			if !test.finish {
-				var encoded string
-				err := f.service.database.db.QueryRowContext(t.Context(), "SELECT receipt_json FROM conversation_commands WHERE conversation_id = ? AND key = ?", record.ID, messages[0].CommandKey).Scan(&encoded)
+				var encoded, contentID string
+				err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT receipt_json,content_attachment_id FROM conversation_commands WHERE conversation_id = ? AND key = ?", record.ID, messages[0].CommandKey).Scan(&encoded, &contentID)
 				if err != nil {
 					t.Fatal(err)
 				}
-				receipt, err := decodeConversationReceipt(encoded)
+				receipt, err := f.conversations.store.decodeReceipt(t.Context(), f.service.database.reader, record.ID, encoded, contentID)
 				if err != nil || receipt.Status != conversation.DeliveryFailed || receipt.Error == nil || receipt.Error.Code != "coordinator_error" {
 					t.Fatalf("receipt = %#v, error = %v", receipt, err)
 				}
@@ -868,11 +881,17 @@ func TestConversationCoordinatorListAttention(t *testing.T) {
 		record.LinkedAt = &linkedAt
 		record.Visibility = conversation.VisibilityShared
 	})
+	question := conversationQuestionRecord{Question: conversation.Question{
+		ID: conversation.NewQuestionID(), ConversationID: linkedConversation.ID, Status: conversation.QuestionPending,
+		Prompts: []conversation.Prompt{{ID: "p1", Question: "Which branch?", FreeText: true}}, CreatedAt: linkedAt, UpdatedAt: linkedAt,
+	}}
+	questionRaw, err := questionPayload(question)
+	if err != nil {
+		t.Fatal(err)
+	}
+	questionContext := prepareRecordTestPayload(t, conversationFixture{store: f.conversations.store}, linkedConversation, questionRaw)
 	f.transact(t, func(tx *sql.Tx) error {
-		return f.conversations.store.upsertQuestion(t.Context(), tx, conversationQuestionRecord{Question: conversation.Question{
-			ID: conversation.NewQuestionID(), ConversationID: linkedConversation.ID, Status: conversation.QuestionPending,
-			Prompts: []conversation.Prompt{{ID: "p1", Question: "Which branch?", FreeText: true}}, CreatedAt: linkedAt, UpdatedAt: linkedAt,
-		}})
+		return f.conversations.store.upsertQuestion(questionContext, tx, question)
 	})
 	f.createIndependent(t, "plain todo")
 
@@ -1240,11 +1259,7 @@ func TestConversationCoordinatorToolMessagesFromUpdates(t *testing.T) {
 func TestConversationReconcileLeavesHubCoordinatorTurns(t *testing.T) {
 	t.Parallel()
 	f := newCoordinatorFixture(t, "reconcile")
-	record := f.seed(t, "reconcile", nil)
-	if _, err := f.service.database.db.ExecContext(t.Context(),
-		`UPDATE conversations SET execution_json = json_set(execution_json, '$.status', 'running') WHERE id = ?`, record.ID); err != nil {
-		t.Fatal(err)
-	}
+	record := f.seed(t, "reconcile", func(record *conversationRecord) { record.Execution.Status = conversation.ExecutionRunning })
 	before, err := f.conversations.store.readConversation(t.Context(), f.service.database.db, record.OrganizationID, record.ProjectID, record.ID)
 	if err != nil {
 		t.Fatal(err)

@@ -442,7 +442,7 @@ func (c *conversationService) prepareWorkerBind(ctx context.Context, scope nativ
 	if err := errors.Join(ownerErr, rollbackConversationPreparation(authTx)); err != nil {
 		return nil, err
 	}
-	record, err := readLinkedConversationRecord(ctx, c.store.reader, scope, item)
+	record, err := c.store.readLinkedConversationRecord(ctx, c.store.reader, scope, item)
 	if err == nil {
 		readable := record
 		if scope.credential.Scope == apiScopeWorker {
@@ -474,6 +474,11 @@ func (c *conversationService) prepareWorkerBind(ctx context.Context, scope nativ
 		creation = &copy
 	}
 	p := &conversationPublicationPlan{service: c, record: record, original: original, creation: creation, now: now}
+	if creation != nil {
+		if err := p.prepareRecord(ctx, *creation); err != nil {
+			return nil, err
+		}
+	}
 	previous := record.Execution
 	if !previous.Status.Terminal() && previous.Owner.AttemptID != "" && previous.Owner.AttemptID != request.AttemptID {
 		if err := p.finishExecution(ctx, conversation.ExecutionInterrupted, conversationLeaseLostError, false); err != nil {

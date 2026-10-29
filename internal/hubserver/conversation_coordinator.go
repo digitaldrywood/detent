@@ -374,7 +374,7 @@ func coordinatorHandles(record conversationRecord) bool {
 }
 
 func (c *conversationTurnCoordinator) readConversation(ctx context.Context, query nativeQueryer, id string) (conversationRecord, error) {
-	record, err := scanConversation(query.QueryRowContext(ctx, "SELECT "+conversationReadColumns+" FROM conversations WHERE id = ?", id))
+	record, err := c.service.store.readConversationRecord(ctx, query, query.QueryRowContext(ctx, "SELECT "+conversationReadColumns+" FROM conversations WHERE id = ?", id))
 	if err != nil {
 		return record, fmt.Errorf("read conversation %s: %w", id, err)
 	}

@@ -349,7 +349,18 @@ func TestConversationQueryMetadataBackfill(t *testing.T) {
 		}
 	}
 	for _, record := range []conversationRecord{first, second} {
-		if _, _, err := f.store.reserveCommand(t.Context(), tx, record.ID, "key", conversation.CommandMessage, "hash", now); err != nil {
+		execution, err := json.Marshal(record.Execution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), `UPDATE conversations SET content_attachment_id='',execution_json=? WHERE id=?`, string(execution), record.ID); err != nil {
+			t.Fatal(err)
+		}
+		receipt, err := json.Marshal(conversation.Receipt{Key: "key", Kind: conversation.CommandMessage, Status: conversation.DeliverySaved, UpdatedAt: now})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), `INSERT INTO conversation_commands(conversation_id,key,kind,request_hash,receipt_json,created_at,updated_at) VALUES(?,'key',?,'hash',?,?,?)`, record.ID, conversation.CommandMessage, string(receipt), conversationTime(now), conversationTime(now)); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := f.insertLegacyEvent(t, t.Context(), tx, record.ID, conversation.EventMessageUpdated, map[string]string{"role": "user", "kind": "continue", "attempt_id": "attempt"}, now); err != nil {
@@ -495,11 +506,13 @@ func TestConversationExecutionQueryMetadata(t *testing.T) {
 		{conversation.ExecutionFailed, false, "", false, true},
 		{conversation.ExecutionUnknown, false, "lease-first", true, true},
 	}
+	legacyExecutions := map[string]string{}
 	wantLive, wantSettle, wantLease := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for i, c := range cases {
 		record := f.record(f.owner, fmt.Sprintf("execution %d", i), at)
 		record.Execution = conversation.Execution{Status: c.status, Settled: c.settled, Owner: conversation.Owner{LeaseID: c.lease}, UpdatedAt: at}
 		record = f.create(t, record)
+		legacyExecutions[record.ID] = mustMarshalConversationExecution(t, f.store, record.ID, nil)
 		if c.live {
 			wantLive[record.ID] = true
 		}
@@ -512,6 +525,11 @@ func TestConversationExecutionQueryMetadata(t *testing.T) {
 	}
 	for _, stage := range []string{"typed", "legacy", "backfilled"} {
 		if stage == "legacy" {
+			for id, raw := range legacyExecutions {
+				if _, err := f.store.db.ExecContext(t.Context(), "UPDATE conversations SET content_attachment_id='',execution_json=? WHERE id=?", raw, id); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversations SET query_metadata_version=0,execution_status=NULL,execution_lease_id=NULL,execution_settled=NULL`); err != nil {
 				t.Fatal(err)
 			}
@@ -645,8 +663,9 @@ func TestConversationUnknownExecutionNeverCompactsLiveLease(t *testing.T) {
 	record.SettledAt = &at
 	record.CreatedAt, record.UpdatedAt = at, at
 	record.Execution = conversation.Execution{Status: conversation.ExecutionCompleted, Owner: conversation.Owner{LeaseID: string(f.lease.ID)}, UpdatedAt: at}
+	ctx := prepareTestConversationRecord(t, f.chat.store, record)
 	tx := f.tx(t)
-	if err := f.chat.store.createConversation(t.Context(), tx, &record); err != nil {
+	if err := f.chat.store.createConversation(ctx, tx, &record); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := (conversationFixture{store: f.chat.store}).appendEvent(t, t.Context(), tx, record.ID, conversation.EventHeartbeat, map[string]string{}, at); err != nil {
@@ -655,9 +674,13 @@ func TestConversationUnknownExecutionNeverCompactsLiveLease(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	executionRaw, err := json.Marshal(record.Execution)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, stage := range []string{"typed", "legacy", "backfilled"} {
 		if stage == "legacy" {
-			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversations SET query_metadata_version=0,execution_status=NULL,execution_lease_id=NULL,execution_settled=NULL WHERE id=?`, record.ID); err != nil {
+			if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversations SET content_attachment_id='',execution_json=?,query_metadata_version=0,execution_status=NULL,execution_lease_id=NULL,execution_settled=NULL WHERE id=?`, string(executionRaw), record.ID); err != nil {
 				t.Fatal(err)
 			}
 		}

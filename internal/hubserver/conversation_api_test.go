@@ -275,12 +275,14 @@ func TestConversationAPIListVisibility(t *testing.T) {
 	requireNativeStatus(t, f.link(t, f.token, shared.ID, "link-shared", true, "Release checklist"), http.StatusOK)
 	shared = f.snapshot(t, f.token, shared.ID).Conversation
 	issue := f.nativeFixture.create(t, "Runner session")
-	tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+	now := f.service.config.now()
+	ctx := prepareTestConversationRecord(t, f.service.conversations.store, conversationRecord{OrganizationID: f.project.OrganizationID, Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now}})
+	tx, err := f.service.database.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = tx.Rollback() })
-	worker, err := f.service.conversations.ensureWorkerConversation(t.Context(), tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: f.ownerID}}, string(issue.WorkItemID), f.service.config.now())
+	worker, err := f.service.conversations.ensureWorkerConversation(ctx, tx, nativeScope{organization: f.project.OrganizationID, project: f.project.ID, credential: apiCredential{ID: f.ownerID}}, string(issue.WorkItemID), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -607,6 +609,14 @@ func TestConversationAPIAnswer(t *testing.T) {
 	if err := plan.updateExecution(t.Context(), execution); err != nil {
 		t.Fatal(err)
 	}
+	question := conversationQuestionRecord{Question: conversation.Question{
+		ID: conversation.NewQuestionID(), ConversationID: record.ID, Status: conversation.QuestionPending,
+		Owner: execution.Owner, Prompts: []conversation.Prompt{{ID: "color", Question: "Which color?", Options: []conversation.Option{{Label: "red"}, {Label: "blue"}}}},
+		CreatedAt: plan.now, UpdatedAt: plan.now,
+	}}
+	if err := plan.prepareQuestion(t.Context(), question); err != nil {
+		t.Fatal(err)
+	}
 	ctx := plan.context(t.Context())
 	tx, err := f.service.database.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -620,11 +630,7 @@ func TestConversationAPIAnswer(t *testing.T) {
 	if err := f.service.conversations.updateExecution(ctx, tx, &linked, execution, now); err != nil {
 		t.Fatal(err)
 	}
-	question := conversationQuestionRecord{Question: conversation.Question{
-		ID: conversation.NewQuestionID(), ConversationID: record.ID, Status: conversation.QuestionPending,
-		Owner: execution.Owner, Prompts: []conversation.Prompt{{ID: "color", Question: "Which color?", Options: []conversation.Option{{Label: "red"}, {Label: "blue"}}}},
-		CreatedAt: now, UpdatedAt: now,
-	}}
+
 	if err := store.upsertQuestion(ctx, tx, question); err != nil {
 		t.Fatal(err)
 	}
@@ -1026,7 +1032,10 @@ func TestConversationContinueRequiresExpectedAttempt(t *testing.T) {
 		owned := f.create(t, f.token, map[string]any{"title": "Owned"}).Conversation
 		requireNativeStatus(t, f.link(t, f.token, owned.ID, "link-owned", true, "Owned"), http.StatusOK)
 		if _, err := f.service.database.db.ExecContext(t.Context(),
-			`UPDATE conversations SET execution_json = json_set(execution_json, '$.attempt_id', 'att_live', '$.status', 'completed') WHERE id = ?`, owned.ID); err != nil {
+			`UPDATE conversations SET content_attachment_id='', execution_json = ? WHERE id = ?`, mustMarshalConversationExecution(t, f.service.conversations.store, owned.ID, func(execution *conversation.Execution) {
+				execution.Owner.AttemptID = "att_live"
+				execution.Status = conversation.ExecutionCompleted
+			}), owned.ID); err != nil {
 			t.Fatal(err)
 		}
 		requireNativeError(t, f.command(t, f.token, owned.ID, conversation.Command{Key: "continue-4", Kind: conversation.CommandContinue}), http.StatusUnprocessableEntity, "invalid_request")
@@ -1084,11 +1093,12 @@ func TestConversationListFiltersInSQL(t *testing.T) {
 			Execution: conversation.Execution{Status: conversation.ExecutionIdle, UpdatedAt: testTime(t)},
 			CreatedAt: testTime(t), UpdatedAt: testTime(t),
 		}
+		ctx := prepareTestConversationRecord(t, f.service.conversations.store, record)
 		tx, err := f.service.database.db.BeginTx(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.conversations.store.createConversation(t.Context(), tx, &record); err != nil {
+		if err := f.service.conversations.store.createConversation(ctx, tx, &record); err != nil {
 			t.Fatal(err)
 		}
 		if err := tx.Commit(); err != nil {

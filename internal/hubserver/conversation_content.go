@@ -35,8 +35,31 @@ type preparedConversationContents map[string]attachment.ArchiveReference
 type conversationContentsKey struct{}
 type conversationArchiveReadsKey struct{}
 type conversationArchiveReads struct {
-	mu      sync.Mutex
-	content map[string][]byte
+	mu         sync.Mutex
+	content    map[string][]byte
+	references map[string]attachment.ArchiveReference
+}
+
+func (r *conversationArchiveReads) rememberReference(organization string, ref attachment.ArchiveReference, content []byte) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.references == nil {
+		r.references = map[string]attachment.ArchiveReference{}
+	}
+	r.references[organization+"/"+artifact.Digest(content)] = ref
+}
+
+func (r *conversationArchiveReads) reference(key string) (attachment.ArchiveReference, bool) {
+	if r == nil {
+		return attachment.ArchiveReference{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ref, ok := r.references[key]
+	return ref, ok
 }
 
 func (r *conversationArchiveReads) load(key string) ([]byte, bool) {
@@ -158,16 +181,8 @@ func (s *conversationStore) messageStorage(ctx context.Context, tx *sql.Tx, mess
 	if err := tx.QueryRowContext(ctx, "SELECT organization_id,project_id,owner_principal_id FROM conversations WHERE id=?", message.ConversationID).Scan(&organization, &project, &uploader); err != nil {
 		return "", "", "", err
 	}
-	prepared, ok := ctx.Value(conversationContentsKey{}).(preparedConversationContents)
-	ref, found := prepared[organization+"/"+digest]
-	if !ok || !found {
-		return "", "", "", errors.New("conversation content was not published before the transaction")
-	}
-	if err := ref.Validate(organization); err != nil {
-		return "", "", "", err
-	}
-	id := contentArchiveID(organization, ref)
-	if err := s.recordContentArchive(ctx, tx, organization, project, uploader, ref, message.CreatedAt); err != nil {
+	id, err := s.preparedRecordStorage(ctx, tx, organization, project, uploader, content, message.CreatedAt)
+	if err != nil {
 		return "", "", "", err
 	}
 
@@ -429,5 +444,6 @@ func (s *conversationStore) readConversationArchive(ctx context.Context, query n
 		return nil, fmt.Errorf("read conversation content: %w", err)
 	}
 	cache.store(key, data)
+	cache.rememberReference(organization, ref, data)
 	return data, nil
 }

@@ -24,10 +24,27 @@ type conversationIssueAllocation struct {
 }
 
 func (c *conversationService) reconcilePublishedCommand(ctx context.Context, scope nativeScope, id string, command conversation.Command) (json.RawMessage, bool, error) {
-	ctx = context.WithValue(ctx, conversationPublicationKey{}, struct{}{})
+	ctx = newConversationArchiveReads(ctx)
+	record, err := c.store.readConversation(ctx, c.store.reader, scope.organization, scope.project, id)
+	if err != nil {
+		return nil, false, err
+	}
+	if _, found, err := c.readReceipt(ctx, c.store.reader, id, command.Key); err != nil {
+		return nil, false, err
+	} else if !found && command.Kind == conversation.CommandAnswer {
+		if _, err := c.store.readQuestion(ctx, c.store.reader, id, command.QuestionID); err != nil {
+			return nil, false, err
+		}
+	}
+	now, err := c.server.database.currentTime()
+	if err != nil {
+		return nil, false, err
+	}
+	plan := &conversationPublicationPlan{service: c, record: record, original: record, now: now}
+	ctx = plan.context(ctx)
 	var receipt *conversation.Receipt
-	err := c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
-		record, err := scanConversation(tx.QueryRowContext(ctx, "SELECT "+conversationColumns+",0,read_audience FROM conversations WHERE organization_id=? AND project_id=? AND id=?", scope.organization, scope.project, id))
+	err = c.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+		record, err := c.store.readConversationRecord(ctx, tx, tx.QueryRowContext(ctx, "SELECT "+conversationColumns+",0,read_audience FROM conversations WHERE organization_id=? AND project_id=? AND id=?", scope.organization, scope.project, id))
 		if errors.Is(err, sql.ErrNoRows) {
 			return nativeNotFound()
 		}
@@ -43,13 +60,13 @@ func (c *conversationService) reconcilePublishedCommand(ctx context.Context, sco
 		if err := c.requireActorAuthority(ctx, tx, scope, now); err != nil {
 			return err
 		}
-		var hash, encoded string
-		err = tx.QueryRowContext(ctx, "SELECT request_hash,receipt_json FROM conversation_commands WHERE conversation_id=? AND key=?", id, command.Key).Scan(&hash, &encoded)
+		var hash, encoded, contentID string
+		err = tx.QueryRowContext(ctx, "SELECT request_hash,receipt_json,content_attachment_id FROM conversation_commands WHERE conversation_id=? AND key=?", id, command.Key).Scan(&hash, &encoded, &contentID)
 		if err == nil {
 			if hash != conversation.RequestHash(command) {
 				return &nativeError{Code: "idempotency_conflict", Message: "Idempotency key has different content", status: http.StatusConflict, publicMessage: true}
 			}
-			receipt, err = decodeConversationReceipt(encoded)
+			receipt, err = c.store.decodeReceipt(ctx, tx, id, encoded, contentID)
 			return err
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -84,6 +101,15 @@ func (p *conversationPublicationPlan) command(ctx context.Context, scope nativeS
 		}
 	}
 	receipt := conversation.Receipt{Key: command.Key, Kind: command.Kind, Status: conversation.DeliverySaved}
+	initial := receipt
+	initial.UpdatedAt = p.now.UTC()
+	raw, err := json.Marshal(initial)
+	if err != nil {
+		return err
+	}
+	if err := p.prepareValue(ctx, raw); err != nil {
+		return err
+	}
 	actor := conversationActorFor(scope)
 	linked := p.record.WorkItemID != ""
 	message := conversationMessageRecord{Role: conversation.RoleUser, Actor: actor, CommandKey: command.Key}
