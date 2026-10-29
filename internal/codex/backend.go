@@ -31,6 +31,8 @@ type AgentBackend struct {
 var _ runner.AgentResumeVerifier = (*AgentBackend)(nil)
 var _ runner.AgentToolBackend = (*AgentBackend)(nil)
 
+func (*AgentBackend) SupportsReadOnlyInvestigation() bool { return true }
+
 func NewAgentBackend(client *AppServer, options Options) (*AgentBackend, error) {
 	if client == nil {
 		return nil, ErrMissingAppServer
@@ -86,6 +88,9 @@ func (b *AgentBackend) runTurn(
 	toolHandler DynamicToolHandler,
 	onUpdate runner.AgentUpdateHandler,
 ) (runner.AgentTurnResult, error) {
+	if req.IsolatedTools && !req.ReadOnly {
+		return runner.AgentTurnResult{}, errors.New("isolated tools require a read-only turn")
+	}
 	if req.TextOnly {
 		if len(tools) > 0 || req.Resume != (runner.AgentResume{}) || len(req.Attachments) > 0 || req.ConversationControl != nil {
 			return runner.AgentTurnResult{}, errors.New("text-only turns require a fresh prompt without tools or attachments")
@@ -156,6 +161,12 @@ func (b *AgentBackend) runTurn(
 		settings = textOnlySettings(req.Workspace)
 		runtimeRoots = []string{req.Workspace}
 	}
+	if req.IsolatedTools && !req.TextOnly {
+		options.PermissionProfile = "detent-investigation"
+		options.ThreadSandbox, options.TurnSandboxPolicy = "", nil
+		settings = investigationSettings(req.Workspace)
+		runtimeRoots = []string{req.Workspace}
+	}
 	instructionTools := tools
 	if req.SupplementalTools {
 		instructionTools = nil
@@ -169,6 +180,7 @@ func (b *AgentBackend) runTurn(
 	result, err := b.client.RunTurn(ctx, RunTurnRequest{
 		ConversationControl:     req.ConversationControl,
 		TextOnly:                req.TextOnly,
+		IsolatedTools:           req.IsolatedTools,
 		Workspace:               req.Workspace,
 		Prompt:                  req.Prompt,
 		Attachments:             req.Attachments,
@@ -193,6 +205,9 @@ func (b *AgentBackend) runTurn(
 		ToolHandler:             toolHandler,
 		RequireSubscriptionAuth: req.RequireSubscriptionAuth,
 	}, func(update Update) error {
+		if err := req.ToolBudget.Observe(agentUpdateFromCodex(update)); err != nil {
+			return err
+		}
 		if onUpdate == nil {
 			return nil
 		}

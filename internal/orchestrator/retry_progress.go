@@ -87,7 +87,10 @@ func (o *Orchestrator) prepareRetryProgress(ctx context.Context, run *RunRequest
 	}
 	run.ProgressDecision = record
 	run.PriorAttempt.Source = "Progress check comment " + record.CommentID
-	run.PriorAttempt.Reason = strings.TrimSpace(run.PriorAttempt.Reason + "\n" + record.Decision.Reason)
+	run.PriorAttempt.Reason = strings.TrimSpace(run.PriorAttempt.Reason + "\n" + record.Decision.Reason + "\nDiagnosis: " + record.Decision.Diagnosis)
+	if record.Decision.Instruction != "" {
+		run.PriorAttempt.Reason += "\nNext instruction: " + record.Decision.Instruction
+	}
 	if backend.called || run.Mode != previousMode {
 		return o.readmitRetryProgress(ctx, run)
 	}

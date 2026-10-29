@@ -32,10 +32,10 @@ func (o nativeProgressOwner) Load(ctx context.Context, project, issue, id string
 
 func readNativeProgress(ctx context.Context, q nativeQueryer, scope nativeScope, issue, id string) (progresscheck.Record, bool, error) {
 	record := progresscheck.Record{RequestID: id, ProjectID: string(scope.project), IssueID: issue}
-	err := q.QueryRowContext(ctx, `SELECT evidence_revision, outcome, step, reason, defect_key, defect_title, defect_body, comment_id, defect_issue_id
+	err := q.QueryRowContext(ctx, `SELECT evidence_revision, outcome, step, reason, defect_key, defect_title, defect_body, comment_id, defect_issue_id, diagnosis, instruction, convergence
  FROM native_progress_decisions WHERE organization_id = ? AND project_id = ? AND work_item_id = ? AND request_id = ?`, scope.organization, scope.project, issue, id).Scan(
 		&record.EvidenceRevision, &record.Decision.Outcome, &record.Decision.Step, &record.Decision.Reason,
-		&record.Decision.DefectKey, &record.Decision.DefectTitle, &record.Decision.DefectBody, &record.CommentID, &record.DefectIssueID)
+		&record.Decision.DefectKey, &record.Decision.DefectTitle, &record.Decision.DefectBody, &record.CommentID, &record.DefectIssueID, &record.Decision.Diagnosis, &record.Decision.Instruction, &record.Decision.Convergence)
 	if errors.Is(err, sql.ErrNoRows) {
 		return progresscheck.Record{}, false, nil
 	}
@@ -67,7 +67,7 @@ func (o nativeProgressOwner) Publish(ctx context.Context, record progresscheck.R
 	if candidate.Decision.Outcome == progresscheck.SystemDefect {
 		candidate.DefectIssueID = "pending"
 	}
-	if err := candidate.Validate(o.request); err != nil {
+	if err := candidate.ValidatePublication(o.request); err != nil {
 		return progresscheck.Record{}, err
 	}
 	tx, err := o.service.database.db.BeginTx(ctx, nil)
@@ -133,8 +133,17 @@ func (o nativeProgressOwner) Publish(ctx context.Context, record progresscheck.R
 		return progresscheck.Record{}, &nativeError{Code: "revision_conflict", status: http.StatusConflict}
 	}
 	body := "Progress check: " + string(record.Decision.Outcome) + "\n\n" + record.Decision.Reason
+	if record.Decision.Diagnosis != "" {
+		body += "\n\nDiagnosis: " + record.Decision.Diagnosis
+	}
+	if record.Decision.Convergence != "" {
+		body += "\n\nConvergence: " + record.Decision.Convergence
+	}
 	if record.Decision.Outcome == progresscheck.Reroute {
 		body += "\n\nNext step: `" + record.Decision.Step + "`"
+		if record.Decision.Instruction != "" {
+			body += "\n\nInstruction: " + record.Decision.Instruction
+		}
 	}
 	body += "\n\nEvidence: " + strings.Join(record.Decision.Evidence, ", ")
 	if record.Decision.Outcome == progresscheck.SystemDefect {
@@ -188,9 +197,9 @@ func (o nativeProgressOwner) Publish(ctx context.Context, record progresscheck.R
 		}
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO native_progress_decisions
- (organization_id, project_id, work_item_id, request_id, evidence_revision, outcome, step, reason, defect_key, defect_title, defect_body, comment_id, defect_issue_id, created_at)
- VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, o.scope.organization, o.scope.project, record.IssueID, record.RequestID, record.EvidenceRevision,
-		record.Decision.Outcome, record.Decision.Step, record.Decision.Reason, record.Decision.DefectKey, record.Decision.DefectTitle, record.Decision.DefectBody, record.CommentID, record.DefectIssueID, now.UTC().Format("2006-01-02T15:04:05.000000000Z"))
+ (organization_id, project_id, work_item_id, request_id, evidence_revision, outcome, step, reason, defect_key, defect_title, defect_body, comment_id, defect_issue_id, created_at, diagnosis, instruction, convergence)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, o.scope.organization, o.scope.project, record.IssueID, record.RequestID, record.EvidenceRevision,
+		record.Decision.Outcome, record.Decision.Step, record.Decision.Reason, record.Decision.DefectKey, record.Decision.DefectTitle, record.Decision.DefectBody, record.CommentID, record.DefectIssueID, now.UTC().Format("2006-01-02T15:04:05.000000000Z"), record.Decision.Diagnosis, record.Decision.Instruction, record.Decision.Convergence)
 	if err != nil {
 		return progresscheck.Record{}, fmt.Errorf("write progress decision: %w", err)
 	}

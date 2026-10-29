@@ -49,7 +49,7 @@ func TestNativeProgressPublicationIsAtomicAndScoped(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			decision := progresscheck.Decision{Outcome: outcome, Reason: "Source or evidence requires another step", Evidence: []string{"failed-attempt"}}
+			decision := progresscheck.Decision{Outcome: outcome, Diagnosis: "failed-attempt" + ": the retained failure identifies missing validation evidence; the failing step has not produced its required receipt", Instruction: "Repair the source finalization check and retain its command receipt", Convergence: "The previously failing check has a successful receipt on the repaired assertion", Reason: "Source or evidence requires another step", Evidence: []string{"failed-attempt"}}
 			if outcome == progresscheck.Reroute {
 				decision.Step = "implement"
 			}

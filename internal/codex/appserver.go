@@ -189,6 +189,7 @@ type ClientInfo struct {
 
 type RunTurnRequest struct {
 	TextOnly              bool
+	IsolatedTools         bool
 	Permissions           string
 	RuntimeWorkspaceRoots []string
 	Config                map[string]any
@@ -518,7 +519,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 	if err := s.initialize(ctx, transport, onUpdate); err != nil {
 		return RunTurnResult{}, err
 	}
-	if req.TextOnly {
+	if req.TextOnly || req.IsolatedTools {
 		if err := s.disableTextOnlyMCP(ctx, transport, &req); err != nil {
 			return RunTurnResult{}, err
 		}

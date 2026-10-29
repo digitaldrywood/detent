@@ -19,11 +19,25 @@ import (
 	"github.com/digitaldrywood/detent/internal/toolcache"
 )
 
+func (b *AgentBackend) SupportsReadOnlyInvestigation() bool { return b.options.IsolationPolicy != nil }
+
 func (b *AgentBackend) RunTurn(
 	ctx context.Context,
 	req runner.AgentTurnRequest,
 	onUpdate runner.AgentUpdateHandler,
 ) (turnResult runner.AgentTurnResult, turnErr error) {
+	if req.ToolBudget != nil {
+		previous := onUpdate
+		onUpdate = func(update runner.AgentUpdate) error {
+			if err := req.ToolBudget.Observe(update); err != nil {
+				return err
+			}
+			if previous != nil {
+				return previous(update)
+			}
+			return nil
+		}
+	}
 	ctx = contextOrBackground(ctx)
 	turnTimeout := b.options.TurnTimeout
 	if req.TurnTimeout > 0 {
@@ -203,6 +217,9 @@ func (b *AgentBackend) command(ctx context.Context, req runner.AgentTurnRequest)
 }
 
 func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.AgentTurnRequest) (*exec.Cmd, map[string]any, error) {
+	if req.IsolatedTools && (!req.ReadOnly || b.options.IsolationPolicy == nil) {
+		return nil, nil, errors.New("Claude investigation requires enforced read-only isolation")
+	}
 	if req.TextOnly {
 		req.ReadOnly = true
 	}
@@ -240,6 +257,17 @@ func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.Agen
 		if err != nil {
 			return nil, nil, err
 		}
+		if req.IsolatedTools {
+			if policy.Tier != isolation.Sandbox {
+				return nil, nil, errors.New("Claude investigation requires sandbox enforcement")
+			}
+			sandbox := settings["sandbox"].(map[string]any)
+			sandbox["autoAllowBashIfSandboxed"] = false
+			sandbox["filesystem"].(map[string]any)["allowWrite"] = []string{}
+			sandbox["network"] = map[string]any{"allowedDomains": []string{}, "allowUnixSockets": []string{}, "allowAllUnixSockets": false, "allowLocalBinding": false, "strictAllowlist": true}
+			permissions := settings["permissions"].(map[string]any)
+			permissions["deny"] = append(permissions["deny"].([]string), "Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch")
+		}
 		if policy.Tier == "sandbox" && len(b.options.ExtraArgs) > 0 {
 			return nil, nil, errors.New("runner isolation cannot apply Claude extra arguments")
 		}
@@ -249,7 +277,7 @@ func (b *AgentBackend) commandWithIsolation(ctx context.Context, req runner.Agen
 			bounded.options.PermissionMode = "acceptEdits"
 			argv = bounded.argv(req)
 			argv = append(argv, "--input-format", "stream-json")
-			if !req.TextOnly {
+			if !req.TextOnly && !req.IsolatedTools {
 				argv = append(argv, "--tools", "Bash,Read,Glob,Grep", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`)
 			}
 		}
