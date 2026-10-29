@@ -517,5 +517,7 @@ func nativeChangeLandingClaimable(state string, detail *tracker.ChangeDetail) bo
 	if nativeChangeLandingReady(state, detail) {
 		return true
 	}
-	return detail != nil && detail.Change.CurrentLanding() == nil && detail.Change.CurrentVersion != "" && detail.Summary.Status == "needs_evidence"
+	return detail != nil && detail.Change.CurrentLanding() == nil && detail.Change.CurrentVersion != "" && detail.Summary.Status == "needs_evidence" &&
+		slices.Contains([]string{"approved", "not_required", "stale"}, detail.Summary.NativeReview) &&
+		slices.Contains([]string{"success", "not_required", "stale"}, detail.Summary.Checks)
 }
