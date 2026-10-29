@@ -80,6 +80,8 @@ type nativeSearchPostingBatch struct {
 
 type nativeSearchDocument struct {
 	id, revision                     int64
+	issue                            int64
+	comment                          sql.NullString
 	organization, project, principal string
 	archived                         int
 	title, body                      string
@@ -92,10 +94,10 @@ type nativeSearchDocument struct {
 func (d *database) prepareNativeSearchDocument(ctx context.Context, id int64) (nativeSearchDocument, error) {
 	document := nativeSearchDocument{id: id}
 	var postings string
-	err := d.reader.QueryRowContext(ctx, `SELECT d.search_revision,i.organization_id,i.project_id,i.archived,COALESCE(i.actor_principal_id,''),
+	err := d.reader.QueryRowContext(ctx, `SELECT d.search_revision,d.issue_id,d.comment_id,i.organization_id,i.project_id,i.archived,COALESCE(i.actor_principal_id,''),
  c.title,c.body,native_search_tokens(c.title,'')+native_search_tokens(c.body,''),native_search_postings(c.title,c.body)
  FROM native_work_documents d JOIN issues i ON i.id=d.issue_id JOIN native_work_search_content c ON c.id=d.id WHERE d.id=?`, id).Scan(
-		&document.revision, &document.organization, &document.project, &document.archived, &document.principal, &document.title, &document.body, &document.tokens, &postings)
+		&document.revision, &document.issue, &document.comment, &document.organization, &document.project, &document.archived, &document.principal, &document.title, &document.body, &document.tokens, &postings)
 	if err != nil {
 		return document, err
 	}
@@ -136,9 +138,10 @@ func (d *database) prepareNativeSearchDocument(ctx context.Context, id int64) (n
 }
 
 func (d *database) publishNativeSearchDocument(ctx context.Context, tx *sql.Tx, document nativeSearchDocument) (bool, error) {
-	result, err := tx.ExecContext(ctx, `UPDATE native_work_documents SET search_revision=search_revision WHERE id=? AND search_revision=?
+	result, err := tx.ExecContext(ctx, `UPDATE native_work_documents SET search_revision=search_revision WHERE id=? AND search_revision=? AND issue_id=? AND comment_id IS ?
+ AND EXISTS(SELECT 1 FROM native_work_search_content WHERE id=native_work_documents.id AND title=? AND body=?)
  AND EXISTS(SELECT 1 FROM issues WHERE id=native_work_documents.issue_id AND organization_id=? AND project_id=? AND archived=? AND COALESCE(actor_principal_id,'')=?)`,
-		document.id, document.revision, document.organization, document.project, document.archived, document.principal)
+		document.id, document.revision, document.issue, document.comment, document.title, document.body, document.organization, document.project, document.archived, document.principal)
 	if err != nil {
 		return false, fmt.Errorf("validate search document revision: %w", err)
 	}

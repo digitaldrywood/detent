@@ -5,6 +5,8 @@ DROP TRIGGER native_work_search_issue_update;
 DROP TRIGGER native_work_search_comment_update;
 ALTER TABLE native_work_search_refresh ADD COLUMN organization_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE native_work_search_refresh ADD COLUMN project_id TEXT NOT NULL DEFAULT '';
+UPDATE native_work_search_refresh AS q SET organization_id=i.organization_id,project_id=i.project_id
+FROM native_work_documents d JOIN issues i ON i.id=d.issue_id WHERE q.document_id=d.id;
 CREATE INDEX native_work_search_refresh_scope ON native_work_search_refresh(organization_id,project_id,document_id);
 ALTER TABLE native_work_documents ADD COLUMN search_revision INTEGER NOT NULL DEFAULT 0;
 

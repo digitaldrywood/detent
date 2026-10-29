@@ -1339,3 +1339,136 @@ func TestNativeSearchPostingRefreshRevision(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeSearchPostingRefreshRejectsReusedDocumentID(t *testing.T) {
+	for _, name := range []string{"issue identity", "comment identity", "content"} {
+		t.Run(name, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			first := f.create(t, "Original narwhal")
+			second := f.create(t, "Replacement narwhal")
+			if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET title='Original narwhal' WHERE native_id=?", second.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			var comment, replacementComment any
+			if name == "comment identity" {
+				for index, id := range []string{"source-comment", "replacement-comment"} {
+					if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at)
+ SELECT ?,organization_id,project_id,native_id,1,?,'Original narwhal','{}',native_created_at,native_created_at FROM issues WHERE native_id=?`, id, index+1, first.WorkItemID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				comment, replacementComment = "source-comment", "replacement-comment"
+			}
+			drainTestNativeSearch(t, f.service)
+			if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_documents WHERE issue_id IN (SELECT id FROM issues WHERE native_id IN (?,?))`, first.WorkItemID, second.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			insert := `INSERT INTO native_work_documents(issue_id,comment_id) SELECT id,? FROM issues WHERE native_id=?`
+			result, err := f.service.database.db.ExecContext(t.Context(), insert, comment, first.WorkItemID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, err := result.LastInsertId()
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := f.service.database.prepareNativeSearchDocument(t.Context(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), "DELETE FROM native_work_documents WHERE id=?", id); err != nil {
+				t.Fatal(err)
+			}
+			replacementIssue := first.WorkItemID
+			if name == "issue identity" {
+				replacementIssue = second.WorkItemID
+			}
+			if name == "content" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE issues SET title='Replacement quasar' WHERE native_id=?", first.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result, err = f.service.database.db.ExecContext(t.Context(), insert, replacementComment, replacementIssue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			replacementID, err := result.LastInsertId()
+			if err != nil || replacementID != id {
+				t.Fatalf("replacement id=%d want=%d err=%v", replacementID, id, err)
+			}
+			tx, err := f.service.database.db.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			published, err := f.service.database.publishNativeSearchDocument(t.Context(), tx, prepared)
+			if err != nil || published {
+				t.Fatalf("published replaced document=%t err=%v", published, err)
+			}
+			if err := f.service.database.commit(t.Context(), tx); err != nil {
+				t.Fatal(err)
+			}
+			var queued int
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_search_refresh WHERE document_id=?", id).Scan(&queued); err != nil || queued != 1 {
+				t.Fatalf("replacement queued=%d err=%v", queued, err)
+			}
+			drainTestNativeSearch(t, f.service)
+			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_work_search_refresh WHERE document_id=?", id).Scan(&queued); err != nil || queued != 0 {
+				t.Fatalf("after retry queued=%d err=%v", queued, err)
+			}
+		})
+	}
+}
+
+func TestNativeSearchPostingRefreshMigrationPreservesQueuedSearch(t *testing.T) {
+	f := newDefaultNativeFixture(t, Config{})
+	if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+		t.Fatal(err)
+	}
+	other := newNativeFixture(t, f.service, "", "queued-search")
+	for _, fixture := range []nativeFixture{f, other} {
+		issue := fixture.create(t, "Queued migration fixture")
+		response := performHubAPIRequest(t, f.service, http.MethodPost, fixture.base+"/work-items/"+string(issue.WorkItemID)+"/comments", fixture.token, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: "queued-comment"}, Body: "Obsolete narwhal"})
+		requireNativeStatus(t, response, http.StatusOK)
+	}
+	drainTestNativeSearch(t, f.service)
+	migration, err := migrationFiles.ReadFile("migrations/20261029094650_native_work_search_refresh_outside_writer.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, down, ok := strings.Cut(string(migration), "-- +goose Down")
+	if !ok {
+		t.Fatal("missing rollback section")
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), down); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), `DROP TRIGGER native_work_search_refresh_insert;
+ CREATE TRIGGER native_work_search_refresh_insert AFTER INSERT ON native_work_search_refresh BEGIN SELECT 1; END;
+ UPDATE native_comments SET body='Current quasar' WHERE body='Obsolete narwhal';`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.database.db.ExecContext(t.Context(), up); err != nil {
+		t.Fatal(err)
+	}
+	for _, fixture := range []nativeFixture{f, other} {
+		var queued int
+		if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT count(*) FROM native_work_search_refresh WHERE organization_id=? AND project_id=?`, fixture.project.OrganizationID, fixture.project.ID).Scan(&queued); err != nil || queued != 1 {
+			t.Errorf("project=%s queued=%d want=1 err=%v", fixture.project.ID, queued, err)
+		}
+		for _, query := range []string{"quasar", "narwhal"} {
+			scope := nativeScope{organization: fixture.project.OrganizationID, project: fixture.project.ID}
+			page, err := f.service.readIssues(t.Context(), scope, url.Values{"q": {query}})
+			want := 0
+			if query == "quasar" {
+				want = 1
+			}
+			if err != nil || len(page.Items) != want {
+				t.Errorf("project=%s queued query=%s items=%d want=%d err=%v", fixture.project.ID, query, len(page.Items), want, err)
+			}
+		}
+	}
+}
