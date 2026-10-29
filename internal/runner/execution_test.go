@@ -40,6 +40,7 @@ type testExecution struct {
 	runtime       tracker.NativeRuntimeObservation
 	finish        string
 	started       bool
+	identity      tracker.NativeExecutionIdentity
 	onCheckpoint  func(tracker.NativeCheckpoint)
 	onValidate    func()
 }
@@ -62,8 +63,9 @@ func (e *testExecution) Validate(context.Context) error {
 	}
 	return e.validateErr
 }
-func (e *testExecution) Start(context.Context, tracker.NativeExecutionIdentity) error {
+func (e *testExecution) Start(_ context.Context, identity tracker.NativeExecutionIdentity) error {
 	e.started = true
+	e.identity = identity
 	return nil
 }
 func (e *testExecution) Checkpoint(_ context.Context, checkpoint tracker.NativeCheckpoint) error {
@@ -213,15 +215,20 @@ func (w *resumedExecutionWorkspace) AfterRun(ctx context.Context, info workspace
 func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name              string
-		status            string
-		unpushed          bool
-		changedHead       bool
-		changedModel      bool
-		conversationModel string
-		dirty             bool
-		rebase            bool
-		gitRef            bool
+		name               string
+		status             string
+		unpushed           bool
+		changedHead        bool
+		changedModel       bool
+		priorEffort        string
+		configuredEffort   string
+		overrideEffort     string
+		conversationEffort string
+		legacyEffort       bool
+		conversationModel  string
+		dirty              bool
+		rebase             bool
+		gitRef             bool
 	}{
 		{name: "killed clean attempt", status: "cancelled"},
 		{name: "killed unpushed attempt", status: "cancelled", unpushed: true},
@@ -232,6 +239,14 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 		{name: "failed retry with changed head", status: "failed", gitRef: true, changedHead: true},
 		{name: "failed retry with changed execution model", status: "failed", gitRef: true, changedModel: true},
 		{name: "failed retry with changed conversation model", status: "failed", gitRef: true, conversationModel: "example-model-b"},
+		{name: "failed retry with changed conversation effort", status: "failed", gitRef: true, priorEffort: "low", conversationEffort: "high"},
+		{name: "failed retry with changed configured effort", status: "failed", gitRef: true, priorEffort: "low", configuredEffort: "high"},
+		{name: "failed retry with changed override effort", status: "failed", gitRef: true, priorEffort: "low", configuredEffort: "low", overrideEffort: "high"},
+		{name: "conversation effort overrides configured and issue effort", status: "failed", gitRef: true, priorEffort: "high", configuredEffort: "high", overrideEffort: "high", conversationEffort: "low"},
+		{name: "unchanged effort resumes after restart", status: "cancelled", gitRef: true, priorEffort: "low", configuredEffort: "low"},
+		{name: "legacy effort rejects changed conversation effort", status: "failed", gitRef: true, priorEffort: "low", legacyEffort: true, conversationEffort: "high"},
+		{name: "legacy effort rejects configured effort without session proof", status: "failed", gitRef: true, legacyEffort: true, configuredEffort: "high"},
+		{name: "legacy effort resumes with matching persisted session", status: "failed", gitRef: true, priorEffort: "low", legacyEffort: true, configuredEffort: "low"},
 		{name: "cancelled retry preserves divergent tracked and untracked work", status: "cancelled", gitRef: true, dirty: true},
 		{name: "failed retry preserves divergent tracked and untracked work", status: "failed", gitRef: true, dirty: true},
 		{name: "cancelled retry rebases current Change", status: "cancelled", gitRef: true, rebase: true},
@@ -239,6 +254,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+			fresh := test.changedHead || test.changedModel || test.conversationModel != "" || test.dirty || test.rebase || test.conversationEffort != "" || test.configuredEffort != test.priorEffort || test.overrideEffort != "" && test.overrideEffort != test.priorEffort || test.legacyEffort && test.priorEffort != test.configuredEffort
 			ctx := t.Context()
 			path := filepath.Join(t.TempDir(), "sessions.db")
 			db, err := store.Open(ctx, store.Config{Path: path})
@@ -256,10 +272,13 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			if test.rebase || test.dirty {
 				role = RoleRework
 			}
-			identity := agentidentity.Configured("codex", "codex", "default", role, "example-model", "openai", "high", "", started)
+			identity := agentidentity.Configured("codex", "codex", "default", role, "example-model", "openai", test.priorEffort, "", started)
 			issue := connector.Issue{ID: "work", Identifier: "example-org/example-project#1", State: "In Progress", BranchName: "example/work"}
 			if role == RoleRework {
 				issue.State = "Rework"
+			}
+			if test.overrideEffort != "" {
+				issue.Description = "```detent-agent\nschema: 1\neffort: " + test.overrideEffort + "\n```"
 			}
 			source := initRunnerSourceRepo(t)
 			remote := filepath.Join(t.TempDir(), "origin.git")
@@ -292,11 +311,13 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			backend := &resumedExecutionWorkspace{LocalGit: gitWorkspace}
 			providerErr := errors.New("provider interrupted")
 			agent := &fakeCodexClient{err: providerErr, result: AgentTurnResult{ThreadID: "persisted-thread", SessionID: "persisted-session"}}
-			if test.changedHead || test.changedModel || test.conversationModel != "" || test.dirty || test.rebase {
+			if fresh {
 				agent.result = AgentTurnResult{ThreadID: "fresh-thread", SessionID: "fresh-session"}
 			}
 			cfg := config.Config{Policy: approved}
+			agent.models = []AgentModel{{ID: "example-model", Model: "example-model", SupportedReasoningEfforts: []string{"low", "high"}}}
 			cfg.Tracker.Kind = config.TrackerHubNative
+			cfg.Agent.Effort.Code = test.configuredEffort
 			cfg.Agents.Routes = []config.AgentRoute{{Name: "default", Role: role, Backend: "codex", Model: "example-model", Default: true}}
 			deps := Dependencies{ProjectID: "native", Workflow: config.Workflow{Config: cfg, Prompt: "Continue the issue"}, Store: db, Workspace: backend, AgentBackend: agent}
 			first, err := NewRunner(deps)
@@ -341,6 +362,9 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			checkpoint := executionCheckpoint(&local)
 			checkpoint.Resume = "resume_session"
 			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{ID: "new-lease", MachineID: "machine", FencingToken: 2}, Attempts: []tracker.NativeAttempt{{Status: test.status, Checkpoint: &checkpoint, NativeRunData: tracker.NativeRunData{MachineID: "machine", LeaseID: "old-lease", FencingToken: 1, Identity: &tracker.NativeExecutionIdentity{Role: role, Backend: "codex", Model: "example-model"}, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: attemptID, Identity: identity}}}}}}
+			if !test.legacyEffort {
+				execution.recovery.Attempts[0].Identity.ReasoningEffort = test.priorEffort
+			}
 			var runExecution Execution = execution
 			if test.changedModel {
 				execution.recovery.Attempts[0].Identity.Model = "previous-model"
@@ -380,6 +404,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			session := newFakeConversationSession()
 			session.resume = resume.ThreadID
 			session.preferences.Model = test.conversationModel
+			session.preferences.ReasoningEffort = test.conversationEffort
 			ctx = (&conversationRun{session: session}).attach(ctx)
 			before, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue)
 			if err != nil {
@@ -388,7 +413,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			_, err = restarted.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, WorkAttemptID: currentAttemptID, Generation: 2, Issue: issue, Mode: RunModeImplement, Execution: runExecution})
 			wantResume := resume
 			wantAction, wantReason := "resume_session", "verified_local_session"
-			if test.changedHead || test.changedModel || test.conversationModel != "" || test.dirty || test.rebase {
+			if fresh {
 				wantResume = AgentResume{}
 				wantAction, wantReason = "fresh_checkout", "session_restart_required"
 			}
@@ -396,8 +421,19 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			if test.conversationModel != "" {
 				wantModel = test.conversationModel
 			}
-			if !errors.Is(err, providerErr) || agent.calls != 1 || agent.request.Resume != wantResume || agent.verifiedResume != resume || agent.request.Model != wantModel {
-				t.Fatalf("restart lost persisted provider session: error=%v calls=%d model=%q resume=%+v verified=%+v", err, agent.calls, agent.request.Model, agent.request.Resume, agent.verifiedResume)
+			wantEffort := test.configuredEffort
+			if test.overrideEffort != "" {
+				wantEffort = test.overrideEffort
+			}
+			if test.conversationEffort != "" {
+				wantEffort = test.conversationEffort
+			}
+			if !errors.Is(err, providerErr) || agent.calls != 1 || agent.request.Resume != wantResume || agent.verifiedResume != resume || agent.request.Model != wantModel || agent.request.ReasoningEffort != wantEffort {
+				t.Fatalf("restart lost persisted provider session: error=%v calls=%d model=%q effort=%q resume=%+v verified=%+v", err, agent.calls, agent.request.Model, agent.request.ReasoningEffort, agent.request.Resume, agent.verifiedResume)
+			}
+			wantIdentity := tracker.NativeExecutionIdentity{Role: role, Backend: "codex", Model: wantModel, ReasoningEffort: wantEffort}
+			if execution.identity != wantIdentity {
+				t.Errorf("persisted native identity = %+v, want %+v", execution.identity, wantIdentity)
 			}
 			decision := execution.runtime.Recovery
 			if decision == nil || decision.Action != wantAction || decision.Reason != wantReason || agent.request.Workspace != info.Path {

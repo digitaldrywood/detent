@@ -110,14 +110,21 @@ func (f *conversationWorkerFixture) tx(t *testing.T) *sql.Tx {
 }
 
 // claim claims a fresh lease for the issue and starts a new attempt on it.
-func (f *conversationWorkerFixture) claim(t *testing.T) {
+func (f *conversationWorkerFixture) claim(t *testing.T, start ...bool) {
 	t.Helper()
 	response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: "conversation-machine", SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
 	requireNativeStatus(t, response, http.StatusOK)
 	decodeHubResponse(t, response, &f.lease)
 	f.attempt = newNativeID("attempt")
 	f.run = newNativeID("run")
-	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("start")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy}}
+	if len(start) == 0 || start[0] {
+		f.startAttempt(t, tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"})
+	}
+}
+
+func (f *conversationWorkerFixture) startAttempt(t *testing.T, identity tracker.NativeExecutionIdentity) {
+	t.Helper()
+	event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("start")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 1, Identity: &identity, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy}}
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/work-items/"+string(f.issue.WorkItemID)+"/events", f.worker, event), http.StatusOK)
 }
 
@@ -335,6 +342,49 @@ func requireConversationErrorCode(t *testing.T, response *httptest.ResponseRecor
 
 func TestConversationWorkerBind(t *testing.T) {
 	t.Parallel()
+	t.Run("failed setup unbinds before provider start", func(t *testing.T) {
+		f := newConversationWorkerFixture(t)
+		f.release(t)
+		f.claim(t, false)
+		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+		requireConversationErrorCode(t, f.controls(t, 0, 0), http.StatusConflict, "stale_execution")
+		requireNativeStatus(t, f.unbind(t, "failed"), http.StatusOK)
+		if record := f.load(t); record.Execution.Status != conversation.ExecutionFailed || !record.Execution.Settled {
+			t.Fatalf("pre-start binding did not settle: %+v", record.Execution)
+		}
+	})
+	t.Run("bind before provider identity is persisted", func(t *testing.T) {
+		f := newConversationWorkerFixture(t)
+		f.release(t)
+		f.claim(t, false)
+		body := f.bindBody()
+		body["fencing_token"] = f.lease.FencingToken + 1
+		requireConversationErrorCode(t, f.bind(t, body), http.StatusConflict, "stale_execution")
+		requireNativeStatus(t, f.bind(t, nil), http.StatusOK)
+		if err := f.chat.reconcileExecutions(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if record := f.load(t); record.Execution.Status != conversation.ExecutionStarting {
+			t.Fatalf("pre-start binding lost its current lease: %+v", record.Execution)
+		}
+		body = f.bindBody()
+		body["attempt_id"] = newNativeID("attempt")
+		requireConversationErrorCode(t, f.bind(t, body), http.StatusConflict, "stale_execution")
+		identity := tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "example-model", ReasoningEffort: "high"}
+		f.startAttempt(t, identity)
+		var data tracker.NativeRunData
+		var raw string
+		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT data_json FROM native_attempts WHERE id = ?", f.attempt).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(raw), &data); err != nil || data.Identity == nil || *data.Identity != identity {
+			t.Fatalf("started identity = %+v, error = %v", data.Identity, err)
+		}
+		requireNativeStatus(t, f.controls(t, 0, 0), http.StatusOK)
+		body = f.bindBody()
+		body["attempt_id"] = newNativeID("attempt")
+		requireConversationErrorCode(t, f.bind(t, body), http.StatusConflict, "stale_execution")
+	})
 	for _, test := range []struct{ confirmed, legacy bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
 		confirmed := test.confirmed
 		t.Run("ordinary Continue lease loss confirmed="+strconv.FormatBool(confirmed)+" legacy="+strconv.FormatBool(test.legacy), func(t *testing.T) {

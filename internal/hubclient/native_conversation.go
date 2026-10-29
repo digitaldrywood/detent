@@ -221,7 +221,14 @@ func (e *nativeExecution) BindConversation(ctx context.Context, capabilities run
 		return nil, err
 	}
 	logger := slog.Default().With("work_item", e.claim.lease.WorkItemID, "attempt", e.data.AttemptID)
-	session := newConversationSession(ctx, e.claim.source.client, e.claim.lease.WorkItemID, identity, response, e.leaseCheck, logger)
+	e.mu.Lock()
+	var ready chan struct{}
+	if e.data.Identity == nil {
+		ready = make(chan struct{})
+		e.conversationReady = ready
+	}
+	e.mu.Unlock()
+	session := newConversationSession(ctx, e.claim.source.client, e.claim.lease.WorkItemID, identity, response, e.leaseCheck, logger, ready)
 	e.mu.Lock()
 	e.conversationContinuation = session.Continuation()
 	e.mu.Unlock()
@@ -289,7 +296,7 @@ type conversationSession struct {
 	closeOnce  sync.Once
 }
 
-func newConversationSession(ctx context.Context, client *NativeClient, item tracker.NativeWorkItemID, identity ConversationIdentity, response ConversationBindResponse, leaseCheck func(context.Context) error, logger *slog.Logger) *conversationSession {
+func newConversationSession(ctx context.Context, client *NativeClient, item tracker.NativeWorkItemID, identity ConversationIdentity, response ConversationBindResponse, leaseCheck func(context.Context) error, logger *slog.Logger, ready <-chan struct{}) *conversationSession {
 	pollCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	flushCtx, flushCancel := context.WithCancel(context.WithoutCancel(ctx))
 	s := &conversationSession{
@@ -334,8 +341,24 @@ func newConversationSession(ctx context.Context, client *NativeClient, item trac
 	pendingText.WriteString(runner.RenderConversationFollowUps(followUps))
 	s.pending = pendingText.String()
 	s.loops.Add(2)
-	go s.pollLoop(pollCtx, queued)
-	go s.reportLoop(pollCtx, flushCtx)
+	go func() {
+		if ready != nil {
+			select {
+			case <-ready:
+			case <-pollCtx.Done():
+			}
+		}
+		s.pollLoop(pollCtx, queued)
+	}()
+	go func() {
+		if ready != nil {
+			select {
+			case <-ready:
+			case <-pollCtx.Done():
+			}
+		}
+		s.reportLoop(pollCtx, flushCtx)
+	}()
 	return s
 }
 

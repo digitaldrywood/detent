@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,6 +78,7 @@ func newConversationHub(t *testing.T) (*conversationHub, *nativeExecution) {
 	scheduler.nativeClaims[id] = nativeClaim{source: source, lease: lease, deadline: time.Now().Add(time.Hour)}
 	execution := &nativeExecution{scheduler: scheduler, claim: nativeClaim{source: source, lease: lease, deadline: time.Now().Add(time.Hour)}, data: tracker.NativeRunData{
 		RunID: "run_1", AttemptID: "attempt_1", LeaseID: lease.ID, FencingToken: lease.FencingToken,
+		Identity: &tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "example-model"},
 	}}
 	return hub, execution
 }
@@ -1232,6 +1234,62 @@ func TestNativeConversationBoundsEventsWhileTheHubStalls(t *testing.T) {
 	closeCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	_ = session.Close(closeCtx, runner.ConversationOutcomeSucceeded, nil)
+}
+
+func TestNativeConversationBindsBeforeProviderStart(t *testing.T) {
+	t.Parallel()
+	h := newNativeChangeHub(t, true)
+	issue := h.createInProgress(t, "Resume with current effort")
+	h.claim(t, issue.ID)
+	execution, ok := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	if !ok {
+		t.Fatal("missing native execution")
+	}
+	client := execution.claim.source.client.client
+	next := client.httpClient.Transport
+	var registered, earlyPoll atomic.Bool
+	polled := make(chan struct{})
+	var once sync.Once
+	client.httpClient.Transport = executionRoundTrip(func(request *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(request.URL.Path, "/controls") {
+			if !registered.Load() {
+				earlyPoll.Store(true)
+			}
+			once.Do(func() { close(polled) })
+		}
+		response, err := next.RoundTrip(request)
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/events") && err == nil && response.StatusCode == http.StatusOK {
+			registered.Store(true)
+		}
+		return response, err
+	})
+	session, err := execution.BindConversation(t.Context(), runner.ConversationCapabilities{Steer: true}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 10*time.Second)
+		defer cancel()
+		if err := session.Close(closeCtx, runner.ConversationOutcomeFailed, nil); err != nil {
+			t.Error(err)
+		}
+	})
+	identity := tracker.NativeExecutionIdentity{Role: "code", Backend: "codex", Model: "example-model", ReasoningEffort: "high"}
+	if err := execution.Start(t.Context(), identity); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-polled:
+	case <-testenv.WaitContext(t, t.Context()).Done():
+		t.Fatal("conversation polling did not begin after provider registration")
+	}
+	if earlyPoll.Load() {
+		t.Fatal("conversation polled before the final provider identity was registered")
+	}
+	recovery, err := h.native.Recovery(t.Context(), tracker.NativeWorkItemID(issue.ID))
+	if err != nil || len(recovery.Attempts) != 1 || recovery.Attempts[0].Identity == nil || *recovery.Attempts[0].Identity != identity {
+		t.Fatalf("persisted attempt identity: attempts=%+v error=%v", recovery.Attempts, err)
+	}
 }
 
 func TestNativeBindConversationSendsTheResumeThread(t *testing.T) {

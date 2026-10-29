@@ -1048,11 +1048,21 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 		(checkpoint.WorktreeState == "clean" || checkpoint.WorktreeState == "unpushed") {
 		return "fresh_checkout", "session_restart_required"
 	}
+	identityMatches := false
+	if previous.Identity != nil {
+		previousIdentity := *previous.Identity
+		if previousIdentity.ReasoningEffort == "" && identity.ReasoningEffort != "" && state.DetentSessionID > 0 && sessionAvailable &&
+			state.RuntimeIdentity.ReasoningEffort.Value == identity.ReasoningEffort &&
+			agentResumeStateMatches(state, identity.Model, identity.Backend, state.RuntimeIdentity.BackendKind, identity.Role) {
+			previousIdentity.ReasoningEffort = identity.ReasoningEffort
+		}
+		identityMatches = previousIdentity == identity
+	}
 	sameMachine := previous.MachineID == recovery.Lease.MachineID
 	localAvailable := sameMachine && local != nil
 	checkpointMatches := localAvailable && checkpoint.HeadSHA == local.HeadSHA && checkpoint.WorkspaceDigest != "" && checkpoint.WorkspaceDigest == local.WorkspaceFingerprint
 	if checkpoint.GitRef() {
-		if !operatorFresh && checkpointMatches && sessionAvailable && checkpoint.Resume == "resume_session" && previous.Identity != nil && *previous.Identity == identity {
+		if !operatorFresh && checkpointMatches && sessionAvailable && checkpoint.Resume == "resume_session" && identityMatches {
 			return "resume_session", "verified_local_session"
 		}
 		return "fresh_checkout", "session_restart_required"
@@ -1073,7 +1083,7 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 		return "fresh_checkout", "checkpoint_unavailable"
 	}
 	interrupted := nativeInterruptedResumeAttempt(recovery) != nil
-	if !operatorFresh && checkpointMatches && checkpoint.Resume == "resume_session" && previous.Identity != nil && *previous.Identity == identity {
+	if !operatorFresh && checkpointMatches && checkpoint.Resume == "resume_session" && identityMatches {
 		if sessionAvailable {
 			return "resume_session", "verified_local_session"
 		}
