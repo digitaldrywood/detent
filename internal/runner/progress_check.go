@@ -3,11 +3,13 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/digitaldrywood/detent/internal/gobudget"
 	"github.com/digitaldrywood/detent/internal/isolation"
 	"github.com/digitaldrywood/detent/internal/progresscheck"
 	"github.com/digitaldrywood/detent/internal/tracker"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 type progressTextBackend struct {
@@ -22,7 +24,7 @@ func (b progressTextBackend) Generate(ctx context.Context, instructions, input s
 	return b.generate(ctx, instructions+"\n\nEvidence:\n"+input)
 }
 
-func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence progresscheck.Request) (progresscheck.Decision, error) {
+func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence progresscheck.Request) (decision progresscheck.Decision, returnErr error) {
 	if req.Issue.IsolationPolicy != nil {
 		ctx = isolation.WithPolicy(ctx, *req.Issue.IsolationPolicy)
 	}
@@ -71,6 +73,22 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 	if err := req.Execution.Start(ctx, identity); err != nil {
 		return progresscheck.Decision{}, err
 	}
+	local, ok := r.workspaceSnapshot().(interface {
+		Existing(workspace.Issue) (workspace.Info, error)
+	})
+	if !ok {
+		return progresscheck.Decision{}, errors.New("progress worker workspace is unavailable")
+	}
+	info, err := local.Existing(workspaceIssue(r.projectID, req.Issue))
+	if err != nil {
+		return progresscheck.Decision{}, fmt.Errorf("resolve progress workspace: %w", err)
+	}
+	scratch, err := workspace.PrepareWorkerScratch(ctx, info.Path)
+	if err != nil {
+		return progresscheck.Decision{}, err
+	}
+	defer func() { returnErr = errors.Join(returnErr, workspace.CleanupWorkerScratch(info.Path, scratch)) }()
+	request.TempDir = scratch
 	generate := r.textGenerator(backend, request, req.Execution, backendConfig.Kind, progresscheck.MaxOutputBytes, "Return only the requested JSON object. Do not call tools or read files.")
 	return (progresscheck.AI{Backend: progressTextBackend{generate: generate}}).Decide(ctx, evidence)
 }
