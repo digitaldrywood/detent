@@ -811,6 +811,9 @@ WHERE organization_id=? AND project_id=? AND work_item_id=? AND record_id=? AND 
 }
 
 func appendNativeHistory(ctx context.Context, tx *sql.Tx, scope nativeScope, workItemID string, eventType string, data tracker.CollaborationData, now time.Time) error {
+	if err := expireNativeProgressDependencies(ctx, tx, scope, workItemID, eventType, data); err != nil {
+		return err
+	}
 	var sequence int64
 	if err := tx.QueryRowContext(ctx, "UPDATE issues SET event_sequence = event_sequence + 1 WHERE organization_id = ? AND project_id = ? AND native_id = ? RETURNING event_sequence", scope.organization, scope.project, workItemID).Scan(&sequence); err != nil {
 		return err

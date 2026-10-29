@@ -17,8 +17,12 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 		changed     bool
 		released    bool
 		editedOlder bool
+		fullContext bool
+		active      bool
 	}{
 		{name: "decision comment does not create new evidence"},
+		{name: "full context remains stable after publication", fullContext: true},
+		{name: "admitted active worker still reads prior failures", active: true},
 		{name: "new human input rejects stale decision", changed: true},
 		{name: "edited older human input rejects stale decision", changed: true, editedOlder: true},
 		{name: "released lease cannot publish decision", released: true},
@@ -42,6 +46,15 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				var view nativeProgressView
 				decodeHubResponse(t, response, &view)
 				return view
+			}
+			if test.active {
+				started := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("start")}, Type: "run.started", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 1, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: newNativeID("run"), AttemptID: newNativeID("attempt"), PolicyID: f.policy}}
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, started), http.StatusOK)
+			}
+			if test.fullContext {
+				for i := range progresscheck.MaxComments {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/comments", testHubAdminToken, tracker.CreateComment{Mutation: tracker.Mutation{IdempotencyKey: fmt.Sprintf("full-%d", i)}, Body: "Recorded evidence"}), http.StatusOK)
+				}
 			}
 			var older tracker.NativeComment
 			if test.editedOlder {
@@ -96,7 +109,11 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_comments WHERE work_item_id=?", f.issue.WorkItemID).Scan(&comments); err != nil {
 				t.Fatal(err)
 			}
-			if comments != 1 {
+			wantComments := 1
+			if test.fullContext {
+				wantComments += progresscheck.MaxComments
+			}
+			if comments != wantComments {
 				t.Fatalf("replay created %d comments", comments)
 			}
 		})

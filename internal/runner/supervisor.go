@@ -223,7 +223,17 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 		}
 	}
 
-	result, err := s.backend.Run(ctx, request)
+	var result RunResult
+	var err error
+	if request.PrepareRun != nil {
+		prepare := request.PrepareRun
+		request.PrepareRun = nil
+		err = prepare(ctx, &request)
+	}
+	completion.Request = request
+	if err == nil {
+		result, err = s.backend.Run(ctx, request)
+	}
 	err = preserveCancellation(ctx, err, "orchestrator.parent_context")
 	if cause := context.Cause(ctx); cooperativeStopError(cause) {
 		err = errors.Join(err, cause)
