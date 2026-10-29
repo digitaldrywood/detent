@@ -37,12 +37,11 @@ func TestRootCommandHelpListsAdminCommands(t *testing.T) {
 	if !strings.HasPrefix(output, "Examples:\n") {
 		t.Fatalf("help output does not lead with examples:\n%s", output)
 	}
-	for _, want := range []string{"detent", "agent orchestrator", "doctor", "dev-runtime", "hub", "cloud", "artifact", "pause", "resume", "issue", "report", "logs"} {
+	for _, want := range []string{"detent", "agent orchestrator", "doctor", "dev-runtime", "hub", "cloud", "artifact", "pause", "resume", "report", "logs"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}
 	}
-
 }
 
 func TestCommandHelpLeadsWithExample(t *testing.T) {
@@ -142,7 +141,7 @@ func TestRootCommandSuggestsMistypedCommandsAndFlags(t *testing.T) {
 		},
 	}
 
-	for _, name := range []string{"state", "mcp", "promote", "unpause"} {
+	for _, name := range []string{"issue", "state", "mcp", "promote", "unpause"} {
 		tests = append(tests, commandCase{name: "removed " + name, args: []string{name}, want: []string{`unknown command "` + name + `"`}, wantNoBoot: true})
 	}
 	for _, name := range []string{"get", "create", "edit", "comment", "edit-comment", "transition", "dependency", "comments", "history", "changes", "create-change", "change", "publish-change", "review-change", "check-change", "discuss-change", "approve-review-policy"} {
@@ -945,7 +944,6 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 		}
 	})
 	assertSignal(t, signals, cli.OperationResumeProject, "docs")
-
 }
 
 func TestPauseCommandExitConditionFlags(t *testing.T) {

@@ -490,7 +490,6 @@ detent --format json config path`),
 		newConfigCommand(&configPath, opts),
 		newCapacityCommand(&configPath, &host, &port, opts),
 		newExposureCommand(&configPath, opts),
-		newIssueCommand(&configPath, &host, &port, opts),
 		newReportCommand(&configPath, &host, &port, opts),
 	)
 	cmd.SetHelpCommand(newHelpCommand(cmd, opts))

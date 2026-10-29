@@ -2,7 +2,7 @@ package operatorskill
 
 import (
 	"bytes"
-	"context"
+	"encoding/json"
 	"regexp"
 	"slices"
 	"strings"
@@ -10,8 +10,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/digitaldrywood/detent/internal/cli"
 	"github.com/digitaldrywood/detent/internal/explain"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 )
 
 func TestContentReturnsCopy(t *testing.T) {
@@ -37,10 +37,10 @@ func TestSkillDocumentContract(t *testing.T) {
 	if len(metadata) != 2 || metadata["name"] != Name || strings.TrimSpace(stringValue(metadata["description"])) == "" {
 		t.Fatalf("frontmatter = %#v, want only name and description", metadata)
 	}
-	if !strings.Contains(body, "Bundle version: 2") {
+	if !strings.Contains(body, "Bundle version: 3") {
 		t.Fatalf("body missing bundle version %d", Version)
 	}
-	if Version != 2 {
+	if Version != 3 {
 		t.Fatalf("Version = %d, update the version stamp contract", Version)
 	}
 	if !strings.Contains(body, "Expected response schema: 3") || explain.SchemaVersion != 3 {
@@ -85,41 +85,35 @@ func assertDecisionTreeContract(t *testing.T, body string) {
 
 func assertCommandCatalogContract(t *testing.T, body string) {
 	t.Helper()
-	commandPattern := regexp.MustCompile(`(?m)^detent --format json issue '<issue-ref>' --explain --project '<project-id>'$`)
-	if got := len(commandPattern.FindAllString(body, -1)); got != 4 {
-		t.Fatalf("recommended command count = %d, want one for each decision class", got)
+	definition, ok := operatortool.Lookup(operatortool.ExplainItem)
+	if !ok || !definition.Annotations.ReadOnly {
+		t.Fatal("explain_item is not a cataloged read tool")
 	}
-	if other := regexp.MustCompile(`(?m)^detent .+$`).FindAllString(body, -1); len(other) != 4 {
-		t.Fatalf("named Detent commands = %q, want only the four recommended calls", other)
+	var schema struct {
+		Required   []string                   `json:"required"`
+		Properties map[string]json.RawMessage `json:"properties"`
 	}
-
-	root := cli.NewRootCommand(context.Background())
-	issue, _, err := root.Find([]string{"issue"})
-	if err != nil || issue == nil || issue.Name() != "issue" {
-		t.Fatalf("issue command lookup = %v, %v", issue, err)
+	if err := json.Unmarshal(definition.InputSchema, &schema); err != nil {
+		t.Fatal(err)
 	}
-	for _, name := range []string{"explain", "project"} {
-		if issue.Flags().Lookup(name) == nil {
-			t.Fatalf("issue command does not catalog --%s", name)
+	arguments := regexp.MustCompile("(?s)```json\n(.*?)\n```").FindAllStringSubmatch(body, -1)
+	if len(arguments) != 4 || strings.Count(body, "Hub MCP `explain_item` arguments:") != 4 {
+		t.Fatal("each decision class must call explain_item")
+	}
+	for _, example := range arguments {
+		var values map[string]string
+		if err := json.Unmarshal([]byte(example[1]), &values); err != nil {
+			t.Fatal(err)
 		}
-	}
-	if root.PersistentFlags().Lookup("format") == nil {
-		t.Fatal("root command does not catalog --format")
-	}
-
-	for _, code := range []string{
-		"dashboard_unauthorized",
-		"dashboard_forbidden",
-		"ambiguous_reference",
-		"issue_not_found",
-		"runtime_unavailable",
-		"dashboard_unreachable",
-		"dashboard_timeout",
-		"unsupported_model_version",
-		"dashboard_request_failed",
-	} {
-		if !strings.Contains(root.Long, code) {
-			t.Fatalf("CLI catalog does not contain named outcome %q", code)
+		for _, required := range schema.Required {
+			if values[required] == "" {
+				t.Fatalf("explain_item example omits required argument %q", required)
+			}
+		}
+		for key := range values {
+			if _, ok := schema.Properties[key]; !ok {
+				t.Fatalf("explain_item example contains uncataloged argument %q", key)
+			}
 		}
 	}
 }
