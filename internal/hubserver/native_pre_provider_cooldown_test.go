@@ -62,13 +62,17 @@ func TestClaimCandidatesRetryInstancePreProviderFailures(t *testing.T) {
 				}
 			}
 
-			var status, stage, attribution string
-			if err := f.service.database.db.QueryRowContext(t.Context(), `SELECT status, COALESCE(json_extract(data_json, '$.terminal_failure.stage'), ''), COALESCE(json_extract(data_json, '$.terminal_failure.attribution'), '') FROM native_attempts WHERE id = ?`, f.attempt).Scan(&status, &stage, &attribution); err != nil {
+			attempt, err := f.service.readNativeAttempt(t.Context(), f.scope(), string(f.issue.WorkItemID), f.attempt)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if status != "failed" {
-				t.Fatalf("attempt status = %q, want failed", status)
+			if attempt.Status != "failed" {
+				t.Fatalf("attempt status = %q, want failed", attempt.Status)
 			}
+			if attempt.TerminalFailure == nil {
+				t.Fatal("failed attempt lost terminal failure detail")
+			}
+			stage, attribution := attempt.TerminalFailure.Stage, attempt.TerminalFailure.Attribution
 			if test.preProvider != (stage == "pre_provider") {
 				t.Fatalf("terminal failure stage = %q, pre-provider %t", stage, test.preProvider)
 			}

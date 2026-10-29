@@ -393,11 +393,21 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 					if test.otherVersion {
 						finalization.VersionID = "version_other"
 					}
-					raw, err := json.Marshal(finalization)
+					ctx := f.service.runDetailContext(t.Context())
+					attempt, err := f.service.readNativeAttempt(ctx, f.scope(), string(f.issue.WorkItemID), f.attempt)
 					if err != nil {
 						t.Fatal(err)
 					}
-					if _, err := f.service.database.db.ExecContext(t.Context(), "UPDATE native_attempts SET data_json=json_set(data_json, '$.finalization', json(?)) WHERE id=?", string(raw), f.attempt); err != nil {
+					attempt.Finalization = &finalization
+					raw, err := json.Marshal(attempt.NativeRunData)
+					if err != nil {
+						t.Fatal(err)
+					}
+					ref, err := prepareChangeContent(ctx, string(f.project.OrganizationID), raw)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(ctx, "UPDATE native_attempts SET payload_object_key=?, finalization_settled=?, finalization_changed=?, finalization_change_id=?, finalization_version_id=? WHERE id=?", ref.Key, finalization.Settled, finalization.Changed, finalization.ChangeID, finalization.VersionID, f.attempt); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -411,17 +421,15 @@ func TestClaimCandidatesRequireUnansweredWorkItem(t *testing.T) {
 					if test.historicalReview {
 						review.VersionID, result.VersionID = historicalVersion, historicalVersion
 					}
-					tx, err := f.service.database.db.BeginTx(t.Context(), nil)
-					if err != nil {
-						t.Fatal(err)
-					}
-					defer tx.Rollback()
-					for _, evidence := range []tracker.ChangeReview{audit, review} {
-						if err := storeChangeReview(t.Context(), tx, string(f.project.OrganizationID), change.ID, evidence); err != nil {
-							t.Fatal(err)
+					ctx := f.service.runDetailContext(t.Context())
+					if err := f.service.hubTransact(ctx, func(tx *sql.Tx, _ time.Time) error {
+						for _, evidence := range []tracker.ChangeReview{audit, review} {
+							if err := storeChangeReview(ctx, tx, string(f.project.OrganizationID), change.ID, evidence); err != nil {
+								return err
+							}
 						}
-					}
-					if err := tx.Commit(); err != nil {
+						return nil
+					}); err != nil {
 						t.Fatal(err)
 					}
 				}
