@@ -213,13 +213,14 @@ func (w *resumedExecutionWorkspace) AfterRun(ctx context.Context, info workspace
 func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name        string
-		status      string
-		unpushed    bool
-		changedHead bool
-		dirty       bool
-		rebase      bool
-		gitRef      bool
+		name         string
+		status       string
+		unpushed     bool
+		changedHead  bool
+		changedModel bool
+		dirty        bool
+		rebase       bool
+		gitRef       bool
 	}{
 		{name: "killed clean attempt", status: "cancelled"},
 		{name: "killed unpushed attempt", status: "cancelled", unpushed: true},
@@ -228,6 +229,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 		{name: "unchanged git checkpoint on failed retry", status: "failed", gitRef: true},
 		{name: "cancelled retry with changed head", status: "cancelled", gitRef: true, changedHead: true},
 		{name: "failed retry with changed head", status: "failed", gitRef: true, changedHead: true},
+		{name: "failed retry with changed execution model", status: "failed", gitRef: true, changedModel: true},
 		{name: "cancelled retry preserves divergent tracked and untracked work", status: "cancelled", gitRef: true, dirty: true},
 		{name: "failed retry preserves divergent tracked and untracked work", status: "failed", gitRef: true, dirty: true},
 		{name: "cancelled retry rebases current Change", status: "cancelled", gitRef: true, rebase: true},
@@ -288,7 +290,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			backend := &resumedExecutionWorkspace{LocalGit: gitWorkspace}
 			providerErr := errors.New("provider interrupted")
 			agent := &fakeCodexClient{err: providerErr, result: AgentTurnResult{ThreadID: "persisted-thread", SessionID: "persisted-session"}}
-			if test.changedHead || test.dirty || test.rebase {
+			if test.changedHead || test.changedModel || test.dirty || test.rebase {
 				agent.result = AgentTurnResult{ThreadID: "fresh-thread", SessionID: "fresh-session"}
 			}
 			cfg := config.Config{Policy: approved}
@@ -338,6 +340,9 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			checkpoint.Resume = "resume_session"
 			execution := &testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{ID: "new-lease", MachineID: "machine", FencingToken: 2}, Attempts: []tracker.NativeAttempt{{Status: test.status, Checkpoint: &checkpoint, NativeRunData: tracker.NativeRunData{MachineID: "machine", LeaseID: "old-lease", FencingToken: 1, Identity: &tracker.NativeExecutionIdentity{Role: role, Backend: "codex", Model: "example-model"}, Runtime: &tracker.NativeRuntimeObservation{LocalAttemptID: attemptID, Identity: identity}}}}}}
 			var runExecution Execution = execution
+			if test.changedModel {
+				execution.recovery.Attempts[0].Identity.Model = "previous-model"
+			}
 			if test.gitRef {
 				ref, _, err := gitWorkspace.PushCheckpointRef(ctx, info, workspaceIssue, workspace.CheckpointRef{}, execution.Validate)
 				if err != nil {
@@ -370,11 +375,9 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 				runRunnerGit(t, source, "commit", "-m", "advance integration base")
 				runRunnerGit(t, source, "push", "origin", "main")
 			}
-			if test.rebase {
-				session := newFakeConversationSession()
-				session.resume = resume.ThreadID
-				ctx = (&conversationRun{session: session}).attach(ctx)
-			}
+			session := newFakeConversationSession()
+			session.resume = resume.ThreadID
+			ctx = (&conversationRun{session: session}).attach(ctx)
 			before, err := gitWorkspace.RecoveryState(ctx, info, workspaceIssue)
 			if err != nil {
 				t.Fatal(err)
@@ -382,7 +385,7 @@ func TestNativeRetryResumesPersistedSessionAfterRunnerRestart(t *testing.T) {
 			_, err = restarted.Run(ctx, RunRequest{ProjectID: "native", Policy: approved, WorkAttemptID: currentAttemptID, Generation: 2, Issue: issue, Mode: RunModeImplement, Execution: runExecution})
 			wantResume := resume
 			wantAction, wantReason := "resume_session", "verified_local_session"
-			if test.changedHead || test.dirty || test.rebase {
+			if test.changedHead || test.changedModel || test.dirty || test.rebase {
 				wantResume = AgentResume{}
 				wantAction, wantReason = "fresh_checkout", "session_restart_required"
 			}
@@ -1258,7 +1261,7 @@ func TestNativeReworkRefusesSourceLostDuringValidation(t *testing.T) {
 			verified := false
 			source := &resumedExecutionWorkspace{afterVerification: func() { verified = true }}
 			r := &Runner{}
-			state, err := r.nativeResume(t.Context(), RunRequest{Execution: execution}, nil, AgentProcessRequest{}, &local, store.AgentResumeState{}, identity, source, workspace.Info{}, workspace.Issue{NativeRework: true})
+			state, err := r.nativeResume(t.Context(), &RunRequest{Execution: execution}, nil, AgentProcessRequest{}, &local, store.AgentResumeState{}, identity, source, workspace.Info{}, workspace.Issue{NativeRework: true})
 			if !errors.Is(err, ErrNativeRecoveryRequired) {
 				t.Fatalf("missing refreshed source was not refused: %v", err)
 			}

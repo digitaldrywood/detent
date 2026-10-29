@@ -1094,7 +1094,7 @@ func nativeRecoveryAction(recovery tracker.NativeRecovery, local *workspace.Reco
 	return "fresh_checkout", "session_restart_required"
 }
 
-func (r *Runner) nativeResume(ctx context.Context, req RunRequest, backend AgentBackend, process AgentProcessRequest, local *workspace.RecoveryState, state store.AgentResumeState, identity tracker.NativeExecutionIdentity, source workspace.Backend, info workspace.Info, issue workspace.Issue) (store.AgentResumeState, error) {
+func (r *Runner) nativeResume(ctx context.Context, req *RunRequest, backend AgentBackend, process AgentProcessRequest, local *workspace.RecoveryState, state store.AgentResumeState, identity tracker.NativeExecutionIdentity, source workspace.Backend, info workspace.Info, issue workspace.Issue) (store.AgentResumeState, error) {
 	if req.Execution == nil {
 		return state, nil
 	}
@@ -1157,13 +1157,17 @@ func (r *Runner) nativeResume(ctx context.Context, req RunRequest, backend Agent
 		return store.AgentResumeState{}, fmt.Errorf("%w: %s", ErrNativeRecoveryRequired, reason)
 	}
 	if runtime, ok := req.Execution.(RuntimeExecution); ok {
-		if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(req), HeartbeatAt: r.now(), Recovery: &tracker.NativeRecoveryDecision{Action: action, Reason: reason}}); err != nil {
+		if err := runtime.ObserveRuntime(ctx, tracker.NativeRuntimeObservation{LocalAttemptID: req.WorkAttemptID, Generation: req.Generation, Phase: nativeRuntimePhase(*req), HeartbeatAt: r.now(), Recovery: &tracker.NativeRecoveryDecision{Action: action, Reason: reason}}); err != nil {
 			return store.AgentResumeState{}, err
 		}
 	}
 	if action != "resume_session" {
+		req.ResumeState = store.AgentResumeState{}
+		req.RetryMode = RetryModeFresh
 		return store.AgentResumeState{}, nil
 	}
+	req.ResumeState = state
+	req.RetryMode = RetryModeResume
 	return state, nil
 }
 

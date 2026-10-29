@@ -17,6 +17,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -33,6 +35,10 @@ type conversationAgentBackend struct {
 }
 
 func (*conversationAgentBackend) SupportsLiveControl() bool { return true }
+
+func (*conversationAgentBackend) VerifyResume(context.Context, AgentProcessRequest, AgentResume) error {
+	return nil
+}
 
 func (b *conversationAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
 	b.mu.Lock()
@@ -203,6 +209,29 @@ func newConversationRunner(t *testing.T, agent AgentBackend) *Runner {
 	return r
 }
 
+func prepareConversationResume(t *testing.T, r *Runner, execution *conversationTestExecution, thread string) {
+	t.Helper()
+	workflow, _, _, _ := r.runtimeSnapshot()
+	workflow.Config.Agents.Routes = []config.AgentRoute{{Name: "default", Role: RolePlan, Backend: "codex", Model: "example-model", Default: true}}
+	if err := r.UpdateWorkflowChecked(workflow); err != nil {
+		t.Fatal(err)
+	}
+	r.store = &fakeSessionStore{sessionID: 2, resumeState: store.AgentResumeState{DetentSessionID: 1, ProviderThreadID: thread}}
+	r.workspace.(*retainedExecutionWorkspace).recoveryStates = []workspace.RecoveryState{{HeadSHA: "actual-head", WorkspaceFingerprint: "actual-digest"}}
+	execution.recovery = tracker.NativeRecovery{
+		Lease: tracker.NativeLease{MachineID: "runner"},
+		Attempts: []tracker.NativeAttempt{{
+			Status: "failed",
+			NativeRunData: tracker.NativeRunData{
+				MachineID: "runner",
+				Identity:  &tracker.NativeExecutionIdentity{Role: RolePlan, Backend: "codex", Model: "example-model"},
+				Runtime:   &tracker.NativeRuntimeObservation{LocalAttemptID: 1},
+			},
+			Checkpoint: &tracker.NativeCheckpoint{Resume: "resume_session", Storage: "local_only", Availability: "available", WorktreeState: "clean", HeadSHA: "actual-head", WorkspaceDigest: "actual-digest"},
+		}},
+	}
+}
+
 func TestRunWithoutConversationStillSucceeds(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
@@ -249,6 +278,7 @@ func TestRunBindsConversationAndReportsTurn(t *testing.T) {
 	session.commands <- AgentControl{Kind: AgentControlMessage, ThreadID: "thread-1", TurnID: "turn-1", MessageID: "msg_1", Text: "steer", Check: func(context.Context) error { return nil }, Reply: make(chan error, 1)}
 	execution := &conversationTestExecution{session: session}
 	r := newConversationRunner(t, agent)
+	prepareConversationResume(t, r, execution, session.resume)
 	var reported []AgentTokenCounts
 	result, err := r.Run(t.Context(), RunRequest{
 		Execution: execution,
@@ -281,8 +311,8 @@ func TestRunBindsConversationAndReportsTurn(t *testing.T) {
 	if result.Tokens.TotalTokens != laterDelta.TotalTokens || result.Tokens.Last == nil || *result.Tokens.Last != *laterUsage.Last {
 		t.Fatalf("canonical resume result = %#v, want attempt total %d with unchanged last-call usage", result.Tokens, laterDelta.TotalTokens)
 	}
-	if execution.resumeThread != "" {
-		t.Fatalf("initial resume thread = %q, want no resume before canonical conversation binding", execution.resumeThread)
+	if execution.resumeThread != session.resume {
+		t.Fatalf("initial resume thread = %q, want verified native thread %q", execution.resumeThread, session.resume)
 	}
 	if !execution.capabilities.Steer || !execution.capabilities.Interrupt || !execution.capabilities.Answer {
 		t.Fatalf("capabilities = %#v", execution.capabilities)
@@ -353,22 +383,35 @@ func TestRunBindsConversationAndReportsTurn(t *testing.T) {
 
 func TestConversationStartupRetainsBoundProviderIdentity(t *testing.T) {
 	t.Parallel()
-	for _, thread := range []string{"", "bound-thread"} {
-		t.Run(thread, func(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		thread   string
+		verified bool
+	}{
+		{name: "no bound thread"},
+		{name: "unverified bound thread", thread: "bound-thread"},
+		{name: "verified bound thread", thread: "bound-thread", verified: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			startupErr := errors.New("provider startup failed before updates")
 			agent := &conversationAgentBackend{beforeTurnErr: startupErr}
 			session := newFakeConversationSession()
-			session.resume = thread
+			session.resume = test.thread
 			execution := &conversationTestExecution{session: session}
 			r := newConversationRunner(t, agent)
 			r.workspace.(*retainedExecutionWorkspace).recoveryStates = []workspace.RecoveryState{{HeadSHA: "actual-head", WorkspaceFingerprint: "actual-digest"}}
+			if test.verified {
+				prepareConversationResume(t, r, execution, test.thread)
+			}
 			result, err := r.Run(t.Context(), RunRequest{Execution: execution, Issue: connector.Issue{ID: "native", Identifier: "native#1"}, Mode: RunModePlan})
 			want := "fresh_checkout"
-			if thread != "" {
+			wantThread := ""
+			if test.verified {
 				want = "resume_session"
+				wantThread = test.thread
 			}
-			if !errors.Is(err, startupErr) || !execution.bound || len(agent.requests) != 1 || agent.requests[0].Resume.ThreadID != thread || execution.checkpoint == nil || execution.checkpoint.Resume != want || execution.checkpoint.HeadSHA != "actual-head" || execution.checkpoint.WorkspaceDigest != "actual-digest" || result.NativeChange != nil || result.TurnCount != 0 {
+			if !errors.Is(err, startupErr) || !execution.bound || len(agent.requests) != 1 || agent.requests[0].Resume.ThreadID != wantThread || execution.checkpoint == nil || execution.checkpoint.Resume != want || execution.checkpoint.HeadSHA != "actual-head" || execution.checkpoint.WorkspaceDigest != "actual-digest" || result.NativeChange != nil || result.TurnCount != 0 {
 				t.Fatalf("startup identity: error=%v requests=%d checkpoint=%+v turns=%d", err, len(agent.requests), execution.checkpoint, result.TurnCount)
 			}
 		})

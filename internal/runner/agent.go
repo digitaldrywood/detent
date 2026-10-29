@@ -1264,8 +1264,9 @@ func (r *Runner) runAgentTurn(
 	turnStarted := false
 	workerProcessObserved := false
 	conversation := conversationRunFromContext(ctx)
+	freshNativeTurn := runRequest.Execution != nil && runRequest.RetryMode == RetryModeFresh && agentResumeEmpty(turnRequest.Resume)
 	turnRequest = conversation.prepareTurn(turnRequest)
-	if runRequest.Execution != nil && runRequest.RetryMode == RetryModeFresh {
+	if freshNativeTurn {
 		turnRequest.Resume = AgentResume{}
 	}
 	turnRequest.reserveScratch = r.reserveSessionWorkerScratch(detentSessionID, info.Path, "")
@@ -2114,7 +2115,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 			return RunResult{}, fmt.Errorf("%w: review source changed before finalization", ErrNativeRecoveryRequired)
 		}
 	} else if turnRecovery == nil {
-		resumeState, err = r.nativeResume(ctx, req, backend, processRequest, recoveryState, resumeState, executionIdentity, runWorkspace, info, workspaceIssue)
+		resumeState, err = r.nativeResume(ctx, &req, backend, processRequest, recoveryState, resumeState, executionIdentity, runWorkspace, info, workspaceIssue)
 		if err != nil {
 			return RunResult{}, err
 		}
@@ -2173,7 +2174,7 @@ func (r *Runner) run(ctx context.Context, req RunRequest) (returnValue RunResult
 				if err != nil {
 					return RunResult{}, err
 				}
-				resumeState, err = r.nativeResume(ctx, req, backend, processRequest, recoveryState, resumeState, executionIdentity, runWorkspace, info, workspaceIssue)
+				resumeState, err = r.nativeResume(ctx, &req, backend, processRequest, recoveryState, resumeState, executionIdentity, runWorkspace, info, workspaceIssue)
 				if err != nil {
 					return RunResult{}, err
 				}
