@@ -199,7 +199,7 @@ func (b *AgentBackend) runTurn(
 	result, err := b.client.RunTurn(ctx, RunTurnRequest{
 		FinalPrompt: func() string {
 			if req.ToolBudget.Exhausted() && !json.Valid([]byte(finalText.String())) {
-				return runner.InvestigationBudgetMessage
+				return req.ToolBudget.FinalPrompt(ctx)
 			}
 			return ""
 		},

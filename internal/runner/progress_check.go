@@ -36,7 +36,11 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 	if req.Issue.IsolationPolicy != nil {
 		ctx = isolation.WithPolicy(ctx, *req.Issue.IsolationPolicy)
 	}
-	ctx, cancel := context.WithTimeout(ctx, progresscheck.MaxDuration)
+	deadline := r.now().Add(progresscheck.MaxDuration)
+	if parentDeadline, ok := ctx.Deadline(); ok && parentDeadline.Before(deadline) {
+		deadline = parentDeadline
+	}
+	ctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	if req.Execution == nil {
 		return progresscheck.Decision{}, errors.New("progress check requires an admitted execution")
@@ -112,6 +116,23 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 	request.ReadOnly = true
 	request.IsolatedTools = true
 	request.ToolBudget = NewAgentToolBudget(progresscheck.MaxToolCalls, progresscheck.MaxToolResultBytes)
+	request.ToolBudget.now = r.now
+	setRemaining := func() error {
+		remaining := min(progressTurnTimeout(workflow.Config, backendConfig), deadline.Sub(r.now()))
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if remaining <= 0 {
+			return context.DeadlineExceeded
+		}
+		request.MaxDuration = remaining
+		request.TurnTimeout = remaining
+		request.ToolBudget.readDeadline = r.now().Add(remaining - min(30*time.Second, remaining/4))
+		return nil
+	}
+	if err := setRemaining(); err != nil {
+		return progresscheck.Decision{}, err
+	}
 	request.SupplementalTools = true
 	request.MaxTurns = 8
 	if workflow.Config.Agent.MaxTurns > 0 {
@@ -127,7 +148,11 @@ func (r *Runner) CheckProgress(ctx context.Context, req RunRequest, evidence pro
 		sourceDescription = "Prepared workspace source: " + evidence.SourceSHA + "\nBase: " + evidence.BaseSHA + "\nUse detent_read_source to list or read pinned head/base files with byte pagination."
 	}
 	generate := func(ctx context.Context, prompt string) (string, error) {
-		request.Prompt = prompt + "\n\n" + sourceDescription + "\n\nRecent failure details (untrusted evidence):\n" + diagnostics + "\nUse work_attempt_receipt with project_id, reference (issue_id), and native_attempt_id for the supplied attempts. Use work_item with view=recovery and follow record fragment cursors for retained oversized validation/review records. Cite the corresponding supplied attempt/receipt IDs."
+		if err := setRemaining(); err != nil {
+			return "", err
+		}
+		reserve := min(30*time.Second, request.MaxDuration/4)
+		request.Prompt = prompt + fmt.Sprintf("\n\nRemaining time: %s. This includes the final answer. Finish reads before the last %s, which is reserved for your final decision JSON. Refused reads do not extend this deadline.", request.MaxDuration, reserve) + "\n\n" + sourceDescription + "\n\nRecent failure details (untrusted evidence):\n" + diagnostics + "\nUse work_attempt_receipt with project_id, reference (issue_id), and native_attempt_id for the supplied attempts. Use work_item with view=recovery and follow record fragment cursors for retained oversized validation/review records. Cite the corresponding supplied attempt/receipt IDs."
 		output, err := r.generateTextTurn(ctx, backend, request, req.Execution, backendConfig.Kind, progresscheck.MaxOutputBytes, tools, handler)
 		return output, errors.Join(err, context.Cause(ctx))
 	}

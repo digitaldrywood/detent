@@ -3,8 +3,10 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 var ErrInvestigationBudget = errors.New("investigation tool budget exhausted")
@@ -26,10 +28,19 @@ type AgentToolBudget struct {
 	err                error
 	tools              map[string]bool
 	items              map[string]investigationItem
+	now                func() time.Time
+	readDeadline       time.Time
 }
 
 func NewAgentToolBudget(maxCalls, maxBytes int) *AgentToolBudget {
-	return &AgentToolBudget{maxCalls: maxCalls, maxBytes: maxBytes, tools: make(map[string]bool), items: make(map[string]investigationItem)}
+	return &AgentToolBudget{maxCalls: maxCalls, maxBytes: maxBytes, tools: make(map[string]bool), items: make(map[string]investigationItem), now: time.Now}
+}
+
+func (b *AgentToolBudget) FinalPrompt(ctx context.Context) string {
+	if deadline, ok := ctx.Deadline(); ok {
+		return fmt.Sprintf("%s Remaining time: %s, including this final answer.", InvestigationBudgetMessage, max(0, deadline.Sub(b.now())))
+	}
+	return InvestigationBudgetMessage
 }
 
 func (b *AgentToolBudget) consume(calls, bytes int) error {
@@ -42,6 +53,9 @@ func (b *AgentToolBudget) consume(calls, bytes int) error {
 }
 
 func (b *AgentToolBudget) consumeLocked(calls, bytes int) error {
+	if !b.readDeadline.IsZero() && !b.now().Before(b.readDeadline) {
+		b.err = ErrInvestigationBudget
+	}
 	if b.err == nil && (calls > b.maxCalls-b.calls || bytes > b.maxBytes-b.bytes || (calls > 0 && b.bytes >= b.maxBytes)) {
 		b.err = ErrInvestigationBudget
 	}
@@ -59,7 +73,7 @@ func (b *AgentToolBudget) Exhausted() bool {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.err != nil || b.calls >= b.maxCalls || b.bytes >= b.maxBytes
+	return b.consumeLocked(0, 0) != nil || b.calls >= b.maxCalls || b.bytes >= b.maxBytes
 }
 
 func (b *AgentToolBudget) Observe(update AgentUpdate) error {
@@ -116,10 +130,25 @@ func (b *AgentToolBudget) handler(handle AgentToolHandler) AgentToolHandler {
 		return handle
 	}
 	return func(ctx context.Context, call AgentToolCall) (AgentToolResult, error) {
+		if err := ctx.Err(); err != nil {
+			return AgentToolResult{}, err
+		}
 		if err := b.consume(1, 0); err != nil {
 			return AgentToolResult{}, err
 		}
-		result, err := handle(ctx, call)
+		readCtx := ctx
+		if !b.readDeadline.IsZero() {
+			var cancel context.CancelFunc
+			readCtx, cancel = context.WithDeadline(ctx, b.readDeadline)
+			defer cancel()
+		}
+		result, err := handle(readCtx, call)
+		if ctx.Err() != nil {
+			return AgentToolResult{}, ctx.Err()
+		}
+		if readCtx.Err() != nil {
+			return AgentToolResult{}, ErrInvestigationBudget
+		}
 		if budgetErr := b.consume(0, len(result.Content)+len(result.ImageURL)); budgetErr != nil {
 			return AgentToolResult{}, budgetErr
 		}

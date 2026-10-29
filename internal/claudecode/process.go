@@ -51,6 +51,15 @@ func (b *AgentBackend) runTurn(ctx context.Context, req runner.AgentTurnRequest,
 	if req.TurnTimeout > 0 {
 		turnTimeout = req.TurnTimeout
 	}
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return runner.AgentTurnResult{}, context.DeadlineExceeded
+		}
+		if turnTimeout <= 0 || remaining < turnTimeout {
+			turnTimeout = remaining
+		}
+	}
 	if turnTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, turnTimeout)
@@ -201,7 +210,7 @@ func (b *AgentBackend) runTurn(ctx context.Context, req runner.AgentTurnRequest,
 	}
 	if !finalizing && req.ToolBudget.Exhausted() && !json.Valid([]byte(state.resultText)) && state.sessionID != "" && ctx.Err() == nil && (finalErr == nil || errors.Is(finalErr, runner.ErrSessionTurnLimitExceeded)) {
 		req.Resume = runner.AgentResume{SessionID: state.sessionID}
-		req.Prompt = runner.InvestigationBudgetMessage
+		req.Prompt = req.ToolBudget.FinalPrompt(ctx)
 		req.MaxTurns = 1
 		return b.runTurn(ctx, req, onUpdate, true)
 	}

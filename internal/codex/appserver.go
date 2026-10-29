@@ -612,7 +612,17 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 			}
 		}
 
-		if err := s.streamTurn(ctx, transport, threadID, turnID, req.turnTimeout(s.turnTimeout), req.StallTimeout, req.ToolHandler, elicitationState, onUpdate); err != nil {
+		turnTimeout := req.turnTimeout(s.turnTimeout)
+		if deadline, ok := ctx.Deadline(); ok {
+			remaining := deadline.Sub(s.now())
+			if remaining <= 0 {
+				return RunTurnResult{}, context.DeadlineExceeded
+			}
+			if turnTimeout <= 0 || remaining < turnTimeout {
+				turnTimeout = remaining
+			}
+		}
+		if err := s.streamTurn(ctx, transport, threadID, turnID, turnTimeout, req.StallTimeout, req.ToolHandler, elicitationState, onUpdate); err != nil {
 			return RunTurnResult{}, err
 		}
 
