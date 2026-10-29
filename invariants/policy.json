@@ -7,7 +7,7 @@
       "TestCloudReport",
       "TestCloudTransport",
       "TestCloudDestinationAuthority",
-      "TestScheduledFinalizer"
+      "TestReleaseFinalizer"
     ],
     "./tools/invariantcheck": [
       "TestBehaviorEvidence"
