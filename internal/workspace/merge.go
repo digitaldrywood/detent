@@ -517,6 +517,11 @@ func (l *LocalGit) runValidationCommand(ctx context.Context, info Info, issue Is
 		procgroup.SetEnvironment(cmd, procgroup.Environment{Variables: variables})
 	}
 	procgroup.SetTempDir(cmd, scratch)
+	if !paged {
+		if session := l.startGoTestReceipts(ctx, cmd, info.Path); session != nil {
+			defer func() { l.finishGoTestReceipts(ctx, session, &result) }()
+		}
+	}
 	procgroup.Configure(ctx, cmd)
 	result.Evidence = reviewCommandEvidence(ctx, cmd, command)
 	if !result.Evidence.Environment.Known() {

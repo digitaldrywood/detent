@@ -384,12 +384,13 @@ No cache is keyed per project or attempt, and no new cache configuration is
 introduced; new `workspace.*cache*` keys are rejected. Per-attempt isolation is
 limited to the host-provided `TMPDIR`/`TMP`/`TEMP`.
 
-Apart from the resolved build cache, its cache program and the shared Go
-admission budget's `-p`, `-trimpath` and `-toolexec` defaults, the runner must not
-set toolchain cache, home or flag variables (such as `GOMODCACHE`, `GOFLAGS`,
-`npm_config_cache`, `CARGO_HOME` or `PIP_CACHE_DIR`) unless the operator
-explicitly passes them through. Host values and explicit overrides, including
-an operator-provided `GOCACHEPROG`, are preserved.
+Apart from the resolved build cache, its cache program, the shared Go
+admission budget's `-p`, `-trimpath` and `-toolexec` defaults, and the go test
+receipt wrapper's `-trimpath` and `-exec` in gate and validator commands, the
+runner must not set toolchain cache, home or flag variables (such as
+`GOMODCACHE`, `GOFLAGS`, `npm_config_cache`, `CARGO_HOME` or `PIP_CACHE_DIR`)
+unless the operator explicitly passes them through. Host values and explicit
+overrides, including an operator-provided `GOCACHEPROG`, are preserved.
 
 **Enforcement:** `TestINV12WorkerInheritsToolchainEnvironment`,
 `TestINV12BackendToolchainEnvironment` in `internal/runner`;
@@ -398,7 +399,8 @@ an operator-provided `GOCACHEPROG`, are preserved.
 `TestINV12DoctorNativeCaches`, `TestINV12DoctorWorkspaceKinds`,
 `TestSSHProbeRequiresProvidedScratch`, and
 `TestSSHLocalTargetIntegration` in `internal/cli`;
-`TestINV12TrimReadout` in `internal/toolcache`.
+`TestINV12TrimReadout` in `internal/toolcache`;
+`TestRunReviewCommandReusesGoTestReceiptsAcrossWorkspaces` in `internal/workspace`.
 
 ## INV-13 — A board card is a title and one status line
 

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/gotestreceipt"
 	"github.com/digitaldrywood/detent/internal/procgroup"
 	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/toolcache"
@@ -26,6 +27,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if gotestreceipt.IsWrapperInvocation(os.Args[0]) {
+		os.Exit(gotestreceipt.RunWrapper(os.Args[1:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	}
 	if len(os.Args) == 2 && os.Args[1] == toolcache.ProgramArgument {
 		if err := toolcache.RunProgram(os.Getenv("GOCACHE"), os.TempDir(), os.Stdin, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)

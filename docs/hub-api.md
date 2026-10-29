@@ -87,6 +87,21 @@ explicit; an unreported decision is not an observed refusal. The normal release
 owner deploys the supported service and reporting runner builds before live
 operator acceptance. This API does not install a build or recover an attempt.
 
+## Go test receipts
+
+`GET /api/v2/organizations/{organization}/projects/{project}/go-test-receipts?key={key}`
+returns up to eight recorded `candidates` for one test binary key, newest first.
+`POST` to the same path records a receipt with `key`, `package`, `inputs` and
+`digest`. Both require a worker or runner credential for the project; runner
+identities read with `read` and record with `events`.
+
+The key is the SHA-256 of the test binary and its test flags. `inputs` lists the
+environment variables and files the test read, as recorded by Go's test log, with
+files inside the checkout stored relative to the checkout root. `digest` hashes
+their values. A receipt holds names and hashes only, never test output, build
+cache entries or file contents, is limited to 96 KiB of input names and expires
+after 30 days.
+
 ## Work view preferences
 
 Hosted sessions expose `GET`, `PUT`, and `DELETE` at
