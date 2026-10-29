@@ -117,9 +117,13 @@ func TestNativeRetryProgressOwnerAndSuccess(t *testing.T) {
 type nativeProgressRerouteAgent struct {
 	nativePlanningAgent
 	attempt string
+	err     error
 }
 
 func (a *nativeProgressRerouteAgent) RunTurn(_ context.Context, _ runner.AgentTurnRequest, update runner.AgentUpdateHandler) (runner.AgentTurnResult, error) {
+	if a.err != nil {
+		return runner.AgentTurnResult{}, a.err
+	}
 	if err := update(runner.AgentUpdate{Type: runner.AgentUpdateTokenUsage, Tokens: runner.AgentTokenUsage{InputTokens: 10, OutputTokens: 1}}); err != nil {
 		return runner.AgentTurnResult{}, err
 	}
@@ -271,6 +275,102 @@ func testNativeRetryProgressReroute(t *testing.T, reserved bool) {
 		t.Fatalf("selected step admission failed: %v", err)
 	case <-testenv.WaitContext(t, t.Context()).Done():
 		t.Fatal("rerouted implementation did not reach execution start")
+	}
+}
+
+func TestNativeRetryProgressFailureReleasesExecutionIdentity(t *testing.T) {
+	t.Parallel()
+	states := hubserverPlanStates()
+	states[1].Transitions = append(states[1].Transitions, "Rework")
+	states = append(states, tracker.NativeState{Name: "Rework", Dispatchable: true, Transitions: []string{"Todo", "In Progress"}})
+	h := newNativeChangeHubTransport(t, "Human Review", states, true)
+	issue, err := h.connector.CreateIssue(t.Context(), connector.IssueDraft{Title: "Retry implementation after progress failure", Body: "Update the README." + issueContractTestSections})
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmIssueContract(t, h.admin, issue.ID)
+	claim := func(state string) connector.Issue {
+		t.Helper()
+		candidates, err := h.scheduler.FetchCandidateIssues(t.Context(), orchestrator.SchedulingRequest{Policy: h.descriptor, ProjectID: "local", WorkflowStates: []string{state}})
+		if err != nil || len(candidates) != 1 || candidates[0].ID != issue.ID {
+			t.Fatalf("admission: candidates=%v error=%v", candidates, err)
+		}
+		admitted, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return admitted.Issue
+	}
+	claim("Todo")
+	failed := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	if err := failed.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "code-model"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := failed.PrepareFinish(t.Context(), "failed", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.scheduler.ReleaseClaim(t.Context(), issue.ID, "failed"); err != nil {
+		t.Fatal(err)
+	}
+	current, err := h.admin.Issue(t.Context(), tracker.NativeWorkItemID(issue.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []string{"In Progress", "Rework"} {
+		current, err = h.admin.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: nativeMutationKey(), ExpectedRevision: current.Revision, State: state, Reason: "user_requested"})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	issue = claim("Rework")
+	original := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	provider := &nativeProgressRerouteAgent{err: errors.New("runner claim isolation policy is unavailable")}
+	agent, err := runner.NewRunner(runner.Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "implementation", Backend: "codex", Model: "code-model", Default: true}}}}}, Workspace: providerPreviewWorkspace{}, AgentBackend: provider})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := &nativeProgressRerouteRunner{Runner: agent, started: make(chan nativeProgressRerouteRun, 1)}
+	source := &nativeProgressRerouteScheduling{nativeCompletionScheduling: &nativeCompletionScheduling{Scheduler: h.scheduler, issue: issue, released: make(chan error, 1)}, refused: make(chan error, 1)}
+	orch, err := orchestrator.New(orchestrator.Config{Project: scheduler.ProjectCandidate{ID: "local"}, Policy: h.descriptor, PollInterval: time.Hour, MaxConcurrentAgents: 1, ActiveStates: []string{"Todo", "In Progress", "Rework"}, TerminalStates: []string{"Done"}}, orchestrator.Dependencies{Connector: h.connector, Scheduling: source, Runner: backend, Logger: slog.New(slog.NewTextHandler(t.Output(), nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- orch.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			t.Error(err)
+		}
+	})
+	select {
+	case err := <-source.released:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-backend.started:
+		t.Fatal("implementation started after a failed progress check")
+	case <-testenv.WaitContext(t, t.Context()).Done():
+		t.Fatal("failed progress check did not release its claim")
+	}
+	check, err := h.admin.NativeAttempt(t.Context(), tracker.NativeWorkItemID(issue.ID), original.data.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if check.Identity == nil || check.Identity.Role != runner.RoleRework || check.Outcome != "failed" || check.ClaimReleasedAt == nil {
+		t.Fatalf("failed progress check retained its rework identity: %+v", check)
+	}
+	issue = claim("Todo")
+	implementation := h.scheduler.RunExecution(issue.ID).(*nativeExecution)
+	if err := implementation.Start(t.Context(), tracker.NativeExecutionIdentity{Role: runner.RoleCode, Backend: "codex", Model: "code-model"}); err != nil {
+		t.Fatalf("implementation retry could not start: %v", err)
+	}
+	if implementation.data.AttemptID == check.AttemptID || implementation.claim.lease.ID == check.LeaseID {
+		t.Fatal("implementation retry reused the progress execution's admission")
+	}
+	if err := implementation.Start(t.Context(), *check.Identity); err == nil {
+		t.Fatal("implementation allowed its admitted identity to change")
 	}
 }
 
