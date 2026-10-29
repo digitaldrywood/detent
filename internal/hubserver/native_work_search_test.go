@@ -398,7 +398,8 @@ func TestNativeWorkSearchRanking(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			var got []tracker.NativeWorkItemID
 			if mode == "rebuilding issues" {
-				if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts; UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts; DELETE FROM native_work_search_lengths;
+UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -438,7 +439,7 @@ func TestNativeWorkSearchRanking(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts;
+		if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts; DELETE FROM native_work_search_lengths;
 UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
 			t.Fatal(err)
 		}
@@ -922,6 +923,65 @@ func TestNativeWorkSearchProjectRebuild(t *testing.T) {
 		if err != nil || len(matches) != want {
 			t.Errorf("unaffected duplicate search project=%s matches=%v err=%v", fixture.project.ID, matches, err)
 		}
+	}
+}
+
+func TestNativeSearchIndexedIssueDuringRebuild(t *testing.T) {
+	for _, mode := range []string{"deployment backfill", "scope refresh"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newDefaultNativeFixture(t, Config{})
+			if err := f.service.stopGitHubWebhookMaintenance(); err != nil {
+				t.Fatal(err)
+			}
+			legacy := f.create(t, "Legacy narwhal discussion")
+			if _, err := f.service.database.db.ExecContext(t.Context(), `WITH RECURSIVE seed(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seed WHERE n<?)
+ INSERT INTO issues(native_id,organization_id,project_id,number,workflow_state_id,title,body,url,github_state,source_version,source_updated_at,synchronized_at,created_at,updated_at,actor_kind,actor_principal_id)
+ SELECT 'wi_rebuild_legacy_'||seed.n,i.organization_id,i.project_id,seed.n+1,i.workflow_state_id,'Legacy discussion','','','open','','','',i.created_at,i.updated_at,i.actor_kind,i.actor_principal_id
+ FROM seed CROSS JOIN issues i WHERE i.native_id=?`, nativeSearchPostingBudget+100, legacy.WorkItemID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.service.database.db.ExecContext(t.Context(), `DELETE FROM native_work_scoped_fts;
+ DELETE FROM native_work_search_lengths`); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "deployment backfill" {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE native_work_search_rebuild SET through_id=0,last_id=(SELECT max(id) FROM native_work_documents)`); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if _, err := f.service.database.db.ExecContext(t.Context(), `INSERT INTO native_work_search_dirty(issue_id,organization_id,project_id)
+ SELECT id,organization_id,project_id FROM issues WHERE native_id=?`, legacy.WorkItemID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fresh := f.create(t, "Narwhal quasaruniqueterm")
+			scope := nativeScope{organization: f.project.OrganizationID, project: f.project.ID}
+			if err := requireNativeSearchIndex(t.Context(), f.service.database.reader, scope); !errors.Is(err, operatortool.ErrServiceUnavailable) {
+				t.Fatalf("search rebuild not pending: %v", err)
+			}
+			for _, test := range []struct {
+				query string
+				want  []tracker.NativeWorkItemID
+			}{
+				{"quasaruniqueterm", []tracker.NativeWorkItemID{fresh.WorkItemID}},
+				{"narwhal quasaruniqueterm", []tracker.NativeWorkItemID{fresh.WorkItemID, legacy.WorkItemID}},
+			} {
+				t.Run(test.query, func(t *testing.T) {
+					params := url.Values{"q": {test.query}, "limit": {"2"}}
+					response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items?"+params.Encode(), f.token, nil)
+					requireNativeStatus(t, response, http.StatusOK)
+					var page tracker.NativeIssuePage
+					decodeHubResponse(t, response, &page)
+					var got []tracker.NativeWorkItemID
+					for _, item := range page.Items {
+						got = append(got, item.WorkItemID)
+					}
+					if !slices.Equal(got, test.want) {
+						t.Fatalf("search during rebuild=%v want=%v", got, test.want)
+					}
+				})
+			}
+		})
 	}
 }
 

@@ -104,10 +104,15 @@ func nativeSearchHits(scope nativeScope, archived string, expressions []string) 
  SELECT i.id FROM index_state CROSS JOIN (
  SELECT i.* FROM issues i WHERE i.organization_id=? AND i.project_id=?` + archiveFilter + ` LIMIT ` + strconv.Itoa(nativeSearchPostingBudget) + `
  ) i WHERE index_state.incomplete AND (` + visibility + `)
- ), terms(matched,key) AS (VALUES ` + strings.Join(values, ",") + `), search_scopes(scope) AS (VALUES ` + strings.Join(scopeValues, ",") + `), fallback_documents AS MATERIALIZED (
- SELECT d.id,d.issue_id,c.title,c.body,native_search_tokens(c.title,'')+native_search_tokens(c.body,'') AS tokens
+ ), terms(matched,key) AS (VALUES ` + strings.Join(values, ",") + `), search_scopes(scope) AS (VALUES ` + strings.Join(scopeValues, ",") + `), fallback_candidates AS MATERIALIZED (
+ SELECT d.id,d.issue_id,c.title,c.body
  FROM fallback_issues i CROSS JOIN native_work_documents d CROSS JOIN native_work_search_content c
  WHERE d.issue_id=i.id AND c.id=d.id LIMIT ` + strconv.Itoa(nativeSearchPostingBudget) + `
+ ), fallback_documents AS MATERIALIZED (
+ SELECT d.*,native_search_tokens(d.title,'')+native_search_tokens(d.body,'') AS tokens
+ FROM fallback_candidates d WHERE NOT EXISTS (
+ SELECT 1 FROM search_scopes s CROSS JOIN native_work_search_lengths l WHERE l.document_id=d.id AND l.scope=s.scope
+ )
  ), fallback_population AS MATERIALIZED (
  SELECT count(*) AS documents,avg(tokens) AS average FROM fallback_documents
  ), fallback_matches AS MATERIALIZED (
@@ -122,9 +127,9 @@ func nativeSearchHits(scope nativeScope, archived string, expressions []string) 
  FROM fallback_matches m CROSS JOIN fallback_population p JOIN fallback_frequencies f ON f.matched=m.matched
  WHERE m.frequency>0 GROUP BY m.id
  ), candidates AS MATERIALIZED (
- SELECT DISTINCT p.document_id,p.scope FROM index_state CROSS JOIN terms CROSS JOIN search_scopes s
+ SELECT DISTINCT p.document_id,p.scope FROM terms CROSS JOIN search_scopes s
  CROSS JOIN native_work_search_postings p
- WHERE NOT index_state.incomplete AND p.rowid IN (
+ WHERE p.rowid IN (
  SELECT rowid FROM native_work_search_postings WHERE scope=s.scope AND term=terms.key
  ORDER BY impact DESC,document_id LIMIT ` + strconv.Itoa(nativeSearchPostingBudget) + `)
  ), indexed_matches AS MATERIALIZED (
@@ -132,11 +137,11 @@ func nativeSearchHits(scope nativeScope, archived string, expressions []string) 
  CASE WHEN length(t.matched)>` + strconv.Itoa(nativeSearchPrefixLimit+3) + ` THEN
  (SELECT 5*native_search_tokens(title,t.matched)+native_search_tokens(body,t.matched) FROM native_work_search_content WHERE id=c.document_id)
  ELSE p.frequency END AS frequency,l.tokens,CAST(pop.tokens AS REAL)/pop.documents AS average,pop.documents,f.documents AS matching
- FROM index_state CROSS JOIN candidates c CROSS JOIN terms t
+ FROM candidates c CROSS JOIN terms t
  CROSS JOIN native_work_search_postings p CROSS JOIN native_work_search_lengths l
  CROSS JOIN native_work_search_population pop CROSS JOIN native_work_search_frequencies f
  CROSS JOIN native_work_documents d
- WHERE NOT index_state.incomplete AND p.document_id=c.document_id AND p.scope=c.scope AND p.term=t.key
+ WHERE p.document_id=c.document_id AND p.scope=c.scope AND p.term=t.key
  AND l.document_id=c.document_id AND l.scope=c.scope AND pop.scope=c.scope
  AND f.scope=c.scope AND f.term=t.key AND d.id=c.document_id
  ), indexed_scores AS MATERIALIZED (
