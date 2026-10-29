@@ -1,16 +1,20 @@
 package hubserver
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/conversation"
+	"github.com/digitaldrywood/detent/internal/testenv"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -85,7 +89,7 @@ func (f *conversationWorkerFixture) as(generation conversationGeneration, body f
 // way a process restart does, and points the fixture at the new service.
 func (f *conversationWorkerFixture) restart(t *testing.T) {
 	t.Helper()
-	config := Config{DatabasePath: f.service.config.DatabasePath, Conversation: &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour}, now: f.service.config.now}
+	config := Config{DatabasePath: f.service.config.DatabasePath, Conversation: &ConversationConfig{Enabled: true, QuestionTimeout: time.Hour, ArchiveContents: f.chat.store.contents}, now: f.service.config.now}
 	if err := f.service.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
@@ -315,23 +319,34 @@ func newConversationQuestionFixture(t *testing.T, status conversation.QuestionSt
 	f := newConversationAPIFixture(t, nil)
 	record := f.create(t, f.token, map[string]any{"title": "Questions"}).Conversation
 	requireNativeStatus(t, f.link(t, f.token, record.ID, "link", true, "Ask me"), http.StatusOK)
-	ctx := t.Context()
 	service := f.service.conversations
 	questionID := conversation.NewQuestionID()
-	err := service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+	plan, err := service.newPublicationPlan(t.Context(), record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution := conversation.Execution{Status: conversation.ExecutionWaitingInput, Owner: conversation.Owner{AttemptID: "att_1", RunID: "run_1", TurnID: "turn_1"}, Capabilities: conversation.Capabilities{Answer: true}}
+	if err := plan.updateExecution(t.Context(), execution); err != nil {
+		t.Fatal(err)
+	}
+	question := conversationQuestionRecord{Question: conversation.Question{
+		ID: questionID, ConversationID: record.ID, Status: status, Owner: execution.Owner,
+		Prompts:   []conversation.Prompt{{ID: "color", Question: "Which color?", Options: []conversation.Option{{Label: "red"}, {Label: "blue"}}}},
+		CreatedAt: plan.now, UpdatedAt: plan.now,
+	}}
+	if err := plan.prepareQuestion(t.Context(), question); err != nil {
+		t.Fatal(err)
+	}
+	ctx := plan.context(t.Context())
+	err = service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 		linked, err := service.store.readConversation(ctx, tx, f.project.OrganizationID, f.project.ID, record.ID)
 		if err != nil {
 			return err
 		}
-		execution := conversation.Execution{Status: conversation.ExecutionWaitingInput, Owner: conversation.Owner{AttemptID: "att_1", RunID: "run_1", TurnID: "turn_1"}, Capabilities: conversation.Capabilities{Answer: true}}
 		if err := service.updateExecution(ctx, tx, &linked, execution, now); err != nil {
 			return err
 		}
-		return service.store.upsertQuestion(ctx, tx, conversationQuestionRecord{Question: conversation.Question{
-			ID: questionID, ConversationID: record.ID, Status: status, Owner: execution.Owner,
-			Prompts:   []conversation.Prompt{{ID: "color", Question: "Which color?", Options: []conversation.Option{{Label: "red"}, {Label: "blue"}}}},
-			CreatedAt: now, UpdatedAt: now,
-		}})
+		return service.store.upsertQuestion(ctx, tx, question)
 	})
 	if err != nil {
 		t.Fatalf("seed question: %v", err)
@@ -378,52 +393,88 @@ func TestConversationDuplicateAnswers(t *testing.T) {
 		}
 	})
 
-	t.Run("two keys race and exactly one wins", func(t *testing.T) {
-		t.Parallel()
-		f := newConversationQuestionFixture(t, conversation.QuestionPending)
-		var wg sync.WaitGroup
-		results := make([]*httptest.ResponseRecorder, 2)
-		for index, value := range []string{"red", "blue"} {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				results[index] = f.answer(t, "race-"+strconv.Itoa(index), value)
-			}()
-		}
-		wg.Wait()
-		accepted, refused := 0, 0
-		for _, response := range results {
-			switch response.Code {
-			case http.StatusOK:
-				accepted++
-				var receipt conversation.Receipt
-				decodeHubResponse(t, response, &receipt)
-				if receipt.Status != conversation.DeliveryQueued || receipt.QuestionID != f.questionID {
-					t.Fatalf("winning receipt = %#v", receipt)
+	for _, test := range []struct {
+		name     string
+		sameKey  bool
+		accepted int
+	}{
+		{name: "two keys race and exactly one wins", accepted: 1},
+		{name: "one key races and replays one receipt", sameKey: true, accepted: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			f := newConversationQuestionFixture(t, conversation.QuestionPending)
+			var wg sync.WaitGroup
+			arrived, release := make(chan struct{}, 2), make(chan struct{})
+			var calls atomic.Int64
+			var releaseOnce sync.Once
+			closeRelease := func() { releaseOnce.Do(func() { close(release) }) }
+			f.service.conversations.store.contents.(*conversationContentFixture).onIO = func() error {
+				if calls.Add(1) <= 2 {
+					arrived <- struct{}{}
+					<-release
 				}
-			case http.StatusConflict:
-				refused++
-				if code := decodeNativeError(t, response).Code; code != "question_already_answered" {
-					t.Fatalf("loser code = %q, want question_already_answered", code)
-				}
-			default:
-				t.Fatalf("unexpected status %d: %s", response.Code, response.Body.String())
+				return nil
 			}
-		}
-		if accepted != 1 || refused != 1 {
-			t.Fatalf("accepted %d refused %d, want exactly one winner", accepted, refused)
-		}
-		var answers int
-		if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE conversation_id = ? AND kind = ?", f.conversationID, conversation.MessageAnswer).Scan(&answers); err != nil {
-			t.Fatal(err)
-		}
-		if answers != 1 {
-			t.Fatalf("answer messages = %d, want exactly one", answers)
-		}
-		if got := f.questionStatus(t); got != conversation.QuestionSending {
-			t.Fatalf("question status = %q, want sending", got)
-		}
-	})
+			t.Cleanup(func() { closeRelease(); wg.Wait() })
+			results := make([]*httptest.ResponseRecorder, 2)
+			for index, value := range []string{"red", "blue"} {
+				key := "race-" + strconv.Itoa(index)
+				if test.sameKey {
+					key, value = "race-shared", "red"
+				}
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					results[index] = f.answer(t, key, value)
+				}()
+			}
+			for range 2 {
+				select {
+				case <-arrived:
+				case <-testenv.WaitContext(t, t.Context()).Done():
+					t.Fatal("both answers did not reach publication")
+				}
+			}
+			closeRelease()
+			wg.Wait()
+			accepted, refused := 0, 0
+			for _, response := range results {
+				switch response.Code {
+				case http.StatusOK:
+					accepted++
+					var receipt conversation.Receipt
+					decodeHubResponse(t, response, &receipt)
+					if receipt.Status != conversation.DeliveryQueued || receipt.QuestionID != f.questionID {
+						t.Fatalf("winning receipt = %#v", receipt)
+					}
+				case http.StatusConflict:
+					refused++
+					if code := decodeNativeError(t, response).Code; code != "question_already_answered" {
+						t.Fatalf("loser code = %q, want question_already_answered", code)
+					}
+				default:
+					t.Fatalf("unexpected status %d: %s", response.Code, response.Body.String())
+				}
+			}
+			if accepted != test.accepted || refused != 2-test.accepted {
+				t.Fatalf("accepted %d refused %d, want %d and %d", accepted, refused, test.accepted, 2-test.accepted)
+			}
+			if test.sameKey && results[0].Body.String() != results[1].Body.String() {
+				t.Fatal("concurrent replay changed the stored receipt")
+			}
+			var answers int
+			if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_messages WHERE conversation_id = ? AND kind = ?", f.conversationID, conversation.MessageAnswer).Scan(&answers); err != nil {
+				t.Fatal(err)
+			}
+			if answers != 1 {
+				t.Fatalf("answer messages = %d, want exactly one", answers)
+			}
+			if got := f.questionStatus(t); got != conversation.QuestionSending {
+				t.Fatalf("question status = %q, want sending", got)
+			}
+		})
+	}
 
 	t.Run("an expired question is stale", func(t *testing.T) {
 		t.Parallel()
@@ -447,18 +498,25 @@ func TestConversationDuplicateAnswers(t *testing.T) {
 // It returns the sequence of event ids the burst produced.
 func conversationBurstDeltas(t *testing.T, f streamFixture, id string, count int) []string {
 	t.Helper()
-	ctx := t.Context()
 	service := f.service.conversations
-	var message conversationMessageRecord
+	message := conversationMessageRecord{Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding, Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "runner"}}
 	ids := make([]string, 0, count+1)
-	emit := func(apply func(tx *sql.Tx, record *conversationRecord, now time.Time) error) {
+	emit := func(apply func(context.Context, *sql.Tx, *conversationRecord, time.Time) error, prepare func(context.Context, *conversationPublicationPlan) error) {
 		t.Helper()
-		err := service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+		plan, err := service.newPublicationPlan(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := prepare(t.Context(), plan); err != nil {
+			t.Fatal(err)
+		}
+		ctx := plan.context(t.Context())
+		err = service.transact(ctx, func(tx *sql.Tx, now time.Time) error {
 			record, err := service.store.readConversation(ctx, tx, f.project.OrganizationID, f.project.ID, id)
 			if err != nil {
 				return err
 			}
-			if err := apply(tx, &record, now); err != nil {
+			if err := apply(ctx, tx, &record, now); err != nil {
 				return err
 			}
 			return tx.QueryRowContext(ctx, "SELECT event_seq FROM conversations WHERE id = ?", id).Scan(&record.EventSeq)
@@ -468,17 +526,17 @@ func conversationBurstDeltas(t *testing.T, f streamFixture, id string, count int
 		}
 		service.broker.notify(id)
 	}
-	emit(func(tx *sql.Tx, record *conversationRecord, now time.Time) error {
-		message = conversationMessageRecord{
-			Role: conversation.RoleAssistant, Kind: conversation.MessageText, Delivery: conversation.DeliveryResponding,
-			Actor: conversation.Actor{Kind: conversation.ActorRunner, PrincipalID: "runner"},
-		}
+	emit(func(ctx context.Context, tx *sql.Tx, record *conversationRecord, now time.Time) error {
 		return service.appendMessage(ctx, tx, record, &message, now)
+	}, func(ctx context.Context, p *conversationPublicationPlan) error {
+		return p.appendMessage(ctx, &message)
 	})
 	ids = append(ids, "1")
 	for i := range count {
-		emit(func(tx *sql.Tx, _ *conversationRecord, now time.Time) error {
+		emit(func(ctx context.Context, tx *sql.Tx, _ *conversationRecord, now time.Time) error {
 			return service.appendDelta(ctx, tx, &message, "d"+strconv.Itoa(i), now)
+		}, func(ctx context.Context, p *conversationPublicationPlan) error {
+			return p.appendDelta(ctx, message, "d"+strconv.Itoa(i))
 		})
 		ids = append(ids, strconv.Itoa(i+2))
 	}
@@ -854,7 +912,7 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 			{name: "removed policy preserves owner", query: "DELETE FROM project_policies WHERE scope = (SELECT scope FROM lease_policies WHERE lease_id = ?)", retainsOwner: true},
 			{name: "released lease", query: "UPDATE leases SET released_at = acquired_at WHERE lease_id = ?"},
 			{name: "terminal attempt", query: "UPDATE native_attempts SET status = 'succeeded' WHERE lease_id = ?"},
-			{name: "foreign attempt", query: "UPDATE conversations SET execution_json = json_set(execution_json, '$.attempt_id', 'foreign-attempt') WHERE json_extract(execution_json, '$.lease_id') = ?"},
+			{name: "foreign attempt"},
 			{name: "foreign work item", query: "UPDATE native_attempts SET work_item_id = (SELECT native_id FROM issues WHERE title = 'foreign-worker-issue') WHERE lease_id = ?"},
 			{name: "foreign run", query: "UPDATE native_attempts SET run_id = 'foreign-run' WHERE lease_id = ?"},
 			{name: "wrong fence", query: "UPDATE native_attempts SET fencing_token = fencing_token + 1 WHERE lease_id = ?"},
@@ -872,7 +930,17 @@ func TestConversationHubRestartRecovery(t *testing.T) {
 				if test.name == "foreign work item" {
 					f.create(t, "foreign-worker-issue")
 				}
-				if _, err := f.service.database.db.ExecContext(t.Context(), test.query, f.lease.ID); err != nil {
+				if test.name == "foreign attempt" {
+					foreign := original
+					foreign.Owner.AttemptID = "foreign-attempt"
+					raw, err := json.Marshal(foreign)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE conversations SET execution_json=?,content_attachment_id='',execution_status=NULL,query_metadata_version=0 WHERE id=?`, string(raw), f.record.ID); err != nil {
+						t.Fatal(err)
+					}
+				} else if _, err := f.service.database.db.ExecContext(t.Context(), test.query, f.lease.ID); err != nil {
 					t.Fatal(err)
 				}
 				if err := f.chat.reconcileExecutions(t.Context()); err != nil {
@@ -1184,7 +1252,7 @@ func conversationEmittedMessageUpdate(t *testing.T, f *conversationWorkerFixture
 	t.Helper()
 	var count int
 	if err := f.service.database.db.QueryRowContext(t.Context(),
-		"SELECT count(*) FROM conversation_events WHERE conversation_id = ? AND type = ? AND json_extract(body_json, '$.id') = ?",
+		"SELECT count(*) FROM conversation_events WHERE conversation_id = ? AND type = ? AND object_id = ?",
 		f.record.ID, conversation.EventMessageUpdated, messageID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}

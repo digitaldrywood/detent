@@ -718,7 +718,7 @@ func browserPreviewConfig(cfg *Config) {
 		plans.Plans, plans.Base = []HostedPlan{plan}, plan.PlanReference
 		cfg.Hosted.Plans = &plans
 	}
-	cfg.Conversation = &ConversationConfig{Enabled: true, Backend: newFakeCoordinatorBackend(), Model: genkitbackend.Model, ReasoningEffort: "low"}
+	cfg.Conversation = &ConversationConfig{Enabled: true, Backend: newFakeCoordinatorBackend(), Model: genkitbackend.Model, ReasoningEffort: "low", ArchiveContents: &conversationContentFixture{}}
 	cfg.Usage = &UsageConfig{Currency: "USD", Prices: map[string]UsagePrice{
 		"gpt-6-astra":   {Input: 1.25, CachedInput: 0.125, Output: 10},
 		"claude-opus-5": {Input: 5, CachedInput: 0.5, Output: 25},

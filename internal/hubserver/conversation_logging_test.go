@@ -113,6 +113,11 @@ func openConversationLogService(t *testing.T, cfg Config, sink *conversationLogS
 	if testing.Short() {
 		t.Skip("durable SQLite integration")
 	}
+	if cfg.Conversation != nil && cfg.Conversation.ArchiveContents == nil {
+		conversationConfig := *cfg.Conversation
+		conversationConfig.ArchiveContents = &conversationContentFixture{}
+		cfg.Conversation = &conversationConfig
+	}
 
 	cfg.Logger = slog.New(slog.NewJSONHandler(sink, nil))
 	if len(cfg.InitialAdminToken) == 0 {
@@ -258,24 +263,42 @@ func TestConversationLoggingRestartNormalization(t *testing.T) {
 			t.Fatalf("seed %q: %v", query, err)
 		}
 	}
-	exec("UPDATE conversations SET execution_json = json_set(execution_json, '$.status', 'running'),execution_status=NULL,query_metadata_version=0 WHERE id = ?", unlinked.ID)
+	executionRaw, err := json.Marshal(conversation.Execution{Status: conversation.ExecutionRunning})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec("UPDATE conversations SET execution_json=?,content_attachment_id='',execution_status=NULL,query_metadata_version=0 WHERE id = ?", string(executionRaw), unlinked.ID)
 	exec("UPDATE conversation_messages SET delivery = ? WHERE conversation_id = ? AND command_key = ?", conversation.DeliverySending, unlinked.ID, "u2")
-	exec("UPDATE conversation_commands SET receipt_json = json_set(receipt_json, '$.status', ?),receipt_status=NULL,query_metadata_version=0 WHERE conversation_id = ? AND key = ?", conversation.DeliverySending, unlinked.ID, "u2")
+	receipt, found, err := f.service.conversations.readReceipt(ctx, f.service.database.reader, unlinked.ID, "u2")
+	if err != nil || !found {
+		t.Fatalf("read receipt: found=%v err=%v", found, err)
+	}
+	receipt.Status = conversation.DeliverySending
+	receiptRaw, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec("UPDATE conversation_commands SET receipt_json=?,content_attachment_id='',receipt_status=NULL,query_metadata_version=0 WHERE conversation_id = ? AND key = ?", string(receiptRaw), unlinked.ID, "u2")
 	exec("UPDATE conversation_messages SET delivery = ? WHERE conversation_id = ? AND command_key = ?", conversation.DeliverySaved, unlinked.ID, "u1")
 	var messageID string
 	if err := db.QueryRowContext(ctx, "SELECT id FROM conversation_messages WHERE conversation_id = ? AND command_key = ?", unlinked.ID, "u2").Scan(&messageID); err != nil {
 		t.Fatalf("read seeded message: %v", err)
 	}
 	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatalf("BeginTx() error = %v", err)
-	}
 	question := conversationQuestionRecord{Question: conversation.Question{
 		ID: conversation.NewQuestionID(), ConversationID: unlinked.ID, MessageID: messageID,
 		Status: conversation.QuestionPending, Prompts: []conversation.Prompt{{ID: "p", Question: "Continue?"}},
 		CreatedAt: now, UpdatedAt: now,
 	}}
+	questionRaw, err := questionPayload(question)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = prepareRecordTestPayload(t, conversationFixture{store: f.service.conversations.store}, conversationRecord{OrganizationID: f.project.OrganizationID}, questionRaw)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
 	if err := f.service.conversations.store.upsertQuestion(ctx, tx, question); err != nil {
 		_ = tx.Rollback()
 		t.Fatalf("upsertQuestion() error = %v", err)
@@ -292,7 +315,7 @@ func TestConversationLoggingRestartNormalization(t *testing.T) {
 	sink := &conversationLogSink{}
 	// The restarted hub has a coordinator backend, so the saved message of
 	// the unlinked conversation is handed to the coordinator.
-	openConversationLogService(t, Config{DatabasePath: databasePath, Conversation: &ConversationConfig{Enabled: true, ControlQueueSize: 8, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir()}}, sink)
+	openConversationLogService(t, Config{DatabasePath: databasePath, Conversation: &ConversationConfig{Enabled: true, ControlQueueSize: 8, Backend: newFakeCoordinatorBackend(), Workspace: t.TempDir(), ArchiveContents: f.service.config.Conversation.ArchiveContents}}, sink)
 
 	requireConversationLogFields(t, sink.only(t, "conversation.restart_normalized"), map[string]any{
 		"conversations": float64(1),
@@ -328,19 +351,33 @@ func TestConversationNormalizeAfterRestartSummary(t *testing.T) {
 		record.Execution = conversation.Execution{Status: row.execution, UpdatedAt: now}
 		record = f.create(t, record)
 		key := "k" + strconv.Itoa(i)
+		message := conversationMessageRecord{ID: conversation.NewMessageID(), ConversationID: record.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: conversationLogSentinel, Delivery: row.delivery, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}, CommandKey: key, CreatedAt: now, UpdatedAt: now}
+		question := conversationQuestionRecord{Question: conversation.Question{ID: conversation.NewQuestionID(), ConversationID: record.ID, MessageID: message.ID, Status: row.question, Prompts: []conversation.Prompt{{ID: "p", Question: "?"}}, CreatedAt: now, UpdatedAt: now}}
+		questionRaw, err := questionPayload(question)
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipt := conversation.Receipt{Key: key, Kind: conversation.CommandMessage, Status: row.receipt, MessageID: message.ID, UpdatedAt: now}
+		receiptRaw, err := json.Marshal(receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		initialRaw, err := json.Marshal(conversation.Receipt{Key: key, Kind: conversation.CommandMessage, Status: conversation.DeliverySaved, UpdatedAt: now})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := prepareRecordTestPayload(t, f, record, questionRaw, initialRaw, receiptRaw)
 		tx := f.tx(t)
-		message := conversationMessageRecord{ConversationID: record.ID, Role: conversation.RoleUser, Kind: conversation.MessageText, Text: conversationLogSentinel, Delivery: row.delivery, Actor: conversation.Actor{Kind: conversation.ActorHuman, PrincipalID: f.owner}, CommandKey: key, CreatedAt: now, UpdatedAt: now}
-		if err := f.store.appendMessage(t.Context(), tx, &message); err != nil {
+		if err := f.appendMessage(t, ctx, tx, &message); err != nil {
 			t.Fatalf("appendMessage() error = %v", err)
 		}
-		question := conversationQuestionRecord{Question: conversation.Question{ID: conversation.NewQuestionID(), ConversationID: record.ID, MessageID: message.ID, Status: row.question, Prompts: []conversation.Prompt{{ID: "p", Question: "?"}}, CreatedAt: now, UpdatedAt: now}}
-		if err := f.store.upsertQuestion(t.Context(), tx, question); err != nil {
+		if err := f.store.upsertQuestion(ctx, tx, question); err != nil {
 			t.Fatalf("upsertQuestion() error = %v", err)
 		}
-		if _, _, err := f.store.reserveCommand(t.Context(), tx, record.ID, key, conversation.CommandMessage, "hash", now); err != nil {
+		if _, _, err := f.store.reserveCommand(ctx, tx, record.ID, key, conversation.CommandMessage, "hash", now); err != nil {
 			t.Fatalf("reserveCommand() error = %v", err)
 		}
-		if err := f.store.updateReceipt(t.Context(), tx, record.ID, key, conversation.Receipt{Key: key, Kind: conversation.CommandMessage, Status: row.receipt, MessageID: message.ID, UpdatedAt: now}); err != nil {
+		if err := f.store.updateReceipt(ctx, tx, record.ID, key, receipt); err != nil {
 			t.Fatalf("updateReceipt() error = %v", err)
 		}
 		f.commit(t, tx)

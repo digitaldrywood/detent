@@ -600,6 +600,10 @@ func (s *Service) executeNativeMutation(ctx context.Context, scope nativeScope, 
 			return nil, err
 		}
 	}
+	now = conversationWriteTime(ctx, now)
+	if err := validateConversationPublication(ctx, tx); err != nil {
+		return nil, err
+	}
 	value, err := operation(ctx, tx, scope, now)
 	if err != nil {
 		return nil, err

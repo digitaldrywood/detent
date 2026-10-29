@@ -89,14 +89,15 @@ func (f conversationAPIFixture) upload(t *testing.T, token, id, name, media stri
 func (f conversationAPIFixture) share(t *testing.T, id string) {
 	t.Helper()
 	service := f.service.conversations
-	if err := service.transact(t.Context(), func(tx *sql.Tx, _ time.Time) error {
-		record, err := service.store.readConversationByID(t.Context(), tx, id)
-		if err != nil {
-			return err
-		}
-		revision := record.Revision
-		record.Visibility = conversation.VisibilityShared
-		return service.store.updateConversation(t.Context(), tx, &record, revision)
+	record, err := service.store.readConversationByID(t.Context(), service.store.reader, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := record.Revision
+	record.Visibility = conversation.VisibilityShared
+	ctx := prepareTestConversationRecord(t, service.store, record)
+	if err := service.transact(ctx, func(tx *sql.Tx, _ time.Time) error {
+		return service.store.updateConversation(ctx, tx, &record, revision)
 	}); err != nil {
 		t.Fatalf("share conversation: %v", err)
 	}
@@ -195,6 +196,10 @@ func TestConversationAttachmentDelete(t *testing.T) {
 	created := f.create(t, f.token, map[string]any{"title": "Delete"})
 	id := created.Conversation.ID
 	upload := f.upload(t, f.token, id, "notes.md", "text/markdown", []byte("# Notes\n"))
+	stored, err := f.service.conversations.store.readAttachment(t.Context(), f.service.database.reader, id, upload.ID)
+	if err != nil || stored.ContentID == "" {
+		t.Fatalf("uploaded attachment has no object reference: %v", err)
+	}
 
 	// Another principal cannot delete an upload it does not own, and cannot
 	// see the private conversation at all.
@@ -205,13 +210,8 @@ func TestConversationAttachmentDelete(t *testing.T) {
 	requireNativeStatus(t, response, http.StatusNoContent)
 	response = performHubAPIRequest(t, f.service, http.MethodGet, upload.URL, f.token, nil)
 	requireNativeStatus(t, response, http.StatusNotFound)
-	// The bytes are gone, not only the row.
-	var blobs int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_attachment_blobs").Scan(&blobs); err != nil {
-		t.Fatal(err)
-	}
-	if blobs != 0 {
-		t.Fatalf("blobs after delete = %d, want 0", blobs)
+	if _, err := f.service.conversations.store.readAttachmentContent(t.Context(), f.service.database.reader, stored.ArtifactRef); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("deleted attachment content remains readable: %v", err)
 	}
 	// Deleting twice is still not found.
 	response = performHubAPIRequest(t, f.service, http.MethodDelete, upload.URL, f.token, nil)
@@ -343,12 +343,18 @@ func TestConversationAttachmentSweep(t *testing.T) {
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, expired.URL, f.token, nil), http.StatusNotFound)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, kept.URL, f.token, nil), http.StatusOK)
 	requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodGet, bound.URL, f.token, nil), http.StatusOK)
-	var blobs int
-	if err := f.service.database.db.QueryRowContext(t.Context(), "SELECT count(*) FROM conversation_attachment_blobs").Scan(&blobs); err != nil {
-		t.Fatal(err)
-	}
-	if blobs != 2 {
-		t.Fatalf("blobs after the sweep = %d, want 2", blobs)
+	for _, live := range []struct {
+		upload conversation.AttachmentUpload
+		text   string
+	}{{kept, "new"}, {bound, "sent"}} {
+		stored, err := f.service.conversations.store.readAttachment(t.Context(), f.service.database.reader, id, live.upload.ID)
+		if err != nil || stored.ContentID == "" {
+			t.Fatalf("live attachment lost its object reference: %v", err)
+		}
+		content, err := f.service.conversations.store.readAttachmentContent(t.Context(), f.service.database.reader, stored.ArtifactRef)
+		if err != nil || string(content) != live.text {
+			t.Fatalf("live attachment content=%q want=%q err=%v", content, live.text, err)
+		}
 	}
 }
 

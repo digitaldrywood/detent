@@ -76,11 +76,12 @@ func newWriteLoadFixture(t *testing.T, history, runners, sessions int) *writeLoa
 			Execution: conversation.Execution{Status: conversation.ExecutionWaitingForRunner, UpdatedAt: now},
 			CreatedAt: now, UpdatedAt: now,
 		}
+		ctx := prepareTestConversationRecord(t, f.service.conversations.store, record)
 		tx, err := d.db.BeginTx(t.Context(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := f.service.conversations.store.createConversation(t.Context(), tx, &record); err != nil {
+		if err := f.service.conversations.store.createConversation(ctx, tx, &record); err != nil {
 			_ = tx.Rollback()
 			t.Fatal(err)
 		}

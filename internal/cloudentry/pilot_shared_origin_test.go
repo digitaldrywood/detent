@@ -74,7 +74,7 @@ func (l *pilotTenantLauncher) Start(_ context.Context, spec TenantSpec) error {
 			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL, Provider: l.provider,
 			StaffEmails: []string{"staff@example.test"}, Plans: pilotPlans(),
 			EntitlementAdministrator: "pilot-operator", EntitlementAdminToken: []byte(pilotOperatorToken),
-			SharedEntry: &hubserver.HostedSharedEntry{Issuer: spec.Issuer, PublicKeys: []ed25519.PublicKey{public}, Generation: spec.Organization.Generation},
+			SharedEntry: &hubserver.HostedSharedEntry{ArchiveContents: &conversationArchiveFixture{}, Issuer: spec.Issuer, PublicKeys: []ed25519.PublicKey{public}, Generation: spec.Organization.Generation},
 		},
 	}
 	if l.billing != nil {

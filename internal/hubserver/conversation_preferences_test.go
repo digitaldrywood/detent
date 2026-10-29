@@ -279,13 +279,23 @@ func readConversationIssue(t *testing.T, f conversationAPIFixture, id string) tr
 func TestConversationPreferencesReachTheBind(t *testing.T) {
 	t.Parallel()
 	f := newConversationWorkerFixture(t)
-	if err := f.chat.transact(t.Context(), func(tx *sql.Tx, now time.Time) error {
-		record, err := f.chat.store.readConversationByID(t.Context(), tx, f.record.ID)
+	plan, err := f.chat.newPublicationPlan(t.Context(), f.record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.record.WorkItem = nil
+	plan.record.Preferences = conversation.Preferences{Model: conversationPreferencesModel, ReasoningEffort: conversation.EffortHigh, Access: conversation.AccessReadOnly}
+	if err := plan.saveConversation(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := plan.context(t.Context())
+	if err := f.chat.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+		record, err := f.chat.store.readConversationByID(ctx, tx, f.record.ID)
 		if err != nil {
 			return err
 		}
 		record.Preferences = conversation.Preferences{Model: conversationPreferencesModel, ReasoningEffort: conversation.EffortHigh, Access: conversation.AccessReadOnly}
-		return f.chat.saveConversation(t.Context(), tx, &record, now)
+		return f.chat.saveConversation(ctx, tx, &record, now)
 	}); err != nil {
 		t.Fatalf("store preferences: %v", err)
 	}
@@ -358,7 +368,7 @@ func TestConversationSettleSweep(t *testing.T) {
 func setConversationExecution(t *testing.T, f conversationAPIFixture, id string, status conversation.ExecutionStatus) {
 	t.Helper()
 	if _, err := f.service.database.db.ExecContext(t.Context(),
-		"UPDATE conversations SET execution_json = json_set(execution_json, '$.status', ?) WHERE id = ?", status, id); err != nil {
+		"UPDATE conversations SET content_attachment_id='',execution_json = ?,execution_status=? WHERE id = ?", mustMarshalConversationExecution(t, f.service.conversations.store, id, func(execution *conversation.Execution) { execution.Status = status }), status, id); err != nil {
 		t.Fatalf("set execution: %v", err)
 	}
 }
@@ -635,8 +645,21 @@ func TestConversationReferencesSurviveMessageUpdates(t *testing.T) {
 
 	// Move the message on without changing its text, the way the coordinator
 	// and the worker do, and read the event the update emitted.
-	if err := f.service.conversations.transact(t.Context(), func(tx *sql.Tx, now time.Time) error {
-		pending, err := f.service.conversations.queryMessages(t.Context(), tx, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND delivery = 'saved' ORDER BY seq", record.ID)
+	plan, err := f.service.conversations.newPublicationPlan(t.Context(), record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := f.service.conversations.queryMessages(plan.context(t.Context()), f.service.database.reader, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND delivery = 'saved' ORDER BY seq", record.ID)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending=%v error=%v", pending, err)
+	}
+	pending[0].Delivery = conversation.DeliverySending
+	if err := plan.updateMessage(t.Context(), pending[0]); err != nil {
+		t.Fatal(err)
+	}
+	ctx := plan.context(t.Context())
+	if err := f.service.conversations.transact(ctx, func(tx *sql.Tx, now time.Time) error {
+		pending, err := f.service.conversations.queryMessages(ctx, tx, conversationMessageQuery+"conversation_id = ? AND role = 'user' AND delivery = 'saved' ORDER BY seq", record.ID)
 		if err != nil {
 			return err
 		}
@@ -644,7 +667,7 @@ func TestConversationReferencesSurviveMessageUpdates(t *testing.T) {
 			t.Fatalf("pending = %#v", pending)
 		}
 		pending[0].Delivery = conversation.DeliverySending
-		return f.service.conversations.updateMessage(t.Context(), tx, pending[0], now)
+		return f.service.conversations.updateMessage(ctx, tx, pending[0], now)
 	}); err != nil {
 		t.Fatalf("update message: %v", err)
 	}

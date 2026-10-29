@@ -711,18 +711,16 @@ func (t *coordinatorToolset) proposeIssue(ctx context.Context, record conversati
 	}
 	t.state.mu.Lock()
 	defer t.state.mu.Unlock()
-	err = t.coordinator.write(ctx, record.ID, func(ctx context.Context, tx *sql.Tx, fresh *conversationRecord, now time.Time) error {
-		message := conversationMessageRecord{
-			Role:     conversation.RoleAssistant,
-			Kind:     conversation.MessageStatus,
-			Text:     "Proposed issue: " + title,
-			Data:     data,
-			Delivery: conversation.DeliveryCompleted,
-			ThreadID: t.state.threadID,
-			Actor:    conversation.Actor{Kind: conversation.ActorCoordinator},
-		}
-		return t.coordinator.service.appendMessage(ctx, tx, fresh, &message, now)
-	})
+	message := conversationMessageRecord{
+		Role:     conversation.RoleAssistant,
+		Kind:     conversation.MessageStatus,
+		Text:     "Proposed issue: " + title,
+		Data:     data,
+		Delivery: conversation.DeliveryCompleted,
+		ThreadID: t.state.threadID,
+		Actor:    conversation.Actor{Kind: conversation.ActorCoordinator},
+	}
+	err = t.coordinator.appendPreparedMessage(ctx, record.ID, message)
 	if err != nil {
 		return nil, fmt.Errorf("record proposal: %w", err)
 	}
