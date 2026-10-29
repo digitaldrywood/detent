@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -471,8 +472,8 @@ func TestDeployStagingRunsFromReleaseOnHostedRunner(t *testing.T) {
 	for _, test := range []struct {
 		name, dependency, end string
 	}{
-		{name: "staging", dependency: "release", end: "\n  production:"},
-		{name: "production", dependency: "[release, staging]"},
+		{name: "staging", dependency: "prepare", end: "\n  production:"},
+		{name: "production", dependency: "[prepare, staging]"},
 	} {
 		t.Run(test.name+" release dependency", func(t *testing.T) {
 			t.Parallel()
@@ -480,10 +481,113 @@ func TestDeployStagingRunsFromReleaseOnHostedRunner(t *testing.T) {
 			for _, want := range []string{
 				"    needs: " + test.dependency + "\n",
 				"    uses: ./.github/workflows/deploy-" + test.name + ".yml\n",
-				"    with:\n      version: ${{ needs.release.outputs.version }}\n",
+				"    with:\n      version: ${{ needs.prepare.outputs.version }}\n",
 			} {
 				if !strings.Contains(job, want) {
 					t.Fatalf("release %s job missing %q", test.name, want)
+				}
+			}
+		})
+	}
+	prepare := workflowBetween(t, release, "\n  prepare:\n", "\n  release:")
+	for _, want := range []string{
+		"    needs: source\n",
+		"- name: Verify release-branch full-suite provenance\n",
+		"args: build --single-target --clean\n",
+		"          GOOS: linux\n",
+		"          GOARCH: amd64\n",
+		"          name: release-hub-binary\n",
+		"          name: release-inputs\n",
+		"            tmp/detent_release_provenance.json\n",
+		"            tmp/prebuilt\n",
+	} {
+		if !strings.Contains(prepare, want) {
+			t.Fatalf("Hub preparation missing %q", want)
+		}
+	}
+	packaging := workflowBetween(t, release, "\n  release:\n", "\n  staging:")
+	for _, want := range []string{
+		"    needs: prepare\n",
+		"          name: release-inputs\n",
+		"          path: tmp\n",
+		"      DETENT_PREBUILT_DIR: ${{ github.workspace }}/tmp/prebuilt\n",
+	} {
+		if !strings.Contains(packaging, want) {
+			t.Fatalf("release packaging missing %q", want)
+		}
+	}
+}
+
+func TestReleaseHubArtifactMatchesPackagedBinary(t *testing.T) {
+	t.Parallel()
+
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Name string `yaml:"name"`
+				Run  string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(readNormalizedFile(t, ".github/workflows/release.yml")), &workflow); err != nil {
+		t.Fatal(err)
+	}
+	var script string
+	for _, step := range workflow.Jobs["prepare"].Steps {
+		if step.Name == "Prepare Hub deployment artifact" {
+			script = step.Run
+		}
+	}
+	if script == "" {
+		t.Fatal("Hub artifact must be prepared before release packaging")
+	}
+	for _, test := range []struct {
+		name  string
+		count int
+	}{
+		{name: "missing binary"},
+		{name: "single binary", count: 1},
+		{name: "ambiguous binaries", count: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			for i := range test.count {
+				dir := filepath.Join(root, "tmp", "goreleaser", "detent_linux_amd64_v"+strconv.Itoa(i+1))
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "detent"), []byte("verified Linux binary"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			command := exec.CommandContext(t.Context(), "bash", "-e", "-c", script)
+			command.Dir = root
+			command.Env = append(os.Environ(), "RUNNER_TEMP="+root)
+			output, err := command.CombinedOutput()
+			if (err != nil) != (test.count != 1) {
+				t.Fatalf("prepare artifact: %v: %s", err, output)
+			}
+			if test.count == 1 {
+				wrapper, err := filepath.Abs("scripts/goreleaser-go.sh")
+				if err != nil {
+					t.Fatal(err)
+				}
+				prebuilt := filepath.Join(root, "tmp", "prebuilt")
+				if err := os.Chmod(filepath.Join(prebuilt, "linux_amd64", "detent"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				build := exec.CommandContext(t.Context(), "bash", wrapper, "build", "-o", "packaged-detent", "./cmd/detent")
+				build.Dir = root
+				build.Env = append(os.Environ(), "DETENT_PREBUILT_DIR="+prebuilt, "GOOS=linux", "GOARCH=amd64")
+				if output, err := build.CombinedOutput(); err != nil {
+					t.Fatalf("package binary: %v: %s", err, output)
+				}
+				for _, artifact := range []string{"detent", "tmp/prebuilt/linux_amd64/detent", "packaged-detent"} {
+					data, err := os.ReadFile(filepath.Join(root, artifact))
+					if err != nil || string(data) != "verified Linux binary" {
+						t.Fatalf("artifact %s = %q, %v", artifact, data, err)
+					}
 				}
 			}
 		})
