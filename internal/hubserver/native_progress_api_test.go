@@ -113,13 +113,16 @@ func (w progressPublicationWorkspace) Existing(workspace.Issue) (workspace.Info,
 
 func TestNativeProgressExecutionPublication(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		attempts int
+		name         string
+		attempts     int
+		staleRunning int
 	}{
-		{"sequential", 1},
-		{"sequential at attempt bound", progresscheck.MaxAttempts + 1},
-		{"construction guard", 1},
-		{"transaction guard", 1},
+		{"sequential", 1, 0},
+		{"sequential at attempt bound", progresscheck.MaxAttempts + 1, 0},
+		{"stale running attempt inside history bound", progresscheck.MaxAttempts + 1, 1},
+		{"multiple stale running attempts", progresscheck.MaxAttempts + 3, 3},
+		{"construction guard", 1, 0},
+		{"transaction guard", 1, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			boundary := test.name
@@ -131,8 +134,16 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 					f.claim(t)
 				}
 				event := tracker.NativeRunEvent{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("finish")}, Type: "run.finished", SchemaVersion: 1, Data: tracker.NativeRunData{Sequence: 2, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, Outcome: "failed"}}
-				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, event), http.StatusOK)
+				if i == 0 || i > test.staleRunning {
+					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, event), http.StatusOK)
+				}
 				f.release(t)
+			}
+			if test.staleRunning > 0 {
+				plan := explainQueryPlan(t, f.service.database.reader, nativeProgressAttemptsSQL, []any{f.project.OrganizationID, f.project.ID, f.issue.WorkItemID, progresscheck.MaxAttempts})
+				if joined := strings.Join(plan, "\n"); !strings.Contains(joined, "USING INDEX native_attempts_progress_terminal") || strings.Contains(joined, "TEMP B-TREE") {
+					t.Fatalf("terminal history lookup is not indexed and bounded: %v", plan)
+				}
 			}
 			var deferred *http.Request
 			var usage []tracker.NativeUsage
@@ -156,6 +167,19 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 				}
 				publication := r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/progress")
 				if publication {
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						return nil, err
+					}
+					r.Body = io.NopCloser(bytes.NewReader(body))
+					var input progresscheck.Publication
+					if err := json.Unmarshal(body, &input); err != nil {
+						return nil, err
+					}
+					current := f.reload(t)
+					if input.ExpectedRevision != current.Revision {
+						t.Fatalf("client published stale item revision: got %d want %d", input.ExpectedRevision, current.Revision)
+					}
 					count := 0
 					r = r.WithContext(context.WithValue(r.Context(), progressPublicationContextKey{}, &count))
 				}
@@ -183,15 +207,31 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 				t.Fatal(err)
 			}
 			execution := scheduler.RunExecution(claim.Issue.ID)
+			beforeTransition, _, err := f.service.nativeProgressRequest(t.Context(), f.scope(), string(f.issue.WorkItemID), f.policy, "conversation-machine")
+			if err != nil {
+				t.Fatal(err)
+			}
+			current := f.reload(t)
+			native, err := client.Native(f.project.OrganizationID, f.project.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			transitioned, err := native.Transition(t.Context(), current.WorkItemID, tracker.Transition{Mutation: tracker.Mutation{IdempotencyKey: newNativeID("transition")}, ExpectedRevision: current.Revision, State: "In Progress", Reason: "worker_progress", ReasonDetail: "dispatch start"})
+			if err != nil || transitioned.Revision != current.Revision+1 {
+				t.Fatalf("dispatch transition: issue=%+v err=%v", transitioned, err)
+			}
 			request, owner, err := scheduler.RetryProgress(t.Context(), claim.Issue)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(beforeTransition, request) {
+				t.Fatalf("workflow transition changed progress evidence: before=%+v after=%+v", beforeTransition, request)
 			}
 			var attempts int
 			if err := f.service.database.reader.QueryRowContext(t.Context(), "SELECT count(*) FROM native_attempts WHERE work_item_id=?", f.issue.WorkItemID).Scan(&attempts); err != nil || attempts != test.attempts {
 				t.Fatalf("evidence fetch started the check execution: attempts=%d err=%v", attempts, err)
 			}
-			if len(request.Attempts) != min(test.attempts, progresscheck.MaxAttempts) {
+			if len(request.Attempts) != min(test.attempts-test.staleRunning, progresscheck.MaxAttempts) {
 				t.Fatalf("evidence omitted terminal attempts: got %d", len(request.Attempts))
 			}
 			worker, err := runner.NewRunner(runner.Dependencies{Workflow: config.Workflow{Config: config.Config{Agents: config.Agents{Routes: []config.AgentRoute{{Name: "implementation", Backend: "codex", Model: "code-model", Default: true}}}}}, Workspace: progressPublicationWorkspace{path: t.TempDir()}, AgentBackend: progressPublicationAgent{attempt: f.attempt}})
@@ -206,8 +246,8 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 				t.Fatalf("real check did not defer its usage: request=%v usage=%+v", deferred, usage)
 			}
 			fresh, _, err := scheduler.RetryProgress(t.Context(), claim.Issue)
-			if err != nil || !reflect.DeepEqual(request, fresh) {
-				t.Fatalf("start or usage changed request: before=%+v after=%+v err=%v", request, fresh, err)
+			if err != nil {
+				t.Fatal(err)
 			}
 			observed := 0
 			if overlap {
@@ -231,7 +271,11 @@ func TestNativeProgressExecutionPublication(t *testing.T) {
 			}
 			record, err := owner.Publish(t.Context(), progresscheck.Record{RequestID: id, ProjectID: request.ProjectID, IssueID: request.IssueID, EvidenceRevision: request.EvidenceRevision, Decision: decision})
 			if err != nil || record.CommentID == "" {
-				t.Fatalf("own execution invalidated publication: observations=%d err=%v", observed, err)
+				freshID, idErr := fresh.ID()
+				t.Fatalf("own execution invalidated publication: statuses=%v attempts=%d->%d evidence_revision=%s->%s request_id=%s->%s id_error=%v observations=%d err=%v", publicationStatuses, len(request.Attempts), len(fresh.Attempts), request.EvidenceRevision, fresh.EvidenceRevision, id, freshID, idErr, observed, err)
+			}
+			if !reflect.DeepEqual(request, fresh) {
+				t.Fatalf("start or usage changed request: before=%+v after=%+v", request, fresh)
 			}
 			if len(publicationStatuses) != 1 || publicationStatuses[0] != http.StatusOK {
 				t.Fatalf("own usage conflicted before publication retry: statuses=%v", publicationStatuses)
