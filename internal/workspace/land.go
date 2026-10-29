@@ -74,6 +74,7 @@ type LandOptions struct {
 	ChangeID              string
 	ReviewDispositions    []tracker.ReviewDisposition
 	ExpectedBaseSHA       string
+	SourceBaseSHA         string
 	SecurityAuditRequired bool
 	SecurityAudit         func(context.Context, FileDiffs) (*tracker.SecurityAuditReview, error) `json:"-"`
 	Native                bool

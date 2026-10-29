@@ -954,6 +954,12 @@ func TestLocalGitNativeLanding(t *testing.T) {
 	}{
 		{name: "AlreadyContains ancestor does not hold the batch", count: 2, conflict: -1, invalid: -1, skip: -1, alreadyContains: "ancestor"},
 		{name: "AlreadyContains squash trailer does not hold the batch", count: 2, conflict: -1, invalid: -1, skip: -1, alreadyContains: "squash"},
+		{name: "audited ancestor does not hold the batch", count: 2, conflict: -1, invalid: -1, skip: -1, alreadyContains: "ancestor", audit: "pass"},
+		{name: "audited squash trailer does not hold the batch", count: 2, conflict: -1, invalid: -1, skip: -1, alreadyContains: "squash", audit: "pass"},
+		{name: "audited incorporated delta does not hold the batch", count: 2, conflict: -1, invalid: -1, skip: -1, alreadyContains: "content", audit: "pass"},
+		{name: "blocking incorporated audit refuses receipt", count: 1, conflict: -1, invalid: -1, skip: -1, alreadyContains: "content", audit: "rework"},
+		{name: "stale incorporated audit refuses receipt", count: 1, conflict: -1, invalid: -1, skip: -1, alreadyContains: "content", audit: "stale"},
+		{name: "failed incorporated audit refuses receipt", count: 1, conflict: -1, invalid: -1, skip: -1, alreadyContains: "content", audit: "failure"},
 		{name: "legacy rolling batch preserves validated heads", count: 2, conflict: -1, invalid: -1, skip: -1, rolling: true},
 		{name: "legacy rolling moved base resquashes", count: 2, conflict: -1, invalid: -1, skip: -1, moved: true, rolling: true},
 		{name: "clean validated head skips gate", count: 1, conflict: -1, invalid: -1, skip: -1},
@@ -1001,6 +1007,7 @@ func TestLocalGitNativeLanding(t *testing.T) {
 				originalHash := sha256.Sum256([]byte(originalPatch))
 				options := LandOptions{Native: true, HeadSHA: head, Method: "squash", TargetBranch: "main", Message: file, ValidationCommand: "exit 73", Validation: &gate.CommandResult{Command: "exit 73", HeadSHA: head, TreeSHA: tree, DurationNS: int64(time.Second)}}
 				options.ChangeID = fmt.Sprintf("change_%d", i)
+				options.SourceBaseSHA = fixtureBase
 				if test.rolling {
 					options.LandingMode = gate.LandingRollingBarrier
 				}
@@ -1054,8 +1061,11 @@ func TestLocalGitNativeLanding(t *testing.T) {
 			if test.alreadyContains != "" {
 				options := requests[0].Options
 				integrated := options.HeadSHA
-				if test.alreadyContains == "squash" {
+				if test.alreadyContains == "squash" || test.alreadyContains == "content" {
 					message := fmt.Sprintf("Prior delivery\n\nChange Request %s, round 1, head %s.", options.ChangeID, options.HeadSHA)
+					if test.alreadyContains == "content" {
+						message = "Prior delivery"
+					}
 					integrated = strings.TrimSpace(runGit(t, f.source, "commit-tree", options.HeadSHA+"^{tree}", "-p", fixtureBase, "-m", message))
 				}
 				runGit(t, f.source, "push", "origin", integrated+":refs/heads/main")
@@ -1138,8 +1148,12 @@ func TestLocalGitNativeLanding(t *testing.T) {
 					}
 					continue
 				}
-				if outcome.Err != nil || outcome.Result.Gate.Command != "" || outcome.Result.MergeSHA == "" || outcome.Result.BaseBefore != base {
-					t.Fatalf("member %d = %#v, base %s", i, outcome, base)
+				wantBase := base
+				if test.alreadyContains != "" && i == 0 && test.audit != "" {
+					wantBase = fixtureBase
+				}
+				if outcome.Err != nil || outcome.Result.Gate.Command != "" || outcome.Result.MergeSHA == "" || outcome.Result.BaseBefore != wantBase {
+					t.Fatalf("member %d = %#v, base %s", i, outcome, wantBase)
 				}
 				wantPath := "clean_push"
 				if test.count > 1 && test.alreadyContains == "" {
@@ -1159,7 +1173,7 @@ func TestLocalGitNativeLanding(t *testing.T) {
 					if test.moved {
 						wantAudits = 2
 					}
-					if len(audits[i]) != wantAudits || outcome.Result.SecurityAudit == nil || outcome.Result.SecurityAudit.Run.BaseSHA != base || outcome.Result.SecurityAudit.Run.HeadSHA != outcome.Result.MergeSHA {
+					if len(audits[i]) != wantAudits || outcome.Result.SecurityAudit == nil || outcome.Result.SecurityAudit.Run.BaseSHA != wantBase || outcome.Result.SecurityAudit.Run.HeadSHA != outcome.Result.MergeSHA {
 						t.Fatalf("landing reused audit for another identity: audits=%+v result=%+v", audits[i], outcome.Result)
 					}
 					if test.moved && audits[i][0].BaseSHA == audits[i][1].BaseSHA {

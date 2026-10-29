@@ -8,12 +8,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/hubserver"
@@ -21,6 +25,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/policy"
 	"github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/securityaudit"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/tracker"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -45,8 +50,12 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 		policyChange func(*policy.Descriptor)
 		wantStale    bool
 		refusal      string
+		audited      string
 	}{
 		{name: "plain git by default"},
+		{name: "audited clean landing", audited: "clean"},
+		{name: "audited already incorporated landing", audited: "incorporated"},
+		{name: "audited already incorporated receipt retry", audited: "receipt"},
 		{name: "stale audit returns to its evidence producer", refusal: "stale_audit"},
 		{name: "conflict receipt returns to Rework", refusal: "conflict"},
 		{name: "protected base holds for a human and resumes the same version", refusal: "base_protected"},
@@ -76,8 +85,124 @@ func TestNativeExecutionLandsReviewedVersion(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
+			if test.audited != "" {
+				testNativeExecutionLandsAuditedVersion(t, test.audited)
+				return
+			}
 			testNativeExecutionLandsReviewedVersion(t, false, test.github, test.ssh, test.batch, test.otherMachine, test.policyChange, test.wantStale, test.refusal)
 		})
+	}
+}
+
+func testNativeExecutionLandsAuditedVersion(t *testing.T, scenario string) {
+	t.Helper()
+	h := newNativeChangeHubTransport(t, "In Review", []tracker.NativeState{
+		{Name: "Todo", Dispatchable: true, Transitions: []string{"In Progress"}},
+		{Name: "In Progress", Dispatchable: true, Transitions: []string{"In Review", "Merging"}},
+		{Name: "In Review", Transitions: []string{"Merging", "In Progress"}},
+		{Name: "Merging", Dispatchable: true, Transitions: []string{"Done", "In Progress"}},
+		{Name: "Done", Terminal: true},
+	}, true)
+	next := h.descriptor
+	next.Gates.SecurityAudit, next.Gates.Validator = true, true
+	next = next.WithID()
+	if _, err := h.admin.ApproveProjectPolicy(t.Context(), policy.Change{ExpectedID: h.descriptor.ID, Policy: next}); err != nil {
+		t.Fatal(err)
+	}
+	h.descriptor = next
+	issue := h.createInProgress(t, "Land audited source")
+	candidate := h.claim(t, issue.ID)
+	source := nativeChangeSourceRepo(t)
+	remote := filepath.Join(nativeChangeTempDir(t), "origin.git")
+	nativeChangeGit(t, source, "init", "--bare", "-b", "main", remote)
+	nativeChangeGit(t, source, "remote", "add", "origin", nativeChangeRepository)
+	nativeChangeGit(t, source, "config", "url."+remote+".insteadOf", nativeChangeRepository)
+	nativeChangeGit(t, source, "push", "-u", "origin", "main")
+	backend, err := workspace.NewLocalGit(workspace.LocalGitOptions{Root: filepath.Join(nativeChangeTempDir(t), "workspaces"), SourceRoot: source, AutoBranch: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := store.Open(t.Context(), store.Config{Path: nativeRuntimeDatabasePath(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := sessions.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	provider := &recoveringReviewAgent{committingAgent: committingAgent{staged: true, complete: true, validator: "pass"}, failStage: "unused"}
+	agent, err := runner.NewRunner(runner.Dependencies{
+		Store: sessions, ProjectID: "local", Workspace: backend, AgentBackend: provider,
+		Workflow: config.Workflow{Config: config.Config{Policy: next, Tracker: config.Tracker{Kind: config.TrackerHubNative}, Gate: gate.Config{Run: "true", AutomatedReview: gate.AutomatedReviewRequired, SecurityAudit: gate.SecurityAuditConfig{Enabled: true}, Validator: gate.ValidatorConfig{Enabled: true}}}, Prompt: "Complete the issue"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.Run(t.Context(), runner.RunRequest{Execution: h.scheduler.RunExecution(issue.ID), ProjectID: "local", Issue: candidate, Mode: runner.RunModeImplement})
+	if err != nil || result.NativeChange == nil || !result.NativeChange.Reviewed {
+		t.Fatalf("source did not pass review: %+v, %v", result.NativeChange, err)
+	}
+	change := result.NativeChange
+	h.complete(t, issue.ID, change, true)
+	incorporated := scenario != "clean"
+	if incorporated {
+		nativeChangeGit(t, source, "merge", "--squash", change.HeadSHA)
+		nativeChangeGit(t, source, "commit", "-m", "Previously incorporated source")
+		if err := os.WriteFile(filepath.Join(source, "INDEPENDENT.md"), []byte("Later target change\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		nativeChangeGit(t, source, "add", "INDEPENDENT.md")
+		nativeChangeGit(t, source, "commit", "-m", "Advance target independently")
+		nativeChangeGit(t, source, "push", "origin", "main")
+	}
+	baseOutput, err := exec.CommandContext(t.Context(), "git", "-C", source, "rev-parse", "main").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := strings.TrimSpace(string(baseOutput))
+	if scenario == "receipt" {
+		info, err := backend.Create(t.Context(), workspace.Issue{ID: issue.ID, Identifier: issue.Identifier, ProjectID: "local", Landing: &workspace.LandOptions{Repository: nativeChangeRepository, HeadSHA: change.HeadSHA}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := workspace.RecordLanding(t.Context(), info, change.HeadSHA, workspace.LandResult{MergeSHA: base, BaseBefore: base, BaseRef: "main", Method: "squash"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	candidates := h.candidatesIn(t, "Merging")
+	if len(candidates) != 1 || candidates[0].ID != issue.ID {
+		t.Fatalf("reviewed source is unavailable for landing: %+v", candidates)
+	}
+	if _, err := h.scheduler.AdoptClaim(t.Context(), candidates[0], time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	result, err = agent.Run(t.Context(), runner.RunRequest{Execution: h.scheduler.RunExecution(issue.ID), ProjectID: "local", Issue: candidates[0], Mode: runner.RunModeMerge})
+	if err != nil || result.NativeLanding == nil || !result.NativeLanding.Landed || h.state(t, issue.ID) != "Done" {
+		t.Fatalf("audited landing did not reach Done: %+v, %v, state=%s", result.NativeLanding, err, h.state(t, issue.ID))
+	}
+	landed := result.NativeLanding
+	audit := landed.SecurityAudit
+	if audit == nil || !audit.Landing || audit.Verdict != "pass" || audit.VersionID != change.VersionID || audit.Run.BaseSHA != landed.BaseSHA || audit.Run.HeadSHA != landed.MergeSHA || landed.HeadSHA != change.HeadSHA || provider.securityCalls.Load() != 2 {
+		t.Fatalf("landing lost generated exact-source audit evidence: %+v, audit calls=%d", landed, provider.securityCalls.Load())
+	}
+	if incorporated && (landed.BaseSHA != change.BaseSHA || landed.MergeSHA != base || landed.HeadSHA == base) {
+		t.Fatalf("incorporated source changed target identity: %+v, target=%s", landed, base)
+	}
+	detail, err := h.admin.Change(t.Context(), tracker.NativeWorkItemID(issue.ID), change.ChangeID)
+	if err != nil || detail.Change.Landed == nil || detail.Change.Landed.MergeSHA != landed.MergeSHA || detail.Summary.Status != "landed" || len(detail.Versions) != 1 || detail.Versions[0].Landing == nil {
+		t.Fatalf("Hub did not retain audited landing: %+v, %v", detail.Change.Landed, err)
+	}
+	retained := detail.Versions[0].Landing.SecurityAudit
+	if retained == nil || !retained.Landing || retained.SessionID != audit.SessionID || retained.DiffDigest != audit.DiffDigest || retained.Verdict != "pass" {
+		t.Fatalf("Hub landing lost audit identity: %+v", retained)
+	}
+	recorded := false
+	for _, review := range detail.Reviews {
+		recorded = recorded || review.Decision == "approved" && review.SecurityAudit != nil && review.SecurityAudit.Landing && review.SecurityAudit.SessionID == audit.SessionID && review.SecurityAudit.DiffDigest == audit.DiffDigest && review.SecurityAudit.Run.BaseSHA == landed.BaseSHA && review.SecurityAudit.Run.HeadSHA == landed.MergeSHA
+	}
+	if !recorded {
+		t.Fatal("Hub accepted landing without its generated audit approval")
 	}
 }
 
