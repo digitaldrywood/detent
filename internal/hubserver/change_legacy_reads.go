@@ -13,7 +13,7 @@ import (
 )
 
 func readLegacyChangeAttempts(ctx context.Context, query nativeQueryer, scope nativeScope, item string) ([]any, error) {
-	versions, err := changeColumnRecords[tracker.ChangeVersion](ctx, query, `SELECT v.record_json FROM change_versions v INDEXED BY change_versions_change_attempt_unknown JOIN change_requests c ON c.id=v.change_id JOIN change_issue_links l ON l.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? AND v.attempt_id IS NULL`, scope.organization, scope.project, item)
+	versions, err := changeColumnRecords[tracker.ChangeVersion](ctx, query, `SELECT v.record_json FROM change_versions v INDEXED BY change_versions_change_attempt_unknown JOIN change_requests c ON c.id=v.change_id JOIN change_issue_links l ON l.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? AND v.attempt_id IS NULL ORDER BY v.rowid`, scope.organization, scope.project, item)
 	if err != nil {
 		return nil, err
 	}
@@ -40,7 +40,7 @@ func changeArtifactAttemptMatches(ctx context.Context, query nativeQueryer, scop
 		return stored.String == attempt, nil
 	}
 	var value tracker.ChangeVersion
-	if err := decodeStorageJSON(ctx, []byte(raw), &value); err != nil {
+	if err := decodeChangeColumnsJSON(ctx, []byte(raw), &value); err != nil {
 		return false, err
 	}
 	return value.AttemptID == attempt, nil
@@ -54,19 +54,14 @@ func readRecoveryCommentIDs(ctx context.Context, query nativeQueryer, scope nati
 	if !unknown {
 		return nativePageIDs(ctx, query, `SELECT id FROM native_comments WHERE organization_id=? AND project_id=? AND work_item_id=? AND (change_actor_kind='human' OR change_edited_by_kind='human' OR id=(SELECT id FROM native_comments WHERE organization_id=? AND project_id=? AND work_item_id=? AND change_actor_kind<>'human' ORDER BY sequence DESC LIMIT 1))`+order, scope.organization, scope.project, item, scope.organization, scope.project, item)
 	}
-	rows, err := query.QueryContext(ctx, `SELECT id,actor_json,edited_by_json FROM native_comments WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY sequence DESC LIMIT ?`, scope.organization, scope.project, item, changeLegacyReadLimit+1)
+	rows, err := queryChangeLegacyRows(ctx, query, `SELECT id,actor_json,edited_by_json FROM native_comments WHERE organization_id=? AND project_id=? AND work_item_id=? ORDER BY sequence DESC`, scope.organization, scope.project, item)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	ids := []string{}
 	latestMachine := false
-	count := 0
 	for rows.Next() {
-		if count == changeLegacyReadLimit {
-			return nil, errChangeColumnsIncomplete
-		}
-		count++
 		var id, raw string
 		var edited sql.NullString
 		if err := rows.Scan(&id, &raw, &edited); err != nil {
@@ -108,7 +103,7 @@ func readLegacyIssueChangeSideData(ctx context.Context, query nativeQueryer, sco
 	if err == nil {
 		var change tracker.ChangeRequest
 		if !current.Valid || !landed.Valid || !base.Valid || !merge.Valid {
-			if err := decodeStorageJSON(ctx, []byte(raw), &change); err != nil {
+			if err := decodeChangeColumnsJSON(ctx, []byte(raw), &change); err != nil {
 				return err
 			}
 			if !current.Valid {
@@ -144,7 +139,7 @@ func readLegacyIssueChangeSideData(ctx context.Context, query nativeQueryer, sco
 					projection.HeadSHA = head.String
 				} else {
 					var version tracker.ChangeVersion
-					if err := decodeStorageJSON(ctx, []byte(versionRaw), &version); err != nil {
+					if err := decodeChangeColumnsJSON(ctx, []byte(versionRaw), &version); err != nil {
 						return err
 					}
 					projection.HeadSHA = version.HeadSHA
@@ -153,18 +148,13 @@ func readLegacyIssueChangeSideData(ctx context.Context, query nativeQueryer, sco
 		}
 		issue.ListChange = projection
 	}
-	rows, err := query.QueryContext(ctx, `SELECT v.external_provider,v.external_id,v.external_url,v.record_json FROM change_versions v JOIN change_requests c ON c.id=v.change_id JOIN change_issue_links l ON l.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? AND ((v.external_provider='github' AND v.external_url<>'') OR v.external_provider IS NULL OR v.external_url IS NULL) ORDER BY c.rowid DESC,v.number DESC LIMIT ?`, scope.organization, scope.project, item, changeLegacyReadLimit+1)
+	rows, err := queryChangeLegacyRows(ctx, query, `SELECT v.external_provider,v.external_id,v.external_url,v.record_json FROM change_versions v JOIN change_requests c ON c.id=v.change_id JOIN change_issue_links l ON l.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND l.work_item_id=? AND ((v.external_provider='github' AND v.external_url<>'') OR v.external_provider IS NULL OR v.external_url IS NULL) ORDER BY c.rowid DESC,v.number DESC`, scope.organization, scope.project, item)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	issue.PullRequest = nil
-	count := 0
 	for rows.Next() {
-		if count == changeLegacyReadLimit {
-			return errChangeColumnsIncomplete
-		}
-		count++
 		var provider, externalID, url sql.NullString
 		var raw string
 		if err := rows.Scan(&provider, &externalID, &url, &raw); err != nil {
@@ -172,7 +162,7 @@ func readLegacyIssueChangeSideData(ctx context.Context, query nativeQueryer, sco
 		}
 		if !provider.Valid || !externalID.Valid || !url.Valid {
 			var version tracker.ChangeVersion
-			if err := decodeStorageJSON(ctx, []byte(raw), &version); err != nil {
+			if err := decodeChangeColumnsJSON(ctx, []byte(raw), &version); err != nil {
 				return err
 			}
 			if version.External != nil {
@@ -201,7 +191,7 @@ func readLegacyIssueChangeSideData(ctx context.Context, query nativeQueryer, sco
 
 func readNativePolicyLanding(ctx context.Context, query policyQuerier, organization, project string, source *policy.RepositorySource) (policyLanding, bool, error) {
 	var after string
-	for examined := 0; ; examined++ {
+	for {
 		var candidate struct {
 			id, raw              string
 			version, merge, base sql.NullString
@@ -216,12 +206,9 @@ func readNativePolicyLanding(ctx context.Context, query policyQuerier, organizat
 		if err != nil {
 			return policyLanding{}, false, err
 		}
-		if examined == changeLegacyReadLimit {
-			return policyLanding{}, false, errChangeColumnsIncomplete
-		}
 		after = candidate.id
 		var change tracker.ChangeRequest
-		if err := decodeStorageJSON(ctx, []byte(candidate.raw), &change); err != nil {
+		if err := decodeChangeColumnsJSON(ctx, []byte(candidate.raw), &change); err != nil {
 			return policyLanding{}, false, err
 		}
 		if change.Landed == nil {
@@ -251,7 +238,7 @@ func readNativePolicyLanding(ctx context.Context, query policyQuerier, organizat
 		}
 		if !repository.Valid {
 			var version tracker.ChangeVersion
-			if err := decodeStorageJSON(ctx, []byte(raw), &version); err != nil {
+			if err := decodeChangeColumnsJSON(ctx, []byte(raw), &version); err != nil {
 				return policyLanding{}, false, err
 			}
 			repository.String = version.Repository
@@ -264,17 +251,12 @@ func readNativePolicyLanding(ctx context.Context, query policyQuerier, organizat
 }
 
 func latestRecoveryLandingAttempt(ctx context.Context, query nativeQueryer, scope nativeScope, item string) (string, error) {
-	rows, err := query.QueryContext(ctx, `SELECT id,has_landing_receipt,data_json FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND (has_landing_receipt=1 OR has_landing_receipt IS NULL) ORDER BY fencing_token DESC LIMIT ?`, scope.organization, scope.project, item, changeLegacyReadLimit+1)
+	rows, err := queryChangeLegacyRows(ctx, query, `SELECT id,has_landing_receipt,data_json FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND (has_landing_receipt=1 OR has_landing_receipt IS NULL) ORDER BY fencing_token DESC`, scope.organization, scope.project, item)
 	if err != nil {
 		return "", err
 	}
 	defer rows.Close()
-	count := 0
 	for rows.Next() {
-		if count == changeLegacyReadLimit {
-			return "", errChangeColumnsIncomplete
-		}
-		count++
 		var id, raw string
 		var present sql.NullBool
 		if err := rows.Scan(&id, &present, &raw); err != nil {
@@ -284,7 +266,7 @@ func latestRecoveryLandingAttempt(ctx context.Context, query nativeQueryer, scop
 			return id, nil
 		}
 		var run tracker.NativeRunData
-		if err := decodeRunDetail(ctx, query, raw, &run); err != nil {
+		if err := decodeChangeColumnsJSON(ctx, []byte(raw), &run); err != nil {
 			return "", err
 		}
 		if run.Runtime != nil && run.Runtime.Landing != nil {
@@ -295,17 +277,12 @@ func latestRecoveryLandingAttempt(ctx context.Context, query nativeQueryer, scop
 }
 
 func readEscapeOccurrence(ctx context.Context, query nativeQueryer, change, version, occurrence string) (string, error) {
-	rows, err := query.QueryContext(ctx, `SELECT record_json,escape_occurrence_id FROM change_evidence WHERE change_id=? AND version_id=? AND kind='discussion' AND (escape_occurrence_id=? OR escape_occurrence_id IS NULL) ORDER BY sequence DESC LIMIT ?`, change, version, occurrence, changeLegacyReadLimit+1)
+	rows, err := queryChangeLegacyRows(ctx, query, `SELECT record_json,escape_occurrence_id FROM change_evidence WHERE change_id=? AND version_id=? AND kind='discussion' AND (escape_occurrence_id=? OR escape_occurrence_id IS NULL) ORDER BY sequence DESC`, change, version, occurrence)
 	if err != nil {
 		return "", err
 	}
 	defer rows.Close()
-	count := 0
 	for rows.Next() {
-		if count == changeLegacyReadLimit {
-			return "", errChangeColumnsIncomplete
-		}
-		count++
 		var raw string
 		var known sql.NullString
 		if err := rows.Scan(&raw, &known); err != nil {
@@ -315,7 +292,7 @@ func readEscapeOccurrence(ctx context.Context, query nativeQueryer, change, vers
 			return raw, nil
 		}
 		var discussion tracker.ChangeDiscussion
-		if err := decodeStorageJSON(ctx, []byte(raw), &discussion); err != nil {
+		if err := decodeChangeColumnsJSON(ctx, []byte(raw), &discussion); err != nil {
 			return "", err
 		}
 		if discussion.Escape != nil && discussion.Escape.OccurrenceID == occurrence {
@@ -340,7 +317,7 @@ func qualityReopenOccurrence(ctx context.Context, query nativeQueryer, scope nat
 	}
 	if !from.Valid || !to.Valid {
 		var data tracker.CollaborationData
-		if err := decodeStorageJSON(ctx, []byte(raw), &data); err != nil {
+		if err := decodeChangeColumnsJSON(ctx, []byte(raw), &data); err != nil {
 			return false, err
 		}
 		from.String, to.String = data.FromState, data.ToState

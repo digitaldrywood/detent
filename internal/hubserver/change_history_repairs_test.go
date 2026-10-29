@@ -95,9 +95,9 @@ func TestChangeMixedBackfillKeepsTypedIssueData(t *testing.T) {
 	}
 }
 
-func TestChangeLegacyReadsRefuseOverflow(t *testing.T) {
+func TestChangeLegacyReadsServeOverflow(t *testing.T) {
 	t.Parallel()
-	for _, family := range []string{"attempts", "side data", "policy", "escape", "comments", "landing attempt"} {
+	for _, family := range []string{"attempts", "side data", "policy", "escape", "comments", "landing attempt", "reviews"} {
 		t.Run(family, func(t *testing.T) {
 			f := newChangeFixture(t, nil)
 			version := f.publish(t, "version", "")
@@ -113,6 +113,12 @@ func TestChangeLegacyReadsRefuseOverflow(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
+			if family == "reviews" {
+				review := tracker.ChangeReview{VersionID: version.ID, ImplementationReview: &gate.ValidatorResult{}}
+				if err := insertChangeEvidence(t.Context(), tx, f.change.ID, version.ID, "review", "older-review", review); err != nil {
+					t.Fatal(err)
+				}
+			}
 			for i := 0; i <= changeLegacyReadLimit; i++ {
 				id := fmt.Sprintf("legacy-%s-%03d", family, i)
 				switch family {
@@ -132,13 +138,27 @@ func TestChangeLegacyReadsRefuseOverflow(t *testing.T) {
 					if _, err := tx.ExecContext(t.Context(), `INSERT INTO native_comments(id,organization_id,project_id,work_item_id,revision,sequence,body,actor_json,created_at,updated_at) VALUES(?,?,?,?,1,?,'comment','{"kind":"runner"}',?,?)`, id, scope.organization, scope.project, f.issue.WorkItemID, i+1, testTimestamp, testTimestamp); err != nil {
 						t.Fatal(err)
 					}
+				case "reviews":
+					if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review','{"decision":"commented"}')`, f.change.ID, version.ID); err != nil {
+						t.Fatal(err)
+					}
 				case "landing attempt":
 					seedHealthRateAttempt(t, tx, scope, f.issue, machine, "succeeded", tracker.NativeRunData{}, f.service.config.now(), -1)
 				}
 			}
 			switch family {
+			case "reviews":
+				var reviews []tracker.ChangeReview
+				reviews, _, err = legacyRecoveryReviews(t.Context(), tx, f.change.ID, version.ID)
+				if err == nil && (len(reviews) != 33 || reviews[0].ImplementationReview == nil) {
+					t.Fatalf("legacy overflow hid older implementation review: %+v", reviews)
+				}
 			case "attempts":
-				_, err = readLegacyChangeAttempts(t.Context(), tx, scope, string(f.issue.WorkItemID))
+				var attempts []any
+				attempts, err = readLegacyChangeAttempts(t.Context(), tx, scope, string(f.issue.WorkItemID))
+				if err == nil && len(attempts) != changeLegacyReadLimit+1 {
+					t.Fatalf("lost legacy attempts: %d", len(attempts))
+				}
 			case "side data":
 				issue := f.issue
 				err = readLegacyIssueChangeSideData(t.Context(), tx, scope, string(f.issue.WorkItemID), &issue)
@@ -151,8 +171,18 @@ func TestChangeLegacyReadsRefuseOverflow(t *testing.T) {
 			case "landing attempt":
 				_, err = latestRecoveryLandingAttempt(t.Context(), tx, scope, string(f.issue.WorkItemID))
 			}
-			if !errors.Is(err, operatortool.ErrServiceUnavailable) {
-				t.Fatalf("%s overflow returned complete evidence: %v", family, err)
+			if family == "escape" && errors.Is(err, sql.ErrNoRows) {
+				err = nil
+			}
+			if err != nil {
+				t.Fatalf("%s legacy read failed: %v", family, err)
+			}
+			if family == "side data" {
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+				response := performHubAPIRequest(t, f.service, http.MethodGet, f.base+"/work-items/"+string(f.issue.WorkItemID), f.token, nil)
+				requireNativeStatus(t, response, http.StatusOK)
 			}
 		})
 	}
@@ -209,8 +239,8 @@ func TestRecoveryUnknownHistoryBudgetPreservesOlderEvidence(t *testing.T) {
 					t.Fatalf("boundary hid older evidence: found=%v error=%v", found, err)
 				}
 				appendUnknown()
-				if found, err := read(); !errors.Is(err, operatortool.ErrServiceUnavailable) || found {
-					t.Fatalf("overflow returned complete evidence: found=%v error=%v", found, err)
+				if found, err := read(); err != nil || !found {
+					t.Fatalf("legacy overflow hid older evidence: found=%v error=%v", found, err)
 				}
 				if family == "check" {
 					_, err = tx.ExecContext(t.Context(), `UPDATE change_evidence SET check_run_id='other' WHERE change_id=? AND kind='check' AND check_run_id IS NULL`, f.change.ID)
@@ -290,12 +320,13 @@ func TestValidationCandidatesKeepHistoricalMatchBeyondPage(t *testing.T) {
 	if _, err := tx.ExecContext(t.Context(), `UPDATE change_landing_receipts SET merge_sha=NULL WHERE version_id IN (SELECT id FROM change_versions WHERE change_id=?)`, f.change.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := readValidationCandidates(t.Context(), tx, scope, string(f.issue.WorkItemID), "", "", gate.ScheduledEvidence{Repository: validationRepository(old.Repository), HeadSHA: head}); !errors.Is(err, operatortool.ErrServiceUnavailable) {
-		t.Fatalf("unknown receipt overflow returned complete candidates: %v", err)
+	rows, partial, err = readValidationCandidates(t.Context(), tx, scope, string(f.issue.WorkItemID), "", "", gate.ScheduledEvidence{Repository: validationRepository(old.Repository), HeadSHA: head})
+	if err != nil || !partial || len(rows) != 20 || rows[0].VersionID != old.ID || rows[0].IntegratedSource != "same_commit" {
+		t.Fatalf("legacy receipts hid older match: rows=%+v partial=%v error=%v", rows, partial, err)
 	}
 }
 
-func TestProductivityRefreshWaitsForChangeBackfill(t *testing.T) {
+func TestProductivityRefreshServesChangeBackfill(t *testing.T) {
 	t.Parallel()
 	first := newChangeFixture(t, nil)
 	for _, f := range []changeFixture{first, first.anotherChange(t)} {
@@ -322,6 +353,14 @@ func TestProductivityRefreshWaitsForChangeBackfill(t *testing.T) {
 		if err := insertChangeEvidence(t.Context(), tx, f.change.ID, version.ID, "review", "refusal", tracker.ChangeReview{VersionID: version.ID, Decision: "changes_requested", CreatedAt: at.Add(-time.Hour)}); err != nil {
 			tx.Rollback()
 			t.Fatal(err)
+		}
+		for i := range changeLegacyReadLimit + 1 {
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_versions(id,change_id,number,record_json) VALUES(?,?,?,?)`, fmt.Sprintf("legacy-%s-%d", f.change.ID, i), f.change.ID, i+100, fmt.Sprintf(`{"created_at":%q}`, formatHubTime(at))); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.ExecContext(t.Context(), `INSERT INTO change_evidence(change_id,version_id,kind,record_json) VALUES(?,?,'review','{"decision":"commented"}')`, f.change.ID, version.ID); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if err := tx.Commit(); err != nil {
 			t.Fatal(err)
@@ -354,30 +393,43 @@ func TestProductivityRefreshWaitsForChangeBackfill(t *testing.T) {
 			}
 			inputs, readErr := productivityQualityInputs(t.Context(), tx, scope, string(f.issue.WorkItemID))
 			refreshErr := refreshProductivitySummary(t.Context(), tx, scope, string(f.issue.WorkItemID))
-			if state != "after" {
-				if !errors.Is(readErr, operatortool.ErrServiceUnavailable) || !errors.Is(refreshErr, operatortool.ErrServiceUnavailable) {
-					tx.Rollback()
-					t.Fatalf("%s silently rebuilt incomplete history: read=%v refresh=%v", state, readErr, refreshErr)
-				}
-				var count int
-				if err := tx.QueryRowContext(t.Context(), `SELECT count(*) FROM report_issue_summaries WHERE work_item_id=?`, f.issue.WorkItemID).Scan(&count); err != nil {
-					tx.Rollback()
-					t.Fatal(err)
-				}
-				if count != 0 {
-					tx.Rollback()
-					t.Fatalf("%s wrote partial report", state)
-				}
-			} else if readErr != nil || refreshErr != nil || len(inputs.currentLandings) != 1 || !slices.ContainsFunc(inputs.events, func(event qualityHistoryEvent) bool { return event.Kind == "changes_requested" }) {
+			if readErr != nil || refreshErr != nil || len(inputs.currentLandings) != 1 || !slices.ContainsFunc(inputs.events, func(event qualityHistoryEvent) bool { return event.Kind == "changes_requested" }) {
 				tx.Rollback()
-				t.Fatalf("converted report lost landing or refusal: %+v read=%v refresh=%v", inputs, readErr, refreshErr)
+				t.Fatalf("%s report lost legacy landing or refusal: %+v read=%v refresh=%v", state, inputs, readErr, refreshErr)
 			}
 			tx.Rollback()
+			if state == "before" {
+				drained := false
+				for range 100 {
+					if err := f.service.database.drainAnalyticsItem(t.Context(), string(f.issue.WorkItemID), at); err != nil {
+						t.Fatalf("legacy analytics drain: %v", err)
+					}
+					var dirty bool
+					if err := f.service.database.reader.QueryRowContext(t.Context(), `SELECT EXISTS(SELECT 1 FROM analytics_rollup_dirty WHERE work_item_id=?)`, f.issue.WorkItemID).Scan(&dirty); err != nil {
+						t.Fatal(err)
+					}
+					if !dirty {
+						drained = true
+						break
+					}
+				}
+				if !drained {
+					t.Fatal("legacy analytics drain did not finish")
+				}
+				snapshot, err := readHealthSnapshot(t.Context(), f.service.database.reader, scope.organization, at)
+				if err != nil {
+					t.Fatalf("legacy health snapshot: %v", err)
+				}
+				if err := f.service.commitHealthEvaluation(t.Context(), scope.organization, at, evaluateHealth(at, snapshot), snapshot.BaselineUnavailable); err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
 		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE issues SET workflow_state_id=(SELECT id FROM workflow_states WHERE project_id=? AND detent_state='Done') WHERE native_id=?`, scope.project, f.issue.WorkItemID); err != nil {
 			t.Fatal(err)
 		}
 		appendTestHealthEventAs(t, f.nativeFixture, tracker.Actor{Kind: "human", PrincipalID: "completion-person", DisplayName: "Example person"}, f.issue, "workflow.transitioned", tracker.CollaborationData{FromState: "In Progress", ToState: "Done"}, at)
+		appendTestHealthEventAs(t, f.nativeFixture, tracker.Actor{Kind: "human", PrincipalID: "other-person"}, f.issue, "workflow.transitioned", tracker.CollaborationData{FromState: "Todo", ToState: "In Progress"}, at.Add(time.Minute))
 		if _, err := f.service.database.db.ExecContext(t.Context(), `UPDATE collaboration_events SET from_state=NULL,to_state=NULL WHERE work_item_id=? AND type='workflow.transitioned'`, f.issue.WorkItemID); err != nil {
 			t.Fatal(err)
 		}
@@ -387,8 +439,8 @@ func TestProductivityRefreshWaitsForChangeBackfill(t *testing.T) {
 		}
 		refreshErr := refreshProductivitySummary(t.Context(), tx, scope, string(f.issue.WorkItemID))
 		tx.Rollback()
-		if !errors.Is(refreshErr, operatortool.ErrServiceUnavailable) {
-			t.Fatalf("unknown completion actor was silently omitted: %v", refreshErr)
+		if refreshErr != nil {
+			t.Fatalf("legacy completion actor unavailable: %v", refreshErr)
 		}
 		if err := f.service.populateChangeColumns(t.Context()); err != nil {
 			t.Fatal(err)
@@ -552,9 +604,9 @@ func TestActivityTypedAndHistoricalAttemptLinks(t *testing.T) {
 	for i := 0; i <= changeLegacyReadLimit; i++ {
 		seedHealthRateAttempt(t, tx, scope, first.issue, string(enrolled.binding.MachineID), "succeeded", tracker.NativeRunData{RunnerID: "other-runner"}, at, -1)
 	}
-	_, err = readActivityAttempts(t.Context(), tx, string(scope.organization), []string{string(scope.project)}, operatortool.ActivityRequest{Limit: 5, RunnerID: "missing-runner"}, operatortool.AnalyticsWindow{From: at.Add(-time.Hour), To: at.Add(time.Second)}, at.Add(time.Second), false)
-	if !errors.Is(err, operatortool.ErrServiceUnavailable) {
-		t.Fatalf("unconverted activity filter overflow returned complete results: %v", err)
+	rows, err := readActivityAttempts(t.Context(), tx, string(scope.organization), []string{string(scope.project)}, operatortool.ActivityRequest{Limit: 5, RunnerID: "missing-runner"}, operatortool.AnalyticsWindow{From: at.Add(-time.Hour), To: at.Add(time.Second)}, at.Add(time.Second), false)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("legacy activity filter failed: rows=%+v error=%v", rows, err)
 	}
 
 }

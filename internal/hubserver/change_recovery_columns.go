@@ -11,18 +11,13 @@ import (
 )
 
 func readRecoveryChangeCheck(ctx context.Context, q nativeQueryer, change, version, run string) ([]tracker.ChangeCheck, error) {
-	rows, err := q.QueryContext(ctx, `SELECT record_json,check_run_id FROM change_evidence WHERE change_id=? AND kind='check' AND version_id=? AND (check_run_id=? OR check_run_id IS NULL) ORDER BY sequence DESC LIMIT ?`, change, version, run, changeLegacyReadLimit+1)
+	rows, err := queryChangeLegacyRows(ctx, q, `SELECT record_json,check_run_id FROM change_evidence WHERE change_id=? AND kind='check' AND version_id=? AND (check_run_id=? OR check_run_id IS NULL) ORDER BY sequence DESC`, change, version, run)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	checks := []tracker.ChangeCheck{}
-	examined := 0
 	for rows.Next() {
-		if examined == changeLegacyReadLimit {
-			return nil, errChangeColumnsIncomplete
-		}
-		examined++
 		var raw string
 		var stored sql.NullString
 		if err := rows.Scan(&raw, &stored); err != nil {
@@ -50,7 +45,7 @@ func readRecoveryChangeCheck(ctx context.Context, q nativeQueryer, change, versi
 }
 
 func legacyRecoveryReviews(ctx context.Context, q nativeQueryer, change, version string) ([]tracker.ChangeReview, map[string]bool, error) {
-	rows, err := q.QueryContext(ctx, `SELECT sequence,record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' ORDER BY sequence DESC LIMIT ?`, change, version, changeLegacyReadLimit+1)
+	rows, err := queryChangeLegacyRows(ctx, q, `SELECT sequence,record_json FROM change_evidence WHERE change_id=? AND version_id=? AND kind='review' ORDER BY sequence DESC`, change, version)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -65,9 +60,6 @@ func legacyRecoveryReviews(ctx context.Context, q nativeQueryer, change, version
 	decisions := map[string]bool{}
 	count := 0
 	for rows.Next() {
-		if count == changeLegacyReadLimit {
-			return nil, nil, errChangeColumnsIncomplete
-		}
 		var sequence int64
 		var raw string
 		if err := rows.Scan(&sequence, &raw); err != nil {

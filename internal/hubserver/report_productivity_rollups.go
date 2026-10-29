@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/issueorigin"
+	"github.com/digitaldrywood/detent/internal/operatortool"
 	"github.com/digitaldrywood/detent/internal/tracker"
 )
 
@@ -23,28 +24,7 @@ type productivityHour struct {
 	worked, reworked, landed int
 }
 
-func requireProductivityChangeColumns(ctx context.Context, query nativeQueryer, scope nativeScope, id string) error {
-	var pending bool
-	err := query.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM change_requests c WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? AND (c.created_at IS NULL OR EXISTS(SELECT 1 FROM change_versions v WHERE v.change_id=c.id AND v.head_sha IS NULL) OR EXISTS(SELECT 1 FROM change_evidence e WHERE e.change_id=c.id AND e.has_validator IS NULL))) OR EXISTS(SELECT 1 FROM collaboration_events e WHERE e.organization_id=? AND e.project_id=? AND e.work_item_id=? AND e.type='workflow.transitioned' AND (e.from_state IS NULL OR e.to_state IS NULL))`, scope.organization, scope.project, id, scope.organization, scope.project, id).Scan(&pending)
-	if err != nil {
-		return err
-	}
-	if !pending {
-		err = query.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND report_projection_version IS NULL) OR EXISTS(SELECT 1 FROM analytics_hourly_rollups WHERE organization_id=? AND project_id=? AND metric='completion' AND projection_version IS NULL)`, scope.organization, scope.project, id, scope.organization, scope.project).Scan(&pending)
-		if err != nil {
-			return err
-		}
-	}
-	if pending {
-		return errChangeColumnsIncomplete
-	}
-	return nil
-}
-
 func refreshProductivitySummary(ctx context.Context, tx projectionQuery, scope nativeScope, id string) error {
-	if err := requireProductivityChangeColumns(ctx, tx, scope, id); err != nil {
-		return err
-	}
 	var created, closed, state, kind, priority, actorRaw, body, labelsRaw string
 	err := tx.QueryRowContext(ctx, `SELECT i.created_at,coalesce(CASE WHEN ws.terminal=1 THEN `+nativeTerminalEnteredAt+` END,''),ws.detent_state,coalesce(i.issue_type,''),coalesce(CAST(q.priority_override AS TEXT),''),i.actor_json,i.body,i.labels_json
  FROM issues i JOIN workflow_states ws ON ws.id=i.workflow_state_id LEFT JOIN queue_entries q ON q.issue_id=i.id
@@ -87,19 +67,36 @@ func refreshProductivitySummary(ctx context.Context, tx projectionQuery, scope n
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		var completionActor string
-		err = tx.QueryRowContext(ctx, `SELECT actor_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='workflow.transitioned' AND to_state='Done' ORDER BY sequence DESC LIMIT 1`, scope.organization, scope.project, id).Scan(&completionActor)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		events, err := queryChangeLegacyRows(ctx, tx, `SELECT actor_json,data_json,to_state FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='workflow.transitioned' AND (to_state='Done' OR to_state IS NULL) ORDER BY sequence DESC`, scope.organization, scope.project, id)
+		if err != nil {
 			return err
 		}
-		if err == nil {
+		for events.Next() {
+			var actorRaw, dataRaw string
+			var target sql.NullString
+			if err := events.Scan(&actorRaw, &dataRaw, &target); err != nil {
+				return errors.Join(err, events.Close())
+			}
+			if !target.Valid {
+				var data tracker.CollaborationData
+				if err := decodeChangeColumnsJSON(ctx, []byte(dataRaw), &data); err != nil {
+					return errors.Join(err, events.Close())
+				}
+				if data.ToState != nativeShippedState {
+					continue
+				}
+			}
 			var who tracker.Actor
-			if err := json.Unmarshal([]byte(completionActor), &who); err != nil {
-				return err
+			if err := json.Unmarshal([]byte(actorRaw), &who); err != nil {
+				return errors.Join(err, events.Close())
 			}
 			if who.Kind == "human" && who.Agent == "" {
 				completedKind, completedID, completedName = "people", who.PrincipalID, who.DisplayName
 			}
+			break
+		}
+		if err := errors.Join(events.Err(), events.Close()); err != nil {
+			return errors.Join(err, events.Close())
 		}
 	}
 	var cycle any
@@ -222,26 +219,34 @@ func productivityHours(ctx context.Context, tx projectionQuery, scope nativeScop
 
 func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope nativeScope, id string) (productivityQuality, error) {
 	out := productivityQuality{}
-	if err := requireProductivityChangeColumns(ctx, tx, scope, id); err != nil {
-		return out, err
-	}
-	rows, err := tx.QueryContext(ctx, `SELECT c.id,c.work_item_id,l.record_json,coalesce(c.landed_version_id=v.id AND c.landed_head_sha=v.head_sha AND length(c.landed_merge_sha) IN (40,64),0) FROM change_requests c JOIN change_versions v ON v.change_id=c.id JOIN quality_landings l ON l.version_id=v.id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=?
- UNION ALL SELECT c.id,c.work_item_id,c.record_json,1 FROM change_requests c JOIN change_versions v ON v.change_id=c.id AND v.id=c.landed_version_id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? AND NOT EXISTS(SELECT 1 FROM quality_landings l WHERE l.version_id=v.id) AND c.landed_head_sha=v.head_sha AND length(c.landed_merge_sha) IN (40,64)`, scope.organization, scope.project, id, scope.organization, scope.project, id)
+	rows, err := queryChangeLegacyRows(ctx, tx, `SELECT c.id,c.work_item_id,c.record_json,v.id,v.record_json,coalesce(l.record_json,'') FROM change_requests c JOIN change_versions v ON v.change_id=c.id LEFT JOIN quality_landings l ON l.version_id=v.id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? ORDER BY c.id,v.number`, scope.organization, scope.project, id)
 	if err != nil {
 		return out, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var landing nativeAnalyticsLanding
-		var current bool
-		var raw string
-		if err := rows.Scan(&landing.ChangeID, &landing.WorkItemID, &raw, &current); err != nil {
-			rows.Close()
+		var changeRaw, versionID, versionRaw, qualityRaw string
+		if err := rows.Scan(&landing.ChangeID, &landing.WorkItemID, &changeRaw, &versionID, &versionRaw, &qualityRaw); err != nil {
 			return out, err
 		}
-		if err := decodeQualityLanding(ctx, raw, &landing.Landing); err != nil {
-			rows.Close()
+		var change tracker.ChangeRequest
+		var version tracker.ChangeVersion
+		if err := decodeChangeColumnsJSON(ctx, []byte(changeRaw), &change); err != nil {
 			return out, err
+		}
+		if err := decodeChangeColumnsJSON(ctx, []byte(versionRaw), &version); err != nil {
+			return out, err
+		}
+		current := change.Landed != nil && change.Landed.VersionID == versionID && change.Landed.HeadSHA == version.HeadSHA && (len(change.Landed.MergeSHA) == 40 || len(change.Landed.MergeSHA) == 64)
+		if qualityRaw != "" {
+			if err := decodeQualityLanding(ctx, qualityRaw, &landing.Landing); err != nil {
+				return out, err
+			}
+		} else if current {
+			landing.Landing = *change.Landed
+		} else {
+			continue
 		}
 		out.landings = append(out.landings, landing)
 		if current {
@@ -251,7 +256,7 @@ func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope na
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return out, err
 	}
-	rows, err = tx.QueryContext(ctx, `SELECT type,recorded_at,data_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='workflow.transitioned'
+	rows, err = queryChangeLegacyRows(ctx, tx, `SELECT type,recorded_at,data_json FROM collaboration_events WHERE organization_id=? AND project_id=? AND work_item_id=? AND type='workflow.transitioned'
  UNION ALL SELECT 'worked',started_at,'{}' FROM native_attempts WHERE organization_id=? AND project_id=? AND work_item_id=? AND coalesce(nullif(role,''),execution_role) IN ('code','rework')`, scope.organization, scope.project, id, scope.organization, scope.project, id)
 	if err != nil {
 		return out, err
@@ -261,24 +266,21 @@ func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope na
 		e := qualityHistoryEvent{Item: id}
 		var at, raw string
 		if err := rows.Scan(&e.Kind, &at, &raw); err != nil {
-			rows.Close()
-			return out, err
+			return out, errors.Join(err, rows.Close())
 		}
 		e.At, err = parseTimeValue(at)
 		if err != nil {
-			rows.Close()
-			return out, err
+			return out, errors.Join(err, rows.Close())
 		}
-		if err := json.Unmarshal([]byte(raw), &e.Data); err != nil {
-			rows.Close()
-			return out, err
+		if err := decodeChangeColumnsJSON(ctx, []byte(raw), &e.Data); err != nil {
+			return out, errors.Join(err, rows.Close())
 		}
 		out.events = append(out.events, e)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return out, err
 	}
-	rows, err = tx.QueryContext(ctx, `SELECT e.record_json FROM change_requests c JOIN change_evidence e ON e.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? AND e.kind='review' AND e.claim_review_decision='changes_requested' AND NOT EXISTS(SELECT 1 FROM change_versions current JOIN change_versions newer ON newer.change_id=current.change_id AND newer.number>current.number WHERE current.id=e.version_id AND julianday(newer.created_at)<=julianday(e.created_at))`, scope.organization, scope.project, id)
+	rows, err = queryChangeLegacyRows(ctx, tx, `SELECT e.record_json FROM change_requests c JOIN change_evidence e ON e.change_id=c.id WHERE c.organization_id=? AND c.project_id=? AND c.work_item_id=? AND e.kind='review' ORDER BY e.sequence`, scope.organization, scope.project, id)
 	if err != nil {
 		return out, err
 	}
@@ -287,12 +289,17 @@ func productivityQualityInputs(ctx context.Context, tx projectionQuery, scope na
 		var raw string
 		var review tracker.ChangeReview
 		if err := rows.Scan(&raw); err != nil {
-			rows.Close()
+			return out, errors.Join(err, rows.Close())
+		}
+		matches, err := legacyQualityEvidenceMatches(ctx, tx, "review", raw, operatortool.AnalyticsWindow{From: time.Time{}, To: time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)})
+		if err != nil {
 			return out, err
 		}
-		if err := json.Unmarshal([]byte(raw), &review); err != nil {
-			rows.Close()
-			return out, err
+		if !matches {
+			continue
+		}
+		if err := decodeChangeColumnsJSON(ctx, []byte(raw), &review); err != nil {
+			return out, errors.Join(err, rows.Close())
 		}
 		out.events = append(out.events, qualityHistoryEvent{Item: id, Kind: "changes_requested", VersionID: review.VersionID, At: review.CreatedAt})
 	}

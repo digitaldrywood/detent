@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -172,7 +171,13 @@ func loadAnalyticsQualityInputs(ctx context.Context, q nativeQueryer, scope nati
 	partial := len(landings) > maxAnalyticsPopulation || analyticsPopulationOffset(ctx, "quality_landings") > 0 || analyticsPopulationOffset(ctx, "quality_events") > 0 || analyticsPopulationOffset(ctx, "quality_evidence") > 0 || analyticsPopulationOffset(ctx, "quality_worked") > 0
 	landings = landings[:min(len(landings), maxAnalyticsPopulation)]
 	eventIssues, eventArgs := reportsIssueClause(ctx, "work_item_id")
-	rows, err := queryAnalyticsPopulation(ctx, q, "quality_events", `SELECT id,work_item_id,type,recorded_at,data_json,to_state,coalesce((SELECT terminal FROM workflow_states ws WHERE ws.project_id=collaboration_events.project_id AND ws.detent_state=to_state),0) FROM `+analyticsEventsInRecordedOrder(q)+`
+	var rows interface {
+		Next() bool
+		Scan(...any) error
+		Err() error
+		Close()
+	}
+	rows, err = queryAnalyticsPopulation(ctx, q, "quality_events", `SELECT id,work_item_id,type,recorded_at,data_json,to_state,coalesce((SELECT terminal FROM workflow_states ws WHERE ws.project_id=collaboration_events.project_id AND ws.detent_state=to_state),0) FROM `+analyticsEventsInRecordedOrder(q)+`
 WHERE organization_id=? AND project_id=? AND type='workflow.transitioned'
 AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?) AND recorded_at>=? AND recorded_at<?`+eventIssues+` ORDER BY recorded_at,sequence,id LIMIT ? OFFSET ?`, append([]any{scope.organization, scope.project, changeColumnTime(w.From), changeColumnTime(w.To), w.From.UTC().Add(-24 * time.Hour).Format(time.DateOnly), w.To.UTC().Add(48 * time.Hour).Format(time.DateOnly)}, eventArgs...)...)
 	if err != nil {
@@ -190,7 +195,7 @@ AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)
 		}
 		e.At, err = parseTimeValue(at)
 		if err == nil {
-			err = json.Unmarshal([]byte(raw), &e.Data)
+			err = decodeChangeColumnsJSON(ctx, []byte(raw), &e.Data)
 		}
 		if err != nil {
 			rows.Close()
@@ -221,7 +226,7 @@ AND julianday(recorded_at)>=julianday(?) AND julianday(recorded_at)<julianday(?)
 		return analyticsQualityInputs{}, err
 	}
 	if pending {
-		rows, err = queryAnalyticsRows(ctx, q, `SELECT e.change_id,e.kind,e.record_json,c.work_item_id,e.sequence FROM change_evidence e JOIN change_requests c ON c.id=e.change_id WHERE c.organization_id=? AND c.project_id=? AND e.kind IN ('review','discussion')`+evidenceIssues+` LIMIT ?`, append(append([]any{scope.organization, scope.project}, evidenceArgs...), maxAnalyticsPopulation+1)...)
+		rows, err = queryLegacyAnalyticsRows(ctx, q, `SELECT e.change_id,e.kind,e.record_json,c.work_item_id,e.sequence FROM change_evidence e JOIN change_requests c ON c.id=e.change_id WHERE c.organization_id=? AND c.project_id=? AND e.kind IN ('review','discussion')`+evidenceIssues+` ORDER BY e.sequence`, append([]any{scope.organization, scope.project}, evidenceArgs...)...)
 	} else {
 		rows, err = queryAnalyticsRows(ctx, q, `SELECT e.change_id,e.kind,e.record_json,c.work_item_id,e.sequence FROM change_evidence e INDEXED BY change_evidence_analytics_review CROSS JOIN change_requests c ON c.id=e.change_id
 WHERE c.organization_id=? AND c.project_id=? AND e.kind='review' AND e.claim_review_decision='changes_requested' AND e.created_at>=? AND e.created_at<? AND NOT EXISTS (SELECT 1 FROM change_versions current JOIN change_versions newer ON newer.change_id=current.change_id AND newer.number>current.number WHERE current.id=e.version_id AND julianday(newer.created_at)<=julianday(e.created_at))
@@ -240,14 +245,7 @@ WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND e.escap
 		sequence            int64
 	}
 	evidence := newAnalyticsOrderedPopulation(ctx, "quality_evidence", func(a, b qualityEvidenceRow) int { return cmp.Compare(a.sequence, b.sequence) })
-	evidenceExamined := 0
 	for rows.Next() {
-		if pending {
-			if evidenceExamined == maxAnalyticsPopulation {
-				return analyticsQualityInputs{}, fmt.Errorf("change analytics evidence backfill exceeds read budget: %w", operatortool.ErrServiceUnavailable)
-			}
-			evidenceExamined++
-		}
 		var value qualityEvidenceRow
 		if err := rows.Scan(&value.id, &value.kind, &value.raw, &value.item, &value.sequence); err != nil {
 			return analyticsQualityInputs{}, err
@@ -279,14 +277,14 @@ WHERE c.organization_id=? AND c.project_id=? AND e.kind='discussion' AND e.escap
 		if kind == "discussion" {
 			var discussion qualityDiscussion
 			discussion.ChangeID = id
-			if err := json.Unmarshal([]byte(raw), &discussion.ChangeDiscussion); err != nil {
+			if err := decodeChangeColumnsJSON(ctx, []byte(raw), &discussion.ChangeDiscussion); err != nil {
 				rows.Close()
 				return analyticsQualityInputs{}, err
 			}
 			discussions = append(discussions, discussion)
 		} else {
 			var review tracker.ChangeReview
-			if err := json.Unmarshal([]byte(raw), &review); err != nil {
+			if err := decodeChangeColumnsJSON(ctx, []byte(raw), &review); err != nil {
 				rows.Close()
 				return analyticsQualityInputs{}, err
 			}
