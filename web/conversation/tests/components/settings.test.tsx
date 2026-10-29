@@ -22,6 +22,7 @@ import { OrganizationMembersProvider } from "../../src/app/account/OrganizationM
 import { accountRoutes } from "../../src/app/routes.account.tsx";
 import { SettingsSidebarNav } from "../../src/components/settings/SettingsSidebarNav.tsx";
 import { SidebarProvider } from "../../src/components/ui/sidebar.tsx";
+import { SidebarUtilityMenu } from "../../src/components/sidebar/SidebarChrome.tsx";
 import { ClientContext } from "../../src/app/client.ts";
 import type { ConversationClient } from "../../src/runtime/bootstrap.ts";
 import {
@@ -1256,6 +1257,30 @@ describe("the settings navigation in the sidebar", () => {
   it("keeps the way back out of settings", async () => {
     renderSidebarNav();
     await waitFor(() => expect(screen.getByRole("button", { name: "Back" })).toBeTruthy());
+  });
+
+  it("returns to the board it left, however many settings tabs were opened since", async () => {
+    const root = createRootRoute({ component: () => <SidebarProvider><SidebarUtilityMenu /><Outlet /></SidebarProvider> });
+    const router = createRouter({
+      routeTree: root.addChildren([
+        createRoute({ getParentRoute: () => root, path: "/work/p/$projectId" }),
+        createRoute({ getParentRoute: () => root, path: "/settings/$section" }),
+        createRoute({ getParentRoute: () => root, path: "/settings/projects/$project/$tab" }),
+      ]),
+      history: createMemoryHistory({ initialEntries: ["/work/p/proj_alpha?view=board"] }),
+    });
+    render(
+      <ClientContext.Provider value={OWNER_ACCOUNT as ConversationClient}>
+        <RouterProvider router={router as never} />
+      </ClientContext.Provider>,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy());
+    for (const to of ["/settings/projects", "/settings/projects/example-project/workflow", "/settings/projects/example-project/repository"]) {
+      await act(() => router.navigate({ to } as never));
+    }
+    fireEvent.click(await screen.findByRole("button", { name: "Back" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/work/p/proj_alpha"));
+    expect(router.state.location.search).toEqual({ view: "board" });
   });
 
   it("renders the brand row exactly once — it is not in this component", async () => {

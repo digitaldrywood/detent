@@ -5,8 +5,8 @@ import {
   SettingsIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { memo, useCallback } from "react";
-import { Link, useCanGoBack, useLocation, useNavigate } from "@tanstack/react-router";
+import { memo, useCallback, useEffect } from "react";
+import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
@@ -139,10 +139,17 @@ function SidebarUtilityItem({
   );
 }
 
+interface FooterReturnLocation {
+  readonly pathname: string;
+  readonly search: unknown;
+  readonly hash: string;
+}
+
+let footerReturnLocation: FooterReturnLocation | null = null;
+
 export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   const hasUnread = useReleaseNotesUnread();
   const navigate = useNavigate();
-  const canGoBack = useCanGoBack();
   const { isMobile, setOpenMobile } = useSidebar();
   const currentFooterPage = useLocation({
     select: (location) =>
@@ -156,6 +163,12 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
               ? "pull-requests"
               : null,
   });
+  const location = useLocation();
+  useEffect(() => {
+    if (currentFooterPage === null) {
+      footerReturnLocation = { pathname: location.pathname, search: location.search, hash: location.hash };
+    }
+  }, [currentFooterPage, location.pathname, location.search, location.hash]);
   const { environments } = useEnvironments();
   // The page reads every connected server, so one of them offering pull requests is enough for
   // the link to lead somewhere.
@@ -188,12 +201,12 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
 
   const handleBackClick = useCallback(() => {
     closeMobileSidebar();
-    if (canGoBack) {
-      window.history.back();
+    if (footerReturnLocation === null) {
+      void navigate({ to: "/work" });
       return;
     }
-    void navigate({ to: "/work" });
-  }, [canGoBack, closeMobileSidebar, navigate]);
+    void navigate({ ...footerReturnLocation, to: footerReturnLocation.pathname } as never);
+  }, [closeMobileSidebar, navigate]);
 
   return (
     <SidebarMenu className="flex-row items-center">
