@@ -7949,10 +7949,24 @@ func initRunnerSourceRepo(t *testing.T) string {
 func runRunnerGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 
-	cmd := exec.CommandContext(t.Context(), "git", append([]string{"-C", dir}, args...)...)
-	output, err := cmd.CombinedOutput()
+	ctx := testenv.WaitContext(t, t.Context())
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	procgroup.Configure(ctx, cmd)
+	outputFile, err := os.CreateTemp(t.TempDir(), "git-output-*")
 	if err != nil {
-		t.Fatalf("git %s failed: %v\n%s", strings.Join(cmd.Args[1:], " "), err, output)
+		t.Fatal(err)
+	}
+	cmd.Stdout, cmd.Stderr = outputFile, outputFile
+	runErr := cmd.Run()
+	if err := outputFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := os.ReadFile(outputFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runErr != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(cmd.Args[1:], " "), runErr, output)
 	}
 	return string(output)
 }

@@ -105,6 +105,10 @@ type ConversationCapabilities struct {
 	Continue  bool `json:"continue"`
 }
 
+type PreStartConversationExecution interface {
+	SupportsPreStartConversationBinding(context.Context) (bool, error)
+}
+
 // ConversationExecution is an optional Execution extension: executions that
 // can bind the running attempt to the issue's conversation implement it.
 type ConversationExecution interface {

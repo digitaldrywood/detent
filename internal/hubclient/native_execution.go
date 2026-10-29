@@ -70,6 +70,7 @@ type nativeExecution struct {
 	worktreeHead             string
 	role                     string
 	conversationContinuation bool
+	conversationReady        chan struct{}
 	settled                  bool
 	landed                   bool
 	change                   *runner.NativeChange
@@ -400,6 +401,12 @@ func (e *nativeExecution) validationError(ctx context.Context, err error) error 
 func (e *nativeExecution) Start(ctx context.Context, identity tracker.NativeExecutionIdentity) (startErr error) {
 	defer func() {
 		if startErr == nil {
+			e.mu.Lock()
+			if e.conversationReady != nil {
+				close(e.conversationReady)
+				e.conversationReady = nil
+			}
+			e.mu.Unlock()
 			e.refreshReasons(ctx, false)
 		}
 	}()

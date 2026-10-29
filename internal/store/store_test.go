@@ -1825,6 +1825,59 @@ func TestLatestAgentResumeStateMatchesIssueBackendAndModel(t *testing.T) {
 		})
 	}
 
+	for _, test := range []struct {
+		name       string
+		errorClass string
+		orphaned   bool
+		found      bool
+	}{
+		{name: "active session"},
+		{name: "reclaimed after restart", errorClass: "service_restart", found: true},
+		{name: "orphaned after restart", errorClass: "service_restart", orphaned: true, found: true},
+		{name: "other abandonment", errorClass: "other"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			issueID := "recovery-" + test.name
+			attemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{ProjectID: "example-project", IssueID: issueID, WorkerType: "agent", StartedAt: startedAt})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sessionID, err := backend.StartSession(ctx, SessionStart{WorkAttemptID: attemptID, ProjectID: "example-project", IssueID: issueID, StartedAt: startedAt, Model: "gpt-5-codex", RequestedModel: "gpt-5-codex", AgentBackendID: "codex", AgentBackendKind: "codex", AgentRole: "code"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := backend.UpdateSessionProviderIdentity(ctx, sessionID, SessionProviderIdentity{ThreadID: "thread-" + issueID, SessionID: "session-" + issueID}); err != nil {
+				t.Fatal(err)
+			}
+			if test.errorClass != "" {
+				if _, err := backend.TimeoutExpiredWorkAttempts(ctx, WorkAttemptTimeout{Now: startedAt.Add(time.Minute), ConfirmedGoneAttemptIDs: []int64{attemptID}, TerminalState: WorkAttemptTerminalAbandoned, ErrorClass: test.errorClass}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.orphaned {
+				if err := backend.MarkAgentSessionOrphaned(ctx, sessionID, startedAt.Add(2*time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			lookup := failedLookup
+			lookup.WorkAttemptID, lookup.IssueID = attemptID, issueID
+			got, err := backend.LatestAgentResumeState(ctx, lookup)
+			if !test.found {
+				if !errors.Is(err, ErrNotFound) {
+					t.Fatalf("unsettled session became resumable: %+v error=%v", got, err)
+				}
+				return
+			}
+			completedAt := startedAt.Add(time.Minute)
+			if test.orphaned {
+				completedAt = startedAt.Add(2 * time.Minute)
+			}
+			if err != nil || got.DetentSessionID != sessionID || got.ProviderThreadID != "thread-"+issueID || got.ProviderSessionID != "session-"+issueID || !got.CompletedAt.Equal(completedAt) {
+				t.Fatalf("reclaimed session was lost: %+v error=%v", got, err)
+			}
+		})
+	}
+
 	firstID, err := backend.StartSession(ctx, SessionStart{
 		ProjectID:        "example-project",
 		IssueID:          "issue-859",
