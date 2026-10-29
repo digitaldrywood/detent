@@ -354,6 +354,7 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 		signingFail              bool
 		authorityLost            bool
 		resolvedPause            bool
+		checkpointRetry          string
 		pausedLaterConflict      bool
 		failedFinalGate          bool
 		lateConflict             bool
@@ -366,6 +367,9 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 	}{
 		{name: "resolved source"},
 		{name: "resolved pause integrates target before validation with two remaining picks", resolvedPause: true},
+		{name: "Todo retry restores paused checkpoint before validation", resolvedPause: true, checkpointRetry: "Todo"},
+		{name: "code retry restores paused checkpoint before validation", resolvedPause: true, checkpointRetry: "In Progress"},
+		{name: "Rework retry restores paused checkpoint before validation", resolvedPause: true, checkpointRetry: "Rework"},
 		{name: "resolved pause preserves later replay conflict", resolvedPause: true, pausedLaterConflict: true},
 		{name: "resolved pause retains genuine final gate failure", resolvedPause: true, failedFinalGate: true},
 		{name: "complete evidence wait resumes review only", reviewResume: "wait", staged: true},
@@ -565,6 +569,33 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				}
 			}
 			execution := &reworkArtifactsExecution{base: base, testExecution: testExecution{recovery: tracker.NativeRecovery{Lease: tracker.NativeLease{PolicyID: "unchanged-policy"}}}}
+			if test.checkpointRetry != "" {
+				ownedIssue := workspaceIssue("default", issue)
+				ownedIssue.NativeRework = true
+				checkpoint, pushed, err := backend.(workspace.CheckpointRefPublisher).PushCheckpointRef(t.Context(), info, ownedIssue, workspace.CheckpointRef{}, func(ctx context.Context) error { return ctx.Err() })
+				if err != nil || !pushed {
+					t.Fatalf("publish paused checkpoint: %+v, %v", checkpoint, err)
+				}
+				local, err := backend.(workspace.RecoveryStateProvider).RecoveryState(t.Context(), info, ownedIssue)
+				if err != nil {
+					t.Fatal(err)
+				}
+				saved := executionCheckpoint(&local)
+				saved.Storage, saved.Ref, saved.CommitSHA, saved.BaseSHA, saved.TreeSHA = "git_ref", checkpoint.Ref, checkpoint.CommitSHA, checkpoint.BaseSHA, checkpoint.TreeSHA
+				execution.recovery.Attempts = []tracker.NativeAttempt{
+					{Status: "interrupted", NativeRunData: tracker.NativeRunData{AttemptID: "source", Identity: &tracker.NativeExecutionIdentity{Role: RoleRework}}, Checkpoint: &saved},
+					{Status: "failed", NativeRunData: tracker.NativeRunData{AttemptID: "workspace_failure"}},
+				}
+				clone := filepath.Join(t.TempDir(), "retry-source")
+				runRunnerGit(t, source, "clone", remote, clone)
+				runRunnerGit(t, clone, "config", "user.name", "Test")
+				runRunnerGit(t, clone, "config", "user.email", "test@example.com")
+				backend, err = workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{Root: filepath.Join(t.TempDir(), "retry-workspaces"), SourceRoot: clone, AutoBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				issue.State = test.checkpointRetry
+			}
 			request := RunRequest{Mode: RunModeImplement, Issue: issue, Execution: execution}
 			if test.resolvedPause {
 				request.Execution = &reworkValidationExecution{execution}
@@ -867,6 +898,9 @@ func TestNativeReworkFinalizesBeforeImmutableEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = r.Run(t.Context(), request)
+			if test.checkpointRetry != "" {
+				info.Path = agent.request.Workspace
+			}
 			if test.resolvedPause {
 				if test.pausedLaterConflict {
 					if err != nil || execution.head != "" || execution.validation != nil || execution.checkpoint == nil || execution.checkpoint.WorktreeState != "dirty" {
