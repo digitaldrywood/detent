@@ -105,6 +105,10 @@ func TestHostCacheReclaimsBeforeTrackerCleanup(t *testing.T) {
 			if err := os.WriteFile(entry, make([]byte, 2048), 0600); err != nil {
 				t.Fatal(err)
 			}
+			old := time.Now().Add(-26 * time.Hour)
+			if err := os.Chtimes(entry, old, old); err != nil {
+				t.Fatal(err)
+			}
 			release := func() error { return nil }
 			pin := filepath.Join(t.TempDir(), "active-output")
 			if busy {
