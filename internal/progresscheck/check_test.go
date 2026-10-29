@@ -147,6 +147,7 @@ func TestAIRejectsUnsafeOrMalformedDecisions(t *testing.T) {
 		name, output string
 		valid        bool
 	}{
+		{"progressing step is ignored", `{"outcome":"progressing","step":"implement","reason":"New evidence","evidence":["attempt-2"]}`, true},
 		{"typed reroute", `{"outcome":"reroute","step":"security_audit","reason":"Missing receipt","evidence":["attempt-2"]}`, true},
 		{"unknown outcome", `{"outcome":"park","reason":"Repeated","evidence":["attempt-2"]}`, false},
 		{"unavailable step", `{"outcome":"reroute","step":"bypass_audit","reason":"Missing receipt","evidence":["attempt-2"]}`, false},

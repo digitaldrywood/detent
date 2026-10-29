@@ -13,14 +13,22 @@ import (
 func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name        string
-		changed     bool
-		released    bool
-		editedOlder bool
-		fullContext bool
-		active      bool
+		name          string
+		changed       bool
+		released      bool
+		editedOlder   bool
+		fullContext   bool
+		active        bool
+		success       bool
+		noProduct     bool
+		blocked       bool
+		staleRevision bool
 	}{
 		{name: "decision comment does not create new evidence"},
+		{name: "succeeded without change is checked", success: true},
+		{name: "succeeded without work product is checked", success: true, noProduct: true},
+		{name: "succeeded with source recovery blocker is checked", success: true, blocked: true},
+		{name: "stale item revision rejects publication", staleRevision: true},
 		{name: "full context remains stable after publication", fullContext: true},
 		{name: "admitted active worker still reads prior failures", active: true},
 		{name: "new human input rejects stale decision", changed: true},
@@ -33,7 +41,26 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				Sequence: 2, Identity: &tracker.NativeExecutionIdentity{Role: "implement", Backend: "codex", Model: "gpt-6-astra"}, LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken, RunID: f.run, AttemptID: f.attempt, PolicyID: f.policy, Outcome: "failed",
 				TerminalFailure: &tracker.NativeTerminalFailure{Error: "422: landing requires security audit evidence for its exact base and head", ErrorClass: "publication", Stage: "publication", ObservedAt: f.now},
 			}}
+			if test.success {
+				event.Data.Outcome = "succeeded"
+				event.Data.TerminalFailure = nil
+				if !test.noProduct {
+					event.Data.Finalization = &tracker.NativeFinalization{Changed: false, Settled: true, ObservedAt: f.now}
+				}
+				if test.blocked {
+					event.Data.Finalization.Changed = true
+					event.Data.Disposition = &tracker.NativeDisposition{Status: "blocked", ReasonCode: "source_recovery_required"}
+				}
+			}
 			path := f.base + "/work-items/" + string(f.issue.WorkItemID)
+			if test.success {
+				checkpoint := event
+				checkpoint.Type, checkpoint.IdempotencyKey, checkpoint.Data.Outcome = "run.checkpointed", newNativeID("checkpoint"), ""
+				checkpoint.Data.Finalization, checkpoint.Data.Disposition = nil, nil
+				checkpoint.Data.Handoff = nativeTestCheckpoint()
+				requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, checkpoint), http.StatusOK)
+				event.Data.Sequence++
+			}
 			requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPost, path+"/events", f.worker, event), http.StatusOK)
 			f.release(t)
 			response := performHubAPIRequest(t, f.service, http.MethodPost, f.base+"/claims", f.worker, tracker.NativeClaim{PolicyID: f.policy, WorkItemID: f.issue.WorkItemID, MachineID: "conversation-machine", SessionID: newNativeID("session"), TTLSeconds: 600, ProtocolMajor: 2, Capabilities: []string{"native_issues", "scoped_collaboration"}})
@@ -66,7 +93,7 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				}
 			}
 			view := read()
-			if len(view.Request.Attempts) != 1 || view.Request.Attempts[0].ID != f.attempt || view.Request.Attempts[0].FailureClass != "publication" {
+			if len(view.Request.Attempts) != 1 || view.Request.Attempts[0].ID != f.attempt || (!test.success && view.Request.Attempts[0].FailureClass != "publication") {
 				t.Fatalf("request attempts=%+v", view.Request.Attempts)
 			}
 			id, err := view.Request.ID()
@@ -74,6 +101,14 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				t.Fatal(err)
 			}
 			input := progresscheck.Publication{Mutation: tracker.Mutation{LeaseID: f.lease.ID, FencingToken: f.lease.FencingToken}, RequestID: id, PolicyID: f.policy, Instance: string(f.lease.MachineID), Decision: progresscheck.Decision{Outcome: progresscheck.Reroute, Step: "implement", Reason: "Produce audit evidence on the current source", Evidence: []string{f.attempt}}}
+			currentResponse := performHubAPIRequest(t, f.service, http.MethodGet, path, f.worker, nil)
+			requireNativeStatus(t, currentResponse, http.StatusOK)
+			var current tracker.NativeIssue
+			decodeHubResponse(t, currentResponse, &current)
+			input.ExpectedRevision = current.Revision
+			if test.staleRevision {
+				input.ExpectedRevision++
+			}
 			if test.changed {
 				if test.editedOlder {
 					requireNativeStatus(t, performHubAPIRequest(t, f.service, http.MethodPatch, path+"/comments/"+older.ID, testHubAdminToken, tracker.UpdateComment{Mutation: tracker.Mutation{IdempotencyKey: "edited-input"}, ExpectedRevision: older.Revision, Body: "The audit protocol changed"}), http.StatusOK)
@@ -85,7 +120,7 @@ func TestNativeProgressRequestReplayAndFencing(t *testing.T) {
 				f.release(t)
 			}
 			response = performHubAPIRequest(t, f.service, http.MethodPost, path+"/progress", f.worker, input)
-			if test.changed || test.released {
+			if test.changed || test.released || test.staleRevision {
 				if response.Code == http.StatusOK {
 					t.Fatal("stale evidence or released authority published decision")
 				}

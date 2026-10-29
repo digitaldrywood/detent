@@ -103,7 +103,7 @@ func (s *Scheduler) RetryProgress(ctx context.Context, issue connector.Issue) (p
 		return progresscheck.Request{}, nil, errors.New("progress check requires current native claim")
 	}
 	request := progresscheck.NativeRequest(claim.recovery, claim.lease.PolicyID, string(claim.lease.MachineID))
-	if len(request.Attempts) == 0 || !progresscheck.Failed(request.Attempts[len(request.Attempts)-1].Outcome) {
+	if !progresscheck.NeedsCheck(request) {
 		return request, &progressOwner{client: claim.source.client, request: request, lease: claim.lease}, nil
 	}
 	path, err := nativeItemPath(claim.lease.WorkItemID)
@@ -141,8 +141,21 @@ func (o *progressOwner) Publish(ctx context.Context, record progresscheck.Record
 		return progresscheck.Record{}, err
 	}
 	input := progresscheck.Publication{Mutation: tracker.Mutation{LeaseID: o.lease.ID, FencingToken: o.lease.FencingToken}, RequestID: record.RequestID, PolicyID: o.request.PolicyID, Instance: o.request.Instance, Decision: record.Decision}
+	current, err := o.client.Issue(ctx, o.lease.WorkItemID)
+	if err != nil {
+		return progresscheck.Record{}, err
+	}
+	input.ExpectedRevision = current.Revision
 	var result progresscheck.Record
 	err = o.client.client.request(ctx, http.MethodPost, o.client.base()+path+"/progress", input, &result)
+	if hubErrorCode(err) == "revision_conflict" {
+		current, refreshErr := o.client.Issue(ctx, o.lease.WorkItemID)
+		if refreshErr != nil {
+			return progresscheck.Record{}, refreshErr
+		}
+		input.ExpectedRevision = current.Revision
+		err = o.client.client.request(ctx, http.MethodPost, o.client.base()+path+"/progress", input, &result)
+	}
 	if err == nil {
 		o.retained = &result
 	}
