@@ -764,10 +764,11 @@ func TestBackgroundStorageCancellationProgress(t *testing.T) {
 		name       string
 		archive    bool
 		aggregates int
+		committed  []int
 	}{
-		{"conversion aggregates", false, 3},
-		{"conversion rows", false, 1},
-		{"archive", true, 3},
+		{"conversion aggregates", false, 3, []int{3}},
+		{"conversion rows", false, 1, []int{2, 3}},
+		{"archive", true, 3, []int{3}},
 	} {
 		archive := test.archive
 		t.Run(test.name, func(t *testing.T) {
@@ -846,18 +847,23 @@ func TestBackgroundStorageCancellationProgress(t *testing.T) {
 				if r.Reference.Key == first {
 					t.Fatal("repeated committed unit")
 				}
-				if test.aggregates > 1 && resumed == 0 && r.Reference.Key == interrupted {
+				if resumed == 0 && r.Reference.Key == interrupted {
 					t.Fatal("interrupted unit starved unattempted work")
+				}
+				if test.aggregates == 1 && resumed == 1 && r.Reference.Key != interrupted {
+					t.Fatal("wrapped pass did not revisit interrupted unit")
 				}
 				resumed++
 				return nil
 			}
-			f.now = f.now.Add(time.Minute)
-			if err := run(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-			if got := count(); got != 3 || resumed != 2 {
-				t.Fatalf("resumed units=%d committed=%d", resumed, got)
+			for tick, want := range test.committed {
+				f.now = f.now.Add(time.Minute)
+				if err := run(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if got := count(); got != want || resumed != want-1 {
+					t.Fatalf("tick=%d resumed units=%d committed=%d want=%d", tick, resumed, got, want)
+				}
 			}
 		})
 	}
