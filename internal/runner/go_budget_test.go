@@ -62,6 +62,10 @@ func TestManagedCacheWorkerAdmission(t *testing.T) {
 			if err := os.WriteFile(entry, make([]byte, 2048), 0600); err != nil {
 				t.Fatal(err)
 			}
+			old := time.Now().Add(-26 * time.Hour)
+			if err := os.Chtimes(entry, old, old); err != nil {
+				t.Fatal(err)
+			}
 			pin := filepath.Join(t.TempDir(), "active-output")
 			if err := os.Link(entry, pin); err != nil {
 				t.Fatal(err)

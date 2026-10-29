@@ -64,27 +64,15 @@ func NewManaged(ctx context.Context, root, owner string) (cache *Managed, err er
 	}
 	defer func() { err = errors.Join(err, lock.Close()) }()
 	marker := filepath.Join(root, ".detent-owner")
-	existing, err := os.ReadFile(marker)
-	if err == nil {
-		if strings.TrimSpace(string(existing)) != filepath.Clean(owner) {
-			return nil, errors.New("managed Go build cache belongs to another runtime store")
-		}
-	} else if errors.Is(err, os.ErrNotExist) {
+	_, err = os.ReadFile(marker)
+	if errors.Is(err, os.ErrNotExist) {
 		if err := os.WriteFile(marker, []byte(filepath.Clean(owner)+"\n"), 0o600); err != nil {
 			return nil, err
 		}
-	} else {
+	} else if err != nil {
 		return nil, err
 	}
 	return cache, nil
-}
-
-func ManagedBuildPath() (string, error) {
-	root, err := os.UserCacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, "detent", "go-build"), nil
 }
 
 func ManagedBuildFromContext(ctx context.Context) string {

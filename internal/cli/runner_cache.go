@@ -16,7 +16,6 @@ import (
 type runnerBuildCache struct {
 	cache  *toolcache.Managed
 	root   string
-	native string
 	mu     sync.Mutex
 	report atomic.Pointer[toolcache.Report]
 }
@@ -24,24 +23,21 @@ type runnerBuildCache struct {
 var errNativeBuildCache = errors.New("runner uses the native Go build cache")
 
 func newRunnerBuildCache(ctx context.Context, cfg BootConfig) (*runnerBuildCache, error) {
-	if !cfg.Global.Client.Configured() || cfg.Global.Client.IdentityFile == "" || runtimeStoreIsMemory(runtimeStorePath(cfg)) || os.Getenv("GOCACHE") != "" || os.Getenv("GOCACHEPROG") != "" {
+	return resolveRunnerBuildCache(ctx, cfg, toolcache.Resolve)
+}
+
+func resolveRunnerBuildCache(ctx context.Context, cfg BootConfig, resolve func(context.Context) (toolcache.Paths, error)) (*runnerBuildCache, error) {
+	if !cfg.Global.Client.Configured() || cfg.Global.Client.IdentityFile == "" || runtimeStoreIsMemory(runtimeStorePath(cfg)) || os.Getenv("GOCACHEPROG") != "" {
 		return nil, errNativeBuildCache
 	}
-	paths, err := toolcache.Resolve(ctx)
+	paths, err := resolve(ctx)
 	if err != nil {
 		return nil, err
 	}
-	nativeRoot, err := os.UserCacheDir()
-	if err != nil {
-		return nil, err
-	}
-	if filepath.Clean(paths.Build) != filepath.Join(nativeRoot, "go-build") {
+	if paths.Build == "off" {
 		return nil, errNativeBuildCache
 	}
-	root, err := toolcache.ManagedBuildPath()
-	if err != nil {
-		return nil, err
-	}
+	root := paths.Build
 	owner, err := filepath.EvalSymlinks(runtimeStorePath(cfg))
 	if err != nil {
 		return nil, err
@@ -54,7 +50,7 @@ func newRunnerBuildCache(ctx context.Context, cfg BootConfig) (*runnerBuildCache
 	if err != nil {
 		return nil, err
 	}
-	return &runnerBuildCache{cache: cache, root: root, native: paths.Build}, nil
+	return &runnerBuildCache{cache: cache, root: root}, nil
 }
 
 func (c *runnerBuildCache) observe() *toolcache.Report {
@@ -93,12 +89,6 @@ func (c *runnerBuildCache) trimForVolume(ctx context.Context, policy toolcache.P
 	}
 	report, err := c.cache.Maintain(ctx, policy, now)
 	c.report.Store(&report)
-	var native toolcache.Report
-	if c.native != "" {
-		var nativeErr error
-		native, nativeErr = toolcache.TrimWithReport(ctx, c.native, policy, now)
-		err = errors.Join(err, nativeErr)
-	}
 	status := "complete"
 	if report.Deferred {
 		status = "busy"
@@ -112,7 +102,7 @@ func (c *runnerBuildCache) trimForVolume(ctx context.Context, policy toolcache.P
 	freeAfter, _, freeAfterErr := volume(c.root)
 	slog.Info("managed Go build cache maintenance", "path", c.root, "status", status,
 		"retained_bytes", report.RetainedBytes, "age_expired_bytes", report.AgeExpiredBytes,
-		"size_evicted_bytes", report.SizeEvictedBytes, "native_path", c.native, "native_age_expired_bytes", native.AgeExpiredBytes,
+		"size_evicted_bytes", report.SizeEvictedBytes,
 		"pressure_reclaim_bytes", pressureReclaim, "free_bytes_before", freeBefore,
 		"free_bytes_after", freeAfter, "disk_observation_error", errors.Join(freeBeforeErr, freeAfterErr))
 	return err

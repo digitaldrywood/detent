@@ -40,7 +40,7 @@ func checkDoctorNativeCaches(ctx context.Context, deps doctorDeps, policy toolca
 			if uint64(policy.NormalizedForCapacity(capacity).MaxBytes) > capacity/10 {
 				check.Status = doctorWarn
 				check.Detail += "; effective build cache size target exceeds 10% of cache-volume capacity"
-				check.Hint = "global.cache.max_bytes bounds the managed runner cache after protected consumers finish; native operator caches retain age-only expiry."
+				check.Hint = "global.cache.max_bytes bounds the shared runner cache after pinned outputs are released; native operator processes use unpinned entries on a best-effort basis."
 			}
 		}
 		policy = policy.NormalizedForCapacity(capacity)
