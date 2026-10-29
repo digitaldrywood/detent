@@ -479,7 +479,7 @@ func nativeLandingCandidateReady(ctx context.Context, query *sql.Tx, scope *nati
 	if err != nil {
 		return false, true, 0, err
 	}
-	if !nativeChangeLandingReady("Merging", &detail) {
+	if !nativeChangeLandingClaimable("Merging", &detail) {
 		return false, true, 0, nil
 	}
 	if version.External == nil && version.AttemptID != "" {
@@ -511,4 +511,11 @@ func nativeChangeLandingReady(state string, detail *tracker.ChangeDetail) bool {
 		return true
 	}
 	return detail != nil && detail.Change.CurrentLanding() == nil && detail.Change.CurrentVersion != "" && detail.Summary.Status == "reviewed"
+}
+
+func nativeChangeLandingClaimable(state string, detail *tracker.ChangeDetail) bool {
+	if nativeChangeLandingReady(state, detail) {
+		return true
+	}
+	return detail != nil && detail.Change.CurrentLanding() == nil && detail.Change.CurrentVersion != "" && detail.Summary.Status == "needs_evidence"
 }

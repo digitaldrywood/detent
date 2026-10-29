@@ -400,9 +400,9 @@ func readNativeRuntimeWithAdmission(ctx context.Context, query nativeQueryer, sc
 			e.Issue.ListChange = issue.ListChange
 		}
 	}
-	ready := nativeChangeLandingReady(issue.State, e.Change)
+	ready := nativeChangeLandingClaimable(issue.State, e.Change)
 	if issue.ListChange != nil && issue.ListChange.LandingPending {
-		ready = nativeChangeLandingReady("Merging", e.Change)
+		ready = nativeChangeLandingClaimable("Merging", e.Change)
 	}
 	e.Scheduling = tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "unknown", At: now, WorkItemRevision: issue.Revision, Reason: "Runner-specific selectors, policy and capacity must also permit this item"}
 	if !ready && !slices.Contains(e.Unavailable, "change_gate_history_truncated") {
@@ -521,7 +521,7 @@ func latestNativeRuntimeEvent(ctx context.Context, q nativeQueryer, scope native
 }
 
 func recordNativeSchedulingDecision(ctx context.Context, tx *sql.Tx, scope *nativeScope, id tracker.WorkItemID, ready bool, capacity int, now time.Time) error {
-	decision := tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "ready", Reason: "Current Change version is ready for native landing; runner capacity remains a separate condition"}
+	decision := tracker.NativeSchedulerDecision{Source: "native_claim_eligibility", Outcome: "ready", Reason: "Current Change version can be claimed for native landing or evidence recovery; runner capacity remains a separate condition"}
 	if !ready {
 		decision.Outcome = "skipped"
 		decision.Reason = "Current Change version is not ready for native landing"
