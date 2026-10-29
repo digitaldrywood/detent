@@ -67,14 +67,16 @@ func (l *pilotTenantLauncher) Start(_ context.Context, spec TenantSpec) error {
 	if err := copyTenantDatabaseTemplate(l.databaseTemplate, filepath.Join(spec.Directory, "hub.db")); err != nil {
 		return err
 	}
+	content := &conversationArchiveFixture{}
 	config := hubserver.Config{
 		DatabasePath: filepath.Join(spec.Directory, "hub.db"), GitHubDisabled: true,
 		InitialAdminToken: []byte(pilotAdminToken(spec.Organization.ID)), Logger: slog.New(slog.DiscardHandler),
+		Content: content.handleContent,
 		Hosted: &hubserver.HostedConfig{
 			OrganizationID: spec.Organization.ID, WorkOSOrganizationID: spec.Organization.ProviderID, PublicURL: spec.PublicURL, Provider: l.provider,
 			StaffEmails: []string{"staff@example.test"}, Plans: pilotPlans(),
 			EntitlementAdministrator: "pilot-operator", EntitlementAdminToken: []byte(pilotOperatorToken),
-			SharedEntry: &hubserver.HostedSharedEntry{ArchiveContents: &conversationArchiveFixture{}, Issuer: spec.Issuer, PublicKeys: []ed25519.PublicKey{public}, Generation: spec.Organization.Generation},
+			SharedEntry: &hubserver.HostedSharedEntry{ArchiveContents: content, Issuer: spec.Issuer, PublicKeys: []ed25519.PublicKey{public}, Generation: spec.Organization.Generation},
 		},
 	}
 	if l.billing != nil {
