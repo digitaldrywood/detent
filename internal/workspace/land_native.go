@@ -125,7 +125,7 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 				out[i].Err = refuse(LandRefusalProtected, "batch members must identify the same remote and base branch")
 				continue
 			}
-			if kept, ok := keptLanding(ctx, info.Path, request.Options.HeadSHA, baseRef); ok {
+			if kept, ok := keptLanding(ctx, info.Path, request.Options.HeadSHA, baseRef); ok && (!request.Options.SecurityAuditRequired || kept.SecurityAudit != nil) {
 				out[i].Result = kept
 				continue
 			}
@@ -152,6 +152,15 @@ func (l *LocalGit) LandChanges(ctx context.Context, requests []LandRequest) []La
 				continue
 			}
 			if delivered.MergeSHA != "" {
+				if request.Options.SecurityAuditRequired {
+					delivered.BaseBefore = request.Options.SourceBaseSHA
+					delivered.SecurityAudit, err = l.auditDeliveredLanding(ctx, info, delivered.BaseBefore, delivered.MergeSHA, request.Options)
+					if err != nil {
+						delivered.MergeSHA = ""
+						out[i] = LandOutcome{Result: delivered, Err: err}
+						continue
+					}
+				}
 				out[i].Result = delivered
 				out[i].Err = RecordLanding(ctx, info, request.Options.HeadSHA, delivered)
 				continue
@@ -381,6 +390,27 @@ func shortLandingCommand(ctx context.Context, path, base, head, approvedCommand 
 		command += " && go test -p ${TEST_PROCS:-4} -short -timeout=60s " + scope + " && golangci-lint run --allow-parallel-runners --concurrency=${TEST_PROCS:-4} --timeout=5m --new-from-rev=" + base + " --whole-files " + scope
 	}
 	return command, packages, nil
+}
+
+func (l *LocalGit) auditDeliveredLanding(ctx context.Context, info Info, base, head string, opts LandOptions) (*tracker.SecurityAuditReview, error) {
+	if !validLandingHead(base) || base == head {
+		return nil, errors.New("landing security audit requires the reviewed source base")
+	}
+	path := filepath.Join(l.root, "landing-audit-"+info.Key)
+	if err := l.removeLandingWorktree(ctx, l.sourceRoot, path); err != nil {
+		return nil, err
+	}
+	if _, err := runGitAt(ctx, info.Path, "worktree", "add", "--detach", path, head); err != nil {
+		return nil, err
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		if err := l.removeLandingWorktree(cleanup, l.sourceRoot, path); err != nil {
+			l.logger.Warn("landing audit worktree left behind", "path", path, "error", err)
+		}
+	}()
+	return auditIntegratedLanding(ctx, path, base, head, opts)
 }
 
 func auditIntegratedLanding(ctx context.Context, path, base, head string, opts LandOptions) (*tracker.SecurityAuditReview, error) {
